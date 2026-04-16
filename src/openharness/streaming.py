@@ -1,0 +1,360 @@
+"""Structured event emission for real-time observability of agent execution.
+
+Events are dataclasses emitted at key points during a loop run.  Consumers
+attach one or more ``EventEmitter`` implementations — callbacks, queues, or
+composites — and receive a typed stream of events without coupling to loop
+internals.
+
+Typical usage::
+
+    received = []
+    hook = StreamingHook(CallbackEmitter(received.append))
+    loop_result = composable_loop(state, ..., hooks=[hook])
+"""
+
+from __future__ import annotations
+
+import queue
+import time
+from dataclasses import dataclass, field
+from typing import Any, Callable, Protocol, runtime_checkable
+
+from openharness.loop import LoopHook
+from openharness.session import SessionLog
+from openharness.types import ToolCall, ToolResult
+
+
+# ── Base Event ──────────────────────────────────────────────────
+
+
+@dataclass
+class Event:
+    """Base class for all streaming events.
+
+    Subclasses set ``event_type`` automatically via ``__post_init__``.
+    Consumers can use ``isinstance`` checks or match on ``event_type`` for
+    routing.
+    """
+
+    event_type: str = field(default="")
+    timestamp: float = field(default_factory=time.time)
+
+
+# ── Concrete Event Types ────────────────────────────────────────
+
+
+@dataclass
+class LoopStartEvent(Event):
+    """Emitted once when the loop begins."""
+
+    task_summary: str = ""
+    max_steps: int = 0
+
+    def __post_init__(self) -> None:
+        self.event_type = type(self).__name__
+
+
+@dataclass
+class StepStartEvent(Event):
+    """Emitted at the start of each step before the LLM prompt is built."""
+
+    step_num: int = 0
+
+    def __post_init__(self) -> None:
+        self.event_type = type(self).__name__
+
+
+@dataclass
+class LLMCallStartEvent(Event):
+    """Emitted immediately before each LLM call."""
+
+    step_num: int = 0
+    prompt_tokens_est: int = 0
+
+    def __post_init__(self) -> None:
+        self.event_type = type(self).__name__
+
+
+@dataclass
+class LLMCallEndEvent(Event):
+    """Emitted immediately after each LLM call returns."""
+
+    step_num: int = 0
+    response_length: int = 0
+    duration_ms: float = 0.0
+
+    def __post_init__(self) -> None:
+        self.event_type = type(self).__name__
+
+
+@dataclass
+class LLMChunkEvent(Event):
+    """Emitted for each text chunk during token-level LLM streaming.
+
+    Only emitted when a streaming LLM backend (one with a ``stream()``
+    method) is used together with a ``stream`` emitter on the loop.
+    """
+
+    step_num: int = 0
+    chunk: str = ""
+    chunk_index: int = 0
+
+    def __post_init__(self) -> None:
+        self.event_type = type(self).__name__
+
+
+@dataclass
+class ToolDispatchEvent(Event):
+    """Emitted before a tool is dispatched."""
+
+    step_num: int = 0
+    tool_name: str = ""
+    args_summary: str = ""
+
+    def __post_init__(self) -> None:
+        self.event_type = type(self).__name__
+
+
+@dataclass
+class ToolResultEvent(Event):
+    """Emitted after a tool execution completes."""
+
+    step_num: int = 0
+    tool_name: str = ""
+    duration_ms: float = 0.0
+    has_error: bool = False
+
+    def __post_init__(self) -> None:
+        self.event_type = type(self).__name__
+
+
+@dataclass
+class StepEndEvent(Event):
+    """Emitted at the end of each step after post_dispatch hooks run."""
+
+    step_num: int = 0
+    classification: str = ""
+    new_entities_count: int = 0
+
+    def __post_init__(self) -> None:
+        self.event_type = type(self).__name__
+
+
+@dataclass
+class LoopEndEvent(Event):
+    """Emitted once after the loop exits for any reason."""
+
+    total_steps: int = 0
+    total_llm_calls: int = 0
+    reason: str = ""
+
+    def __post_init__(self) -> None:
+        self.event_type = type(self).__name__
+
+
+@dataclass
+class HookEvent(Event):
+    """Emitted by hooks to surface internal messages for observability."""
+
+    hook_name: str = ""
+    method: str = ""
+    message: str = ""
+
+    def __post_init__(self) -> None:
+        self.event_type = type(self).__name__
+
+
+@dataclass
+class RecoveryEvent(Event):
+    """Emitted when a recovery strategy is attempted (e.g. parse retry)."""
+
+    strategy: str = ""
+    success: bool = False
+
+    def __post_init__(self) -> None:
+        self.event_type = type(self).__name__
+
+
+# ── EventEmitter Protocol ───────────────────────────────────────
+
+
+@runtime_checkable
+class EventEmitter(Protocol):
+    """Protocol for event consumers.
+
+    Any object with an ``emit(event)`` method satisfies this protocol.
+    """
+
+    def emit(self, event: Event) -> None:
+        """Deliver an event to this consumer."""
+        ...
+
+
+# ── Emitter Implementations ─────────────────────────────────────
+
+
+class CallbackEmitter:
+    """Calls a user-provided callable with each event.
+
+    Args:
+        callback: Callable that receives each emitted ``Event``.
+    """
+
+    def __init__(self, callback: Callable[[Event], None]) -> None:
+        self._callback = callback
+
+    def emit(self, event: Event) -> None:
+        self._callback(event)
+
+
+class QueueEmitter:
+    """Puts events on a ``queue.Queue`` for consumer threads.
+
+    Args:
+        q: The queue to put events into.
+    """
+
+    def __init__(self, q: "queue.Queue[Event]") -> None:
+        self._queue = q
+
+    def emit(self, event: Event) -> None:
+        self._queue.put(event)
+
+
+class CompositeEmitter:
+    """Fans out each event to multiple child emitters.
+
+    Args:
+        emitters: Sequence of ``EventEmitter`` instances to fan out to.
+    """
+
+    def __init__(self, emitters: list[EventEmitter]) -> None:
+        self._emitters = list(emitters)
+
+    def emit(self, event: Event) -> None:
+        for emitter in self._emitters:
+            emitter.emit(event)
+
+
+# ── StreamingHook ───────────────────────────────────────────────
+
+
+class StreamingHook:
+    """``LoopHook`` implementation that emits structured events.
+
+    Attach a ``StreamingHook`` to any ``composable_loop`` run to receive
+    a typed event stream without modifying loop internals.
+
+    Args:
+        emitter: The ``EventEmitter`` that will receive all events.
+    """
+
+    def __init__(self, emitter: EventEmitter) -> None:
+        self._emitter = emitter
+        self._total_llm_calls: int = 0
+
+    def pre_loop(
+        self,
+        state: Any,
+        session_log: Any,
+        context: Any,
+    ) -> None:
+        """Emit ``LoopStartEvent`` once before the loop begins."""
+        task_summary = getattr(state, "task_summary", "")
+        max_steps = getattr(state, "max_steps", 0)
+        self._emitter.emit(LoopStartEvent(task_summary=task_summary, max_steps=max_steps))
+
+    def pre_prompt(
+        self,
+        state: Any,
+        session_log: SessionLog,
+        context: Any,
+        step_num: int,
+    ) -> str | None:
+        """Emit ``StepStartEvent`` before each LLM prompt."""
+        self._emitter.emit(StepStartEvent(step_num=step_num))
+        return None
+
+    def pre_dispatch(
+        self,
+        state: Any,
+        session_log: SessionLog,
+        tool_call: ToolCall,
+        step_num: int,
+    ) -> ToolResult | None:
+        """Emit ``ToolDispatchEvent``; never intercepts execution."""
+        self._emitter.emit(
+            ToolDispatchEvent(
+                step_num=step_num,
+                tool_name=tool_call.tool,
+                args_summary=str(tool_call.args)[:200],
+            )
+        )
+        return None
+
+    def check_permission(self, tool_call: ToolCall, state: Any) -> bool:
+        """StreamingHook never blocks — always returns True."""
+        return True
+
+    def post_dispatch(
+        self,
+        state: Any,
+        session_log: SessionLog,
+        tool_call: ToolCall,
+        tool_result: ToolResult,
+        step_num: int,
+    ) -> str | None:
+        """Emit ``ToolResultEvent`` and ``StepEndEvent`` after each dispatch."""
+        self._emitter.emit(
+            ToolResultEvent(
+                step_num=step_num,
+                tool_name=tool_result.tool,
+                duration_ms=tool_result.duration_ms,
+                has_error=tool_result.error is not None,
+            )
+        )
+        self._emitter.emit(
+            StepEndEvent(
+                step_num=step_num,
+                classification="continue",
+                new_entities_count=0,
+            )
+        )
+        return None
+
+    def check_done(
+        self,
+        state: Any,
+        session_log: SessionLog,
+        context: Any,
+        step_num: int,
+    ) -> str | None:
+        """Never blocks done; returns None."""
+        return None
+
+    def should_stop(
+        self,
+        state: Any,
+        step_num: int,
+        new_entities: int,
+    ) -> bool:
+        """Never stops early; returns False."""
+        return False
+
+    def on_loop_end(
+        self,
+        state: Any,
+        session_log: SessionLog,
+        context: Any,
+        llm: Any,
+    ) -> int:
+        """Emit ``LoopEndEvent`` and return 0 extra LLM calls."""
+        total_steps = getattr(state, "step_count", 0)
+        self._emitter.emit(
+            LoopEndEvent(
+                total_steps=total_steps,
+                total_llm_calls=self._total_llm_calls,
+                reason="completed",
+            )
+        )
+        return 0

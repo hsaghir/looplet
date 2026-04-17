@@ -487,3 +487,32 @@ class Step:
             total = r.data.get("total", r.data.get("total_items", "?"))
             return f"S{self.number} ✓ {r.tool}({r.args_summary}) → {total}"
         return f"S{self.number} ✓ {r.tool}({r.args_summary})"
+
+    def pretty(self) -> str:
+        """One-line human-readable summary for CLI / log display.
+
+        Unlike :meth:`summary` (which is tuned for LLM context assembly),
+        ``pretty`` prioritises human readability: it prefixes with the
+        step number, flags success/failure with ``✓``/``✗``, and includes
+        per-step duration when the tool registry recorded it. Safe to
+        ``print()`` directly while iterating the loop::
+
+            for step in composable_loop(...):
+                print(step.pretty())
+        """
+        r = self.tool_result
+        status = "✗" if r.error else "✓"
+        header = f"#{self.number} {status} {r.tool}({r.args_summary})"
+        if r.error:
+            tail = f"ERROR: {r.error[:80]}"
+        elif isinstance(r.data, list):
+            tail = f"{len(r.data)} items"
+        elif isinstance(r.data, dict):
+            tail = f"{len(r.data)} keys"
+        elif r.data is None:
+            tail = ""
+        else:
+            snippet = str(r.data)
+            tail = snippet if len(snippet) <= 60 else snippet[:57] + "..."
+        ms = f" [{r.duration_ms:.0f}ms]" if r.duration_ms > 0 else ""
+        return f"{header} → {tail}{ms}" if tail else f"{header}{ms}"

@@ -3,7 +3,7 @@
 Extracted from cadence and hardened for reuse across agent domains.
 """
 
-__version__ = "0.1.5"
+__version__ = "0.1.6"
 
 from openharness.async_loop import (
     AsyncLLMBackend,
@@ -52,6 +52,16 @@ from openharness.permissions import (
     PermissionRule,
 )
 from openharness.prompts import build_prompt
+from openharness.provenance import (
+    AsyncRecordingLLMBackend,
+    LLMCall,
+    ProvenanceSink,
+    RecordingLLMBackend,
+    StepRecord,
+    Trajectory,
+    TrajectoryRecorder,
+    replay_loop,
+)
 from openharness.recovery import (
     FailureScenario,
     RecoveryAction,
@@ -224,6 +234,15 @@ __all__ = [
     "TracingHook",
     "MetricsCollector",
     "MetricsHook",
+    # Provenance
+    "LLMCall",
+    "RecordingLLMBackend",
+    "AsyncRecordingLLMBackend",
+    "StepRecord",
+    "Trajectory",
+    "TrajectoryRecorder",
+    "ProvenanceSink",
+    "replay_loop",
     # Recovery
     "FailureScenario",
     "RecoveryAction",

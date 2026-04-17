@@ -1,8 +1,25 @@
 # Hook Authoring Guide
 
-Hooks are the primary extension mechanism in cadence. They let you inject
-domain-specific behavior into the generic loop without modifying any framework
-code.
+Hooks are the primary extension mechanism in `openharness`. They let you
+inject domain-specific behavior into the generic loop without modifying
+any framework code.
+
+Hooks are [`@runtime_checkable`](https://docs.python.org/3/library/typing.html#typing.runtime_checkable)
+Protocols — **any object with the right methods is a hook**. No base
+class, no registry, no decorator:
+
+```python
+class ConsolePrinter:
+    def post_dispatch(self, state, session_log, tool_call, tool_result, step_num):
+        print(f"#{step_num} {tool_call.tool} → {tool_result.data}")
+        return None
+
+for step in composable_loop(..., hooks=[ConsolePrinter()]):
+    ...
+```
+
+That's the entire contract. Include only the hook methods you need; the
+loop calls the ones you define and ignores the rest.
 
 ## The Hook Protocol
 
@@ -235,3 +252,14 @@ def test_quality_gate_allows_enough():
     result = hook.check_done(state, None, None, 3)
     assert result is None  # should allow
 ```
+
+---
+
+## Related: provenance hook
+
+`TrajectoryRecorder` (in `openharness.provenance`) is a hook that
+captures a complete structured record of every loop run —
+`pre_loop` → `pre_prompt` → `post_dispatch` → `on_loop_end` — and
+serialises it to disk alongside per-LLM-call prompt/response files.
+Use it whenever you want a git-diffable audit trail of what your
+agent did. See [PROVENANCE_GUIDE.md](PROVENANCE_GUIDE.md).

@@ -7,6 +7,62 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **`replay_loop(trace_dir, tools=...)`** — rerun a captured trace
+  through a fresh `composable_loop` without calling the LLM again.
+  Useful for golden-trajectory regression tests, hook A/Bs, and
+  cost-free loop diffs. Raises `RuntimeError` if the replay loop
+  requests more calls than were recorded or diverges in method
+  (`generate` vs `generate_with_tools`). Falls back to
+  `call_NN_response.txt` files when `manifest.jsonl` is missing.
+- **`python -m openharness show <trace-dir>`** — stdlib-only CLI that
+  prints a one-page summary of a captured trace (run id, termination,
+  per-step tool calls with durations, LLM totals). Exit code 1 when
+  the directory is missing or malformed.
+- **`openharness.provenance`** — new module for debugging agent runs:
+  - `RecordingLLMBackend` / `AsyncRecordingLLMBackend` wrap any backend
+    and capture every prompt, system prompt, tool schema, response,
+    duration, and error as `LLMCall` records. `generate_with_tools` is
+    surfaced only when the wrapped backend supports it, so
+    `NativeToolBackend` detection stays honest.
+  - `TrajectoryRecorder` hook captures a structured `Trajectory` per
+    run (steps, context-before, termination reason, embedded `Tracer`
+    spans) and writes `trajectory.json` + `steps/step_NN.json`.
+  - `ProvenanceSink` is a 3-line facade: `wrap_llm(...)`,
+    `trajectory_hook()`, `flush()`.
+  - On-disk layout is diff-friendly: `call_NN_prompt.txt` /
+    `call_NN_response.txt` per LLM call plus a `manifest.jsonl`.
+  - Both recorders accept `redact=` for secret scrubbing and
+    `max_chars_per_call=` for bounded memory.
+  - See [PROVENANCE_GUIDE.md](PROVENANCE_GUIDE.md) for API reference,
+    recipes, and performance notes.
+- `Step.pretty()` — human-readable CLI formatter complementing
+  `Step.summary()` (which is tuned for LLM context assembly).
+
+## [0.1.6] - 2026-04-17
+
+### Added
+- **`openharness.testing`** — public test-utility module exposing
+  `MockLLMBackend` and `AsyncMockLLMBackend` (scripted, zero-dependency)
+  so downstream packages can unit-test hooks, tools, and backends
+  without a real LLM provider.
+- **PyPI publish workflow** (`.github/workflows/publish.yml`) that
+  builds + publishes on version tags via PyPI trusted publishing.
+- **README positioning matrix** comparing `openharness` to LangGraph,
+  DSPy, and smolagents; observability/OTel wiring example; stability &
+  versioning policy; real `AnthropicBackend` usage in quick-start.
+
+### Fixed
+- `resume_loop_state()` now restores the checkpointed `Conversation`
+  thread (was silently dropping multi-turn message history on resume).
+- `RoutingLLMBackend.generate_with_tools` is now gated dynamically via
+  `__getattr__` so `hasattr(llm, "generate_with_tools")` returns a
+  truthful answer for the currently-selected backend (consistent with
+  `_FallbackLLM` and `CostTracker`).
+- Async `__llm_error__` step is now recorded through `_history` to
+  match the sync loop (previously caused session-log/conversation
+  drift on LLM failure).
+
+### Previously added in this release
 - **`ToolError` taxonomy** — structured `ErrorKind` enum
   (`PERMISSION_DENIED`, `TIMEOUT`, `VALIDATION`, `EXECUTION`, `PARSE`,
   `CONTEXT_OVERFLOW`, `RATE_LIMIT`, `NETWORK`, `CANCELLED`) plus a

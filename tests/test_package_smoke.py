@@ -14,7 +14,7 @@ def test_version_is_string() -> None:
 def test_version_value() -> None:
     import openharness
 
-    assert openharness.__version__ == "0.1.5"
+    assert openharness.__version__ == "0.1.6"
 
 
 def test_package_docstring() -> None:

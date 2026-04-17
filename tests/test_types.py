@@ -170,6 +170,37 @@ class TestStepConstruction:
         assert "✗" in summary
         assert "ERROR" in summary
 
+    def test_pretty_success_with_duration(self):
+        from openharness.types import Step, ToolCall, ToolResult
+        tc = ToolCall(tool="search")
+        tr = ToolResult(
+            tool="search", args_summary="q=test", data=["a", "b", "c"],
+            duration_ms=182.4,
+        )
+        step = Step(number=1, tool_call=tc, tool_result=tr)
+        pretty = step.pretty()
+        assert pretty.startswith("#1 ✓ search(q=test)")
+        assert "3 items" in pretty
+        assert "[182ms]" in pretty
+
+    def test_pretty_error(self):
+        from openharness.types import Step, ToolCall, ToolResult
+        tc = ToolCall(tool="shell")
+        tr = ToolResult(
+            tool="shell", args_summary="cmd=ls", data=None, error="permission denied",
+        )
+        step = Step(number=2, tool_call=tc, tool_result=tr)
+        pretty = step.pretty()
+        assert pretty.startswith("#2 ✗ shell(cmd=ls)")
+        assert "permission denied" in pretty
+
+    def test_pretty_no_duration_when_zero(self):
+        from openharness.types import Step, ToolCall, ToolResult
+        tc = ToolCall(tool="noop")
+        tr = ToolResult(tool="noop", args_summary="", data=None)
+        step = Step(number=1, tool_call=tc, tool_result=tr)
+        assert "ms" not in step.pretty()
+
 
 # ── AgentState Protocol compliance ───────────────────────────────
 

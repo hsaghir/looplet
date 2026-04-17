@@ -1,7 +1,7 @@
 [project]
 name = "openharness"
-version = "0.1.5"
-description = "A composable, tool-calling LLM agent harness — the inner loop of an agent, designed to be domain-agnostic."
+version = "0.1.6"
+description = "The tool-calling loop for LLM agents — iterator-first, protocol-hooked, one dependency."
 readme = "README.md"
 license = { text = "Apache-2.0" }
 requires-python = ">=3.11"

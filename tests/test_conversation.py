@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+
 import pytest
 
 pytestmark = pytest.mark.smoke
@@ -308,6 +309,7 @@ class TestConversationSerialize:
 
     def test_serialize_is_json_compatible(self):
         import json
+
         from openharness.conversation import Conversation, Message, MessageRole
         c = Conversation()
         c.append(Message(role=MessageRole.SYSTEM, content="system"))
@@ -359,6 +361,7 @@ class TestConversationSerialize:
 
     def test_serialize_with_metadata(self):
         import json
+
         from openharness.conversation import Conversation, Message, MessageRole
         c = Conversation()
         msg = Message(role=MessageRole.USER, content="hi", metadata={"key": "value"})
@@ -437,6 +440,7 @@ class TestDefaultSummarizer:
         assert "search" in result or "think" in result or "tool" in result.lower()
 
     def test_default_summarizer_callable(self):
-        from openharness.conversation import DefaultSummarizer
         import inspect
+
+        from openharness.conversation import DefaultSummarizer
         assert callable(DefaultSummarizer)

@@ -13,6 +13,7 @@ on agent state and loop counters.
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import re
@@ -35,7 +36,6 @@ DIMINISHING_RETURNS_THRESHOLD = 0  # new items in window to be "diminishing"
 RESULT_BUDGET_PER_RESULT = 50_000   # 50K chars per individual result
 RESULT_BUDGET_AGGREGATE = 500_000   # 500K chars total across all results
 
-DONE_QUALITY_MIN_STEPS = 3  # don't quality-gate done() in first N steps
 
 
 # ── LLM Error Types ──────────────────────────────────────────────
@@ -67,11 +67,21 @@ class LLMResult:
     ``ok`` is True iff the LLM returned a non-None response.
     ``is_prompt_too_long`` is computed once in __init__ so callers
     can branch without re-checking the error string.
+
+    ``text`` is normally a plain ``str``. When the backend is invoked
+    via ``generate_with_tools`` (native tool-calling path), it may be
+    a ``list`` of provider-native content blocks (e.g. Anthropic's
+    ``[{"type": "text"|"tool_use", ...}, ...]``). Callers on the native
+    path should branch on ``isinstance(result.text, list)``.
     """
 
     __slots__ = ("text", "error", "is_prompt_too_long")
 
-    def __init__(self, text: str | None, error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        text: "str | list[Any] | None",
+        error: Exception | None = None,
+    ) -> None:
         self.text = text
         self.error = error
         self.is_prompt_too_long = error is not None and _is_prompt_too_long(error)
@@ -101,6 +111,35 @@ def estimate_prompt_tokens(text: str) -> int:
 # ── LLM Retry with Backoff ──────────────────────────────────────
 
 
+def _accepts_kwarg(fn: Any, name: str) -> bool:
+    """Return True iff ``fn`` declares ``name`` as a parameter."""
+    try:
+        sig = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return False
+    return name in sig.parameters
+
+
+_ACCEPTS_CT_CACHE: dict[tuple[type, str], bool] = {}
+
+
+def _backend_accepts_cancel_token(backend: Any, method_name: str) -> bool:
+    """Check if ``getattr(backend, method_name)`` accepts ``cancel_token``.
+
+    Cached by ``(type(backend), method_name)`` so the ``inspect.signature``
+    cost is paid once per backend *class*, not per call. Safe across GC
+    cycles because we key on the class, not ``id()`` of a transient bound
+    method.
+    """
+    key = (type(backend), method_name)
+    hit = _ACCEPTS_CT_CACHE.get(key)
+    if hit is None:
+        fn = getattr(backend, method_name, None)
+        hit = _accepts_kwarg(fn, "cancel_token") if fn is not None else False
+        _ACCEPTS_CT_CACHE[key] = hit
+    return hit
+
+
 def llm_call_with_retry(
     llm: Any,
     prompt: str,
@@ -109,25 +148,67 @@ def llm_call_with_retry(
     system_prompt: str = "",
     temperature: float = 0.2,
     max_retries: int = MAX_LLM_RETRIES,
+    tools: list[dict[str, Any]] | None = None,
+    cancel_token: Any | None = None,
 ) -> LLMResult:
     """Call LLM with exponential backoff retry on failure.
 
     Returns LLMResult with error discrimination:
       - result.ok: True if successful
-      - result.text: response string (None on failure)
+      - result.text: response string (None on failure); when ``tools`` is
+        provided and the backend supports ``generate_with_tools``, this is a
+        list of Anthropic-style content blocks instead of a string.
       - result.is_prompt_too_long: True if prompt exceeded context window
 
     Prompt-too-long errors are not retried — retrying the same prompt
     against the same context window will always fail.
+
+    When ``tools`` is provided and the backend exposes ``generate_with_tools``,
+    native tool calling is used; otherwise the call falls back to ``generate``
+    (plain text → JSON-text tool parsing upstream).
+
+    When ``cancel_token`` is provided:
+      * If already cancelled before the call, returns an error result
+        without invoking the backend.
+      * If the backend's ``generate`` / ``generate_with_tools`` declares a
+        ``cancel_token`` parameter, the token is forwarded so the backend
+        can interrupt HTTP streams. Backends without the parameter keep
+        working unchanged.
     """
+    if cancel_token is not None and getattr(cancel_token, "is_cancelled", False):
+        return LLMResult(None, RuntimeError("cancelled before LLM call"))
+
+    use_native = tools is not None and hasattr(llm, "generate_with_tools")
     last_error: Exception | None = None
     for attempt in range(max_retries + 1):
+        # Re-check cancellation between retries — a long backoff could span it.
+        if cancel_token is not None and getattr(cancel_token, "is_cancelled", False):
+            return LLMResult(None, RuntimeError("cancelled during retry backoff"))
         try:
-            text = llm.generate(
+            if use_native:
+                call = llm.generate_with_tools
+                extra_kwargs: dict[str, Any] = {}
+                if cancel_token is not None and _backend_accepts_cancel_token(llm, "generate_with_tools"):
+                    extra_kwargs["cancel_token"] = cancel_token
+                blocks = call(
+                    prompt,
+                    tools=tools,
+                    max_tokens=max_tokens,
+                    system_prompt=system_prompt,
+                    temperature=temperature,
+                    **extra_kwargs,
+                )
+                return LLMResult(blocks)
+            call = llm.generate
+            extra_kwargs = {}
+            if cancel_token is not None and _backend_accepts_cancel_token(llm, "generate"):
+                extra_kwargs["cancel_token"] = cancel_token
+            text = call(
                 prompt,
                 max_tokens=max_tokens,
                 system_prompt=system_prompt,
                 temperature=temperature,
+                **extra_kwargs,
             )
             return LLMResult(text)
         except Exception as e:
@@ -536,7 +617,7 @@ def enforce_result_budget(
     to avoid progressive degradation.
     """
     def _is_compacted(data: Any) -> bool:
-        return isinstance(data, dict) and data.get("__compacted__")
+        return bool(isinstance(data, dict) and data.get("__compacted__"))
 
     # Phase 1: Per-result budget
     for step in steps:

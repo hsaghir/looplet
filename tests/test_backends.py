@@ -2,15 +2,15 @@
 from __future__ import annotations
 
 import pytest
+
 from openharness.backends import (
-    OpenAIBackend,
-    OpenAIStreamingBackend,
     AnthropicBackend,
     AnthropicStreamingBackend,
-    AsyncOpenAIBackend,
     AsyncAnthropicBackend,
+    AsyncOpenAIBackend,
+    OpenAIBackend,
+    OpenAIStreamingBackend,
 )
-
 
 # ── Mock API objects ────────────────────────────────────────────
 
@@ -178,13 +178,13 @@ class TestLLMChunkEvent:
 class TestExports:
     def test_backends_exported(self):
         from openharness import (
-            OpenAIBackend,
-            OpenAIStreamingBackend,
             AnthropicBackend,
             AnthropicStreamingBackend,
-            AsyncOpenAIBackend,
             AsyncAnthropicBackend,
+            AsyncOpenAIBackend,
             LLMChunkEvent,
+            OpenAIBackend,
+            OpenAIStreamingBackend,
         )
         assert OpenAIBackend is not None
         assert LLMChunkEvent is not None

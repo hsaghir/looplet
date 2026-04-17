@@ -17,7 +17,6 @@ from openharness.telemetry import (
 )
 from openharness.types import Step, ToolCall, ToolResult
 
-
 # ── Helpers ────────────────────────────────────────────────────────
 
 

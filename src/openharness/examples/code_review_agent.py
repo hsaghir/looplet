@@ -1,4 +1,4 @@
-"""Code review agent example — demonstrates cadence with a simulated code review agent.
+"""Code review agent example — demonstrates openharness with a simulated code review agent.
 
 Shows:
   - QualityGateHook: custom LoopHook that blocks done() until all files are reviewed
@@ -8,17 +8,14 @@ Shows:
 """
 from __future__ import annotations
 
-import io
-from contextlib import redirect_stdout
 from dataclasses import dataclass, field
 from typing import Any
 
-from openharness.loop import LoopConfig, LoopHook, composable_loop
+from openharness.loop import LoopConfig, composable_loop
 from openharness.session import SessionLog
 from openharness.streaming import CallbackEmitter, StreamingHook
 from openharness.tools import BaseToolRegistry, ToolSpec
 from openharness.types import ToolCall, ToolResult
-
 
 # ── Mock LLM ─────────────────────────────────────────────────────
 

@@ -103,6 +103,9 @@ class _FallbackLLM:
     def __init__(self, primary: LLMBackend, fallback: LLMBackend) -> None:
         self._primary = primary
         self._fallback = fallback
+        # Expose generate_with_tools only if at least one backend supports it
+        if hasattr(primary, "generate_with_tools") or hasattr(fallback, "generate_with_tools"):
+            self.generate_with_tools = self._generate_with_tools_impl  # type: ignore[attr-defined]
 
     def generate(
         self,
@@ -127,6 +130,30 @@ class _FallbackLLM:
                 system_prompt=system_prompt,
                 temperature=temperature,
             )
+
+    def _generate_with_tools_impl(
+        self,
+        prompt: str,
+        *,
+        tools: list[dict[str, Any]],
+        max_tokens: int = 2000,
+        system_prompt: str = "",
+        temperature: float = 0.2,
+    ) -> Any:
+        try:
+            if hasattr(self._primary, "generate_with_tools"):
+                return self._primary.generate_with_tools(  # type: ignore[attr-defined]
+                    prompt, tools=tools, max_tokens=max_tokens,
+                    system_prompt=system_prompt, temperature=temperature,
+                )
+        except Exception as exc:
+            logger.warning("Primary LLM generate_with_tools failed (%s); switching to fallback", exc)
+        if hasattr(self._fallback, "generate_with_tools"):
+            return self._fallback.generate_with_tools(  # type: ignore[attr-defined]
+                prompt, tools=tools, max_tokens=max_tokens,
+                system_prompt=system_prompt, temperature=temperature,
+            )
+        raise AttributeError("Neither primary nor fallback supports generate_with_tools")
 
 
 class FallbackRouter:
@@ -174,6 +201,9 @@ class CostTracker:
         self._total_output_tokens: int = 0
         self._total_cost: float = 0.0
         self._call_count: int = 0
+        # Proxy generate_with_tools if the wrapped backend supports it
+        if hasattr(backend, "generate_with_tools"):
+            self.generate_with_tools = self._generate_with_tools_impl  # type: ignore[attr-defined]
 
     @staticmethod
     def _estimate_tokens(text: str) -> int:
@@ -237,6 +267,33 @@ class CostTracker:
             f"cost=${self._total_cost:.6f}"
         )
 
+    def _generate_with_tools_impl(
+        self,
+        prompt: str,
+        *,
+        tools: list[dict[str, Any]],
+        max_tokens: int = 2000,
+        system_prompt: str = "",
+        temperature: float = 0.2,
+    ) -> Any:
+        response = self._backend.generate_with_tools(  # type: ignore[attr-defined]
+            prompt, tools=tools, max_tokens=max_tokens,
+            system_prompt=system_prompt, temperature=temperature,
+        )
+        input_tokens = self._estimate_tokens(prompt)
+        if system_prompt:
+            input_tokens += self._estimate_tokens(system_prompt)
+        # Native tool responses are lists of blocks; estimate from str repr
+        output_tokens = self._estimate_tokens(str(response))
+        self._total_input_tokens += input_tokens
+        self._total_output_tokens += output_tokens
+        self._total_cost += (
+            input_tokens * self._cost_per_1k_input / 1000
+            + output_tokens * self._cost_per_1k_output / 1000
+        )
+        self._call_count += 1
+        return response
+
 
 # ── RoutingLLMBackend ─────────────────────────────────────────────
 
@@ -287,3 +344,37 @@ class RoutingLLMBackend:
             system_prompt=system_prompt,
             temperature=temperature,
         )
+
+    def _generate_with_tools_impl(
+        self,
+        prompt: str,
+        *,
+        tools: list[dict[str, Any]],
+        max_tokens: int = 2000,
+        system_prompt: str = "",
+        temperature: float = 0.2,
+    ) -> Any:
+        """Proxy to the selected backend's native tool calling."""
+        backend = self._router.select(self._purpose)
+        return backend.generate_with_tools(  # type: ignore[attr-defined]
+            prompt, tools=tools, max_tokens=max_tokens,
+            system_prompt=system_prompt, temperature=temperature,
+        )
+
+    def __getattr__(self, name: str) -> Any:
+        # Dynamically surface ``generate_with_tools`` only when the
+        # currently-selected backend supports it, so callers using
+        # ``hasattr(llm, "generate_with_tools")`` get a truthful answer
+        # under a dynamic routing regime. Matches the gating pattern
+        # used by ``_FallbackLLM`` and ``CostTracker``.
+        if name == "generate_with_tools":
+            backend = self._router.select(self._purpose)
+            if hasattr(backend, "generate_with_tools"):
+                return self._generate_with_tools_impl
+        raise AttributeError(name)
+
+    @property
+    def _supports_native_tools(self) -> bool:
+        """Check if the current backend supports generate_with_tools."""
+        backend = self._router.select(self._purpose)
+        return hasattr(backend, "generate_with_tools")

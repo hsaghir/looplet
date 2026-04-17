@@ -78,7 +78,7 @@ def run_sub_loop(
     # Create isolated tool registry if not provided
     if sub_tools is None:
         exclude = state_mutating_tools or ["done"]
-        sub_tools = _clone_tools_excluding(tools, exclude)
+        sub_tools = clone_tools_excluding(tools, exclude)
 
     # Fork conversation for sub-agent isolation (if provided)
     _sub_conv = None
@@ -123,6 +123,7 @@ def run_sub_loop(
                 all_highlights.extend(entry.highlights or [])
 
     # Build summary via injected callable or generic default
+    result: dict[str, Any]
     if build_summary is not None:
         result = build_summary(state, session_log, steps)
     else:
@@ -177,9 +178,9 @@ class _MinimalState:
         }
 
 
-def _clone_tools_excluding(parent_tools: Any, exclude: list[str]) -> Any:
+def clone_tools_excluding(parent_tools: Any, exclude: list[str]) -> Any:
     """Clone a tool registry, excluding specified tool names."""
-    from openharness.tools import ToolSpec, BaseToolRegistry
+    from openharness.tools import BaseToolRegistry, ToolSpec
 
     sub = BaseToolRegistry()
     for name, spec in parent_tools._tools.items():
@@ -191,5 +192,10 @@ def _clone_tools_excluding(parent_tools: Any, exclude: list[str]) -> Any:
             parameters=spec.parameters,
             execute=spec.execute,
             concurrent_safe=spec.concurrent_safe,
+            free=spec.free,
         ))
     return sub
+
+
+# Backward-compat alias
+_clone_tools_excluding = clone_tools_excluding

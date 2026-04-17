@@ -18,7 +18,6 @@ from openharness.validation import (
     validate_args,
 )
 
-
 # ── FieldSpec ────────────────────────────────────────────────────────
 
 
@@ -218,7 +217,7 @@ class TestValidateArgs:
 class TestValidatingToolRegistry:
     def _make_registry(self) -> "ValidatingToolRegistry":
         from openharness.tools import ToolSpec
-        from openharness.validation import ValidatingToolRegistry, OutputSchema, FieldSpec
+        from openharness.validation import FieldSpec, OutputSchema, ValidatingToolRegistry
 
         registry = ValidatingToolRegistry()
         spec = ToolSpec(
@@ -250,7 +249,7 @@ class TestValidatingToolRegistry:
     def test_invalid_call_does_not_execute_tool(self) -> None:
         executed: list[bool] = []
         from openharness.tools import ToolSpec
-        from openharness.validation import ValidatingToolRegistry, OutputSchema, FieldSpec
+        from openharness.validation import FieldSpec, OutputSchema, ValidatingToolRegistry
 
         registry = ValidatingToolRegistry()
         spec = ToolSpec(

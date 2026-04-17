@@ -1,12 +1,24 @@
 """openharness — composable tool-calling LLM agent harness.
 
-Extracted from cadence. Provides the inner agent loop, hooks, context
-management, streaming, checkpoints, recovery, and LLM backends.
+Extracted from cadence and hardened for reuse across agent domains.
 """
 
 __version__ = "0.1.5"
 
-from openharness.async_loop import AsyncLLMBackend, AsyncLoopHook, SyncToAsyncAdapter, async_composable_loop
+from openharness.async_loop import (
+    AsyncLLMBackend,
+    AsyncLoopHook,
+    SyncToAsyncAdapter,
+    async_composable_loop,
+)
+from openharness.backends import (
+    AnthropicBackend,
+    AnthropicStreamingBackend,
+    AsyncAnthropicBackend,
+    AsyncOpenAIBackend,
+    OpenAIBackend,
+    OpenAIStreamingBackend,
+)
 from openharness.checkpoint import (
     Checkpoint,
     CheckpointHook,
@@ -15,10 +27,30 @@ from openharness.checkpoint import (
     resume_loop_state,
 )
 from openharness.context import ContextManagerHook
-from openharness.conversation import Conversation, DefaultSummarizer, Message, MessageRole
+from openharness.conversation import (
+    HEAVY_BLOCK_KINDS,
+    ContentBlock,
+    Conversation,
+    DefaultSummarizer,
+    Message,
+    MessageRole,
+)
 from openharness.flags import FLAGS, HARNESS_FLAGS
+from openharness.history import HistoryRecorder
 from openharness.loop import LoopConfig, LoopHook, composable_loop
+from openharness.memory import (
+    CallableMemorySource,
+    PersistentMemorySource,
+    StaticMemorySource,
+    render_memory,
+)
 from openharness.parse import parse_multi_tool_calls, parse_native_tool_use, parse_tool_call
+from openharness.permissions import (
+    PermissionDecision,
+    PermissionEngine,
+    PermissionOutcome,
+    PermissionRule,
+)
 from openharness.prompts import build_prompt
 from openharness.recovery import (
     FailureScenario,
@@ -36,8 +68,8 @@ from openharness.router import (
     SimpleRouter,
 )
 from openharness.scaffolding import (
-    PARSE_RECOVERY_MAX,
     MAX_LLM_RETRIES,
+    PARSE_RECOVERY_MAX,
     TOOL_RESULT_MAX_CHARS,
     TOOL_RESULT_MAX_ROWS,
     DiminishingReturnsTracker,
@@ -53,10 +85,11 @@ from openharness.scaffolding import (
     should_compress_context,
     truncate_tool_result,
 )
-from openharness.session import LogEntry, SessionLog, InvestigationLog
+from openharness.session import InvestigationLog, LogEntry, SessionLog
 from openharness.streaming import (
     CallbackEmitter,
     CompositeEmitter,
+    ContextPressureEvent,
     Event,
     EventEmitter,
     HookEvent,
@@ -73,18 +106,22 @@ from openharness.streaming import (
     ToolDispatchEvent,
     ToolResultEvent,
 )
-from openharness.backends import (
-    OpenAIBackend,
-    OpenAIStreamingBackend,
-    AnthropicBackend,
-    AnthropicStreamingBackend,
-    AsyncOpenAIBackend,
-    AsyncAnthropicBackend,
-)
-from openharness.subagent import run_sub_loop, _clone_tools_excluding
+from openharness.subagent import clone_tools_excluding, run_sub_loop
 from openharness.telemetry import MetricsCollector, MetricsHook, Span, Tracer, TracingHook
 from openharness.tools import BaseToolRegistry, ToolSpec, register_think_tool
-from openharness.types import AgentState, DefaultState, LLMBackend, Step, ToolCall, ToolResult
+from openharness.types import (
+    AgentState,
+    CancelToken,
+    DefaultState,
+    ErrorKind,
+    LLMBackend,
+    NativeToolBackend,
+    Step,
+    ToolCall,
+    ToolContext,
+    ToolError,
+    ToolResult,
+)
 from openharness.validation import (
     DoneValidator,
     FieldSpec,
@@ -107,16 +144,29 @@ __all__ = [
     "Step",
     "ToolCall",
     "ToolResult",
+    "ToolError",
+    "ErrorKind",
     "AgentState",
     "DefaultState",
     "LLMBackend",
+    "NativeToolBackend",
     "LLMResult",
+    "CancelToken",
+    "ToolContext",
+    "HistoryRecorder",
+    # Persistent memory
+    "PersistentMemorySource",
+    "StaticMemorySource",
+    "CallableMemorySource",
+    "render_memory",
     # Async
     "AsyncLLMBackend",
     "AsyncLoopHook",
     "SyncToAsyncAdapter",
     # Conversation
     "Conversation",
+    "ContentBlock",
+    "HEAVY_BLOCK_KINDS",
     "DefaultSummarizer",
     "Message",
     "MessageRole",
@@ -128,7 +178,7 @@ __all__ = [
     "ToolSpec",
     "BaseToolRegistry",
     "register_think_tool",
-    "_clone_tools_excluding",
+    "clone_tools_excluding",
     # Streaming
     "CallbackEmitter",
     "CompositeEmitter",
@@ -147,6 +197,7 @@ __all__ = [
     "StreamingHook",
     "ToolDispatchEvent",
     "ToolResultEvent",
+    "ContextPressureEvent",
     # Backends (LLM adapters)
     "OpenAIBackend",
     "OpenAIStreamingBackend",
@@ -179,6 +230,11 @@ __all__ = [
     "RecoveryRecipe",
     "RecoveryRegistry",
     "build_default_registry",
+    # Permissions
+    "PermissionDecision",
+    "PermissionEngine",
+    "PermissionOutcome",
+    "PermissionRule",
     # Validation
     "FieldSpec",
     "OutputSchema",

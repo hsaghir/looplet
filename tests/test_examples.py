@@ -69,16 +69,18 @@ def test_research_agent_has_main_block():
 
 def test_research_agent_uses_session_log():
     """Verify the example imports and uses SessionLog."""
-    import openharness.examples.research_agent as m
     import inspect
+
+    import openharness.examples.research_agent as m
     source = inspect.getsource(m)
     assert "SessionLog" in source
 
 
 def test_research_agent_theory_tracking():
     """Verify the example has theory tracking."""
-    import openharness.examples.research_agent as m
     import inspect
+
+    import openharness.examples.research_agent as m
     source = inspect.getsource(m)
     assert "theory" in source.lower()
 
@@ -107,23 +109,26 @@ def test_code_review_agent_has_main_block():
 
 def test_code_review_agent_uses_streaming():
     """Verify the example uses StreamingHook."""
-    import openharness.examples.code_review_agent as m
     import inspect
+
+    import openharness.examples.code_review_agent as m
     source = inspect.getsource(m)
     assert "StreamingHook" in source or "streaming" in source.lower()
 
 
 def test_code_review_agent_has_quality_gate_hook():
     """Verify the example defines a QualityGateHook."""
-    import openharness.examples.code_review_agent as m
     import inspect
+
+    import openharness.examples.code_review_agent as m
     source = inspect.getsource(m)
     assert "QualityGate" in source
 
 
 def test_code_review_agent_uses_callback_emitter():
     """Verify the example uses CallbackEmitter for event printing."""
-    import openharness.examples.code_review_agent as m
     import inspect
+
+    import openharness.examples.code_review_agent as m
     source = inspect.getsource(m)
     assert "CallbackEmitter" in source

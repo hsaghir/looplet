@@ -226,11 +226,17 @@ def resume_loop_state(checkpoint: Checkpoint) -> dict[str, Any]:
 
     Returns a dict with:
       - ``session_log``: reconstructed SessionLog
+      - ``conversation``: reconstructed Conversation (message thread)
+        if the checkpoint captured one; ``None`` otherwise
       - ``step_offset``: step number to continue from
+      - ``state_counters``: dict with ``queries_used`` and
+        ``budget_remaining`` if present in ``config_snapshot`` (so the
+        loop can restore its budget/query accounting)
       - ``metadata``: checkpoint metadata dict
 
     The returned dict can be passed to composable_loop to resume
-    execution from where it left off.
+    execution from where it left off. In particular, ``conversation``
+    should be forwarded so multi-turn LLM context is preserved.
     """
     from openharness.session import SessionLog
 
@@ -249,8 +255,20 @@ def resume_loop_state(checkpoint: Checkpoint) -> dict[str, Any]:
         )
     log.current_theory = checkpoint.session_log_data.get("current_theory", "")
 
+    cfg = checkpoint.config_snapshot or {}
+    state_counters = {
+        k: cfg[k] for k in ("queries_used", "budget_remaining") if k in cfg
+    }
+
+    conv = None
+    if checkpoint.conversation_data:
+        from openharness.conversation import Conversation  # noqa: PLC0415
+        conv = Conversation.deserialize(checkpoint.conversation_data)
+
     return {
         "session_log": log,
+        "conversation": conv,
         "step_offset": checkpoint.step_number,
+        "state_counters": state_counters,
         "metadata": checkpoint.metadata,
     }

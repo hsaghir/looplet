@@ -1,4 +1,4 @@
-"""Tests for cadence.flags — _CadenceFlags and FLAGS singleton."""
+"""Tests for openharness.flags — _Flags and FLAGS singleton."""
 
 from __future__ import annotations
 
@@ -9,8 +9,8 @@ pytestmark = pytest.mark.smoke
 
 class TestFlagDefaults:
     def test_singleton_exists(self):
-        from openharness.flags import FLAGS, _CadenceFlags
-        assert isinstance(FLAGS, _CadenceFlags)
+        from openharness.flags import FLAGS, _Flags
+        assert isinstance(FLAGS, _Flags)
 
     def test_concurrent_dispatch_default_false(self):
         from openharness.flags import FLAGS
@@ -46,52 +46,85 @@ class TestFlagDefaults:
 
 
 class TestFlagEnvOverrides:
+    """Test with OPENHARNESS_* prefix (canonical)."""
+
     def test_concurrent_dispatch_env_true(self, monkeypatch):
-        monkeypatch.setenv("CADENCE_CONCURRENT_DISPATCH", "1")
-        from openharness.flags import _CadenceFlags
-        assert _CadenceFlags().concurrent_dispatch is True
+        monkeypatch.setenv("OPENHARNESS_CONCURRENT_DISPATCH", "1")
+        from openharness.flags import _Flags
+        assert _Flags().concurrent_dispatch is True
 
     def test_concurrent_dispatch_env_false(self, monkeypatch):
-        monkeypatch.setenv("CADENCE_CONCURRENT_DISPATCH", "false")
-        from openharness.flags import _CadenceFlags
-        assert _CadenceFlags().concurrent_dispatch is False
+        monkeypatch.setenv("OPENHARNESS_CONCURRENT_DISPATCH", "false")
+        from openharness.flags import _Flags
+        assert _Flags().concurrent_dispatch is False
 
     def test_sub_agents_env_on(self, monkeypatch):
-        monkeypatch.setenv("CADENCE_SUB_AGENTS", "on")
-        from openharness.flags import _CadenceFlags
-        assert _CadenceFlags().sub_agents is True
+        monkeypatch.setenv("OPENHARNESS_SUB_AGENTS", "on")
+        from openharness.flags import _Flags
+        assert _Flags().sub_agents is True
 
     def test_context_management_env_off(self, monkeypatch):
-        monkeypatch.setenv("CADENCE_CONTEXT_MANAGEMENT", "0")
-        from openharness.flags import _CadenceFlags
-        assert _CadenceFlags().context_management is False
+        monkeypatch.setenv("OPENHARNESS_CONTEXT_MANAGEMENT", "0")
+        from openharness.flags import _Flags
+        assert _Flags().context_management is False
 
     def test_reactive_recovery_env_no(self, monkeypatch):
-        monkeypatch.setenv("CADENCE_REACTIVE_RECOVERY", "no")
-        from openharness.flags import _CadenceFlags
-        assert _CadenceFlags().reactive_recovery is False
+        monkeypatch.setenv("OPENHARNESS_REACTIVE_RECOVERY", "no")
+        from openharness.flags import _Flags
+        assert _Flags().reactive_recovery is False
 
     def test_native_tools_env_yes(self, monkeypatch):
-        monkeypatch.setenv("CADENCE_NATIVE_TOOLS", "yes")
-        from openharness.flags import _CadenceFlags
-        assert _CadenceFlags().native_tools is True
+        monkeypatch.setenv("OPENHARNESS_NATIVE_TOOLS", "yes")
+        from openharness.flags import _Flags
+        assert _Flags().native_tools is True
 
     def test_result_budgeting_env_off(self, monkeypatch):
-        monkeypatch.setenv("CADENCE_RESULT_BUDGETING", "off")
-        from openharness.flags import _CadenceFlags
-        assert _CadenceFlags().result_budgeting is False
+        monkeypatch.setenv("OPENHARNESS_RESULT_BUDGETING", "off")
+        from openharness.flags import _Flags
+        assert _Flags().result_budgeting is False
+
+
+class TestLegacyCadenceFallback:
+    """Legacy CADENCE_* env vars still work as fallback."""
+
+    def test_legacy_concurrent_dispatch(self, monkeypatch):
+        monkeypatch.setenv("CADENCE_CONCURRENT_DISPATCH", "1")
+        from openharness.flags import _Flags
+        assert _Flags().concurrent_dispatch is True
+
+    def test_legacy_native_tools(self, monkeypatch):
+        monkeypatch.setenv("CADENCE_NATIVE_TOOLS", "yes")
+        from openharness.flags import _Flags
+        assert _Flags().native_tools is True
+
+    def test_openharness_prefix_wins_over_cadence(self, monkeypatch):
+        """OPENHARNESS_* takes precedence over CADENCE_*."""
+        monkeypatch.setenv("OPENHARNESS_CONCURRENT_DISPATCH", "0")
+        monkeypatch.setenv("CADENCE_CONCURRENT_DISPATCH", "1")
+        from openharness.flags import _Flags
+        assert _Flags().concurrent_dispatch is False
+
+    def test_legacy_sub_agent_max_steps(self, monkeypatch):
+        monkeypatch.setenv("CADENCE_SUB_AGENT_MAX_STEPS", "10")
+        from openharness.flags import _Flags
+        assert _Flags().sub_agent_max_steps == 10
+
+    def test_legacy_sub_agent_max_spawns(self, monkeypatch):
+        monkeypatch.setenv("CADENCE_SUB_AGENT_MAX_SPAWNS", "5")
+        from openharness.flags import _Flags
+        assert _Flags().sub_agent_max_spawns == 5
 
 
 class TestIntFlags:
     def test_sub_agent_max_steps_env(self, monkeypatch):
-        monkeypatch.setenv("CADENCE_SUB_AGENT_MAX_STEPS", "10")
-        from openharness.flags import _CadenceFlags
-        assert _CadenceFlags().sub_agent_max_steps == 10
+        monkeypatch.setenv("OPENHARNESS_SUB_AGENT_MAX_STEPS", "10")
+        from openharness.flags import _Flags
+        assert _Flags().sub_agent_max_steps == 10
 
     def test_sub_agent_max_spawns_env(self, monkeypatch):
-        monkeypatch.setenv("CADENCE_SUB_AGENT_MAX_SPAWNS", "5")
-        from openharness.flags import _CadenceFlags
-        assert _CadenceFlags().sub_agent_max_spawns == 5
+        monkeypatch.setenv("OPENHARNESS_SUB_AGENT_MAX_SPAWNS", "5")
+        from openharness.flags import _Flags
+        assert _Flags().sub_agent_max_spawns == 5
 
     def test_sub_agent_max_steps_returns_int(self):
         from openharness.flags import FLAGS
@@ -103,15 +136,14 @@ class TestIntFlags:
 
 
 class TestExports:
-    def test_flags_exported_from_cadence(self):
-        import openharness as cadence
-        assert hasattr(cadence, "FLAGS")
+    def test_flags_exported(self):
+        import openharness
+        assert hasattr(openharness, "FLAGS")
 
     def test_no_harness_prefix_in_flags(self):
-        """Verify we use CADENCE_ prefix for env vars, not HARNESS_."""
+        """Verify we use OPENHARNESS_ prefix for env vars (with CADENCE_ fallback)."""
         import openharness.flags as fm
         src = open(fm.__file__).read()
-        # Only check for HARNESS_ as an env var prefix (e.g. _flag("HARNESS_..."))
         import re
         harness_env_vars = re.findall(r'_flag\(["\']HARNESS_', src)
         assert not harness_env_vars, f"HARNESS_ env var prefix found: {harness_env_vars}"

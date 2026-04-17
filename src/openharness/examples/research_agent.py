@@ -1,4 +1,4 @@
-"""Research agent example — demonstrates cadence with a simulated web research agent.
+"""Research agent example — demonstrates openharness with a simulated web research agent.
 
 Shows:
   - SessionLog for entity/memory tracking
@@ -13,7 +13,6 @@ from typing import Any
 from openharness.loop import LoopConfig, composable_loop
 from openharness.session import SessionLog
 from openharness.tools import BaseToolRegistry, ToolSpec
-
 
 # ── Mock LLM ─────────────────────────────────────────────────────
 
@@ -103,20 +102,12 @@ _MOCK_PAGE_CONTENT = {
 }
 
 
-def _make_research_registry(state: ResearchState, session_log: SessionLog) -> BaseToolRegistry:
+def _make_research_registry(state: ResearchState) -> BaseToolRegistry:
     reg = BaseToolRegistry()
     step_counter: list[int] = [0]
 
     def _search(query: str = "") -> dict[str, Any]:
         results = _MOCK_SEARCH_RESULTS
-        # Record entities in session log
-        session_log.record(
-            step=step_counter[0],
-            theory=state.theory,
-            tool="search",
-            reasoning=f"searching for: {query}",
-            entities=[r["url"] for r in results],
-        )
         step_counter[0] += 1
         return {"query": query, "results": results}
 
@@ -124,25 +115,11 @@ def _make_research_registry(state: ResearchState, session_log: SessionLog) -> Ba
         content = _MOCK_PAGE_CONTENT.get(url, f"[no content found for {url}]")
         # Update theory based on reading
         state.theory = "asyncio.gather is the best practice for concurrent I/O"
-        session_log.record(
-            step=step_counter[0],
-            theory=state.theory,
-            tool="read_page",
-            reasoning=f"reading {url}",
-            findings=[content[:80]],
-        )
         step_counter[0] += 1
         return {"url": url, "content": content}
 
     def _take_notes(text: str = "") -> dict[str, Any]:
         state.notes.append(text)
-        session_log.record(
-            step=step_counter[0],
-            theory=state.theory,
-            tool="take_notes",
-            reasoning="recording key finding",
-            highlights=[text],
-        )
         step_counter[0] += 1
         return {"recorded": text, "total_notes": len(state.notes)}
 
@@ -185,7 +162,7 @@ def run() -> None:
     print("=== Research Agent ===")
     state = ResearchState(theory="unknown")
     session_log = SessionLog()
-    reg = _make_research_registry(state, session_log)
+    reg = _make_research_registry(state)
     llm = MockResearchLLM()
     config = LoopConfig(max_steps=10, done_tool="done")
 

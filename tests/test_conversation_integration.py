@@ -6,10 +6,10 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
+
 from openharness.conversation import Conversation, Message, MessageRole
 from openharness.loop import LoopConfig, composable_loop
 from openharness.tools import BaseToolRegistry, ToolSpec
-
 
 # ── Helpers ──────────────────────────────────────────────────────
 

@@ -4,14 +4,178 @@ Domain-agnostic: Step, ToolCall, ToolResult can represent any
 tool invocation in any agent pipeline.
 
 Protocols define the contracts that agent states and LLM backends
-must satisfy to work with the cadence loop engine.
+must satisfy to work with the openharness loop engine.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Protocol, runtime_checkable
+from enum import Enum
+from typing import Any, Callable, Protocol, runtime_checkable
 from uuid import uuid4
+
+# ── Error taxonomy ───────────────────────────────────────────────
+
+
+class ErrorKind(str, Enum):
+    """Discriminator for tool and LLM errors.
+
+    Inherits ``str`` so values compare equal to their string form and
+    serialise cleanly in ``to_dict()`` / JSON.
+    """
+
+    PERMISSION_DENIED = "permission_denied"
+    """Tool call blocked by a permission check (engine or hook)."""
+
+    TIMEOUT = "timeout"
+    """Tool/LLM call exceeded its deadline."""
+
+    VALIDATION = "validation"
+    """Args failed schema validation or tool name unknown."""
+
+    EXECUTION = "execution"
+    """Generic runtime failure inside the tool body."""
+
+    PARSE = "parse"
+    """LLM response couldn't be parsed into a tool call."""
+
+    CONTEXT_OVERFLOW = "context_overflow"
+    """Prompt exceeded the backend's context window."""
+
+    RATE_LIMIT = "rate_limit"
+    """Provider returned a throttling / quota error."""
+
+    NETWORK = "network"
+    """Transport-level failure reaching the provider."""
+
+    CANCELLED = "cancelled"
+    """Cancelled via ``CancelToken`` before completion."""
+
+
+@dataclass
+class ToolError:
+    """Structured error produced by a tool or LLM call.
+
+    Prefer this over a bare string when you need the loop, hooks, or
+    permission-aware recovery to distinguish failure modes.
+    """
+
+    kind: ErrorKind
+    """Discriminator — which class of failure occurred."""
+
+    message: str
+    """Human-readable description, safe to include in LLM context."""
+
+    retriable: bool = False
+    """Advisory hint for recovery hooks and external orchestrators.
+
+    Set ``True`` for transient failures (rate limits, timeouts, network
+    errors) where a retry has a real chance of success.  The built-in
+    loop does **not** automatically retry based on this flag; it is
+    consumed by:
+
+    * ``RecoveryRegistry`` recipes (if registered via ``LoopConfig.recovery_registry``)
+    * Custom ``LoopHook.post_dispatch`` implementations
+    * External orchestrators wrapping ``composable_loop``
+
+    Producers set this via ``_classify_exception()`` in ``tools.py``."""
+
+    context: dict[str, Any] = field(default_factory=dict)
+    """Optional structured metadata — e.g. ``{"attempts": 3,
+    "next_retry_in": 2.0}`` — attached by the producer for observability."""
+
+    def __bool__(self) -> bool:  # truthy like a string error
+        return True
+
+    def __str__(self) -> str:
+        return self.message
+
+
+# ── Cancellation ─────────────────────────────────────────────────
+
+
+@dataclass
+class CancelToken:
+    """Cooperative cancellation signal for long-running tools.
+
+    A token starts non-cancelled. Any observer can call ``cancel()`` to
+    mark it. Tool implementations poll ``is_cancelled`` or call
+    ``raise_if_cancelled()`` at safe checkpoints to stop early.
+
+    The token is intentionally simple: no threading primitives, no async
+    events. Tools that need those wrap the token in their own primitive.
+    """
+
+    _cancelled: bool = False
+
+    def cancel(self) -> None:
+        """Mark this token as cancelled. Idempotent."""
+        self._cancelled = True
+
+    @property
+    def is_cancelled(self) -> bool:
+        """True once ``cancel()`` has been called."""
+        return self._cancelled
+
+    def raise_if_cancelled(self) -> None:
+        """Raise :class:`RuntimeError` if this token has been cancelled.
+
+        Useful as a one-liner at tool checkpoints:
+            ctx.cancel_token and ctx.cancel_token.raise_if_cancelled()
+        """
+        if self._cancelled:
+            raise RuntimeError("Tool execution cancelled")
+
+
+# ── ToolContext ──────────────────────────────────────────────────
+
+
+@dataclass
+class ToolContext:
+    """Runtime context handed to tools that opt-in via a ``ctx`` parameter.
+
+    Modelled on Claude Code's ``ToolUseContext``: gives tools structured
+    access to workspace information, cancellation, progress reporting, and
+    arbitrary per-session metadata. Strictly opt-in — tools without a
+    ``ctx`` kwarg in their signature never receive one.
+
+    Fields:
+        cwd: Current working directory for file operations.
+        workspace_root: Root of the active workspace (session-bound).
+        cancel_token: Cooperative cancellation signal. Tools should check
+            periodically during long operations.
+        on_progress: Optional callback ``(stage: str, data: dict) -> None``
+            that tools may invoke to report incremental progress.
+        session_id: Identifier for the owning loop/session.
+        metadata: Arbitrary key/value bag for domain-specific context
+            (e.g. ``{"alert_id": "...", "permission_mode": "read-only"}``).
+    """
+
+    cwd: str | None = None
+    workspace_root: str | None = None
+    cancel_token: "CancelToken | None" = None
+    on_progress: Callable[[str, dict], None] | None = None
+    session_id: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    elicit: Callable[[str, list[str] | None], str | None] | None = None
+    """Optional handler that lets a tool ask the caller (user or another
+    agent) for clarification mid-execution. Signature is
+    ``(prompt: str, options: list[str] | None) -> str | None`` — returns
+    the caller's reply, or ``None`` when the caller declined / no handler
+    is installed. Tools should treat ``None`` as "proceed without
+    extra input" to remain usable in headless runs."""
+
+    def report_progress(self, stage: str, data: dict | None = None) -> None:
+        """Invoke the progress callback if one is installed. Silent if not."""
+        if self.on_progress is not None:
+            self.on_progress(stage, data or {})
+
+    def request_input(self, prompt: str, options: list[str] | None = None) -> str | None:
+        """Convenience helper to call the configured ``elicit`` handler,
+        or return ``None`` gracefully if no handler is installed."""
+        if self.elicit is None:
+            return None
+        return self.elicit(prompt, options)
 
 
 # ── Protocols ────────────────────────────────────────────────────
@@ -22,7 +186,7 @@ class AgentState(Protocol):
     """Protocol defining the state interface the loop engine requires.
 
     Any agent state class must provide these attributes and methods
-    to work with the cadence pipeline loop. Implementations are
+    to work with the openharness pipeline loop. Implementations are
     responsible for tracking steps taken, resource usage, and
     producing summaries for LLM context windows.
     """
@@ -127,6 +291,50 @@ class LLMBackend(Protocol):
         ...
 
 
+@runtime_checkable
+class NativeToolBackend(Protocol):
+    """Optional protocol for backends that support native tool calling.
+
+    Backends satisfying this protocol can accept tool schemas and return
+    structured tool-use blocks (list of dicts) instead of free-text JSON.
+    The loop detects the capability via hasattr(backend, "generate_with_tools")
+    and only invokes it when ``FLAGS.native_tools`` (or ``LoopConfig.use_native_tools``)
+    is True.
+
+    The returned list is normalised to Anthropic-style content blocks:
+        [{"type": "text", "text": "..."},
+         {"type": "tool_use", "id": "...", "name": "...", "input": {...}}, ...]
+
+    Each backend is responsible for translating its provider's native tool-call
+    shape (e.g. OpenAI ``message.tool_calls``) into this unified format.
+    """
+
+    def generate_with_tools(
+        self,
+        prompt: str,
+        *,
+        tools: list[dict[str, Any]],
+        max_tokens: int = 2000,
+        system_prompt: str = "",
+        temperature: float = 0.2,
+    ) -> list[dict[str, Any]]:
+        """Generate a response with native tool calling.
+
+        Args:
+            prompt: The user/context prompt.
+            tools: Tool schemas in Anthropic format
+                ``[{"name": ..., "description": ..., "input_schema": {...}}, ...]``.
+                Each backend converts to its native tool-schema format internally.
+            max_tokens: Upper bound on tokens in the response.
+            system_prompt: Optional system instruction.
+            temperature: Sampling temperature.
+
+        Returns:
+            List of normalised content blocks (text and/or tool_use).
+        """
+        ...
+
+
 # ── Data classes ──────────────────────────────────────────────────
 
 
@@ -180,7 +388,13 @@ class ToolResult:
     """Raw output returned by the tool — list, dict, str, or None."""
 
     error: str | None = None
-    """Error message if the tool raised an exception; None on success."""
+    """Error message if the tool raised an exception; None on success.
+    Always a plain string for safe serialization and downstream use."""
+
+    error_detail: ToolError | None = None
+    """Structured error metadata (kind, retriable, context). Populated
+    by the tool dispatch layer alongside ``error``. Read via the
+    ``error_kind`` / ``error_retriable`` accessors."""
 
     duration_ms: float = 0.0
     """Wall-clock time the tool took to execute, in milliseconds."""
@@ -191,6 +405,28 @@ class ToolResult:
     call_id: str | None = None
     """Links back to the ToolCall that produced this result."""
 
+    @property
+    def error_message(self) -> str | None:
+        """Human-readable message — same as ``error``."""
+        return self.error
+
+    @property
+    def error_kind(self) -> ErrorKind | None:
+        """Discriminator from the structured error, if available.
+        Defaults to ``EXECUTION`` when only a plain string error is set."""
+        if self.error is None:
+            return None
+        if self.error_detail is not None:
+            return self.error_detail.kind
+        return ErrorKind.EXECUTION
+
+    @property
+    def error_retriable(self) -> bool:
+        """Retriable hint from the structured error, if available."""
+        if self.error_detail is not None:
+            return self.error_detail.retriable
+        return False
+
     def to_dict(self) -> dict[str, Any]:
         """Serialise to a compact dict for inclusion in LLM context."""
         d: dict[str, Any] = {
@@ -200,6 +436,9 @@ class ToolResult:
         }
         if self.error:
             d["error"] = self.error
+            if self.error_detail is not None:
+                d["error_kind"] = self.error_detail.kind.value
+                d["error_retriable"] = self.error_detail.retriable
         elif self.result_key:
             d["result_key"] = self.result_key
         if isinstance(self.data, list):

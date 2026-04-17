@@ -1,4 +1,4 @@
-"""Calculator agent example — demonstrates cadence with a math problem-solving agent.
+"""Calculator agent example — demonstrates openharness with a math problem-solving agent.
 
 Uses a mock LLM that returns scripted tool calls. Shows the basic pattern:
   1. Create a ToolRegistry with domain tools
@@ -7,14 +7,39 @@ Uses a mock LLM that returns scripted tool calls. Shows the basic pattern:
 """
 from __future__ import annotations
 
-import json
+import operator
 from dataclasses import dataclass, field
 from typing import Any
 
 from openharness.loop import LoopConfig, composable_loop
 from openharness.tools import BaseToolRegistry, ToolSpec
-from openharness.types import LLMBackend
 
+# ── Safe arithmetic evaluator (no eval()) ────────────────────────
+
+_OPS: dict[str, Any] = {
+    "+": operator.add,
+    "-": operator.sub,
+    "*": operator.mul,
+    "/": operator.truediv,
+}
+
+
+def _safe_eval_arithmetic(expression: str) -> float:
+    """Evaluate a simple binary arithmetic expression without eval().
+
+    Supports expressions like ``"2+3"``, ``"5 * 4"``, ``"10 / 2"``.
+    Only one operator is supported per call (no chaining).
+    """
+    expr = expression.strip()
+    for op_char, op_fn in _OPS.items():
+        if op_char in expr:
+            parts = expr.split(op_char, 1)
+            if len(parts) == 2:
+                left = float(parts[0].strip())
+                right = float(parts[1].strip())
+                return float(op_fn(left, right))
+    # Bare number
+    return float(expr)
 
 # ── Mock LLM ─────────────────────────────────────────────────────
 
@@ -59,8 +84,8 @@ class CalcState:
 
     steps: list = field(default_factory=list)
     queries_used: int = 0
-    _last_result: float = 0.0
-    _max_steps: int = 10
+    last_result: float = 0.0
+    max_steps: int = 10
 
     @property
     def step_count(self) -> int:
@@ -68,13 +93,13 @@ class CalcState:
 
     @property
     def budget_remaining(self) -> int:
-        return max(0, self._max_steps - len(self.steps))
+        return max(0, self.max_steps - len(self.steps))
 
     def context_summary(self) -> str:
-        return f"Calculator: last_result={self._last_result}, steps={len(self.steps)}"
+        return f"Calculator: last_result={self.last_result}, steps={len(self.steps)}"
 
     def snapshot(self) -> dict[str, Any]:
-        return {"steps": len(self.steps), "last_result": self._last_result}
+        return {"steps": len(self.steps), "last_result": self.last_result}
 
 
 # ── Tool Registry ─────────────────────────────────────────────────
@@ -85,18 +110,14 @@ def _make_calc_registry(state: CalcState) -> BaseToolRegistry:
 
     def _calculate(expression: str = "") -> dict[str, Any]:
         try:
-            # Safe evaluation of simple arithmetic only
-            allowed = set("0123456789+-*/()., ")
-            if not all(c in allowed for c in expression):
-                return {"error": "unsafe expression"}
-            result = eval(expression)  # noqa: S307 — constrained above
-            state._last_result = float(result)
+            result = _safe_eval_arithmetic(expression)
+            state.last_result = result
             return {"result": result, "expression": expression}
-        except Exception as exc:
+        except (ValueError, ZeroDivisionError) as exc:
             return {"error": str(exc)}
 
     def _get_result() -> dict[str, Any]:
-        return {"last_result": state._last_result}
+        return {"last_result": state.last_result}
 
     def _done(answer: str = "") -> dict[str, Any]:
         return {"final_answer": answer, "status": "complete"}

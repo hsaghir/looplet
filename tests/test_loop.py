@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+
 import pytest
 
 pytestmark = pytest.mark.smoke
@@ -154,7 +155,9 @@ class TestParseNativeToolUse:
         assert parse_native_tool_use([]) == []
 
     def test_no_primal_security_import(self):
-        import openharness.parse as m, inspect
+        import inspect
+
+        import openharness.parse as m
         assert "primal_security" not in inspect.getsource(m)
 
 
@@ -184,6 +187,7 @@ class TestLoopConfig:
     def test_no_alert_exploration_params(self):
         """Backward-compat params must not exist."""
         import inspect
+
         from openharness.loop import composable_loop
         sig = inspect.signature(composable_loop)
         assert "alert" not in sig.parameters
@@ -228,8 +232,9 @@ class TestLoopHookProtocol:
         assert isinstance(h, LoopHook)
 
     def test_protocol_has_six_methods(self):
-        from openharness.loop import LoopHook
         import inspect
+
+        from openharness.loop import LoopHook
         members = {
             name for name, _ in inspect.getmembers(LoopHook, predicate=callable)
             if not name.startswith("_")
@@ -238,7 +243,9 @@ class TestLoopHookProtocol:
         assert required.issubset(members)
 
     def test_no_primal_security_import(self):
-        import openharness.loop as m, inspect
+        import inspect
+
+        import openharness.loop as m
         assert "primal_security" not in inspect.getsource(m)
 
 
@@ -257,7 +264,7 @@ class TestComposableLoopBasic:
             next(gen)
 
     def test_basic_loop_yields_step_and_terminates(self):
-        from openharness.loop import composable_loop, LoopConfig
+        from openharness.loop import LoopConfig, composable_loop
         from openharness.types import Step
 
         state = SimpleState()
@@ -272,7 +279,7 @@ class TestComposableLoopBasic:
         assert steps[-1].tool_call.tool == "done"
 
     def test_loop_after_two_tool_steps(self):
-        from openharness.loop import composable_loop, LoopConfig
+        from openharness.loop import LoopConfig, composable_loop
         from openharness.tools import ToolSpec
 
         state = SimpleState()
@@ -297,7 +304,7 @@ class TestComposableLoopBasic:
         assert "done" in tools_called
 
     def test_max_steps_enforced(self):
-        from openharness.loop import composable_loop, LoopConfig
+        from openharness.loop import LoopConfig, composable_loop
 
         state = SimpleState(max_steps=2)
         # LLM never calls done — just calls search forever
@@ -322,7 +329,7 @@ class TestComposableLoopBasic:
         assert len(steps) <= 4  # budget_remaining=0 breaks loop
 
     def test_parse_error_yields_parse_error_step(self):
-        from openharness.loop import composable_loop, LoopConfig
+        from openharness.loop import LoopConfig, composable_loop
 
         state = SimpleState(max_steps=3)
         from tests.conftest import MockLLMBackend
@@ -336,7 +343,7 @@ class TestComposableLoopBasic:
         assert "__parse_error__" in tool_names
 
     def test_return_value_is_trace(self):
-        from openharness.loop import composable_loop, LoopConfig
+        from openharness.loop import LoopConfig, composable_loop
 
         state = SimpleState()
         llm = _make_done_llm([])
@@ -389,7 +396,7 @@ class TestComposableLoopHooks:
         return SpyHook(), events
 
     def test_hook_firing_order(self):
-        from openharness.loop import composable_loop, LoopConfig
+        from openharness.loop import LoopConfig, composable_loop
         from openharness.tools import ToolSpec
 
         state = SimpleState()
@@ -424,7 +431,7 @@ class TestComposableLoopHooks:
         assert events[-1] == "on_loop_end"
 
     def test_quality_gate_rejection(self):
-        from openharness.loop import composable_loop, LoopConfig
+        from openharness.loop import LoopConfig, composable_loop
 
         state = SimpleState()
         done_json = '{"tool": "done", "args": {}}'
@@ -452,9 +459,9 @@ class TestComposableLoopHooks:
         assert len(rejected) >= 1
 
     def test_pre_dispatch_interception(self):
-        from openharness.loop import composable_loop, LoopConfig
-        from openharness.types import ToolResult
+        from openharness.loop import LoopConfig, composable_loop
         from openharness.tools import ToolSpec
+        from openharness.types import ToolResult
 
         state = SimpleState()
         from tests.conftest import MockLLMBackend
@@ -490,7 +497,7 @@ class TestComposableLoopHooks:
         assert "real_search" not in dispatched
 
     def test_multi_tool_in_one_response(self):
-        from openharness.loop import composable_loop, LoopConfig
+        from openharness.loop import LoopConfig, composable_loop
         from openharness.tools import ToolSpec
 
         state = SimpleState()
@@ -520,7 +527,7 @@ class TestComposableLoopHooks:
         assert "think" in tool_names
 
     def test_should_stop_hook(self):
-        from openharness.loop import composable_loop, LoopConfig
+        from openharness.loop import LoopConfig, composable_loop
         from openharness.tools import ToolSpec
 
         state = SimpleState(max_steps=20)

@@ -26,24 +26,70 @@ class MessageRole(str, Enum):
 
 
 @dataclass
+class ContentBlock:
+    """One block of multimodal message content.
+
+    ``kind`` is a free-form discriminator — common values are ``"text"``,
+    ``"image"``, ``"tool_use"``, ``"tool_result"``. ``data`` holds the
+    payload in a shape native to the block kind (``{"text": "..."}`` for
+    text, ``{"url": "...", "media_type": "image/png"}`` for images, etc.).
+
+    Keeping this deliberately loose — providers disagree on exact
+    shapes — so the loop remains vendor-agnostic.
+    """
+
+    kind: str
+    data: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def text(self) -> str:
+        """Render block as plain text for prompt inclusion / fallbacks."""
+        if self.kind == "text":
+            return str(self.data.get("text", ""))
+        if self.kind == "image":
+            return "[image attached]"
+        if self.kind == "tool_use":
+            name = self.data.get("name", "?")
+            return f"[tool_use: {name}]"
+        if self.kind == "tool_result":
+            return f"[tool_result: {str(self.data.get('content', ''))[:200]}]"
+        return f"[{self.kind}]"
+
+
+@dataclass
 class Message:
     """A single message in a conversation.
 
-    Fields:
-        role: Who produced this message (system, user, assistant, or tool).
-        content: Text content of the message.
-        tool_call: Optional ToolCall for assistant messages that invoke a tool.
-        tool_result: Optional ToolResult for tool response messages.
-        metadata: Arbitrary key/value pairs for domain-specific annotations.
-        timestamp: Unix timestamp when this message was created.
+    ``content`` is either a plain string (legacy / text-only case) or a
+    list of :class:`ContentBlock` for multimodal / tool-native traffic.
+    Use :meth:`text` or :meth:`blocks` to access content uniformly.
     """
 
     role: MessageRole
-    content: str
+    content: str | list[ContentBlock]
     tool_call: ToolCall | None = None
     tool_result: ToolResult | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     timestamp: float = field(default_factory=time.time)
+
+    @property
+    def text(self) -> str:
+        """Flatten content to a single string (multi-block → newlines)."""
+        if isinstance(self.content, str):
+            return self.content
+        return "\n".join(b.text for b in self.content if b.text)
+
+    @property
+    def blocks(self) -> list[ContentBlock]:
+        """Normalise content to a list of :class:`ContentBlock`."""
+        if isinstance(self.content, str):
+            return [ContentBlock(kind="text", data={"text": self.content})]
+        return list(self.content)
+
+    def text_blocks(self) -> list[ContentBlock]:
+        """Return only the text blocks — useful when stripping images
+        for summarisation or for backends that don't support multimodal."""
+        return [b for b in self.blocks if b.kind == "text"]
 
 
 class Conversation:
@@ -112,6 +158,10 @@ class Conversation:
         message (if not already in the recent window). All older messages
         are replaced by a deterministic or LLM-refined summary.
 
+        Compaction boundary messages (``metadata["kind"] ==
+        "compaction_boundary"``) are preserved verbatim — dropping them
+        would silently erase the record of earlier compactions.
+
         Args:
             summarizer: Optional callable(list[Message]) -> str. If None,
                 ``DefaultSummarizer`` is used.
@@ -130,26 +180,48 @@ class Conversation:
         to_compact = self.messages[:split_idx]
         to_keep = self.messages[split_idx:]
 
-        # Also preserve the last USER message if it's in to_compact
+        # Preserve the last USER message if it's in to_compact
         last_user_in_compact = None
         for msg in to_compact:
             if msg.role == MessageRole.USER:
                 last_user_in_compact = msg
 
+        # Preserve every compaction boundary — they must survive re-compaction
+        boundaries_to_keep = [
+            m for m in to_compact
+            if m.metadata.get("kind") == "compaction_boundary"
+        ]
+
         if not to_compact:
             return self
 
-        summary_text = fn(to_compact)
+        # Don't include boundary messages in the summary input; they're
+        # already a compressed form of prior context.
+        summary_input = [
+            _strip_heavy_blocks(m)
+            for m in to_compact
+            if m.metadata.get("kind") != "compaction_boundary"
+        ]
+        summary_text = fn(summary_input) if summary_input else ""
         summary_msg = Message(
             role=MessageRole.SYSTEM,
             content=f"[Summary of prior context]\n{summary_text}",
         )
 
-        if last_user_in_compact is not None:
-            self.messages = [summary_msg, last_user_in_compact] + to_keep
-        else:
-            self.messages = [summary_msg] + to_keep
+        head: list[Message] = list(boundaries_to_keep)
+        if summary_input:
+            head.append(summary_msg)
+        if last_user_in_compact is not None and last_user_in_compact not in head:
+            head.append(last_user_in_compact)
+        self.messages = head + to_keep
         return self
+
+    def find_compaction_boundaries(self) -> list[Message]:
+        """Return all compaction-boundary messages in order of insertion."""
+        return [
+            m for m in self.messages
+            if m.metadata.get("kind") == "compaction_boundary"
+        ]
 
     # ── Rendering ────────────────────────────────────────────────
 
@@ -180,7 +252,7 @@ class Conversation:
                 else:
                     lines.append(f"[{role_label}] ✓ {tr.tool}: {str(tr.data)[:200]}")
             elif msg.content:
-                lines.append(f"[{role_label}] {msg.content}")
+                lines.append(f"[{role_label}] {msg.text}")
 
         text = "\n".join(lines)
 
@@ -212,7 +284,7 @@ class Conversation:
     def token_estimate(self) -> int:
         """Rough token count across all messages (4 chars per token)."""
         total_chars = sum(
-            len(m.content)
+            len(m.text)
             + (len(str(m.tool_call.args)) if m.tool_call else 0)
             + (len(str(m.tool_result.data)) if m.tool_result else 0)
             for m in self.messages
@@ -237,6 +309,47 @@ class Conversation:
 # ── Default summarizer ───────────────────────────────────────────
 
 
+HEAVY_BLOCK_KINDS: frozenset[str] = frozenset({"image", "audio", "video", "binary"})
+"""Block kinds stripped before summarization — large payloads that
+shouldn't be sent to a text summarizer. This is a ``frozenset`` and
+cannot be mutated in place. To customize, reassign the module attribute
+with a new frozenset::
+
+    from openharness import conversation
+    conversation.HEAVY_BLOCK_KINDS = conversation.HEAVY_BLOCK_KINDS | {"pdf"}
+"""
+
+
+def _strip_heavy_blocks(msg: Message) -> Message:
+    """Return a copy of ``msg`` with heavy (binary / multimodal) blocks
+    replaced by short text placeholders. Plain-string content is
+    returned unchanged. This is applied pre-summarization so large
+    payloads never reach the summarizer LLM's context.
+    """
+    if isinstance(msg.content, str):
+        return msg
+    # Short-circuit: if no heavy blocks, return the original unchanged.
+    if not any(b.kind in HEAVY_BLOCK_KINDS for b in msg.content):
+        return msg
+    stripped: list[ContentBlock] = []
+    for b in msg.content:
+        if b.kind in HEAVY_BLOCK_KINDS:
+            stripped.append(ContentBlock(
+                kind="text",
+                data={"text": f"[{b.kind} omitted during compaction]"},
+            ))
+        else:
+            stripped.append(b)
+    return Message(
+        role=msg.role,
+        content=stripped,
+        tool_call=msg.tool_call,
+        tool_result=msg.tool_result,
+        metadata=msg.metadata,
+        timestamp=msg.timestamp,
+    )
+
+
 def DefaultSummarizer(messages: list[Message]) -> str:
     """Deterministic summarizer — no LLM required.
 
@@ -254,7 +367,7 @@ def DefaultSummarizer(messages: list[Message]) -> str:
         if msg.tool_call:
             tools_called.append(msg.tool_call.tool)
         if msg.role == MessageRole.USER and msg.content:
-            last_user_content = msg.content
+            last_user_content = msg.text
 
     parts: list[str] = []
 
@@ -278,9 +391,13 @@ def DefaultSummarizer(messages: list[Message]) -> str:
 
 
 def _serialize_message(msg: Message) -> dict[str, Any]:
+    if isinstance(msg.content, str):
+        content_repr: Any = msg.content
+    else:
+        content_repr = [{"kind": b.kind, "data": b.data} for b in msg.content]
     d: dict[str, Any] = {
         "role": msg.role.value,
-        "content": msg.content,
+        "content": content_repr,
         "timestamp": msg.timestamp,
         "metadata": msg.metadata,
     }
@@ -299,6 +416,9 @@ def _serialize_message(msg: Message) -> dict[str, Any]:
             "args_summary": tr.args_summary,
             "data": tr.data,
             "error": tr.error,
+            "error_kind": tr.error_detail.kind.value if tr.error_detail else None,
+            "error_retriable": tr.error_detail.retriable if tr.error_detail else None,
+            "error_context": tr.error_detail.context if tr.error_detail else None,
             "duration_ms": tr.duration_ms,
             "result_key": tr.result_key,
             "call_id": tr.call_id,
@@ -308,7 +428,13 @@ def _serialize_message(msg: Message) -> dict[str, Any]:
 
 def _deserialize_message(d: dict[str, Any]) -> Message:
     role = MessageRole(d["role"])
-    content = d.get("content", "")
+    content_raw = d.get("content", "")
+    content: str | list[ContentBlock]
+    if isinstance(content_raw, list):
+        content = [ContentBlock(kind=b.get("kind", "text"), data=b.get("data", {}))
+                   for b in content_raw]
+    else:
+        content = content_raw
     timestamp = d.get("timestamp", time.time())
     metadata = d.get("metadata", {})
 
@@ -325,11 +451,22 @@ def _deserialize_message(d: dict[str, Any]) -> Message:
     tool_result: ToolResult | None = None
     if "tool_result" in d and d["tool_result"]:
         tr_data = d["tool_result"]
+        # Reconstruct error_detail from serialized error_kind/error_retriable.
+        _error_detail = None
+        if tr_data.get("error_kind"):
+            from openharness.types import ErrorKind, ToolError  # noqa: PLC0415
+            _error_detail = ToolError(
+                kind=ErrorKind(tr_data["error_kind"]),
+                message=tr_data.get("error", ""),
+                retriable=tr_data.get("error_retriable", False),
+                context=tr_data.get("error_context") or {},
+            )
         tool_result = ToolResult(
             tool=tr_data["tool"],
             args_summary=tr_data.get("args_summary", ""),
             data=tr_data.get("data"),
             error=tr_data.get("error"),
+            error_detail=_error_detail,
             duration_ms=tr_data.get("duration_ms", 0.0),
             result_key=tr_data.get("result_key"),
             call_id=tr_data.get("call_id"),

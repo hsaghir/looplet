@@ -2,7 +2,7 @@
 
 Ready-to-use adapters that satisfy the ``LLMBackend`` and ``AsyncLLMBackend``
 protocols for OpenAI-compatible and Anthropic APIs.  Each adapter accepts the
-provider's native client object so cadence stays dependency-free — import the
+provider's native client object so openharness stays dependency-free — import the
 SDK you already use and pass the client in.
 
 Typical usage::
@@ -34,14 +34,94 @@ Typical usage::
     llm = OpenAIStreamingBackend(OpenAI(), model="gpt-4o")
     for chunk in llm.stream("What is 2+2?"):
         print(chunk, end="", flush=True)
+
+    # Native tool calling (gate with OPENHARNESS_NATIVE_TOOLS=1)
+    schemas = [
+        {"name": "get_weather",
+         "description": "Get current weather",
+         "input_schema": {"type": "object",
+                          "properties": {"city": {"type": "string"}}}},
+    ]
+    blocks = llm.generate_with_tools("Weather in Paris?", tools=schemas)
+    # → [{"type": "tool_use", "id": "...", "name": "get_weather",
+    #     "input": {"city": "Paris"}}]
 """
 
 from __future__ import annotations
 
+import json
 import logging
-from typing import Any, Generator, AsyncGenerator
+from typing import Any, AsyncGenerator, Generator
 
 logger = logging.getLogger(__name__)
+
+
+# ── Tool-schema translation helpers ──────────────────────────────
+
+
+def _to_openai_tools(schemas: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Convert Anthropic-style schemas to OpenAI function-tool format."""
+    out: list[dict[str, Any]] = []
+    for s in schemas:
+        out.append({
+            "type": "function",
+            "function": {
+                "name": s["name"],
+                "description": s.get("description", ""),
+                "parameters": s.get("input_schema", {"type": "object", "properties": {}}),
+            },
+        })
+    return out
+
+
+def _openai_message_to_blocks(message: Any) -> list[dict[str, Any]]:
+    """Normalise an OpenAI chat.completion message to Anthropic-style blocks.
+
+    Builds a list containing an optional ``{"type":"text"}`` block followed by
+    zero or more ``{"type":"tool_use"}`` blocks.  JSON-decodes the
+    ``function.arguments`` string into an ``input`` dict; on malformed JSON,
+    keeps the raw string under ``_raw_arguments`` for debugging.
+    """
+    blocks: list[dict[str, Any]] = []
+    text = getattr(message, "content", None)
+    if text:
+        blocks.append({"type": "text", "text": text})
+
+    tool_calls = getattr(message, "tool_calls", None) or []
+    for tc in tool_calls:
+        fn = getattr(tc, "function", None)
+        name = getattr(fn, "name", "") if fn is not None else ""
+        raw_args = getattr(fn, "arguments", "") if fn is not None else ""
+        try:
+            input_args = json.loads(raw_args) if raw_args else {}
+            if not isinstance(input_args, dict):
+                input_args = {}
+        except (ValueError, TypeError):
+            input_args = {"_raw_arguments": raw_args}
+        blocks.append({
+            "type": "tool_use",
+            "id": getattr(tc, "id", "") or "",
+            "name": name,
+            "input": input_args,
+        })
+    return blocks
+
+
+def _anthropic_response_to_blocks(response: Any) -> list[dict[str, Any]]:
+    """Normalise an Anthropic messages.create response to plain-dict blocks."""
+    blocks: list[dict[str, Any]] = []
+    for block in getattr(response, "content", []) or []:
+        btype = getattr(block, "type", None)
+        if btype == "text":
+            blocks.append({"type": "text", "text": getattr(block, "text", "")})
+        elif btype == "tool_use":
+            blocks.append({
+                "type": "tool_use",
+                "id": getattr(block, "id", "") or "",
+                "name": getattr(block, "name", "") or "",
+                "input": dict(getattr(block, "input", {}) or {}),
+            })
+    return blocks
 
 
 # ── OpenAI Backend ───────────────────────────────────────────────
@@ -87,6 +167,35 @@ class OpenAIBackend:
             temperature=temperature,
         )
         return response.choices[0].message.content or ""
+
+    def generate_with_tools(
+        self,
+        prompt: str,
+        *,
+        tools: list[dict[str, Any]],
+        max_tokens: int = 2000,
+        system_prompt: str = "",
+        temperature: float = 0.2,
+    ) -> list[dict[str, Any]]:
+        """Native tool calling via OpenAI ``tools`` parameter.
+
+        Returns Anthropic-normalised content blocks so the loop can use
+        ``parse_native_tool_use`` uniformly regardless of provider.
+        """
+        messages: list[dict[str, str]] = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+
+        response = self._client.chat.completions.create(
+            model=self._model,
+            messages=messages,
+            max_tokens=max_tokens or self._default_max_tokens,
+            temperature=temperature,
+            tools=_to_openai_tools(tools),
+            tool_choice="auto",
+        )
+        return _openai_message_to_blocks(response.choices[0].message)
 
 
 class OpenAIStreamingBackend(OpenAIBackend):
@@ -183,6 +292,29 @@ class AnthropicBackend:
                 parts.append(block.text)
         return "".join(parts)
 
+    def generate_with_tools(
+        self,
+        prompt: str,
+        *,
+        tools: list[dict[str, Any]],
+        max_tokens: int = 2000,
+        system_prompt: str = "",
+        temperature: float = 0.2,
+    ) -> list[dict[str, Any]]:
+        """Native tool calling via Anthropic ``tools`` parameter."""
+        kwargs: dict[str, Any] = {
+            "model": self._model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": max_tokens or self._default_max_tokens,
+            "temperature": temperature,
+            "tools": tools,
+        }
+        if system_prompt:
+            kwargs["system"] = system_prompt
+
+        response = self._client.messages.create(**kwargs)
+        return _anthropic_response_to_blocks(response)
+
 
 class AnthropicStreamingBackend(AnthropicBackend):
     """Anthropic backend with token-level streaming support.
@@ -260,6 +392,31 @@ class AsyncOpenAIBackend:
         )
         return response.choices[0].message.content or ""
 
+    async def generate_with_tools(
+        self,
+        prompt: str,
+        *,
+        tools: list[dict[str, Any]],
+        max_tokens: int = 2000,
+        system_prompt: str = "",
+        temperature: float = 0.2,
+    ) -> list[dict[str, Any]]:
+        """Async native tool calling via OpenAI ``tools`` parameter."""
+        messages: list[dict[str, str]] = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+
+        response = await self._client.chat.completions.create(
+            model=self._model,
+            messages=messages,
+            max_tokens=max_tokens or self._default_max_tokens,
+            temperature=temperature,
+            tools=_to_openai_tools(tools),
+            tool_choice="auto",
+        )
+        return _openai_message_to_blocks(response.choices[0].message)
+
     async def stream(
         self,
         prompt: str,
@@ -332,6 +489,29 @@ class AsyncAnthropicBackend:
             if hasattr(block, "text"):
                 parts.append(block.text)
         return "".join(parts)
+
+    async def generate_with_tools(
+        self,
+        prompt: str,
+        *,
+        tools: list[dict[str, Any]],
+        max_tokens: int = 2000,
+        system_prompt: str = "",
+        temperature: float = 0.2,
+    ) -> list[dict[str, Any]]:
+        """Async native tool calling via Anthropic ``tools`` parameter."""
+        kwargs: dict[str, Any] = {
+            "model": self._model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": max_tokens or self._default_max_tokens,
+            "temperature": temperature,
+            "tools": tools,
+        }
+        if system_prompt:
+            kwargs["system"] = system_prompt
+
+        response = await self._client.messages.create(**kwargs)
+        return _anthropic_response_to_blocks(response)
 
     async def stream(
         self,

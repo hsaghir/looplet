@@ -7,12 +7,64 @@ BaseToolRegistry and register their own tools.
 
 from __future__ import annotations
 
+import inspect
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from openharness.types import ToolCall, ToolResult
+from openharness.types import ErrorKind, ToolCall, ToolContext, ToolError, ToolResult
+
+
+def _classify_exception(e: BaseException) -> ToolError:
+    """Map a Python exception to a :class:`ToolError`.
+
+    Covers the common stdlib cases. Provider-specific exceptions
+    (rate limits, context-overflow errors, API cancellations) are
+    matched by class name as a best-effort since importing every
+    provider SDK here would create a dependency mess — producers
+    should attach a richer :class:`ToolError` directly when a more
+    specific classification is needed.
+    """
+    msg = f"{type(e).__name__}: {e}"
+    # Cooperative cancellation — asyncio.CancelledError inherits from
+    # BaseException, so check it before the stdlib Exception branches.
+    import asyncio as _asyncio  # noqa: PLC0415
+    if isinstance(e, _asyncio.CancelledError):
+        return ToolError(kind=ErrorKind.CANCELLED, message=msg, retriable=False)
+    if isinstance(e, TimeoutError):
+        return ToolError(kind=ErrorKind.TIMEOUT, message=msg, retriable=True)
+    if isinstance(e, (ValueError, TypeError, KeyError)):
+        return ToolError(kind=ErrorKind.VALIDATION, message=msg, retriable=False)
+    if isinstance(e, PermissionError):
+        return ToolError(kind=ErrorKind.PERMISSION_DENIED, message=msg, retriable=False)
+    if isinstance(e, ConnectionError):
+        return ToolError(kind=ErrorKind.NETWORK, message=msg, retriable=True)
+    # Best-effort match on provider-specific exception class names.
+    cls_name = type(e).__name__.lower()
+    text = str(e).lower()
+    if "ratelimit" in cls_name or "rate_limit" in cls_name or "429" in text:
+        return ToolError(kind=ErrorKind.RATE_LIMIT, message=msg, retriable=True)
+    if "contextlengthexceeded" in cls_name or "context_length" in cls_name \
+            or "context window" in text or "too many tokens" in text \
+            or "input is too long" in text:
+        return ToolError(kind=ErrorKind.CONTEXT_OVERFLOW, message=msg, retriable=False)
+    if "parseerror" in cls_name or "jsondecode" in cls_name:
+        return ToolError(kind=ErrorKind.PARSE, message=msg, retriable=False)
+    return ToolError(kind=ErrorKind.EXECUTION, message=msg, retriable=False)
+
+
+def _accepts_ctx(fn: Callable[..., Any]) -> bool:
+    """True if ``fn`` declares a ``ctx`` parameter (by name).
+
+    Used to decide whether to thread ToolContext into a tool's execute
+    callable. Cached per-ToolSpec to avoid repeated signature inspection.
+    """
+    try:
+        sig = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return False
+    return "ctx" in sig.parameters
 
 
 @dataclass
@@ -41,6 +93,9 @@ class ToolSpec:
 
     free: bool = False
     """True if the tool does not consume agent budget (e.g. think, reflect)."""
+
+    _accepts_ctx: bool | None = field(default=None, repr=False, compare=False)
+    """Cached result of ``inspect.signature(execute)`` for ``ctx`` detection."""
 
     def spec_text(self) -> str:
         """Format for LLM prompt inclusion."""
@@ -76,7 +131,6 @@ class BaseToolRegistry:
 
     def __init__(self) -> None:
         self._tools: dict[str, ToolSpec] = {}
-        self._step_counter = 0
 
     def register(self, spec: ToolSpec) -> None:
         """Register a ToolSpec by name.
@@ -84,6 +138,9 @@ class BaseToolRegistry:
         Args:
             spec: The tool specification to register.
         """
+        # Eagerly compute ctx-acceptance so dispatch is thread-safe.
+        if spec._accepts_ctx is None:
+            spec._accepts_ctx = _accepts_ctx(spec.execute)
         self._tools[spec.name] = spec
 
     # Backward-compat alias
@@ -101,34 +158,72 @@ class BaseToolRegistry:
             lines.append(spec.spec_text())
         return "\n".join(lines)
 
-    def dispatch(self, call: ToolCall) -> ToolResult:
+    def dispatch(self, call: ToolCall, *, ctx: ToolContext | None = None) -> ToolResult:
         """Execute a tool call and return the result with provenance.
 
         Strips dunder args (``__*``), wraps exceptions into error fields,
         and records wall-clock timing in duration_ms.
+
+        When ``ctx`` is supplied and the tool's ``execute`` callable declares
+        a ``ctx`` parameter, it is threaded through. If ``ctx.cancel_token``
+        has been cancelled, the tool is skipped and a cancellation error is
+        returned without invoking ``execute``.
         """
         clean_args = {k: v for k, v in call.args.items() if not k.startswith("__")}
 
         if call.tool not in self._tools:
+            _te = ToolError(
+                kind=ErrorKind.VALIDATION,
+                message=f"Unknown tool: {call.tool}. Available: {self.tool_names}",
+                retriable=False,
+            )
             return ToolResult(
                 tool=call.tool,
                 args_summary=str(clean_args)[:100],
                 data=None,
-                error=f"Unknown tool: {call.tool}. Available: {self.tool_names}",
+                error=_te.message,
+                error_detail=_te,
                 call_id=call.call_id,
             )
 
         spec = self._tools[call.tool]
-        self._step_counter += 1
-        t0 = time.time()
-        try:
-            result_data = spec.execute(**clean_args)
-        except Exception as e:
+
+        # Honor cancellation before invoking execute at all.
+        if ctx is not None and ctx.cancel_token is not None and ctx.cancel_token.is_cancelled:
+            _te = ToolError(
+                kind=ErrorKind.CANCELLED,
+                message="Tool execution cancelled before dispatch",
+                retriable=False,
+            )
             return ToolResult(
                 tool=call.tool,
                 args_summary=self._summarize_args(call),
                 data=None,
-                error=f"{type(e).__name__}: {e}",
+                error=_te.message,
+                error_detail=_te,
+                call_id=call.call_id,
+            )
+
+        # _accepts_ctx is normally computed eagerly in register(), but guard
+        # against ToolSpec instances constructed directly and inserted into
+        # _tools without going through register().
+        if spec._accepts_ctx is None:
+            spec._accepts_ctx = _accepts_ctx(spec.execute)
+        exec_kwargs: dict[str, Any] = dict(clean_args)
+        if spec._accepts_ctx:
+            exec_kwargs["ctx"] = ctx
+
+        t0 = time.time()
+        try:
+            result_data = spec.execute(**exec_kwargs)
+        except Exception as e:
+            _te = _classify_exception(e)
+            return ToolResult(
+                tool=call.tool,
+                args_summary=self._summarize_args(call),
+                data=None,
+                error=_te.message,
+                error_detail=_te,
                 duration_ms=(time.time() - t0) * 1000,
                 call_id=call.call_id,
             )
@@ -149,11 +244,14 @@ class BaseToolRegistry:
         """Override in subclasses to enable result storage/recall."""
         return None
 
-    def dispatch_batch(self, calls: list[ToolCall]) -> list[ToolResult]:
+    def dispatch_batch(
+        self, calls: list[ToolCall], *, ctx: ToolContext | None = None
+    ) -> list[ToolResult]:
         """Dispatch multiple tool calls, preserving original order.
 
         Partitions consecutive concurrent-safe calls into parallel batches;
-        serial (non-concurrent-safe) tools run one at a time.
+        serial (non-concurrent-safe) tools run one at a time. ``ctx`` is
+        forwarded to each underlying dispatch call.
         """
         if not calls:
             return []
@@ -161,17 +259,19 @@ class BaseToolRegistry:
         results: list[ToolResult] = []
         for batch in self._partition_calls(calls):
             if batch["concurrent"] and len(batch["calls"]) > 1:
-                results.extend(self._dispatch_concurrent_batch(batch["calls"]))
+                results.extend(self._dispatch_concurrent_batch(batch["calls"], ctx=ctx))
             else:
-                results.extend(self.dispatch(c) for c in batch["calls"])
+                results.extend(self.dispatch(c, ctx=ctx) for c in batch["calls"])
         return results
 
-    def _dispatch_concurrent_batch(self, calls: list[ToolCall]) -> list[ToolResult]:
+    def _dispatch_concurrent_batch(
+        self, calls: list[ToolCall], *, ctx: ToolContext | None = None
+    ) -> list[ToolResult]:
         """Dispatch a batch of concurrent-safe tools in parallel via ThreadPoolExecutor."""
         if len(calls) <= 1:
-            return [self.dispatch(c) for c in calls]
+            return [self.dispatch(c, ctx=ctx) for c in calls]
         with ThreadPoolExecutor(max_workers=min(10, len(calls))) as pool:
-            futures = [pool.submit(self.dispatch, c) for c in calls]
+            futures = [pool.submit(self.dispatch, c, ctx=ctx) for c in calls]
             return [f.result() for f in futures]
 
     def _partition_calls(self, calls: list[ToolCall]) -> list[dict[str, Any]]:

@@ -16,7 +16,7 @@ Section order (stable → volatile):
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Callable
 
 _DEFAULT_HEADERS: dict[str, str] = {
     "task": "TASK",
@@ -26,6 +26,7 @@ _DEFAULT_HEADERS: dict[str, str] = {
     "assessment": "ASSESSMENT",
     "results": "RECENT RESULTS",
     "step": "STEP",
+    "memory": "MEMORY",
 }
 
 
@@ -39,6 +40,7 @@ def build_prompt(
     session_log: str = "",
     briefing: str = "",
     *,
+    memory: str | None = "",
     render_facts: Callable[[dict], list[str]] | None = None,
     task_fields: list[str] | None = None,
     action_prompt: str = "What do you want to do next? Respond with JSON.",
@@ -73,6 +75,16 @@ def build_prompt(
     headers = {**_DEFAULT_HEADERS, **(section_headers or {})}
 
     parts: list[str] = []
+
+    # ── §0 MEMORY (persistent — rendered before TASK so it's
+    #     the first thing the model sees every turn; survives
+    #     all compactions when sourced from PersistentMemorySource) ──
+    if memory:
+        mem_text = memory.strip() if isinstance(memory, str) else ""  # type: ignore[reportUnnecessaryIsInstance]
+        if mem_text:
+            parts.append(f"═══ {headers['memory']} ═══")
+            parts.append(mem_text)
+            parts.append("")
 
     # ── §1 TASK (stable — never changes) ────────────────────
     parts.append(f"═══ {headers['task']} ═══")

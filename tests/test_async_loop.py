@@ -10,7 +10,6 @@ import pytest
 
 from openharness.types import Step, ToolCall, ToolResult
 
-
 # ── Helpers ────────────────────────────────────────────────────────
 
 
@@ -110,8 +109,9 @@ class TestAsyncLLMBackend:
         assert isinstance(mock, AsyncLLMBackend)
 
     def test_has_async_generate(self):
-        from openharness.async_loop import AsyncLLMBackend
         import inspect
+
+        from openharness.async_loop import AsyncLLMBackend
         # Check that generate is a coroutine function in the mock
         assert asyncio.iscoroutinefunction(_MockAsyncLLM.generate)
 
@@ -129,8 +129,9 @@ class TestAsyncLLMBackend:
 
 class TestAsyncLoopHook:
     def test_is_runtime_checkable(self):
-        from openharness.async_loop import AsyncLoopHook
         import inspect
+
+        from openharness.async_loop import AsyncLoopHook
         # Protocol must be @runtime_checkable
         assert hasattr(AsyncLoopHook, "__protocol_attrs__") or \
                getattr(AsyncLoopHook, "_is_protocol", False) or \
@@ -177,7 +178,7 @@ class TestSyncToAsyncAdapter:
         assert result == "test response"
 
     async def test_adapter_satisfies_async_backend(self):
-        from openharness.async_loop import SyncToAsyncAdapter, AsyncLLMBackend
+        from openharness.async_loop import AsyncLLMBackend, SyncToAsyncAdapter
         sync_llm = _MockSyncLLM("response")
         adapter = SyncToAsyncAdapter(sync_llm)
         assert isinstance(adapter, AsyncLLMBackend)
@@ -544,8 +545,9 @@ class TestAsyncComposableLoop:
 
     async def test_returns_async_generator(self):
         """async_composable_loop must return an async generator."""
-        from openharness.async_loop import async_composable_loop
         import inspect
+
+        from openharness.async_loop import async_composable_loop
 
         class SimpleState:
             def __init__(self):

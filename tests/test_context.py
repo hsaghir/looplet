@@ -10,7 +10,6 @@ import pytest
 
 from openharness.types import Step, ToolCall, ToolResult
 
-
 # ── Helpers ───────────────────────────────────────────────────────
 
 
@@ -47,11 +46,11 @@ class TestImports:
 
     def test_default_constants_importable(self):
         from openharness.context import (
-            DEFAULT_CONTEXT_WINDOW,
-            DEFAULT_COMPACT_BUFFER,
-            DEFAULT_WARNING_BUFFER,
             DEFAULT_BLOCKING_BUFFER,
+            DEFAULT_COMPACT_BUFFER,
+            DEFAULT_CONTEXT_WINDOW,
             DEFAULT_RESULT_MAX_AGE_FULL,
+            DEFAULT_WARNING_BUFFER,
         )
         assert DEFAULT_CONTEXT_WINDOW == 128_000
         assert DEFAULT_COMPACT_BUFFER == 20_000
@@ -450,15 +449,17 @@ class TestPrePrompt:
 class TestNoIOCReferences:
     def test_no_ioc_in_source(self):
         """context.py must not contain 'IOC' references."""
-        import openharness.context as mod
         import inspect
+
+        import openharness.context as mod
         source = inspect.getsource(mod)
         assert "IOC" not in source, "Found 'IOC' reference in context.py"
 
     def test_module_importable_without_primal_security(self):
         """context.py must only import from cadence.*."""
-        import openharness.context as mod
         import inspect
+
+        import openharness.context as mod
         source = inspect.getsource(mod)
         assert "primal_security" not in source
 

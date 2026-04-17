@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import pytest
 from typing import Any
 
+import pytest
 
 pytestmark = pytest.mark.smoke
 
@@ -134,7 +134,7 @@ class TestToolResultWithError:
 
 class TestStepConstruction:
     def test_basic_construction(self):
-        from openharness.types import ToolCall, ToolResult, Step
+        from openharness.types import Step, ToolCall, ToolResult
         tc = ToolCall(tool="search", call_id="id1")
         tr = ToolResult(tool="search", args_summary="q=test", data=[], call_id="id1")
         step = Step(number=1, tool_call=tc, tool_result=tr)
@@ -143,7 +143,7 @@ class TestStepConstruction:
         assert step.tool_result is tr
 
     def test_to_dict(self):
-        from openharness.types import ToolCall, ToolResult, Step
+        from openharness.types import Step, ToolCall, ToolResult
         tc = ToolCall(tool="search", call_id="id1")
         tr = ToolResult(tool="search", args_summary="q=test", data=[], call_id="id1")
         step = Step(number=2, tool_call=tc, tool_result=tr)
@@ -153,7 +153,7 @@ class TestStepConstruction:
         assert "result" in d
 
     def test_summary_success(self):
-        from openharness.types import ToolCall, ToolResult, Step
+        from openharness.types import Step, ToolCall, ToolResult
         tc = ToolCall(tool="search")
         tr = ToolResult(tool="search", args_summary="q=test", data=["a", "b"])
         step = Step(number=1, tool_call=tc, tool_result=tr)
@@ -162,7 +162,7 @@ class TestStepConstruction:
         assert "search" in summary
 
     def test_summary_error(self):
-        from openharness.types import ToolCall, ToolResult, Step
+        from openharness.types import Step, ToolCall, ToolResult
         tc = ToolCall(tool="search")
         tr = ToolResult(tool="search", args_summary="q=test", data=None, error="timeout")
         step = Step(number=3, tool_call=tc, tool_result=tr)

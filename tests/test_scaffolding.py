@@ -16,8 +16,8 @@ from openharness.scaffolding import (
     build_parse_recovery_prompt,
     compress_session_log,
     enforce_result_budget,
-    estimate_tokens,
     estimate_prompt_tokens,
+    estimate_tokens,
     llm_call_with_retry,
     reactive_compact,
     should_compress_context,
@@ -217,8 +217,9 @@ class TestBuildParseRecoveryPrompt:
         assert "x" * 400 not in result
 
     def test_no_primal_security_import(self) -> None:
-        import openharness.scaffolding as m
         import inspect
+
+        import openharness.scaffolding as m
         src = inspect.getsource(m)
         assert "primal_security" not in src
 
@@ -653,13 +654,12 @@ class TestReactiveCompact:
 class TestConstants:
     def test_constants_exist(self) -> None:
         from openharness.scaffolding import (
+            DIMINISHING_RETURNS_THRESHOLD,
+            DIMINISHING_RETURNS_WINDOW,
             MAX_LLM_RETRIES,
             PARSE_RECOVERY_MAX,
             TOOL_RESULT_MAX_CHARS,
             TOOL_RESULT_MAX_ROWS,
-            DIMINISHING_RETURNS_WINDOW,
-            DIMINISHING_RETURNS_THRESHOLD,
-            DONE_QUALITY_MIN_STEPS,
         )
         assert MAX_LLM_RETRIES >= 1
         assert PARSE_RECOVERY_MAX >= 1

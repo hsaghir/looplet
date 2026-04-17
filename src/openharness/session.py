@@ -312,6 +312,7 @@ class SessionLog:
                 "entities_seen": e.entities_seen,
                 "findings": e.findings,
                 "highlights": e.highlights,
+                "recall_key": e.recall_key,
             }
             for e in self.entries
         ]

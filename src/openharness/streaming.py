@@ -19,10 +19,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol, runtime_checkable
 
-from openharness.loop import LoopHook
 from openharness.session import SessionLog
 from openharness.types import ToolCall, ToolResult
-
 
 # ── Base Event ──────────────────────────────────────────────────
 
@@ -175,6 +173,33 @@ class RecoveryEvent(Event):
         self.event_type = type(self).__name__
 
 
+@dataclass
+class ContextPressureEvent(Event):
+    """Emitted when the estimated context usage crosses a tier threshold.
+
+    ``level`` is one of ``"ok"``, ``"warning"``, ``"compact"``,
+    ``"blocking"`` — matching ``ContextManagerHook``'s 4-tier budget.
+
+    Consumers typically:
+
+    * ``ok`` — clear any "context almost full" UI indicator.
+    * ``warning`` — display a soft notice to the user.
+    * ``compact`` — the loop will compact automatically; a debug UI can
+      surface the action.
+    * ``blocking`` — emergency compaction was forced; expect to see a
+      ``compaction_boundary`` message shortly after.
+    """
+
+    level: str = "ok"
+    estimated_tokens: int = 0
+    threshold: int = 0
+    context_window: int = 0
+    percent_used: float = 0.0
+
+    def __post_init__(self) -> None:
+        self.event_type = type(self).__name__
+
+
 # ── EventEmitter Protocol ───────────────────────────────────────
 
 
@@ -252,6 +277,7 @@ class StreamingHook:
     def __init__(self, emitter: EventEmitter) -> None:
         self._emitter = emitter
         self._total_llm_calls: int = 0
+        self._step_llm_calls: int = 0
 
     def pre_loop(
         self,
@@ -259,7 +285,13 @@ class StreamingHook:
         session_log: Any,
         context: Any,
     ) -> None:
-        """Emit ``LoopStartEvent`` once before the loop begins."""
+        """Emit ``LoopStartEvent`` once before the loop begins.
+
+        Reads ``max_steps`` from ``state`` (``DefaultState`` carries it).
+        When using the loop's ``stream=`` parameter *and* a
+        ``StreamingHook`` in ``hooks``, the event will fire twice — prefer
+        one mechanism, not both.
+        """
         task_summary = getattr(state, "task_summary", "")
         max_steps = getattr(state, "max_steps", 0)
         self._emitter.emit(LoopStartEvent(task_summary=task_summary, max_steps=max_steps))
@@ -271,7 +303,8 @@ class StreamingHook:
         context: Any,
         step_num: int,
     ) -> str | None:
-        """Emit ``StepStartEvent`` before each LLM prompt."""
+        """Emit ``StepStartEvent`` before each LLM prompt and count the LLM call."""
+        self._total_llm_calls += 1
         self._emitter.emit(StepStartEvent(step_num=step_num))
         return None
 
@@ -350,11 +383,12 @@ class StreamingHook:
     ) -> int:
         """Emit ``LoopEndEvent`` and return 0 extra LLM calls."""
         total_steps = getattr(state, "step_count", 0)
+        reason = getattr(state, "_stop_reason", "completed")
         self._emitter.emit(
             LoopEndEvent(
                 total_steps=total_steps,
                 total_llm_calls=self._total_llm_calls,
-                reason="completed",
+                reason=reason,
             )
         )
         return 0

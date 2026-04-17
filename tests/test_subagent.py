@@ -9,7 +9,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-
 # ── Mock setup helpers ────────────────────────────────────────────
 
 
@@ -177,6 +176,7 @@ class TestRunSubLoopSignature:
     def test_no_alert_param(self):
         """Backward-compat 'alert' param must NOT be present."""
         import inspect
+
         from openharness.subagent import run_sub_loop
         sig = inspect.signature(run_sub_loop)
         assert "alert" not in sig.parameters, "alert param should be removed"
@@ -184,12 +184,14 @@ class TestRunSubLoopSignature:
     def test_no_exploration_param(self):
         """Backward-compat 'exploration' param must NOT be present."""
         import inspect
+
         from openharness.subagent import run_sub_loop
         sig = inspect.signature(run_sub_loop)
         assert "exploration" not in sig.parameters, "exploration param should be removed"
 
     def test_has_required_params(self):
         import inspect
+
         from openharness.subagent import run_sub_loop
         sig = inspect.signature(run_sub_loop)
         params = sig.parameters
@@ -467,7 +469,7 @@ class TestParentStateIsolation:
 
     def test_sub_loop_uses_minimal_state_not_parent(self):
         """When no state provided, _MinimalState is used (not parent state)."""
-        from openharness.subagent import run_sub_loop, _MinimalState
+        from openharness.subagent import _MinimalState, run_sub_loop
 
         captured_states = []
 
@@ -511,6 +513,7 @@ class TestParentStateIsolation:
 class TestNoDomainSpecificCode:
     def test_no_primal_security_imports(self):
         import inspect
+
         import openharness.subagent as mod
         source = inspect.getsource(mod)
         assert "primal_security" not in source
@@ -518,11 +521,13 @@ class TestNoDomainSpecificCode:
     def test_no_alert_in_source(self):
         """No backward-compat 'alert' param in source."""
         import inspect
+
         import openharness.subagent as mod
         source = inspect.getsource(mod)
         assert "alert" not in source or "# alert" in source or "alert_id" in source
         # More precise: check function signature
-        import openharness.subagent
         import inspect as ins
+
+        import openharness.subagent
         sig = ins.signature(openharness.subagent.run_sub_loop)
         assert "alert" not in sig.parameters

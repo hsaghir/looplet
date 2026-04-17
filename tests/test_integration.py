@@ -275,7 +275,12 @@ def test_router_model_selection():
 
 def test_recovery_fires_on_parse_error():
     """Custom recovery strategy executes when PARSE_ERROR triggered."""
-    from openharness.recovery import FailureScenario, RecoveryAction, RecoveryRecipe, RecoveryRegistry
+    from openharness.recovery import (
+        FailureScenario,
+        RecoveryAction,
+        RecoveryRecipe,
+        RecoveryRegistry,
+    )
 
     fired: list[dict] = []
 
@@ -390,8 +395,8 @@ def test_streaming_event_sequence():
         LoopEndEvent,
         LoopStartEvent,
         StepStartEvent,
-        ToolDispatchEvent,
         StreamingHook,
+        ToolDispatchEvent,
     )
 
     llm = _ScriptedLLM([

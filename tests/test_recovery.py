@@ -11,7 +11,6 @@ from openharness.recovery import (
     build_default_registry,
 )
 
-
 # ── FailureScenario enum ─────────────────────────────────────────
 
 

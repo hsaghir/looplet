@@ -71,7 +71,7 @@ class TestToolSpec:
 
 class TestBaseToolRegistry:
     def _make_registry_with_echo(self):
-        from openharness.tools import ToolSpec, BaseToolRegistry
+        from openharness.tools import BaseToolRegistry, ToolSpec
         reg = BaseToolRegistry()
         reg.register(ToolSpec(
             name="echo",
@@ -102,8 +102,8 @@ class TestBaseToolRegistry:
         assert result.duration_ms >= 0.0
 
     def test_dispatch_unknown_tool(self):
-        from openharness.types import ToolCall
         from openharness.tools import BaseToolRegistry
+        from openharness.types import ToolCall
         reg = BaseToolRegistry()
         call = ToolCall(tool="nonexistent", args={})
         result = reg.dispatch(call)
@@ -111,8 +111,8 @@ class TestBaseToolRegistry:
         assert "Unknown tool" in result.error
 
     def test_dispatch_error_handling(self):
+        from openharness.tools import BaseToolRegistry, ToolSpec
         from openharness.types import ToolCall
-        from openharness.tools import ToolSpec, BaseToolRegistry
         reg = BaseToolRegistry()
         reg.register(ToolSpec(
             name="boom",
@@ -161,7 +161,7 @@ class TestBaseToolRegistry:
 
 class TestBatchDispatch:
     def _make_registry(self):
-        from openharness.tools import ToolSpec, BaseToolRegistry
+        from openharness.tools import BaseToolRegistry, ToolSpec
         reg = BaseToolRegistry()
         reg.register(ToolSpec(
             name="read",
@@ -246,8 +246,8 @@ class TestThinkTool:
         assert spec.concurrent_safe is True
 
     def test_think_tool_dispatch(self):
-        from openharness.types import ToolCall
         from openharness.tools import BaseToolRegistry, register_think_tool
+        from openharness.types import ToolCall
         reg = BaseToolRegistry()
         register_think_tool(reg)
         call = ToolCall(tool="think", args={"analysis": "weighing pros and cons"})
@@ -256,8 +256,9 @@ class TestThinkTool:
         assert result.data == {"acknowledged": True, "analysis": "weighing pros and cons"}
 
     def test_think_docstring_no_security_terms(self):
-        from openharness.tools import register_think_tool
         import inspect
+
+        from openharness.tools import register_think_tool
         doc = inspect.getdoc(register_think_tool) or ""
         lower_doc = doc.lower()
         for term in ["brute force", "vpn", "lateral movement", "security"]:

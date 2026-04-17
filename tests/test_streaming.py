@@ -28,7 +28,6 @@ from openharness.streaming import (
 )
 from openharness.types import ToolCall, ToolResult
 
-
 # ── Base Event ──────────────────────────────────────────────────
 
 

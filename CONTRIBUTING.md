@@ -1,0 +1,95 @@
+# Contributing to openharness
+
+Thanks for your interest in improving `openharness`! This document lays
+out how to set up a dev environment, the conventions we follow, and how
+to submit changes.
+
+## Development setup
+
+`openharness` uses [`uv`](https://docs.astral.sh/uv/) for dependency
+management. If you don't have it yet:
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+Then from the repo root:
+
+```bash
+uv sync                              # install dev + runtime deps
+uv run pytest                        # run the full suite (~4s, 865 tests)
+uv run pytest -m smoke -q            # fast smoke run
+uv run ruff check .                  # lint
+uv run ruff format --check .         # format check
+uv run mypy src/openharness          # optional type check
+```
+
+## Branching & commits
+
+- Create a feature branch off `main`.
+- Write small, focused commits. We aim for commits that tell a story;
+  squash-merges are fine on the PR side.
+- Include a test for any behavior change; bug fixes should come with a
+  regression test.
+
+## Coding conventions
+
+- **Python**: target 3.11+; use modern syntax (`X | Y`, `match`,
+  `dataclasses`, `typing.Protocol`).
+- **Domain-agnostic core**: the harness must not assume what the agent
+  *does*. Domain-specific helpers belong in the user's code, not here.
+- **Fail closed**: permissions, cancellation, and parse recovery must
+  default to the safe path. If in doubt, deny / cancel / re-prompt.
+- **Sync ↔ async parity**: any behavior added to `composable_loop` must
+  have the equivalent in `async_composable_loop`, and vice-versa. Add
+  tests for both paths.
+- **Avoid bare `except`**: catch the narrowest exception you can.
+- **No new runtime dependencies without discussion** — the core runtime
+  depends only on the standard library + `pyyaml`. Optional extras are
+  fine under `[project.optional-dependencies]`.
+- **Public API surface** — if you add a public symbol, export it from
+  `openharness/__init__.py`, document it with a docstring, and add a
+  test.
+
+## Testing
+
+- Unit tests live under `tests/`, mirroring the module layout of
+  `src/openharness/`.
+- Mark fast tests with `@pytest.mark.smoke` (module-level `pytestmark`
+  is fine) and slow / network-bound tests with `@pytest.mark.integration`
+  or `@pytest.mark.slow`.
+- Tests should not require network access by default. Mock the LLM
+  backend via the `LLMBackend` protocol.
+- Keep individual tests under 1 second where possible. If a test
+  takes longer, mark it `slow`.
+
+## Pull request checklist
+
+Before opening a PR, please verify:
+
+- [ ] `uv run pytest` passes (865+ tests).
+- [ ] `uv run ruff check .` reports no new issues.
+- [ ] New public API has docstrings and tests.
+- [ ] `CHANGELOG.md` has an entry under `## Unreleased` describing your
+      change (unless it's a docs-only or internal refactor with no
+      user-visible effect).
+- [ ] Sync and async loops stay in parity (if applicable).
+
+## Reporting bugs
+
+Open an issue on GitHub with:
+
+- What you expected to happen.
+- What actually happened (stack trace, log output).
+- A minimal reproduction — ideally a single `pytest` test case.
+- Your Python version and `openharness` version.
+
+## Security issues
+
+Please **do not** open a public issue for vulnerabilities; see
+[SECURITY.md](SECURITY.md) for the private disclosure channel.
+
+## License
+
+By contributing, you agree that your contributions will be licensed under
+the Apache License 2.0, the same as the project.

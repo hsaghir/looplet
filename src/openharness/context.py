@@ -49,7 +49,7 @@ class ContextManagerHook:
         self,
         llm: Any,
         *,
-        context_window: int = DEFAULT_CONTEXT_WINDOW,
+        context_window: int | None = None,
         compact_buffer: int = DEFAULT_COMPACT_BUFFER,
         warning_buffer: int = DEFAULT_WARNING_BUFFER,
         blocking_buffer: int = DEFAULT_BLOCKING_BUFFER,
@@ -57,9 +57,26 @@ class ContextManagerHook:
         per_result_chars: int = 50_000,
         aggregate_chars: int = 500_000,
         must_preserve: Any = None,
+        recorder: Any = None,
+        emitter: Any = None,
     ) -> None:
         self._llm = llm
-        self._context_window = context_window
+        # Resolve effective context window:
+        #   1. explicit kwarg wins (user intent)
+        #   2. otherwise use backend.context_window minus
+        #      backend.reserved_output_tokens (if present)
+        #   3. fall back to DEFAULT_CONTEXT_WINDOW
+        if context_window is None:
+            backend_window = getattr(llm, "context_window", None)
+            if isinstance(backend_window, int) and backend_window > 0:
+                reserved = getattr(llm, "reserved_output_tokens", 0)
+                if not isinstance(reserved, int) or reserved < 0:
+                    reserved = 0
+                context_window = backend_window - reserved
+            else:
+                context_window = DEFAULT_CONTEXT_WINDOW
+        self.context_window = context_window
+        self._context_window = context_window  # back-compat private attr
         # Multi-tier thresholds (absolute token counts subtracted from window ceiling)
         self._compact_threshold = context_window - compact_buffer
         self._warning_threshold = context_window - warning_buffer
@@ -68,6 +85,9 @@ class ContextManagerHook:
         self._per_result_chars = per_result_chars
         self._aggregate_chars = aggregate_chars
         self._must_preserve = must_preserve
+        self._recorder = recorder
+        self._emitter = emitter
+        self._last_pressure_level: str | None = None
         self._extra_llm_calls = 0
         self._compact_failures = 0
         self._max_compact_failures = 3  # circuit breaker
@@ -94,6 +114,10 @@ class ContextManagerHook:
         # Layer 3: Multi-tier context management
         estimated = self._estimate_context_tokens(state, session_log)
 
+        # Emit a pressure event (even at "ok") so consumers can clear
+        # stale UI warnings when usage drops after a compaction.
+        self._emit_pressure(estimated)
+
         # Tier 3a: Blocking check — refuse to proceed if context is nearly full
         if estimated >= self._blocking_threshold:
             logger.warning(
@@ -101,10 +125,16 @@ class ContextManagerHook:
                 estimated, self._blocking_threshold,
             )
             # Emergency: compact session log + clear old results
+            dropped_range = self._step_range(state)
             compress_session_log(session_log, must_preserve=self._must_preserve)
             if hasattr(state, "steps"):
                 for step in state.steps[:-2]:
                     step.tool_result.data = None
+            self._emit_boundary(
+                summary=f"Emergency compaction at step {step_num}: "
+                        f"old tool result data cleared, session log compressed.",
+                dropped_step_range=dropped_range,
+            )
             return (
                 "⚠ CONTEXT LIMIT: Context was near capacity. "
                 "Old results cleared. Continue with current findings."
@@ -118,12 +148,18 @@ class ContextManagerHook:
                     "Context at ~%d tokens (compact threshold %d) — compacting",
                     estimated, self._compact_threshold,
                 )
+                dropped_range = self._step_range(state)
                 result = compress_session_log(session_log, llm=self._llm,
                                               must_preserve=self._must_preserve)
                 if result is not None:
                     if self._llm is not None:
                         self._extra_llm_calls += 1
                     self._compact_failures = 0  # reset on success
+                    self._emit_boundary(
+                        summary=f"Proactive compaction at step {step_num}: "
+                                f"session log summarized near token threshold.",
+                        dropped_step_range=dropped_range,
+                    )
                     # Health probe: verify entities survived compaction
                     probe_text = self._health_probe(state, session_log)
                     if probe_text:
@@ -144,6 +180,81 @@ class ContextManagerHook:
         llm: Any,
     ) -> int:
         return self._extra_llm_calls
+
+    def _step_range(self, state: Any) -> tuple[int, int]:
+        """Return the (first, last) step number currently in state.steps.
+
+        Returns (0, 0) if state has no steps. Used to record which step
+        range was dropped/compressed in a compaction boundary marker.
+        """
+        steps = getattr(state, "steps", None) or []
+        if not steps:
+            return (0, 0)
+        return (steps[0].number, steps[-1].number)
+
+    def _emit_boundary(
+        self, *, summary: str, dropped_step_range: tuple[int, int]
+    ) -> None:
+        """Record a compaction boundary on the attached recorder, if any.
+
+        No-op when no ``recorder`` was supplied. Never raises — boundary
+        recording must not break the loop.
+        """
+        if self._recorder is None:
+            return
+        try:
+            self._recorder.record_compaction_boundary(
+                summary=summary,
+                dropped_step_range=dropped_step_range,
+            )
+        except Exception:  # pragma: no cover - defensive
+            logger.exception("Failed to record compaction boundary")
+
+    def _classify_pressure(self, estimated: int) -> str:
+        """Return the pressure tier for ``estimated`` tokens.
+
+        Order of checks matches the action order in ``pre_prompt``: we
+        want ``blocking`` to win over ``compact`` when both are true.
+        """
+        if estimated >= self._blocking_threshold:
+            return "blocking"
+        if estimated >= self._compact_threshold:
+            return "compact"
+        if estimated >= self._warning_threshold:
+            return "warning"
+        return "ok"
+
+    def _emit_pressure(self, estimated: int) -> None:
+        """Emit a ``ContextPressureEvent`` on tier *changes* only.
+
+        Prevents event spam — if pressure stays in the same tier across
+        many turns we only emit once per transition. The very first
+        call always emits (initial state).
+        """
+        if self._emitter is None:
+            return
+        level = self._classify_pressure(estimated)
+        if level == self._last_pressure_level:
+            return
+        self._last_pressure_level = level
+        try:
+            from openharness.streaming import ContextPressureEvent  # noqa: PLC0415
+            threshold = {
+                "blocking": self._blocking_threshold,
+                "compact": self._compact_threshold,
+                "warning": self._warning_threshold,
+                "ok": 0,
+            }[level]
+            pct = (estimated / self.context_window * 100.0) if self.context_window else 0.0
+            self._emitter.emit(ContextPressureEvent(
+                level=level,
+                estimated_tokens=estimated,
+                threshold=threshold,
+                context_window=self.context_window,
+                percent_used=round(pct, 1),
+            ))
+        except Exception:  # pragma: no cover - defensive
+            logger.exception("Failed to emit context pressure event")
 
     def _age_results(self, state: Any, step_num: int) -> None:
         """Progressively age tool results based on step distance.

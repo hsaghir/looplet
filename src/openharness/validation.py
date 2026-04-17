@@ -182,7 +182,16 @@ class ValidatingToolRegistry:
     def tool_catalog_text(self) -> str:
         return self._base.tool_catalog_text()
 
-    def dispatch(self, call: Any) -> Any:
+    @property
+    def _tools(self) -> dict:
+        """Proxy to the underlying registry's tool dict for budget accounting."""
+        return self._base._tools
+
+    def tool_schemas(self) -> list:
+        """Proxy for native tool calling."""
+        return self._base.tool_schemas()
+
+    def dispatch(self, call: Any, **kwargs: Any) -> Any:
         """Validate args (if schema exists) then dispatch. Returns error ToolResult on failure."""
         from openharness.types import ToolResult
 
@@ -198,11 +207,12 @@ class ValidatingToolRegistry:
                     args_summary=str(clean_args)[:100],
                     data=None,
                     error=error_msg,
+                    call_id=call.call_id,
                 )
 
-        return self._base.dispatch(call)
+        return self._base.dispatch(call, **kwargs)
 
-    def dispatch_batch(self, calls: list[Any]) -> list[Any]:
+    def dispatch_batch(self, calls: list[Any], **kwargs: Any) -> list[Any]:
         """Validate all calls, dispatch valid ones in batch, return errors for invalid.
 
         Preserves concurrent dispatch optimization from BaseToolRegistry for
@@ -225,12 +235,13 @@ class ValidatingToolRegistry:
                         args_summary=str(clean_args)[:100],
                         data=None,
                         error=error_msg,
+                        call_id=call.call_id,
                     )
                     continue
             valid_calls.append((i, call))
 
         if valid_calls:
-            batch_results = self._base.dispatch_batch([c for _, c in valid_calls])
+            batch_results = self._base.dispatch_batch([c for _, c in valid_calls], **kwargs)
             for (idx, _), result in zip(valid_calls, batch_results):
                 results[idx] = result
 

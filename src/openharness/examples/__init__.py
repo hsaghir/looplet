@@ -1,1 +1,1 @@
-"""cadence.examples package — demonstration agents for non-security domains."""
+"""openharness.examples package — demonstration agents for non-security domains."""

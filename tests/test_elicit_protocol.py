@@ -1,0 +1,75 @@
+"""Tests for the elicit() protocol on ToolContext.
+
+Tools can opt-in to request caller input mid-execution by accepting
+``ctx`` and calling ``ctx.request_input(prompt, options)``. The handler
+is installed via ``LoopConfig.elicit_handler``; in headless runs the
+method returns ``None`` so tools can proceed unattended.
+"""
+
+from __future__ import annotations
+
+from openharness.loop import LoopConfig, composable_loop
+from openharness.tools import BaseToolRegistry, ToolSpec
+from openharness.types import DefaultState, LLMBackend, ToolContext
+
+
+class TestToolContextElicit:
+    def test_request_input_returns_none_without_handler(self):
+        ctx = ToolContext()
+        assert ctx.request_input("pick one", ["a", "b"]) is None
+
+    def test_request_input_calls_handler(self):
+        captured = {}
+
+        def handler(prompt, options):
+            captured["prompt"] = prompt
+            captured["options"] = options
+            return "answer"
+
+        ctx = ToolContext(elicit=handler)
+        out = ctx.request_input("question?", ["a", "b"])
+        assert out == "answer"
+        assert captured == {"prompt": "question?", "options": ["a", "b"]}
+
+
+class _LLM(LLMBackend):
+    def __init__(self, *scripts):
+        self.s = list(scripts)
+        self.n = 0
+
+    def generate(self, prompt: str, **kw) -> str:
+        s = self.s[self.n]
+        self.n += 1
+        return s
+
+
+class TestLoopPlumbsElicit:
+    def test_tool_receives_elicit_handler(self):
+        seen: dict = {}
+
+        def tool(ctx: ToolContext, **kw):
+            reply = ctx.request_input("confirm?", ["y", "n"])
+            seen["reply"] = reply
+            return {"ok": True, "reply": reply}
+
+        reg = BaseToolRegistry()
+        reg.register(ToolSpec(
+            name="confirm", description="", parameters={},
+            execute=tool, concurrent_safe=False,
+        ))
+        reg.register(ToolSpec(
+            name="done", description="", parameters={"summary": "s"},
+            execute=lambda summary="": {"done": True, "summary": summary},
+        ))
+
+        handler = lambda prompt, options: "y"
+        cfg = LoopConfig(max_steps=3, elicit_handler=handler)
+        llm = _LLM(
+            '```json\n{"tool": "confirm", "args": {}}\n```',
+            '```json\n{"tool": "done", "args": {"summary": "x"}}\n```',
+        )
+        list(composable_loop(
+            llm=llm, task={"id": "T"}, tools=reg,
+            config=cfg, state=DefaultState(max_steps=3),
+        ))
+        assert seen == {"reply": "y"}

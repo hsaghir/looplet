@@ -1,8 +1,9 @@
 """Tests for cadence.router — multi-model routing and cost tracking."""
 from __future__ import annotations
 
-import pytest
 from unittest.mock import MagicMock
+
+import pytest
 
 from openharness.router import (
     CostTracker,
@@ -13,7 +14,6 @@ from openharness.router import (
     SimpleRouter,
 )
 from openharness.types import LLMBackend
-
 
 # ── Helpers ─────────────────────────────────────────────────────
 

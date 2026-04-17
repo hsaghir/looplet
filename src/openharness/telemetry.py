@@ -118,7 +118,8 @@ class Tracer:
         attributes: dict[str, Any] | None = None,
     ) -> None:
         """End a span: set end_time, status, merge extra attributes, pop from stack."""
-        span.end_time = time.time()
+        if span.end_time is None:
+            span.end_time = time.time()
         span.status = status
         if attributes:
             span.attributes.update(attributes)
@@ -185,6 +186,7 @@ class TracingHook:
         """Create a child tool span for the completed step."""
         tool = tool_call.tool if hasattr(tool_call, "tool") else "unknown"
         has_error = bool(tool_result.error if hasattr(tool_result, "error") else False)
+        duration_ms = getattr(tool_result, "duration_ms", 0.0) or 0.0
         status = "error" if has_error else "ok"
         span = self._tracer.start_span(
             f"tool.{tool}",
@@ -192,8 +194,12 @@ class TracingHook:
                 "tool": tool,
                 "step": step_num,
                 "has_error": has_error,
+                "duration_ms": duration_ms,
             },
         )
+        # Back-date end_time so span reflects actual tool duration
+        if duration_ms > 0:
+            span.end_time = span.start_time + duration_ms / 1000.0
         self._tracer.end_span(span, status=status)
         return None
 
@@ -391,7 +397,7 @@ class MetricsHook:
             classification=classification,
             input_tokens=0,
             output_tokens=0,
-            duration_ms=0.0,
+            duration_ms=getattr(tool_result, "duration_ms", 0.0) or 0.0,
             has_error=has_error,
         )
         return None

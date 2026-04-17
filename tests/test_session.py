@@ -142,8 +142,8 @@ class TestSessionLogRender:
         assert "root cause is X" in log.render()
 
     def test_render_no_investigation_terms(self):
-        from openharness.session import SessionLog, LogEntry
         import openharness.session as sm
+        from openharness.session import LogEntry, SessionLog
         src = open(sm.__file__).read().lower()
         for term in ["iocs_found"]:
             assert term not in src, f"Forbidden term '{term}' found in session.py"

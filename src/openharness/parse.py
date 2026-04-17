@@ -9,8 +9,31 @@ from __future__ import annotations
 
 import json
 import re
+from typing import Any
 
 from openharness.types import ToolCall
+
+
+def coerce_text(raw: str | list[Any] | None) -> str | None:
+    """Coerce an LLM response into plain text.
+
+    Backends returning native tool-use blocks produce a ``list`` of
+    content blocks (e.g. Anthropic's ``{"type": "text"|"tool_use", ...}``).
+    This helper extracts and joins the ``text`` blocks so callers that
+    only handle plain text get a usable string. Returns ``None`` if
+    ``raw`` is ``None`` and ``""`` if no text blocks are present.
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        return raw
+    parts: list[str] = []
+    for block in raw:
+        if isinstance(block, dict) and block.get("type") == "text":
+            t = block.get("text")
+            if isinstance(t, str):
+                parts.append(t)
+    return "".join(parts)
 
 
 def parse_tool_call(raw: str) -> ToolCall | None:
@@ -35,8 +58,12 @@ def parse_tool_call(raw: str) -> ToolCall | None:
     return None
 
 
-def parse_multi_tool_calls(raw: str | None) -> list[ToolCall]:
+def parse_multi_tool_calls(raw: "str | list[Any] | None") -> list[ToolCall]:
     """Parse multiple tool calls from a single LLM response.
+
+    Accepts either a plain string or a list of native content blocks
+    (native-tool path). List inputs are flattened to text via
+    :func:`coerce_text` before parsing.
 
     Supports these formats:
     1. Single tool:  {"tool": "name", "args": {...}, "reasoning": "..."}
@@ -45,10 +72,11 @@ def parse_multi_tool_calls(raw: str | None) -> list[ToolCall]:
     4. Extra surrounding text before/after the JSON object
     5. Malformed JSON — falls back to regex extraction, then returns []
     """
-    if not raw or not raw.strip():
+    text_raw = coerce_text(raw)
+    if not text_raw or not text_raw.strip():
         return []
 
-    text = raw.strip()
+    text = text_raw.strip()
     text = re.sub(r"^```(?:json)?\s*", "", text)
     text = re.sub(r"\s*```$", "", text)
 
@@ -125,7 +153,7 @@ def parse_native_tool_use(blocks: list[dict]) -> list[ToolCall]:
     """
     calls: list[ToolCall] = []
     for block in blocks:
-        if not isinstance(block, dict):
+        if not isinstance(block, dict):  # type: ignore[reportUnnecessaryIsInstance]
             continue
         if block.get("type") != "tool_use":
             continue
@@ -137,5 +165,6 @@ def parse_native_tool_use(blocks: list[dict]) -> list[ToolCall]:
             tool=str(name),
             args=dict(input_args) if isinstance(input_args, dict) else {},
             reasoning="",  # native tool_use doesn't include reasoning
+            call_id=block.get("id") or "",
         ))
     return calls

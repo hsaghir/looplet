@@ -9,60 +9,52 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Generator, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Callable, Generator, Protocol, runtime_checkable
 
-from openharness.types import Step, ToolCall, ToolResult, AgentState, LLMBackend
-from openharness.tools import BaseToolRegistry
-from openharness.session import SessionLog
-from openharness.parse import parse_multi_tool_calls, parse_native_tool_use
-from openharness.scaffolding import (
-    LLMResult,
-    build_parse_recovery_prompt,
-    enforce_result_budget,
-    llm_call_with_retry,
-    reactive_compact,
-    truncate_tool_result,
-    estimate_prompt_tokens,
-    PARSE_RECOVERY_MAX,
+from openharness.checkpoint import (
+    Checkpoint as _Checkpoint,
+)
+from openharness.checkpoint import (
+    FileCheckpointStore as _FileCheckpointStore,
+)
+from openharness.checkpoint import (
+    resume_loop_state as _resume_loop_state,
 )
 from openharness.flags import FLAGS
+from openharness.history import HistoryRecorder
+from openharness.parse import coerce_text, parse_multi_tool_calls, parse_native_tool_use
+from openharness.recovery import FailureScenario as _FailureScenario
+from openharness.recovery_strategies import (
+    rebuild_prompt as _rebuild_prompt,
+)
+from openharness.recovery_strategies import (
+    recovery_aggressive_budget as _recovery_aggressive_budget,
+)
+from openharness.recovery_strategies import (
+    recovery_clear_old_results as _recovery_clear_old_results,
+)
+from openharness.recovery_strategies import (
+    recovery_reactive_compact as _recovery_reactive_compact,
+)
+from openharness.scaffolding import (
+    PARSE_RECOVERY_MAX,
+    LLMResult,
+    build_parse_recovery_prompt,
+    estimate_prompt_tokens,
+    llm_call_with_retry,
+    truncate_tool_result,
+)
+from openharness.session import SessionLog
+from openharness.tools import BaseToolRegistry
+from openharness.types import Step, ToolCall, ToolContext, ToolResult
+from openharness.validation import validate_args as _validate_args
 
-# Optional capability imports — available when those modules are present
-try:
-    from openharness.router import ModelRouter as _ModelRouter
-except ImportError:  # pragma: no cover
-    _ModelRouter = None  # type: ignore[assignment,misc]
-
-try:
-    from openharness.checkpoint import (
-        Checkpoint as _Checkpoint,
-        FileCheckpointStore as _FileCheckpointStore,
-        resume_loop_state as _resume_loop_state,
-    )
-except ImportError:  # pragma: no cover
-    _Checkpoint = None  # type: ignore[assignment,misc]
-    _FileCheckpointStore = None  # type: ignore[assignment,misc]
-    _resume_loop_state = None  # type: ignore[assignment]
-
-try:
-    from openharness.telemetry import Tracer as _Tracer
-except ImportError:  # pragma: no cover
-    _Tracer = None  # type: ignore[assignment,misc]
-
-try:
-    from openharness.recovery import RecoveryRegistry as _RecoveryRegistry, FailureScenario as _FailureScenario
-except ImportError:  # pragma: no cover
-    _RecoveryRegistry = None  # type: ignore[assignment,misc]
-    _FailureScenario = None  # type: ignore[assignment,misc]
-
-try:
-    from openharness.validation import OutputSchema as _OutputSchema, validate_args as _validate_args
-except ImportError:  # pragma: no cover
-    _OutputSchema = None  # type: ignore[assignment,misc]
-    _validate_args = None  # type: ignore[assignment]
+if TYPE_CHECKING:
+    from openharness.permissions import PermissionEngine
+    from openharness.types import CancelToken
 
 # streaming imports are lazy (inside composable_loop) to avoid circular import:
-# streaming.py imports cadence.loop.LoopHook
+# streaming.py imports openharness.loop.LoopHook
 
 logger = logging.getLogger(__name__)
 
@@ -259,9 +251,12 @@ class LoopConfig:
     for the session log.
     """
 
-    use_native_tools: bool = False
+    use_native_tools: bool = field(default_factory=lambda: FLAGS.native_tools)
     """If True, pass tool schemas to the LLM and parse tool_use blocks
-    instead of JSON text.  Requires LLM backend support."""
+    instead of JSON text.  Requires LLM backend support.
+
+    Defaults to the ``OPENHARNESS_NATIVE_TOOLS`` environment variable
+    (via ``FLAGS.native_tools``), which is ``False`` when unset."""
 
     acceptance_criteria: list[str] | None = None
     """Optional acceptance criteria checked by quality gate hooks.
@@ -306,6 +301,44 @@ class LoopConfig:
     start to restore session_log and step offset (crash-resume support).
     """
 
+    memory_sources: list[Any] = field(default_factory=list)
+    """Optional list of ``PersistentMemorySource`` objects rendered into
+    the default prompt's top ``MEMORY`` section on every turn. Each
+    source must expose ``load(state) -> str | None``. When ``build_prompt``
+    is user-supplied, the loop still renders memory but passes it to
+    the custom function as a ``memory=`` kwarg.
+    """
+
+    cancel_token: CancelToken | None = None
+    """Optional :class:`openharness.types.CancelToken` that signals the
+    loop should terminate. The token is threaded through every LLM call
+    (forwarded to backends that accept ``cancel_token=``) and every
+    ``ToolContext`` so tools share the same cancellation channel. When
+    observed cancelled between turns the loop exits cleanly without
+    further LLM calls.
+    """
+
+    permissions: PermissionEngine | None = None
+    """Optional :class:`openharness.permissions.PermissionEngine`
+    consulted before every tool dispatch. Denied calls are short-
+    circuited into a synthetic ``ToolResult`` carrying a
+    :class:`ToolError` with ``kind=ErrorKind.PERMISSION_DENIED``; the
+    tool body is never invoked. Complements per-hook ``check_permission``
+    (both run — AND semantics)."""
+
+    elicit_handler: Callable[[str, list[str] | None], str | None] | None = None
+    """Optional callable surfaced to tools via ``ToolContext.elicit``.
+    Lets a tool pause and ask the caller (user, upstream agent, test
+    harness) for clarification mid-execution. Signature is
+    ``(prompt, options) -> str | None``; returning ``None`` means "no
+    answer — proceed". Leave unset for fully-autonomous runs."""
+
+    context_window: int = 128_000
+    """Maximum context window (in tokens) for the backend.  Used by the
+    pre-flight prompt-size check to decide whether to trigger reactive
+    recovery *before* sending the LLM call.  Override this to match your
+    actual backend's window (e.g. 200_000 for Claude, 128_000 for GPT-4o)."""
+
 
 def _default_extract_entities(data: Any) -> list[str]:
     """Fallback: no entity extraction."""
@@ -320,6 +353,19 @@ def _default_build_briefing(state: Any, session_log: SessionLog, context: Any) -
 def _default_extract_step_metadata(state: Any, step_num: int) -> tuple[list[str], list[str]]:
     """Fallback: no step metadata extraction."""
     return [], []
+
+
+def _build_tool_ctx(config: "LoopConfig") -> ToolContext | None:
+    """Build a ToolContext for tool dispatch if the config has anything
+    worth threading (cancel_token, elicit_handler). Returns None when
+    there's nothing to carry so tools that don't opt-in are unaffected.
+    """
+    if config.cancel_token is None and config.elicit_handler is None:
+        return None
+    return ToolContext(
+        cancel_token=config.cancel_token,
+        elicit=config.elicit_handler,
+    )
 
 
 # ── Composable Agent Loop ───────────────────────────────────────
@@ -371,20 +417,35 @@ def composable_loop(
         session_log = SessionLog()
 
     # ── Conversation thread — always active (single source of truth) ──
-    from openharness.conversation import Conversation as _Conversation, Message as _Message, MessageRole as _MessageRole  # noqa: PLC0415
+    from openharness.conversation import Conversation as _Conversation  # noqa: PLC0415
     _conv = conversation if conversation is not None else _Conversation()
+
+    # ── Unified history recorder — single write path for step/turn events ──
+    _history = HistoryRecorder(
+        state=state,
+        session_log=session_log,
+        conversation=_conv,
+    )
 
     # ── Lazy streaming imports (avoid circular: streaming imports loop.LoopHook)
     _LoopStartEvent = _StepStartEvent = _LLMCallStartEvent = None
     _ToolDispatchEvent = _LoopEndEvent = None
     if stream is not None:
         try:
+            from openharness.streaming import (
+                LLMCallStartEvent as _LLMCallStartEvent,
+            )
+            from openharness.streaming import (
+                LoopEndEvent as _LoopEndEvent,
+            )
             from openharness.streaming import (  # noqa: PLC0415
                 LoopStartEvent as _LoopStartEvent,
+            )
+            from openharness.streaming import (
                 StepStartEvent as _StepStartEvent,
-                LLMCallStartEvent as _LLMCallStartEvent,
+            )
+            from openharness.streaming import (
                 ToolDispatchEvent as _ToolDispatchEvent,
-                LoopEndEvent as _LoopEndEvent,
             )
         except ImportError:
             pass
@@ -397,12 +458,12 @@ def composable_loop(
 
     # ── Checkpoint store setup ──────────────────────────────────
     _ckpt_store = None
-    if config.checkpoint_dir is not None and _FileCheckpointStore is not None:
+    if config.checkpoint_dir is not None:
         _ckpt_store = _FileCheckpointStore(config.checkpoint_dir)
 
     # ── Crash-resume from initial checkpoint ───────────────────
     _step_offset = 0
-    if config.initial_checkpoint is not None and _resume_loop_state is not None:
+    if config.initial_checkpoint is not None:
         resumed = _resume_loop_state(config.initial_checkpoint)
         _step_offset = resumed.get("step_offset", 0)
         # Restore session log entries into session_log
@@ -410,6 +471,15 @@ def composable_loop(
         if restored_log is not None:
             session_log.entries = restored_log.entries[:]
             session_log.current_theory = restored_log.current_theory
+        # Restore state counters (queries_used, budget_remaining) so
+        # budget enforcement continues where the checkpoint left off.
+        # Some state classes expose budget_remaining as a read-only property
+        # derived from steps/max_steps; skip fields that can't be assigned.
+        for _k, _v in (resumed.get("state_counters") or {}).items():
+            try:
+                setattr(state, _k, _v)
+            except AttributeError:
+                pass
 
     build_briefing = config.build_briefing or _default_build_briefing
     extract_entities = config.extract_entities or _default_extract_entities
@@ -437,11 +507,20 @@ def composable_loop(
             hook.pre_loop(state, session_log, context)
 
     # ── Emit LoopStartEvent ─────────────────────────────────────
-    if stream is not None and _LoopStartEvent is not None:
+    # Skip if a StreamingHook is in hooks — it already emits LoopStartEvent
+    # from its pre_loop method and we don't want duplicates.
+    from openharness.streaming import StreamingHook as _StreamingHook  # noqa: PLC0415
+    _has_streaming_hook = any(isinstance(h, _StreamingHook) for h in hooks)
+    if stream is not None and _LoopStartEvent is not None and not _has_streaming_hook:
         stream.emit(_LoopStartEvent(task_summary=str(task.get("id", "")), max_steps=config.max_steps))
 
     while state.budget_remaining > 0 and not done:
         step_num = state.step_count + 1 + _step_offset
+
+        # Cancellation check between turns — stop cleanly, no more LLM calls.
+        if config.cancel_token is not None and getattr(config.cancel_token, "is_cancelled", False):
+            stop_reason = "cancelled"
+            break
 
         # ── Pre-prompt hooks ────────────────────────────────
         briefing_parts = [build_briefing(state, session_log, context)]
@@ -472,6 +551,15 @@ def composable_loop(
             context_history += "\n" + quality_gate_message
             quality_gate_message = ""
 
+        # Persistent memory (CLAUDE.md generalization): rendered once
+        # per turn, placed above TASK by the default prompt builder.
+        _memory_sources = getattr(config, "memory_sources", None)
+        if _memory_sources:
+            from openharness.memory import render_memory as _render_memory  # noqa: PLC0415
+            _rendered_memory = _render_memory(_memory_sources, state)
+        else:
+            _rendered_memory = ""
+
         if build_prompt_fn is not None:
             prompt = build_prompt_fn(
                 task=task,
@@ -482,20 +570,26 @@ def composable_loop(
                 max_steps=config.max_steps,
                 session_log=session_log.render(),
                 briefing="\n".join(briefing_parts),
+                memory=_rendered_memory,
             )
         else:
-            prompt = (
-                f"Task: {task}\n\n"
-                f"{tools.tool_catalog_text()}\n\n"
-                f"Step {step_num}/{config.max_steps}\n\n"
-                f"{context_history}\n\n"
-                f"{session_log.render()}\n\n"
-                f"{chr(10).join(briefing_parts)}"
+            # Domain-agnostic default: 7-section structured prompt.
+            from openharness.prompts import build_prompt as _default_build_prompt  # noqa: PLC0415
+            prompt = _default_build_prompt(
+                task=task,
+                tool_catalog=tools.tool_catalog_text(),
+                state_summary=state.snapshot(),
+                context_history=context_history,
+                step_number=step_num,
+                max_steps=config.max_steps,
+                session_log=session_log.render(),
+                briefing="\n".join(briefing_parts),
+                memory=_rendered_memory,
             )
 
         # ── Pre-flight context check ──────────────────────────
         estimated_tokens = estimate_prompt_tokens(prompt)
-        preflight_too_long = estimated_tokens > getattr(config, '_context_window', 128_000) - 3_000
+        preflight_too_long = estimated_tokens > config.context_window - 3_000
 
         # Emit StepStartEvent
         if stream is not None and _StepStartEvent is not None:
@@ -510,7 +604,7 @@ def composable_loop(
                 "Pre-flight block: prompt ~%d tokens exceeds safe limit — "
                 "running recovery before LLM call", estimated_tokens,
             )
-            llm_result = LLMResult(None, Exception("pre-flight: prompt too long"))
+            llm_result = LLMResult(None, Exception("pre-flight: prompt is too long"))
         else:
             # ── LLM call with retry + reactive recovery ───────────
             # Emit LLMCallStartEvent
@@ -523,13 +617,19 @@ def composable_loop(
                     f"llm.call.step_{step_num}",
                     attributes={"step": step_num},
                 )
+            _native_on = (config.use_native_tools or FLAGS.native_tools) and hasattr(
+                effective_llm, "generate_with_tools"
+            )
+            _tool_schemas = tools.tool_schemas() if _native_on else None
             llm_result = llm_call_with_retry(
                 effective_llm, prompt,
                 max_tokens=config.max_tokens,
                 system_prompt=config.system_prompt,
                 temperature=config.temperature,
+                tools=_tool_schemas,
+                cancel_token=config.cancel_token,
             )
-            if _llm_span is not None:
+            if _llm_span is not None and config.tracer is not None:
                 config.tracer.end_span(_llm_span)
             llm_calls += 1
 
@@ -540,22 +640,19 @@ def composable_loop(
                 tools, context, build_briefing, build_prompt_fn,
                 task, config, step_num,
             )
-            if raw_response is not None:
-                llm_calls += recovery_state.get("_last_recovery_llm_calls", 0)
+            llm_calls += recovery_state.get("_last_recovery_llm_calls", 0)
             llm_result = LLMResult(raw_response)
 
         raw_response = llm_result.text
 
-        # ── Record in conversation thread if enabled ──────────
-        if True:  # Conversation always active
-            _conv.append(_Message(role=_MessageRole.USER, content=prompt[:5000]))
-            if raw_response is not None:
-                _conv.append(_Message(
-                    role=_MessageRole.ASSISTANT,
-                    content=raw_response[:5000] if isinstance(raw_response, str) else str(raw_response)[:5000],
-                ))
+        # ── Record LLM turn in conversation thread via unified recorder ──
+        _history.record_llm_turn(prompt=prompt, response=raw_response)
 
         if raw_response is None:
+            # If cancellation caused the failure, exit cleanly — no error step.
+            if config.cancel_token is not None and getattr(config.cancel_token, "is_cancelled", False):
+                stop_reason = "cancelled"
+                break
             logger.error("LLM call failed after retries at step %d", step_num)
             error_call = ToolCall(tool="__llm_error__", reasoning="LLM call failed after retries")
             error_result = ToolResult(
@@ -565,6 +662,7 @@ def composable_loop(
             step = Step(number=step_num, tool_call=error_call, tool_result=error_result)
             state.steps.append(step)
             yield step
+            _history.record_step(step, theory="", entities=[], findings=[], highlights=[], recall_key="")
             break
 
         # ── Parse response (native tool_use or JSON text) ────
@@ -576,14 +674,14 @@ def composable_loop(
             consecutive_parse_failures += 1
             # Consult recovery_registry if set — use returned action
             _recovery_action = None
-            if config.recovery_registry is not None and _FailureScenario is not None:
+            if config.recovery_registry is not None:
                 _recovery_action = config.recovery_registry.attempt_recovery(
                     _FailureScenario.PARSE_ERROR,
                     {"step": step_num, "raw_response": raw_response},
                 )
                 if _recovery_action is not None and _recovery_action.action_type == "abort":
                     logger.warning("Recovery registry aborted parse recovery at step %d", step_num)
-                    tool_call = ToolCall(tool="__parse_error__", reasoning=(raw_response or "")[:200])
+                    tool_call = ToolCall(tool="__parse_error__", reasoning=(coerce_text(raw_response) or "")[:200])
                     tool_result = ToolResult(
                         tool="__parse_error__", args_summary="", data=None,
                         error=f"Parse error — recovery aborted: {_recovery_action.message}",
@@ -591,6 +689,7 @@ def composable_loop(
                     step = Step(number=step_num, tool_call=tool_call, tool_result=tool_result)
                     state.steps.append(step)
                     yield step
+                    _history.record_step(step, theory="", entities=[], findings=[], highlights=[], recall_key="")
                     continue
                 if _recovery_action is not None and _recovery_action.message:
                     post_dispatch_parts.append(_recovery_action.message)
@@ -599,12 +698,13 @@ def composable_loop(
                     "Parse failure %d/%d at step %d — attempting recovery",
                     consecutive_parse_failures, PARSE_RECOVERY_MAX, step_num,
                 )
-                recovery_prompt = build_parse_recovery_prompt(prompt, raw_response)
+                recovery_prompt = build_parse_recovery_prompt(prompt, coerce_text(raw_response) or "")
                 recovery_result = llm_call_with_retry(
                     effective_llm, recovery_prompt,
                     max_tokens=config.max_tokens,
                     system_prompt=config.system_prompt,
                     temperature=config.recovery_temperature,
+                    cancel_token=config.cancel_token,
                 )
                 llm_calls += 1
                 if recovery_result.ok:
@@ -612,14 +712,15 @@ def composable_loop(
 
             if not tool_calls:
                 logger.warning("Unparseable LLM response at step %d after recovery", step_num)
-                tool_call = ToolCall(tool="__parse_error__", reasoning=(raw_response or "")[:200])
+                tool_call = ToolCall(tool="__parse_error__", reasoning=(coerce_text(raw_response) or "")[:200])
                 tool_result = ToolResult(
                     tool="__parse_error__", args_summary="", data=None,
-                    error=f"Could not parse JSON: {(raw_response or '')[:200]}",
+                    error=f"Could not parse JSON: {(coerce_text(raw_response) or '')[:200]}",
                 )
                 step = Step(number=step_num, tool_call=tool_call, tool_result=tool_result)
                 state.steps.append(step)
                 yield step
+                _history.record_step(step, theory="", entities=[], findings=[], highlights=[], recall_key="")
                 continue
         else:
             consecutive_parse_failures = 0
@@ -651,17 +752,44 @@ def composable_loop(
                 tc for i, tc in enumerate(regular_calls) if i not in intercepted_results
             ]
 
-            # Permission check: hooks can deny tool calls (AND semantics)
+            # Permission check: engine + hooks can deny tool calls (AND semantics)
             permitted_calls = []
             for tc in calls_to_dispatch:
                 denied = False
+                # Declarative PermissionEngine first — if present.
+                if config.permissions is not None:
+                    outcome = config.permissions.evaluate(tc)
+                    if outcome.denied:
+                        from openharness.types import ErrorKind, ToolError  # noqa: PLC0415
+                        idx = next(i for i, c in enumerate(regular_calls) if c is tc)
+                        _te = ToolError(
+                            kind=ErrorKind.PERMISSION_DENIED,
+                            message=outcome.reason
+                                or f"Permission denied for tool '{tc.tool}'",
+                            retriable=False,
+                        )
+                        intercepted_results[idx] = ToolResult(
+                            tool=tc.tool, args_summary=str(tc.args)[:100],
+                            data=None,
+                            error=_te.message,
+                            error_detail=_te,
+                        )
+                        denied = True
+                if denied:
+                    continue
                 for hook in hooks:
                     if hasattr(hook, "check_permission"):
                         if not hook.check_permission(tc, state):
+                            from openharness.types import ErrorKind, ToolError  # noqa: PLC0415
                             idx = next(i for i, c in enumerate(regular_calls) if c is tc)
+                            _te = ToolError(
+                                kind=ErrorKind.PERMISSION_DENIED,
+                                message=f"Permission denied for tool '{tc.tool}'",
+                                retriable=False,
+                            )
                             intercepted_results[idx] = ToolResult(
                                 tool=tc.tool, args_summary=str(tc.args)[:100],
-                                data=None, error=f"Permission denied for tool '{tc.tool}'",
+                                data=None, error=_te.message, error_detail=_te,
                             )
                             denied = True
                             break
@@ -669,10 +797,12 @@ def composable_loop(
                     permitted_calls.append(tc)
 
             if permitted_calls:
+                _tool_ctx = _build_tool_ctx(config)
+                _dispatch_kw = {"ctx": _tool_ctx} if _tool_ctx is not None else {}
                 if FLAGS.concurrent_dispatch:
-                    dispatch_results = tools.dispatch_batch(permitted_calls)
+                    dispatch_results = tools.dispatch_batch(permitted_calls, **_dispatch_kw)
                 else:
-                    dispatch_results = [tools.dispatch(c) for c in permitted_calls]
+                    dispatch_results = [tools.dispatch(c, **_dispatch_kw) for c in permitted_calls]
             else:
                 dispatch_results = []
 
@@ -715,13 +845,17 @@ def composable_loop(
                 yield step
 
                 # Save checkpoint after each step
-                if _ckpt_store is not None and _Checkpoint is not None:
+                if _ckpt_store is not None:
                     _ckpt_store.save(
                         _Checkpoint(
                             step_number=cur_step,
                             session_log_data={"entries": session_log.to_list(), "current_theory": session_log.current_theory},
                             conversation_data=_conv.serialize(),
-                            config_snapshot={"max_steps": config.max_steps},
+                            config_snapshot={
+                                "max_steps": config.max_steps,
+                                "queries_used": getattr(state, "queries_used", 0),
+                                "budget_remaining": getattr(state, "budget_remaining", 0),
+                            },
                             tool_results_store={},
                             metadata={"task": str(task)},
                         ),
@@ -734,22 +868,16 @@ def composable_loop(
                 recall_key = tool_result.result_key or ""
                 theory = tool_call.args.get("__theory__", "")
 
-                session_log.record(
-                    step=cur_step, theory=theory, tool=tool_call.tool,
-                    reasoning=tool_call.reasoning, entities=step_entities,
-                    findings=step_findings, highlights=step_highlights, recall_key=recall_key,
+                # Unified write: state.steps was already appended above, so the
+                # recorder dedups there and fills in the session log + conversation.
+                _history.record_step(
+                    step,
+                    theory=theory,
+                    entities=step_entities,
+                    findings=step_findings,
+                    highlights=step_highlights,
+                    recall_key=recall_key,
                 )
-
-                # Record tool call/result in conversation thread
-                if True:  # Conversation always active
-                    _conv.append(_Message(
-                        role=_MessageRole.ASSISTANT, content="",
-                        tool_call=tool_call,
-                    ))
-                    _conv.append(_Message(
-                        role=_MessageRole.TOOL, content="",
-                        tool_result=tool_result,
-                    ))
 
         # Handle done() if present
         if done_idx is not None:
@@ -765,7 +893,7 @@ def composable_loop(
                         break
 
             # Output schema validation — reject done() if payload is invalid
-            if gate_warning is None and config.output_schema is not None and _validate_args is not None:
+            if gate_warning is None and config.output_schema is not None:
                 validation = _validate_args(config.output_schema, tool_call.args)
                 if not validation.valid:
                     gate_warning = f"Output schema validation failed: {'; '.join(validation.errors)}"
@@ -788,28 +916,49 @@ def composable_loop(
                 step = Step(number=cur_step, tool_call=tool_call, tool_result=tool_result)
                 state.steps.append(step)
                 yield step
-                session_log.record(
-                    step=cur_step, theory="", tool=done_tool_name,
-                    reasoning=f"{done_tool_name}() rejected by quality gate",
+                _history.record_step(
+                    step,
+                    theory="",
+                    entities=[],
+                    findings=[],
+                    highlights=[],
+                    recall_key="",
                 )
             else:
-                tool_result = tools.dispatch(tool_call)
+                # done() dispatch intentionally bypasses PermissionEngine — it's
+                # a loop signal, not a side-effecting tool. Permission-gating a
+                # termination signal would prevent the agent from ever stopping.
+                _ctx = _build_tool_ctx(config)
+                tool_result = tools.dispatch(tool_call, ctx=_ctx) if _ctx is not None else tools.dispatch(tool_call)
                 step = Step(number=cur_step, tool_call=tool_call, tool_result=tool_result)
                 state.steps.append(step)
-                # Save checkpoint after done step too
-                if _ckpt_store is not None and _Checkpoint is not None:
+                yield step
+                # Record accepted done() to session_log + conversation
+                _history.record_step(
+                    step,
+                    theory=tool_call.args.get("__theory__", ""),
+                    entities=[],
+                    findings=[],
+                    highlights=[],
+                    recall_key="",
+                )
+                # Save checkpoint after done step (after yield, matching non-done pattern)
+                if _ckpt_store is not None:
                     _ckpt_store.save(
                         _Checkpoint(
                             step_number=cur_step,
                             session_log_data={"entries": session_log.to_list(), "current_theory": session_log.current_theory},
                             conversation_data=_conv.serialize(),
-                            config_snapshot={"max_steps": config.max_steps},
+                            config_snapshot={
+                                "max_steps": config.max_steps,
+                                "queries_used": getattr(state, "queries_used", 0),
+                                "budget_remaining": getattr(state, "budget_remaining", 0),
+                            },
                             tool_results_store={},
                             metadata={"task": str(task), "status": "done"},
                         ),
                         key=f"step_{cur_step}_done",
                     )
-                yield step
                 done = True
                 stop_reason = "done"
 
@@ -827,14 +976,17 @@ def composable_loop(
             break
 
     # ── Post-loop hooks ─────────────────────────────────────
+    # Stash stop_reason on state so hooks (e.g. StreamingHook) can read it
+    if state is not None:
+        state._stop_reason = stop_reason
     for hook in hooks:
         if hasattr(hook, "on_loop_end"):
             extra = hook.on_loop_end(state, session_log, context, llm)
             if isinstance(extra, int):
                 llm_calls += extra
 
-    # Emit LoopEndEvent
-    if stream is not None and _LoopEndEvent is not None:
+    # Emit LoopEndEvent — skip if StreamingHook already emits it
+    if stream is not None and _LoopEndEvent is not None and not _has_streaming_hook:
         stream.emit(_LoopEndEvent(
             total_steps=state.step_count,
             total_llm_calls=llm_calls,
@@ -873,7 +1025,7 @@ def _reactive_recovery_chain(
     task: dict,
     config: Any,
     step_num: int,
-) -> str | None:
+) -> Any:
     """Multi-strategy recovery chain for prompt-too-long errors.
 
     Tries strategies in order, each at most once:
@@ -911,6 +1063,7 @@ def _reactive_recovery_chain(
             max_tokens=config.max_tokens,
             system_prompt=config.system_prompt,
             temperature=config.temperature,
+            cancel_token=config.cancel_token,
         )
         extra_llm_calls += 1
 
@@ -925,53 +1078,3 @@ def _reactive_recovery_chain(
     logger.error("All recovery strategies exhausted at step %d", step_num)
     recovery_state["_last_recovery_llm_calls"] = extra_llm_calls
     return None
-
-
-def _recovery_aggressive_budget(state: Any, session_log: Any, llm: Any, step_num: int) -> int:
-    """Strategy 1: Enforce aggressive per-result budget (2KB each)."""
-    if hasattr(state, "steps") and state.steps:
-        enforce_result_budget(state.steps, per_result_chars=2000, aggregate_chars=20_000)
-    return 0
-
-
-def _recovery_reactive_compact(state: Any, session_log: Any, llm: Any, step_num: int) -> int:
-    """Strategy 2: Emergency session log compression (deterministic)."""
-    reactive_compact(state, session_log, keep_recent=2)
-    return 0
-
-
-def _recovery_clear_old_results(state: Any, session_log: Any, llm: Any, step_num: int) -> int:
-    """Strategy 3: Clear all result data except last 2 steps."""
-    if hasattr(state, "steps"):
-        for step in state.steps[:-2]:
-            step.tool_result.data = None
-    return 0
-
-
-def _rebuild_prompt(
-    state: Any, session_log: Any, context: Any,
-    build_briefing: Any, build_prompt_fn: Any,
-    task: dict, tools: Any, config: Any, step_num: int,
-) -> str:
-    """Rebuild prompt after a recovery strategy modified state."""
-    context_history = state.context_summary()
-    briefing = build_briefing(state, session_log, context) if build_briefing else ""
-    if build_prompt_fn is not None:
-        return build_prompt_fn(
-            task=task,
-            tool_catalog=tools.tool_catalog_text(),
-            state_summary=state.snapshot(),
-            context_history=context_history,
-            step_number=step_num,
-            max_steps=config.max_steps,
-            session_log=session_log.render(),
-            briefing=briefing,
-        )
-    return (
-        f"Task: {task}\n\n"
-        f"{tools.tool_catalog_text()}\n\n"
-        f"Step {step_num}/{config.max_steps}\n\n"
-        f"{context_history}\n\n"
-        f"{session_log.render()}\n\n"
-        f"{briefing}"
-    )

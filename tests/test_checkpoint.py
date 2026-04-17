@@ -10,15 +10,14 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from openharness.session import SessionLog
 from openharness.checkpoint import (
     Checkpoint,
-    CheckpointStore,
     CheckpointHook,
+    CheckpointStore,
     FileCheckpointStore,
     resume_loop_state,
 )
-
+from openharness.session import SessionLog
 
 # ── Helpers ────────────────────────────────────────────────────────
 

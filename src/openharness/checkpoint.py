@@ -126,6 +126,24 @@ class FileCheckpointStore:
         data = json.loads(path.read_text())
         return Checkpoint.from_dict(data)
 
+    def load_latest(self) -> Checkpoint | None:
+        """Load the checkpoint with the highest step number, or None.
+
+        Scans all ``*.json`` files in the directory, parses each, and
+        returns the one with the largest ``step_number``. Used by the
+        loop for auto-resume when ``checkpoint_dir`` is set.
+        """
+        best: Checkpoint | None = None
+        for path in sorted(self._dir.glob("*.json")):
+            try:
+                data = json.loads(path.read_text())
+                cp = Checkpoint.from_dict(data)
+                if best is None or cp.step_number > best.step_number:
+                    best = cp
+            except Exception:  # noqa: BLE001
+                logger.warning("Skipping corrupt checkpoint: %s", path)
+        return best
+
 
 # ── CheckpointHook ─────────────────────────────────────────────────
 
@@ -216,6 +234,14 @@ class CheckpointHook:
         llm: Any,
     ) -> int:
         return 0
+
+    # ── LoopHook Protocol stubs ────────────────────────────────
+    def pre_loop(self, *a: Any, **k: Any) -> None: return None
+    def check_permission(self, *a: Any, **k: Any) -> None: return None
+    def should_compact(self, *a: Any, **k: Any) -> bool: return False
+    def build_briefing(self, *a: Any, **k: Any) -> None: return None
+    def build_prompt(self, **k: Any) -> None: return None
+    def on_event(self, *a: Any, **k: Any) -> None: return None
 
 
 # ── resume_loop_state ───────────────────────────────────────────────

@@ -1,7 +1,7 @@
-"""Persistent memory sources — the generalization of CLAUDE.md.
+"""Persistent memory sources for agent loops.
 
-Claude Code injects the project's ``CLAUDE.md`` file into every prompt
-and it survives all compactions. This module gives open-harness an
+Many agent frameworks inject a project-level memory file into every
+prompt, surviving all compactions. This module gives openharness an
 equivalent that is *domain-agnostic*: any object exposing
 ``load(state) -> str | None`` can be attached to ``LoopConfig`` and the
 loop will render it into a stable ``MEMORY`` section at the top of
@@ -15,7 +15,7 @@ Two tiny convenience implementations are shipped:
   ``AgentState`` so memory can vary per turn (e.g. "case id = X,
   pinned entities = [...]").
 
-For a filesystem-backed source (CLAUDE.md equivalent), callers can
+For a filesystem-backed source, callers can
 compose ``CallableMemorySource(lambda _: Path("RUBRIC.md").read_text())``
 — openharness core stays out of the filesystem.
 

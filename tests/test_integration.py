@@ -1,6 +1,6 @@
-"""End-to-end integration tests for cadence — all components working together.
+"""End-to-end integration tests for openharness — all components working together.
 
-Each test scenario exercises multiple cadence components simultaneously to
+Each test scenario exercises multiple openharness components simultaneously to
 verify correct composition and cross-module integration.
 """
 
@@ -105,7 +105,7 @@ def _make_registry_with_done() -> Any:
 def test_full_loop_with_all_capabilities():
     """Run a 3-step mock loop with all capabilities active simultaneously."""
     from openharness.checkpoint import Checkpoint, FileCheckpointStore
-    from openharness.context import ContextManagerHook
+    from openharness.context import ContextPressureHook
     from openharness.loop import LoopConfig, composable_loop
     from openharness.streaming import CallbackEmitter, LoopEndEvent, LoopStartEvent, StreamingHook
     from openharness.telemetry import MetricsCollector, Tracer
@@ -167,7 +167,7 @@ def test_full_loop_with_all_capabilities():
                 saved_checkpoints.append(step_num)
 
         hooks = [
-            ContextManagerHook(llm=None),
+            ContextPressureHook(llm=None),
             InstrumentHook(),
             StreamingHook(emitter),
             SimpleCheckpointHook(),
@@ -351,37 +351,6 @@ def test_validation_rejects_bad_done():
     first_done_step = steps[0]
     assert first_done_step.tool_result.error is not None
     assert "Validation failed" in first_done_step.tool_result.error
-
-
-# ── Test 6: Async loop with ContextManagerHook ────────────────────
-
-
-async def test_async_loop_with_context():
-    """async_composable_loop with ContextManagerHook completes without RuntimeError."""
-    from openharness.async_loop import async_composable_loop
-    from openharness.context import ContextManagerHook
-
-    llm = _AsyncScriptedLLM([
-        _tool_response("think", thought="async step"),
-        _tool_response("done", answer="async done"),
-    ])
-
-    registry = _make_registry_with_done()
-    state = _State(max_steps=10)
-    ctx_hook = ContextManagerHook(llm=None)
-
-    from openharness.loop import LoopConfig
-
-    config = LoopConfig(max_steps=10, done_tool="done")
-
-    steps = []
-    async for step in async_composable_loop(
-        llm, task={}, tools=registry, hooks=[ctx_hook], config=config, state=state
-    ):
-        steps.append(step)
-
-    # Completed without RuntimeError
-    assert len(steps) >= 1
 
 
 # ── Test 7: Streaming event sequence ─────────────────────────────

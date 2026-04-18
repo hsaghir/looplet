@@ -16,7 +16,7 @@ Section order (stable → volatile):
 
 from __future__ import annotations
 
-from typing import Callable
+from typing import Any, Callable
 
 _DEFAULT_HEADERS: dict[str, str] = {
     "task": "TASK",
@@ -178,3 +178,62 @@ def _render_facts_generic(state_summary: dict) -> list[str]:
                 lines.append(f"{key}: {val}")
 
     return lines
+
+
+def preview_prompt(
+    task: dict | None = None,
+    tools: Any = None,
+    state: Any = None,
+    session_log: Any = None,
+    *,
+    config: Any = None,
+    step_number: int = 1,
+) -> str:
+    """Render the prompt the LLM would see — useful for debugging.
+
+    Call this before or after running the loop to inspect exactly
+    what the model receives::
+
+        from openharness import preview_prompt
+        print(preview_prompt(
+            task={"goal": "fix the bug"},
+            tools=my_registry,
+            state=my_state,
+        ))
+
+    Args:
+        task: Task dict (same as composable_loop).
+        tools: BaseToolRegistry instance.
+        state: AgentState instance (or None for empty facts).
+        session_log: SessionLog instance (or None for empty log).
+        config: LoopConfig (optional — used for memory_sources).
+        step_number: Which step to render for (default 1).
+    """
+
+    _task = task or {}
+    _catalog = tools.tool_catalog_text() if tools is not None else ""
+    _state = state.snapshot() if state is not None and hasattr(state, "snapshot") else {}
+    _log = session_log.render() if session_log is not None and hasattr(session_log, "render") else ""
+    _max = getattr(config, "max_steps", 15) if config else 15
+    _briefing = ""
+    _memory = ""
+    if config is not None:
+        sources = getattr(config, "memory_sources", None) or []
+        parts = []
+        for src in sources:
+            text = src.load(state) if hasattr(src, "load") else None
+            if text:
+                parts.append(text)
+        _memory = "\n".join(parts)
+
+    return build_prompt(
+        task=_task,
+        tool_catalog=_catalog,
+        state_summary=_state,
+        context_history="",
+        step_number=step_number,
+        max_steps=_max,
+        session_log=_log,
+        briefing=_briefing,
+        memory=_memory,
+    )

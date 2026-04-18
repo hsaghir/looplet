@@ -1,8 +1,7 @@
 """Declarative permission engine for tool calls.
 
-``check_permission`` hooks remain as a low-level escape hatch, but most
-pipelines should attach a :class:`PermissionEngine` to
-:class:`LoopConfig.permissions` to get:
+Register a :class:`PermissionEngine` via ``hooks=[PermissionHook(engine)]``
+to get:
 
 * Four canonical decisions — ``allow``, ``deny``, ``ask``, ``default``
 * Rule-based matching on ``(tool_name, arg_matcher)``
@@ -12,7 +11,7 @@ pipelines should attach a :class:`PermissionEngine` to
 * A single extension point — plug in a callable ``ask_handler`` to
   wire up human-in-the-loop prompts without touching the engine
 
-This is the minimum needed to match claude-code's permission semantics
+This is the minimum needed to match modern agent permission semantics
 while staying domain-agnostic.
 """
 
@@ -204,3 +203,67 @@ class PermissionEngine:
             "rule": rule.tool if rule else None,
             "reason": reason,
         })
+
+
+# ── Permission hook helper ─────────────────────────────────────
+
+
+class PermissionHook:
+    """Adapt a :class:`PermissionEngine` to the :class:`LoopHook` surface.
+
+    This is the principled way to install declarative permission rules
+    into the new ``HookDecision`` world: one hook class, registered in
+    ``hooks=[...]`` alongside everything else, producing the same
+    :class:`HookDecision` shape all other hook slots use.
+
+    Example::
+
+        engine = PermissionEngine(default=PermissionDecision.ALLOW)
+        engine.deny("bash", arg_matcher=lambda a: "rm -rf" in a.get("cmd", ""))
+
+        for step in composable_loop(
+            llm=..., tools=..., state=...,
+            hooks=[PermissionHook(engine)],
+        ):
+            ...
+    """
+
+    def __init__(self, engine: "PermissionEngine") -> None:
+        self.engine = engine
+
+    def on_event(self, payload: Any) -> Any:
+        """Fire on ``PRE_TOOL_USE`` and convert engine outcomes to decisions."""
+        # Lazy import — avoids a hard cycle with openharness.events.
+        from openharness.events import LifecycleEvent  # noqa: PLC0415
+        from openharness.hook_decision import Allow, Deny  # noqa: PLC0415
+
+        if payload.event != LifecycleEvent.PRE_TOOL_USE:
+            return None
+        if payload.tool_call is None:
+            return None
+        outcome = self.engine.evaluate(payload.tool_call)
+        if outcome.allowed:
+            return Allow()
+        if outcome.denied:
+            return Deny(outcome.reason or f"permission denied for '{payload.tool_call.tool}'")
+        # ALLOW by default for ASK/DEFAULT outcomes that slipped through.
+        return None
+
+    # Back-compat: many older hooks use check_permission. Expose it so
+    # this hook behaves correctly even if someone calls the per-method
+    # surface directly (e.g. in tests).
+    def check_permission(self, tool_call: ToolCall, state: Any) -> bool:
+        outcome = self.engine.evaluate(tool_call)
+        return not outcome.denied
+
+    # ── LoopHook Protocol stubs ────────────────────────────────
+    def pre_loop(self, *a: Any, **k: Any) -> None: return None
+    def pre_prompt(self, *a: Any, **k: Any) -> None: return None
+    def pre_dispatch(self, *a: Any, **k: Any) -> None: return None
+    def post_dispatch(self, *a: Any, **k: Any) -> None: return None
+    def check_done(self, *a: Any, **k: Any) -> None: return None
+    def should_stop(self, *a: Any, **k: Any) -> bool: return False
+    def should_compact(self, *a: Any, **k: Any) -> bool: return False
+    def build_briefing(self, *a: Any, **k: Any) -> None: return None
+    def build_prompt(self, **k: Any) -> None: return None
+    def on_loop_end(self, *a: Any, **k: Any) -> int: return 0

@@ -112,54 +112,124 @@ pip install "openharness[openai]"      # adds openai SDK
 pip install "openharness[all]"         # both
 ```
 
-## Quick start
+## Tutorial — build your first agent in 5 steps
+
+### Step 1: Install and run the hello world
+
+```bash
+pip install "openharness[openai]"
+python -m openharness.examples.hello_world
+```
+
+This connects to any OpenAI-compatible API (set `OPENAI_BASE_URL` and
+`OPENAI_MODEL` to point at your provider).
+
+### Step 2: Understand the loop
+
+The core is one `for` loop. You own iteration — pause, filter, break:
 
 ```python
-from anthropic import Anthropic
-from openharness import (
-    composable_loop, LoopConfig,
-    BaseToolRegistry, ToolSpec,
-    DefaultState, SessionLog,
-    AnthropicBackend,
-)
+from openharness import composable_loop, LoopConfig, DefaultState, BaseToolRegistry, ToolSpec
 
-# 1. Define tools
 tools = BaseToolRegistry()
-tools.register(ToolSpec(
-    name="add",
-    description="Add two integers.",
-    parameters={"a": "int", "b": "int"},
-    execute=lambda a, b: {"sum": a + b},
-))
+tools.register(ToolSpec(name="greet", description="Greet someone",
+                        parameters={"name": "str"},
+                        execute=lambda *, name: {"greeting": f"Hello, {name}!"}))
+tools.register(ToolSpec(name="done", description="Finish",
+                        parameters={"answer": "str"},
+                        execute=lambda *, answer: {"answer": answer}))
 
-# 2. Pick a backend (or bring your own implementing the LLMBackend protocol)
-llm = AnthropicBackend(Anthropic(), model="claude-opus-4-1")
+for step in composable_loop(
+    llm=my_llm,  # any LLMBackend — OpenAI, Anthropic, local
+    tools=tools,
+    state=DefaultState(max_steps=5),
+    config=LoopConfig(max_steps=5),
+    task={"goal": "Greet Alice, then finish."},
+):
+    print(step.pretty())
+```
 
-# 3. Configure the loop
-config = LoopConfig(
-    max_steps=10,
-    max_tokens=1024,
-    system_prompt="You are a helpful assistant. Use tools when needed.",
+### Step 3: Add a hook
+
+Hooks are plain Python classes. Implement only the methods you need:
+
+```python
+from openharness import HookDecision, InjectContext
+
+class MyGuardrail:
+    def post_dispatch(self, state, session_log, tool_call, tool_result, step_num):
+        if tool_call.tool == "write" and "test_" not in tool_call.args.get("file_path", ""):
+            return InjectContext("You wrote code but no tests. Write tests first.")
+        return None
+
+    def check_done(self, state, session_log, context, step_num):
+        return HookDecision(block="Not done yet — run tests first.")
+
+    # Only implement what you need. All other LoopHook methods are optional.
+    def should_stop(self, *a, **k): return False
+```
+
+Pass hooks to the loop: `composable_loop(..., hooks=[MyGuardrail()])`.
+
+### Step 4: Add context management
+
+For long sessions, add a compaction chain so the agent doesn't run out
+of context:
+
+```python
+from openharness import (
+    compact_chain, PruneToolResults, SummarizeCompact, TruncateCompact,
+    ContextBudget, ThresholdCompactHook,
 )
 
-# 4. Run
-state = DefaultState(max_steps=10)
-session = SessionLog()
-for step in composable_loop(
-    llm=llm,
-    task={"question": "What is 2 + 3?"},
-    tools=tools,
-    config=config,
-    state=state,
-    session_log=session,
-):
-    print(f"Step {step.number}: {step.tool_call.tool} → {step.tool_result.data}")
+config = LoopConfig(
+    max_steps=50,
+    compact_service=compact_chain(
+        PruneToolResults(keep_recent=5),   # free: clear old tool output
+        SummarizeCompact(keep_recent=2),   # 1 LLM call: summarize middle
+        TruncateCompact(keep_recent=1),    # free: drop everything old
+    ),
+)
+hooks = [ThresholdCompactHook(ContextBudget(context_window=128_000))]
+```
+
+### Step 5: Add crash-resume and approval
+
+One line for crash-safe checkpoints. Add `ApprovalHook` for human
+sign-off on risky actions:
+
+```python
+from openharness import ApprovalHook
+
+config = LoopConfig(
+    max_steps=50,
+    checkpoint_dir="./checkpoints",  # auto-save after every step, auto-resume on restart
+)
+hooks = [ApprovalHook()]  # stops loop when tool returns needs_approval=True
+```
+
+### See it all together
+
+Run the complete coding agent example (bash, read, write, edit, glob,
+grep, think — same tools as Claude Code):
+
+```bash
+python -m openharness.examples.coding_agent "implement fizzbuzz" --model gpt-4o
+python -m openharness.examples.coding_agent --trace ./traces/  # save trajectory
+```
+
+### Debug: see what the LLM sees
+
+```python
+from openharness import preview_prompt
+
+print(preview_prompt(task={"goal": "fix the bug"}, tools=my_tools, state=my_state))
 ```
 
 ## Adding behavior with hooks
 
 Hooks are `@runtime_checkable` Protocols — any object with the right
-method is a hook. No base class, no registry, no decorator:
+method is a hook. No base class, no registry, no decorator.
 
 ```python
 class ConsolePrinter:
@@ -194,8 +264,8 @@ llm = MockLLMBackend(responses=[
 ```
 
 See [`src/openharness/examples/`](src/openharness/examples/) for complete
-examples including a calculator agent, research agent, and code review
-agent.
+examples: `hello_world.py` (starter) and `coding_agent.py` (production
+reference with bash/read/write/edit/glob/grep tools).
 
 ## Observability
 
@@ -260,6 +330,115 @@ Both accept a `redact=` callable for secret scrubbing and
 
 See [PROVENANCE_GUIDE.md](PROVENANCE_GUIDE.md) for the full API, recipes
 (golden tests, cost accounting, bug-report bundles), and performance notes.
+
+## Evals — score your agent as you debug it
+
+Agent evals work like pytest: write functions named `eval_*`, the
+framework discovers and runs them. The difference from tests: evals
+return **scores** (0-1) not just pass/fail, because agent output quality
+is a spectrum.
+
+```python
+# eval_my_agent.py — discovered automatically by eval_discover()
+
+def eval_tests_passed(ctx):
+    """Did the agent get tests to pass?"""
+    for s in reversed(ctx.steps):
+        if s.tool_call.tool == "bash" and "pytest" in s.tool_call.args.get("command", ""):
+            return s.tool_result.data.get("exit_code") == 0
+    return False
+
+def eval_efficiency(ctx):
+    """Score 0-1: fewer steps = better."""
+    return min(5 / max(ctx.step_count, 1), 1.0)
+
+def eval_ioc_quality(ctx):
+    """Return multiple metrics at once."""
+    return {"precision": 0.9, "recall": 0.75, "f1": 0.82}
+
+def eval_reasoning_gaps(ctx, llm):
+    """LLM-as-judge: are conclusions supported by data?"""
+    resp = llm.generate(f"Score 0-1: {ctx.final_output} supported by {ctx.session_log_text}?")
+    return float(resp.strip())
+```
+
+**Return anything** — `float`, `bool`, `str`, `dict`, or `EvalResult`.
+The framework normalizes. If your function takes an `llm` parameter,
+the framework passes the judge LLM automatically.
+
+**Attach to your loop** for live scoring during development:
+
+```python
+from openharness import EvalHook
+
+hook = EvalHook(
+    evaluators=[eval_tests_passed, eval_efficiency],
+    verbose=True,  # prints scores after each run
+)
+for step in composable_loop(..., hooks=[hook]):
+    ...
+print(hook.summary())   # "2 scored (avg 0.90)"
+hook.save("evals/run_1.json")
+```
+
+**Discover and batch-run** across saved trajectories:
+
+```python
+from openharness import eval_discover, eval_run, EvalContext
+
+evals = eval_discover("eval_my_agent.py")     # finds all eval_* functions
+ctx = EvalContext.from_trajectory_dir("traces/run_1/")
+results = eval_run(evals, ctx, judge_llm=my_judge)
+for r in results:
+    print(r.pretty())
+```
+
+The workflow: debug a run → notice a failure pattern → write a 5-line
+`eval_*` function → it runs automatically on every future run. Your
+debugging becomes your eval suite.
+
+**Tag evals with marks** for filtering (like pytest marks):
+
+```python
+from openharness import eval_mark
+
+@eval_mark("verdict", "fast")
+def eval_verdict_correct(ctx): ...
+
+@eval_mark("ioc", "slow")
+def eval_ioc_quality(ctx, llm): ...
+
+# Run only "verdict" evals:
+results = eval_run(evals, ctx, include=["verdict"])
+# Skip "slow" evals in CI:
+results = eval_run(evals, ctx, exclude=["slow"])
+```
+
+**Batch-run across multiple trajectories** (like pytest parametrize):
+
+```python
+from openharness import eval_run_batch
+
+contexts = [EvalContext.from_trajectory_dir(d) for d in trace_dirs]
+table = eval_run_batch(evals, contexts)
+for row in table:
+    print(f"{row['name']:30s} avg={row['avg_score']:.2f}")
+```
+
+**CLI runner** for CI (like `pytest` with exit codes):
+
+```bash
+openharness eval traces/ --evals eval_agent.py --threshold 0.7 -v
+```
+
+```
+  ✓ eval_verdict_correct           avg=1.00  min=1.00  max=1.00  (5 runs)
+  ✗ eval_ioc_quality               avg=0.42  min=0.20  max=0.80  (5 runs)
+  ✓ eval_no_tool_errors            avg=1.00  min=1.00  max=1.00  (5 runs)
+
+  overall: 0.81
+  threshold: 0.70  → PASS
+```
 
 ## Documentation
 

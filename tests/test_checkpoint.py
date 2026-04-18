@@ -1,4 +1,4 @@
-"""Tests for cadence.checkpoint — save/restore loop state."""
+"""Tests for openharness.checkpoint — save/restore loop state."""
 
 from __future__ import annotations
 

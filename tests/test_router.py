@@ -1,4 +1,4 @@
-"""Tests for cadence.router — multi-model routing and cost tracking."""
+"""Tests for openharness.router — multi-model routing and cost tracking."""
 from __future__ import annotations
 
 from unittest.mock import MagicMock

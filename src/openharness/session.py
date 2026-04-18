@@ -316,6 +316,3 @@ class SessionLog:
             }
             for e in self.entries
         ]
-
-# Backward-compat alias for migration from the harness module
-InvestigationLog = SessionLog

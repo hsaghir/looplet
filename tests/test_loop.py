@@ -1,4 +1,4 @@
-"""Tests for cadence.loop and cadence.parse."""
+"""Tests for openharness.loop and openharness.parse."""
 
 from __future__ import annotations
 
@@ -154,7 +154,7 @@ class TestParseNativeToolUse:
         from openharness.parse import parse_native_tool_use
         assert parse_native_tool_use([]) == []
 
-    def test_no_primal_security_import(self):
+    def test_no_domain_specific_imports(self):
         import inspect
 
         import openharness.parse as m
@@ -225,8 +225,20 @@ class TestLoopHookProtocol:
             def should_stop(self, state, step_num, new_entities):
                 return False
 
+            def should_compact(self, state, session_log, conversation, step_num):
+                return False
+
+            def build_briefing(self, state, session_log, context):
+                return None
+
+            def build_prompt(self, **kwargs):
+                return None
+
             def on_loop_end(self, state, session_log, context, llm):
                 return 0
+
+            def on_event(self, payload):
+                return None
 
         h = MinimalHook()
         assert isinstance(h, LoopHook)
@@ -242,7 +254,7 @@ class TestLoopHookProtocol:
         required = {"pre_prompt", "pre_dispatch", "post_dispatch", "check_done", "should_stop", "on_loop_end"}
         assert required.issubset(members)
 
-    def test_no_primal_security_import(self):
+    def test_no_domain_specific_imports(self):
         import inspect
 
         import openharness.loop as m

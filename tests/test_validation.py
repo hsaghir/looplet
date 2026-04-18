@@ -1,4 +1,4 @@
-"""Tests for cadence.validation — schema enforcement for tool call args and done payloads."""
+"""Tests for openharness.validation — schema enforcement for tool call args and done payloads."""
 
 from __future__ import annotations
 

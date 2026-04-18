@@ -1,4 +1,4 @@
-"""Tests for cadence.prompts — structured prompt assembly."""
+"""Tests for openharness.prompts — structured prompt assembly."""
 
 from __future__ import annotations
 
@@ -209,7 +209,7 @@ class TestNoBackwardCompatParams:
         sig = inspect.signature(build_prompt)
         assert "alert" not in sig.parameters
 
-    def test_no_investigation_log_param_in_signature(self) -> None:
+    def test_no_legacy_param_in_signature(self) -> None:
         sig = inspect.signature(build_prompt)
         assert "investigation_log" not in sig.parameters
 

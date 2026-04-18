@@ -134,7 +134,7 @@ class CancelToken:
 class ToolContext:
     """Runtime context handed to tools that opt-in via a ``ctx`` parameter.
 
-    Modelled on Claude Code's ``ToolUseContext``: gives tools structured
+    Gives tools structured
     access to workspace information, cancellation, progress reporting, and
     arbitrary per-session metadata. Strictly opt-in — tools without a
     ``ctx`` kwarg in their signature never receive one.
@@ -148,7 +148,7 @@ class ToolContext:
             that tools may invoke to report incremental progress.
         session_id: Identifier for the owning loop/session.
         metadata: Arbitrary key/value bag for domain-specific context
-            (e.g. ``{"alert_id": "...", "permission_mode": "read-only"}``).
+            (e.g. ``{"task_id": "...", "permission_mode": "read-only"}``).
     """
 
     cwd: str | None = None
@@ -157,25 +157,34 @@ class ToolContext:
     on_progress: Callable[[str, dict], None] | None = None
     session_id: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
-    elicit: Callable[[str, list[str] | None], str | None] | None = None
-    """Optional handler that lets a tool ask the caller (user or another
-    agent) for clarification mid-execution. Signature is
-    ``(prompt: str, options: list[str] | None) -> str | None`` — returns
-    the caller's reply, or ``None`` when the caller declined / no handler
-    is installed. Tools should treat ``None`` as "proceed without
-    extra input" to remain usable in headless runs."""
+    request_approval: Callable[[str, list[str] | None], str | None] | None = None
+    """Optional handler that lets a tool request approval from the
+    caller (user, upstream agent, webhook) mid-execution. Signature is
+    ``(prompt: str, options: list[str] | None) -> str | None``.
+
+    Returns the caller's reply, or ``None`` when:
+      * No handler is installed (headless/autonomous run).
+      * The handler defers (async approval — the loop should
+        checkpoint and stop; see :class:`ApprovalHook`).
+
+    Tools should treat ``None`` as "proceed without approval" to
+    remain usable in headless runs."""
 
     def report_progress(self, stage: str, data: dict | None = None) -> None:
         """Invoke the progress callback if one is installed. Silent if not."""
         if self.on_progress is not None:
             self.on_progress(stage, data or {})
 
-    def request_input(self, prompt: str, options: list[str] | None = None) -> str | None:
-        """Convenience helper to call the configured ``elicit`` handler,
-        or return ``None`` gracefully if no handler is installed."""
-        if self.elicit is None:
+    def approve(self, prompt: str, options: list[str] | None = None) -> str | None:
+        """Request approval from the configured handler.
+
+        Returns the approval response, or ``None`` if no handler is
+        installed or the handler defers (async). Tools should treat
+        ``None`` as "approved by default" or "not yet — proceed
+        cautiously" depending on their risk model."""
+        if self.request_approval is None:
             return None
-        return self.elicit(prompt, options)
+        return self.request_approval(prompt, options)
 
 
 # ── Protocols ────────────────────────────────────────────────────
@@ -298,7 +307,7 @@ class NativeToolBackend(Protocol):
     Backends satisfying this protocol can accept tool schemas and return
     structured tool-use blocks (list of dicts) instead of free-text JSON.
     The loop detects the capability via hasattr(backend, "generate_with_tools")
-    and only invokes it when ``FLAGS.native_tools`` (or ``LoopConfig.use_native_tools``)
+    and only invokes it when ``LoopConfig.use_native_tools``
     is True.
 
     The returned list is normalised to Anthropic-style content blocks:

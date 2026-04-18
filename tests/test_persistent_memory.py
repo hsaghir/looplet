@@ -1,7 +1,7 @@
-"""Tests for PersistentMemorySource — the generalization of CLAUDE.md.
+"""Tests for PersistentMemorySource.
 
-Problem: Claude Code reads CLAUDE.md on every turn; it survives all
-compactions. Open-harness has no equivalent — callers must stuff memory
+Problem: many agent frameworks inject a memory file on every turn;
+it survives all compactions. Open-harness had no equivalent — callers must stuff memory
 into the system prompt manually, and it isn't protected from
 compaction.
 

@@ -1,8 +1,8 @@
-"""Integration tests: ContextManagerHook emits compaction boundaries."""
+"""Integration tests: ContextPressureHook emits compaction boundaries."""
 
 from __future__ import annotations
 
-from openharness.context import ContextManagerHook
+from openharness.context import ContextPressureHook
 from openharness.conversation import Conversation
 from openharness.history import HistoryRecorder
 from openharness.session import SessionLog
@@ -34,7 +34,7 @@ class TestContextManagerEmitsBoundary:
         state = _mk_state_with_huge_log(3)
 
         recorder = HistoryRecorder(state=state, session_log=log, conversation=conv)
-        hook = ContextManagerHook(
+        hook = ContextPressureHook(
             llm=None,
             # Small context window so huge state blows past blocking
             context_window=1_000,
@@ -57,7 +57,7 @@ class TestContextManagerEmitsBoundary:
     def test_hook_without_recorder_does_not_raise(self):
         state = _mk_state_with_huge_log(2)
         log = SessionLog()
-        hook = ContextManagerHook(
+        hook = ContextPressureHook(
             llm=None,
             context_window=1_000,
             compact_buffer=100,

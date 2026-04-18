@@ -8,7 +8,7 @@ payloads.
 from __future__ import annotations
 
 from openharness.conversation import (
-    HEAVY_BLOCK_KINDS,
+    LARGE_CONTENT_TYPES,
     ContentBlock,
     Conversation,
     Message,
@@ -18,8 +18,8 @@ from openharness.conversation import (
 
 class TestHeavyBlockConstants:
     def test_default_kinds_include_image_and_audio(self):
-        assert "image" in HEAVY_BLOCK_KINDS
-        assert "audio" in HEAVY_BLOCK_KINDS
+        assert "image" in LARGE_CONTENT_TYPES
+        assert "audio" in LARGE_CONTENT_TYPES
 
 
 class TestCompactionStripsHeavyBlocks:

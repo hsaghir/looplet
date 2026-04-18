@@ -6,8 +6,7 @@ import asyncio
 
 import pytest
 
-from openharness.async_loop import AsyncLLMBackend
-from openharness.testing import AsyncMockLLMBackend, MockLLMBackend
+from openharness.testing import MockLLMBackend
 from openharness.types import LLMBackend
 
 pytestmark = pytest.mark.smoke
@@ -43,15 +42,3 @@ class TestMockLLMBackendSmoke:
         llm = MockLLMBackend()
         llm.generate("hi", system_prompt="sys")
         assert llm.last_system_prompt == "sys"
-
-
-class TestAsyncMockLLMBackendSmoke:
-    def test_satisfies_async_protocol(self) -> None:
-        llm = AsyncMockLLMBackend()
-        assert isinstance(llm, AsyncLLMBackend)
-
-    def test_default_response(self) -> None:
-        llm = AsyncMockLLMBackend()
-        result = asyncio.run(llm.generate("hello"))
-        assert result == "mock response"
-        assert llm.calls == 1

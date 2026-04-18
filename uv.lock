@@ -484,7 +484,6 @@ name = "openharness"
 version = "0.1.6"
 source = { editable = "." }
 dependencies = [
-    { name = "openai" },
     { name = "pyyaml" },
 ]
 
@@ -514,7 +513,6 @@ dev = [
 requires-dist = [
     { name = "anthropic", marker = "extra == 'all'", specifier = ">=0.34" },
     { name = "anthropic", marker = "extra == 'anthropic'", specifier = ">=0.34" },
-    { name = "openai", specifier = ">=2.32.0" },
     { name = "openai", marker = "extra == 'all'", specifier = ">=1.30" },
     { name = "openai", marker = "extra == 'openai'", specifier = ">=1.30" },
     { name = "pyyaml", specifier = ">=6.0" },

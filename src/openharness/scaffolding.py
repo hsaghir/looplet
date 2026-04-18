@@ -73,18 +73,30 @@ class LLMResult:
     a ``list`` of provider-native content blocks (e.g. Anthropic's
     ``[{"type": "text"|"tool_use", ...}, ...]``). Callers on the native
     path should branch on ``isinstance(result.text, list)``.
+
+    ``stop_reason`` is provider-reported reason the generation ended
+    (``"stop"`` | ``"max_tokens"`` | ``"tool_use"`` | ``None``). Captured
+    from ``backend.last_stop_reason`` when the backend opts in by
+    exposing that attribute. ``None`` means "unknown / not reported".
+    ``continuations`` counts how many budget-aware continuation calls
+    were stitched together to produce ``text`` — always ``0`` unless
+    the caller requested continuation.
     """
 
-    __slots__ = ("text", "error", "is_prompt_too_long")
+    __slots__ = ("text", "error", "is_prompt_too_long", "stop_reason", "continuations")
 
     def __init__(
         self,
         text: "str | list[Any] | None",
         error: Exception | None = None,
+        stop_reason: str | None = None,
+        continuations: int = 0,
     ) -> None:
         self.text = text
         self.error = error
         self.is_prompt_too_long = error is not None and _is_prompt_too_long(error)
+        self.stop_reason = stop_reason
+        self.continuations = continuations
 
     @property
     def ok(self) -> bool:
@@ -150,6 +162,8 @@ def llm_call_with_retry(
     max_retries: int = MAX_LLM_RETRIES,
     tools: list[dict[str, Any]] | None = None,
     cancel_token: Any | None = None,
+    max_continuations: int = 0,
+    cache_breakpoints: list[Any] | None = None,
 ) -> LLMResult:
     """Call LLM with exponential backoff retry on failure.
 
@@ -190,6 +204,8 @@ def llm_call_with_retry(
                 extra_kwargs: dict[str, Any] = {}
                 if cancel_token is not None and _backend_accepts_cancel_token(llm, "generate_with_tools"):
                     extra_kwargs["cancel_token"] = cancel_token
+                if cache_breakpoints and _accepts_kwarg(call, "cache_breakpoints"):
+                    extra_kwargs["cache_breakpoints"] = cache_breakpoints
                 blocks = call(
                     prompt,
                     tools=tools,
@@ -198,11 +214,13 @@ def llm_call_with_retry(
                     temperature=temperature,
                     **extra_kwargs,
                 )
-                return LLMResult(blocks)
+                return LLMResult(blocks, stop_reason=getattr(llm, "last_stop_reason", None))
             call = llm.generate
             extra_kwargs = {}
             if cancel_token is not None and _backend_accepts_cancel_token(llm, "generate"):
                 extra_kwargs["cancel_token"] = cancel_token
+            if cache_breakpoints and _accepts_kwarg(call, "cache_breakpoints"):
+                extra_kwargs["cache_breakpoints"] = cache_breakpoints
             text = call(
                 prompt,
                 max_tokens=max_tokens,
@@ -210,7 +228,46 @@ def llm_call_with_retry(
                 temperature=temperature,
                 **extra_kwargs,
             )
-            return LLMResult(text)
+            stop = getattr(llm, "last_stop_reason", None)
+            # Budget-aware turn continuation: if the backend reports the
+            # generation was cut off at ``max_tokens`` and the caller
+            # opted in, re-prompt up to ``max_continuations`` times and
+            # concatenate. Each continuation call carries the same
+            # system prompt + a thin "continue" hint appending prior
+            # output so the model picks up mid-thought. Total token cost
+            # grows linearly with ``max_continuations``; keep that bound
+            # small (1–3) in production.
+            _cont = 0
+            _acc_text: str = text if isinstance(text, str) else ""
+            while (
+                max_continuations > 0
+                and _cont < max_continuations
+                and stop == "max_tokens"
+                and isinstance(_acc_text, str)
+            ):
+                if cancel_token is not None and getattr(cancel_token, "is_cancelled", False):
+                    break
+                _cont_prompt = (
+                    prompt
+                    + "\n\n[assistant partial output so far]\n"
+                    + _acc_text
+                    + "\n\n[continue from exactly where you left off; "
+                    "do not repeat any prior text]"
+                )
+                more = call(
+                    _cont_prompt,
+                    max_tokens=max_tokens,
+                    system_prompt=system_prompt,
+                    temperature=temperature,
+                    **extra_kwargs,
+                )
+                if not isinstance(more, str):
+                    break
+                _acc_text = _acc_text + more
+                stop = getattr(llm, "last_stop_reason", None)
+                _cont += 1
+            final_text: Any = _acc_text if _cont > 0 else text
+            return LLMResult(final_text, stop_reason=stop, continuations=_cont)
         except Exception as e:
             last_error = e
             if _is_prompt_too_long(e):
@@ -256,7 +313,7 @@ def build_parse_recovery_prompt(original_prompt: str, raw_response: str) -> str:
 # ── Diminishing Returns Detection ────────────────────────────────
 
 
-class DiminishingReturnsTracker:
+class StallDetector:
     """Track agent productivity to detect spinning.
 
     Records new-item counts per step.  When the rolling window shows
@@ -340,7 +397,7 @@ class StepProgressTracker:
     before. Provides raw data — domain-specific guidance is generated
     by hooks, not by this tracker.
 
-    Also provides backward-compatibility with ``DiminishingReturnsTracker``
+    Also provides backward-compatibility with ``StallDetector``
     API so existing code can migrate incrementally.
     """
 
@@ -409,7 +466,7 @@ class StepProgressTracker:
         """Total steps classified."""
         return len(self._classifications)
 
-    # ── Backward-compat bridge for DiminishingReturnsTracker API ──
+    # ── Backward-compat bridge for StallDetector API ──
 
     @property
     def consecutive_empty(self) -> int:
@@ -429,12 +486,12 @@ class StepProgressTracker:
         *,
         new_items: int | None = None,
     ) -> None:
-        """Backward-compat: record a step like DiminishingReturnsTracker."""
+        """Backward-compat: record a step like StallDetector."""
         total = new_items if new_items is not None else (new_findings + new_highlights + new_entities)
         self.classify_turn(total, self.total_steps + 1)
 
     def guidance_text(self) -> str:
-        """Backward-compat: same interface as DiminishingReturnsTracker."""
+        """Backward-compat: same interface as StallDetector."""
         if self._consecutive_unproductive >= 5:
             return (
                 "\n⚠ CRITICAL STAGNATION: %d consecutive steps with no new information. "
@@ -518,7 +575,7 @@ def truncate_tool_result(
 # ── Context Overflow Detection ───────────────────────────────────
 
 
-def should_compress_context(
+def is_context_oversized(
     prompt: str,
     context_window: int = 128_000,
     threshold: float = 0.75,
@@ -527,7 +584,7 @@ def should_compress_context(
     return estimate_tokens(prompt) > context_window * threshold
 
 
-def compress_session_log(
+def age_session_entries(
     session_log: Any,
     llm: Any = None,
     max_entries_to_keep: int = 5,
@@ -603,7 +660,7 @@ def compress_session_log(
 # ── Result Budget Enforcement ────────────────────────────────────
 
 
-def enforce_result_budget(
+def trim_results(
     steps: list,
     per_result_chars: int = RESULT_BUDGET_PER_RESULT,
     aggregate_chars: int = RESULT_BUDGET_AGGREGATE,
@@ -716,7 +773,7 @@ def _compact_result(data: Any, result_key: str | None, max_chars: int) -> Any:
 # ── Reactive Compaction ──────────────────────────────────────────
 
 
-def reactive_compact(
+def emergency_truncate(
     state: Any,
     session_log: Any,
     llm: Any = None,
@@ -724,7 +781,7 @@ def reactive_compact(
 ) -> str | None:
     """Emergency compaction when context is exhausted.
 
-    More aggressive than compress_session_log: compresses ALL old entries
+    More aggressive than age_session_entries: compresses ALL old entries
     (not just those above a threshold), ages old step results to None,
     and produces a single summary.
 
@@ -752,3 +809,5 @@ def reactive_compact(
                 if e.tool == "__summary__":
                     return "\n\n".join(e.findings) if e.findings else "compacted"
     return None
+
+

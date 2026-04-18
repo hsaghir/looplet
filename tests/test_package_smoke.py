@@ -1,4 +1,4 @@
-"""Smoke tests for the cadence package scaffold."""
+"""Smoke tests for the openharness package scaffold."""
 
 import pytest
 
@@ -21,11 +21,11 @@ def test_package_docstring() -> None:
     import openharness
 
     assert openharness.__doc__ is not None
-    assert "openharness" in openharness.__doc__.lower() or "cadence" in openharness.__doc__.lower()
+    assert "openharness" in openharness.__doc__.lower() or "openharness" in openharness.__doc__.lower()
 
 
-def test_mock_llm_backend_no_cadence_imports(mock_llm) -> None:
-    """MockLLMBackend must work without any cadence package imports."""
+def test_mock_llm_backend_no_external_imports(mock_llm) -> None:
+    """MockLLMBackend must work without any external package imports."""
     response = mock_llm.generate("hello")
     assert isinstance(response, str)
     assert len(response) > 0

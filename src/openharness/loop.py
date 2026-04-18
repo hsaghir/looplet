@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
+from dataclasses import replace as _dc_replace
 from typing import TYPE_CHECKING, Any, Callable, Generator, Protocol, runtime_checkable
 
 from openharness.checkpoint import (
@@ -20,9 +21,9 @@ from openharness.checkpoint import (
 from openharness.checkpoint import (
     resume_loop_state as _resume_loop_state,
 )
-from openharness.flags import FLAGS
 from openharness.history import HistoryRecorder
-from openharness.parse import coerce_text, parse_multi_tool_calls, parse_native_tool_use
+from openharness.hook_decision import normalize_hook_return
+from openharness.parse import parse_multi_tool_calls, parse_native_tool_use, to_text
 from openharness.recovery import FailureScenario as _FailureScenario
 from openharness.recovery_strategies import (
     rebuild_prompt as _rebuild_prompt,
@@ -32,9 +33,6 @@ from openharness.recovery_strategies import (
 )
 from openharness.recovery_strategies import (
     recovery_clear_old_results as _recovery_clear_old_results,
-)
-from openharness.recovery_strategies import (
-    recovery_reactive_compact as _recovery_reactive_compact,
 )
 from openharness.scaffolding import (
     PARSE_RECOVERY_MAX,
@@ -50,7 +48,7 @@ from openharness.types import Step, ToolCall, ToolContext, ToolResult
 from openharness.validation import validate_args as _validate_args
 
 if TYPE_CHECKING:
-    from openharness.permissions import PermissionEngine
+    from openharness.cache import CachePolicy
     from openharness.types import CancelToken
 
 # streaming imports are lazy (inside composable_loop) to avoid circular import:
@@ -187,6 +185,73 @@ class LoopHook(Protocol):
         """
         ...
 
+    def should_compact(
+        self,
+        state: Any,
+        session_log: SessionLog,
+        conversation: Any,
+        step_num: int,
+    ) -> bool:
+        """Called at the top of each step, before prompt build.
+
+        Returns True to proactively trigger the configured
+        :class:`openharness.compact.CompactService` before the next
+        LLM call. Complements the reactive path (which fires only on
+        a ``prompt_too_long`` error) — use this when you want to
+        preempt context pressure based on message count, token
+        estimates, or wall-clock heuristics. If any hook returns
+        True the compaction runs; otherwise the step proceeds as
+        usual.
+        """
+        ...
+
+    def build_briefing(
+        self,
+        state: Any,
+        session_log: SessionLog,
+        context: Any,
+    ) -> str | None:
+        """Optional per-hook briefing builder.
+
+        When any hook returns a non-``None`` string, the loop uses
+        that text as the briefing for the current step and skips
+        :attr:`LoopConfig.build_briefing` / the default. First hook
+        wins — subsequent hooks don't run for this slot.
+
+        Intended for domain adapters that want to bundle briefing
+        logic alongside the rest of their hook surface instead of
+        wiring it through ``config.build_briefing`` separately.
+        Return ``None`` to pass through to the config/default.
+        """
+        ...
+
+    def build_prompt(
+        self,
+        *,
+        task: Any,
+        tool_catalog: str,
+        state_summary: dict,
+        context_history: str,
+        step_number: int,
+        max_steps: int,
+        session_log: str,
+        briefing: str,
+        memory: str,
+    ) -> str | None:
+        """Optional per-hook prompt builder.
+
+        When any hook returns a non-``None`` string, the loop uses
+        that as the full prompt for the current step and skips
+        :attr:`LoopConfig.build_prompt` / the default 7-section
+        template. First hook wins. Return ``None`` to pass through.
+
+        The kwargs mirror :func:`openharness.prompts.build_prompt`
+        so implementations can extend the default template by
+        calling the reference implementation themselves and
+        splicing extra sections.
+        """
+        ...
+
     def on_loop_end(
         self,
         state: Any,
@@ -201,13 +266,70 @@ class LoopHook(Protocol):
         """
         ...
 
+    def on_event(self, payload: Any) -> Any:
+        """Single-slot subscriber for named lifecycle events.
+
+        Complements the per-method hook API. Hooks that implement this
+        method receive an :class:`openharness.events.EventPayload`
+        with ``event: LifecycleEvent`` and slot-specific fields
+        populated. Returning a :class:`HookDecision` for
+        :attr:`LifecycleEvent.PRE_TOOL_USE`,
+        :attr:`LifecycleEvent.POST_TOOL_USE`, or
+        :attr:`LifecycleEvent.STOP` has the same effect as returning
+        it from the matching per-method hook.
+
+        Implementing ``on_event`` is strictly additive — hooks can
+        still implement per-method slots and mix both styles.
+        """
+        ...
+
 
 # ── Loop Configuration ──────────────────────────────────────────
 
 
 @dataclass
+class DomainAdapter:
+    """Bundle the five domain-specific callables a loop needs.
+
+    Grouping keeps :class:`LoopConfig` flat and readable, and gives
+    agent packages a single handle to pass around instead of threading
+    five separate callables.
+
+    When a :class:`LoopConfig` has a :attr:`LoopConfig.domain` set,
+    each adapter field seeds the corresponding flat ``LoopConfig``
+    field only if the flat field is ``None``. Per-field overrides
+    on ``LoopConfig`` therefore win over the bundled adapter, which
+    wins over the loop's built-in defaults.
+
+    All fields are optional — provide only what differs from the
+    defaults. See :class:`LoopConfig` for callable signatures.
+    """
+
+    build_briefing: Callable[..., str] | None = None
+    extract_entities: Callable[..., list[str]] | None = None
+    build_trace: Callable[..., Any] | None = None
+    build_prompt: Callable[..., str] | None = None
+    extract_step_metadata: Callable[..., tuple[list[str], list[str]]] | None = None
+
+
+@dataclass
 class LoopConfig:
-    """Configuration for the composable agent loop."""
+    """Configuration for the composable agent loop.
+
+    **Start here** — most fields have sensible defaults. For your
+    first agent, you only need::
+
+        config = LoopConfig(max_steps=10)
+
+    Essential fields (set these first):
+      - ``max_steps`` — how many tool calls before the loop stops
+      - ``system_prompt`` — who the agent is
+      - ``compact_service`` — how to manage growing context
+      - ``checkpoint_dir`` — crash-safe auto-resume (one directory path)
+
+    Everything else is optional and can be added later as your agent
+    matures. See the tutorial in README.md for a progressive walkthrough.
+    """
 
     max_steps: int = 15
     max_tokens: int = 2000
@@ -216,6 +338,13 @@ class LoopConfig:
     recovery_temperature: float = 0.1
     # Name of the tool that signals task completion.
     done_tool: str = "done"
+
+    max_turn_continuations: int = 0
+    """When > 0, ``llm_call_with_retry`` will issue up to this many
+    follow-up calls for a single step if the backend reports
+    ``stop_reason == "max_tokens"`` mid-response, concatenating outputs
+    so long thoughts aren't truncated. Requires the backend to expose
+    ``last_stop_reason`` after each call. Default ``0`` (off)."""
 
     # Domain-specific callables — injected by the agent
 
@@ -251,12 +380,27 @@ class LoopConfig:
     for the session log.
     """
 
-    use_native_tools: bool = field(default_factory=lambda: FLAGS.native_tools)
-    """If True, pass tool schemas to the LLM and parse tool_use blocks
-    instead of JSON text.  Requires LLM backend support.
+    domain: "DomainAdapter | None" = None
+    """Optional :class:`DomainAdapter` bundling the five domain callables
+    above. When set, each adapter field seeds the matching flat field
+    above only if that flat field is ``None``. Direct field assignments
+    on :class:`LoopConfig` therefore win over the adapter. Prefer this
+    when composing a reusable agent package — pass one adapter instead
+    of threading five callables through config kwargs."""
 
-    Defaults to the ``OPENHARNESS_NATIVE_TOOLS`` environment variable
-    (via ``FLAGS.native_tools``), which is ``False`` when unset."""
+    use_native_tools: bool = False
+    """If True, pass tool schemas to the LLM and parse tool_use blocks
+    instead of JSON text. Requires LLM backend support."""
+
+    concurrent_dispatch: bool = False
+    """If True, dispatch non-dependent tool calls in parallel via
+    ThreadPoolExecutor. Default False — some backends and tools
+    are not thread-safe."""
+
+    reactive_recovery: bool = True
+    """If True, attempt multi-strategy recovery when a prompt exceeds
+    the context window (prompt-too-long error). Default True — essential
+    for reliability in long sessions."""
 
     acceptance_criteria: list[str] | None = None
     """Optional acceptance criteria checked by quality gate hooks.
@@ -291,6 +435,17 @@ class LoopConfig:
     built-in hardcoded 3-strategy recovery chain.
     """
 
+    compact_service: Any | None = None
+    """Optional :class:`openharness.compact.CompactService` — when set,
+    replaces the default reactive-compact strategy in the prompt-too-long
+    recovery chain. The service is invoked via
+    :func:`openharness.compact.run_compact`, which also fires
+    :attr:`LifecycleEvent.PRE_COMPACT` / :attr:`LifecycleEvent.POST_COMPACT`
+    events so observer hooks see every compaction regardless of which
+    service runs. ``None`` keeps the historic behaviour
+    (:func:`recovery_emergency_truncate`).
+    """
+
     output_schema: Any | None = None
     """OutputSchema — when set, validate_args(schema, done_payload) is called
     in the done() quality gate; invalid payloads are rejected with a message.
@@ -309,6 +464,16 @@ class LoopConfig:
     the custom function as a ``memory=`` kwarg.
     """
 
+    cache_policy: "CachePolicy | None" = None
+    """Optional :class:`openharness.cache.CachePolicy` declaring which
+    stable prompt sections (system prompt, tool schemas, memory) should
+    carry ``cache_control`` markers. When set and the backend exposes
+    ``generate_with_cache(..., cache_breakpoints=[...])``, the loop
+    computes per-turn :class:`CacheBreakpoint` lists and passes them
+    through. Backends without the method keep working unchanged;
+    caching is strictly opt-in and additive.
+    """
+
     cancel_token: CancelToken | None = None
     """Optional :class:`openharness.types.CancelToken` that signals the
     loop should terminate. The token is threaded through every LLM call
@@ -318,26 +483,38 @@ class LoopConfig:
     further LLM calls.
     """
 
-    permissions: PermissionEngine | None = None
-    """Optional :class:`openharness.permissions.PermissionEngine`
-    consulted before every tool dispatch. Denied calls are short-
-    circuited into a synthetic ``ToolResult`` carrying a
-    :class:`ToolError` with ``kind=ErrorKind.PERMISSION_DENIED``; the
-    tool body is never invoked. Complements per-hook ``check_permission``
-    (both run — AND semantics)."""
+    approval_handler: Callable[[str, list[str] | None], str | None] | None = None
+    """Optional callable surfaced to tools via ``ToolContext.request_approval``.
+    Lets a tool pause and request approval from the caller (user,
+    upstream agent, webhook). Signature is
+    ``(prompt, options) -> str | None``.
 
-    elicit_handler: Callable[[str, list[str] | None], str | None] | None = None
-    """Optional callable surfaced to tools via ``ToolContext.elicit``.
-    Lets a tool pause and ask the caller (user, upstream agent, test
-    harness) for clarification mid-execution. Signature is
-    ``(prompt, options) -> str | None``; returning ``None`` means "no
-    answer — proceed". Leave unset for fully-autonomous runs."""
+    * Returns a string → tool receives the approval and continues.
+    * Returns ``None`` → tool receives ``None`` (async: the tool can
+      set ``needs_approval=True`` in its result and
+      :class:`ApprovalHook` will stop the loop for external approval).
+
+    Leave unset for fully-autonomous runs."""
 
     context_window: int = 128_000
     """Maximum context window (in tokens) for the backend.  Used by the
     pre-flight prompt-size check to decide whether to trigger reactive
     recovery *before* sending the LLM call.  Override this to match your
-    actual backend's window (e.g. 200_000 for Claude, 128_000 for GPT-4o)."""
+    actual backend's window (e.g. 200_000 for Anthropic, 128_000 for GPT-4o)."""
+
+    render_messages_override: Callable[..., str] | None = None
+    """Byte-exact prompt escape hatch.
+
+    Receives keyword arguments ``messages: list[Message]``,
+    ``default_prompt: str`` (the string the loop would have sent), and
+    ``step_num: int``. Must return a string; whatever it returns is
+    what the backend sees. When ``None`` (default), the loop uses the
+    default or user-supplied :attr:`build_prompt` path.
+
+    Prefer this over :attr:`build_prompt` when you want to inspect or
+    mutate the full conversation thread (compaction, redaction, role
+    reordering, role swaps) before send. Prefer :attr:`build_prompt`
+    when you only want to change the section layout."""
 
 
 def _default_extract_entities(data: Any) -> list[str]:
@@ -355,17 +532,88 @@ def _default_extract_step_metadata(state: Any, step_num: int) -> tuple[list[str]
     return [], []
 
 
-def _build_tool_ctx(config: "LoopConfig") -> ToolContext | None:
-    """Build a ToolContext for tool dispatch if the config has anything
-    worth threading (cancel_token, elicit_handler). Returns None when
-    there's nothing to carry so tools that don't opt-in are unaffected.
+def _build_tool_ctx(
+    config: "LoopConfig",
+    *,
+    hooks: list[Any] | None = None,
+    tool_call: ToolCall | None = None,
+    step_num: int = 0,
+    state: Any = None,
+    session_log: Any = None,
+) -> ToolContext | None:
+    """Build a ToolContext for tool dispatch.
+
+    Returns ``None`` only when nothing would be carried — no cancel
+    token, no approval handler, and no hooks subscribing to
+    :attr:`LifecycleEvent.TOOL_PROGRESS`. When hooks are present an
+    ``on_progress`` callback is installed that fires
+    ``TOOL_PROGRESS`` with the current ``tool_call`` payload so
+    observers can stream intermediate output from long-running tools.
     """
-    if config.cancel_token is None and config.elicit_handler is None:
+    _hooks = hooks or []
+    _has_progress_subscribers = any(
+        hasattr(h, "on_event") for h in _hooks
+    )
+    if (
+        config.cancel_token is None
+        and config.approval_handler is None
+        and not _has_progress_subscribers
+    ):
         return None
+
+    _on_progress: Callable[[str, dict], None] | None = None
+    if _has_progress_subscribers:
+        from openharness.events import LifecycleEvent as _LE  # noqa: PLC0415
+
+        def _on_progress(stage: str, data: dict) -> None:
+            _emit_event(
+                _hooks, _LE.TOOL_PROGRESS,
+                step_num=step_num, state=state,
+                session_log=session_log,
+                tool_call=tool_call,
+                extra={"stage": stage, "data": data},
+            )
+
     return ToolContext(
         cancel_token=config.cancel_token,
-        elicit=config.elicit_handler,
+        request_approval=config.approval_handler,
+        on_progress=_on_progress,
     )
+
+
+def _emit_event(
+    hooks: list[Any],
+    event: Any,
+    **payload_kwargs: Any,
+) -> list[Any]:
+    """Dispatch a :class:`LifecycleEvent` to every hook that opts in.
+
+    Hooks without ``on_event`` are silently skipped — this is the
+    additive surface, nobody has to implement it. Returned
+    :class:`HookDecision` objects are collected so the caller can act
+    on ``block`` / ``stop`` / ``updated_*`` fields; ``None`` returns
+    are filtered out.
+
+    Exceptions from a hook are swallowed and logged — event dispatch
+    must never break the loop.
+    """
+    from openharness.events import EventPayload  # noqa: PLC0415
+    from openharness.hook_decision import HookDecision  # noqa: PLC0415
+
+    decisions: list[Any] = []
+    payload = EventPayload(event=event, **payload_kwargs)
+    for hook in hooks:
+        fn = getattr(hook, "on_event", None)
+        if fn is None:
+            continue
+        try:
+            result = fn(payload)
+        except Exception:  # noqa: BLE001
+            logger.exception("on_event hook raised; continuing")
+            continue
+        if isinstance(result, HookDecision):
+            decisions.append(result)
+    return decisions
 
 
 # ── Composable Agent Loop ───────────────────────────────────────
@@ -389,7 +637,7 @@ def composable_loop(
 
     Args:
         llm: LLM backend (must implement generate()).
-        task: The task description dict (e.g. an alert, a coding task, etc.).
+        task: The task description (dict, string, or domain-specific object)..
         tools: Tool registry with available tools.
         context: Domain-specific backend passed to hooks and build_briefing.
             Hooks can also capture their backends at __init__ time.
@@ -461,6 +709,20 @@ def composable_loop(
     if config.checkpoint_dir is not None:
         _ckpt_store = _FileCheckpointStore(config.checkpoint_dir)
 
+        # Auto-resume: if checkpoint_dir has checkpoints and no
+        # explicit initial_checkpoint was given, load the latest.
+        # This makes crash-resume a one-liner:
+        #   LoopConfig(checkpoint_dir="./ckpt")
+        # — saves after every step, resumes on restart.
+        if config.initial_checkpoint is None:
+            _latest = _ckpt_store.load_latest()
+            if _latest is not None:
+                config = _dc_replace(config, initial_checkpoint=_latest)
+                logger.info(
+                    "Auto-resuming from checkpoint at step %d",
+                    _latest.step_number,
+                )
+
     # ── Crash-resume from initial checkpoint ───────────────────
     _step_offset = 0
     if config.initial_checkpoint is not None:
@@ -481,9 +743,25 @@ def composable_loop(
             except AttributeError:
                 pass
 
-    build_briefing = config.build_briefing or _default_build_briefing
-    extract_entities = config.extract_entities or _default_extract_entities
-    build_prompt_fn = config.build_prompt
+    # Domain adapter seeding: when ``config.domain`` is set, fall back
+    # to each adapter field only if the flat field is still ``None``.
+    # Flat fields therefore override the adapter; adapter overrides
+    # built-in defaults.
+    _dom = config.domain
+    build_briefing = (
+        config.build_briefing
+        or (_dom.build_briefing if _dom else None)
+        or _default_build_briefing
+    )
+    extract_entities = (
+        config.extract_entities
+        or (_dom.extract_entities if _dom else None)
+        or _default_extract_entities
+    )
+    build_prompt_fn = (
+        config.build_prompt
+        or (_dom.build_prompt if _dom else None)
+    )
 
     # ── Loop state ──────────────────────────────────────────
     consecutive_parse_failures = 0
@@ -495,16 +773,28 @@ def composable_loop(
     # Recovery state — each strategy fires at most once
     recovery_state = {
         "budget_enforcement": False,
-        "reactive_compact": False,
+        "emergency_truncate": False,
         "result_clearing": False,
     }
 
-    extract_step_metadata = config.extract_step_metadata or _default_extract_step_metadata
+    extract_step_metadata = (
+        config.extract_step_metadata
+        or (_dom.extract_step_metadata if _dom else None)
+        or _default_extract_step_metadata
+    )
 
     # ── Pre-loop hooks ──────────────────────────────────────────
     for hook in hooks:
         if hasattr(hook, "pre_loop"):
             hook.pre_loop(state, session_log, context)
+
+    # Fire SESSION_START — single-slot subscribers to lifecycle
+    # events get it in one place alongside the per-method pre_loop.
+    from openharness.events import LifecycleEvent as _LE  # noqa: PLC0415
+    _emit_event(
+        hooks, _LE.SESSION_START,
+        state=state, session_log=session_log, context=context,
+    )
 
     # ── Emit LoopStartEvent ─────────────────────────────────────
     # Skip if a StreamingHook is in hooks — it already emits LoopStartEvent
@@ -516,20 +806,61 @@ def composable_loop(
 
     while state.budget_remaining > 0 and not done:
         step_num = state.step_count + 1 + _step_offset
+        _hook_requested_stop = False  # reset per step; honored after dispatch
 
         # Cancellation check between turns — stop cleanly, no more LLM calls.
         if config.cancel_token is not None and getattr(config.cancel_token, "is_cancelled", False):
             stop_reason = "cancelled"
             break
 
+        # ── Proactive compaction ────────────────────────────
+        # If any hook votes yes, run the configured compact service
+        # before building the next prompt. Complements the reactive
+        # path that fires only on prompt_too_long errors.
+        _want_compact = False
+        for hook in hooks:
+            if hasattr(hook, "should_compact"):
+                try:
+                    if hook.should_compact(state, session_log, _conv, step_num):
+                        _want_compact = True
+                        break
+                except Exception:  # noqa: BLE001
+                    logger.exception("should_compact hook raised; skipping")
+        if _want_compact and config.compact_service is not None:
+            from openharness.compact import run_compact as _run_compact  # noqa: PLC0415
+            _run_compact(
+                config.compact_service,
+                hooks=hooks, state=state, session_log=session_log,
+                llm=_get_llm(), conversation=_conv, step_num=step_num,
+                reason="proactive",
+            )
+
         # ── Pre-prompt hooks ────────────────────────────────
-        briefing_parts = [build_briefing(state, session_log, context)]
+        # First-hook-wins ``build_briefing`` slot on LoopHook takes
+        # precedence over ``config.build_briefing`` / the default.
+        _briefing_text: str | None = None
+        for hook in hooks:
+            if hasattr(hook, "build_briefing"):
+                try:
+                    _bt = hook.build_briefing(state, session_log, context)
+                except Exception:  # noqa: BLE001
+                    logger.exception("build_briefing hook raised; falling back")
+                    _bt = None
+                if _bt is not None:
+                    _briefing_text = _bt
+                    break
+        if _briefing_text is None:
+            _briefing_text = build_briefing(state, session_log, context)
+        briefing_parts = [_briefing_text]
         _briefing_budget = config.max_briefing_tokens
         _briefing_used = len(briefing_parts[0]) // 4 if _briefing_budget else 0
 
         for hook in hooks:
             if hasattr(hook, "pre_prompt"):
                 text = hook.pre_prompt(state, session_log, context, step_num)
+                # HookDecision-aware: accept both legacy str and decisions.
+                _decision = normalize_hook_return(text, slot="pre_prompt")
+                text = _decision.additional_context if _decision else None
                 if text:
                     if _briefing_budget:
                         text_tokens = len(text) // 4
@@ -551,7 +882,7 @@ def composable_loop(
             context_history += "\n" + quality_gate_message
             quality_gate_message = ""
 
-        # Persistent memory (CLAUDE.md generalization): rendered once
+        # Persistent memory: rendered once
         # per turn, placed above TASK by the default prompt builder.
         _memory_sources = getattr(config, "memory_sources", None)
         if _memory_sources:
@@ -560,31 +891,52 @@ def composable_loop(
         else:
             _rendered_memory = ""
 
-        if build_prompt_fn is not None:
-            prompt = build_prompt_fn(
-                task=task,
-                tool_catalog=tools.tool_catalog_text(),
-                state_summary=state.snapshot(),
-                context_history=context_history,
-                step_number=step_num,
-                max_steps=config.max_steps,
-                session_log=session_log.render(),
-                briefing="\n".join(briefing_parts),
-                memory=_rendered_memory,
-            )
-        else:
-            # Domain-agnostic default: 7-section structured prompt.
-            from openharness.prompts import build_prompt as _default_build_prompt  # noqa: PLC0415
-            prompt = _default_build_prompt(
-                task=task,
-                tool_catalog=tools.tool_catalog_text(),
-                state_summary=state.snapshot(),
-                context_history=context_history,
-                step_number=step_num,
-                max_steps=config.max_steps,
-                session_log=session_log.render(),
-                briefing="\n".join(briefing_parts),
-                memory=_rendered_memory,
+        _prompt_kwargs = dict(
+            task=task,
+            tool_catalog=tools.tool_catalog_text(),
+            state_summary=state.snapshot(),
+            context_history=context_history,
+            step_number=step_num,
+            max_steps=config.max_steps,
+            session_log=session_log.render(),
+            briefing="\n".join(briefing_parts),
+            memory=_rendered_memory,
+        )
+
+        # First-hook-wins ``build_prompt`` slot on LoopHook takes
+        # precedence over ``config.build_prompt`` / the default.
+        prompt: str | None = None
+        for hook in hooks:
+            if hasattr(hook, "build_prompt"):
+                try:
+                    _hp = hook.build_prompt(**_prompt_kwargs)
+                except Exception:  # noqa: BLE001
+                    logger.exception("build_prompt hook raised; falling back")
+                    _hp = None
+                if _hp is not None:
+                    prompt = _hp
+                    break
+
+        if prompt is None:
+            if build_prompt_fn is not None:
+                prompt = build_prompt_fn(**_prompt_kwargs)
+            else:
+                # Domain-agnostic default: 7-section structured prompt.
+                from openharness.prompts import (
+                    build_prompt as _default_build_prompt,  # noqa: PLC0415
+                )
+                prompt = _default_build_prompt(**_prompt_kwargs)
+
+        # ── Byte-exact escape hatch (render_messages_override) ──
+        # If configured, the user takes full control of the prompt
+        # bytes after seeing the live conversation thread. We pass
+        # the would-be default prompt so the user can fall back to
+        # it for sections they don't want to change.
+        if config.render_messages_override is not None:
+            prompt = config.render_messages_override(
+                messages=list(_conv.messages),
+                default_prompt=prompt,
+                step_num=step_num,
             )
 
         # ── Pre-flight context check ──────────────────────────
@@ -599,7 +951,23 @@ def composable_loop(
         # parse-recovery below, regardless of whether pre-flight fires.
         effective_llm = _get_llm()
 
-        if preflight_too_long and FLAGS.reactive_recovery:
+        # Fire PRE_LLM_CALL — observers only; return decisions are
+        # collected but only ``additional_context`` is honored (the
+        # prompt string is already built at this point; mutating it
+        # would invalidate the briefing budget accounting).
+        _pre_llm_decisions = _emit_event(
+            hooks, _LE.PRE_LLM_CALL,
+            step_num=step_num, state=state, session_log=session_log,
+            context=context, prompt=prompt,
+        )
+        for _d in _pre_llm_decisions:
+            if _d.additional_context:
+                post_dispatch_parts.append(_d.additional_context)
+            if _d.stop is not None:
+                stop_reason = _d.stop
+                _hook_requested_stop = True
+
+        if preflight_too_long and config.reactive_recovery:
             logger.warning(
                 "Pre-flight block: prompt ~%d tokens exceeds safe limit — "
                 "running recovery before LLM call", estimated_tokens,
@@ -617,10 +985,41 @@ def composable_loop(
                     f"llm.call.step_{step_num}",
                     attributes={"step": step_num},
                 )
-            _native_on = (config.use_native_tools or FLAGS.native_tools) and hasattr(
+            _native_on = (config.use_native_tools) and hasattr(
                 effective_llm, "generate_with_tools"
             )
             _tool_schemas = tools.tool_schemas() if _native_on else None
+            # ── Prompt cache breakpoints (opt-in) ─────────────────
+            # When a ``cache_policy`` is configured, compute hashes for
+            # the stable sections and hand them to the backend. If a
+            # ``CacheBreakDetector`` is present among hooks we prefer
+            # its ``record`` path so cache-break telemetry is captured.
+            _cache_bps: list[Any] | None = None
+            if config.cache_policy is not None:
+                from openharness.cache import (  # noqa: PLC0415
+                    CacheBreakDetector as _CBD,
+                )
+                from openharness.cache import (
+                    compute_breakpoints as _compute_bps,
+                )
+                _schemas_text = tools.tool_catalog_text()
+                _detector = next(
+                    (h for h in hooks if isinstance(h, _CBD)), None,
+                )
+                if _detector is not None:
+                    _cache_bps = _detector.record(
+                        step_num,
+                        system_prompt=config.system_prompt,
+                        tool_schemas_text=_schemas_text,
+                        memory_text=_rendered_memory,
+                    )
+                else:
+                    _cache_bps = _compute_bps(
+                        config.cache_policy,
+                        system_prompt=config.system_prompt,
+                        tool_schemas_text=_schemas_text,
+                        memory_text=_rendered_memory,
+                    )
             llm_result = llm_call_with_retry(
                 effective_llm, prompt,
                 max_tokens=config.max_tokens,
@@ -628,17 +1027,20 @@ def composable_loop(
                 temperature=config.temperature,
                 tools=_tool_schemas,
                 cancel_token=config.cancel_token,
+                max_continuations=config.max_turn_continuations,
+                cache_breakpoints=_cache_bps,
             )
             if _llm_span is not None and config.tracer is not None:
                 config.tracer.end_span(_llm_span)
             llm_calls += 1
 
         # Reactive recovery: if prompt-too-long, try chained strategies
-        if not llm_result.ok and llm_result.is_prompt_too_long and FLAGS.reactive_recovery:
-            raw_response = _reactive_recovery_chain(
+        if not llm_result.ok and llm_result.is_prompt_too_long and config.reactive_recovery:
+            raw_response = _recovery_chain(
                 llm_result, recovery_state, state, session_log, effective_llm,
                 tools, context, build_briefing, build_prompt_fn,
                 task, config, step_num,
+                hooks=hooks, conversation=_conv,
             )
             llm_calls += recovery_state.get("_last_recovery_llm_calls", 0)
             llm_result = LLMResult(raw_response)
@@ -647,6 +1049,20 @@ def composable_loop(
 
         # ── Record LLM turn in conversation thread via unified recorder ──
         _history.record_llm_turn(prompt=prompt, response=raw_response)
+
+        # Fire POST_LLM_RESPONSE — hooks can observe raw text before
+        # it hits the parser. Stop requests are honored at end-of-step.
+        _post_llm_decisions = _emit_event(
+            hooks, _LE.POST_LLM_RESPONSE,
+            step_num=step_num, state=state, session_log=session_log,
+            context=context, prompt=prompt, raw_response=raw_response,
+        )
+        for _d in _post_llm_decisions:
+            if _d.stop is not None:
+                stop_reason = _d.stop
+                _hook_requested_stop = True
+            if _d.additional_context:
+                post_dispatch_parts.append(_d.additional_context)
 
         if raw_response is None:
             # If cancellation caused the failure, exit cleanly — no error step.
@@ -666,7 +1082,7 @@ def composable_loop(
             break
 
         # ── Parse response (native tool_use or JSON text) ────
-        if (config.use_native_tools or FLAGS.native_tools) and isinstance(raw_response, list):
+        if (config.use_native_tools) and isinstance(raw_response, list):
             tool_calls = parse_native_tool_use(raw_response)
         else:
             tool_calls = parse_multi_tool_calls(raw_response)
@@ -681,7 +1097,7 @@ def composable_loop(
                 )
                 if _recovery_action is not None and _recovery_action.action_type == "abort":
                     logger.warning("Recovery registry aborted parse recovery at step %d", step_num)
-                    tool_call = ToolCall(tool="__parse_error__", reasoning=(coerce_text(raw_response) or "")[:200])
+                    tool_call = ToolCall(tool="__parse_error__", reasoning=(to_text(raw_response) or "")[:200])
                     tool_result = ToolResult(
                         tool="__parse_error__", args_summary="", data=None,
                         error=f"Parse error — recovery aborted: {_recovery_action.message}",
@@ -698,7 +1114,7 @@ def composable_loop(
                     "Parse failure %d/%d at step %d — attempting recovery",
                     consecutive_parse_failures, PARSE_RECOVERY_MAX, step_num,
                 )
-                recovery_prompt = build_parse_recovery_prompt(prompt, coerce_text(raw_response) or "")
+                recovery_prompt = build_parse_recovery_prompt(prompt, to_text(raw_response) or "")
                 recovery_result = llm_call_with_retry(
                     effective_llm, recovery_prompt,
                     max_tokens=config.max_tokens,
@@ -712,10 +1128,10 @@ def composable_loop(
 
             if not tool_calls:
                 logger.warning("Unparseable LLM response at step %d after recovery", step_num)
-                tool_call = ToolCall(tool="__parse_error__", reasoning=(coerce_text(raw_response) or "")[:200])
+                tool_call = ToolCall(tool="__parse_error__", reasoning=(to_text(raw_response) or "")[:200])
                 tool_result = ToolResult(
                     tool="__parse_error__", args_summary="", data=None,
-                    error=f"Could not parse JSON: {(coerce_text(raw_response) or '')[:200]}",
+                    error=f"Could not parse JSON: {(to_text(raw_response) or '')[:200]}",
                 )
                 step = Step(number=step_num, tool_call=tool_call, tool_result=tool_result)
                 state.steps.append(step)
@@ -738,53 +1154,111 @@ def composable_loop(
         # Dispatch non-done tools
         regular_calls = tool_calls[:done_idx] if done_idx is not None else tool_calls
         if regular_calls:
-            # Pre-dispatch hooks: allow hooks to intercept/block calls
+            # Pre-dispatch hooks: allow hooks to intercept/block calls.
+            # HookDecision-aware: a hook may return ``updated_args`` (rewrite
+            # the call), ``updated_result`` (short-circuit with a fixture),
+            # or ``permission="deny"`` (convert to PERMISSION_DENIED error).
             intercepted_results: dict[int, ToolResult] = {}
+            hook_denied_calls: set[int] = set()
             for tc_idx, tc in enumerate(regular_calls):
+                # Fire PRE_TOOL_USE — event-style hooks see every tool
+                # call. Their HookDecision is applied identically to
+                # what the per-method pre_dispatch hook below does.
+                _pre_tool_decisions = _emit_event(
+                    hooks, _LE.PRE_TOOL_USE,
+                    step_num=step_num + tc_idx, state=state,
+                    session_log=session_log, context=context,
+                    tool_call=tc,
+                )
+                _handled = False
+                for _d in _pre_tool_decisions:
+                    if _d.updated_args is not None:
+                        tc.args = _d.updated_args
+                    if _d.permission == "deny":
+                        from openharness.types import ErrorKind, ToolError  # noqa: PLC0415
+                        _te = ToolError(
+                            kind=ErrorKind.PERMISSION_DENIED,
+                            message=_d.block
+                                or f"Permission denied for tool '{tc.tool}'",
+                            retriable=False,
+                        )
+                        intercepted_results[tc_idx] = ToolResult(
+                            tool=tc.tool, args_summary=str(tc.args)[:100],
+                            data=None, error=_te.message, error_detail=_te,
+                        )
+                        hook_denied_calls.add(tc_idx)
+                        _handled = True
+                        break
+                    if _d.updated_result is not None:
+                        intercepted_results[tc_idx] = _d.updated_result
+                        _handled = True
+                        break
+                    if _d.additional_context:
+                        post_dispatch_parts.append(_d.additional_context)
+                if _handled:
+                    continue
                 for hook in hooks:
                     if hasattr(hook, "pre_dispatch"):
                         cached = hook.pre_dispatch(state, session_log, tc, step_num + tc_idx)
-                        if cached is not None:
-                            intercepted_results[tc_idx] = cached
+                        _decision = normalize_hook_return(cached, slot="pre_dispatch")
+                        if _decision is None:
+                            # Legacy: None → pass through, ToolResult handled below.
+                            if cached is not None and isinstance(cached, ToolResult):
+                                intercepted_results[tc_idx] = cached
+                                break
+                            continue
+                        # Apply HookDecision effects in priority order.
+                        if _decision.updated_args is not None:
+                            tc.args = _decision.updated_args
+                        if _decision.permission == "deny":
+                            from openharness.types import ErrorKind, ToolError  # noqa: PLC0415
+                            _te = ToolError(
+                                kind=ErrorKind.PERMISSION_DENIED,
+                                message=_decision.block
+                                    or f"Permission denied for tool '{tc.tool}'",
+                                retriable=False,
+                            )
+                            intercepted_results[tc_idx] = ToolResult(
+                                tool=tc.tool, args_summary=str(tc.args)[:100],
+                                data=None, error=_te.message, error_detail=_te,
+                            )
+                            hook_denied_calls.add(tc_idx)
                             break
+                        if _decision.updated_result is not None:
+                            intercepted_results[tc_idx] = _decision.updated_result
+                            break
+                        # Decision with only additional_context / metadata:
+                        # record it as briefing text for the next turn.
+                        if _decision.additional_context:
+                            post_dispatch_parts.append(_decision.additional_context)
 
             calls_to_dispatch = [
                 tc for i, tc in enumerate(regular_calls) if i not in intercepted_results
             ]
 
-            # Permission check: engine + hooks can deny tool calls (AND semantics)
+            # Permission check: hooks can deny tool calls. For declarative
+            # rules, register a ``PermissionHook`` in ``hooks=[...]``.
             permitted_calls = []
             for tc in calls_to_dispatch:
                 denied = False
-                # Declarative PermissionEngine first — if present.
-                if config.permissions is not None:
-                    outcome = config.permissions.evaluate(tc)
-                    if outcome.denied:
-                        from openharness.types import ErrorKind, ToolError  # noqa: PLC0415
-                        idx = next(i for i, c in enumerate(regular_calls) if c is tc)
-                        _te = ToolError(
-                            kind=ErrorKind.PERMISSION_DENIED,
-                            message=outcome.reason
-                                or f"Permission denied for tool '{tc.tool}'",
-                            retriable=False,
-                        )
-                        intercepted_results[idx] = ToolResult(
-                            tool=tc.tool, args_summary=str(tc.args)[:100],
-                            data=None,
-                            error=_te.message,
-                            error_detail=_te,
-                        )
-                        denied = True
-                if denied:
-                    continue
                 for hook in hooks:
                     if hasattr(hook, "check_permission"):
-                        if not hook.check_permission(tc, state):
+                        _raw = hook.check_permission(tc, state)
+                        _decision = normalize_hook_return(
+                            _raw, slot="check_permission",
+                        )
+                        allowed = _decision is None or _decision.permission != "deny"
+                        if not allowed:
                             from openharness.types import ErrorKind, ToolError  # noqa: PLC0415
                             idx = next(i for i, c in enumerate(regular_calls) if c is tc)
+                            _msg = (
+                                _decision.block
+                                if _decision and _decision.block
+                                else f"Permission denied for tool '{tc.tool}'"
+                            )
                             _te = ToolError(
                                 kind=ErrorKind.PERMISSION_DENIED,
-                                message=f"Permission denied for tool '{tc.tool}'",
+                                message=_msg,
                                 retriable=False,
                             )
                             intercepted_results[idx] = ToolResult(
@@ -797,12 +1271,24 @@ def composable_loop(
                     permitted_calls.append(tc)
 
             if permitted_calls:
-                _tool_ctx = _build_tool_ctx(config)
-                _dispatch_kw = {"ctx": _tool_ctx} if _tool_ctx is not None else {}
-                if FLAGS.concurrent_dispatch:
+                def _ctx_for(_c: ToolCall) -> ToolContext | None:
+                    return _build_tool_ctx(
+                        config, hooks=hooks, tool_call=_c,
+                        step_num=step_num, state=state,
+                        session_log=session_log,
+                    )
+                if config.concurrent_dispatch:
+                    # Batch dispatch shares one ctx; fall back to the
+                    # first call's context so cancel/approval still work.
+                    _tool_ctx = _ctx_for(permitted_calls[0])
+                    _dispatch_kw = {"ctx": _tool_ctx} if _tool_ctx is not None else {}
                     dispatch_results = tools.dispatch_batch(permitted_calls, **_dispatch_kw)
                 else:
-                    dispatch_results = [tools.dispatch(c, **_dispatch_kw) for c in permitted_calls]
+                    dispatch_results = []
+                    for _c in permitted_calls:
+                        _tool_ctx = _ctx_for(_c)
+                        _kw = {"ctx": _tool_ctx} if _tool_ctx is not None else {}
+                        dispatch_results.append(tools.dispatch(_c, **_kw))
             else:
                 dispatch_results = []
 
@@ -836,8 +1322,39 @@ def composable_loop(
                         text = hook.post_dispatch(
                             state, session_log, tool_call, tool_result, cur_step,
                         )
-                        if text:
-                            post_dispatch_parts.append(text)
+                        _decision = normalize_hook_return(text, slot="post_dispatch")
+                        if _decision is not None:
+                            # HookDecision: honor updated_result (rewrite before
+                            # recording), stop (terminate after step), and
+                            # additional_context (inject into next briefing).
+                            if _decision.updated_result is not None:
+                                tool_result = _decision.updated_result
+                            if _decision.additional_context:
+                                post_dispatch_parts.append(_decision.additional_context)
+                            if _decision.stop is not None:
+                                stop_reason = _decision.stop
+                                _hook_requested_stop = True
+
+                # Fire POST_TOOL_USE (or POST_TOOL_FAILURE on error).
+                # Event hooks can rewrite the result, inject briefing
+                # text, or request stop — same semantics as post_dispatch.
+                _post_tool_event = (
+                    _LE.POST_TOOL_FAILURE if tool_result.error else _LE.POST_TOOL_USE
+                )
+                _post_tool_decisions = _emit_event(
+                    hooks, _post_tool_event,
+                    step_num=cur_step, state=state, session_log=session_log,
+                    context=context, tool_call=tool_call,
+                    tool_result=tool_result,
+                )
+                for _d in _post_tool_decisions:
+                    if _d.updated_result is not None:
+                        tool_result = _d.updated_result
+                    if _d.additional_context:
+                        post_dispatch_parts.append(_d.additional_context)
+                    if _d.stop is not None:
+                        stop_reason = _d.stop
+                        _hook_requested_stop = True
 
                 step = Step(number=cur_step, tool_call=tool_call, tool_result=tool_result)
                 cur_step_count = state.step_count
@@ -888,8 +1405,9 @@ def composable_loop(
             for hook in hooks:
                 if hasattr(hook, "check_done"):
                     w = hook.check_done(state, session_log, context, step_num)
-                    if w is not None:
-                        gate_warning = w
+                    _decision = normalize_hook_return(w, slot="check_done")
+                    if _decision is not None and _decision.is_block():
+                        gate_warning = _decision.block or "blocked by hook"
                         break
 
             # Output schema validation — reject done() if payload is invalid
@@ -925,10 +1443,14 @@ def composable_loop(
                     recall_key="",
                 )
             else:
-                # done() dispatch intentionally bypasses PermissionEngine — it's
+                # done() dispatch intentionally bypasses permission checks — it's
                 # a loop signal, not a side-effecting tool. Permission-gating a
                 # termination signal would prevent the agent from ever stopping.
-                _ctx = _build_tool_ctx(config)
+                _ctx = _build_tool_ctx(
+                    config, hooks=hooks, tool_call=tool_call,
+                    step_num=step_num, state=state,
+                    session_log=session_log,
+                )
                 tool_result = tools.dispatch(tool_call, ctx=_ctx) if _ctx is not None else tools.dispatch(tool_call)
                 step = Step(number=cur_step, tool_call=tool_call, tool_result=tool_result)
                 state.steps.append(step)
@@ -965,12 +1487,21 @@ def composable_loop(
         if done:
             continue
 
+        # Honor HookDecision.stop signalled during post_dispatch.
+        if _hook_requested_stop:
+            done = True
+            break
+
         for hook in hooks:
             if hasattr(hook, "should_stop"):
-                if hook.should_stop(state, step_num, len(all_step_entities)):
+                _raw = hook.should_stop(state, step_num, len(all_step_entities))
+                _decision = normalize_hook_return(_raw, slot="should_stop")
+                _stopped = _decision.is_stop() if _decision else False
+                if _stopped:
                     logger.info("Hook %s requested stop at step %d", type(hook).__name__, step_num)
                     done = True
-                    stop_reason = "hook_stop"
+                    stop_reason = (_decision.stop if _decision and _decision.stop
+                                   else "hook_stop")
                     break
         if done:
             break
@@ -979,6 +1510,17 @@ def composable_loop(
     # Stash stop_reason on state so hooks (e.g. StreamingHook) can read it
     if state is not None:
         state._stop_reason = stop_reason
+
+    # Fire STOP — event-style hooks see termination reason before
+    # on_loop_end cleanup runs. Return values are ignored (the loop
+    # is already exiting); hooks should use on_loop_end for llm-call
+    # side effects.
+    _emit_event(
+        hooks, _LE.STOP,
+        state=state, session_log=session_log, context=context,
+        termination_reason=stop_reason,
+    )
+
     for hook in hooks:
         if hasattr(hook, "on_loop_end"):
             extra = hook.on_loop_end(state, session_log, context, llm)
@@ -995,8 +1537,12 @@ def composable_loop(
 
     # Build trace via injected callable
     elapsed = (time.time() - t0) * 1000
-    if config.build_trace is not None:
-        trace = config.build_trace(
+    _build_trace_fn = (
+        config.build_trace
+        or (config.domain.build_trace if config.domain else None)
+    )
+    if _build_trace_fn is not None:
+        trace = _build_trace_fn(
             task=task, state=state, session_log=session_log,
             done=stop_reason == "done", llm=llm, llm_calls=llm_calls, elapsed_ms=elapsed,
         )
@@ -1012,7 +1558,7 @@ def composable_loop(
 # ── Reactive Recovery Chain ──────────────────────────────────────
 
 
-def _reactive_recovery_chain(
+def _recovery_chain(
     llm_result: Any,
     recovery_state: dict,
     state: Any,
@@ -1025,22 +1571,46 @@ def _reactive_recovery_chain(
     task: dict,
     config: Any,
     step_num: int,
+    *,
+    hooks: list[Any] | None = None,
+    conversation: Any | None = None,
 ) -> Any:
     """Multi-strategy recovery chain for prompt-too-long errors.
 
     Tries strategies in order, each at most once:
       1. Aggressive budget enforcement (shrink all results to 2KB)
-      2. Emergency session log compression (reactive_compact)
+      2. Emergency session log compression (emergency_truncate — routed
+         through :func:`openharness.compact.run_compact` so
+         ``PRE_COMPACT`` / ``POST_COMPACT`` events fire and users can
+         swap in a custom :class:`CompactService`)
       3. Clear all old result data entirely
 
     After each strategy, rebuilds the prompt and retries the LLM call.
     Returns the response text if recovery succeeds, None if all fail.
     """
     extra_llm_calls = 0
+    hooks = hooks or []
+
+    # Pick the compact service: user-supplied or the built-in default.
+    from openharness.compact import TruncateCompact, run_compact  # noqa: PLC0415
+    _compact_service = config.compact_service or TruncateCompact()
+
+    def _run_emergency_truncate(_state: Any, _sl: Any, _llm: Any, _sn: int) -> int:
+        outcome = run_compact(
+            _compact_service,
+            hooks=hooks,
+            state=_state,
+            session_log=_sl,
+            llm=_llm,
+            conversation=conversation,
+            step_num=_sn,
+            reason="prompt_too_long",
+        )
+        return outcome.llm_calls_spent
 
     strategies = [
         ("budget_enforcement", _recovery_aggressive_budget),
-        ("reactive_compact", _recovery_reactive_compact),
+        ("emergency_truncate", _run_emergency_truncate),
         ("result_clearing", _recovery_clear_old_results),
     ]
 

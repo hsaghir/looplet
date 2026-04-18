@@ -16,7 +16,7 @@ import json
 import logging
 from typing import Any
 
-from openharness.scaffolding import compress_session_log, enforce_result_budget
+from openharness.scaffolding import age_session_entries, trim_results
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_CONTEXT_WINDOW = 128_000    # tokens
 DEFAULT_RESULT_MAX_AGE_FULL = 3     # steps before result is compacted
 
-# Multi-tier thresholds (inspired by Claude Code's 4-tier system).
+# Multi-tier thresholds for context pressure.
 # Each tier is a buffer subtracted from the context window.
 # Larger buffer = triggers earlier.
 DEFAULT_COMPACT_BUFFER = 20_000     # tokens reserved before compaction fires
@@ -36,7 +36,7 @@ DEFAULT_BLOCKING_BUFFER = 5_000     # refuse to send LLM call (prevent wasted AP
 _COMPACTED_MARKER = "__compacted__"
 
 
-class ContextManagerHook:
+class ContextPressureHook:
     """Progressive context management as a composable loop hook.
 
     Applied as a pre_prompt hook. Each step:
@@ -105,7 +105,7 @@ class ContextManagerHook:
 
         # Layer 2: Enforce result budgets (skips already-compacted)
         if hasattr(state, "steps") and state.steps:
-            enforce_result_budget(
+            trim_results(
                 state.steps,
                 per_result_chars=self._per_result_chars,
                 aggregate_chars=self._aggregate_chars,
@@ -126,7 +126,7 @@ class ContextManagerHook:
             )
             # Emergency: compact session log + clear old results
             dropped_range = self._step_range(state)
-            compress_session_log(session_log, must_preserve=self._must_preserve)
+            age_session_entries(session_log, must_preserve=self._must_preserve)
             if hasattr(state, "steps"):
                 for step in state.steps[:-2]:
                     step.tool_result.data = None
@@ -149,7 +149,7 @@ class ContextManagerHook:
                     estimated, self._compact_threshold,
                 )
                 dropped_range = self._step_range(state)
-                result = compress_session_log(session_log, llm=self._llm,
+                result = age_session_entries(session_log, llm=self._llm,
                                               must_preserve=self._must_preserve)
                 if result is not None:
                     if self._llm is not None:
@@ -180,6 +180,18 @@ class ContextManagerHook:
         llm: Any,
     ) -> int:
         return self._extra_llm_calls
+
+    # ── LoopHook Protocol stubs ────────────────────────────────
+    def pre_loop(self, *a: Any, **k: Any) -> None: return None
+    def pre_dispatch(self, *a: Any, **k: Any) -> None: return None
+    def post_dispatch(self, *a: Any, **k: Any) -> None: return None
+    def check_done(self, *a: Any, **k: Any) -> None: return None
+    def check_permission(self, *a: Any, **k: Any) -> None: return None
+    def should_stop(self, *a: Any, **k: Any) -> bool: return False
+    def should_compact(self, *a: Any, **k: Any) -> bool: return False
+    def build_briefing(self, *a: Any, **k: Any) -> None: return None
+    def build_prompt(self, **k: Any) -> None: return None
+    def on_event(self, *a: Any, **k: Any) -> None: return None
 
     def _step_range(self, state: Any) -> tuple[int, int]:
         """Return the (first, last) step number currently in state.steps.
@@ -335,7 +347,7 @@ def _compact_data(data: Any, result_key: str | None) -> dict:
 
     Always returns a dict with __compacted__=True so that:
     - _age_results skips it on subsequent calls (idempotent)
-    - enforce_result_budget skips it (already small)
+    - trim_results skips it (already small)
     - isinstance(data, dict) is True (no type confusion)
     """
     if isinstance(data, list):
@@ -371,3 +383,4 @@ def _compact_data(data: Any, result_key: str | None) -> dict:
         "summary": str(data)[:500],
         **({"recall_key": result_key} if result_key else {}),
     }
+

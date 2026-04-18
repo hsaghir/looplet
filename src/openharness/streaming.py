@@ -178,7 +178,7 @@ class ContextPressureEvent(Event):
     """Emitted when the estimated context usage crosses a tier threshold.
 
     ``level`` is one of ``"ok"``, ``"warning"``, ``"compact"``,
-    ``"blocking"`` — matching ``ContextManagerHook``'s 4-tier budget.
+    ``"blocking"`` — matching ``ContextPressureHook``'s 4-tier budget.
 
     Consumers typically:
 
@@ -374,6 +374,29 @@ class StreamingHook:
         """Never stops early; returns False."""
         return False
 
+    def should_compact(
+        self,
+        state: Any,
+        session_log: SessionLog,
+        conversation: Any,
+        step_num: int,
+    ) -> bool:
+        """Never proactively compacts; returns False."""
+        return False
+
+    def build_briefing(
+        self,
+        state: Any,
+        session_log: SessionLog,
+        context: Any,
+    ) -> str | None:
+        """Pass-through; returns ``None`` to defer to config/default."""
+        return None
+
+    def build_prompt(self, **kwargs: Any) -> str | None:
+        """Pass-through; returns ``None`` to defer to config/default."""
+        return None
+
     def on_loop_end(
         self,
         state: Any,
@@ -392,3 +415,7 @@ class StreamingHook:
             )
         )
         return 0
+
+    def on_event(self, payload: Any) -> None:
+        """No-op — :class:`StreamingHook` uses the per-method API."""
+        return None

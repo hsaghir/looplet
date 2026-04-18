@@ -1,4 +1,4 @@
-"""Tests for cadence.conversation — unified message thread."""
+"""Tests for openharness.conversation — unified message thread."""
 
 from __future__ import annotations
 
@@ -416,17 +416,17 @@ class TestConversationProperties:
 
 class TestDefaultSummarizer:
     def test_default_summarizer_returns_string(self):
-        from openharness.conversation import DefaultSummarizer, Message, MessageRole
+        from openharness.conversation import Message, MessageRole, default_summarizer
         messages = [
             Message(role=MessageRole.USER, content="Do something"),
             Message(role=MessageRole.ASSISTANT, content="ok"),
         ]
-        result = DefaultSummarizer(messages)
+        result = default_summarizer(messages)
         assert isinstance(result, str)
         assert len(result) > 0
 
     def test_default_summarizer_includes_role_counts(self):
-        from openharness.conversation import DefaultSummarizer, Message, MessageRole
+        from openharness.conversation import Message, MessageRole, default_summarizer
         from openharness.types import ToolCall
         messages = [
             Message(role=MessageRole.USER, content="task"),
@@ -435,12 +435,12 @@ class TestDefaultSummarizer:
             Message(role=MessageRole.ASSISTANT, content="",
                     tool_call=ToolCall(tool="think", args={})),
         ]
-        result = DefaultSummarizer(messages)
+        result = default_summarizer(messages)
         # Should mention the tools called
         assert "search" in result or "think" in result or "tool" in result.lower()
 
     def test_default_summarizer_callable(self):
         import inspect
 
-        from openharness.conversation import DefaultSummarizer
-        assert callable(DefaultSummarizer)
+        from openharness.conversation import default_summarizer
+        assert callable(default_summarizer)

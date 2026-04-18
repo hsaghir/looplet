@@ -8,7 +8,6 @@ from pathlib import Path
 import pytest
 
 from openharness.provenance import (
-    AsyncRecordingLLMBackend,
     LLMCall,
     ProvenanceSink,
     RecordingLLMBackend,
@@ -16,7 +15,7 @@ from openharness.provenance import (
     Trajectory,
     TrajectoryRecorder,
 )
-from openharness.testing import AsyncMockLLMBackend, MockLLMBackend
+from openharness.testing import MockLLMBackend
 from openharness.types import LLMBackend, Step, ToolCall, ToolResult
 
 
@@ -106,19 +105,6 @@ class TestRecordingLLMBackendSmoke:
         lines = (out / "manifest.jsonl").read_text().strip().split("\n")
         assert len(lines) == 2
         assert json.loads(lines[0])["index"] == 0
-
-
-class TestAsyncRecordingLLMBackendSmoke:
-    def test_records_async_call(self):
-        rec = AsyncRecordingLLMBackend(AsyncMockLLMBackend(responses=["async ok"]))
-
-        async def run():
-            return await rec.generate("hi")
-
-        out = asyncio.run(run())
-        assert out == "async ok"
-        assert len(rec.calls) == 1
-        assert rec.calls[0].method == "generate"
 
 
 class TestTrajectoryRecorderSmoke:
@@ -236,10 +222,6 @@ class TestProvenanceSinkSmoke:
 
     def test_wrap_llm_detects_async(self):
         sink = ProvenanceSink(dir=Path("/tmp/does-not-matter"))
-        wrapped = sink.wrap_llm(AsyncMockLLMBackend(responses=["r"]))
-        assert isinstance(wrapped, AsyncRecordingLLMBackend)
-
-
 class TestDataclassSmoke:
     def test_llm_call_to_dict(self):
         c = LLMCall(

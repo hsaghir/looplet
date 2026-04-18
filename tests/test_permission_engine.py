@@ -6,6 +6,7 @@ from openharness.loop import LoopConfig, composable_loop
 from openharness.permissions import (
     PermissionDecision,
     PermissionEngine,
+    PermissionHook,
     PermissionOutcome,
     PermissionRule,
 )
@@ -117,7 +118,7 @@ class TestLoopIntegration:
         ran: list[str] = []
         eng = PermissionEngine()
         eng.deny("danger", reason="forbidden")
-        cfg = LoopConfig(max_steps=3, permissions=eng)
+        cfg = LoopConfig(max_steps=3)
         llm = _LLM(
             '```json\n{"tool": "danger", "args": {"cmd": "rm -rf /"}}\n```',
             '```json\n{"tool": "done", "args": {"summary": "x"}}\n```',
@@ -125,6 +126,7 @@ class TestLoopIntegration:
         steps = list(composable_loop(
             llm=llm, task={"id": "T"}, tools=self._reg(ran),
             config=cfg, state=DefaultState(max_steps=3),
+            hooks=[PermissionHook(eng)],
         ))
         assert ran == []  # tool body never ran
         # The denied step should have a ToolError with PERMISSION_DENIED.
@@ -137,7 +139,7 @@ class TestLoopIntegration:
     def test_engine_allows_tool_by_default(self):
         ran: list[str] = []
         eng = PermissionEngine(default=PermissionDecision.ALLOW)
-        cfg = LoopConfig(max_steps=3, permissions=eng)
+        cfg = LoopConfig(max_steps=3)
         llm = _LLM(
             '```json\n{"tool": "danger", "args": {"cmd": "ls"}}\n```',
             '```json\n{"tool": "done", "args": {"summary": "x"}}\n```',
@@ -145,5 +147,6 @@ class TestLoopIntegration:
         list(composable_loop(
             llm=llm, task={"id": "T"}, tools=self._reg(ran),
             config=cfg, state=DefaultState(max_steps=3),
+            hooks=[PermissionHook(eng)],
         ))
         assert ran == ["ls"]

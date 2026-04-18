@@ -164,7 +164,7 @@ class Conversation:
 
         Args:
             summarizer: Optional callable(list[Message]) -> str. If None,
-                ``DefaultSummarizer`` is used.
+                ``default_summarizer`` is used.
             keep_recent: Number of most-recent messages to keep verbatim
                 after the summary.
 
@@ -173,7 +173,7 @@ class Conversation:
         if len(self.messages) <= keep_recent + 1:
             return self
 
-        fn = summarizer or DefaultSummarizer
+        fn = summarizer or default_summarizer
 
         # Keep the last `keep_recent` messages verbatim
         split_idx = len(self.messages) - keep_recent
@@ -198,7 +198,7 @@ class Conversation:
         # Don't include boundary messages in the summary input; they're
         # already a compressed form of prior context.
         summary_input = [
-            _strip_heavy_blocks(m)
+            _strip_large_content(m)
             for m in to_compact
             if m.metadata.get("kind") != "compaction_boundary"
         ]
@@ -309,18 +309,18 @@ class Conversation:
 # ── Default summarizer ───────────────────────────────────────────
 
 
-HEAVY_BLOCK_KINDS: frozenset[str] = frozenset({"image", "audio", "video", "binary"})
+LARGE_CONTENT_TYPES: frozenset[str] = frozenset({"image", "audio", "video", "binary"})
 """Block kinds stripped before summarization — large payloads that
 shouldn't be sent to a text summarizer. This is a ``frozenset`` and
 cannot be mutated in place. To customize, reassign the module attribute
 with a new frozenset::
 
     from openharness import conversation
-    conversation.HEAVY_BLOCK_KINDS = conversation.HEAVY_BLOCK_KINDS | {"pdf"}
+    conversation.LARGE_CONTENT_TYPES = conversation.LARGE_CONTENT_TYPES | {"pdf"}
 """
 
 
-def _strip_heavy_blocks(msg: Message) -> Message:
+def _strip_large_content(msg: Message) -> Message:
     """Return a copy of ``msg`` with heavy (binary / multimodal) blocks
     replaced by short text placeholders. Plain-string content is
     returned unchanged. This is applied pre-summarization so large
@@ -329,11 +329,11 @@ def _strip_heavy_blocks(msg: Message) -> Message:
     if isinstance(msg.content, str):
         return msg
     # Short-circuit: if no heavy blocks, return the original unchanged.
-    if not any(b.kind in HEAVY_BLOCK_KINDS for b in msg.content):
+    if not any(b.kind in LARGE_CONTENT_TYPES for b in msg.content):
         return msg
     stripped: list[ContentBlock] = []
     for b in msg.content:
-        if b.kind in HEAVY_BLOCK_KINDS:
+        if b.kind in LARGE_CONTENT_TYPES:
             stripped.append(ContentBlock(
                 kind="text",
                 data={"text": f"[{b.kind} omitted during compaction]"},
@@ -350,7 +350,7 @@ def _strip_heavy_blocks(msg: Message) -> Message:
     )
 
 
-def DefaultSummarizer(messages: list[Message]) -> str:
+def default_summarizer(messages: list[Message]) -> str:
     """Deterministic summarizer — no LLM required.
 
     Counts messages by role, lists tools called, and preserves the last
@@ -480,3 +480,4 @@ def _deserialize_message(d: dict[str, Any]) -> Message:
         metadata=metadata,
         timestamp=timestamp,
     )
+

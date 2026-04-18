@@ -64,12 +64,12 @@ def _make_loop_generator(steps: list, return_value: dict | None = None):
 
 
 def _inject_mocks(mock_session_log: Any, mock_registry: Any):
-    """Inject mock cadence.session, cadence.loop, cadence.tools into sys.modules."""
-    # Mock cadence.session
+    """Inject mock openharness.session, openharness.loop, openharness.tools into sys.modules."""
+    # Mock openharness.session
     mock_session_mod = MagicMock()
     mock_session_mod.SessionLog.return_value = mock_session_log
 
-    # Mock cadence.tools
+    # Mock openharness.tools
     mock_tools_mod = MagicMock()
     mock_tools_mod.BaseToolRegistry.return_value = _make_mock_registry([])
 
@@ -81,7 +81,7 @@ def _inject_mocks(mock_session_log: Any, mock_registry: Any):
     mock_tool_spec_cls = MagicMock(side_effect=lambda **kw: MagicMock(**kw))
     mock_tools_mod.ToolSpec = mock_tool_spec_cls
 
-    # Mock cadence.loop
+    # Mock openharness.loop
     mock_loop_mod = MagicMock()
 
     return {
@@ -210,7 +210,7 @@ class TestRunSubLoopSignature:
 class TestRunSubLoopExecution:
     def _run_with_mocks(self, steps=None, entities=None, findings=None, highlights=None,
                         build_summary=None, tools=None, state_mutating_tools=None):
-        """Helper: run run_sub_loop with all cadence deps mocked."""
+        """Helper: run run_sub_loop with all openharness deps mocked."""
         from openharness.subagent import run_sub_loop
 
         mock_log = _make_mock_session_log(
@@ -507,11 +507,11 @@ class TestParentStateIsolation:
         assert isinstance(captured_states[0], _MinimalState)
 
 
-# ── No primal_security / backward-compat tests ────────────────────
+# ── No domain-specific imports ──────────────────
 
 
 class TestNoDomainSpecificCode:
-    def test_no_primal_security_imports(self):
+    def test_no_domain_specific_imports(self):
         import inspect
 
         import openharness.subagent as mod

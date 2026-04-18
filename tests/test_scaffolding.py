@@ -1,4 +1,4 @@
-"""Tests for cadence.scaffolding — LLM retry, truncation, trackers."""
+"""Tests for openharness.scaffolding — LLM retry, truncation, trackers."""
 
 from __future__ import annotations
 
@@ -10,17 +10,17 @@ import pytest
 
 from openharness.scaffolding import (
     PARSE_RECOVERY_MAX,
-    DiminishingReturnsTracker,
     LLMResult,
+    StallDetector,
     StepProgressTracker,
+    age_session_entries,
     build_parse_recovery_prompt,
-    compress_session_log,
-    enforce_result_budget,
+    emergency_truncate,
     estimate_prompt_tokens,
     estimate_tokens,
+    is_context_oversized,
     llm_call_with_retry,
-    reactive_compact,
-    should_compress_context,
+    trim_results,
     truncate_tool_result,
 )
 from openharness.types import Step, ToolCall, ToolResult
@@ -216,7 +216,7 @@ class TestBuildParseRecoveryPrompt:
         assert "x" * 300 in result
         assert "x" * 400 not in result
 
-    def test_no_primal_security_import(self) -> None:
+    def test_no_domain_specific_imports(self) -> None:
         import inspect
 
         import openharness.scaffolding as m
@@ -268,7 +268,7 @@ class TestTruncateToolResult:
         assert result == data
 
 
-# ── enforce_result_budget ───────────────────────────────────────────
+# ── trim_results ───────────────────────────────────────────
 
 
 class TestEnforceResultBudget:
@@ -279,49 +279,49 @@ class TestEnforceResultBudget:
 
     def test_small_results_unchanged(self) -> None:
         step = self._make_step({"key": "small value"})
-        enforce_result_budget([step])
+        trim_results([step])
         assert step.tool_result.data == {"key": "small value"}
 
     def test_oversized_result_compacted(self) -> None:
         big_data = {"rows": [{"x": "y" * 100}] * 600}
         step = self._make_step(big_data)
-        enforce_result_budget([step], per_result_chars=1000)
+        trim_results([step], per_result_chars=1000)
         assert step.tool_result.data != big_data
 
     def test_large_individual_result_compacted_list(self) -> None:
         big_data = list(range(10000))
         step = self._make_step(big_data)
-        enforce_result_budget([step], per_result_chars=1000)
+        trim_results([step], per_result_chars=1000)
         assert not isinstance(step.tool_result.data, list) or isinstance(step.tool_result.data, dict)
 
     def test_error_results_skipped(self) -> None:
         tc = ToolCall(tool="test", args={})
         tr = ToolResult(tool="test", args_summary="", data=None, error="oops")
         step = Step(number=1, tool_call=tc, tool_result=tr)
-        enforce_result_budget([step])
+        trim_results([step])
         assert step.tool_result.error == "oops"
 
     def test_empty_steps_ok(self) -> None:
-        enforce_result_budget([])
+        trim_results([])
 
 
-# ── compress_session_log ────────────────────────────────────────────
+# ── age_session_entries ────────────────────────────────────────────
 
 
 class TestCompressSessionLog:
     def test_non_session_log_returns_none(self) -> None:
-        result = compress_session_log("just a string")
+        result = age_session_entries("just a string")
         assert result is None
 
     def test_session_log_without_compact_returns_none(self) -> None:
         obj = object()
-        result = compress_session_log(obj)
+        result = age_session_entries(obj)
         assert result is None
 
     def test_session_log_compact_not_needed_returns_none(self) -> None:
         mock_log = MagicMock()
         mock_log.compact.return_value = False
-        result = compress_session_log(mock_log)
+        result = age_session_entries(mock_log)
         assert result is None
 
     def test_session_log_compact_returns_summary(self) -> None:
@@ -331,14 +331,14 @@ class TestCompressSessionLog:
         summary_entry.tool = "__summary__"
         summary_entry.findings = ["finding 1", "finding 2"]
         mock_log.entries = [summary_entry]
-        result = compress_session_log(mock_log)
+        result = age_session_entries(mock_log)
         assert result is not None
         assert "finding 1" in result
 
     def test_returns_none_for_short_real_log(self) -> None:
         from openharness.session import SessionLog
         log = SessionLog()
-        result = compress_session_log(log, max_entries_to_keep=5)
+        result = age_session_entries(log, max_entries_to_keep=5)
         assert result is None
 
     def test_compacts_long_real_log(self) -> None:
@@ -347,71 +347,71 @@ class TestCompressSessionLog:
         for i in range(10):
             log.record(step=i + 1, theory="t", tool="search", reasoning=f"q{i}",
                        findings=[f"finding {i}"])
-        result = compress_session_log(log, max_entries_to_keep=3)
+        result = age_session_entries(log, max_entries_to_keep=3)
         assert result is None or isinstance(result, str)
 
 
-# ── DiminishingReturnsTracker ───────────────────────────────────────
+# ── StallDetector ───────────────────────────────────────
 
 
-class TestDiminishingReturnsTracker:
+class TestStallDetector:
     def test_not_diminishing_initially(self) -> None:
-        t = DiminishingReturnsTracker(window=5)
+        t = StallDetector(window=5)
         assert t.is_diminishing is False
 
     def test_initial_state_full(self) -> None:
-        t = DiminishingReturnsTracker(window=5)
+        t = StallDetector(window=5)
         assert t.is_diminishing is False
         assert t.consecutive_empty == 0
         assert t.total_steps == 0
 
     def test_productive_steps_not_diminishing(self) -> None:
-        t = DiminishingReturnsTracker(window=3)
+        t = StallDetector(window=3)
         t.record_step(new_items=5)
         t.record_step(new_items=3)
         t.record_step(new_items=2)
         assert t.is_diminishing is False
 
     def test_not_diminishing_below_window(self) -> None:
-        t = DiminishingReturnsTracker(window=5)
+        t = StallDetector(window=5)
         for _ in range(4):
             t.record_step(new_items=0)
         assert t.is_diminishing is False
 
     def test_empty_steps_trigger_diminishing(self) -> None:
-        t = DiminishingReturnsTracker(window=3)
+        t = StallDetector(window=3)
         for _ in range(5):
             t.record_step(new_items=0)
         assert t.is_diminishing is True
 
     def test_total_steps_tracked(self) -> None:
-        t = DiminishingReturnsTracker()
+        t = StallDetector()
         t.record_step(new_items=1)
         t.record_step(new_items=2)
         assert t.total_steps == 2
 
     def test_consecutive_empty_increments(self) -> None:
-        t = DiminishingReturnsTracker()
+        t = StallDetector()
         t.record_step(new_items=0)
         t.record_step(new_items=0)
         assert t.consecutive_empty == 2
 
     def test_consecutive_empty_resets_on_productive(self) -> None:
-        t = DiminishingReturnsTracker()
+        t = StallDetector()
         t.record_step(new_items=0)
         t.record_step(new_items=0)
         t.record_step(new_items=5)
         assert t.consecutive_empty == 0
 
     def test_consecutive_empty_tracking_three(self) -> None:
-        t = DiminishingReturnsTracker()
+        t = StallDetector()
         t.record_step(new_items=0)
         t.record_step(new_items=0)
         t.record_step(new_items=0)
         assert t.consecutive_empty == 3
 
     def test_guidance_text_for_stagnation(self) -> None:
-        t = DiminishingReturnsTracker()
+        t = StallDetector()
         for _ in range(5):
             t.record_step(new_items=0)
         text = t.guidance_text()
@@ -419,28 +419,28 @@ class TestDiminishingReturnsTracker:
         assert "STAGNATION" in text or "DIMINISHING" in text or "done" in text.lower()
 
     def test_guidance_text_for_diminishing(self) -> None:
-        t = DiminishingReturnsTracker()
+        t = StallDetector()
         for _ in range(3):
             t.record_step(new_items=0)
         text = t.guidance_text()
         assert "DIMINISHING" in text or "STAGNATION" in text or text
 
     def test_no_guidance_when_productive(self) -> None:
-        t = DiminishingReturnsTracker()
+        t = StallDetector()
         t.record_step(new_items=5)
         assert t.guidance_text() == ""
 
     def test_guidance_text_empty_initially(self) -> None:
-        t = DiminishingReturnsTracker()
+        t = StallDetector()
         assert t.guidance_text() == ""
 
     def test_new_items_kwarg(self) -> None:
-        t = DiminishingReturnsTracker()
+        t = StallDetector()
         t.record_step(new_items=3)
         assert t.total_steps == 1
 
     def test_legacy_positional_args(self) -> None:
-        t = DiminishingReturnsTracker()
+        t = StallDetector()
         t.record_step(new_findings=1, new_highlights=2, new_entities=3)
         assert t.total_steps == 1
 
@@ -595,11 +595,11 @@ class TestContextOverflowDetection:
 
     def test_should_compress_small_prompt(self) -> None:
         short = "x" * 100
-        assert should_compress_context(short, context_window=128_000) is False
+        assert is_context_oversized(short, context_window=128_000) is False
 
     def test_should_compress_large_prompt(self) -> None:
         long = "x" * 400_000
-        assert should_compress_context(long, context_window=128_000) is True
+        assert is_context_oversized(long, context_window=128_000) is True
 
 
 # ── No domain-specific code ─────────────────────────────────────────
@@ -610,17 +610,17 @@ class TestNoDomainSpecificCode:
         import openharness.scaffolding as s
         assert not hasattr(s, "check_done_quality")
 
-    def test_no_primal_security_imports(self) -> None:
+    def test_no_domain_specific_importss(self) -> None:
         import openharness.scaffolding as s
         src = open(s.__file__).read()
         assert "primal_security" not in src
 
-    def test_no_compress_investigation_log_alias(self) -> None:
+    def test_no_legacy_aliases(self) -> None:
         import openharness.scaffolding as m
         assert not hasattr(m, "compress_investigation_log")
 
 
-# ── reactive_compact ──────────────────────────────────────────────
+# ── emergency_truncate ──────────────────────────────────────────────
 
 
 class TestReactiveCompact:
@@ -631,7 +631,7 @@ class TestReactiveCompact:
             steps: list = []
 
         log = SessionLog()
-        result = reactive_compact(FakeState(), log, keep_recent=3)
+        result = emergency_truncate(FakeState(), log, keep_recent=3)
         assert result is None
 
     def test_compacts_long_log(self) -> None:
@@ -644,7 +644,7 @@ class TestReactiveCompact:
         for i in range(8):
             log.record(step=i + 1, theory="t", tool="search", reasoning=f"q{i}",
                        findings=[f"finding {i}"])
-        result = reactive_compact(FakeState(), log, keep_recent=3)
+        result = emergency_truncate(FakeState(), log, keep_recent=3)
         assert result is None or isinstance(result, str)
 
 

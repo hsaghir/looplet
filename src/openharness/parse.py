@@ -14,7 +14,7 @@ from typing import Any
 from openharness.types import ToolCall
 
 
-def coerce_text(raw: str | list[Any] | None) -> str | None:
+def to_text(raw: str | list[Any] | None) -> str | None:
     """Coerce an LLM response into plain text.
 
     Backends returning native tool-use blocks produce a ``list`` of
@@ -63,7 +63,7 @@ def parse_multi_tool_calls(raw: "str | list[Any] | None") -> list[ToolCall]:
 
     Accepts either a plain string or a list of native content blocks
     (native-tool path). List inputs are flattened to text via
-    :func:`coerce_text` before parsing.
+    :func:`to_text` before parsing.
 
     Supports these formats:
     1. Single tool:  {"tool": "name", "args": {...}, "reasoning": "..."}
@@ -72,7 +72,7 @@ def parse_multi_tool_calls(raw: "str | list[Any] | None") -> list[ToolCall]:
     4. Extra surrounding text before/after the JSON object
     5. Malformed JSON — falls back to regex extraction, then returns []
     """
-    text_raw = coerce_text(raw)
+    text_raw = to_text(raw)
     if not text_raw or not text_raw.strip():
         return []
 
@@ -168,3 +168,4 @@ def parse_native_tool_use(blocks: list[dict]) -> list[ToolCall]:
             call_id=block.get("id") or "",
         ))
     return calls
+

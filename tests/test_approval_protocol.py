@@ -1,8 +1,8 @@
-"""Tests for the elicit() protocol on ToolContext.
+"""Tests for the approval() protocol on ToolContext.
 
 Tools can opt-in to request caller input mid-execution by accepting
-``ctx`` and calling ``ctx.request_input(prompt, options)``. The handler
-is installed via ``LoopConfig.elicit_handler``; in headless runs the
+``ctx`` and calling ``ctx.approve(prompt, options)``. The handler
+is installed via ``LoopConfig.approval_handler``; in headless runs the
 method returns ``None`` so tools can proceed unattended.
 """
 
@@ -13,12 +13,12 @@ from openharness.tools import BaseToolRegistry, ToolSpec
 from openharness.types import DefaultState, LLMBackend, ToolContext
 
 
-class TestToolContextElicit:
-    def test_request_input_returns_none_without_handler(self):
+class TestToolContextApproval:
+    def test_approve_returns_none_without_handler(self):
         ctx = ToolContext()
-        assert ctx.request_input("pick one", ["a", "b"]) is None
+        assert ctx.approve("pick one", ["a", "b"]) is None
 
-    def test_request_input_calls_handler(self):
+    def test_approve_calls_handler(self):
         captured = {}
 
         def handler(prompt, options):
@@ -26,8 +26,8 @@ class TestToolContextElicit:
             captured["options"] = options
             return "answer"
 
-        ctx = ToolContext(elicit=handler)
-        out = ctx.request_input("question?", ["a", "b"])
+        ctx = ToolContext(request_approval=handler)
+        out = ctx.approve("question?", ["a", "b"])
         assert out == "answer"
         assert captured == {"prompt": "question?", "options": ["a", "b"]}
 
@@ -43,12 +43,12 @@ class _LLM(LLMBackend):
         return s
 
 
-class TestLoopPlumbsElicit:
-    def test_tool_receives_elicit_handler(self):
+class TestLoopPlumbsApproval:
+    def test_tool_receives_approval_handler(self):
         seen: dict = {}
 
         def tool(ctx: ToolContext, **kw):
-            reply = ctx.request_input("confirm?", ["y", "n"])
+            reply = ctx.approve("confirm?", ["y", "n"])
             seen["reply"] = reply
             return {"ok": True, "reply": reply}
 
@@ -63,7 +63,7 @@ class TestLoopPlumbsElicit:
         ))
 
         handler = lambda prompt, options: "y"
-        cfg = LoopConfig(max_steps=3, elicit_handler=handler)
+        cfg = LoopConfig(max_steps=3, approval_handler=handler)
         llm = _LLM(
             '```json\n{"tool": "confirm", "args": {}}\n```',
             '```json\n{"tool": "done", "args": {"summary": "x"}}\n```',

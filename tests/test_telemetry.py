@@ -1,4 +1,4 @@
-"""Tests for cadence.telemetry — spans, tracer, metrics, and hooks."""
+"""Tests for openharness.telemetry — spans, tracer, metrics, and hooks."""
 
 from __future__ import annotations
 

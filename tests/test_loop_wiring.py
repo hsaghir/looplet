@@ -204,6 +204,56 @@ def test_checkpoint_file_is_valid_json():
         assert "step_number" in data
 
 
+def test_load_latest_returns_highest_step():
+    """FileCheckpointStore.load_latest picks the highest step_number."""
+    from openharness.checkpoint import Checkpoint, FileCheckpointStore
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        store = FileCheckpointStore(tmpdir)
+        for step in [1, 3, 2]:
+            cp = Checkpoint(
+                step_number=step,
+                session_log_data={"entries": [], "current_theory": ""},
+                conversation_data=None,
+                config_snapshot={},
+                tool_results_store={},
+                metadata={"step": step},
+            )
+            store.save(cp, f"step_{step}")
+        latest = store.load_latest()
+        assert latest is not None
+        assert latest.step_number == 3
+
+
+def test_auto_resume_from_checkpoint_dir():
+    """When checkpoint_dir has checkpoints, the loop auto-resumes."""
+    from openharness.checkpoint import Checkpoint, FileCheckpointStore
+    from openharness.loop import LoopConfig, composable_loop
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Pre-seed a checkpoint at step 1
+        store = FileCheckpointStore(tmpdir)
+        store.save(Checkpoint(
+            step_number=1,
+            session_log_data={"entries": [], "current_theory": ""},
+            conversation_data=None,
+            config_snapshot={"max_steps": 5, "queries_used": 1, "budget_remaining": 4},
+            tool_results_store={},
+            metadata={},
+        ), "step_1")
+
+        # Run with checkpoint_dir but NO initial_checkpoint — should auto-resume
+        responses = ['{"tool": "done", "args": {"summary": "resumed"}}']
+        llm = _make_scripted_llm(responses)
+        state = SimpleState()
+        reg = _make_registry()
+        config = LoopConfig(checkpoint_dir=tmpdir, max_steps=5)
+        steps = list(composable_loop(llm, tools=reg, config=config, state=state))
+        assert len(steps) >= 1
+        # Step numbering should continue from the checkpoint
+        assert steps[0].number >= 2
+
+
 # ── Tracer test ──────────────────────────────────────────────────
 
 

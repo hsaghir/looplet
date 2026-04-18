@@ -1,4 +1,4 @@
-"""Tests for cadence.parse — JSON and native tool parsing."""
+"""Tests for openharness.parse — JSON and native tool parsing."""
 
 from __future__ import annotations
 

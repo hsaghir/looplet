@@ -1,4 +1,4 @@
-"""Tests for cadence.streaming — structured event emission for agent observability."""
+"""Tests for openharness.streaming — structured event emission for agent observability."""
 from __future__ import annotations
 
 import queue

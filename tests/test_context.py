@@ -1,4 +1,4 @@
-"""Tests for cadence.context — ContextManagerHook."""
+"""Tests for openharness.context — ContextPressureHook."""
 
 from __future__ import annotations
 
@@ -37,8 +37,8 @@ def _make_session_log(entities: set | None = None, render_output: str = "") -> A
 
 class TestImports:
     def test_context_manager_hook_importable(self):
-        from openharness.context import ContextManagerHook
-        assert ContextManagerHook is not None
+        from openharness.context import ContextPressureHook
+        assert ContextPressureHook is not None
 
     def test_compact_data_importable(self):
         from openharness.context import _compact_data
@@ -59,13 +59,13 @@ class TestImports:
         assert DEFAULT_RESULT_MAX_AGE_FULL == 3
 
 
-# ── ContextManagerHook constructor ────────────────────────────────
+# ── ContextPressureHook constructor ────────────────────────────────
 
 
 class TestContextManagerHookConstructor:
     def test_default_params(self):
-        from openharness.context import ContextManagerHook
-        hook = ContextManagerHook(llm=None)
+        from openharness.context import ContextPressureHook
+        hook = ContextPressureHook(llm=None)
         assert hook._context_window == 128_000
         assert hook._compact_threshold == 128_000 - 20_000
         assert hook._warning_threshold == 128_000 - 30_000
@@ -75,14 +75,14 @@ class TestContextManagerHookConstructor:
         assert hook._aggregate_chars == 500_000
 
     def test_configurable_context_window(self):
-        from openharness.context import ContextManagerHook
-        hook = ContextManagerHook(llm=None, context_window=200_000)
+        from openharness.context import ContextPressureHook
+        hook = ContextPressureHook(llm=None, context_window=200_000)
         assert hook._context_window == 200_000
         assert hook._compact_threshold == 200_000 - 20_000
 
     def test_configurable_buffers(self):
-        from openharness.context import ContextManagerHook
-        hook = ContextManagerHook(
+        from openharness.context import ContextPressureHook
+        hook = ContextPressureHook(
             llm=None,
             context_window=100_000,
             compact_buffer=10_000,
@@ -95,31 +95,31 @@ class TestContextManagerHookConstructor:
 
     def test_absolute_not_fraction(self):
         """Buffer thresholds are absolute token counts, NOT fractions."""
-        from openharness.context import ContextManagerHook
-        hook = ContextManagerHook(llm=None, context_window=100_000, compact_buffer=20_000)
+        from openharness.context import ContextPressureHook
+        hook = ContextPressureHook(llm=None, context_window=100_000, compact_buffer=20_000)
         # If fractions were used, threshold would be around 80_000 * some_fraction
         # With absolute offsets: 100_000 - 20_000 = 80_000
         assert hook._compact_threshold == 80_000
 
     def test_configurable_result_params(self):
-        from openharness.context import ContextManagerHook
-        hook = ContextManagerHook(llm=None, per_result_chars=10_000, aggregate_chars=100_000)
+        from openharness.context import ContextPressureHook
+        hook = ContextPressureHook(llm=None, per_result_chars=10_000, aggregate_chars=100_000)
         assert hook._per_result_chars == 10_000
         assert hook._aggregate_chars == 100_000
 
     def test_configurable_result_max_age(self):
-        from openharness.context import ContextManagerHook
-        hook = ContextManagerHook(llm=None, result_max_age_full=5)
+        from openharness.context import ContextPressureHook
+        hook = ContextPressureHook(llm=None, result_max_age_full=5)
         assert hook._result_max_age_full == 5
 
     def test_extra_llm_calls_starts_at_zero(self):
-        from openharness.context import ContextManagerHook
-        hook = ContextManagerHook(llm=None)
+        from openharness.context import ContextPressureHook
+        hook = ContextPressureHook(llm=None)
         assert hook._extra_llm_calls == 0
 
     def test_compact_failures_starts_at_zero(self):
-        from openharness.context import ContextManagerHook
-        hook = ContextManagerHook(llm=None)
+        from openharness.context import ContextPressureHook
+        hook = ContextPressureHook(llm=None)
         assert hook._compact_failures == 0
 
 
@@ -128,8 +128,8 @@ class TestContextManagerHookConstructor:
 
 class TestResultAging:
     def test_fresh_result_not_compacted(self):
-        from openharness.context import ContextManagerHook
-        hook = ContextManagerHook(llm=None, result_max_age_full=3)
+        from openharness.context import ContextPressureHook
+        hook = ContextPressureHook(llm=None, result_max_age_full=3)
         step = _make_step(1, data=["item1", "item2"])
         state = _make_state([step])
         hook._age_results(state, step_num=3)  # age = 3 - 1 = 2 <= max_age
@@ -137,8 +137,8 @@ class TestResultAging:
         assert isinstance(step.tool_result.data, list)
 
     def test_old_result_compacted(self):
-        from openharness.context import ContextManagerHook
-        hook = ContextManagerHook(llm=None, result_max_age_full=3)
+        from openharness.context import ContextPressureHook
+        hook = ContextPressureHook(llm=None, result_max_age_full=3)
         step = _make_step(1, data=["item1", "item2", "item3"])
         state = _make_state([step])
         hook._age_results(state, step_num=5)  # age = 5 - 1 = 4 > 3
@@ -148,8 +148,8 @@ class TestResultAging:
 
     def test_already_compacted_skipped(self):
         """Idempotency: already-compacted results are not re-processed."""
-        from openharness.context import ContextManagerHook
-        hook = ContextManagerHook(llm=None, result_max_age_full=3)
+        from openharness.context import ContextPressureHook
+        hook = ContextPressureHook(llm=None, result_max_age_full=3)
         compacted_data = {"__compacted__": True, "type": "list", "original_count": 5}
         step = _make_step(1, data=compacted_data)
         state = _make_state([step])
@@ -159,8 +159,8 @@ class TestResultAging:
 
     def test_error_results_skipped(self):
         """Results with errors are not aged."""
-        from openharness.context import ContextManagerHook
-        hook = ContextManagerHook(llm=None, result_max_age_full=3)
+        from openharness.context import ContextPressureHook
+        hook = ContextPressureHook(llm=None, result_max_age_full=3)
         step = _make_step(1, data=None, error="Tool failed")
         state = _make_state([step])
         hook._age_results(state, step_num=10)
@@ -168,8 +168,8 @@ class TestResultAging:
 
     def test_none_data_results_skipped(self):
         """Results with None data are not aged."""
-        from openharness.context import ContextManagerHook
-        hook = ContextManagerHook(llm=None, result_max_age_full=3)
+        from openharness.context import ContextPressureHook
+        hook = ContextPressureHook(llm=None, result_max_age_full=3)
         step = _make_step(1, data=None)
         state = _make_state([step])
         hook._age_results(state, step_num=10)
@@ -177,8 +177,8 @@ class TestResultAging:
 
     def test_exact_age_boundary_not_compacted(self):
         """At exactly result_max_age_full, result should NOT be compacted (> not >=)."""
-        from openharness.context import ContextManagerHook
-        hook = ContextManagerHook(llm=None, result_max_age_full=3)
+        from openharness.context import ContextPressureHook
+        hook = ContextPressureHook(llm=None, result_max_age_full=3)
         step = _make_step(1, data=["x"])
         state = _make_state([step])
         hook._age_results(state, step_num=4)  # age = 4 - 1 = 3 == max_age, NOT > max_age
@@ -186,15 +186,15 @@ class TestResultAging:
 
     def test_no_steps_attr_safe(self):
         """Works gracefully when state has no steps attribute."""
-        from openharness.context import ContextManagerHook
-        hook = ContextManagerHook(llm=None)
+        from openharness.context import ContextPressureHook
+        hook = ContextPressureHook(llm=None)
         state = SimpleNamespace()  # no .steps
         hook._age_results(state, step_num=5)  # should not raise
 
     def test_configurable_max_age(self):
         """result_max_age_full is configurable."""
-        from openharness.context import ContextManagerHook
-        hook = ContextManagerHook(llm=None, result_max_age_full=1)
+        from openharness.context import ContextPressureHook
+        hook = ContextPressureHook(llm=None, result_max_age_full=1)
         step = _make_step(1, data=["x"])
         state = _make_state([step])
         hook._age_results(state, step_num=3)  # age = 2 > 1
@@ -261,30 +261,30 @@ class TestCompactData:
 
 class TestHealthProbe:
     def test_no_all_entities_method_returns_none(self):
-        from openharness.context import ContextManagerHook
-        hook = ContextManagerHook(llm=None)
+        from openharness.context import ContextPressureHook
+        hook = ContextPressureHook(llm=None)
         log = SimpleNamespace()  # no all_entities method
         state = _make_state([])
         assert hook._health_probe(state, log) is None
 
     def test_empty_entities_returns_none(self):
-        from openharness.context import ContextManagerHook
-        hook = ContextManagerHook(llm=None)
+        from openharness.context import ContextPressureHook
+        hook = ContextPressureHook(llm=None)
         log = _make_session_log(entities=set())
         state = _make_state([])
         assert hook._health_probe(state, log) is None
 
     def test_few_entities_returns_none(self):
         """With <= 3 entities, no probe needed."""
-        from openharness.context import ContextManagerHook
-        hook = ContextManagerHook(llm=None)
+        from openharness.context import ContextPressureHook
+        hook = ContextPressureHook(llm=None)
         log = _make_session_log(entities={"a", "b", "c"})
         state = _make_state([])
         assert hook._health_probe(state, log) is None
 
     def test_all_entities_visible_returns_none(self):
-        from openharness.context import ContextManagerHook
-        hook = ContextManagerHook(llm=None)
+        from openharness.context import ContextPressureHook
+        hook = ContextPressureHook(llm=None)
         entities = {"entity1", "entity2", "entity3", "entity4", "entity5"}
         log = _make_session_log(
             entities=entities,
@@ -294,8 +294,8 @@ class TestHealthProbe:
         assert hook._health_probe(state, log) is None
 
     def test_many_missing_entities_returns_reminder(self):
-        from openharness.context import ContextManagerHook
-        hook = ContextManagerHook(llm=None)
+        from openharness.context import ContextPressureHook
+        hook = ContextPressureHook(llm=None)
         entities = {f"entity{i}" for i in range(20)}
         # Only first 5 appear in render
         visible_text = "entity0 entity1 entity2 entity3 entity4"
@@ -308,8 +308,8 @@ class TestHealthProbe:
 
     def test_reminder_has_no_ioc_reference(self):
         """No 'IOC' text — uses 'highlight' or 'notable item'."""
-        from openharness.context import ContextManagerHook
-        hook = ContextManagerHook(llm=None)
+        from openharness.context import ContextPressureHook
+        hook = ContextPressureHook(llm=None)
         entities = {f"entity{i}" for i in range(20)}
         log = _make_session_log(entities=entities, render_output="entity0")
         state = _make_state([])
@@ -323,8 +323,8 @@ class TestHealthProbe:
 
 class TestEstimateContextTokens:
     def test_returns_int(self):
-        from openharness.context import ContextManagerHook
-        hook = ContextManagerHook(llm=None)
+        from openharness.context import ContextPressureHook
+        hook = ContextPressureHook(llm=None)
         state = _make_state([])
         log = _make_session_log(render_output="")
         result = hook._estimate_context_tokens(state, log)
@@ -332,16 +332,16 @@ class TestEstimateContextTokens:
 
     def test_includes_overhead(self):
         """Even empty state has overhead tokens."""
-        from openharness.context import ContextManagerHook
-        hook = ContextManagerHook(llm=None)
+        from openharness.context import ContextPressureHook
+        hook = ContextPressureHook(llm=None)
         state = _make_state([])
         log = _make_session_log(render_output="")
         result = hook._estimate_context_tokens(state, log)
         assert result > 0  # overhead alone > 0
 
     def test_increases_with_more_steps(self):
-        from openharness.context import ContextManagerHook
-        hook = ContextManagerHook(llm=None)
+        from openharness.context import ContextPressureHook
+        hook = ContextPressureHook(llm=None)
         log = _make_session_log(render_output="")
         state_empty = _make_state([])
         state_full = _make_state([_make_step(i, data=list(range(100))) for i in range(10)])
@@ -350,8 +350,8 @@ class TestEstimateContextTokens:
         assert full_tokens > empty_tokens
 
     def test_increases_with_larger_session_log(self):
-        from openharness.context import ContextManagerHook
-        hook = ContextManagerHook(llm=None)
+        from openharness.context import ContextPressureHook
+        hook = ContextPressureHook(llm=None)
         state = _make_state([])
         small_log = _make_session_log(render_output="small")
         large_log = _make_session_log(render_output="x" * 10000)
@@ -360,8 +360,8 @@ class TestEstimateContextTokens:
         assert large_tokens > small_tokens
 
     def test_no_steps_attr_safe(self):
-        from openharness.context import ContextManagerHook
-        hook = ContextManagerHook(llm=None)
+        from openharness.context import ContextPressureHook
+        hook = ContextPressureHook(llm=None)
         state = SimpleNamespace()  # no .steps
         log = _make_session_log(render_output="some log text")
         result = hook._estimate_context_tokens(state, log)
@@ -374,8 +374,8 @@ class TestEstimateContextTokens:
 class TestPrePrompt:
     def test_returns_none_when_under_threshold(self):
         """When context is well below threshold, returns None (no intervention)."""
-        from openharness.context import ContextManagerHook
-        hook = ContextManagerHook(llm=None, context_window=128_000)
+        from openharness.context import ContextPressureHook
+        hook = ContextPressureHook(llm=None, context_window=128_000)
         state = _make_state([])
         log = _make_session_log(render_output="short log")
         result = hook.pre_prompt(state, log, context=None, step_num=1)
@@ -383,8 +383,8 @@ class TestPrePrompt:
 
     def test_ages_results_called(self):
         """pre_prompt calls _age_results to compact old data."""
-        from openharness.context import ContextManagerHook
-        hook = ContextManagerHook(llm=None, result_max_age_full=1)
+        from openharness.context import ContextPressureHook
+        hook = ContextPressureHook(llm=None, result_max_age_full=1)
         # Step 1 with data, at step 5 it should be aged
         step = _make_step(1, data=["x", "y"])
         state = _make_state([step])
@@ -395,9 +395,9 @@ class TestPrePrompt:
         assert step.tool_result.data.get("__compacted__") is True
 
     def test_enforces_result_budget(self):
-        """pre_prompt calls enforce_result_budget from scaffolding."""
-        from openharness.context import ContextManagerHook
-        hook = ContextManagerHook(llm=None, per_result_chars=100, aggregate_chars=1000)
+        """pre_prompt calls trim_results from scaffolding."""
+        from openharness.context import ContextPressureHook
+        hook = ContextPressureHook(llm=None, per_result_chars=100, aggregate_chars=1000)
         # Oversized result
         big_data = {"rows": ["x" * 200] * 10}
         step = _make_step(1, data=big_data)
@@ -409,9 +409,9 @@ class TestPrePrompt:
 
     def test_blocking_threshold_returns_warning(self):
         """When context is at blocking threshold, returns a warning string."""
-        from openharness.context import ContextManagerHook
+        from openharness.context import ContextPressureHook
         # Very small context window so estimate exceeds blocking threshold easily
-        hook = ContextManagerHook(llm=None, context_window=100, blocking_buffer=90)
+        hook = ContextPressureHook(llm=None, context_window=100, blocking_buffer=90)
         # block threshold = 100 - 90 = 10 tokens
         # Overhead alone (~13000 chars / 4 = 3250 tokens) >> 10
         state = _make_state([])
@@ -421,12 +421,12 @@ class TestPrePrompt:
         assert "CONTEXT" in result.upper() or "LIMIT" in result.upper() or "⚠" in result
 
     def test_compact_threshold_triggers_compaction(self):
-        """When context approaches compact threshold, compress_session_log is called."""
-        from openharness.context import ContextManagerHook
-        with patch("openharness.context.compress_session_log") as mock_compress:
+        """When context approaches compact threshold, age_session_entries is called."""
+        from openharness.context import ContextPressureHook
+        with patch("openharness.context.age_session_entries") as mock_compress:
             mock_compress.return_value = "compressed"
             # Very small context window so estimate exceeds compact threshold
-            hook = ContextManagerHook(llm=None, context_window=100, compact_buffer=90, blocking_buffer=5)
+            hook = ContextPressureHook(llm=None, context_window=100, compact_buffer=90, blocking_buffer=5)
             # compact threshold = 100 - 90 = 10 (still triggers compact before blocking)
             state = _make_state([])
             log = _make_session_log(render_output="x" * 100)
@@ -436,8 +436,8 @@ class TestPrePrompt:
             mock_compress.assert_called_once()
 
     def test_on_loop_end_returns_extra_llm_calls(self):
-        from openharness.context import ContextManagerHook
-        hook = ContextManagerHook(llm=None)
+        from openharness.context import ContextPressureHook
+        hook = ContextPressureHook(llm=None)
         hook._extra_llm_calls = 3
         result = hook.on_loop_end(state=None, session_log=None, context=None, llm=None)
         assert result == 3
@@ -455,8 +455,8 @@ class TestNoIOCReferences:
         source = inspect.getsource(mod)
         assert "IOC" not in source, "Found 'IOC' reference in context.py"
 
-    def test_module_importable_without_primal_security(self):
-        """context.py must only import from cadence.*."""
+    def test_no_domain_specific_imports(self):
+        """context.py must only import from openharness.*."""
         import inspect
 
         import openharness.context as mod
@@ -469,11 +469,11 @@ class TestNoIOCReferences:
 
 class TestLoopHookCompatibility:
     def test_has_pre_prompt(self):
-        from openharness.context import ContextManagerHook
-        hook = ContextManagerHook(llm=None)
+        from openharness.context import ContextPressureHook
+        hook = ContextPressureHook(llm=None)
         assert callable(hook.pre_prompt)
 
     def test_has_on_loop_end(self):
-        from openharness.context import ContextManagerHook
-        hook = ContextManagerHook(llm=None)
+        from openharness.context import ContextPressureHook
+        hook = ContextPressureHook(llm=None)
         assert callable(hook.on_loop_end)

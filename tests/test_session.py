@@ -1,4 +1,4 @@
-"""Tests for cadence.session — LogEntry and SessionLog."""
+"""Tests for openharness.session — LogEntry and SessionLog."""
 
 from __future__ import annotations
 
@@ -141,13 +141,12 @@ class TestSessionLogRender:
         log.record(step=1, theory="root cause is X", tool="t", reasoning="r")
         assert "root cause is X" in log.render()
 
-    def test_render_no_investigation_terms(self):
+    def test_render_no_legacy_terms(self):
         import openharness.session as sm
         from openharness.session import LogEntry, SessionLog
         src = open(sm.__file__).read().lower()
         for term in ["iocs_found"]:
             assert term not in src, f"Forbidden term '{term}' found in session.py"
-        # InvestigationLog alias is allowed as backward-compat
 
 
 # ── SessionLog.all_entities tests ────────────────────────────────
@@ -276,13 +275,7 @@ class TestCompact:
 
 
 class TestExports:
-    def test_exported_from_cadence(self):
-        import openharness as cadence
-        assert hasattr(cadence, "SessionLog"), "SessionLog not exported"
-        assert hasattr(cadence, "LogEntry"), "LogEntry not exported"
-
-    def test_investigation_log_alias_is_session_log(self):
-        import openharness as cadence
-        assert hasattr(cadence, "InvestigationLog"), \
-            "InvestigationLog backward-compat alias should be exported"
-        assert cadence.InvestigationLog is cadence.SessionLog
+    def test_exported_from_openharness(self):
+        import openharness as oh
+        assert hasattr(oh, "SessionLog"), "SessionLog not exported"
+        assert hasattr(oh, "LogEntry"), "LogEntry not exported"

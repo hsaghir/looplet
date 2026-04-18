@@ -84,37 +84,6 @@ class TestFlagEnvOverrides:
         assert _Flags().result_budgeting is False
 
 
-class TestLegacyCadenceFallback:
-    """Legacy CADENCE_* env vars still work as fallback."""
-
-    def test_legacy_concurrent_dispatch(self, monkeypatch):
-        monkeypatch.setenv("CADENCE_CONCURRENT_DISPATCH", "1")
-        from openharness.flags import _Flags
-        assert _Flags().concurrent_dispatch is True
-
-    def test_legacy_native_tools(self, monkeypatch):
-        monkeypatch.setenv("CADENCE_NATIVE_TOOLS", "yes")
-        from openharness.flags import _Flags
-        assert _Flags().native_tools is True
-
-    def test_openharness_prefix_wins_over_cadence(self, monkeypatch):
-        """OPENHARNESS_* takes precedence over CADENCE_*."""
-        monkeypatch.setenv("OPENHARNESS_CONCURRENT_DISPATCH", "0")
-        monkeypatch.setenv("CADENCE_CONCURRENT_DISPATCH", "1")
-        from openharness.flags import _Flags
-        assert _Flags().concurrent_dispatch is False
-
-    def test_legacy_sub_agent_max_steps(self, monkeypatch):
-        monkeypatch.setenv("CADENCE_SUB_AGENT_MAX_STEPS", "10")
-        from openharness.flags import _Flags
-        assert _Flags().sub_agent_max_steps == 10
-
-    def test_legacy_sub_agent_max_spawns(self, monkeypatch):
-        monkeypatch.setenv("CADENCE_SUB_AGENT_MAX_SPAWNS", "5")
-        from openharness.flags import _Flags
-        assert _Flags().sub_agent_max_spawns == 5
-
-
 class TestIntFlags:
     def test_sub_agent_max_steps_env(self, monkeypatch):
         monkeypatch.setenv("OPENHARNESS_SUB_AGENT_MAX_STEPS", "10")
@@ -141,7 +110,7 @@ class TestExports:
         assert hasattr(openharness, "FLAGS")
 
     def test_no_harness_prefix_in_flags(self):
-        """Verify we use OPENHARNESS_ prefix for env vars (with CADENCE_ fallback)."""
+        """Verify we use OPENHARNESS_ prefix for env vars (no legacy env var prefixes)."""
         import openharness.flags as fm
         src = open(fm.__file__).read()
         import re

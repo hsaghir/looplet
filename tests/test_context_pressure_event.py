@@ -1,9 +1,9 @@
 """Tests for ContextPressureEvent — the 4th tier of token budget tracking.
 
 The 3-tier (compact / warning / blocking) system already exists on
-``ContextManagerHook``, but only the *compact* and *blocking* tiers
+``ContextPressureHook``, but only the *compact* and *blocking* tiers
 trigger visible actions. The *warning* tier is computed but nothing
-consumes it. Claude Code uses the warning tier to signal the *user*
+consumes it. Some agent frameworks use the warning tier to signal the *user*
 ("85% full — consider wrapping up"), which requires pushing the signal
 through an event channel.
 
@@ -12,7 +12,7 @@ This test locks in:
 1. A new ``ContextPressureEvent`` dataclass exists in
    ``openharness.streaming`` with ``level``, ``estimated_tokens``,
    ``threshold``, ``context_window``, ``percent_used``.
-2. ``ContextManagerHook`` emits one per ``pre_prompt`` call via the
+2. ``ContextPressureHook`` emits one per ``pre_prompt`` call via the
    attached emitter when thresholds are crossed (ok → warning →
    compact → blocking), exactly once per level crossing.
 3. Downgrades (pressure dropping after a compaction) emit a fresh
@@ -22,7 +22,7 @@ This test locks in:
 
 from __future__ import annotations
 
-from openharness.context import ContextManagerHook
+from openharness.context import ContextPressureHook
 from openharness.streaming import ContextPressureEvent
 from openharness.types import DefaultState, Step, ToolCall, ToolResult
 
@@ -70,7 +70,7 @@ class TestHookEmitsPressure:
         emitter = _CaptureEmitter()
         state = _mk_state(1, 10)  # tiny payload
         from openharness.session import SessionLog
-        hook = ContextManagerHook(llm=None, emitter=emitter)
+        hook = ContextPressureHook(llm=None, emitter=emitter)
         hook.pre_prompt(state=state, session_log=SessionLog(),
                         context=None, step_num=2)
         assert emitter.events, "no pressure event emitted"
@@ -85,7 +85,7 @@ class TestHookEmitsPressure:
         # use explicit buffers that put us in the warning band.
         state = _mk_state(3, 20_000)  # ~15K tokens estimated
         from openharness.session import SessionLog
-        hook = ContextManagerHook(
+        hook = ContextPressureHook(
             llm=None,
             context_window=20_000,
             compact_buffer=2_000,       # compact at 18K
@@ -103,7 +103,7 @@ class TestHookEmitsPressure:
     def test_no_emitter_no_error(self):
         state = _mk_state(1, 10)
         from openharness.session import SessionLog
-        hook = ContextManagerHook(llm=None)  # no emitter
+        hook = ContextPressureHook(llm=None)  # no emitter
         # Must not raise
         hook.pre_prompt(state=state, session_log=SessionLog(),
                         context=None, step_num=2)

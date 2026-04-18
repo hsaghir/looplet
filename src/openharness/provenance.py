@@ -646,6 +646,29 @@ class TrajectoryRecorder:
             self.trajectory.termination_reason = "no_steps"
         return 0
 
+    # ── summary ─────────────────────────────────────────────────
+
+    def summary(self) -> str:
+        """One-line human-readable summary of the run.
+
+        Example output::
+
+            5 steps, 2 failed, done, 12.3s
+
+        Call after the loop finishes (or mid-run for progress).
+        """
+        t = self.trajectory
+        n = len(t.steps)
+        fails = sum(1 for s in t.steps if s.tool_result.get("error"))
+        elapsed = (t.ended_at - t.started_at) if t.ended_at else 0
+        parts = [f"{n} steps"]
+        if fails:
+            parts.append(f"{fails} failed")
+        parts.append(f"{t.termination_reason or 'running'}")
+        if elapsed > 0:
+            parts.append(f"{elapsed:.1f}s")
+        return ", ".join(parts)
+
     # ── disk IO ─────────────────────────────────────────────────
 
     def save(self, directory: str | Path) -> Path:

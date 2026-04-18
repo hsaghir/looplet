@@ -1,6 +1,6 @@
 """Shared recovery strategies for prompt-too-long errors.
 
-Used by both sync ``composable_loop`` and ``async_composable_loop`` when
+Used by ``composable_loop`` when
 reactive recovery is triggered. Each strategy mutates agent state to
 reduce prompt size, then the caller rebuilds the prompt and retries.
 
@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from openharness.scaffolding import enforce_result_budget, reactive_compact
+from openharness.scaffolding import emergency_truncate, trim_results
 
 logger = logging.getLogger(__name__)
 
@@ -23,13 +23,13 @@ logger = logging.getLogger(__name__)
 def recovery_aggressive_budget(state: Any, session_log: Any, llm: Any, step_num: int) -> int:
     """Strategy 1: Enforce aggressive per-result budget (2 KB each)."""
     if hasattr(state, "steps") and state.steps:
-        enforce_result_budget(state.steps, per_result_chars=2000, aggregate_chars=20_000)
+        trim_results(state.steps, per_result_chars=2000, aggregate_chars=20_000)
     return 0
 
 
-def recovery_reactive_compact(state: Any, session_log: Any, llm: Any, step_num: int) -> int:
+def recovery_emergency_truncate(state: Any, session_log: Any, llm: Any, step_num: int) -> int:
     """Strategy 2: Emergency session log compression (deterministic)."""
-    reactive_compact(state, session_log, keep_recent=2)
+    emergency_truncate(state, session_log, keep_recent=2)
     return 0
 
 
@@ -83,3 +83,4 @@ def rebuild_prompt(
         briefing=briefing,
         memory=_rendered_memory,
     )
+

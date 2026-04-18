@@ -1,4 +1,4 @@
-"""Tests for cadence.recovery — pluggable failure recovery strategies."""
+"""Tests for openharness.recovery — pluggable failure recovery strategies."""
 from __future__ import annotations
 
 import pytest

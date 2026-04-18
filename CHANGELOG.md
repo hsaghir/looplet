@@ -6,7 +6,200 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added (evals — pytest-style agent evaluation)
+- **Eval framework** (`openharness.evals`). Write `eval_*` functions
+  that take `EvalContext` and return any of `float`, `bool`, `str`,
+  `dict`, or `EvalResult`. The framework normalizes all return types.
+- **`eval_discover(path)`** — auto-discovers eval functions in
+  `eval_*.py` files (like pytest discovers `test_*`).
+- **`eval_run(evals, ctx)`** — runs evaluators, auto-detects
+  `llm` parameter for LLM-as-judge, catches errors gracefully.
+- **`eval_run_batch(evals, contexts)`** — runs same evals across
+  multiple trajectories with per-eval avg/min/max aggregation.
+- **`eval_mark(*tags)`** — decorator for categorizing evals.
+  `eval_run` and `eval_run_batch` accept `include=`/`exclude=` to
+  filter by marks.
+- **`eval_cli(args)`** — CLI runner with threshold-based pass/fail
+  exit codes for CI integration.
+- **`EvalHook`** — LoopHook that builds EvalContext at `on_loop_end`
+  and runs all evaluators automatically during development.
+- **`EvalContext.from_trajectory_dir()`** — loads context from saved
+  trajectories with support for both openharness and benchmark formats.
+
+### Added (MCP + skills)
+- **`MCPToolAdapter`** — wraps MCP server tools as `ToolSpec` instances
+  via JSON-RPC over stdio. No MCP SDK required.
+- **`Skill`** — bundles tools + context + prompt fragment into one
+  loadable unit. `skill.register(registry)` adds all tools.
+
+### Added (approval)
+- **`ApprovalHook`** — stops the loop when a tool returns
+  `needs_approval=True`. Combined with `checkpoint_dir` for
+  crash-safe async human-in-the-loop approval.
+- Renamed `elicit` → `approval` uniformly: `LoopConfig.approval_handler`,
+  `ToolContext.request_approval`, `ToolContext.approve()`.
+
+### Changed (naming cleanup)
+- Renamed internal names for clarity: `coerce_text` → `to_text`,
+  `DiminishingReturnsTracker` → `StallDetector`,
+  `reactive_compact` → `emergency_truncate`,
+  `compress_session_log` → `age_session_entries`,
+  `enforce_result_budget` → `trim_results`,
+  `should_compress_context` → `is_context_oversized`,
+  `HEAVY_BLOCK_KINDS` → `LARGE_CONTENT_TYPES`,
+  `DefaultSummarizer` → `default_summarizer`.
+- Renamed compact services: `DefaultCompactService` → `TruncateCompact`,
+  `LLMCompactService` → `SummarizeCompact`.
+- Renamed `normalise_hook_return` → `normalize_hook_return`.
+- Moved `concurrent_dispatch` and `reactive_recovery` from `FLAGS`
+  global singleton to `LoopConfig` fields.
+- Trimmed `__all__` from 154 → 54 symbols organized into labeled tiers.
+
+### Changed (developer experience)
+- Added `preview_prompt()` — shows what the LLM sees before the first
+  call. Invaluable for debugging.
+- Added `TrajectoryRecorder.summary()` — one-liner run summary.
+- Added `--trace DIR` to coding_agent example for trajectory recording.
+- Added step-by-step tutorial to README (5 progressive steps).
+- Added `LoopConfig` docstring with "start here" guide listing the
+  4 essential fields.
+- Added `FileCheckpointStore.load_latest()` + auto-resume wiring in
+  `composable_loop` — crash-resume is now one line:
+  `LoopConfig(checkpoint_dir="./ckpt")`.
+
+### Removed
+- Removed `async_loop.py` (feature-frozen, no consumers).
+- Removed 3 mock examples (calculator, code_review, research).
+  Replaced with `hello_world.py` (real LLM) + `coding_agent.py`
+  (Claude Code-equivalent tools: bash, read, write, edit, glob,
+  grep, think, done).
+- Removed all back-compat aliases.
+- Removed all internal project references (cadence, primal_security).
+
+### Added (compaction strategies)
+- **`PruneToolResults`** — new zero-LLM-call compaction service that
+  clears old tool-result content while keeping conversation structure
+  intact. Configurable `keep_recent` (how many recent tool results
+  to preserve) and `compactable_tools` (restrict to specific tools).
+  Cheapest possible compaction — use as the first stage in a chain.
+- **`compact_chain(*services)`** — combinator that tries compaction
+  services in order; first stage that has an effect wins. Replaces
+  the need for a separate `ChainedCompactService` class. Usage:
+  `compact_chain(PruneToolResults(), SummarizeCompact(), TruncateCompact())`.
+- **`CompactOutcome.cleanup`** — optional post-compact callback.
+  When set, `run_compact()` invokes it after firing `POST_COMPACT`.
+  Use for domain-specific state resets (clear caches, re-inject
+  context, reset token baselines) without the loop knowing details.
+
+### Changed (renames — back-compat aliases kept)
+- **`DefaultCompactService`** → **`TruncateCompact`** — clearer name
+  for "drop old entries, keep N recent, zero LLM calls."
+- **`LLMCompactService`** → **`SummarizeCompact`** — clearer name
+  for "LLM summarizes middle, keeps N recent."
+- Old names (`DefaultCompactService`, `LLMCompactService`) remain
+  as aliases and continue to work.
+
+### Added (context management pt. 2)
+- **Prompt caching infrastructure** (`openharness.cache`). New
+  `CachePolicy` dataclass declares which stable prompt sections
+  (system prompt, tool schemas, memory) should carry Anthropic-style
+  `cache_control` markers, with per-section TTL (`ephemeral` / `1h`).
+  `LoopConfig.cache_policy` threads per-turn `CacheBreakpoint` lists
+  (label + SHA-256 hash + TTL) to backends that expose
+  `generate_with_cache(..., cache_breakpoints=[...])`. Backends
+  without the kwarg keep working unchanged — caching is strictly
+  additive. `CacheBreakDetector` ships as a drop-in observer hook
+  that records section-hash changes across turns for cache-miss
+  telemetry.
+- **`LLMCompactService`** — new compaction strategy that spends one
+  LLM call to summarise the session. Produces a dense 4-section
+  summary (task goal, findings, open questions, recent decisions)
+  spliced into the session log as a synthetic entry after
+  keep-recent pruning. Falls back to deterministic keep-recent on
+  any summariser error. Trade-off vs `DefaultCompactService`: one
+  LLM call per compaction for preserved reasoning chains.
+- **Threshold-tier context budgeting** (`openharness.budget`). New
+  `ContextBudget` dataclass with `warning_at` / `error_at` /
+  `compact_buffer` tiers. `ThresholdCompactHook` is a ready-to-register
+  `should_compact` implementation that fires proactive compaction
+  once estimated tokens cross the configured tier.
+  `BudgetTelemetry` observer records per-step tier samples and
+  exposes `peak_tier` for production dashboards.
+
+### Added (architecture improvements)
+- **Proactive compact hook slot** — `LoopHook.should_compact(state,
+  session_log, conversation, step_num) -> bool`. Fires at the top of
+  each step, before prompt build. Any hook returning `True` triggers
+  the configured `CompactService` preemptively. Complements the
+  reactive `prompt_too_long` path — use for message-count or
+  token-estimate heuristics. `StreamingHook` gets a no-op stub.
+- **Tool-result streaming via `TOOL_PROGRESS`** — new
+  `LifecycleEvent.TOOL_PROGRESS`. When hooks are present, the loop
+  builds a `ToolContext.on_progress` callback per tool-call that
+  emits `TOOL_PROGRESS` (with the originating `tool_call`) whenever
+  the tool invokes `ctx.report_progress(stage, data)`. Observers can
+  stream intermediate output from long-running tools without
+  blocking dispatch.
+- **Budget-aware turn continuation** — new
+  `LoopConfig.max_turn_continuations: int = 0`. When `> 0` and the
+  backend exposes `last_stop_reason`, `llm_call_with_retry` will
+  re-prompt up to N times on `stop_reason == "max_tokens"` and
+  concatenate outputs so long thoughts aren't truncated mid-message.
+  `LLMResult` gains `stop_reason` and `continuations` fields.
+- **`build_briefing` / `build_prompt` as hook slots** — both are now
+  optional methods on `LoopHook`. First hook returning a non-`None`
+  string wins; the loop falls back to `LoopConfig.build_briefing` /
+  `config.build_prompt` / the built-in default. Lets domain hooks
+  own prompt construction without threading callables through
+  `LoopConfig` separately.
+- **`DomainAdapter`** — new dataclass bundling the five domain
+  callables (`build_briefing`, `extract_entities`, `build_trace`,
+  `build_prompt`, `extract_step_metadata`) into a single object.
+  `LoopConfig.domain: DomainAdapter | None = None` seeds matching
+  flat fields when they are `None`. Flat fields still win over the
+  adapter, which wins over built-in defaults — use the adapter to
+  package a reusable agent in one handle instead of five kwargs.
+
+### Removed (breaking)
+- **`InvestigationLog`** backward-compat alias is gone — use
+  `SessionLog` directly.
+- **`HARNESS_FLAGS`** backward-compat alias is gone — use `FLAGS`.
+- **Legacy `CADENCE_*` environment variables** for feature flags are
+  no longer read; use the `OPENHARNESS_*` prefix.
+- **`_clone_tools_excluding`** private alias is gone — use
+  `clone_tools_excluding`.
+- **`LoopConfig.permissions`** is gone. Register a
+  `PermissionHook(PermissionEngine(...))` in `hooks=[...]` instead —
+  it flows through the same unified `HookDecision` + event bus as
+  every other hook.
+
 ### Added
+- **Unified hook vocabulary — `HookDecision`** (`openharness.hook_decision`).
+  All hook slots now accept a single `HookDecision` return type (legacy
+  `None` / `bool` / `str` returns still work via `normalise_hook_return`).
+  Helpers `Allow()`, `Deny(reason)`, `Block(reason)`, `Stop(reason)`,
+  `Continue()`, `InjectContext(text)` make intent explicit at the call
+  site.
+- **Lifecycle events — `on_event(payload)`** (`openharness.events`).
+  `LoopHook` gained an optional `on_event(EventPayload)` method. The
+  loop now fires 10 named events: `SESSION_START`, `PRE_LLM_CALL`,
+  `POST_LLM_RESPONSE`, `PRE_TOOL_USE`, `POST_TOOL_USE`,
+  `POST_TOOL_FAILURE`, `PRE_COMPACT`, `POST_COMPACT`, `STOP`,
+  `SUBAGENT_START`, `SUBAGENT_STOP`. Any hook can subscribe with a
+  single method instead of implementing every slot.
+- **`PermissionHook`** (`openharness.permissions`) — wraps
+  `PermissionEngine` and plugs it into the event bus so policy
+  decisions flow through the same `HookDecision` path as custom hooks.
+- **`CompactService` + `DefaultCompactService` + `run_compact(...)`**
+  (`openharness.compact`) — reactive compaction is now a swappable
+  service with `PRE_COMPACT` / `POST_COMPACT` events.
+- **`LoopConfig.render_messages_override`** — byte-exact escape hatch.
+  Receives `(messages, default_prompt, step_num)` and returns the
+  exact prompt string sent to the LLM. Lets advanced callers take full
+  control of prompt rendering without forking the loop.
+- **First-class subagents** — `run_sub_loop(..., subagent_id=...)`
+  now fires `SUBAGENT_START` / `SUBAGENT_STOP` events on the parent's
+  hooks and returns `subagent_id` in the result dict for correlation.
 - **`replay_loop(trace_dir, tools=...)`** — rerun a captured trace
   through a fresh `composable_loop` without calling the LLM again.
   Useful for golden-trajectory regression tests, hook A/Bs, and
@@ -133,5 +326,5 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [0.1.5] - initial public import
 
-- Extracted from `cadence` as a standalone package. See the extraction
+- Initial release as a standalone package. See the extraction
   commit history for the pre-extraction development timeline.

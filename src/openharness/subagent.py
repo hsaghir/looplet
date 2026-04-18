@@ -36,6 +36,7 @@ def run_sub_loop(
     build_summary: Callable[[Any, Any, list[dict]], dict[str, Any]] | None = None,
     state_mutating_tools: list[str] | None = None,
     conversation: Any | None = None,
+    subagent_id: str | None = None,
 ) -> dict[str, Any]:
     """Run a sub-agent loop with isolated state.
 
@@ -84,6 +85,21 @@ def run_sub_loop(
     _sub_conv = None
     if conversation is not None and hasattr(conversation, "fork"):
         _sub_conv = conversation.fork()
+
+    # Generate a stable id for lifecycle events so the caller can
+    # correlate SUBAGENT_START / SUBAGENT_STOP payloads.
+    if subagent_id is None:
+        import uuid  # noqa: PLC0415
+        subagent_id = uuid.uuid4().hex[:12]
+
+    # Fire SUBAGENT_START on the parent's hooks so observers see the
+    # spawn. Import lazily to avoid a circular import with loop.py.
+    from openharness.events import LifecycleEvent as _LE  # noqa: PLC0415
+    from openharness.loop import _emit_event  # noqa: PLC0415
+    _emit_event(
+        hooks or [], _LE.SUBAGENT_START,
+        state=state, context=context, subagent_id=subagent_id,
+    )
 
     config = LoopConfig(
         max_steps=max_steps,
@@ -138,6 +154,20 @@ def run_sub_loop(
     result["llm_calls"] = trace.get("llm_calls", 0) if isinstance(trace, dict) else 0
     result.setdefault("findings", all_findings)
     result.setdefault("highlights", all_highlights)
+
+    # Fire SUBAGENT_STOP — observers see completion, final state, and
+    # the llm-call cost via EventPayload.extra. Swallowing exceptions
+    # is already handled by _emit_event.
+    _emit_event(
+        hooks or [], _LE.SUBAGENT_STOP,
+        state=state, context=context, subagent_id=subagent_id,
+        extra={
+            "llm_calls": result["llm_calls"],
+            "step_count": len(steps),
+            "entities": result.get("entities", []),
+        },
+    )
+    result["subagent_id"] = subagent_id
     return result
 
 
@@ -195,7 +225,3 @@ def clone_tools_excluding(parent_tools: Any, exclude: list[str]) -> Any:
             free=spec.free,
         ))
     return sub
-
-
-# Backward-compat alias
-_clone_tools_excluding = clone_tools_excluding

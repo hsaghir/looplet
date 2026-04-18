@@ -1,4 +1,4 @@
-"""Tests for cadence.tools — ToolSpec, BaseToolRegistry, register_think_tool."""
+"""Tests for openharness.tools — ToolSpec, BaseToolRegistry, register_think_tool."""
 
 from __future__ import annotations
 
@@ -277,7 +277,7 @@ class TestThinkTool:
 
 
 class TestExports:
-    def test_all_tools_exported_from_cadence(self):
-        import openharness as cadence
+    def test_all_tools_exported_from_openharness(self):
+        import openharness as oh
         for name in ["ToolSpec", "BaseToolRegistry", "register_think_tool"]:
-            assert hasattr(cadence, name), f"{name} not exported from cadence"
+            assert hasattr(oh, name), f"{name} not exported from openharness"

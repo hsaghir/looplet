@@ -43,5 +43,5 @@ def sample_task() -> dict[str, Any]:
     """Return a minimal task dict suitable for pipeline tests."""
     return {
         "id": "test-task-001",
-        "description": "A sample task for unit testing the cadence pipeline.",
+        "description": "A sample task for unit testing the openharness pipeline.",
     }

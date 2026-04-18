@@ -1,4 +1,4 @@
-"""Tests for cadence.types — core data types and protocols."""
+"""Tests for openharness.types — core data types and protocols."""
 
 from __future__ import annotations
 
@@ -302,7 +302,7 @@ class TestLLMBackendProtocol:
 
 
 class TestExports:
-    def test_all_types_exported_from_cadence(self):
-        import openharness as cadence
+    def test_all_types_exported_from_openharness(self):
+        import openharness as oh
         for name in ["ToolCall", "ToolResult", "Step", "AgentState", "LLMBackend"]:
-            assert hasattr(cadence, name), f"{name} not exported from cadence"
+            assert hasattr(oh, name), f"{name} not exported from openharness"

@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import asyncio
 
-from openharness.async_loop import async_composable_loop
 from openharness.loop import LoopConfig, composable_loop
 from openharness.scaffolding import llm_call_with_retry
 from openharness.tools import BaseToolRegistry, ToolSpec
@@ -162,31 +161,3 @@ class TestToolContextSharesCancelToken:
         ))
         assert seen["tool"] is tok
 
-
-class TestAsyncLoopCancelTokenParity:
-    def test_async_loop_threads_cancel_token(self):
-        class _AsyncLLM:
-            def __init__(self) -> None:
-                self.tokens = []
-
-            async def generate(self, prompt: str, *, max_tokens=2000,
-                               system_prompt="", temperature=0.2,
-                               cancel_token=None) -> str:
-                self.tokens.append(cancel_token)
-                return '```json\n{"tool": "done", "args": {"summary": "x"}}\n```'
-
-        llm = _AsyncLLM()
-        tok = CancelToken()
-        cfg = LoopConfig(max_steps=2, cancel_token=tok)
-
-        async def _run():
-            out = []
-            async for s in async_composable_loop(
-                llm=llm, task={"id": "T-1"}, tools=_reg(),
-                config=cfg, state=DefaultState(max_steps=2),
-            ):
-                out.append(s)
-            return out
-
-        asyncio.run(_run())
-        assert tok in llm.tokens

@@ -2,7 +2,6 @@
 
 Covers two architectural invariants:
 
-1. **Async parity** — ``async_composable_loop`` must apply the same
    multi-strategy reactive recovery chain as the sync loop when the
    LLM raises a prompt-too-long error. Without this, long async sessions
    silently fail on context overflow.
@@ -20,7 +19,6 @@ from typing import Any
 
 import pytest
 
-from openharness.async_loop import async_composable_loop
 from openharness.loop import LoopConfig, composable_loop
 from openharness.tools import BaseToolRegistry, ToolSpec
 from openharness.types import DefaultState, LLMBackend
@@ -119,30 +117,3 @@ class _AsyncFlakyLLM:
             raise item
         return item
 
-
-class TestAsyncReactiveRecoveryParity:
-    def test_async_loop_recovers_from_prompt_too_long(self):
-        """Async loop today has no reactive recovery. An overflow yields
-        __llm_error__ immediately. After the fix, the loop should run the
-        same 3-strategy chain as the sync path."""
-        good_done = '```json\n{"tool": "done", "args": {"summary": "ok"}}\n```'
-        llm = _AsyncFlakyLLM([
-            _PromptTooLongError(),  # step 1 overflow
-            good_done,              # recovery retry succeeds
-        ])
-
-        async def _run():
-            state = DefaultState(max_steps=5)
-            reg = _registry()
-            steps = []
-            async for s in async_composable_loop(
-                llm=llm, task={"id": "T-1"}, tools=reg,
-                config=LoopConfig(max_steps=5), state=state,
-            ):
-                steps.append(s)
-            return steps
-
-        steps = asyncio.run(_run())
-        assert len(steps) == 1, f"got {len(steps)} steps"
-        assert steps[0].tool_call.tool == "done", \
-            f"async loop did not recover (tool={steps[0].tool_call.tool})"

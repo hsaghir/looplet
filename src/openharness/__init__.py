@@ -94,6 +94,12 @@ from openharness.permissions import (
     PermissionOutcome,
     PermissionRule,
 )
+from openharness.presets import (
+    AgentPreset,
+    coding_agent_preset,
+    minimal_preset,
+    research_agent_preset,
+)
 from openharness.prompts import build_prompt, preview_prompt
 from openharness.provenance import (
     AsyncRecordingLLMBackend,
@@ -241,4 +247,9 @@ __all__ = [
     "Conversation",
     "Message",
     "run_sub_loop",
+    # ── PRESETS (one-liner agent setup) ─────────────────────────
+    "AgentPreset",
+    "coding_agent_preset",
+    "research_agent_preset",
+    "minimal_preset",
 ]

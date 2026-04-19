@@ -74,6 +74,31 @@ class ToolSpec:
     Encapsulates everything the registry needs to invoke a tool:
     its name, human-readable description, parameter schema,
     the callable to execute, and scheduling hints.
+
+    ``parameters`` accepts two formats:
+
+    1. **Simple** (backward-compatible): ``{"name": "str", "path": "file path"}``
+       — keys are parameter names, values are type/description strings.
+
+    2. **JSON Schema**: ``{"type": "object", "properties": {...}, "required": [...]}``
+       — a full JSON Schema object.  Detected automatically when the dict
+       contains a ``"type"`` key with value ``"object"``.  Provides richer
+       metadata for native tool calling and machine-readable introspection.
+
+    Example (simple)::
+
+        ToolSpec(name="read", ..., parameters={"file_path": "str"})
+
+    Example (JSON Schema)::
+
+        ToolSpec(name="read", ..., parameters={
+            "type": "object",
+            "properties": {
+                "file_path": {"type": "string", "description": "Relative path"},
+                "encoding": {"type": "string", "description": "File encoding", "default": "utf-8"},
+            },
+            "required": ["file_path"],
+        })
     """
 
     name: str
@@ -82,8 +107,8 @@ class ToolSpec:
     description: str
     """Human-readable description shown to the LLM in the tool catalog."""
 
-    parameters: dict[str, str]
-    """Mapping of parameter name → description for schema generation."""
+    parameters: dict[str, Any]
+    """Parameter schema — simple ``{name: desc}`` dict or full JSON Schema object."""
 
     execute: Callable[..., Any] = field(repr=False)
     """Callable invoked when the tool is dispatched. Receives kwargs matching parameters."""
@@ -97,18 +122,64 @@ class ToolSpec:
     _accepts_ctx: bool | None = field(default=None, repr=False, compare=False)
     """Cached result of ``inspect.signature(execute)`` for ``ctx`` detection."""
 
+    @property
+    def is_json_schema(self) -> bool:
+        """True if parameters are in JSON Schema format (has ``type: object``)."""
+        return (
+            isinstance(self.parameters.get("type"), str)
+            and self.parameters["type"] == "object"
+            and "properties" in self.parameters
+        )
+
+    def parameter_names(self) -> list[str]:
+        """Return the list of parameter names regardless of schema format."""
+        if self.is_json_schema:
+            return list(self.parameters.get("properties", {}).keys())
+        return list(self.parameters.keys())
+
+    def required_parameters(self) -> list[str]:
+        """Return required parameter names.
+
+        For JSON Schema, reads the ``required`` field.
+        For simple format, all parameters are assumed required.
+        """
+        if self.is_json_schema:
+            return list(self.parameters.get("required", []))
+        return list(self.parameters.keys())
+
     def spec_text(self) -> str:
         """Format for LLM prompt inclusion."""
-        params = ", ".join(f"{k}: {v}" for k, v in self.parameters.items())
+        if self.is_json_schema:
+            props = self.parameters.get("properties", {})
+            required = set(self.parameters.get("required", []))
+            parts = []
+            for k, v in props.items():
+                ptype = v.get("type", "any") if isinstance(v, dict) else "any"
+                opt = "" if k in required else "?"
+                parts.append(f"{k}{opt}: {ptype}")
+            params = ", ".join(parts)
+        else:
+            params = ", ".join(f"{k}: {v}" for k, v in self.parameters.items())
         return f"  {self.name}({params})\n    {self.description}"
 
     def to_api_schema(self) -> dict[str, Any]:
-        """Generate API-compatible tool schema for native tool calling."""
+        """Generate API-compatible tool schema for native tool calling.
+
+        When ``parameters`` is already JSON Schema, it is used directly
+        as the ``input_schema``.  Otherwise, the simple format is
+        auto-converted (all params typed as ``string``).
+        """
+        if self.is_json_schema:
+            return {
+                "name": self.name,
+                "description": self.description,
+                "input_schema": self.parameters,
+            }
         properties: dict[str, Any] = {}
         for param_name, param_desc in self.parameters.items():
             properties[param_name] = {
                 "type": "string",
-                "description": param_desc,
+                "description": str(param_desc),
             }
         return {
             "name": self.name,
@@ -117,6 +188,26 @@ class ToolSpec:
                 "type": "object",
                 "properties": properties,
             },
+        }
+
+    def to_json_schema(self) -> dict[str, Any]:
+        """Return the parameter schema as a JSON Schema object.
+
+        If ``parameters`` is already JSON Schema, returns it directly.
+        Otherwise, auto-converts the simple format.
+        """
+        if self.is_json_schema:
+            return dict(self.parameters)
+        properties: dict[str, Any] = {}
+        for param_name, param_desc in self.parameters.items():
+            properties[param_name] = {
+                "type": "string",
+                "description": str(param_desc),
+            }
+        return {
+            "type": "object",
+            "properties": properties,
+            "required": list(self.parameters.keys()),
         }
 
 
@@ -293,6 +384,31 @@ class BaseToolRegistry:
     def tool_schemas(self) -> list[dict[str, Any]]:
         """Export all tool schemas for native API tool calling."""
         return [spec.to_api_schema() for spec in self._tools.values()]
+
+    def introspect(self) -> dict[str, Any]:
+        """Return a machine-readable description of all registered tools.
+
+        Useful for coding agents to discover available tools, their
+        parameters, and capabilities at runtime.
+
+        Returns a dict with:
+          - ``tool_count``: number of registered tools
+          - ``tools``: list of tool metadata dicts with name, description,
+            parameters (JSON Schema), concurrent_safe, free
+        """
+        tools_info = []
+        for spec in self._tools.values():
+            tools_info.append({
+                "name": spec.name,
+                "description": spec.description,
+                "parameters": spec.to_json_schema(),
+                "concurrent_safe": spec.concurrent_safe,
+                "free": spec.free,
+            })
+        return {
+            "tool_count": len(self._tools),
+            "tools": tools_info,
+        }
 
     def _summarize_args(self, call: ToolCall) -> str:
         """Compact arg summary for logging and context."""

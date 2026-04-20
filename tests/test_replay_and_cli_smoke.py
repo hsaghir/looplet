@@ -12,11 +12,10 @@ from openharness import (
     BaseToolRegistry,
     DefaultState,
     LoopConfig,
-    ProvenanceSink,
     composable_loop,
-    replay_loop,
 )
 from openharness.__main__ import main as cli_main
+from openharness.provenance import ProvenanceSink, replay_loop
 from openharness.testing import MockLLMBackend
 from openharness.tools import ToolSpec
 

@@ -5,15 +5,14 @@ import pytest
 
 from openharness import (
     BaseToolRegistry,
-    BudgetTelemetry,
     ContextBudget,
     DefaultState,
     LoopConfig,
     ThresholdCompactHook,
     TruncateCompact,
-    classify_tier,
     composable_loop,
 )
+from openharness.budget import BudgetTelemetry, classify_tier
 from openharness.session import SessionLog
 from openharness.tools import ToolSpec
 

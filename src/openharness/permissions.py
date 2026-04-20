@@ -258,15 +258,3 @@ class PermissionHook:
     def check_permission(self, tool_call: ToolCall, state: AgentState) -> bool:
         outcome = self.engine.evaluate(tool_call)
         return not outcome.denied
-
-    # ── LoopHook Protocol stubs ────────────────────────────────
-    def pre_loop(self, *a: Any, **k: Any) -> None: return None
-    def pre_prompt(self, *a: Any, **k: Any) -> None: return None
-    def pre_dispatch(self, *a: Any, **k: Any) -> None: return None
-    def post_dispatch(self, *a: Any, **k: Any) -> None: return None
-    def check_done(self, *a: Any, **k: Any) -> None: return None
-    def should_stop(self, *a: Any, **k: Any) -> bool: return False
-    def should_compact(self, *a: Any, **k: Any) -> bool: return False
-    def build_briefing(self, *a: Any, **k: Any) -> None: return None
-    def build_prompt(self, **k: Any) -> None: return None
-    def on_loop_end(self, *a: Any, **k: Any) -> int: return 0

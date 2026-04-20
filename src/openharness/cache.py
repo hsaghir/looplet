@@ -31,7 +31,7 @@ from __future__ import annotations
 import hashlib
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Literal
 
 __all__ = [
     "CacheControl",
@@ -54,7 +54,6 @@ CacheSection = Literal["system_prompt", "tool_schemas", "memory"]
 only prompt regions that are (a) stable across turns within a
 session and (b) large enough to justify a cache entry."""
 
-
 @dataclass(frozen=True)
 class CacheControl:
     """Per-section caching declaration. Frozen so it's safe to share
@@ -68,7 +67,6 @@ class CacheControl:
     ttl: _CacheTTL = "ephemeral"
     """Cache TTL. Default 5-min ephemeral; use ``"1h"`` when you know
     sessions will last long enough to amortise the higher write cost."""
-
 
 @dataclass(frozen=True)
 class CacheBreakpoint:
@@ -87,7 +85,6 @@ class CacheBreakpoint:
     hash: str
     content: str
     control: CacheControl = field(default_factory=CacheControl)
-
 
 @dataclass
 class CachePolicy:
@@ -120,12 +117,10 @@ class CachePolicy:
             out.append(("memory", self.memory))
         return out
 
-
 def _hash(text: str) -> str:
     """Stable 16-char hex hash for cache-break detection. SHA-256
     truncated — collision risk is irrelevant at session scale."""
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
-
 
 def compute_breakpoints(
     policy: CachePolicy,
@@ -151,7 +146,6 @@ def compute_breakpoints(
             label=label, hash=_hash(content), content=content, control=ctl,
         ))
     return out
-
 
 class CacheBreakDetector:
     """Observer :class:`LoopHook` that records section hashes per turn
@@ -215,15 +209,3 @@ class CacheBreakDetector:
     # without wrapping. The loop calls record() itself from the
     # prompt-build path; these are just here to satisfy the protocol.
 
-    def pre_loop(self, *a: Any, **k: Any) -> None: return None
-    def pre_prompt(self, *a: Any, **k: Any) -> None: return None
-    def pre_dispatch(self, *a: Any, **k: Any) -> None: return None
-    def post_dispatch(self, *a: Any, **k: Any) -> None: return None
-    def check_done(self, *a: Any, **k: Any) -> None: return None
-    def check_permission(self, *a: Any, **k: Any) -> None: return None
-    def should_stop(self, *a: Any, **k: Any) -> bool: return False
-    def should_compact(self, *a: Any, **k: Any) -> bool: return False
-    def build_briefing(self, *a: Any, **k: Any) -> None: return None
-    def build_prompt(self, **k: Any) -> None: return None
-    def on_loop_end(self, *a: Any, **k: Any) -> int: return 0
-    def on_event(self, *a: Any, **k: Any) -> None: return None

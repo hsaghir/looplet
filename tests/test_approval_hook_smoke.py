@@ -7,12 +7,12 @@ import pytest
 
 from openharness import (
     ApprovalHook,
-    ApprovalRequest,
     BaseToolRegistry,
     DefaultState,
     LoopConfig,
     composable_loop,
 )
+from openharness.approval import ApprovalRequest
 from openharness.testing import MockLLMBackend
 from openharness.tools import ToolSpec
 

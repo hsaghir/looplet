@@ -53,7 +53,6 @@ BudgetTier = Literal["ok", "warning", "error", "blocking"]
   recovery (prompt-too-long) is imminent if no action is taken.
 """
 
-
 @dataclass
 class ContextBudget:
     """Threshold-tier budgeting for a loop's context window.
@@ -100,7 +99,6 @@ class ContextBudget:
             return "warning"
         return "ok"
 
-
 def classify_tier(
     budget: ContextBudget,
     *,
@@ -137,9 +135,7 @@ def classify_tier(
     est += int(extra_estimate)
     return budget.classify(est), est
 
-
 # ── Hooks ─────────────────────────────────────────────────────────
-
 
 class ThresholdCompactHook:
     """Proactive-compaction hook driven by a :class:`ContextBudget`.
@@ -205,18 +201,6 @@ class ThresholdCompactHook:
         return False
 
     # LoopHook Protocol no-ops so this can be registered directly.
-    def pre_loop(self, *a: Any, **k: Any) -> None: return None
-    def pre_prompt(self, *a: Any, **k: Any) -> None: return None
-    def pre_dispatch(self, *a: Any, **k: Any) -> None: return None
-    def post_dispatch(self, *a: Any, **k: Any) -> None: return None
-    def check_done(self, *a: Any, **k: Any) -> None: return None
-    def check_permission(self, *a: Any, **k: Any) -> None: return None
-    def should_stop(self, *a: Any, **k: Any) -> bool: return False
-    def build_briefing(self, *a: Any, **k: Any) -> None: return None
-    def build_prompt(self, **k: Any) -> None: return None
-    def on_loop_end(self, *a: Any, **k: Any) -> int: return 0
-    def on_event(self, *a: Any, **k: Any) -> None: return None
-
 
 class BudgetTelemetry:
     """Observer hook that records tier transitions per step.
@@ -241,18 +225,6 @@ class BudgetTelemetry:
         tier, est = classify_tier(self.budget, session_log=session_log)
         self.samples.append((step_num, tier, est))
         return None
-
-    def pre_loop(self, *a: Any, **k: Any) -> None: return None
-    def pre_dispatch(self, *a: Any, **k: Any) -> None: return None
-    def post_dispatch(self, *a: Any, **k: Any) -> None: return None
-    def check_done(self, *a: Any, **k: Any) -> None: return None
-    def check_permission(self, *a: Any, **k: Any) -> None: return None
-    def should_stop(self, *a: Any, **k: Any) -> bool: return False
-    def should_compact(self, *a: Any, **k: Any) -> bool: return False
-    def build_briefing(self, *a: Any, **k: Any) -> None: return None
-    def build_prompt(self, **k: Any) -> None: return None
-    def on_loop_end(self, *a: Any, **k: Any) -> int: return 0
-    def on_event(self, *a: Any, **k: Any) -> None: return None
 
     @property
     def peak_tier(self) -> BudgetTier:

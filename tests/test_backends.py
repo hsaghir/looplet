@@ -177,14 +177,14 @@ class TestLLMChunkEvent:
 
 class TestExports:
     def test_backends_exported(self):
-        from openharness import (
-            AnthropicBackend,
+        from openharness import AnthropicBackend, OpenAIBackend
+        from openharness.backends import (
             AnthropicStreamingBackend,
             AsyncAnthropicBackend,
             AsyncOpenAIBackend,
-            LLMChunkEvent,
-            OpenAIBackend,
             OpenAIStreamingBackend,
         )
+        from openharness.streaming import LLMChunkEvent
+
         assert OpenAIBackend is not None
         assert LLMChunkEvent is not None

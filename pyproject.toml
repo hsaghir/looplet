@@ -66,6 +66,7 @@ packages = ["src/openharness"]
 [tool.hatch.build.targets.sdist]
 include = [
     "src/openharness",
+    "src/openharness/py.typed",
     "tests",
     "README.md",
     "LICENSE",

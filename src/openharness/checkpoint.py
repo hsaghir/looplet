@@ -23,9 +23,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-
 # ── Checkpoint dataclass ────────────────────────────────────────────
-
 
 @dataclass
 class Checkpoint:
@@ -80,9 +78,7 @@ class Checkpoint:
             created_at=data.get("created_at", time.time()),
         )
 
-
 # ── CheckpointStore Protocol ────────────────────────────────────────
-
 
 @runtime_checkable
 class CheckpointStore(Protocol):
@@ -99,9 +95,7 @@ class CheckpointStore(Protocol):
         """Load a checkpoint by key; returns None if not found."""
         ...
 
-
 # ── FileCheckpointStore ─────────────────────────────────────────────
-
 
 class FileCheckpointStore:
     """Saves and loads checkpoints as JSON files in a directory.
@@ -148,9 +142,7 @@ class FileCheckpointStore:
                 logger.warning("Skipping corrupt checkpoint: %s", path)
         return best
 
-
 # ── CheckpointHook ─────────────────────────────────────────────────
-
 
 class CheckpointHook:
     """Loop hook that auto-saves checkpoints every N steps.
@@ -239,17 +231,7 @@ class CheckpointHook:
     ) -> int:
         return 0
 
-    # ── LoopHook Protocol stubs ────────────────────────────────
-    def pre_loop(self, *a: Any, **k: Any) -> None: return None
-    def check_permission(self, *a: Any, **k: Any) -> None: return None
-    def should_compact(self, *a: Any, **k: Any) -> bool: return False
-    def build_briefing(self, *a: Any, **k: Any) -> None: return None
-    def build_prompt(self, **k: Any) -> None: return None
-    def on_event(self, *a: Any, **k: Any) -> None: return None
-
-
 # ── resume_loop_state ───────────────────────────────────────────────
-
 
 def resume_loop_state(checkpoint: Checkpoint) -> dict[str, Any]:
     """Reconstruct runnable loop state from a checkpoint.

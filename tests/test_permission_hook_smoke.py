@@ -7,11 +7,11 @@ from openharness import (
     BaseToolRegistry,
     DefaultState,
     LoopConfig,
-    PermissionDecision,
     PermissionEngine,
     PermissionHook,
     composable_loop,
 )
+from openharness.permissions import PermissionDecision
 from openharness.testing import MockLLMBackend
 from openharness.tools import ToolSpec
 

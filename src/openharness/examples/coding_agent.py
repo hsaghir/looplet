@@ -70,7 +70,6 @@ from openharness.types import ToolCall, ToolResult
 # ARE prompts.
 # ═══════════════════════════════════════════════════════════════════
 
-
 def _bash(*, command: str, workspace: str = "") -> dict:
     """Execute a bash command in the workspace directory.
 
@@ -108,7 +107,6 @@ def _bash(*, command: str, workspace: str = "") -> dict:
             "remediation": "Check for infinite loops or blocking I/O.",
         }
 
-
 def _read(*, file_path: str, workspace: str = "") -> dict:
     """Read a file and return its content with line numbers."""
     full = os.path.join(workspace, file_path) if workspace else file_path
@@ -128,7 +126,6 @@ def _read(*, file_path: str, workspace: str = "") -> dict:
             ),
         }
 
-
 def _write(*, file_path: str, content: str, workspace: str = "") -> dict:
     """Create or overwrite a file with the given content."""
     full = os.path.join(workspace, file_path) if workspace else file_path
@@ -136,7 +133,6 @@ def _write(*, file_path: str, content: str, workspace: str = "") -> dict:
     with open(full, "w") as f:
         f.write(content)
     return {"written": file_path, "lines": content.count("\n") + 1}
-
 
 def _edit(*, file_path: str, old_string: str, new_string: str,
           workspace: str = "") -> dict:
@@ -172,7 +168,6 @@ def _edit(*, file_path: str, old_string: str, new_string: str,
         f.write(text.replace(old_string, new_string, 1))
     return {"edited": file_path, "replacements": 1}
 
-
 def _glob(*, pattern: str, workspace: str = "") -> dict:
     """Find files matching a glob pattern (e.g. '**/*.py', 'test_*.py')."""
     import glob as globmod
@@ -184,7 +179,6 @@ def _glob(*, pattern: str, workspace: str = "") -> dict:
         rel = rel[:100]
         return {"pattern": pattern, "files": rel, "truncated": True, "total": len(matches)}
     return {"pattern": pattern, "files": rel, "total": len(rel)}
-
 
 def _grep(*, pattern: str, path: str = ".", workspace: str = "") -> dict:
     """Search file contents with a regex pattern (like ripgrep)."""
@@ -201,7 +195,6 @@ def _grep(*, pattern: str, path: str = ".", workspace: str = "") -> dict:
         return {"pattern": pattern, "matches": lines, "total": len(lines)}
     except subprocess.TimeoutExpired:
         return {"error": "Search timed out", "remediation": "Narrow your pattern or path."}
-
 
 def build_tools(workspace: str) -> BaseToolRegistry:
     """Build the tool registry with Claude Code-equivalent tools.
@@ -269,7 +262,6 @@ def build_tools(workspace: str) -> BaseToolRegistry:
     ))
     return reg
 
-
 # ═══════════════════════════════════════════════════════════════════
 # 2. HOOKS — surface instructions at the right time
 #
@@ -278,7 +270,6 @@ def build_tools(workspace: str) -> BaseToolRegistry:
 # - At quality gate (check_done): block done() until tests pass
 # - At step start (should_stop): only stop when done, never early
 # ═══════════════════════════════════════════════════════════════════
-
 
 @dataclass
 class CodingGuardrailHook:
@@ -352,16 +343,6 @@ class CodingGuardrailHook:
         return False
 
     # Protocol stubs
-    def pre_loop(self, *a: Any, **k: Any) -> None: return None
-    def pre_prompt(self, *a: Any, **k: Any) -> None: return None
-    def pre_dispatch(self, *a: Any, **k: Any) -> None: return None
-    def check_permission(self, *a: Any, **k: Any) -> None: return None
-    def should_compact(self, *a: Any, **k: Any) -> bool: return False
-    def build_briefing(self, *a: Any, **k: Any) -> None: return None
-    def build_prompt(self, **k: Any) -> None: return None
-    def on_loop_end(self, *a: Any, **k: Any) -> int: return 0
-    def on_event(self, *a: Any, **k: Any) -> None: return None
-
 
 # ═══════════════════════════════════════════════════════════════════
 # 3. PERSISTENT MEMORY — coding standards
@@ -381,7 +362,6 @@ CODING_STANDARDS = StaticMemorySource("""\
 6. **Naming**: snake_case for functions/variables, PascalCase for classes.
 """)
 
-
 # ═══════════════════════════════════════════════════════════════════
 # 4. COMPACTION CHAIN — cheap first, then LLM, then truncate
 #
@@ -397,7 +377,6 @@ COMPACT_SERVICE = compact_chain(
     SummarizeCompact(keep_recent=2),
     TruncateCompact(keep_recent=1),
 )
-
 
 # ═══════════════════════════════════════════════════════════════════
 # 5. DOMAIN ADAPTER — Bundle domain callables in one object
@@ -430,7 +409,6 @@ def _build_briefing(state: Any, session_log: SessionLog, context: Any) -> str:
         lines.append("WARNING: You haven't run tests yet. Do that before calling done().")
     return "\n".join(lines)
 
-
 def _build_prompt(*, use_native: bool = False, **kwargs: Any) -> str | None:
     """Custom prompt with JSON format instruction for non-native backends."""
     if use_native:
@@ -447,11 +425,9 @@ def _build_prompt(*, use_native: bool = False, **kwargs: Any) -> str | None:
         ),
     )
 
-
 DOMAIN = DomainAdapter(
     build_briefing=_build_briefing,
 )
-
 
 # ═══════════════════════════════════════════════════════════════════
 # 6. EVALS — write eval functions as you debug, they run automatically
@@ -460,7 +436,6 @@ DOMAIN = DomainAdapter(
 # These are the same checks you'd do manually when reviewing
 # an agent run — formalized as reusable evaluators.
 # ═══════════════════════════════════════════════════════════════════
-
 
 def eval_tests_passed(ctx: EvalContext) -> bool:
     """Did the agent run tests and get them to pass?
@@ -480,7 +455,6 @@ def eval_tests_passed(ctx: EvalContext) -> bool:
                     return True
     return False
 
-
 def eval_wrote_tests(ctx: EvalContext) -> bool:
     """Did the agent write test files (not just implementation)?
 
@@ -495,7 +469,6 @@ def eval_wrote_tests(ctx: EvalContext) -> bool:
             if "test_" in path:
                 return True
     return False
-
 
 def eval_efficiency(ctx: EvalContext) -> float:
     """Score 0-1: how efficiently did the agent complete the task?
@@ -512,7 +485,6 @@ def eval_efficiency(ctx: EvalContext) -> float:
     if n <= 10:
         return 0.6
     return max(0.2, 1.0 - (n - 10) * 0.1)
-
 
 def eval_error_recovery(ctx: EvalContext) -> dict:
     """Did the agent recover from errors or get stuck?
@@ -532,10 +504,8 @@ def eval_error_recovery(ctx: EvalContext) -> dict:
         "score": (1.0 - error_rate) * (1.0 if recovered else 0.5),
     }
 
-
 # All evals for this agent, collected in one list
 CODING_EVALS = [eval_tests_passed, eval_wrote_tests, eval_efficiency, eval_error_recovery]
-
 
 # ═══════════════════════════════════════════════════════════════════
 # 7. MAIN — Putting it all together
@@ -696,11 +666,9 @@ def run_coding_agent(
 
     return trace or {}
 
-
 # ═══════════════════════════════════════════════════════════════════
 # Run with real LLM
 # ═══════════════════════════════════════════════════════════════════
-
 
 def _get_llm(
     *,
@@ -734,7 +702,6 @@ def _get_llm(
 
     client = OpenAI(base_url=_url, api_key=_key)
     return OpenAIBackend(client, model=_model)
-
 
 def main() -> None:
     """Run the coding agent with a real LLM backend."""
@@ -775,7 +742,6 @@ def main() -> None:
 
     run_coding_agent(llm, task=args.task, max_steps=args.max_steps,
                      trace_dir=args.trace)
-
 
 if __name__ == "__main__":
     main()

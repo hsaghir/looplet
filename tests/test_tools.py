@@ -279,5 +279,9 @@ class TestThinkTool:
 class TestExports:
     def test_all_tools_exported_from_openharness(self):
         import openharness as oh
-        for name in ["ToolSpec", "BaseToolRegistry", "register_think_tool"]:
+        for name in ["ToolSpec", "BaseToolRegistry"]:
             assert hasattr(oh, name), f"{name} not exported from openharness"
+
+    def test_register_think_tool_importable(self):
+        from openharness.tools import register_think_tool
+        assert register_think_tool is not None

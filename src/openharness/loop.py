@@ -44,12 +44,13 @@ from openharness.scaffolding import (
 )
 from openharness.session import SessionLog
 from openharness.tools import BaseToolRegistry
-from openharness.types import Step, ToolCall, ToolContext, ToolResult
+from openharness.types import AgentState, Step, ToolCall, ToolContext, ToolResult
 from openharness.validation import validate_args as _validate_args
 
 if TYPE_CHECKING:
     from openharness.cache import CachePolicy
-    from openharness.types import CancelToken
+    from openharness.conversation import Conversation
+    from openharness.types import CancelToken, LLMBackend
 
 # streaming imports are lazy (inside composable_loop) to avoid circular import:
 # streaming.py imports openharness.loop.LoopHook
@@ -110,7 +111,7 @@ class LoopHook(Protocol):
 
     def pre_loop(
         self,
-        state: Any,
+        state: AgentState,
         session_log: SessionLog,
         context: Any,
     ) -> None:
@@ -122,7 +123,7 @@ class LoopHook(Protocol):
 
     def pre_prompt(
         self,
-        state: Any,
+        state: AgentState,
         session_log: SessionLog,
         context: Any,
         step_num: int,
@@ -137,7 +138,7 @@ class LoopHook(Protocol):
 
     def pre_dispatch(
         self,
-        state: Any,
+        state: AgentState,
         session_log: SessionLog,
         tool_call: ToolCall,
         step_num: int,
@@ -152,7 +153,7 @@ class LoopHook(Protocol):
     def check_permission(
         self,
         tool_call: ToolCall,
-        state: Any,
+        state: AgentState,
     ) -> bool:
         """Called before tool dispatch to gate execution on permission.
 
@@ -168,7 +169,7 @@ class LoopHook(Protocol):
 
     def post_dispatch(
         self,
-        state: Any,
+        state: AgentState,
         session_log: SessionLog,
         tool_call: ToolCall,
         tool_result: ToolResult,
@@ -183,7 +184,7 @@ class LoopHook(Protocol):
 
     def check_done(
         self,
-        state: Any,
+        state: AgentState,
         session_log: SessionLog,
         context: Any,
         step_num: int,
@@ -197,7 +198,7 @@ class LoopHook(Protocol):
 
     def should_stop(
         self,
-        state: Any,
+        state: AgentState,
         step_num: int,
         new_entities: int,
     ) -> bool:
@@ -210,9 +211,9 @@ class LoopHook(Protocol):
 
     def should_compact(
         self,
-        state: Any,
+        state: AgentState,
         session_log: SessionLog,
-        conversation: Any,
+        conversation: Conversation | None,
         step_num: int,
     ) -> bool:
         """Called at the top of each step, before prompt build.
@@ -230,7 +231,7 @@ class LoopHook(Protocol):
 
     def build_briefing(
         self,
-        state: Any,
+        state: AgentState,
         session_log: SessionLog,
         context: Any,
     ) -> str | None:
@@ -277,10 +278,10 @@ class LoopHook(Protocol):
 
     def on_loop_end(
         self,
-        state: Any,
+        state: AgentState,
         session_log: SessionLog,
         context: Any,
-        llm: Any,
+        llm: LLMBackend,
     ) -> int:
         """Called once after the loop exits.
 

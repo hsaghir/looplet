@@ -46,7 +46,10 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from openharness.types import AgentState, SessionLog, ToolCall, ToolResult
 
 __all__ = ["ApprovalHook", "ApprovalRequest"]
 
@@ -103,10 +106,10 @@ class ApprovalHook:
 
     def post_dispatch(
         self,
-        state: Any,
-        session_log: Any,
-        tool_call: Any,
-        tool_result: Any,
+        state: AgentState,
+        session_log: SessionLog,
+        tool_call: ToolCall,
+        tool_result: ToolResult,
         step_num: int,
     ) -> Any:
         """Detect ``needs_approval`` in tool result and stop the loop."""
@@ -128,7 +131,7 @@ class ApprovalHook:
         )
         return HookDecision(stop="waiting_for_approval")
 
-    def should_stop(self, state: Any, step_num: int, new_entities: int) -> bool:
+    def should_stop(self, state: AgentState, step_num: int, new_entities: int) -> bool:
         return False
 
     # ── LoopHook Protocol stubs ────────────────────────────────

@@ -17,10 +17,13 @@ from __future__ import annotations
 import queue
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Callable, Protocol, runtime_checkable
 
 from openharness.session import SessionLog
 from openharness.types import ToolCall, ToolResult
+
+if TYPE_CHECKING:
+    from openharness.types import AgentState, LLMBackend
 
 # ── Base Event ──────────────────────────────────────────────────
 
@@ -281,8 +284,8 @@ class StreamingHook:
 
     def pre_loop(
         self,
-        state: Any,
-        session_log: Any,
+        state: AgentState,
+        session_log: SessionLog,
         context: Any,
     ) -> None:
         """Emit ``LoopStartEvent`` once before the loop begins.
@@ -298,7 +301,7 @@ class StreamingHook:
 
     def pre_prompt(
         self,
-        state: Any,
+        state: AgentState,
         session_log: SessionLog,
         context: Any,
         step_num: int,
@@ -310,7 +313,7 @@ class StreamingHook:
 
     def pre_dispatch(
         self,
-        state: Any,
+        state: AgentState,
         session_log: SessionLog,
         tool_call: ToolCall,
         step_num: int,
@@ -325,13 +328,13 @@ class StreamingHook:
         )
         return None
 
-    def check_permission(self, tool_call: ToolCall, state: Any) -> bool:
+    def check_permission(self, tool_call: ToolCall, state: AgentState) -> bool:
         """StreamingHook never blocks — always returns True."""
         return True
 
     def post_dispatch(
         self,
-        state: Any,
+        state: AgentState,
         session_log: SessionLog,
         tool_call: ToolCall,
         tool_result: ToolResult,
@@ -357,7 +360,7 @@ class StreamingHook:
 
     def check_done(
         self,
-        state: Any,
+        state: AgentState,
         session_log: SessionLog,
         context: Any,
         step_num: int,
@@ -367,7 +370,7 @@ class StreamingHook:
 
     def should_stop(
         self,
-        state: Any,
+        state: AgentState,
         step_num: int,
         new_entities: int,
     ) -> bool:
@@ -376,7 +379,7 @@ class StreamingHook:
 
     def should_compact(
         self,
-        state: Any,
+        state: AgentState,
         session_log: SessionLog,
         conversation: Any,
         step_num: int,
@@ -386,7 +389,7 @@ class StreamingHook:
 
     def build_briefing(
         self,
-        state: Any,
+        state: AgentState,
         session_log: SessionLog,
         context: Any,
     ) -> str | None:
@@ -399,10 +402,10 @@ class StreamingHook:
 
     def on_loop_end(
         self,
-        state: Any,
+        state: AgentState,
         session_log: SessionLog,
         context: Any,
-        llm: Any,
+        llm: LLMBackend,
     ) -> int:
         """Emit ``LoopEndEvent`` and return 0 extra LLM calls."""
         total_steps = getattr(state, "step_count", 0)

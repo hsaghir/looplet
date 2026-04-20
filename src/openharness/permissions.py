@@ -20,9 +20,12 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from openharness.types import ToolCall
+
+if TYPE_CHECKING:
+    from openharness.types import AgentState
 
 logger = logging.getLogger(__name__)
 
@@ -252,7 +255,7 @@ class PermissionHook:
     # Back-compat: many older hooks use check_permission. Expose it so
     # this hook behaves correctly even if someone calls the per-method
     # surface directly (e.g. in tests).
-    def check_permission(self, tool_call: ToolCall, state: Any) -> bool:
+    def check_permission(self, tool_call: ToolCall, state: AgentState) -> bool:
         outcome = self.engine.evaluate(tool_call)
         return not outcome.denied
 

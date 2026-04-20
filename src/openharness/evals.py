@@ -50,7 +50,10 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
+
+if TYPE_CHECKING:
+    from openharness.types import AgentState, LLMBackend, SessionLog
 
 __all__ = [
     "EvalContext",
@@ -373,7 +376,7 @@ def eval_run(
     evaluators: list[Callable],
     ctx: EvalContext,
     *,
-    judge_llm: Any = None,
+    judge_llm: LLMBackend = None,
     include: list[str] | None = None,
     exclude: list[str] | None = None,
 ) -> list[EvalResult]:
@@ -466,7 +469,7 @@ class EvalHook:
         self,
         evaluators: list[Callable],
         *,
-        judge_llm: Any = None,
+        judge_llm: LLMBackend = None,
         verbose: bool = False,
     ) -> None:
         self.evaluators = evaluators
@@ -506,7 +509,7 @@ class EvalHook:
     # ── LoopHook interface ─────────────────────────────────────
 
     def on_loop_end(
-        self, state: Any, session_log: Any, context: Any, llm: Any,
+        self, state: AgentState, session_log: SessionLog, context: Any, llm: LLMBackend,
     ) -> int:
         """Run all evaluators after the loop finishes."""
         steps = getattr(state, "steps", [])
@@ -547,7 +550,7 @@ class EvalHook:
 
         return 0
 
-    def pre_loop(self, state: Any, session_log: Any,
+    def pre_loop(self, state: AgentState, session_log: SessionLog,
                  context: Any) -> None:
         """Capture the task from context for eval."""
         # The task is passed via composable_loop's task= kwarg and
@@ -608,7 +611,7 @@ def eval_run_batch(
     evaluators: list[Callable],
     contexts: list[EvalContext],
     *,
-    judge_llm: Any = None,
+    judge_llm: LLMBackend = None,
     include: list[str] | None = None,
     exclude: list[str] | None = None,
 ) -> list[dict[str, Any]]:

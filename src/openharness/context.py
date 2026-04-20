@@ -14,9 +14,13 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from openharness.scaffolding import age_session_entries, trim_results
+
+if TYPE_CHECKING:
+    from openharness.session import SessionLog
+    from openharness.types import AgentState, LLMBackend
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +51,7 @@ class ContextPressureHook:
 
     def __init__(
         self,
-        llm: Any,
+        llm: LLMBackend,
         *,
         context_window: int | None = None,
         compact_buffer: int = DEFAULT_COMPACT_BUFFER,
@@ -94,8 +98,8 @@ class ContextPressureHook:
 
     def pre_prompt(
         self,
-        state: Any,
-        session_log: Any,
+        state: AgentState,
+        session_log: SessionLog,
         context: Any,
         step_num: int,
     ) -> str | None:
@@ -174,10 +178,10 @@ class ContextPressureHook:
 
     def on_loop_end(
         self,
-        state: Any,
-        session_log: Any,
+        state: AgentState,
+        session_log: SessionLog,
         context: Any,
-        llm: Any,
+        llm: LLMBackend,
     ) -> int:
         return self._extra_llm_calls
 
@@ -193,7 +197,7 @@ class ContextPressureHook:
     def build_prompt(self, **k: Any) -> None: return None
     def on_event(self, *a: Any, **k: Any) -> None: return None
 
-    def _step_range(self, state: Any) -> tuple[int, int]:
+    def _step_range(self, state: AgentState) -> tuple[int, int]:
         """Return the (first, last) step number currently in state.steps.
 
         Returns (0, 0) if state has no steps. Used to record which step
@@ -268,7 +272,7 @@ class ContextPressureHook:
         except Exception:  # pragma: no cover - defensive
             logger.exception("Failed to emit context pressure event")
 
-    def _age_results(self, state: Any, step_num: int) -> None:
+    def _age_results(self, state: AgentState, step_num: int) -> None:
         """Progressively age tool results based on step distance.
 
         Idempotent: skips results that are already compacted or None.
@@ -289,7 +293,7 @@ class ContextPressureHook:
             if age > self._result_max_age_full:
                 r.data = _compact_data(r.data, r.result_key)
 
-    def _health_probe(self, state: Any, session_log: Any) -> str | None:
+    def _health_probe(self, state: AgentState, session_log: SessionLog) -> str | None:
         """Verify context integrity after compaction.
 
         Checks whether entities tracked by the session log are still
@@ -318,7 +322,7 @@ class ContextPressureHook:
             f"{', '.join(sample)}. Use result_key to retrieve full data."
         )
 
-    def _estimate_context_tokens(self, state: Any, session_log: Any) -> int:
+    def _estimate_context_tokens(self, state: AgentState, session_log: SessionLog) -> int:
         """Estimate total prompt tokens.
 
         Counts step data + session log + realistic prompt overhead.

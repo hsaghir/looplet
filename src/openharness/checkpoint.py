@@ -15,7 +15,11 @@ import logging
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Callable, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    from openharness.session import SessionLog
+    from openharness.types import AgentState, LLMBackend, ToolCall, ToolResult
 
 logger = logging.getLogger(__name__)
 
@@ -176,8 +180,8 @@ class CheckpointHook:
 
     def pre_prompt(
         self,
-        state: Any,
-        session_log: Any,
+        state: AgentState,
+        session_log: SessionLog,
         context: Any,
         step_num: int,
     ) -> str | None:
@@ -185,19 +189,19 @@ class CheckpointHook:
 
     def pre_dispatch(
         self,
-        state: Any,
-        session_log: Any,
-        tool_call: Any,
+        state: AgentState,
+        session_log: SessionLog,
+        tool_call: ToolCall,
         step_num: int,
     ) -> None:
         return None
 
     def post_dispatch(
         self,
-        state: Any,
-        session_log: Any,
-        tool_call: Any,
-        tool_result: Any,
+        state: AgentState,
+        session_log: SessionLog,
+        tool_call: ToolCall,
+        tool_result: ToolResult,
         step_num: int,
     ) -> str | None:
         """Save a checkpoint if step_num is a multiple of save_every_n_steps."""
@@ -211,8 +215,8 @@ class CheckpointHook:
 
     def check_done(
         self,
-        state: Any,
-        session_log: Any,
+        state: AgentState,
+        session_log: SessionLog,
         context: Any,
         step_num: int,
     ) -> str | None:
@@ -220,7 +224,7 @@ class CheckpointHook:
 
     def should_stop(
         self,
-        state: Any,
+        state: AgentState,
         step_num: int,
         new_entities: int,
     ) -> bool:
@@ -228,10 +232,10 @@ class CheckpointHook:
 
     def on_loop_end(
         self,
-        state: Any,
-        session_log: Any,
+        state: AgentState,
+        session_log: SessionLog,
         context: Any,
-        llm: Any,
+        llm: LLMBackend,
     ) -> int:
         return 0
 

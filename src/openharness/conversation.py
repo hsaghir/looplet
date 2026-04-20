@@ -15,6 +15,15 @@ from typing import Any, Callable
 
 from openharness.types import ToolCall, ToolResult
 
+__all__ = [
+    "MessageRole",
+    "ContentBlock",
+    "Message",
+    "Conversation",
+    "default_summarizer",
+]
+
+
 
 class MessageRole(str, Enum):
     """Role of a message in a conversation thread."""

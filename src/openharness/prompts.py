@@ -18,6 +18,12 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+__all__ = [
+    "build_prompt",
+    "preview_prompt",
+]
+
+
 _DEFAULT_HEADERS: dict[str, str] = {
     "task": "TASK",
     "tools": "TOOLS",

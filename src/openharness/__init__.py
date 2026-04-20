@@ -50,7 +50,7 @@ from openharness.hook_decision import (
     InjectContext,
     Stop,
 )
-from openharness.loop import DomainAdapter, LoopConfig, LoopHook, composable_loop
+from openharness.loop import DomainAdapter, LoopConfig, LoopHook, composable_loop, emit_event
 from openharness.mcp import MCPToolAdapter
 from openharness.memory import CallableMemorySource, StaticMemorySource
 from openharness.permissions import PermissionEngine, PermissionHook, PermissionRule
@@ -146,6 +146,7 @@ __all__ = [
     "eval_cli",
     # ── ADVANCED (power users import from submodules directly) ──
     "DomainAdapter",
+    "emit_event",
     "LifecycleEvent",
     "EventPayload",
     "CancelToken",

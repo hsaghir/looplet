@@ -80,7 +80,7 @@ def build_prompt(
     #     the first thing the model sees every turn; survives
     #     all compactions when sourced from PersistentMemorySource) ──
     if memory:
-        mem_text = memory.strip() if isinstance(memory, str) else ""  # type: ignore[reportUnnecessaryIsInstance]
+        mem_text = memory.strip() if isinstance(memory, str) else ""
         if mem_text:
             parts.append(f"═══ {headers['memory']} ═══")
             parts.append(mem_text)

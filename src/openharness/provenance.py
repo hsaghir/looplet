@@ -274,7 +274,7 @@ class RecordingLLMBackend(_RecordingBase):
             backend, max_chars_per_call=max_chars_per_call, redact=redact
         )
         if hasattr(backend, "generate_with_tools"):
-            self.generate_with_tools = self._generate_with_tools_impl  # type: ignore[attr-defined]
+            self.generate_with_tools = self._generate_with_tools_impl
 
     def generate(
         self,
@@ -363,7 +363,7 @@ class AsyncRecordingLLMBackend(_RecordingBase):
             backend, max_chars_per_call=max_chars_per_call, redact=redact
         )
         if hasattr(backend, "generate_with_tools"):
-            self.generate_with_tools = self._generate_with_tools_impl  # type: ignore[attr-defined]
+            self.generate_with_tools = self._generate_with_tools_impl
 
     async def generate(
         self,
@@ -802,7 +802,7 @@ class _ReplayLLMBackend:
         # Surface ``generate_with_tools`` only if any recorded call used
         # it — keeps ``hasattr`` detection honest for the loop.
         if any(c.get("method") == "generate_with_tools" for c in calls):
-            self.generate_with_tools = self._generate_with_tools_impl  # type: ignore[attr-defined]
+            self.generate_with_tools = self._generate_with_tools_impl
 
     def _next(self, expected_method: str) -> dict[str, Any]:
         if self._index >= len(self._calls):

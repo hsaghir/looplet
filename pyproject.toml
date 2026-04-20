@@ -53,7 +53,7 @@ dev = [
     "pytest-cov>=4.0",
     "pytest-timeout>=2.0",
     "ruff>=0.4",
-    "mypy>=1.8",
+    "pyright>=1.1",
 ]
 
 [build-system]
@@ -102,12 +102,3 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = ["F401", "F811", "F841", "E731"]  # relax common test idioms
-
-[tool.mypy]
-python_version = "3.11"
-strict = false
-warn_unused_configs = true
-warn_redundant_casts = true
-warn_unused_ignores = true
-disallow_untyped_defs = true
-ignore_missing_imports = true

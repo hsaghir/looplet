@@ -595,7 +595,7 @@ def run_coding_agent(
     # via build_prompt so the model knows the expected response shape.
     _domain = DomainAdapter(
         build_briefing=_build_briefing,
-        build_prompt=(None if _native else
+        build_prompt=(None if _native else # pyright: ignore[reportArgumentType]
                       lambda **kw: _build_prompt(use_native=False, **kw)),
     )
 

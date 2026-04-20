@@ -153,7 +153,7 @@ def parse_native_tool_use(blocks: list[dict]) -> list[ToolCall]:
     """
     calls: list[ToolCall] = []
     for block in blocks:
-        if not isinstance(block, dict):  # type: ignore[reportUnnecessaryIsInstance]
+        if not isinstance(block, dict):
             continue
         if block.get("type") != "tool_use":
             continue

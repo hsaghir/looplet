@@ -105,7 +105,7 @@ class _FallbackLLM:
         self._fallback = fallback
         # Expose generate_with_tools only if at least one backend supports it
         if hasattr(primary, "generate_with_tools") or hasattr(fallback, "generate_with_tools"):
-            self.generate_with_tools = self._generate_with_tools_impl  # type: ignore[attr-defined]
+            self.generate_with_tools = self._generate_with_tools_impl
 
     def generate(
         self,
@@ -142,14 +142,14 @@ class _FallbackLLM:
     ) -> Any:
         try:
             if hasattr(self._primary, "generate_with_tools"):
-                return self._primary.generate_with_tools(  # type: ignore[attr-defined]
+                return self._primary.generate_with_tools( # pyright: ignore[reportAttributeAccessIssue]
                     prompt, tools=tools, max_tokens=max_tokens,
                     system_prompt=system_prompt, temperature=temperature,
                 )
         except Exception as exc:
             logger.warning("Primary LLM generate_with_tools failed (%s); switching to fallback", exc)
         if hasattr(self._fallback, "generate_with_tools"):
-            return self._fallback.generate_with_tools(  # type: ignore[attr-defined]
+            return self._fallback.generate_with_tools( # pyright: ignore[reportAttributeAccessIssue]
                 prompt, tools=tools, max_tokens=max_tokens,
                 system_prompt=system_prompt, temperature=temperature,
             )
@@ -203,7 +203,7 @@ class CostTracker:
         self._call_count: int = 0
         # Proxy generate_with_tools if the wrapped backend supports it
         if hasattr(backend, "generate_with_tools"):
-            self.generate_with_tools = self._generate_with_tools_impl  # type: ignore[attr-defined]
+            self.generate_with_tools = self._generate_with_tools_impl
 
     @staticmethod
     def _estimate_tokens(text: str) -> int:
@@ -276,7 +276,7 @@ class CostTracker:
         system_prompt: str = "",
         temperature: float = 0.2,
     ) -> Any:
-        response = self._backend.generate_with_tools(  # type: ignore[attr-defined]
+        response = self._backend.generate_with_tools( # pyright: ignore[reportAttributeAccessIssue]
             prompt, tools=tools, max_tokens=max_tokens,
             system_prompt=system_prompt, temperature=temperature,
         )
@@ -356,7 +356,7 @@ class RoutingLLMBackend:
     ) -> Any:
         """Proxy to the selected backend's native tool calling."""
         backend = self._router.select(self._purpose)
-        return backend.generate_with_tools(  # type: ignore[attr-defined]
+        return backend.generate_with_tools( # pyright: ignore[reportAttributeAccessIssue]
             prompt, tools=tools, max_tokens=max_tokens,
             system_prompt=system_prompt, temperature=temperature,
         )

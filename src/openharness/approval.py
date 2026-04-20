@@ -49,7 +49,8 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from openharness.types import AgentState, SessionLog, ToolCall, ToolResult
+    from openharness.session import SessionLog
+    from openharness.types import AgentState, ToolCall, ToolResult
 
 __all__ = ["ApprovalHook", "ApprovalRequest"]
 

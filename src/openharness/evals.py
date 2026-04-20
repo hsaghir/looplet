@@ -53,7 +53,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
-    from openharness.types import AgentState, LLMBackend, SessionLog
+    from openharness.session import SessionLog
+    from openharness.types import AgentState, LLMBackend
 
 __all__ = [
     "EvalContext",
@@ -376,7 +377,7 @@ def eval_run(
     evaluators: list[Callable],
     ctx: EvalContext,
     *,
-    judge_llm: LLMBackend = None,
+    judge_llm: LLMBackend | None = None,
     include: list[str] | None = None,
     exclude: list[str] | None = None,
 ) -> list[EvalResult]:
@@ -433,7 +434,7 @@ def _format_summary(results: list[EvalResult]) -> str:
     labeled = [r for r in results if r.label and r.score is None]
     parts = []
     if scored:
-        avg = sum(r.score for r in scored) / len(scored)  # type: ignore[arg-type]
+        avg = sum(r.score or 0.0 for r in scored) / len(scored)
         parts.append(f"{len(scored)} scored (avg {avg:.2f})")
     if labeled:
         parts.append(f"{len(labeled)} labeled")
@@ -469,7 +470,7 @@ class EvalHook:
         self,
         evaluators: list[Callable],
         *,
-        judge_llm: LLMBackend = None,
+        judge_llm: LLMBackend | None = None,
         verbose: bool = False,
     ) -> None:
         self.evaluators = evaluators
@@ -594,7 +595,7 @@ def eval_mark(*tags: str) -> Callable:
         results = eval_run(evals, ctx, exclude=["slow"])
     """
     def decorator(fn: Callable) -> Callable:
-        fn._eval_marks = set(tags)  # type: ignore[attr-defined]
+        fn._eval_marks = set(tags)
         return fn
     return decorator
 
@@ -611,7 +612,7 @@ def eval_run_batch(
     evaluators: list[Callable],
     contexts: list[EvalContext],
     *,
-    judge_llm: LLMBackend = None,
+    judge_llm: LLMBackend | None = None,
     include: list[str] | None = None,
     exclude: list[str] | None = None,
 ) -> list[dict[str, Any]]:
@@ -645,10 +646,12 @@ def eval_run_batch(
     # Pivot: per-evaluator aggregation
     summary: list[dict[str, Any]] = []
     for i, fn in enumerate(filtered):
-        scores = [
-            all_results[j][i].score
-            for j in range(len(contexts))
-            if i < len(all_results[j]) and all_results[j][i].score is not None
+        scores: list[float] = [
+            s for s in (
+                all_results[j][i].score
+                for j in range(len(contexts))
+                if i < len(all_results[j])
+            ) if s is not None
         ]
         entry: dict[str, Any] = {
             "name": fn.__name__,

@@ -589,7 +589,7 @@ def _build_tool_ctx(
     ):
         return None
 
-    _on_progress: Callable[[str, dict], None] | None = None
+    _progress_fn: Callable[[str, dict], None] | None = None
     if _has_progress_subscribers:
         from openharness.events import LifecycleEvent as _LE  # noqa: PLC0415
 
@@ -602,10 +602,12 @@ def _build_tool_ctx(
                 extra={"stage": stage, "data": data},
             )
 
+        _progress_fn = _on_progress
+
     return ToolContext(
         cancel_token=config.cancel_token,
         request_approval=config.approval_handler,
-        on_progress=_on_progress,
+        on_progress=_progress_fn,
     )
 
 
@@ -728,8 +730,8 @@ def composable_loop(
 
     # ── Resolve effective LLM (router overrides direct llm) ────
     def _get_llm() -> Any:
-        if config.router is not None:
-            return config.router.select(purpose="reasoning")
+        if config.router is not None: # pyright: ignore[reportOptionalMemberAccess]
+            return config.router.select(purpose="reasoning") # pyright: ignore[reportOptionalMemberAccess]
         return llm
 
     # ── Checkpoint store setup ──────────────────────────────────

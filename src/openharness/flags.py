@@ -1,9 +1,13 @@
 """Feature flags for openharness pipeline capabilities.
 
-All flags read from environment variables with sensible defaults.
-Non-essential or expensive features are off by default.
+.. deprecated:: 0.1.6
+   All flags have been migrated to :class:`LoopConfig` fields.
+   Use ``LoopConfig(concurrent_dispatch=True)`` instead of
+   ``FLAGS.concurrent_dispatch``.  This module is kept for
+   backward compatibility with existing consumers but may be
+   removed in a future release.
 
-Usage:
+Usage (legacy — prefer LoopConfig fields):
     from openharness.flags import FLAGS
 
     if FLAGS.concurrent_dispatch:

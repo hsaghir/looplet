@@ -374,3 +374,7 @@ def _compact_data(data: Any, result_key: str | None) -> dict:
         **({"recall_key": result_key} if result_key else {}),
     }
 
+
+# Back-compat alias — consumer code imports ``ContextManagerHook``.
+ContextManagerHook = ContextPressureHook
+

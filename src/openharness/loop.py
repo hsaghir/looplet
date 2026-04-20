@@ -531,10 +531,17 @@ class LoopConfig:
     Leave unset for fully-autonomous runs."""
 
     context_window: int = 128_000
-    """Maximum context window (in tokens) for the backend.  Used by the
-    pre-flight prompt-size check to decide whether to trigger reactive
-    recovery *before* sending the LLM call.  Override this to match your
-    actual backend's window (e.g. 200_000 for Anthropic, 128_000 for GPT-4o)."""
+    """Maximum context window (in tokens) for the backend.  Used by:
+
+    * The **pre-flight** prompt-size check — if the estimated prompt exceeds
+      ``context_window - 3000`` tokens, reactive recovery fires *before*
+      the LLM call (avoiding a wasted API call).
+    * ``ThresholdCompactHook`` — when you also set ``compact_service``,
+      proactive compaction triggers based on this value.
+
+    Override to match your actual backend's window:
+    200 000 for Claude, 128 000 for GPT-4o, 32 000 for GPT-4, etc.
+    Default: 128 000."""
 
     render_messages_override: Callable[..., str] | None = None
     """Byte-exact prompt escape hatch.
@@ -915,7 +922,7 @@ def composable_loop(
     context: Any = None,
     hooks: list[Any] | None = None,
     config: LoopConfig | None = None,
-    state: Any = None,
+    state: AgentState | None = None,
     session_log: SessionLog | None = None,
     stream: Any | None = None,
     conversation: Any | None = None,
@@ -960,8 +967,12 @@ def composable_loop(
             "Use OpenAIBackend(client, model=...) or AnthropicBackend(client, model=...)."
         )
 
-    # Sync max_steps: config is the source of truth.
+    # Default state when none provided.
     from openharness.types import DefaultState as _DefaultState  # noqa: PLC0415
+    if state is None:
+        state = _DefaultState(max_steps=config.max_steps)
+
+    # Sync max_steps: config is the source of truth.
     if isinstance(state, _DefaultState) and state.max_steps != config.max_steps:
         state.max_steps = config.max_steps
 

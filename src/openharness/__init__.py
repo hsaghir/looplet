@@ -66,6 +66,7 @@ from openharness.session import SessionLog
 from openharness.skills import Skill
 from openharness.streaming import StreamingHook
 from openharness.subagent import run_sub_loop
+from openharness.telemetry import MetricsCollector, MetricsHook, Tracer, TracingHook
 from openharness.tools import BaseToolRegistry, ToolSpec
 from openharness.types import (
     CancelToken,
@@ -130,6 +131,10 @@ __all__ = [
     # ── OBSERVABILITY ───────────────────────────────────────────
     "TrajectoryRecorder",
     "StreamingHook",
+    "Tracer",
+    "TracingHook",
+    "MetricsCollector",
+    "MetricsHook",
     # ── EVALS ────────────────────────────────────────────────────
     "EvalHook",
     "EvalContext",

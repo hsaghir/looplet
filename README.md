@@ -63,7 +63,7 @@ for step in composable_loop(llm=llm, tools=tools, task=task, ...):
 
 ## Features
 
-- **Composable loop** — `composable_loop` / `async_composable_loop` yield
+- **Composable loop** — `composable_loop` yields
   `Step`s you can observe or interrupt. Hooks (`pre_prompt`, `pre_dispatch`,
   `post_dispatch`, `check_done`, `should_stop`, `on_loop_end`) let you
   layer behavior without forking the loop.
@@ -233,11 +233,12 @@ method is a hook. No base class, no registry, no decorator.
 
 ```python
 class ConsolePrinter:
-    def post_dispatch(self, step, state, ctx):
-        print(step.pretty())
+    def post_dispatch(self, state, session_log, tool_call, tool_result, step_num):
+        from openharness import Step
+        print(Step(number=step_num, tool_call=tool_call, tool_result=tool_result).pretty())
 
 class DenyShellCommands:
-    def pre_dispatch(self, tool_call, state, ctx):
+    def pre_dispatch(self, state, session_log, tool_call, step_num):
         if tool_call.tool == "shell":
             return "shell disabled for this task"    # non-empty string = veto
         return None
@@ -304,7 +305,7 @@ sink = ProvenanceSink(dir="traces/run_1/")
 llm = sink.wrap_llm(AnthropicBackend(...))            # capture every prompt + response
 hooks = [sink.trajectory_hook()]                      # capture every step
 
-for step in composable_loop(llm=llm, tool_registry=tools, hooks=hooks, ...):
+for step in composable_loop(llm=llm, tools=tools, hooks=hooks, ...):
     print(step.pretty())
 
 sink.flush()
@@ -459,10 +460,10 @@ Security issues should be reported privately per [SECURITY.md](SECURITY.md).
 
 ```bash
 uv sync
-uv run pytest                 # full test suite (~4 s, 865 tests)
+uv run pytest                 # full test suite (<2 s, 1055 tests)
 uv run pytest -m smoke        # smoke tests only
 uv run ruff check .           # lint
-uv run mypy src/openharness   # type-check
+uv run pyright src/openharness # type-check
 ```
 
 ## Design philosophy
@@ -473,8 +474,8 @@ uv run mypy src/openharness   # type-check
   you bring tools, prompts, and state shape.
 - **Fail closed** — permissions, cancellation, parse recovery all default
   to the safe path.
-- **Sync ↔ async parity** — `composable_loop` and `async_composable_loop`
-  implement identical semantics; choose based on your backend.
+- **Sync first** — `composable_loop` is a plain generator. Async
+  backends (``AsyncOpenAIBackend``, etc.) work inside ``asyncio.run``.
 - **Observable** — every loop phase emits events and records structured
   history; nothing happens inside a black box.
 

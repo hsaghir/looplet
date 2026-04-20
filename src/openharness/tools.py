@@ -15,6 +15,13 @@ from typing import Any, Callable
 
 from openharness.types import ErrorKind, ToolCall, ToolContext, ToolError, ToolResult
 
+__all__ = [
+    "ToolSpec",
+    "BaseToolRegistry",
+    "register_think_tool",
+]
+
+
 
 def _classify_exception(e: BaseException) -> ToolError:
     """Map a Python exception to a :class:`ToolError`.

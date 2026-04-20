@@ -299,7 +299,8 @@ actually see?* and *what trajectory did the loop take?* The
 extra dependencies:
 
 ```python
-from openharness import ProvenanceSink, composable_loop
+from openharness import composable_loop
+from openharness.provenance import ProvenanceSink
 
 sink = ProvenanceSink(dir="traces/run_1/")
 llm = sink.wrap_llm(AnthropicBackend(...))            # capture every prompt + response

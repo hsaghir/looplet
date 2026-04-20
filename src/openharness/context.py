@@ -22,6 +22,12 @@ if TYPE_CHECKING:
     from openharness.session import SessionLog
     from openharness.types import AgentState, LLMBackend
 
+
+__all__ = [
+    "ContextPressureHook",
+    "ContextManagerHook",
+]
+
 logger = logging.getLogger(__name__)
 
 # ── Constants ────────────────────────────────────────────────────

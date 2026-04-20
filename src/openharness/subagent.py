@@ -19,6 +19,12 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable
 
+__all__ = [
+    "run_sub_loop",
+    "clone_tools_excluding",
+]
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -95,8 +101,8 @@ def run_sub_loop(
     # Fire SUBAGENT_START on the parent's hooks so observers see the
     # spawn. Import lazily to avoid a circular import with loop.py.
     from openharness.events import LifecycleEvent as _LE  # noqa: PLC0415
-    from openharness.loop import _emit_event  # noqa: PLC0415
-    _emit_event(
+    from openharness.loop import emit_event  # noqa: PLC0415
+    emit_event(
         hooks or [], _LE.SUBAGENT_START,
         state=state, context=context, subagent_id=subagent_id,
     )
@@ -157,8 +163,8 @@ def run_sub_loop(
 
     # Fire SUBAGENT_STOP — observers see completion, final state, and
     # the llm-call cost via EventPayload.extra. Swallowing exceptions
-    # is already handled by _emit_event.
-    _emit_event(
+    # is already handled by emit_event.
+    emit_event(
         hooks or [], _LE.SUBAGENT_STOP,
         state=state, context=context, subagent_id=subagent_id,
         extra={

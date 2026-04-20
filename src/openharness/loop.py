@@ -607,7 +607,7 @@ def _build_tool_ctx(
         from openharness.events import LifecycleEvent as _LE  # noqa: PLC0415
 
         def _on_progress(stage: str, data: dict) -> None:
-            _emit_event(
+            emit_event(
                 _hooks, _LE.TOOL_PROGRESS,
                 step_num=step_num, state=state,
                 session_log=session_log,
@@ -624,12 +624,15 @@ def _build_tool_ctx(
     )
 
 
-def _emit_event(
+def emit_event(
     hooks: list[Any],
     event: Any,
     **payload_kwargs: Any,
 ) -> list[Any]:
     """Dispatch a :class:`LifecycleEvent` to every hook that opts in.
+
+    Public API — safe to call from subagents, custom hooks, or external
+    orchestrators that need to fire lifecycle events on a hook list.
 
     Hooks without ``on_event`` are silently skipped — this is the
     additive surface, nobody has to implement it. Returned
@@ -754,7 +757,7 @@ def _intercept_tool_calls(
         cur_step = step_num + tc_idx
 
         # ── Event-style hooks (on_event) ────────────────────
-        _pre_tool_decisions = _emit_event(
+        _pre_tool_decisions = emit_event(
             hooks, _LE.PRE_TOOL_USE,
             step_num=cur_step, state=state,
             session_log=session_log, context=context,
@@ -895,7 +898,7 @@ def _run_post_dispatch_hooks(
     _post_tool_event = (
         _LE.POST_TOOL_FAILURE if tool_result.error else _LE.POST_TOOL_USE
     )
-    _post_tool_decisions = _emit_event(
+    _post_tool_decisions = emit_event(
         hooks, _post_tool_event,
         step_num=step_num, state=state, session_log=session_log,
         context=context, tool_call=tool_call,
@@ -1111,7 +1114,7 @@ def composable_loop(
     # Fire SESSION_START — single-slot subscribers to lifecycle
     # events get it in one place alongside the per-method pre_loop.
     from openharness.events import LifecycleEvent as _LE  # noqa: PLC0415
-    _emit_event(
+    emit_event(
         hooks, _LE.SESSION_START,
         state=state, session_log=session_log, context=context,
     )
@@ -1276,7 +1279,7 @@ def composable_loop(
         # collected but only ``additional_context`` is honored (the
         # prompt string is already built at this point; mutating it
         # would invalidate the briefing budget accounting).
-        _pre_llm_decisions = _emit_event(
+        _pre_llm_decisions = emit_event(
             hooks, _LE.PRE_LLM_CALL,
             step_num=step_num, state=state, session_log=session_log,
             context=context, prompt=prompt,
@@ -1373,7 +1376,7 @@ def composable_loop(
 
         # Fire POST_LLM_RESPONSE — hooks can observe raw text before
         # it hits the parser. Stop requests are honored at end-of-step.
-        _post_llm_decisions = _emit_event(
+        _post_llm_decisions = emit_event(
             hooks, _LE.POST_LLM_RESPONSE,
             step_num=step_num, state=state, session_log=session_log,
             context=context, prompt=prompt, raw_response=raw_response,
@@ -1702,7 +1705,7 @@ def composable_loop(
     # on_loop_end cleanup runs. Return values are ignored (the loop
     # is already exiting); hooks should use on_loop_end for llm-call
     # side effects.
-    _emit_event(
+    emit_event(
         hooks, _LE.STOP,
         state=state, session_log=session_log, context=context,
         termination_reason=stop_reason,

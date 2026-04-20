@@ -69,9 +69,7 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
-
 # ── Core data types ──────────────────────────────────────────────
-
 
 @dataclass
 class EvalContext:
@@ -188,7 +186,6 @@ class EvalContext:
             metadata=metadata,
         )
 
-
 @dataclass
 class _DictStep:
     """Lightweight step wrapper for trajectories loaded from JSON.
@@ -217,7 +214,6 @@ class _DictStep:
                   "data": self._data.get("data", {})}
         return _DictView(tr)
 
-
 class _DictView:
     """Attribute-access wrapper for dicts (so eval functions can use dot notation)."""
 
@@ -229,7 +225,6 @@ class _DictView:
 
     def get(self, key: str, default: Any = None) -> Any:
         return self._d.get(key, default)
-
 
 @dataclass
 class EvalResult:
@@ -323,9 +318,7 @@ class EvalResult:
             d["duration_ms"] = round(self.duration_ms, 1)
         return d
 
-
 # ── Discovery ────────────────────────────────────────────────────
-
 
 def eval_discover(
     path: str | Path,
@@ -369,9 +362,7 @@ def eval_discover(
 
     return evaluators
 
-
 # ── Runner ───────────────────────────────────────────────────────
-
 
 def eval_run(
     evaluators: list[Callable],
@@ -427,7 +418,6 @@ def eval_run(
         results.append(result)
     return results
 
-
 def _format_summary(results: list[EvalResult]) -> str:
     """One-line summary of eval results."""
     scored = [r for r in results if r.score is not None]
@@ -443,9 +433,7 @@ def _format_summary(results: list[EvalResult]) -> str:
         parts.append(f"{len(errors)} errors")
     return ", ".join(parts) if parts else "no results"
 
-
 # ── Hook ─────────────────────────────────────────────────────────
-
 
 class EvalHook:
     """LoopHook that runs evaluators at the end of each agent run.
@@ -560,20 +548,8 @@ class EvalHook:
         return None
 
     # Protocol stubs
-    def pre_prompt(self, *a: Any, **k: Any) -> None: return None
-    def pre_dispatch(self, *a: Any, **k: Any) -> None: return None
-    def post_dispatch(self, *a: Any, **k: Any) -> None: return None
-    def check_done(self, *a: Any, **k: Any) -> None: return None
-    def check_permission(self, *a: Any, **k: Any) -> None: return None
-    def should_stop(self, *a: Any, **k: Any) -> bool: return False
-    def should_compact(self, *a: Any, **k: Any) -> bool: return False
-    def build_briefing(self, *a: Any, **k: Any) -> None: return None
-    def build_prompt(self, **k: Any) -> None: return None
-    def on_event(self, *a: Any, **k: Any) -> None: return None
-
 
 # ── Marks ────────────────────────────────────────────────────────
-
 
 def eval_mark(*tags: str) -> Callable:
     """Tag an eval function with category marks for filtering.
@@ -599,14 +575,11 @@ def eval_mark(*tags: str) -> Callable:
         return fn
     return decorator
 
-
 def _get_marks(fn: Callable) -> set[str]:
     """Get eval marks from a function (empty set if unmarked)."""
     return getattr(fn, "_eval_marks", set())
 
-
 # ── Batch runner ─────────────────────────────────────────────────
-
 
 def eval_run_batch(
     evaluators: list[Callable],
@@ -671,7 +644,6 @@ def eval_run_batch(
 
     return summary
 
-
 def _filter_evals(
     evaluators: list[Callable],
     include: list[str] | None,
@@ -690,9 +662,7 @@ def _filter_evals(
         result.append(fn)
     return result
 
-
 # ── CLI runner ───────────────────────────────────────────────────
-
 
 def eval_cli(args: list[str] | None = None) -> int:
     """CLI entry point for running evals.

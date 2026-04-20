@@ -56,7 +56,6 @@ __all__ = ["ApprovalHook", "ApprovalRequest"]
 
 logger = logging.getLogger(__name__)
 
-
 @dataclass(frozen=True)
 class ApprovalRequest:
     """Record of a pending approval request.
@@ -70,7 +69,6 @@ class ApprovalRequest:
     tool: str
     description: str = ""
     options: list[str] = field(default_factory=lambda: ["approve", "deny"])
-
 
 class ApprovalHook:
     """Hook that stops the loop when a tool requests approval.
@@ -135,14 +133,3 @@ class ApprovalHook:
     def should_stop(self, state: AgentState, step_num: int, new_entities: int) -> bool:
         return False
 
-    # ── LoopHook Protocol stubs ────────────────────────────────
-    def pre_loop(self, *a: Any, **k: Any) -> None: return None
-    def pre_prompt(self, *a: Any, **k: Any) -> None: return None
-    def pre_dispatch(self, *a: Any, **k: Any) -> None: return None
-    def check_done(self, *a: Any, **k: Any) -> None: return None
-    def check_permission(self, *a: Any, **k: Any) -> None: return None
-    def should_compact(self, *a: Any, **k: Any) -> bool: return False
-    def build_briefing(self, *a: Any, **k: Any) -> None: return None
-    def build_prompt(self, **k: Any) -> None: return None
-    def on_loop_end(self, *a: Any, **k: Any) -> int: return 0
-    def on_event(self, *a: Any, **k: Any) -> None: return None

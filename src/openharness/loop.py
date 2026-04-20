@@ -49,8 +49,14 @@ from openharness.validation import validate_args as _validate_args
 
 if TYPE_CHECKING:
     from openharness.cache import CachePolicy
+    from openharness.checkpoint import Checkpoint
+    from openharness.compact import CompactService
     from openharness.conversation import Conversation
+    from openharness.recovery import RecoveryRegistry
+    from openharness.router import ModelRouter
+    from openharness.telemetry import Tracer
     from openharness.types import CancelToken, LLMBackend
+    from openharness.validation import OutputSchema
 
 # streaming imports are lazy (inside composable_loop) to avoid circular import:
 # streaming.py imports openharness.loop.LoopHook
@@ -443,9 +449,10 @@ class LoopConfig:
 
     # ── Optional wired capabilities ──────────────────────────────
 
-    router: Any | None = None
-    """ModelRouter — when set, router.select(purpose='reasoning') is called at
-    each step instead of the llm argument passed directly.
+    router: ModelRouter | None = None
+    """When set, ``router.select(purpose='reasoning')`` is called at each
+    step instead of the ``llm`` argument passed directly.  Import from
+    ``openharness.router`` — e.g. ``SimpleRouter``, ``FallbackRouter``.
     """
 
     checkpoint_dir: str | None = None
@@ -453,35 +460,34 @@ class LoopConfig:
     saves a checkpoint after every step so the loop can be resumed.
     """
 
-    tracer: Any | None = None
-    """Tracer instance — when set, wraps each LLM call and tool dispatch in
-    a span so call timings are recorded in the trace tree.
+    tracer: Tracer | None = None
+    """When set, wraps each LLM call and tool dispatch in a span so call
+    timings are recorded in the trace tree.  Import from
+    ``openharness.telemetry``.
     """
 
-    recovery_registry: Any | None = None
-    """RecoveryRegistry — when set, consulted on PARSE_ERROR instead of the
-    built-in hardcoded 3-strategy recovery chain.
+    recovery_registry: RecoveryRegistry | None = None
+    """When set, consulted on PARSE_ERROR instead of the built-in
+    hardcoded 3-strategy recovery chain.  Import from
+    ``openharness.recovery``.
     """
 
-    compact_service: Any | None = None
-    """Optional :class:`openharness.compact.CompactService` — when set,
-    replaces the default reactive-compact strategy in the prompt-too-long
-    recovery chain. The service is invoked via
-    :func:`openharness.compact.run_compact`, which also fires
-    :attr:`LifecycleEvent.PRE_COMPACT` / :attr:`LifecycleEvent.POST_COMPACT`
-    events so observer hooks see every compaction regardless of which
-    service runs. ``None`` keeps the historic behaviour
-    (:func:`recovery_emergency_truncate`).
+    compact_service: CompactService | None = None
+    """When set, replaces the default reactive-compact strategy in the
+    prompt-too-long recovery chain.  The service is invoked via
+    :func:`run_compact`, which fires ``PRE_COMPACT`` / ``POST_COMPACT``
+    events.  ``None`` keeps the default :class:`TruncateCompact`.
     """
 
-    output_schema: Any | None = None
-    """OutputSchema — when set, validate_args(schema, done_payload) is called
-    in the done() quality gate; invalid payloads are rejected with a message.
+    output_schema: OutputSchema | None = None
+    """When set, ``validate_args(schema, done_payload)`` is called in the
+    done() quality gate; invalid payloads are rejected with a message.
+    Import from ``openharness.validation``.
     """
 
-    initial_checkpoint: Any | None = None
-    """Checkpoint — when set, resume_loop_state(checkpoint) is called at loop
-    start to restore session_log and step offset (crash-resume support).
+    initial_checkpoint: Checkpoint | None = None
+    """When set, ``resume_loop_state(checkpoint)`` is called at loop start
+    to restore session_log and step offset (crash-resume support).
     """
 
     memory_sources: list[Any] = field(default_factory=list)
@@ -636,6 +642,12 @@ def _emit_event(
         fn = getattr(hook, "on_event", None)
         if fn is None:
             continue
+        # Deduplicate: when the event has a per-method equivalent
+        # (PRE_TOOL_USE → pre_dispatch, POST_TOOL_USE/FAILURE → post_dispatch),
+        # skip hooks that implement the per-method slot — they already fired.
+        _equiv = _EVENT_METHOD_EQUIV.get(event)
+        if _equiv is not None and hasattr(hook, _equiv):
+            continue
         try:
             result = fn(payload)
         except Exception:  # noqa: BLE001
@@ -646,12 +658,259 @@ def _emit_event(
     return decisions
 
 
+# ── Event → per-method deduplication map ────────────────────────
+# When an on_event LifecycleEvent has a per-method hook equivalent,
+# hooks that implement the per-method version are skipped in on_event
+# to avoid double-firing.  Hooks that ONLY use on_event still get it.
+_EVENT_METHOD_EQUIV: dict[Any, str] = {}  # populated after LifecycleEvent import
+
+
+def _init_event_method_equiv() -> None:
+    from openharness.events import LifecycleEvent as _LE  # noqa: PLC0415
+    _EVENT_METHOD_EQUIV[_LE.PRE_TOOL_USE] = "pre_dispatch"
+    _EVENT_METHOD_EQUIV[_LE.POST_TOOL_USE] = "post_dispatch"
+    _EVENT_METHOD_EQUIV[_LE.POST_TOOL_FAILURE] = "post_dispatch"
+
+
+_init_event_method_equiv()
+
+
+# ── Hook method names (for typo detection) ──────────────────────
+
+_KNOWN_HOOK_METHODS = frozenset({
+    "pre_loop", "pre_prompt", "pre_dispatch", "post_dispatch",
+    "check_done", "check_permission", "should_stop", "should_compact",
+    "build_briefing", "build_prompt", "on_loop_end", "on_event",
+})
+
+
+def _validate_hooks(hooks: list[Any]) -> None:
+    """Warn when a hook object has no recognized hook methods.
+
+    Catches typos like ``post_dispach`` by checking that at least one
+    method name matches the known set.  Silently accepts hooks with
+    at least one valid method — partial implementations are the norm.
+    """
+    import warnings  # noqa: PLC0415
+    for hook in hooks:
+        has_any = any(hasattr(hook, m) for m in _KNOWN_HOOK_METHODS)
+        if not has_any:
+            warnings.warn(
+                f"Hook {type(hook).__name__} has no recognized hook methods "
+                f"({', '.join(sorted(_KNOWN_HOOK_METHODS)[:5])}, ...). "
+                f"Did you misspell a method name?",
+                UserWarning,
+                stacklevel=3,
+            )
+
+
+# ── Composable Agent Loop ───────────────────────────────────────
+
+
+# ── Extracted dispatch helpers ────────────────────────────────────
+# These reduce composable_loop's nesting depth and make the heaviest
+# phases independently readable + testable.
+
+
+@dataclass
+class _InterceptResult:
+    """Return value of _intercept_tool_calls — collected pre-dispatch outcomes."""
+
+    intercepted: dict[int, ToolResult] = field(default_factory=dict)
+    """Map of call-index → ToolResult for intercepted/denied calls."""
+
+    extra_context: list[str] = field(default_factory=list)
+    """Additional context strings to inject into the next prompt."""
+
+
+def _intercept_tool_calls(
+    calls: list[ToolCall],
+    hooks: list[Any],
+    state: AgentState,
+    session_log: SessionLog,
+    context: Any,
+    step_num: int,
+) -> _InterceptResult:
+    """Run pre-dispatch hooks and permission checks on tool calls.
+
+    Processes both the event-style ``on_event(PRE_TOOL_USE)`` path and
+    the per-method ``pre_dispatch`` + ``check_permission`` paths.
+    Returns the set of intercepted results so the caller can skip
+    dispatch for those calls.
+    """
+    from openharness.events import LifecycleEvent as _LE  # noqa: PLC0415
+    from openharness.types import ErrorKind, ToolError  # noqa: PLC0415
+
+    result = _InterceptResult()
+
+    for tc_idx, tc in enumerate(calls):
+        cur_step = step_num + tc_idx
+
+        # ── Event-style hooks (on_event) ────────────────────
+        _pre_tool_decisions = _emit_event(
+            hooks, _LE.PRE_TOOL_USE,
+            step_num=cur_step, state=state,
+            session_log=session_log, context=context,
+            tool_call=tc,
+        )
+        _handled = False
+        for _d in _pre_tool_decisions:
+            if _d.updated_args is not None:
+                tc.args = _d.updated_args
+            if _d.permission == "deny":
+                _te = ToolError(
+                    kind=ErrorKind.PERMISSION_DENIED,
+                    message=_d.block or f"Permission denied for tool '{tc.tool}'",
+                    retriable=False,
+                )
+                result.intercepted[tc_idx] = ToolResult(
+                    tool=tc.tool, args_summary=str(tc.args)[:100],
+                    data=None, error=_te.message, error_detail=_te,
+                )
+                _handled = True
+                break
+            if _d.updated_result is not None:
+                result.intercepted[tc_idx] = _d.updated_result
+                _handled = True
+                break
+            if _d.additional_context:
+                result.extra_context.append(_d.additional_context)
+        if _handled:
+            continue
+
+        # ── Per-method pre_dispatch hooks ───────────────────
+        for hook in hooks:
+            if not hasattr(hook, "pre_dispatch"):
+                continue
+            cached = hook.pre_dispatch(state, session_log, tc, cur_step)
+            _decision = normalize_hook_return(cached, slot="pre_dispatch")
+            if _decision is None:
+                if cached is not None and isinstance(cached, ToolResult):
+                    result.intercepted[tc_idx] = cached
+                    break
+                continue
+            if _decision.updated_args is not None:
+                tc.args = _decision.updated_args
+            if _decision.permission == "deny":
+                _te = ToolError(
+                    kind=ErrorKind.PERMISSION_DENIED,
+                    message=_decision.block or f"Permission denied for tool '{tc.tool}'",
+                    retriable=False,
+                )
+                result.intercepted[tc_idx] = ToolResult(
+                    tool=tc.tool, args_summary=str(tc.args)[:100],
+                    data=None, error=_te.message, error_detail=_te,
+                )
+                break
+            if _decision.updated_result is not None:
+                result.intercepted[tc_idx] = _decision.updated_result
+                break
+            if _decision.additional_context:
+                result.extra_context.append(_decision.additional_context)
+
+        if tc_idx in result.intercepted:
+            continue
+
+        # ── Per-method check_permission hooks ──────────────
+        for hook in hooks:
+            if not hasattr(hook, "check_permission"):
+                continue
+            _raw = hook.check_permission(tc, state)
+            _decision = normalize_hook_return(_raw, slot="check_permission")
+            allowed = _decision is None or _decision.permission != "deny"
+            if not allowed:
+                _msg = (
+                    _decision.block if _decision and _decision.block
+                    else f"Permission denied for tool '{tc.tool}'"
+                )
+                _te = ToolError(
+                    kind=ErrorKind.PERMISSION_DENIED,
+                    message=_msg,
+                    retriable=False,
+                )
+                result.intercepted[tc_idx] = ToolResult(
+                    tool=tc.tool, args_summary=str(tc.args)[:100],
+                    data=None, error=_te.message, error_detail=_te,
+                )
+                break
+
+    return result
+
+
+@dataclass
+class _PostDispatchOutcome:
+    """Return value of _run_post_dispatch_hooks."""
+
+    tool_result: ToolResult
+    """Possibly rewritten tool result."""
+
+    extra_context: list[str] = field(default_factory=list)
+    """Additional context strings for next prompt."""
+
+    stop_reason: str | None = None
+    """Non-None if any hook requested stop."""
+
+
+def _run_post_dispatch_hooks(
+    tool_call: ToolCall,
+    tool_result: ToolResult,
+    hooks: list[Any],
+    state: AgentState,
+    session_log: SessionLog,
+    context: Any,
+    step_num: int,
+) -> _PostDispatchOutcome:
+    """Run post_dispatch hooks + POST_TOOL_USE/FAILURE events.
+
+    Returns a potentially rewritten ToolResult, additional context
+    parts, and an optional stop reason.
+    """
+    from openharness.events import LifecycleEvent as _LE  # noqa: PLC0415
+
+    outcome = _PostDispatchOutcome(tool_result=tool_result)
+
+    # ── Per-method post_dispatch ───────────────────────────
+    for hook in hooks:
+        if not hasattr(hook, "post_dispatch"):
+            continue
+        text = hook.post_dispatch(state, session_log, tool_call, tool_result, step_num)
+        _decision = normalize_hook_return(text, slot="post_dispatch")
+        if _decision is not None:
+            if _decision.updated_result is not None:
+                outcome.tool_result = _decision.updated_result
+                tool_result = outcome.tool_result
+            if _decision.additional_context:
+                outcome.extra_context.append(_decision.additional_context)
+            if _decision.stop is not None:
+                outcome.stop_reason = _decision.stop
+
+    # ── Event-style POST_TOOL_USE / POST_TOOL_FAILURE ──────
+    _post_tool_event = (
+        _LE.POST_TOOL_FAILURE if tool_result.error else _LE.POST_TOOL_USE
+    )
+    _post_tool_decisions = _emit_event(
+        hooks, _post_tool_event,
+        step_num=step_num, state=state, session_log=session_log,
+        context=context, tool_call=tool_call,
+        tool_result=tool_result,
+    )
+    for _d in _post_tool_decisions:
+        if _d.updated_result is not None:
+            outcome.tool_result = _d.updated_result
+        if _d.additional_context:
+            outcome.extra_context.append(_d.additional_context)
+        if _d.stop is not None:
+            outcome.stop_reason = _d.stop
+
+    return outcome
+
+
 # ── Composable Agent Loop ───────────────────────────────────────
 
 
 def composable_loop(
     llm: Any,
-    task: dict[str, Any] | None = None,
+    task: Any = None,
     tools: BaseToolRegistry | None = None,
     context: Any = None,
     hooks: list[Any] | None = None,
@@ -666,11 +925,15 @@ def composable_loop(
     Yields Steps, returns a trace object built by config.build_trace.
 
     Args:
-        llm: LLM backend (must implement generate()).
-        task: The task description (dict, string, or domain-specific object)..
+        llm: LLM backend — must implement ``generate()`` (see :class:`LLMBackend`).
+        task: The task description — dict, string, or any domain object.
+            When a dict, ``task.get("id")`` is used for event labels.
         tools: Tool registry with available tools.
-        context: Domain-specific backend passed to hooks and build_briefing.
-            Hooks can also capture their backends at __init__ time.
+        context: Opaque domain handle passed verbatim to hook methods
+            (``pre_prompt``, ``check_done``, ``build_briefing``,
+            ``on_loop_end``).  Hooks that need domain state at call time
+            should receive it here; hooks that capture state at ``__init__``
+            can ignore it.  Defaults to ``None`` for simple agents.
         hooks: Composable hook instances for domain behavior.
         config: Loop configuration (steps, tokens, callables).
         state: Agent state (must satisfy AgentState protocol).
@@ -689,6 +952,22 @@ def composable_loop(
         config = LoopConfig()
     if hooks is None:
         hooks = []
+
+    # ── Input guards ────────────────────────────────────────────
+    if not callable(getattr(llm, "generate", None)):
+        raise TypeError(
+            f"llm must implement generate() (got {type(llm).__name__}). "
+            "Use OpenAIBackend(client, model=...) or AnthropicBackend(client, model=...)."
+        )
+
+    # Sync max_steps: config is the source of truth.
+    from openharness.types import DefaultState as _DefaultState  # noqa: PLC0415
+    if isinstance(state, _DefaultState) and state.max_steps != config.max_steps:
+        state.max_steps = config.max_steps
+
+    # Warn when a hook object has no recognized hook methods — likely a typo.
+    _validate_hooks(hooks)
+
     t0 = time.time()
 
     if session_log is None:
@@ -730,8 +1009,8 @@ def composable_loop(
 
     # ── Resolve effective LLM (router overrides direct llm) ────
     def _get_llm() -> Any:
-        if config.router is not None: # pyright: ignore[reportOptionalMemberAccess]
-            return config.router.select(purpose="reasoning") # pyright: ignore[reportOptionalMemberAccess]
+        if config is not None and config.router is not None:  # pyright: ignore[reportOptionalMemberAccess]
+            return config.router.select(purpose="reasoning")  # pyright: ignore[reportOptionalMemberAccess]
         return llm
 
     # ── Checkpoint store setup ──────────────────────────────────
@@ -832,7 +1111,8 @@ def composable_loop(
     from openharness.streaming import StreamingHook as _StreamingHook  # noqa: PLC0415
     _has_streaming_hook = any(isinstance(h, _StreamingHook) for h in hooks)
     if stream is not None and _LoopStartEvent is not None and not _has_streaming_hook:
-        stream.emit(_LoopStartEvent(task_summary=str(task.get("id", "")), max_steps=config.max_steps))
+        _task_id = task.get("id", "") if isinstance(task, dict) else str(task)[:80]
+        stream.emit(_LoopStartEvent(task_summary=str(_task_id), max_steps=config.max_steps))
 
     while state.budget_remaining > 0 and not done:
         step_num = state.step_count + 1 + _step_offset
@@ -955,7 +1235,7 @@ def composable_loop(
                 from openharness.prompts import (
                     build_prompt as _default_build_prompt,  # noqa: PLC0415
                 )
-                prompt = _default_build_prompt(**_prompt_kwargs)
+                prompt = _default_build_prompt(**_prompt_kwargs)  # pyright: ignore[reportArgumentType]
 
         # ── Byte-exact escape hatch (render_messages_override) ──
         # If configured, the user takes full control of the prompt
@@ -1184,123 +1464,19 @@ def composable_loop(
         # Dispatch non-done tools
         regular_calls = tool_calls[:done_idx] if done_idx is not None else tool_calls
         if regular_calls:
-            # Pre-dispatch hooks: allow hooks to intercept/block calls.
-            # HookDecision-aware: a hook may return ``updated_args`` (rewrite
-            # the call), ``updated_result`` (short-circuit with a fixture),
-            # or ``permission="deny"`` (convert to PERMISSION_DENIED error).
-            intercepted_results: dict[int, ToolResult] = {}
-            hook_denied_calls: set[int] = set()
-            for tc_idx, tc in enumerate(regular_calls):
-                # Fire PRE_TOOL_USE — event-style hooks see every tool
-                # call. Their HookDecision is applied identically to
-                # what the per-method pre_dispatch hook below does.
-                _pre_tool_decisions = _emit_event(
-                    hooks, _LE.PRE_TOOL_USE,
-                    step_num=step_num + tc_idx, state=state,
-                    session_log=session_log, context=context,
-                    tool_call=tc,
-                )
-                _handled = False
-                for _d in _pre_tool_decisions:
-                    if _d.updated_args is not None:
-                        tc.args = _d.updated_args
-                    if _d.permission == "deny":
-                        from openharness.types import ErrorKind, ToolError  # noqa: PLC0415
-                        _te = ToolError(
-                            kind=ErrorKind.PERMISSION_DENIED,
-                            message=_d.block
-                                or f"Permission denied for tool '{tc.tool}'",
-                            retriable=False,
-                        )
-                        intercepted_results[tc_idx] = ToolResult(
-                            tool=tc.tool, args_summary=str(tc.args)[:100],
-                            data=None, error=_te.message, error_detail=_te,
-                        )
-                        hook_denied_calls.add(tc_idx)
-                        _handled = True
-                        break
-                    if _d.updated_result is not None:
-                        intercepted_results[tc_idx] = _d.updated_result
-                        _handled = True
-                        break
-                    if _d.additional_context:
-                        post_dispatch_parts.append(_d.additional_context)
-                if _handled:
-                    continue
-                for hook in hooks:
-                    if hasattr(hook, "pre_dispatch"):
-                        cached = hook.pre_dispatch(state, session_log, tc, step_num + tc_idx)
-                        _decision = normalize_hook_return(cached, slot="pre_dispatch")
-                        if _decision is None:
-                            # Legacy: None → pass through, ToolResult handled below.
-                            if cached is not None and isinstance(cached, ToolResult):
-                                intercepted_results[tc_idx] = cached
-                                break
-                            continue
-                        # Apply HookDecision effects in priority order.
-                        if _decision.updated_args is not None:
-                            tc.args = _decision.updated_args
-                        if _decision.permission == "deny":
-                            from openharness.types import ErrorKind, ToolError  # noqa: PLC0415
-                            _te = ToolError(
-                                kind=ErrorKind.PERMISSION_DENIED,
-                                message=_decision.block
-                                    or f"Permission denied for tool '{tc.tool}'",
-                                retriable=False,
-                            )
-                            intercepted_results[tc_idx] = ToolResult(
-                                tool=tc.tool, args_summary=str(tc.args)[:100],
-                                data=None, error=_te.message, error_detail=_te,
-                            )
-                            hook_denied_calls.add(tc_idx)
-                            break
-                        if _decision.updated_result is not None:
-                            intercepted_results[tc_idx] = _decision.updated_result
-                            break
-                        # Decision with only additional_context / metadata:
-                        # record it as briefing text for the next turn.
-                        if _decision.additional_context:
-                            post_dispatch_parts.append(_decision.additional_context)
+            # ── Pre-dispatch interception (hooks + permissions) ──
+            _intercept = _intercept_tool_calls(
+                regular_calls, hooks, state, session_log, context, step_num,
+            )
+            intercepted_results = _intercept.intercepted
+            post_dispatch_parts.extend(_intercept.extra_context)
 
+            # ── Dispatch permitted calls ────────────────────────
             calls_to_dispatch = [
                 tc for i, tc in enumerate(regular_calls) if i not in intercepted_results
             ]
 
-            # Permission check: hooks can deny tool calls. For declarative
-            # rules, register a ``PermissionHook`` in ``hooks=[...]``.
-            permitted_calls = []
-            for tc in calls_to_dispatch:
-                denied = False
-                for hook in hooks:
-                    if hasattr(hook, "check_permission"):
-                        _raw = hook.check_permission(tc, state)
-                        _decision = normalize_hook_return(
-                            _raw, slot="check_permission",
-                        )
-                        allowed = _decision is None or _decision.permission != "deny"
-                        if not allowed:
-                            from openharness.types import ErrorKind, ToolError  # noqa: PLC0415
-                            idx = next(i for i, c in enumerate(regular_calls) if c is tc)
-                            _msg = (
-                                _decision.block
-                                if _decision and _decision.block
-                                else f"Permission denied for tool '{tc.tool}'"
-                            )
-                            _te = ToolError(
-                                kind=ErrorKind.PERMISSION_DENIED,
-                                message=_msg,
-                                retriable=False,
-                            )
-                            intercepted_results[idx] = ToolResult(
-                                tool=tc.tool, args_summary=str(tc.args)[:100],
-                                data=None, error=_te.message, error_detail=_te,
-                            )
-                            denied = True
-                            break
-                if not denied:
-                    permitted_calls.append(tc)
-
-            if permitted_calls:
+            if calls_to_dispatch:
                 def _ctx_for(_c: ToolCall) -> ToolContext | None:
                     return _build_tool_ctx(
                         config, hooks=hooks, tool_call=_c,
@@ -1308,14 +1484,12 @@ def composable_loop(
                         session_log=session_log,
                     )
                 if config.concurrent_dispatch:
-                    # Batch dispatch shares one ctx; fall back to the
-                    # first call's context so cancel/approval still work.
-                    _tool_ctx = _ctx_for(permitted_calls[0])
+                    _tool_ctx = _ctx_for(calls_to_dispatch[0])
                     _dispatch_kw = {"ctx": _tool_ctx} if _tool_ctx is not None else {}
-                    dispatch_results = tools.dispatch_batch(permitted_calls, **_dispatch_kw)
+                    dispatch_results = tools.dispatch_batch(calls_to_dispatch, **_dispatch_kw)
                 else:
                     dispatch_results = []
-                    for _c in permitted_calls:
+                    for _c in calls_to_dispatch:
                         _tool_ctx = _ctx_for(_c)
                         _kw = {"ctx": _tool_ctx} if _tool_ctx is not None else {}
                         dispatch_results.append(tools.dispatch(_c, **_kw))
@@ -1347,44 +1521,16 @@ def composable_loop(
                         args_summary=str(tool_call.args)[:200],
                     ))
 
-                for hook in hooks:
-                    if hasattr(hook, "post_dispatch"):
-                        text = hook.post_dispatch(
-                            state, session_log, tool_call, tool_result, cur_step,
-                        )
-                        _decision = normalize_hook_return(text, slot="post_dispatch")
-                        if _decision is not None:
-                            # HookDecision: honor updated_result (rewrite before
-                            # recording), stop (terminate after step), and
-                            # additional_context (inject into next briefing).
-                            if _decision.updated_result is not None:
-                                tool_result = _decision.updated_result
-                            if _decision.additional_context:
-                                post_dispatch_parts.append(_decision.additional_context)
-                            if _decision.stop is not None:
-                                stop_reason = _decision.stop
-                                _hook_requested_stop = True
-
-                # Fire POST_TOOL_USE (or POST_TOOL_FAILURE on error).
-                # Event hooks can rewrite the result, inject briefing
-                # text, or request stop — same semantics as post_dispatch.
-                _post_tool_event = (
-                    _LE.POST_TOOL_FAILURE if tool_result.error else _LE.POST_TOOL_USE
+                # ── Post-dispatch hooks + events ────────────────
+                _pd = _run_post_dispatch_hooks(
+                    tool_call, tool_result, hooks,
+                    state, session_log, context, cur_step,
                 )
-                _post_tool_decisions = _emit_event(
-                    hooks, _post_tool_event,
-                    step_num=cur_step, state=state, session_log=session_log,
-                    context=context, tool_call=tool_call,
-                    tool_result=tool_result,
-                )
-                for _d in _post_tool_decisions:
-                    if _d.updated_result is not None:
-                        tool_result = _d.updated_result
-                    if _d.additional_context:
-                        post_dispatch_parts.append(_d.additional_context)
-                    if _d.stop is not None:
-                        stop_reason = _d.stop
-                        _hook_requested_stop = True
+                tool_result = _pd.tool_result
+                post_dispatch_parts.extend(_pd.extra_context)
+                if _pd.stop_reason is not None:
+                    stop_reason = _pd.stop_reason
+                    _hook_requested_stop = True
 
                 step = Step(number=cur_step, tool_call=tool_call, tool_result=tool_result)
                 cur_step_count = state.step_count
@@ -1539,7 +1685,7 @@ def composable_loop(
     # ── Post-loop hooks ─────────────────────────────────────
     # Stash stop_reason on state so hooks (e.g. StreamingHook) can read it
     if state is not None:
-        state._stop_reason = stop_reason
+        state._stop_reason = stop_reason  # pyright: ignore[reportAttributeAccessIssue]
 
     # Fire STOP — event-style hooks see termination reason before
     # on_loop_end cleanup runs. Return values are ignored (the loop

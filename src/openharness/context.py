@@ -39,7 +39,6 @@ DEFAULT_BLOCKING_BUFFER = 5_000     # refuse to send LLM call (prevent wasted AP
 # Sentinel marking a result as already compacted (skip re-processing)
 _COMPACTED_MARKER = "__compacted__"
 
-
 class ContextPressureHook:
     """Progressive context management as a composable loop hook.
 
@@ -184,18 +183,6 @@ class ContextPressureHook:
         llm: LLMBackend,
     ) -> int:
         return self._extra_llm_calls
-
-    # ── LoopHook Protocol stubs ────────────────────────────────
-    def pre_loop(self, *a: Any, **k: Any) -> None: return None
-    def pre_dispatch(self, *a: Any, **k: Any) -> None: return None
-    def post_dispatch(self, *a: Any, **k: Any) -> None: return None
-    def check_done(self, *a: Any, **k: Any) -> None: return None
-    def check_permission(self, *a: Any, **k: Any) -> None: return None
-    def should_stop(self, *a: Any, **k: Any) -> bool: return False
-    def should_compact(self, *a: Any, **k: Any) -> bool: return False
-    def build_briefing(self, *a: Any, **k: Any) -> None: return None
-    def build_prompt(self, **k: Any) -> None: return None
-    def on_event(self, *a: Any, **k: Any) -> None: return None
 
     def _step_range(self, state: AgentState) -> tuple[int, int]:
         """Return the (first, last) step number currently in state.steps.
@@ -344,7 +331,6 @@ class ContextPressureHook:
         # + system_prompt(2500)
         total_chars += 13_000
         return total_chars // 4
-
 
 def _compact_data(data: Any, result_key: str | None) -> dict:
     """Compact result data to a summary dict.

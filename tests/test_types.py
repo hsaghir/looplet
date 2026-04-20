@@ -304,5 +304,9 @@ class TestLLMBackendProtocol:
 class TestExports:
     def test_all_types_exported_from_openharness(self):
         import openharness as oh
-        for name in ["ToolCall", "ToolResult", "Step", "AgentState", "LLMBackend"]:
+        for name in ["ToolCall", "ToolResult", "Step", "DefaultState", "LLMBackend"]:
             assert hasattr(oh, name), f"{name} not exported from openharness"
+
+    def test_agent_state_importable(self):
+        from openharness.types import AgentState
+        assert AgentState is not None

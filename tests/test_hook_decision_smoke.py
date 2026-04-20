@@ -25,8 +25,8 @@ from openharness import (
     LoopConfig,
     Stop,
     composable_loop,
-    normalize_hook_return,
 )
+from openharness.hook_decision import normalize_hook_return
 from openharness.testing import MockLLMBackend
 from openharness.tools import ToolSpec
 from openharness.types import ToolResult

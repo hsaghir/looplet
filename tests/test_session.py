@@ -278,4 +278,7 @@ class TestExports:
     def test_exported_from_openharness(self):
         import openharness as oh
         assert hasattr(oh, "SessionLog"), "SessionLog not exported"
-        assert hasattr(oh, "LogEntry"), "LogEntry not exported"
+
+    def test_logentry_importable_from_submodule(self):
+        from openharness.session import LogEntry
+        assert LogEntry is not None

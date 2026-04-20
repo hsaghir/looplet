@@ -466,6 +466,11 @@ class Step:
 
     Steps are accumulated in AgentState.steps and used to build
     context summaries for subsequent LLM prompts.
+
+    The most common usage is printing each step as you iterate::
+
+        for step in composable_loop(...):
+            print(step.pretty())   # "#1 ✓ search(query='x') → 12 items [182ms]"
     """
 
     number: int

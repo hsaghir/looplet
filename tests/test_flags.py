@@ -105,9 +105,9 @@ class TestIntFlags:
 
 
 class TestExports:
-    def test_flags_exported(self):
-        import openharness
-        assert hasattr(openharness, "FLAGS")
+    def test_flags_importable_from_submodule(self):
+        from openharness.flags import FLAGS
+        assert FLAGS is not None
 
     def test_no_harness_prefix_in_flags(self):
         """Verify we use OPENHARNESS_ prefix for env vars (no legacy env var prefixes)."""

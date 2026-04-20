@@ -1,40 +1,25 @@
 """openharness — composable tool-calling LLM agent harness.
 
 A minimal, composable framework for building tool-calling LLM agent loops.
+
+Only symbols listed in ``__all__`` are imported here. For everything
+else, import from the relevant submodule::
+
+    from openharness.backends import OpenAIStreamingBackend, AsyncOpenAIBackend
+    from openharness.provenance import ProvenanceSink, replay_loop
+    from openharness.cache import CacheBreakDetector, compute_breakpoints
 """
-# ruff: noqa: F401 — __init__.py intentionally re-exports for `from openharness import X`
 
 __version__ = "0.1.6"
 
-from openharness.approval import ApprovalHook, ApprovalRequest
-from openharness.backends import (
-    AnthropicBackend,
-    AnthropicStreamingBackend,
-    AsyncAnthropicBackend,
-    AsyncOpenAIBackend,
-    OpenAIBackend,
-    OpenAIStreamingBackend,
-)
-from openharness.budget import (
-    BudgetTelemetry,
-    ContextBudget,
-    ThresholdCompactHook,
-    classify_tier,
-)
-from openharness.cache import (
-    CacheBreakDetector,
-    CacheBreakpoint,
-    CacheControl,
-    CachePolicy,
-    compute_breakpoints,
-)
-from openharness.checkpoint import (
-    Checkpoint,
-    CheckpointHook,
-    CheckpointStore,
-    FileCheckpointStore,
-    resume_loop_state,
-)
+# ── Public re-exports (one import per submodule, alphabetical) ──────────
+# ruff: noqa: F401 — __init__.py intentionally re-exports for `from openharness import X`
+
+from openharness.approval import ApprovalHook
+from openharness.backends import AnthropicBackend, OpenAIBackend
+from openharness.budget import ContextBudget, ThresholdCompactHook
+from openharness.cache import CachePolicy
+from openharness.checkpoint import FileCheckpointStore
 from openharness.compact import (
     CompactOutcome,
     CompactService,
@@ -44,13 +29,7 @@ from openharness.compact import (
     compact_chain,
     run_compact,
 )
-from openharness.context import ContextPressureHook
-from openharness.conversation import (
-    ContentBlock,
-    Conversation,
-    Message,
-    MessageRole,
-)
+from openharness.conversation import Conversation, Message
 from openharness.evals import (
     EvalContext,
     EvalHook,
@@ -61,9 +40,7 @@ from openharness.evals import (
     eval_run,
     eval_run_batch,
 )
-from openharness.events import LIFECYCLE_EVENTS, EventPayload, LifecycleEvent  # noqa: F401
-from openharness.flags import FLAGS
-from openharness.history import HistoryRecorder  # noqa: F401
+from openharness.events import EventPayload, LifecycleEvent
 from openharness.hook_decision import (
     Allow,
     Block,
@@ -72,93 +49,25 @@ from openharness.hook_decision import (
     HookDecision,
     InjectContext,
     Stop,
-    normalize_hook_return,
 )
 from openharness.loop import DomainAdapter, LoopConfig, LoopHook, composable_loop
 from openharness.mcp import MCPToolAdapter
-from openharness.memory import (
-    CallableMemorySource,
-    PersistentMemorySource,
-    StaticMemorySource,
-    render_memory,
-)
-from openharness.parse import (  # noqa: F401
-    parse_multi_tool_calls,
-    parse_native_tool_use,
-    parse_tool_call,
-)
-from openharness.permissions import (
-    PermissionDecision,
-    PermissionEngine,
-    PermissionHook,
-    PermissionOutcome,
-    PermissionRule,
-)
+from openharness.memory import CallableMemorySource, StaticMemorySource
+from openharness.permissions import PermissionEngine, PermissionHook, PermissionRule
 from openharness.presets import (
     AgentPreset,
     coding_agent_preset,
     minimal_preset,
     research_agent_preset,
 )
-from openharness.prompts import build_prompt, preview_prompt
-from openharness.provenance import (
-    AsyncRecordingLLMBackend,
-    ProvenanceSink,
-    RecordingLLMBackend,
-    Trajectory,
-    TrajectoryRecorder,
-    replay_loop,
-)
-from openharness.recovery import (
-    RecoveryRegistry,
-    build_default_registry,
-)
-from openharness.router import (
-    CostTracker,
-    FallbackRouter,
-    ModelProfile,
-    ModelRouter,
-    RoutingLLMBackend,
-    SimpleRouter,
-)
-from openharness.scaffolding import (
-    LLMResult,
-    build_parse_recovery_prompt,  # noqa: F401
-    emergency_truncate,  # noqa: F401
-    estimate_prompt_tokens,
-    estimate_tokens,  # noqa: F401
-    is_context_oversized,  # noqa: F401
-    llm_call_with_retry,  # noqa: F401
-    trim_results,  # noqa: F401
-    truncate_tool_result,  # noqa: F401
-)
-from openharness.session import LogEntry, SessionLog
+from openharness.prompts import preview_prompt
+from openharness.provenance import TrajectoryRecorder
+from openharness.session import SessionLog
 from openharness.skills import Skill
-from openharness.streaming import (
-    CallbackEmitter,
-    CompositeEmitter,
-    ContextPressureEvent,  # noqa: F401
-    Event,
-    EventEmitter,
-    HookEvent,  # noqa: F401
-    LLMCallEndEvent,  # noqa: F401
-    LLMCallStartEvent,  # noqa: F401
-    LLMChunkEvent,  # noqa: F401
-    LoopEndEvent,  # noqa: F401
-    LoopStartEvent,  # noqa: F401
-    QueueEmitter,
-    RecoveryEvent,  # noqa: F401
-    StepEndEvent,  # noqa: F401
-    StepStartEvent,  # noqa: F401
-    StreamingHook,
-    ToolDispatchEvent,  # noqa: F401
-    ToolResultEvent,  # noqa: F401
-)
-from openharness.subagent import clone_tools_excluding, run_sub_loop
-from openharness.telemetry import MetricsCollector, MetricsHook, Span, Tracer, TracingHook
-from openharness.tools import BaseToolRegistry, ToolSpec, register_think_tool
+from openharness.streaming import StreamingHook
+from openharness.subagent import run_sub_loop
+from openharness.tools import BaseToolRegistry, ToolSpec
 from openharness.types import (
-    AgentState,
     CancelToken,
     DefaultState,
     ErrorKind,
@@ -169,15 +78,6 @@ from openharness.types import (
     ToolContext,
     ToolError,
     ToolResult,
-)
-from openharness.validation import (
-    DoneValidator,
-    FieldSpec,  # noqa: F401
-    OutputSchema,
-    SimpleDoneValidator,
-    ValidatingToolRegistry,
-    ValidationResult,  # noqa: F401
-    validate_args,
 )
 
 __all__ = [
@@ -196,23 +96,28 @@ __all__ = [
     "LLMBackend",
     "HookDecision",
     "Allow",
-    "Deny",
     "Block",
+    "Continue",
+    "Deny",
     "Stop",
     "InjectContext",
     "preview_prompt",
     # ── BACKENDS ─────────────────────────────────────────────────
     "OpenAIBackend",
     "AnthropicBackend",
+    "NativeToolBackend",
     "MCPToolAdapter",
     # ── CONTEXT MANAGEMENT ──────────────────────────────────────
     "CompactService",
+    "CompactOutcome",
     "TruncateCompact",
     "SummarizeCompact",
     "PruneToolResults",
     "compact_chain",
+    "run_compact",
     "ContextBudget",
     "ThresholdCompactHook",
+    "CachePolicy",
     "StaticMemorySource",
     "CallableMemorySource",
     # ── APPROVAL / PERMISSIONS ──────────────────────────────────
@@ -236,7 +141,6 @@ __all__ = [
     "eval_cli",
     # ── ADVANCED (power users import from submodules directly) ──
     "DomainAdapter",
-    "LoopHook",
     "LifecycleEvent",
     "EventPayload",
     "CancelToken",

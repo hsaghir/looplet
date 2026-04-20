@@ -5,15 +5,12 @@ import pytest
 
 from openharness import (
     BaseToolRegistry,
-    CacheBreakDetector,
-    CacheBreakpoint,
-    CacheControl,
     CachePolicy,
     DefaultState,
     LoopConfig,
     composable_loop,
-    compute_breakpoints,
 )
+from openharness.cache import CacheBreakDetector, CacheBreakpoint, CacheControl, compute_breakpoints
 from openharness.tools import ToolSpec
 
 pytestmark = pytest.mark.smoke
@@ -121,14 +118,19 @@ class TestLoopIntegration:
         ))
 
     def test_detector_hook_integration(self):
+        """CacheBreakDetector is detected by the loop via isinstance, not via hook methods."""
+        import warnings
+
         b = _CacheAwareBackend([
             '{"tool":"done","args":{"answer":"ok"},"reasoning":"r"}',
         ])
         pol = CachePolicy(system_prompt=CacheControl())
         det = CacheBreakDetector(pol)
-        list(composable_loop(
-            llm=b, tools=_tools(), state=DefaultState(max_steps=2),
-            hooks=[det], config=LoopConfig(max_steps=2, system_prompt="S", cache_policy=pol),
-        ))
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            list(composable_loop(
+                llm=b, tools=_tools(), state=DefaultState(max_steps=2),
+                hooks=[det], config=LoopConfig(max_steps=2, system_prompt="S", cache_policy=pol),
+            ))
         # Detector recorded one turn, no breaks (only one turn).
         assert det.breaks == []

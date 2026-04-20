@@ -53,9 +53,7 @@ __all__ = [
     "minimal_preset",
 ]
 
-
 # ── Preset container ─────────────────────────────────────────────
-
 
 @dataclass
 class AgentPreset:
@@ -77,12 +75,17 @@ class AgentPreset:
     state: DefaultState
     """Agent state with budget tracking."""
 
-
 # ── Tool implementations ─────────────────────────────────────────
 
-
 def _bash(*, command: str, workspace: str = "") -> dict:
-    """Execute a bash command."""
+    """Execute a bash command.
+
+    .. warning::
+
+       This tool runs arbitrary shell commands with no sandboxing.
+       Suitable for local development only.  For production deployments,
+       gate with ``PermissionHook`` or replace with a sandboxed executor.
+    """
     try:
         result = subprocess.run(
             ["bash", "-c", command],
@@ -108,7 +111,6 @@ def _bash(*, command: str, workspace: str = "") -> dict:
         return {"error": "Command timed out after 120s",
                 "remediation": "Check for infinite loops or blocking I/O."}
 
-
 def _read(*, file_path: str, workspace: str = "") -> dict:
     """Read a file with line numbers."""
     full = os.path.join(workspace, file_path) if workspace else file_path
@@ -123,7 +125,6 @@ def _read(*, file_path: str, workspace: str = "") -> dict:
         return {"error": f"File not found: {file_path}",
                 "remediation": "Use glob to find files, or write to create."}
 
-
 def _write(*, file_path: str, content: str, workspace: str = "") -> dict:
     """Create or overwrite a file."""
     full = os.path.join(workspace, file_path) if workspace else file_path
@@ -131,7 +132,6 @@ def _write(*, file_path: str, content: str, workspace: str = "") -> dict:
     with open(full, "w") as f:
         f.write(content)
     return {"written": file_path, "lines": content.count("\n") + 1}
-
 
 def _edit(*, file_path: str, old_string: str, new_string: str,
           workspace: str = "") -> dict:
@@ -153,7 +153,6 @@ def _edit(*, file_path: str, old_string: str, new_string: str,
         f.write(text.replace(old_string, new_string, 1))
     return {"edited": file_path, "replacements": 1}
 
-
 def _glob(*, pattern: str, workspace: str = "") -> dict:
     """Find files matching a glob pattern."""
     import glob as globmod
@@ -163,7 +162,6 @@ def _glob(*, pattern: str, workspace: str = "") -> dict:
     if len(rel) > 100:
         return {"pattern": pattern, "files": rel[:100], "truncated": True, "total": len(matches)}
     return {"pattern": pattern, "files": rel, "total": len(rel)}
-
 
 def _grep(*, pattern: str, path: str = ".", workspace: str = "") -> dict:
     """Search file contents with regex."""
@@ -181,7 +179,6 @@ def _grep(*, pattern: str, path: str = ".", workspace: str = "") -> dict:
         return {"pattern": pattern, "matches": lines, "total": len(lines)}
     except subprocess.TimeoutExpired:
         return {"error": "Search timed out", "remediation": "Narrow your pattern."}
-
 
 def _build_coding_tools(workspace: str) -> BaseToolRegistry:
     """Build a coding agent tool registry (bash, read, write, edit, glob, grep, think, done)."""
@@ -245,9 +242,7 @@ def _build_coding_tools(workspace: str) -> BaseToolRegistry:
     ))
     return reg
 
-
 # ── Coding agent hook ────────────────────────────────────────────
-
 
 class _CodingGuardrailHook:
     """Just-in-time guardrails: test enforcement and review nudges."""
@@ -296,19 +291,7 @@ class _CodingGuardrailHook:
     def should_stop(self, state: Any, step_num: int, new_entities: int) -> bool:
         return False
 
-    def pre_loop(self, *a: Any, **k: Any) -> None: return None
-    def pre_prompt(self, *a: Any, **k: Any) -> None: return None
-    def pre_dispatch(self, *a: Any, **k: Any) -> None: return None
-    def check_permission(self, *a: Any, **k: Any) -> None: return None
-    def should_compact(self, *a: Any, **k: Any) -> bool: return False
-    def build_briefing(self, *a: Any, **k: Any) -> None: return None
-    def build_prompt(self, **k: Any) -> None: return None
-    def on_loop_end(self, *a: Any, **k: Any) -> int: return 0
-    def on_event(self, *a: Any, **k: Any) -> None: return None
-
-
 # ── Preset functions ─────────────────────────────────────────────
-
 
 def coding_agent_preset(
     workspace: str = ".",
@@ -384,7 +367,6 @@ def coding_agent_preset(
         state=DefaultState(max_steps=max_steps),
     )
 
-
 def research_agent_preset(
     workspace: str = ".",
     *,
@@ -444,7 +426,6 @@ def research_agent_preset(
         tools=tools,
         state=DefaultState(max_steps=max_steps),
     )
-
 
 def minimal_preset(
     *,

@@ -67,22 +67,45 @@ class LoopHook(Protocol):
     Hooks inject domain-specific behavior into the generic agent loop.
     All methods are optional — implement only what you need.
 
-    Hook methods (called in this order per step):
-        pre_loop:      once at loop start — setup, state initialization
-        pre_prompt:    before each LLM prompt — inject briefing text
-        pre_dispatch:  before each tool call — intercept/cache results
-        post_dispatch: after each tool call — inject follow-up text
-        check_done:    when done() called — reject premature completion
-        should_stop:   after each step — force early termination
-        on_loop_end:   once after loop exits — cleanup, summary generation
+    Minimal example::
 
-    Args for hook methods:
-        state: The agent's state object (satisfies AgentState protocol).
-        session_log: The session log recording what the agent has done.
-        context: Domain-specific backend (e.g. query engine, file system, API client).
-            Hooks typically capture this at __init__ time; this parameter
-            provides it for hooks that don't.
-        step_num: Current step number in the loop.
+        class MyHook:
+            def post_dispatch(self, state, session_log, tool_call, tool_result, step_num):
+                if tool_call.tool == "write":
+                    return InjectContext("Remember to write tests too.")
+                return None
+
+            def check_done(self, state, session_log, context, step_num):
+                if not self._tests_passed:
+                    return HookDecision(block="Run tests first.")
+                return None
+
+            # Only implement what you need. All other methods are optional.
+
+    Hook methods (called in this order per step):
+        pre_loop:        once at loop start
+        pre_prompt:      before each LLM call — inject briefing text (additive, all hooks contribute)
+        build_briefing:  override the briefing section (first hook returning non-None wins)
+        build_prompt:    override the entire prompt (first hook returning non-None wins)
+        pre_dispatch:    before each tool call — intercept, cache, or deny
+        post_dispatch:   after each tool call — inject follow-up context
+        check_done:      when done() is called — reject premature completion
+        should_stop:     after each step — force early termination
+        should_compact:  at step start — trigger proactive compaction
+        on_loop_end:     once after loop exits — cleanup
+
+    Return types:
+        All hook methods accept ``HookDecision`` as return type.
+        Legacy returns (``str``, ``bool``, ``None``) still work
+        and are auto-converted via ``normalize_hook_return()``.
+
+    Precedence for prompt injection:
+        1. ``build_prompt`` hook (first non-None wins) — full prompt override
+        2. ``config.build_prompt`` callable — full prompt override
+        3. ``build_briefing`` hook (first non-None wins) — briefing section only
+        4. ``config.build_briefing`` callable — briefing section only
+        5. ``pre_prompt`` hooks — additive text appended to briefing
+        6. Default 7-section template from ``openharness.prompts``
     """
 
     def pre_loop(
@@ -320,9 +343,13 @@ class LoopConfig:
     first agent, you only need::
 
         config = LoopConfig(max_steps=10)
+        state = DefaultState(max_steps=10)  # must match
 
     Essential fields (set these first):
-      - ``max_steps`` — how many tool calls before the loop stops
+      - ``max_steps`` — how many tool calls before the loop stops.
+        **Important:** also pass the same value to ``DefaultState(max_steps=N)``
+        — the state tracks budget_remaining, config tracks the loop limit.
+        If they differ, the lower one wins.
       - ``system_prompt`` — who the agent is
       - ``compact_service`` — how to manage growing context
       - ``checkpoint_dir`` — crash-safe auto-resume (one directory path)

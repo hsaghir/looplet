@@ -21,7 +21,11 @@ is configured.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Callable, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    from openharness.session import SessionLog
+    from openharness.types import AgentState, LLMBackend
 
 __all__ = [
     "CompactService",
@@ -70,9 +74,9 @@ class CompactService(Protocol):
     def compact(
         self,
         *,
-        state: Any,
-        session_log: Any,
-        llm: Any,
+        state: AgentState,
+        session_log: SessionLog,
+        llm: LLMBackend,
         conversation: Any | None,
         step_num: int,
         reason: str,
@@ -99,9 +103,9 @@ class TruncateCompact:
     def compact(
         self,
         *,
-        state: Any,
-        session_log: Any,
-        llm: Any,
+        state: AgentState,
+        session_log: SessionLog,
+        llm: LLMBackend,
         conversation: Any | None,
         step_num: int,
         reason: str,
@@ -133,9 +137,9 @@ def run_compact(
     service: CompactService,
     *,
     hooks: list[Any],
-    state: Any,
-    session_log: Any,
-    llm: Any,
+    state: AgentState,
+    session_log: SessionLog,
+    llm: LLMBackend,
     conversation: Any | None,
     step_num: int,
     reason: str,
@@ -201,8 +205,8 @@ def _emit_compact_event(
     hooks: list[Any],
     event: Any,
     *,
-    state: Any,
-    session_log: Any,
+    state: AgentState,
+    session_log: SessionLog,
     step_num: int,
     messages_before: int | None,
     messages_after: int | None = None,
@@ -306,9 +310,9 @@ class SummarizeCompact:
     def compact(
         self,
         *,
-        state: Any,
-        session_log: Any,
-        llm: Any,
+        state: AgentState,
+        session_log: SessionLog,
+        llm: LLMBackend,
         conversation: Any | None,
         step_num: int,
         reason: str,
@@ -467,9 +471,9 @@ class PruneToolResults:
     def compact(
         self,
         *,
-        state: Any,
-        session_log: Any,
-        llm: Any,
+        state: AgentState,
+        session_log: SessionLog,
+        llm: LLMBackend,
         conversation: Any | None,
         step_num: int,
         reason: str,
@@ -556,9 +560,9 @@ class _CompactChain:
     def compact(
         self,
         *,
-        state: Any,
-        session_log: Any,
-        llm: Any,
+        state: AgentState,
+        session_log: SessionLog,
+        llm: LLMBackend,
         conversation: Any | None,
         step_num: int,
         reason: str,

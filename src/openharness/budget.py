@@ -24,10 +24,13 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from openharness.scaffolding import estimate_prompt_tokens
 from openharness.session import SessionLog
+
+if TYPE_CHECKING:
+    from openharness.types import AgentState
 
 __all__ = [
     "BudgetTier",
@@ -180,7 +183,7 @@ class ThresholdCompactHook:
 
     def should_compact(
         self,
-        state: Any,
+        state: AgentState,
         session_log: SessionLog,
         conversation: Any,
         step_num: int,
@@ -230,7 +233,7 @@ class BudgetTelemetry:
 
     def pre_prompt(
         self,
-        state: Any,
+        state: AgentState,
         session_log: SessionLog,
         context: Any,
         step_num: int,

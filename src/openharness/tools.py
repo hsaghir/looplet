@@ -82,8 +82,12 @@ class ToolSpec:
 
     2. **JSON Schema**: ``{"type": "object", "properties": {...}, "required": [...]}``
        — a full JSON Schema object.  Detected automatically when the dict
-       contains a ``"type"`` key with value ``"object"``.  Provides richer
-       metadata for native tool calling and machine-readable introspection.
+       contains a ``"type"`` key with value ``"object"``.
+
+    **Note:** If your simple-format parameter dict happens to contain a
+    key named ``"type"`` with value ``"object"``, it will be misdetected
+    as JSON Schema. Use JSON Schema format explicitly in that case, or
+    rename the parameter.
 
     Example (simple)::
 

@@ -53,7 +53,12 @@ from openharness.hook_decision import (
 from openharness.loop import DomainAdapter, LoopConfig, LoopHook, composable_loop, emit_event
 from openharness.mcp import MCPToolAdapter
 from openharness.memory import CallableMemorySource, StaticMemorySource
-from openharness.permissions import PermissionEngine, PermissionHook, PermissionRule
+from openharness.permissions import (
+    PermissionDecision,
+    PermissionEngine,
+    PermissionHook,
+    PermissionRule,
+)
 from openharness.presets import (
     AgentPreset,
     coding_agent_preset,
@@ -61,12 +66,13 @@ from openharness.presets import (
     research_agent_preset,
 )
 from openharness.prompts import preview_prompt
-from openharness.provenance import TrajectoryRecorder
+from openharness.provenance import ProvenanceSink, TrajectoryRecorder, replay_loop
 from openharness.session import SessionLog
 from openharness.skills import Skill
 from openharness.streaming import StreamingHook
 from openharness.subagent import run_sub_loop
 from openharness.telemetry import MetricsCollector, MetricsHook, Tracer, TracingHook
+from openharness.testing import AsyncMockLLMBackend, MockLLMBackend
 from openharness.tools import BaseToolRegistry, ToolSpec
 from openharness.types import (
     CancelToken,
@@ -126,10 +132,13 @@ __all__ = [
     "PermissionEngine",
     "PermissionHook",
     "PermissionRule",
+    "PermissionDecision",
     # ── CHECKPOINTS ─────────────────────────────────────────────
     "FileCheckpointStore",
     # ── OBSERVABILITY ───────────────────────────────────────────
     "TrajectoryRecorder",
+    "ProvenanceSink",
+    "replay_loop",
     "StreamingHook",
     "Tracer",
     "TracingHook",
@@ -144,6 +153,9 @@ __all__ = [
     "eval_run_batch",
     "eval_mark",
     "eval_cli",
+    # ── TESTING ─────────────────────────────────────────────────
+    "MockLLMBackend",
+    "AsyncMockLLMBackend",
     # ── ADVANCED (power users import from submodules directly) ──
     "DomainAdapter",
     "emit_event",

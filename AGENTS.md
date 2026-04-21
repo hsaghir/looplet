@@ -431,3 +431,139 @@ Tools classify errors via `ErrorKind`:
 - `RATE_LIMIT` — provider throttling (retriable)
 - `NETWORK` — transport failure (retriable)
 - `CANCELLED` — cancelled via CancelToken
+
+## LoopConfig cheat sheet
+
+`LoopConfig` has ~40 fields. Group them mentally as follows — most agents
+only touch the first group.
+
+**Essentials (always set these):**
+`max_steps`, `system_prompt`, `temperature`, `done_tool`
+
+**Behavior tuning (usually fine as-is):**
+`max_tokens`, `recovery_temperature`, `max_turn_continuations`,
+`concurrent_dispatch`, `reactive_recovery`, `use_native_tools`,
+`context_window`, `max_briefing_tokens`, `acceptance_criteria`
+
+**Domain hooks (bundle into `DomainAdapter` or set individually):**
+`build_briefing`, `build_prompt`, `extract_entities`,
+`extract_step_metadata`, `build_trace`, `domain`
+
+**Wired-in capabilities (opt-in — each enables one feature):**
+`compact_service` (compaction) · `checkpoint_dir` (crash-resume) ·
+`cache_policy` (prompt caching) · `router` (multi-model) ·
+`tracer` (telemetry) · `recovery_registry` (error recovery) ·
+`output_schema` (done() validation) · `memory_sources` (persistent notes) ·
+`approval_handler` (human-in-the-loop) · `cancel_token` (cooperative stop) ·
+`initial_checkpoint` (resume a specific checkpoint)
+
+**Escape hatches (rare — only when `build_prompt` isn't enough):**
+`render_messages_override`
+
+> **Footgun:** `LoopConfig(max_steps=N)` and `DefaultState(max_steps=M)`
+> must match. The loop now warns and syncs to the config value, but you
+> should still pass the same N to both.
+
+## Canonical hook return values
+
+Every hook method accepts a `HookDecision` (or one of its factory
+helpers). Legacy returns (`str`, `bool`, raw `ToolResult`) still work
+via `normalize_hook_return`, but new code should use the factory
+helpers — they read naturally and compose:
+
+| Intent | Use |
+|---|---|
+| Allow / no opinion | `return None` |
+| Append text to next prompt | `return InjectContext("...")` |
+| Block tool call or `done()` | `return Block("reason for the model")` |
+| Deny permission | `return Deny("reason")` |
+| Stop the loop cleanly | `return Stop("done-ish reason")` |
+| Short-circuit with a cached result | `return HookDecision(updated_result=ToolResult(...))` |
+| Rewrite the model's tool args | `return HookDecision(updated_args={"path": "..."})` |
+
+Prefer the helpers (`Allow`, `Block`, `Deny`, `Stop`, `InjectContext`)
+over bare `HookDecision(...)` for single-intent cases.
+
+## Symbol index (A–Z)
+
+Everything in `from openharness import X` is listed here. Submodule-only
+symbols live in `openharness.<module>`.
+
+| Symbol | Module | Purpose |
+|---|---|---|
+| `Allow` | `hook_decision` | Factory: allow / no opinion |
+| `AgentPreset` | `presets` | Dataclass returned by preset fns |
+| `AnthropicBackend` | `backends` | Claude LLM adapter |
+| `ApprovalHook` | `approval` | Pauses loop for external approval |
+| `AsyncMockLLMBackend` | `testing` | Async scripted LLM for tests |
+| `BaseToolRegistry` | `tools` | Tool registry + dispatch |
+| `Block` | `hook_decision` | Factory: block tool call / done() |
+| `CachePolicy` | `cache` | Prompt-caching config |
+| `CallableMemorySource` | `memory` | Memory from a callable |
+| `CancelToken` | `types` | Cooperative cancellation signal |
+| `CompactOutcome` | `compact` | Compaction result record |
+| `CompactService` | `compact` | Compaction strategy protocol |
+| `ContextBudget` | `budget` | Context window thresholds |
+| `Continue` | `hook_decision` | Factory: explicit no-op |
+| `Conversation` | `conversation` | Message thread container |
+| `DefaultState` | `types` | Built-in `AgentState` impl |
+| `Deny` | `hook_decision` | Factory: deny permission |
+| `DomainAdapter` | `loop` | Bundle domain callables |
+| `ErrorKind` | `types` | Error discriminator enum |
+| `EvalContext` | `evals` | Eval run context |
+| `EvalHook` | `evals` | Hook for eval scoring |
+| `EvalResult` | `evals` | Eval result record |
+| `EventPayload` | `events` | Lifecycle event payload |
+| `FileCheckpointStore` | `checkpoint` | Disk-backed crash-resume |
+| `HookDecision` | `hook_decision` | Unified hook return type |
+| `InjectContext` | `hook_decision` | Factory: append text to next prompt |
+| `LLMBackend` | `types` | Sync LLM protocol |
+| `LifecycleEvent` | `events` | Event name enum |
+| `LoopConfig` | `loop` | Loop configuration dataclass |
+| `LoopHook` | `loop` | Hook protocol |
+| `MCPToolAdapter` | `mcp` | Bridges MCP tools into registry |
+| `Message` | `conversation` | Single conversation message |
+| `MetricsCollector` | `telemetry` | Metrics backend protocol |
+| `MetricsHook` | `telemetry` | Emits metrics during loop |
+| `MockLLMBackend` | `testing` | Scripted sync LLM for tests |
+| `NativeToolBackend` | `types` | Protocol for native-tool backends |
+| `OpenAIBackend` | `backends` | OpenAI LLM adapter |
+| `PermissionDecision` | `permissions` | Enum: ALLOW/DENY/ASK/DEFAULT |
+| `PermissionEngine` | `permissions` | Declarative permission engine |
+| `PermissionHook` | `permissions` | Wraps engine as a hook |
+| `PermissionRule` | `permissions` | Single allow/deny/ask rule |
+| `ProvenanceSink` | `provenance` | Trajectory recording sink |
+| `PruneToolResults` | `compact` | Compaction: drop old results |
+| `SessionLog` | `session` | Append-only event log |
+| `Skill` | `skills` | Bundle of hooks + tools |
+| `StaticMemorySource` | `memory` | Fixed-text memory source |
+| `Step` | `types` | Yielded by `composable_loop` |
+| `Stop` | `hook_decision` | Factory: stop loop after step |
+| `StreamingHook` | `streaming` | Emits lifecycle events |
+| `SummarizeCompact` | `compact` | Compaction: summarize via LLM |
+| `ThresholdCompactHook` | `budget` | Trigger compact at % window |
+| `ToolCall` | `types` | LLM-requested tool call |
+| `ToolContext` | `types` | Runtime ctx threaded to tools |
+| `ToolError` | `types` | Structured tool error |
+| `ToolResult` | `types` | Tool execution result |
+| `ToolSpec` | `tools` | Tool definition |
+| `Tracer` | `telemetry` | Tracing backend protocol |
+| `TracingHook` | `telemetry` | Emits spans during loop |
+| `TrajectoryRecorder` | `provenance` | Records trajectories to disk |
+| `TruncateCompact` | `compact` | Compaction: drop oldest |
+| `coding_agent_preset` | `presets` | Pre-built coding agent |
+| `compact_chain` | `compact` | Chain compaction strategies |
+| `composable_loop` | `loop` | **The loop generator** |
+| `emit_event` | `loop` | Fire a `LifecycleEvent` to hooks |
+| `eval_cli` | `evals` | CLI entry for evals |
+| `eval_discover` | `evals` | Find eval scenarios |
+| `eval_mark` | `evals` | Mark eval scenario outcome |
+| `eval_run` | `evals` | Run one eval scenario |
+| `eval_run_batch` | `evals` | Run many eval scenarios |
+| `minimal_preset` | `presets` | Bare-bones agent preset |
+| `preview_prompt` | `prompts` | Debug: render next prompt |
+| `replay_loop` | `provenance` | Replay a recorded trajectory |
+| `research_agent_preset` | `presets` | Pre-built research agent |
+| `run_compact` | `compact` | Invoke a compact service |
+| `run_sub_loop` | `subagent` | Spawn a sub-agent loop |
+

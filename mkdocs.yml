@@ -1,0 +1,58 @@
+site_name: openharness
+site_description: The tool-calling loop you can actually step through.
+site_url: https://hsaghir.github.io/openharness/
+repo_url: https://github.com/hsaghir/openharness
+repo_name: hsaghir/openharness
+edit_uri: edit/master/
+
+theme:
+  name: material
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+    - content.code.annotate
+    - search.suggest
+    - toc.follow
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      toggle: { icon: material/weather-night, name: Dark mode }
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      toggle: { icon: material/weather-sunny, name: Light mode }
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+
+nav:
+  - Home: index.md
+  - Tutorial: tutorial.md
+  - Hooks: hooks.md
+  - Evals: evals.md
+  - Provenance: provenance.md
+  - Recipes: recipes.md
+  - Roadmap: roadmap.md
+  - Contributing: contributing.md
+  - Good first issues: good-first-issues.md
+  - Changelog: changelog.md
+
+plugins:
+  - search

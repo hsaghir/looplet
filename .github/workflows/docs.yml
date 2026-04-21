@@ -1,0 +1,74 @@
+name: Docs
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "docs/**"
+      - "mkdocs.yml"
+      - "README.md"
+      - "HOOK_GUIDE.md"
+      - "PROVENANCE_GUIDE.md"
+      - "CHANGELOG.md"
+      - "CONTRIBUTING.md"
+      - "ROADMAP.md"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+
+      - name: Install mkdocs
+        run: pip install mkdocs-material
+
+      - name: Assemble docs tree
+        run: |
+          # Mirror top-level markdown into docs/ so mkdocs can find it.
+          cp README.md docs/index.md
+          cp HOOK_GUIDE.md docs/hooks.md
+          cp PROVENANCE_GUIDE.md docs/provenance.md
+          cp CHANGELOG.md docs/changelog.md
+          cp CONTRIBUTING.md docs/contributing.md
+          cp ROADMAP.md docs/roadmap.md
+
+          # Rewrite relative links in the copied index so in-site links resolve.
+          sed -i 's|docs/tutorial.md|tutorial.md|g' docs/index.md
+          sed -i 's|HOOK_GUIDE.md|hooks.md|g' docs/index.md
+          sed -i 's|docs/evals.md|evals.md|g' docs/index.md
+          sed -i 's|PROVENANCE_GUIDE.md|provenance.md|g' docs/index.md
+          sed -i 's|docs/recipes.md|recipes.md|g' docs/index.md
+          sed -i 's|ROADMAP.md|roadmap.md|g' docs/index.md
+          sed -i 's|CONTRIBUTING.md|contributing.md|g' docs/index.md
+          sed -i 's|CHANGELOG.md|changelog.md|g' docs/index.md
+          sed -i 's|docs/good-first-issues.md|good-first-issues.md|g' docs/index.md
+
+      - name: Build
+        run: mkdocs build
+
+      - uses: actions/upload-pages-artifact@v3
+        with: { path: site }
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

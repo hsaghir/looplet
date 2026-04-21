@@ -975,8 +975,18 @@ def composable_loop(
     if state is None:
         state = _DefaultState(max_steps=config.max_steps)
 
-    # Sync max_steps: config is the source of truth.
+    # Sync max_steps: config is the source of truth.  Warn once when the
+    # two disagree — a common footgun for agents assembling a loop for
+    # the first time.
     if isinstance(state, _DefaultState) and state.max_steps != config.max_steps:
+        import warnings  # noqa: PLC0415
+        warnings.warn(
+            f"DefaultState(max_steps={state.max_steps}) differs from "
+            f"LoopConfig(max_steps={config.max_steps}); using the config "
+            f"value. Pass the same max_steps to both to silence this.",
+            UserWarning,
+            stacklevel=2,
+        )
         state.max_steps = config.max_steps
 
     # Warn when a hook object has no recognized hook methods — likely a typo.

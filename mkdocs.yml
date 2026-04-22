@@ -45,6 +45,7 @@ markdown_extensions:
 nav:
   - Home: index.md
   - Tutorial: tutorial.md
+  - Benchmarks: benchmarks.md
   - Hooks: hooks.md
   - Evals: evals.md
   - Provenance: provenance.md

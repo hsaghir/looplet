@@ -61,3 +61,8 @@ scratch/
 # Type checkers
 .pyre/
 .pytype/
+
+# Example runtime artifacts
+/checkpoints/
+/.benchmarks/
+/traces/

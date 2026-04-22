@@ -1,74 +1,54 @@
-# Demo script — 30-second asciinema recording
+# Demo script — GIF recording
 
-A single take, ~30 seconds, that ends up as the hero GIF on the README.
-Keep it minimal — no `cd`, no editor, no sudo.
+The hero GIF at the top of the README is produced from a deterministic
+scripted run of `examples/scripted_demo.py` — no API key, no network,
+no flaky timing. Re-record whenever the loop's output format changes.
 
 ## Prep
 
 ```bash
-# Terminal: wide, monospace font, dark theme, 120×30.
-# Ensure prompt is short ($ only).
+# Install the recorder + converter (one-time):
+uv tool install asciinema
+cargo install --git https://github.com/asciinema/agg --tag v1.5.0
+
+# Short prompt so the recording is clean:
 export PS1='$ '
 clear
-
-# Python env already set up with looplet[openai] installed.
-# OPENAI_BASE_URL + OPENAI_MODEL pointed at a fast model (Groq, Together).
 ```
-
-## Script
-
-```text
-$ python -m looplet.examples.coding_agent "write fizzbuzz in fizz.py and test it"
-```
-
-The agent should:
-
-1. Call `write` — creates `fizz.py` with a FizzBuzz implementation.
-2. Call `bash` — `python fizz.py` to sanity-check.
-3. Call `write` — creates `test_fizz.py` with pytest tests.
-4. Call `bash` — `pytest test_fizz.py` — all green.
-5. Call `done` with a summary.
-
-Each step prints via `step.pretty()` in under 80 columns:
-
-```
-#1 ✓ write(file_path='fizz.py') → 412B [182ms]
-#2 ✓ bash(command='python fizz.py') → exit=0 [91ms]
-#3 ✓ write(file_path='test_fizz.py') → 328B [145ms]
-#4 ✓ bash(command='pytest test_fizz.py') → 3 passed [842ms]
-#5 ✓ done(answer='FizzBuzz implemented and tested') → final [0ms]
-```
-
-Total: ~8 seconds of visible output.
 
 ## Record
 
 ```bash
-asciinema rec demo.cast -c "python -m looplet.examples.coding_agent 'write fizzbuzz in fizz.py and test it'"
-
-# Convert to GIF:
-agg demo.cast demo.gif --theme monokai --speed 1.2 --rows 14 --cols 100
-# or SVG animated:
-svg-term --cast demo.cast --out demo.svg --width 100 --height 14
+cd <repo-root>
+rm -f docs/demo.cast docs/demo.gif
+asciinema rec docs/demo.cast --overwrite --cols 90 --rows 14 \
+    --command "uv run --quiet python -m looplet.examples.scripted_demo"
+agg docs/demo.cast docs/demo.gif --theme monokai --cols 90 --rows 14 --font-size 18
 ```
 
-## Embed
+Output: ~3-second, 7-frame, ~20 KB GIF that loops forever.
 
-Drop `demo.gif` (or `demo.svg`) at the top of the README, right under
-the h1:
+## Real-LLM version (optional)
 
-```markdown
-# looplet
+If you want a recording that hits a real model (Groq, Together, vLLM,
+Ollama), substitute the command:
 
-![demo](./docs/demo.gif)
-
-**The tool-calling loop you can actually step through.**
-...
+```bash
+asciinema rec docs/demo.cast --overwrite --cols 100 --rows 16 \
+    --command "python -m looplet.examples.coding_agent 'write fizzbuzz in fizz.py and test it'"
 ```
+
+Requires `OPENAI_BASE_URL`, `OPENAI_MODEL`, `OPENAI_API_KEY` and a fast
+(< 2 s/step) model. Timings won't be deterministic — expect slight
+variation between runs.
 
 ## Re-record checklist
 
-- Fresh working directory (no leftover `fizz.py`).
-- API key works and the model is fast (< 2 s/step).
-- No stderr warnings leaked into the tape.
-- Total run ≤ 12 s so the GIF loops smoothly.
+- Fresh working directory (no leftover `fizz.py`, `test_fizz.py`).
+- The `$` prompt is the only thing before the command.
+- No stderr warnings leaked into the tape (check with
+  `grep -i warn docs/demo.cast`).
+- GIF is under 200 KB and loops smoothly.
+- Frame count roughly matches lines of output (use Pillow to inspect
+  if curious).
+

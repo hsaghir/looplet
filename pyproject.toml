@@ -71,7 +71,7 @@ include = [
     "README.md",
     "LICENSE",
     "CHANGELOG.md",
-    "HOOK_GUIDE.md",
+    "docs/hooks.md",
     "pyproject.toml",
 ]
 

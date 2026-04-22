@@ -1,8 +1,15 @@
-"""Scripted demo — deterministic, no API key needed.
+"""Scripted demo — **GIF-recording utility, not a usage example.**
 
-Used for recording the README GIF and for smoke-testing the loop in
-environments without LLM credentials. Every tool call is real; only
-the LLM is replaced with a scripted ``MockLLMBackend``.
+This file exists only to produce the deterministic terminal GIF at the
+top of the README. The LLM is replaced with a scripted
+``MockLLMBackend`` so every recording is byte-identical.
+
+For a real usage example, see instead:
+
+* ``hello_world.py`` — the 20-line "first agent" (real LLM).
+* ``coding_agent.py`` — a realistic tool-using agent (real LLM).
+* ``data_agent.py`` — approval + compact + checkpoints wired together
+  (real LLM by default; pass ``--mock`` for CI).
 
 Run::
 

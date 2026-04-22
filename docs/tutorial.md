@@ -64,7 +64,7 @@ Pass hooks to the loop:
 composable_loop(..., hooks=[MyGuardrail()])
 ```
 
-See [HOOK_GUIDE.md](../HOOK_GUIDE.md) for the full walkthrough.
+See [hooks.md](hooks.md) for the full walkthrough.
 
 ## Step 4 — Add context management
 
@@ -137,9 +137,9 @@ llm = MockLLMBackend(responses=[
 
 ## Next
 
-- [HOOK_GUIDE.md](../HOOK_GUIDE.md) — compose hooks for guardrails,
+- [hooks.md](hooks.md) — compose hooks for guardrails,
   metrics, caching, approval.
 - [docs/evals.md](evals.md) — score your agent as you debug it.
-- [PROVENANCE_GUIDE.md](../PROVENANCE_GUIDE.md) — capture the exact
+- [provenance.md](provenance.md) — capture the exact
   prompts and trajectory.
 - [docs/recipes.md](recipes.md) — Ollama, OTel, MCP, cost accounting.

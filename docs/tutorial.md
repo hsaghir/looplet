@@ -6,8 +6,8 @@ hooks, context management, crash-resume, and approval.
 ## Step 1 — Install and run the hello world
 
 ```bash
-pip install "openharness[openai]"
-python -m openharness.examples.hello_world
+pip install "looplet[openai]"
+python -m looplet.examples.hello_world
 ```
 
 Connects to any OpenAI-compatible API — set `OPENAI_BASE_URL` and
@@ -19,7 +19,7 @@ Together, vLLM, …).
 The core is one `for` loop. You own iteration — pause, filter, break:
 
 ```python
-from openharness import (
+from looplet import (
     composable_loop, LoopConfig, DefaultState, BaseToolRegistry, ToolSpec,
 )
 
@@ -46,7 +46,7 @@ for step in composable_loop(
 Hooks are plain Python classes. Implement only the methods you need:
 
 ```python
-from openharness import HookDecision, InjectContext
+from looplet import HookDecision, InjectContext
 
 class MyGuardrail:
     def post_dispatch(self, state, session_log, tool_call, tool_result, step_num):
@@ -72,7 +72,7 @@ For long sessions, add a compaction chain so the agent doesn't run out
 of context:
 
 ```python
-from openharness import (
+from looplet import (
     compact_chain, PruneToolResults, SummarizeCompact, TruncateCompact,
     ContextBudget, ThresholdCompactHook,
 )
@@ -94,7 +94,7 @@ One line for crash-safe checkpoints. Add `ApprovalHook` for human
 sign-off on risky actions:
 
 ```python
-from openharness import ApprovalHook
+from looplet import ApprovalHook
 
 config = LoopConfig(
     max_steps=50,
@@ -109,25 +109,25 @@ Run the complete coding agent example (bash, read, write, edit, glob,
 grep, think — same tools as Claude Code):
 
 ```bash
-python -m openharness.examples.coding_agent "implement fizzbuzz" --model gpt-4o
-python -m openharness.examples.coding_agent --trace ./traces/   # save trajectory
+python -m looplet.examples.coding_agent "implement fizzbuzz" --model gpt-4o
+python -m looplet.examples.coding_agent --trace ./traces/   # save trajectory
 ```
 
 ## Debug — see what the LLM sees
 
 ```python
-from openharness import preview_prompt
+from looplet import preview_prompt
 
 print(preview_prompt(task={"goal": "fix the bug"}, tools=my_tools, state=my_state))
 ```
 
 ## Testing without a real LLM
 
-`openharness.testing` ships a scripted mock backend so you can unit-test
+`looplet.testing` ships a scripted mock backend so you can unit-test
 hooks, tools, and your agent wiring without hitting a provider:
 
 ```python
-from openharness.testing import MockLLMBackend
+from looplet.testing import MockLLMBackend
 
 llm = MockLLMBackend(responses=[
     '{"tool": "add", "args": {"a": 2, "b": 3}, "reasoning": "sum"}',

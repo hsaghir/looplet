@@ -9,7 +9,7 @@ class TestToolSpecJsonSchema:
     """Test that ToolSpec accepts both simple and JSON Schema parameters."""
 
     def test_simple_format_is_not_json_schema(self):
-        from openharness.tools import ToolSpec
+        from looplet.tools import ToolSpec
         spec = ToolSpec(
             name="read", description="Read file",
             parameters={"file_path": "str"},
@@ -18,7 +18,7 @@ class TestToolSpecJsonSchema:
         assert not spec.is_json_schema
 
     def test_json_schema_format_detected(self):
-        from openharness.tools import ToolSpec
+        from looplet.tools import ToolSpec
         spec = ToolSpec(
             name="read", description="Read file",
             parameters={
@@ -33,7 +33,7 @@ class TestToolSpecJsonSchema:
         assert spec.is_json_schema
 
     def test_parameter_names_simple(self):
-        from openharness.tools import ToolSpec
+        from looplet.tools import ToolSpec
         spec = ToolSpec(
             name="test", description="Test",
             parameters={"a": "str", "b": "int"},
@@ -42,7 +42,7 @@ class TestToolSpecJsonSchema:
         assert spec.parameter_names() == ["a", "b"]
 
     def test_parameter_names_json_schema(self):
-        from openharness.tools import ToolSpec
+        from looplet.tools import ToolSpec
         spec = ToolSpec(
             name="test", description="Test",
             parameters={
@@ -57,7 +57,7 @@ class TestToolSpecJsonSchema:
         assert spec.parameter_names() == ["query", "limit"]
 
     def test_required_parameters_simple(self):
-        from openharness.tools import ToolSpec
+        from looplet.tools import ToolSpec
         spec = ToolSpec(
             name="test", description="Test",
             parameters={"a": "str", "b": "int"},
@@ -67,7 +67,7 @@ class TestToolSpecJsonSchema:
         assert spec.required_parameters() == ["a", "b"]
 
     def test_required_parameters_json_schema(self):
-        from openharness.tools import ToolSpec
+        from looplet.tools import ToolSpec
         spec = ToolSpec(
             name="test", description="Test",
             parameters={
@@ -83,7 +83,7 @@ class TestToolSpecJsonSchema:
         assert spec.required_parameters() == ["query"]
 
     def test_spec_text_simple(self):
-        from openharness.tools import ToolSpec
+        from looplet.tools import ToolSpec
         spec = ToolSpec(
             name="read", description="Read a file",
             parameters={"path": "str"},
@@ -94,7 +94,7 @@ class TestToolSpecJsonSchema:
         assert "path: str" in text
 
     def test_spec_text_json_schema(self):
-        from openharness.tools import ToolSpec
+        from looplet.tools import ToolSpec
         spec = ToolSpec(
             name="read", description="Read a file",
             parameters={
@@ -113,7 +113,7 @@ class TestToolSpecJsonSchema:
         assert "encoding?: string" in text  # optional marked with ?
 
     def test_to_api_schema_simple(self):
-        from openharness.tools import ToolSpec
+        from looplet.tools import ToolSpec
         spec = ToolSpec(
             name="test", description="Test tool",
             parameters={"q": "search query"},
@@ -125,7 +125,7 @@ class TestToolSpecJsonSchema:
         assert "q" in schema["input_schema"]["properties"]
 
     def test_to_api_schema_json_schema_passthrough(self):
-        from openharness.tools import ToolSpec
+        from looplet.tools import ToolSpec
         params = {
             "type": "object",
             "properties": {
@@ -143,7 +143,7 @@ class TestToolSpecJsonSchema:
         assert schema["input_schema"] is params  # direct passthrough
 
     def test_to_json_schema_from_simple(self):
-        from openharness.tools import ToolSpec
+        from looplet.tools import ToolSpec
         spec = ToolSpec(
             name="test", description="Test",
             parameters={"name": "person name", "age": "integer"},
@@ -156,7 +156,7 @@ class TestToolSpecJsonSchema:
         assert schema["required"] == ["name", "age"]
 
     def test_to_json_schema_from_json_schema(self):
-        from openharness.tools import ToolSpec
+        from looplet.tools import ToolSpec
         params = {
             "type": "object",
             "properties": {"q": {"type": "string"}},
@@ -171,8 +171,8 @@ class TestToolSpecJsonSchema:
         assert schema == params
 
     def test_dispatch_works_with_json_schema(self):
-        from openharness.tools import BaseToolRegistry, ToolSpec
-        from openharness.types import ToolCall
+        from looplet.tools import BaseToolRegistry, ToolSpec
+        from looplet.types import ToolCall
         reg = BaseToolRegistry()
         reg.register(ToolSpec(
             name="search",
@@ -195,14 +195,14 @@ class TestRegistryIntrospect:
     """Test BaseToolRegistry.introspect() for machine-readable discovery."""
 
     def test_introspect_empty_registry(self):
-        from openharness.tools import BaseToolRegistry
+        from looplet.tools import BaseToolRegistry
         reg = BaseToolRegistry()
         info = reg.introspect()
         assert info["tool_count"] == 0
         assert info["tools"] == []
 
     def test_introspect_with_tools(self):
-        from openharness.tools import BaseToolRegistry, ToolSpec
+        from looplet.tools import BaseToolRegistry, ToolSpec
         reg = BaseToolRegistry()
         reg.register(ToolSpec(
             name="echo", description="Echo input",
@@ -228,7 +228,7 @@ class TestRegistryIntrospect:
         assert "text" in echo_info["parameters"]["properties"]
 
     def test_introspect_json_schema_passthrough(self):
-        from openharness.tools import BaseToolRegistry, ToolSpec
+        from looplet.tools import BaseToolRegistry, ToolSpec
         reg = BaseToolRegistry()
         params = {
             "type": "object",

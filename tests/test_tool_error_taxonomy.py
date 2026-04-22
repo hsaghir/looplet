@@ -13,8 +13,8 @@ the error is the legacy string or the new structured type.
 
 from __future__ import annotations
 
-from openharness.tools import BaseToolRegistry, ToolSpec
-from openharness.types import ErrorKind, ToolCall, ToolError, ToolResult
+from looplet.tools import BaseToolRegistry, ToolSpec
+from looplet.types import ErrorKind, ToolCall, ToolError, ToolResult
 
 
 class TestToolErrorType:

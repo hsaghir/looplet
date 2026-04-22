@@ -1,13 +1,21 @@
 # Changelog
 
-All notable changes to `openharness` are documented here. The format is
+All notable changes to `looplet` are documented here. The format is
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed (project rename)
+- **Renamed from `openharness` to `looplet`.** The PyPI name
+  `openharness` was taken by an unrelated project, so we renamed
+  before the first public release. The public API (imports, symbol
+  names, protocols) is unchanged except for the top-level package
+  name — update imports from `openharness` to `looplet`. The GitHub
+  repository is also renamed; old URLs redirect automatically.
+
 ### Added (evals — pytest-style agent evaluation)
-- **Eval framework** (`openharness.evals`). Write `eval_*` functions
+- **Eval framework** (`looplet.evals`). Write `eval_*` functions
   that take `EvalContext` and return any of `float`, `bool`, `str`,
   `dict`, or `EvalResult`. The framework normalizes all return types.
 - **`eval_discover(path)`** — auto-discovers eval functions in
@@ -24,7 +32,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - **`EvalHook`** — LoopHook that builds EvalContext at `on_loop_end`
   and runs all evaluators automatically during development.
 - **`EvalContext.from_trajectory_dir()`** — loads context from saved
-  trajectories with support for both openharness and benchmark formats.
+  trajectories with support for both looplet and benchmark formats.
 
 ### Added (MCP + skills)
 - **`MCPToolAdapter`** — wraps MCP server tools as `ToolSpec` instances
@@ -100,7 +108,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   as aliases and continue to work.
 
 ### Added (context management pt. 2)
-- **Prompt caching infrastructure** (`openharness.cache`). New
+- **Prompt caching infrastructure** (`looplet.cache`). New
   `CachePolicy` dataclass declares which stable prompt sections
   (system prompt, tool schemas, memory) should carry Anthropic-style
   `cache_control` markers, with per-section TTL (`ephemeral` / `1h`).
@@ -118,7 +126,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   keep-recent pruning. Falls back to deterministic keep-recent on
   any summariser error. Trade-off vs `DefaultCompactService`: one
   LLM call per compaction for preserved reasoning chains.
-- **Threshold-tier context budgeting** (`openharness.budget`). New
+- **Threshold-tier context budgeting** (`looplet.budget`). New
   `ContextBudget` dataclass with `warning_at` / `error_at` /
   `compact_buffer` tiers. `ThresholdCompactHook` is a ready-to-register
   `should_compact` implementation that fires proactive compaction
@@ -165,7 +173,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   `SessionLog` directly.
 - **`HARNESS_FLAGS`** backward-compat alias is gone — use `FLAGS`.
 - **Legacy `CADENCE_*` environment variables** for feature flags are
-  no longer read; use the `OPENHARNESS_*` prefix.
+  no longer read; use the `LOOPLET_*` prefix.
 - **`_clone_tools_excluding`** private alias is gone — use
   `clone_tools_excluding`.
 - **`LoopConfig.permissions`** is gone. Register a
@@ -174,24 +182,24 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   every other hook.
 
 ### Added
-- **Unified hook vocabulary — `HookDecision`** (`openharness.hook_decision`).
+- **Unified hook vocabulary — `HookDecision`** (`looplet.hook_decision`).
   All hook slots now accept a single `HookDecision` return type (legacy
   `None` / `bool` / `str` returns still work via `normalise_hook_return`).
   Helpers `Allow()`, `Deny(reason)`, `Block(reason)`, `Stop(reason)`,
   `Continue()`, `InjectContext(text)` make intent explicit at the call
   site.
-- **Lifecycle events — `on_event(payload)`** (`openharness.events`).
+- **Lifecycle events — `on_event(payload)`** (`looplet.events`).
   `LoopHook` gained an optional `on_event(EventPayload)` method. The
   loop now fires 10 named events: `SESSION_START`, `PRE_LLM_CALL`,
   `POST_LLM_RESPONSE`, `PRE_TOOL_USE`, `POST_TOOL_USE`,
   `POST_TOOL_FAILURE`, `PRE_COMPACT`, `POST_COMPACT`, `STOP`,
   `SUBAGENT_START`, `SUBAGENT_STOP`. Any hook can subscribe with a
   single method instead of implementing every slot.
-- **`PermissionHook`** (`openharness.permissions`) — wraps
+- **`PermissionHook`** (`looplet.permissions`) — wraps
   `PermissionEngine` and plugs it into the event bus so policy
   decisions flow through the same `HookDecision` path as custom hooks.
 - **`CompactService` + `DefaultCompactService` + `run_compact(...)`**
-  (`openharness.compact`) — reactive compaction is now a swappable
+  (`looplet.compact`) — reactive compaction is now a swappable
   service with `PRE_COMPACT` / `POST_COMPACT` events.
 - **`LoopConfig.render_messages_override`** — byte-exact escape hatch.
   Receives `(messages, default_prompt, step_num)` and returns the
@@ -207,11 +215,11 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   requests more calls than were recorded or diverges in method
   (`generate` vs `generate_with_tools`). Falls back to
   `call_NN_response.txt` files when `manifest.jsonl` is missing.
-- **`python -m openharness show <trace-dir>`** — stdlib-only CLI that
+- **`python -m looplet show <trace-dir>`** — stdlib-only CLI that
   prints a one-page summary of a captured trace (run id, termination,
   per-step tool calls with durations, LLM totals). Exit code 1 when
   the directory is missing or malformed.
-- **`openharness.provenance`** — new module for debugging agent runs:
+- **`looplet.provenance`** — new module for debugging agent runs:
   - `RecordingLLMBackend` / `AsyncRecordingLLMBackend` wrap any backend
     and capture every prompt, system prompt, tool schema, response,
     duration, and error as `LLMCall` records. `generate_with_tools` is
@@ -234,13 +242,13 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 ## [0.1.6] - 2026-04-17
 
 ### Added
-- **`openharness.testing`** — public test-utility module exposing
+- **`looplet.testing`** — public test-utility module exposing
   `MockLLMBackend` and `AsyncMockLLMBackend` (scripted, zero-dependency)
   so downstream packages can unit-test hooks, tools, and backends
   without a real LLM provider.
 - **PyPI publish workflow** (`.github/workflows/publish.yml`) that
   builds + publishes on version tags via PyPI trusted publishing.
-- **README positioning matrix** comparing `openharness` to LangGraph,
+- **README positioning matrix** comparing `looplet` to LangGraph,
   DSPy, and smolagents; observability/OTel wiring example; stability &
   versioning policy; real `AnthropicBackend` usage in quick-start.
 
@@ -317,7 +325,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 - `_rebuild_prompt` now renders `memory` and falls back to the
-  structured `build_prompt` from `openharness.prompts` instead of a
+  structured `build_prompt` from `looplet.prompts` instead of a
   bare f-string, restoring parity with the first-pass build.
 - `_deserialize_message` now reconstructs `ToolError` from serialized
   `error_kind` / `error_retriable` / `error_context` fields.

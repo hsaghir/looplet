@@ -22,8 +22,8 @@ Invariants:
 
 from __future__ import annotations
 
-from openharness.conversation import Conversation, Message, MessageRole
-from openharness.history import HistoryRecorder
+from looplet.conversation import Conversation, Message, MessageRole
+from looplet.history import HistoryRecorder
 
 
 class TestCompactionBoundary:

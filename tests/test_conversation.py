@@ -1,4 +1,4 @@
-"""Tests for openharness.conversation — unified message thread."""
+"""Tests for looplet.conversation — unified message thread."""
 
 from __future__ import annotations
 
@@ -16,19 +16,19 @@ pytestmark = pytest.mark.smoke
 
 class TestMessageRole:
     def test_has_all_four_roles(self):
-        from openharness.conversation import MessageRole
+        from looplet.conversation import MessageRole
         assert hasattr(MessageRole, "SYSTEM")
         assert hasattr(MessageRole, "USER")
         assert hasattr(MessageRole, "ASSISTANT")
         assert hasattr(MessageRole, "TOOL")
 
     def test_enum_values_are_strings(self):
-        from openharness.conversation import MessageRole
+        from looplet.conversation import MessageRole
         assert isinstance(MessageRole.SYSTEM.value, str)
         assert isinstance(MessageRole.USER.value, str)
 
     def test_enum_distinct_values(self):
-        from openharness.conversation import MessageRole
+        from looplet.conversation import MessageRole
         values = [r.value for r in MessageRole]
         assert len(values) == len(set(values))
 
@@ -40,7 +40,7 @@ class TestMessageRole:
 
 class TestMessage:
     def test_basic_creation(self):
-        from openharness.conversation import Message, MessageRole
+        from looplet.conversation import Message, MessageRole
         msg = Message(role=MessageRole.USER, content="hello")
         assert msg.role == MessageRole.USER
         assert msg.content == "hello"
@@ -50,27 +50,27 @@ class TestMessage:
         assert isinstance(msg.timestamp, float)
 
     def test_timestamp_is_recent(self):
-        from openharness.conversation import Message, MessageRole
+        from looplet.conversation import Message, MessageRole
         t0 = time.time()
         msg = Message(role=MessageRole.ASSISTANT, content="hi")
         assert msg.timestamp >= t0
 
     def test_with_tool_call(self):
-        from openharness.conversation import Message, MessageRole
-        from openharness.types import ToolCall
+        from looplet.conversation import Message, MessageRole
+        from looplet.types import ToolCall
         tc = ToolCall(tool="search", args={"q": "test"})
         msg = Message(role=MessageRole.ASSISTANT, content="", tool_call=tc)
         assert msg.tool_call is tc
 
     def test_with_tool_result(self):
-        from openharness.conversation import Message, MessageRole
-        from openharness.types import ToolResult
+        from looplet.conversation import Message, MessageRole
+        from looplet.types import ToolResult
         tr = ToolResult(tool="search", args_summary="q=test", data={"r": 1})
         msg = Message(role=MessageRole.TOOL, content="", tool_result=tr)
         assert msg.tool_result is tr
 
     def test_metadata_default_is_empty_dict(self):
-        from openharness.conversation import Message, MessageRole
+        from looplet.conversation import Message, MessageRole
         m1 = Message(role=MessageRole.USER, content="a")
         m2 = Message(role=MessageRole.USER, content="b")
         # Must be independent dicts (default_factory)
@@ -78,12 +78,12 @@ class TestMessage:
         assert "x" not in m2.metadata
 
     def test_system_role(self):
-        from openharness.conversation import Message, MessageRole
+        from looplet.conversation import Message, MessageRole
         msg = Message(role=MessageRole.SYSTEM, content="You are an agent.")
         assert msg.role == MessageRole.SYSTEM
 
     def test_all_roles_usable(self):
-        from openharness.conversation import Message, MessageRole
+        from looplet.conversation import Message, MessageRole
         for role in MessageRole:
             msg = Message(role=role, content=f"test {role.value}")
             assert msg.role == role
@@ -96,12 +96,12 @@ class TestMessage:
 
 class TestConversationAppend:
     def test_empty_conversation(self):
-        from openharness.conversation import Conversation
+        from looplet.conversation import Conversation
         c = Conversation()
         assert c.messages == []
 
     def test_append_single_message(self):
-        from openharness.conversation import Conversation, Message, MessageRole
+        from looplet.conversation import Conversation, Message, MessageRole
         c = Conversation()
         msg = Message(role=MessageRole.USER, content="hello")
         c.append(msg)
@@ -109,7 +109,7 @@ class TestConversationAppend:
         assert c.messages[0] is msg
 
     def test_append_preserves_order(self):
-        from openharness.conversation import Conversation, Message, MessageRole
+        from looplet.conversation import Conversation, Message, MessageRole
         c = Conversation()
         roles = [MessageRole.SYSTEM, MessageRole.USER, MessageRole.ASSISTANT]
         for r in roles:
@@ -119,7 +119,7 @@ class TestConversationAppend:
 
 class TestConversationFork:
     def test_fork_returns_new_conversation(self):
-        from openharness.conversation import Conversation, Message, MessageRole
+        from looplet.conversation import Conversation, Message, MessageRole
         c = Conversation()
         c.append(Message(role=MessageRole.USER, content="original"))
         fork = c.fork()
@@ -127,7 +127,7 @@ class TestConversationFork:
         assert len(fork.messages) == 1
 
     def test_fork_is_deep_independent_copy(self):
-        from openharness.conversation import Conversation, Message, MessageRole
+        from looplet.conversation import Conversation, Message, MessageRole
         c = Conversation()
         c.append(Message(role=MessageRole.USER, content="original"))
         fork = c.fork()
@@ -138,7 +138,7 @@ class TestConversationFork:
         assert len(fork.messages) == 2
 
     def test_fork_content_is_independent(self):
-        from openharness.conversation import Conversation, Message, MessageRole
+        from looplet.conversation import Conversation, Message, MessageRole
         c = Conversation()
         c.append(Message(role=MessageRole.USER, content="original"))
         fork = c.fork()
@@ -148,7 +148,7 @@ class TestConversationFork:
         assert "fork_key" not in c.messages[0].metadata
 
     def test_fork_has_same_initial_messages(self):
-        from openharness.conversation import Conversation, Message, MessageRole
+        from looplet.conversation import Conversation, Message, MessageRole
         c = Conversation()
         c.append(Message(role=MessageRole.SYSTEM, content="system"))
         c.append(Message(role=MessageRole.USER, content="user"))
@@ -160,7 +160,7 @@ class TestConversationFork:
 
 class TestConversationTruncate:
     def _make_conversation(self, n: int, with_system: bool = True):
-        from openharness.conversation import Conversation, Message, MessageRole
+        from looplet.conversation import Conversation, Message, MessageRole
         c = Conversation()
         if with_system:
             c.append(Message(role=MessageRole.SYSTEM, content="system prompt"))
@@ -170,14 +170,14 @@ class TestConversationTruncate:
         return c
 
     def test_truncate_keeps_last_n(self):
-        from openharness.conversation import MessageRole
+        from looplet.conversation import MessageRole
         c = self._make_conversation(10, with_system=False)
         c.truncate(keep_last=3)
         assert len(c.messages) == 3
         assert c.messages[-1].content == "message 9"
 
     def test_truncate_preserves_system_messages_by_default(self):
-        from openharness.conversation import MessageRole
+        from looplet.conversation import MessageRole
         c = self._make_conversation(10, with_system=True)
         c.truncate(keep_last=3)
         # System message should be kept
@@ -185,7 +185,7 @@ class TestConversationTruncate:
         assert MessageRole.SYSTEM in roles
 
     def test_truncate_no_preserve_system(self):
-        from openharness.conversation import MessageRole
+        from looplet.conversation import MessageRole
         c = self._make_conversation(10, with_system=True)
         c.truncate(keep_last=3, preserve_system=False)
         # With preserve_system=False, only last 3 are kept
@@ -195,7 +195,7 @@ class TestConversationTruncate:
         assert MessageRole.SYSTEM not in roles or c.messages[0].content != "system prompt"
 
     def test_truncate_noop_when_small(self):
-        from openharness.conversation import Conversation, Message, MessageRole
+        from looplet.conversation import Conversation, Message, MessageRole
         c = Conversation()
         c.append(Message(role=MessageRole.USER, content="a"))
         c.append(Message(role=MessageRole.USER, content="b"))
@@ -204,15 +204,15 @@ class TestConversationTruncate:
 
     def test_truncate_returns_self(self):
         c = self._make_conversation(5)
-        from openharness.conversation import Conversation
+        from looplet.conversation import Conversation
         result = c.truncate(keep_last=2)
         assert result is c
 
 
 class TestConversationCompact:
     def _make_conversation_with_tools(self):
-        from openharness.conversation import Conversation, Message, MessageRole
-        from openharness.types import ToolCall, ToolResult
+        from looplet.conversation import Conversation, Message, MessageRole
+        from looplet.types import ToolCall, ToolResult
         c = Conversation()
         c.append(Message(role=MessageRole.SYSTEM, content="You are an agent."))
         c.append(Message(role=MessageRole.USER, content="Investigate something"))
@@ -231,14 +231,14 @@ class TestConversationCompact:
         assert len(c.messages) < initial_count
 
     def test_compact_adds_summary_system_message(self):
-        from openharness.conversation import MessageRole
+        from looplet.conversation import MessageRole
         c = self._make_conversation_with_tools()
         c.compact()
         roles = [m.role for m in c.messages]
         assert MessageRole.SYSTEM in roles
 
     def test_compact_with_custom_summarizer(self):
-        from openharness.conversation import MessageRole
+        from looplet.conversation import MessageRole
         c = self._make_conversation_with_tools()
 
         def custom_summarizer(messages):
@@ -255,7 +255,7 @@ class TestConversationCompact:
         assert result is c
 
     def test_compact_preserves_last_user_message(self):
-        from openharness.conversation import MessageRole
+        from looplet.conversation import MessageRole
         c = self._make_conversation_with_tools()
         c.compact()
         # Last user message should be in the compacted conversation
@@ -266,21 +266,21 @@ class TestConversationCompact:
 
 class TestConversationRender:
     def test_render_returns_string(self):
-        from openharness.conversation import Conversation, Message, MessageRole
+        from looplet.conversation import Conversation, Message, MessageRole
         c = Conversation()
         c.append(Message(role=MessageRole.USER, content="test"))
         result = c.render()
         assert isinstance(result, str)
 
     def test_render_includes_content(self):
-        from openharness.conversation import Conversation, Message, MessageRole
+        from looplet.conversation import Conversation, Message, MessageRole
         c = Conversation()
         c.append(Message(role=MessageRole.USER, content="unique-marker-xyz"))
         result = c.render()
         assert "unique-marker-xyz" in result
 
     def test_render_includes_role_labels(self):
-        from openharness.conversation import Conversation, Message, MessageRole
+        from looplet.conversation import Conversation, Message, MessageRole
         c = Conversation()
         c.append(Message(role=MessageRole.SYSTEM, content="system msg"))
         c.append(Message(role=MessageRole.USER, content="user msg"))
@@ -289,7 +289,7 @@ class TestConversationRender:
         assert len(result) > 0
 
     def test_render_with_max_tokens(self):
-        from openharness.conversation import Conversation, Message, MessageRole
+        from looplet.conversation import Conversation, Message, MessageRole
         c = Conversation()
         for i in range(100):
             c.append(Message(role=MessageRole.USER, content=f"message {i} " * 50))
@@ -301,7 +301,7 @@ class TestConversationRender:
 
 class TestConversationSerialize:
     def test_serialize_returns_dict(self):
-        from openharness.conversation import Conversation, Message, MessageRole
+        from looplet.conversation import Conversation, Message, MessageRole
         c = Conversation()
         c.append(Message(role=MessageRole.USER, content="hello"))
         data = c.serialize()
@@ -310,7 +310,7 @@ class TestConversationSerialize:
     def test_serialize_is_json_compatible(self):
         import json
 
-        from openharness.conversation import Conversation, Message, MessageRole
+        from looplet.conversation import Conversation, Message, MessageRole
         c = Conversation()
         c.append(Message(role=MessageRole.SYSTEM, content="system"))
         c.append(Message(role=MessageRole.USER, content="user"))
@@ -320,7 +320,7 @@ class TestConversationSerialize:
         assert len(json_str) > 0
 
     def test_deserialize_roundtrip(self):
-        from openharness.conversation import Conversation, Message, MessageRole
+        from looplet.conversation import Conversation, Message, MessageRole
         c = Conversation()
         c.append(Message(role=MessageRole.SYSTEM, content="system prompt"))
         c.append(Message(role=MessageRole.USER, content="user message"))
@@ -335,8 +335,8 @@ class TestConversationSerialize:
             assert restored.content == orig.content
 
     def test_deserialize_with_tool_call(self):
-        from openharness.conversation import Conversation, Message, MessageRole
-        from openharness.types import ToolCall
+        from looplet.conversation import Conversation, Message, MessageRole
+        from looplet.types import ToolCall
         c = Conversation()
         tc = ToolCall(tool="search", args={"q": "test"}, reasoning="because")
         c.append(Message(role=MessageRole.ASSISTANT, content="", tool_call=tc))
@@ -348,8 +348,8 @@ class TestConversationSerialize:
         assert c2.messages[0].tool_call.args["q"] == "test"
 
     def test_deserialize_with_tool_result(self):
-        from openharness.conversation import Conversation, Message, MessageRole
-        from openharness.types import ToolResult
+        from looplet.conversation import Conversation, Message, MessageRole
+        from looplet.types import ToolResult
         c = Conversation()
         tr = ToolResult(tool="search", args_summary="q=test", data={"results": ["r1"]})
         c.append(Message(role=MessageRole.TOOL, content="", tool_result=tr))
@@ -362,7 +362,7 @@ class TestConversationSerialize:
     def test_serialize_with_metadata(self):
         import json
 
-        from openharness.conversation import Conversation, Message, MessageRole
+        from looplet.conversation import Conversation, Message, MessageRole
         c = Conversation()
         msg = Message(role=MessageRole.USER, content="hi", metadata={"key": "value"})
         c.append(msg)
@@ -373,26 +373,26 @@ class TestConversationSerialize:
 
 class TestConversationProperties:
     def test_token_estimate_zero_for_empty(self):
-        from openharness.conversation import Conversation
+        from looplet.conversation import Conversation
         c = Conversation()
         assert c.token_estimate >= 0
 
     def test_token_estimate_grows_with_messages(self):
-        from openharness.conversation import Conversation, Message, MessageRole
+        from looplet.conversation import Conversation, Message, MessageRole
         c = Conversation()
         t0 = c.token_estimate
         c.append(Message(role=MessageRole.USER, content="x" * 100))
         assert c.token_estimate > t0
 
     def test_entities_empty_for_no_results(self):
-        from openharness.conversation import Conversation, Message, MessageRole
+        from looplet.conversation import Conversation, Message, MessageRole
         c = Conversation()
         c.append(Message(role=MessageRole.USER, content="hello"))
         assert isinstance(c.entities, set)
 
     def test_entities_from_tool_results(self):
-        from openharness.conversation import Conversation, Message, MessageRole
-        from openharness.types import ToolResult
+        from looplet.conversation import Conversation, Message, MessageRole
+        from looplet.types import ToolResult
         c = Conversation()
         tr = ToolResult(
             tool="search", args_summary="",
@@ -405,8 +405,8 @@ class TestConversationProperties:
         assert "entity_b" in entities
 
     def test_entities_union_across_messages(self):
-        from openharness.conversation import Conversation, Message, MessageRole
-        from openharness.types import ToolResult
+        from looplet.conversation import Conversation, Message, MessageRole
+        from looplet.types import ToolResult
         c = Conversation()
         for names in [["a", "b"], ["c"]]:
             tr = ToolResult(tool="t", args_summary="", data={"entities": names})
@@ -416,7 +416,7 @@ class TestConversationProperties:
 
 class TestDefaultSummarizer:
     def test_default_summarizer_returns_string(self):
-        from openharness.conversation import Message, MessageRole, default_summarizer
+        from looplet.conversation import Message, MessageRole, default_summarizer
         messages = [
             Message(role=MessageRole.USER, content="Do something"),
             Message(role=MessageRole.ASSISTANT, content="ok"),
@@ -426,8 +426,8 @@ class TestDefaultSummarizer:
         assert len(result) > 0
 
     def test_default_summarizer_includes_role_counts(self):
-        from openharness.conversation import Message, MessageRole, default_summarizer
-        from openharness.types import ToolCall
+        from looplet.conversation import Message, MessageRole, default_summarizer
+        from looplet.types import ToolCall
         messages = [
             Message(role=MessageRole.USER, content="task"),
             Message(role=MessageRole.ASSISTANT, content="",
@@ -442,5 +442,5 @@ class TestDefaultSummarizer:
     def test_default_summarizer_callable(self):
         import inspect
 
-        from openharness.conversation import default_summarizer
+        from looplet.conversation import default_summarizer
         assert callable(default_summarizer)

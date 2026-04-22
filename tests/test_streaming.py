@@ -1,4 +1,4 @@
-"""Tests for openharness.streaming — structured event emission for agent observability."""
+"""Tests for looplet.streaming — structured event emission for agent observability."""
 from __future__ import annotations
 
 import queue
@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from openharness.streaming import (
+from looplet.streaming import (
     CallbackEmitter,
     CompositeEmitter,
     Event,
@@ -26,7 +26,7 @@ from openharness.streaming import (
     ToolDispatchEvent,
     ToolResultEvent,
 )
-from openharness.types import ToolCall, ToolResult
+from looplet.types import ToolCall, ToolResult
 
 # ── Base Event ──────────────────────────────────────────────────
 
@@ -241,7 +241,7 @@ def test_composite_emitter_satisfies_protocol():
 
 
 def test_streaming_hook_is_loop_hook():
-    from openharness.loop import LoopHook
+    from looplet.loop import LoopHook
     received: list[Event] = []
     hook = StreamingHook(CallbackEmitter(received.append))
     assert isinstance(hook, LoopHook)

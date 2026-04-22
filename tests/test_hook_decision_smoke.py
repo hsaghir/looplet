@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from openharness import (
+from looplet import (
     Allow,
     BaseToolRegistry,
     Block,
@@ -26,10 +26,10 @@ from openharness import (
     Stop,
     composable_loop,
 )
-from openharness.hook_decision import normalize_hook_return
-from openharness.testing import MockLLMBackend
-from openharness.tools import ToolSpec
-from openharness.types import ToolResult
+from looplet.hook_decision import normalize_hook_return
+from looplet.testing import MockLLMBackend
+from looplet.tools import ToolSpec
+from looplet.types import ToolResult
 
 
 class TestHookDecisionDataclass:

@@ -19,9 +19,9 @@ from typing import Any
 
 import pytest
 
-from openharness.loop import LoopConfig, composable_loop
-from openharness.tools import BaseToolRegistry, ToolSpec
-from openharness.types import DefaultState, LLMBackend
+from looplet.loop import LoopConfig, composable_loop
+from looplet.tools import BaseToolRegistry, ToolSpec
+from looplet.types import DefaultState, LLMBackend
 
 # ── Shared helpers ────────────────────────────────────────────────
 

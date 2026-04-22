@@ -44,7 +44,7 @@ class SimpleState:
 
 
 def _make_registry(extra_tools=None):
-    from openharness.tools import BaseToolRegistry, ToolSpec
+    from looplet.tools import BaseToolRegistry, ToolSpec
     reg = BaseToolRegistry()
     reg.register(ToolSpec(
         name="done",
@@ -73,42 +73,42 @@ def _make_scripted_llm(responses: list[str]):
 
 
 def test_loopconfig_has_router_field():
-    from openharness.loop import LoopConfig
+    from looplet.loop import LoopConfig
     cfg = LoopConfig()
     assert hasattr(cfg, "router")
     assert cfg.router is None
 
 
 def test_loopconfig_has_checkpoint_dir_field():
-    from openharness.loop import LoopConfig
+    from looplet.loop import LoopConfig
     cfg = LoopConfig()
     assert hasattr(cfg, "checkpoint_dir")
     assert cfg.checkpoint_dir is None
 
 
 def test_loopconfig_has_tracer_field():
-    from openharness.loop import LoopConfig
+    from looplet.loop import LoopConfig
     cfg = LoopConfig()
     assert hasattr(cfg, "tracer")
     assert cfg.tracer is None
 
 
 def test_loopconfig_has_recovery_registry_field():
-    from openharness.loop import LoopConfig
+    from looplet.loop import LoopConfig
     cfg = LoopConfig()
     assert hasattr(cfg, "recovery_registry")
     assert cfg.recovery_registry is None
 
 
 def test_loopconfig_has_output_schema_field():
-    from openharness.loop import LoopConfig
+    from looplet.loop import LoopConfig
     cfg = LoopConfig()
     assert hasattr(cfg, "output_schema")
     assert cfg.output_schema is None
 
 
 def test_loopconfig_has_initial_checkpoint_field():
-    from openharness.loop import LoopConfig
+    from looplet.loop import LoopConfig
     cfg = LoopConfig()
     assert hasattr(cfg, "initial_checkpoint")
     assert cfg.initial_checkpoint is None
@@ -117,7 +117,7 @@ def test_loopconfig_has_initial_checkpoint_field():
 def test_composable_loop_accepts_stream_param():
     import inspect
 
-    from openharness.loop import LoopConfig, composable_loop
+    from looplet.loop import LoopConfig, composable_loop
     sig = inspect.signature(composable_loop)
     assert "stream" in sig.parameters
 
@@ -127,8 +127,8 @@ def test_composable_loop_accepts_stream_param():
 
 def test_router_selects_backend():
     """When config.router is set, the router's selected backend is used."""
-    from openharness.loop import LoopConfig, composable_loop
-    from openharness.router import ModelRouter
+    from looplet.loop import LoopConfig, composable_loop
+    from looplet.router import ModelRouter
 
     calls_received = []
 
@@ -167,7 +167,7 @@ def test_router_selects_backend():
 
 def test_checkpoint_dir_saves_checkpoints():
     """When checkpoint_dir is set, a checkpoint file is written after each step."""
-    from openharness.loop import LoopConfig, composable_loop
+    from looplet.loop import LoopConfig, composable_loop
 
     responses = [
         '{"tool": "done", "args": {"summary": "ckpt test"}}',
@@ -187,7 +187,7 @@ def test_checkpoint_dir_saves_checkpoints():
 
 def test_checkpoint_file_is_valid_json():
     """Checkpoint files should be valid JSON with expected keys."""
-    from openharness.loop import LoopConfig, composable_loop
+    from looplet.loop import LoopConfig, composable_loop
 
     responses = ['{"tool": "done", "args": {"summary": "ok"}}']
     llm = _make_scripted_llm(responses)
@@ -206,7 +206,7 @@ def test_checkpoint_file_is_valid_json():
 
 def test_load_latest_returns_highest_step():
     """FileCheckpointStore.load_latest picks the highest step_number."""
-    from openharness.checkpoint import Checkpoint, FileCheckpointStore
+    from looplet.checkpoint import Checkpoint, FileCheckpointStore
 
     with tempfile.TemporaryDirectory() as tmpdir:
         store = FileCheckpointStore(tmpdir)
@@ -227,8 +227,8 @@ def test_load_latest_returns_highest_step():
 
 def test_auto_resume_from_checkpoint_dir():
     """When checkpoint_dir has checkpoints, the loop auto-resumes."""
-    from openharness.checkpoint import Checkpoint, FileCheckpointStore
-    from openharness.loop import LoopConfig, composable_loop
+    from looplet.checkpoint import Checkpoint, FileCheckpointStore
+    from looplet.loop import LoopConfig, composable_loop
 
     with tempfile.TemporaryDirectory() as tmpdir:
         # Pre-seed a checkpoint at step 1
@@ -259,8 +259,8 @@ def test_auto_resume_from_checkpoint_dir():
 
 def test_tracer_records_spans():
     """When config.tracer is set, spans are created for LLM call and tool dispatch."""
-    from openharness.loop import LoopConfig, composable_loop
-    from openharness.telemetry import Tracer
+    from looplet.loop import LoopConfig, composable_loop
+    from looplet.telemetry import Tracer
 
     responses = ['{"tool": "done", "args": {"summary": "traced"}}']
     llm = _make_scripted_llm(responses)
@@ -277,8 +277,8 @@ def test_tracer_records_spans():
 
 def test_tracer_span_names():
     """Tracer spans should include LLM call span."""
-    from openharness.loop import LoopConfig, composable_loop
-    from openharness.telemetry import Tracer
+    from looplet.loop import LoopConfig, composable_loop
+    from looplet.telemetry import Tracer
 
     responses = ['{"tool": "done", "args": {"summary": "traced"}}']
     llm = _make_scripted_llm(responses)
@@ -299,8 +299,8 @@ def test_tracer_span_names():
 
 def test_recovery_registry_consulted_on_parse_error():
     """When recovery_registry is set, it's consulted when a parse error occurs."""
-    from openharness.loop import LoopConfig, composable_loop
-    from openharness.recovery import (
+    from looplet.loop import LoopConfig, composable_loop
+    from looplet.recovery import (
         FailureScenario,
         RecoveryAction,
         RecoveryRecipe,
@@ -342,8 +342,8 @@ def test_recovery_registry_consulted_on_parse_error():
 
 def test_output_schema_rejects_invalid_done():
     """When output_schema is set, done() with missing required fields is rejected."""
-    from openharness.loop import LoopConfig, composable_loop
-    from openharness.validation import FieldSpec, OutputSchema
+    from looplet.loop import LoopConfig, composable_loop
+    from looplet.validation import FieldSpec, OutputSchema
 
     schema = OutputSchema(fields={
         "report": FieldSpec(name="report", field_type="str", required=True),
@@ -357,7 +357,7 @@ def test_output_schema_rejects_invalid_done():
     llm = _make_scripted_llm(responses)
     state = SimpleState()
     reg = _make_registry()
-    reg.register(__import__("openharness.tools", fromlist=["ToolSpec"]).ToolSpec(
+    reg.register(__import__("looplet.tools", fromlist=["ToolSpec"]).ToolSpec(
         name="done",  # override done to accept report too
         description="finish",
         parameters={"summary": "summary", "report": "report"},
@@ -373,8 +373,8 @@ def test_output_schema_rejects_invalid_done():
 
 def test_output_schema_allows_valid_done():
     """When output_schema is set, done() with valid payload completes normally."""
-    from openharness.loop import LoopConfig, composable_loop
-    from openharness.validation import FieldSpec, OutputSchema
+    from looplet.loop import LoopConfig, composable_loop
+    from looplet.validation import FieldSpec, OutputSchema
 
     schema = OutputSchema(fields={
         "summary": FieldSpec(name="summary", field_type="str", required=True),
@@ -395,8 +395,8 @@ def test_output_schema_allows_valid_done():
 
 def test_stream_receives_events():
     """When stream is set, events are emitted during the loop."""
-    from openharness.loop import LoopConfig, composable_loop
-    from openharness.streaming import CallbackEmitter
+    from looplet.loop import LoopConfig, composable_loop
+    from looplet.streaming import CallbackEmitter
 
     received = []
     emitter = CallbackEmitter(callback=lambda evt: received.append(evt))
@@ -413,8 +413,8 @@ def test_stream_receives_events():
 
 def test_stream_receives_loop_start_event():
     """LoopStartEvent should be emitted before the loop starts."""
-    from openharness.loop import LoopConfig, composable_loop
-    from openharness.streaming import CallbackEmitter, LoopStartEvent
+    from looplet.loop import LoopConfig, composable_loop
+    from looplet.streaming import CallbackEmitter, LoopStartEvent
 
     received = []
     emitter = CallbackEmitter(callback=lambda evt: received.append(evt))
@@ -432,8 +432,8 @@ def test_stream_receives_loop_start_event():
 
 def test_stream_receives_loop_end_event():
     """LoopEndEvent should be emitted after the loop ends."""
-    from openharness.loop import LoopConfig, composable_loop
-    from openharness.streaming import CallbackEmitter, LoopEndEvent
+    from looplet.loop import LoopConfig, composable_loop
+    from looplet.streaming import CallbackEmitter, LoopEndEvent
 
     received = []
     emitter = CallbackEmitter(callback=lambda evt: received.append(evt))
@@ -451,8 +451,8 @@ def test_stream_receives_loop_end_event():
 
 def test_stream_receives_tool_dispatch_event():
     """ToolDispatchEvent should be emitted for each tool dispatch."""
-    from openharness.loop import LoopConfig, composable_loop
-    from openharness.streaming import CallbackEmitter, ToolDispatchEvent
+    from looplet.loop import LoopConfig, composable_loop
+    from looplet.streaming import CallbackEmitter, ToolDispatchEvent
 
     received = []
     emitter = CallbackEmitter(callback=lambda evt: received.append(evt))
@@ -473,8 +473,8 @@ def test_stream_receives_tool_dispatch_event():
 
 def test_initial_checkpoint_restores_step_offset():
     """Loop with initial_checkpoint should start from checkpoint's step_number."""
-    from openharness.checkpoint import Checkpoint
-    from openharness.loop import LoopConfig, composable_loop
+    from looplet.checkpoint import Checkpoint
+    from looplet.loop import LoopConfig, composable_loop
 
     start_steps = []
 
@@ -508,9 +508,9 @@ def test_initial_checkpoint_restores_step_offset():
 
 def test_initial_checkpoint_restores_session_log():
     """Session log should be restored from initial_checkpoint."""
-    from openharness.checkpoint import Checkpoint
-    from openharness.loop import LoopConfig, composable_loop
-    from openharness.session import SessionLog
+    from looplet.checkpoint import Checkpoint
+    from looplet.loop import LoopConfig, composable_loop
+    from looplet.session import SessionLog
 
     responses = ['{"tool": "done", "args": {"summary": "ok"}}']
     llm = _make_scripted_llm(responses)
@@ -544,7 +544,7 @@ def test_initial_checkpoint_restores_session_log():
 
 def test_all_new_params_default_to_none():
     """All new LoopConfig fields default to None — no behavior change."""
-    from openharness.loop import LoopConfig
+    from looplet.loop import LoopConfig
     cfg = LoopConfig()
     for field_name in ("router", "checkpoint_dir", "tracer", "recovery_registry",
                        "output_schema", "initial_checkpoint"):
@@ -553,7 +553,7 @@ def test_all_new_params_default_to_none():
 
 def test_loop_works_without_new_params():
     """Existing loop usage (no new params) continues to work."""
-    from openharness.loop import LoopConfig, composable_loop
+    from looplet.loop import LoopConfig, composable_loop
 
     responses = ['{"tool": "done", "args": {"summary": "baseline"}}']
     llm = _make_scripted_llm(responses)

@@ -1,11 +1,11 @@
-"""Tests for openharness.parse — JSON and native tool parsing."""
+"""Tests for looplet.parse — JSON and native tool parsing."""
 
 from __future__ import annotations
 
 import pytest
 
-from openharness.parse import parse_multi_tool_calls, parse_native_tool_use
-from openharness.types import ToolCall
+from looplet.parse import parse_multi_tool_calls, parse_native_tool_use
+from looplet.types import ToolCall
 
 pytestmark = pytest.mark.smoke
 

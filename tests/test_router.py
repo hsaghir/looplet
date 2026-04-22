@@ -1,11 +1,11 @@
-"""Tests for openharness.router — multi-model routing and cost tracking."""
+"""Tests for looplet.router — multi-model routing and cost tracking."""
 from __future__ import annotations
 
 from unittest.mock import MagicMock
 
 import pytest
 
-from openharness.router import (
+from looplet.router import (
     CostTracker,
     FallbackRouter,
     ModelProfile,
@@ -13,7 +13,7 @@ from openharness.router import (
     RoutingLLMBackend,
     SimpleRouter,
 )
-from openharness.types import LLMBackend
+from looplet.types import LLMBackend
 
 # ── Helpers ─────────────────────────────────────────────────────
 

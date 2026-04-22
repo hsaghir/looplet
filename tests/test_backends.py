@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from openharness.backends import (
+from looplet.backends import (
     AnthropicBackend,
     AnthropicStreamingBackend,
     AsyncAnthropicBackend,
@@ -124,7 +124,7 @@ class TestOpenAIBackend:
         assert msgs[0]["role"] == "user"
 
     def test_satisfies_llm_backend_protocol(self):
-        from openharness.types import LLMBackend
+        from looplet.types import LLMBackend
         client = _MockOpenAIClient()
         llm = OpenAIBackend(client)
         assert isinstance(llm, LLMBackend)
@@ -152,7 +152,7 @@ class TestAnthropicBackend:
         assert result == "Anthropic response"
 
     def test_satisfies_llm_backend_protocol(self):
-        from openharness.types import LLMBackend
+        from looplet.types import LLMBackend
         client = _MockAnthropicClient()
         llm = AnthropicBackend(client)
         assert isinstance(llm, LLMBackend)
@@ -168,7 +168,7 @@ class TestAnthropicStreamingBackend:
 
 class TestLLMChunkEvent:
     def test_chunk_event_creation(self):
-        from openharness.streaming import LLMChunkEvent
+        from looplet.streaming import LLMChunkEvent
         e = LLMChunkEvent(step_num=3, chunk="hello", chunk_index=0)
         assert e.event_type == "LLMChunkEvent"
         assert e.step_num == 3
@@ -177,14 +177,14 @@ class TestLLMChunkEvent:
 
 class TestExports:
     def test_backends_exported(self):
-        from openharness import AnthropicBackend, OpenAIBackend
-        from openharness.backends import (
+        from looplet import AnthropicBackend, OpenAIBackend
+        from looplet.backends import (
             AnthropicStreamingBackend,
             AsyncAnthropicBackend,
             AsyncOpenAIBackend,
             OpenAIStreamingBackend,
         )
-        from openharness.streaming import LLMChunkEvent
+        from looplet.streaming import LLMChunkEvent
 
         assert OpenAIBackend is not None
         assert LLMChunkEvent is not None

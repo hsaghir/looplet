@@ -1,12 +1,12 @@
-# Contributing to openharness
+# Contributing to looplet
 
-Thanks for your interest in improving `openharness`! This document lays
+Thanks for your interest in improving `looplet`! This document lays
 out how to set up a dev environment, the conventions we follow, and how
 to submit changes.
 
 ## Development setup
 
-`openharness` uses [`uv`](https://docs.astral.sh/uv/) for dependency
+`looplet` uses [`uv`](https://docs.astral.sh/uv/) for dependency
 management. If you don't have it yet:
 
 ```bash
@@ -21,7 +21,7 @@ uv run pytest                        # run the full suite (~4s, 865 tests)
 uv run pytest -m smoke -q            # fast smoke run
 uv run ruff check .                  # lint
 uv run ruff format --check .         # format check
-uv run mypy src/openharness          # optional type check
+uv run mypy src/looplet          # optional type check
 ```
 
 ## Branching & commits
@@ -48,13 +48,13 @@ uv run mypy src/openharness          # optional type check
   depends only on the standard library + `pyyaml`. Optional extras are
   fine under `[project.optional-dependencies]`.
 - **Public API surface** — if you add a public symbol, export it from
-  `openharness/__init__.py`, document it with a docstring, and add a
+  `looplet/__init__.py`, document it with a docstring, and add a
   test.
 
 ## Testing
 
 - Unit tests live under `tests/`, mirroring the module layout of
-  `src/openharness/`.
+  `src/looplet/`.
 - Mark fast tests with `@pytest.mark.smoke` (module-level `pytestmark`
   is fine) and slow / network-bound tests with `@pytest.mark.integration`
   or `@pytest.mark.slow`.
@@ -82,7 +82,7 @@ Open an issue on GitHub with:
 - What you expected to happen.
 - What actually happened (stack trace, log output).
 - A minimal reproduction — ideally a single `pytest` test case.
-- Your Python version and `openharness` version.
+- Your Python version and `looplet` version.
 
 ## Security issues
 

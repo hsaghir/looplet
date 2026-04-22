@@ -6,7 +6,7 @@ self-contained snippet you can drop into your agent.
 ## Ollama (local models, zero API key)
 
 ```python
-from openharness.backends import OpenAIBackend
+from looplet.backends import OpenAIBackend
 from openai import OpenAI
 
 llm = OpenAIBackend(
@@ -15,14 +15,14 @@ llm = OpenAIBackend(
 )
 ```
 
-See [`examples/ollama_hello.py`](../src/openharness/examples/ollama_hello.py)
+See [`examples/ollama_hello.py`](../src/looplet/examples/ollama_hello.py)
 for a runnable end-to-end example.
 
 ## Groq / Together / any OpenAI-compatible endpoint
 
 ```python
 import os
-from openharness.backends import OpenAIBackend
+from looplet.backends import OpenAIBackend
 from openai import OpenAI
 
 llm = OpenAIBackend(
@@ -34,7 +34,7 @@ llm = OpenAIBackend(
 ## Anthropic
 
 ```python
-from openharness.backends import AnthropicBackend
+from looplet.backends import AnthropicBackend
 from anthropic import Anthropic
 
 llm = AnthropicBackend(Anthropic(), model="claude-sonnet-4-latest")
@@ -45,7 +45,7 @@ llm = AnthropicBackend(Anthropic(), model="claude-sonnet-4-latest")
 Wrap the built-in `Tracer` with an OTel exporter:
 
 ```python
-from openharness import Tracer, TracingHook
+from looplet import Tracer, TracingHook
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.sdk.trace import TracerProvider
@@ -54,7 +54,7 @@ from opentelemetry.sdk.trace.export import BatchSpanProcessor
 provider = TracerProvider()
 provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
 trace.set_tracer_provider(provider)
-otel_tracer = trace.get_tracer("openharness")
+otel_tracer = trace.get_tracer("looplet")
 
 class OTelBridge:
     def __init__(self, otel): self.otel = otel
@@ -68,7 +68,7 @@ hooks = [TracingHook(OTelBridge(otel_tracer))]
 ## MCP server as a tool source
 
 ```python
-from openharness import MCPToolAdapter, BaseToolRegistry
+from looplet import MCPToolAdapter, BaseToolRegistry
 
 reg = BaseToolRegistry()
 adapter = MCPToolAdapter.connect_stdio(
@@ -78,12 +78,12 @@ for spec in adapter.list_tools():
     reg.register(spec)
 ```
 
-No MCP SDK required — `openharness` speaks JSON-RPC over stdio directly.
+No MCP SDK required — `looplet` speaks JSON-RPC over stdio directly.
 
 ## Cost accounting on top of provenance
 
 ```python
-from openharness.provenance import ProvenanceSink
+from looplet.provenance import ProvenanceSink
 
 sink = ProvenanceSink(dir="traces/run_1/")
 llm = sink.wrap_llm(my_llm)
@@ -106,7 +106,7 @@ print(f"${cost:.4f}")
 ## Golden-test a trajectory
 
 ```python
-from openharness import eval_discover, eval_run, EvalContext
+from looplet import eval_discover, eval_run, EvalContext
 
 def eval_matches_golden(ctx):
     golden = open("golden/run_1/tool_sequence.txt").read().splitlines()
@@ -119,7 +119,7 @@ print(eval_run([eval_matches_golden], ctx))
 ## Crash-resume with conversation preserved
 
 ```python
-from openharness import LoopConfig, resume_loop_state
+from looplet import LoopConfig, resume_loop_state
 
 config = LoopConfig(checkpoint_dir="./checkpoints", max_steps=100)
 
@@ -139,7 +139,7 @@ for step in composable_loop(
 ## Deny-by-default shell tool
 
 ```python
-from openharness import PermissionEngine, PermissionRule
+from looplet import PermissionEngine, PermissionRule
 
 engine = PermissionEngine(default="DENY")
 engine.add(PermissionRule(tool="bash", args={"command": r"^(ls|pwd|cat)( |$)"}, decision="ALLOW"))
@@ -151,7 +151,7 @@ config = LoopConfig(permissions=engine, approval_handler=my_ask_handler)
 ## Run a sub-loop with its own tools
 
 ```python
-from openharness import run_sub_loop
+from looplet import run_sub_loop
 
 result = run_sub_loop(
     llm=llm,

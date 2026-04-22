@@ -38,7 +38,7 @@ the framework passes the judge LLM automatically.
 For live scoring during development:
 
 ```python
-from openharness import EvalHook
+from looplet import EvalHook
 
 hook = EvalHook(
     evaluators=[eval_tests_passed, eval_efficiency],
@@ -53,7 +53,7 @@ hook.save("evals/run_1.json")
 ## Discover and batch-run across saved trajectories
 
 ```python
-from openharness import eval_discover, eval_run, EvalContext
+from looplet import eval_discover, eval_run, EvalContext
 
 evals = eval_discover("eval_my_agent.py")       # finds all eval_* functions
 ctx = EvalContext.from_trajectory_dir("traces/run_1/")
@@ -69,7 +69,7 @@ debugging becomes your eval suite.
 ## Tag evals with marks for filtering
 
 ```python
-from openharness import eval_mark
+from looplet import eval_mark
 
 @eval_mark("verdict", "fast")
 def eval_verdict_correct(ctx): ...
@@ -87,7 +87,7 @@ results = eval_run(evals, ctx, exclude=["slow"])
 ## Batch-run across multiple trajectories
 
 ```python
-from openharness import eval_run_batch
+from looplet import eval_run_batch
 
 contexts = [EvalContext.from_trajectory_dir(d) for d in trace_dirs]
 table = eval_run_batch(evals, contexts)
@@ -100,7 +100,7 @@ for row in table:
 Like `pytest` with exit codes:
 
 ```bash
-openharness eval traces/ --evals eval_agent.py --threshold 0.7 -v
+looplet eval traces/ --evals eval_agent.py --threshold 0.7 -v
 ```
 
 ```

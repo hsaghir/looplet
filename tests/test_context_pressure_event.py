@@ -10,7 +10,7 @@ through an event channel.
 This test locks in:
 
 1. A new ``ContextPressureEvent`` dataclass exists in
-   ``openharness.streaming`` with ``level``, ``estimated_tokens``,
+   ``looplet.streaming`` with ``level``, ``estimated_tokens``,
    ``threshold``, ``context_window``, ``percent_used``.
 2. ``ContextPressureHook`` emits one per ``pre_prompt`` call via the
    attached emitter when thresholds are crossed (ok → warning →
@@ -22,9 +22,9 @@ This test locks in:
 
 from __future__ import annotations
 
-from openharness.context import ContextPressureHook
-from openharness.streaming import ContextPressureEvent
-from openharness.types import DefaultState, Step, ToolCall, ToolResult
+from looplet.context import ContextPressureHook
+from looplet.streaming import ContextPressureEvent
+from looplet.types import DefaultState, Step, ToolCall, ToolResult
 
 
 class _CaptureEmitter:
@@ -69,7 +69,7 @@ class TestHookEmitsPressure:
     def test_ok_level_emitted_when_under_all_thresholds(self):
         emitter = _CaptureEmitter()
         state = _mk_state(1, 10)  # tiny payload
-        from openharness.session import SessionLog
+        from looplet.session import SessionLog
         hook = ContextPressureHook(llm=None, emitter=emitter)
         hook.pre_prompt(state=state, session_log=SessionLog(),
                         context=None, step_num=2)
@@ -84,7 +84,7 @@ class TestHookEmitsPressure:
         # With a 10_000 context window and defaults (warn=30K=>out of range),
         # use explicit buffers that put us in the warning band.
         state = _mk_state(3, 20_000)  # ~15K tokens estimated
-        from openharness.session import SessionLog
+        from looplet.session import SessionLog
         hook = ContextPressureHook(
             llm=None,
             context_window=20_000,
@@ -102,7 +102,7 @@ class TestHookEmitsPressure:
 
     def test_no_emitter_no_error(self):
         state = _mk_state(1, 10)
-        from openharness.session import SessionLog
+        from looplet.session import SessionLog
         hook = ContextPressureHook(llm=None)  # no emitter
         # Must not raise
         hook.pre_prompt(state=state, session_log=SessionLog(),

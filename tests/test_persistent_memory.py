@@ -22,13 +22,13 @@ This file verifies:
 
 from __future__ import annotations
 
-from openharness.memory import (
+from looplet.memory import (
     CallableMemorySource,
     PersistentMemorySource,
     StaticMemorySource,
     render_memory,
 )
-from openharness.prompts import build_prompt
+from looplet.prompts import build_prompt
 
 
 class TestMemorySourceShape:

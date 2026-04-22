@@ -16,10 +16,10 @@ from __future__ import annotations
 
 import asyncio
 
-from openharness.loop import LoopConfig, composable_loop
-from openharness.scaffolding import llm_call_with_retry
-from openharness.tools import BaseToolRegistry, ToolSpec
-from openharness.types import CancelToken, DefaultState, LLMBackend, ToolContext
+from looplet.loop import LoopConfig, composable_loop
+from looplet.scaffolding import llm_call_with_retry
+from looplet.tools import BaseToolRegistry, ToolSpec
+from looplet.types import CancelToken, DefaultState, LLMBackend, ToolContext
 
 
 class _CancelAwareLLM(LLMBackend):

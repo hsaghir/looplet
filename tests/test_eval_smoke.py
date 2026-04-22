@@ -7,13 +7,13 @@ from pathlib import Path
 
 import pytest
 
-from openharness import (
+from looplet import (
     BaseToolRegistry,
     DefaultState,
     LoopConfig,
     composable_loop,
 )
-from openharness.evals import (
+from looplet.evals import (
     EvalContext,
     EvalHook,
     EvalResult,
@@ -22,9 +22,9 @@ from openharness.evals import (
     eval_run,
     eval_run_batch,
 )
-from openharness.testing import MockLLMBackend
-from openharness.tools import ToolSpec
-from openharness.types import Step, ToolCall, ToolResult
+from looplet.testing import MockLLMBackend
+from looplet.tools import ToolSpec
+from looplet.types import Step, ToolCall, ToolResult
 
 pytestmark = pytest.mark.smoke
 

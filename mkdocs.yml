@@ -1,8 +1,8 @@
-site_name: openharness
+site_name: looplet
 site_description: The tool-calling loop you can actually step through.
-site_url: https://hsaghir.github.io/openharness/
-repo_url: https://github.com/hsaghir/openharness
-repo_name: hsaghir/openharness
+site_url: https://hsaghir.github.io/looplet/
+repo_url: https://github.com/hsaghir/looplet
+repo_name: hsaghir/looplet
 edit_uri: edit/master/
 
 theme:

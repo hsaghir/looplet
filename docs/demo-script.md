@@ -11,14 +11,14 @@ Keep it minimal — no `cd`, no editor, no sudo.
 export PS1='$ '
 clear
 
-# Python env already set up with openharness[openai] installed.
+# Python env already set up with looplet[openai] installed.
 # OPENAI_BASE_URL + OPENAI_MODEL pointed at a fast model (Groq, Together).
 ```
 
 ## Script
 
 ```text
-$ python -m openharness.examples.coding_agent "write fizzbuzz in fizz.py and test it"
+$ python -m looplet.examples.coding_agent "write fizzbuzz in fizz.py and test it"
 ```
 
 The agent should:
@@ -44,7 +44,7 @@ Total: ~8 seconds of visible output.
 ## Record
 
 ```bash
-asciinema rec demo.cast -c "python -m openharness.examples.coding_agent 'write fizzbuzz in fizz.py and test it'"
+asciinema rec demo.cast -c "python -m looplet.examples.coding_agent 'write fizzbuzz in fizz.py and test it'"
 
 # Convert to GIF:
 agg demo.cast demo.gif --theme monokai --speed 1.2 --rows 14 --cols 100
@@ -58,7 +58,7 @@ Drop `demo.gif` (or `demo.svg`) at the top of the README, right under
 the h1:
 
 ```markdown
-# openharness
+# looplet
 
 ![demo](./docs/demo.gif)
 

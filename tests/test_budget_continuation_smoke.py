@@ -3,14 +3,14 @@ from __future__ import annotations
 
 import pytest
 
-from openharness import (
+from looplet import (
     BaseToolRegistry,
     DefaultState,
     LoopConfig,
     composable_loop,
 )
-from openharness.scaffolding import LLMResult, llm_call_with_retry
-from openharness.tools import ToolSpec
+from looplet.scaffolding import LLMResult, llm_call_with_retry
+from looplet.tools import ToolSpec
 
 pytestmark = pytest.mark.smoke
 

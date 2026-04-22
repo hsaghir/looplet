@@ -7,9 +7,9 @@ from typing import Any
 
 import pytest
 
-from openharness.conversation import Conversation, Message, MessageRole
-from openharness.loop import LoopConfig, composable_loop
-from openharness.tools import BaseToolRegistry, ToolSpec
+from looplet.conversation import Conversation, Message, MessageRole
+from looplet.loop import LoopConfig, composable_loop
+from looplet.tools import BaseToolRegistry, ToolSpec
 
 # ── Helpers ──────────────────────────────────────────────────────
 

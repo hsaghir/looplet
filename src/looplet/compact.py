@@ -80,8 +80,7 @@ class CompactService(Protocol):
         conversation: Any | None,
         step_num: int,
         reason: str,
-    ) -> CompactOutcome:
-        ...
+    ) -> CompactOutcome: ...
 
 
 class TruncateCompact:
@@ -113,17 +112,13 @@ class TruncateCompact:
         # Session-log side.
         from looplet.scaffolding import emergency_truncate  # noqa: PLC0415
 
-        messages_before = (
-            len(conversation.messages) if conversation is not None else None
-        )
+        messages_before = len(conversation.messages) if conversation is not None else None
         emergency_truncate(state, session_log, keep_recent=self.keep_recent)
 
         # Conversation side (optional — most domains don't thread one).
         if conversation is not None and hasattr(conversation, "compact"):
             conversation.compact(keep_recent=self.keep_recent)
-        messages_after = (
-            len(conversation.messages) if conversation is not None else None
-        )
+        messages_after = len(conversation.messages) if conversation is not None else None
 
         return CompactOutcome(
             reason=reason,
@@ -159,11 +154,12 @@ def run_compact(
 
     # Pre-compact: observers can block.
     pre_decisions = _emit_compact_event(
-        hooks, LifecycleEvent.PRE_COMPACT,
-        state=state, session_log=session_log, step_num=step_num,
-        messages_before=(
-            len(conversation.messages) if conversation is not None else None
-        ),
+        hooks,
+        LifecycleEvent.PRE_COMPACT,
+        state=state,
+        session_log=session_log,
+        step_num=step_num,
+        messages_before=(len(conversation.messages) if conversation is not None else None),
         reason=reason,
     )
     for d in pre_decisions:
@@ -180,8 +176,11 @@ def run_compact(
     )
 
     _emit_compact_event(
-        hooks, LifecycleEvent.POST_COMPACT,
-        state=state, session_log=session_log, step_num=step_num,
+        hooks,
+        LifecycleEvent.POST_COMPACT,
+        state=state,
+        session_log=session_log,
+        step_num=step_num,
         messages_before=outcome.messages_before,
         messages_after=outcome.messages_after,
         reason=reason,
@@ -241,7 +240,8 @@ def _emit_compact_event(
             import logging  # noqa: PLC0415
 
             logging.getLogger(__name__).exception(
-                "on_event hook raised during %s; continuing", event,
+                "on_event hook raised during %s; continuing",
+                event,
             )
             continue
         if isinstance(result, HookDecision):
@@ -322,9 +322,7 @@ class SummarizeCompact:
             llm_call_with_retry,
         )
 
-        messages_before = (
-            len(conversation.messages) if conversation is not None else None
-        )
+        messages_before = len(conversation.messages) if conversation is not None else None
 
         # 1. Build transcript text: session_log.render() is the
         #    single source of truth for what the agent has seen.
@@ -341,10 +339,9 @@ class SummarizeCompact:
             if conversation is not None and hasattr(conversation, "compact"):
                 conversation.compact(keep_recent=self.keep_recent)
             return CompactOutcome(
-                reason=reason, messages_before=messages_before,
-                messages_after=(
-                    len(conversation.messages) if conversation is not None else None
-                ),
+                reason=reason,
+                messages_before=messages_before,
+                messages_after=(len(conversation.messages) if conversation is not None else None),
                 llm_calls_spent=0,
                 extra={"mode": "empty_fallback"},
             )
@@ -365,7 +362,8 @@ class SummarizeCompact:
         summary_text: str | None = None
         try:
             result = llm_call_with_retry(
-                llm, prompt,
+                llm,
+                prompt,
                 max_tokens=self.summary_max_tokens,
                 system_prompt="",
                 temperature=self.summary_temperature,
@@ -413,9 +411,7 @@ class SummarizeCompact:
         if conversation is not None and hasattr(conversation, "compact"):
             conversation.compact(keep_recent=self.keep_recent)
 
-        messages_after = (
-            len(conversation.messages) if conversation is not None else None
-        )
+        messages_after = len(conversation.messages) if conversation is not None else None
         return CompactOutcome(
             reason=reason,
             messages_before=messages_before,
@@ -570,8 +566,11 @@ class _CompactChain:
         total_llm = 0
         for i, svc in enumerate(self._stages):
             outcome = svc.compact(
-                state=state, session_log=session_log, llm=llm,
-                conversation=conversation, step_num=step_num,
+                state=state,
+                session_log=session_log,
+                llm=llm,
+                conversation=conversation,
+                step_num=step_num,
                 reason=reason,
             )
             total_llm += outcome.llm_calls_spent
@@ -582,10 +581,7 @@ class _CompactChain:
                 and outcome.messages_after is not None
                 and outcome.messages_after < outcome.messages_before
             )
-            _pruned = (
-                outcome.extra is not None
-                and outcome.extra.get("cleared", 0) > 0
-            )
+            _pruned = outcome.extra is not None and outcome.extra.get("cleared", 0) > 0
             if _shrank or _pruned or i == len(self._stages) - 1:
                 outcome.llm_calls_spent = total_llm
                 if outcome.extra is None:

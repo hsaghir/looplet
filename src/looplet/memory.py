@@ -36,7 +36,6 @@ __all__ = [
 ]
 
 
-
 @runtime_checkable
 class PersistentMemorySource(Protocol):
     """Any object with a ``load(state) -> str | None`` method.

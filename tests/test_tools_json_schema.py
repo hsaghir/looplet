@@ -10,8 +10,10 @@ class TestToolSpecJsonSchema:
 
     def test_simple_format_is_not_json_schema(self):
         from looplet.tools import ToolSpec
+
         spec = ToolSpec(
-            name="read", description="Read file",
+            name="read",
+            description="Read file",
             parameters={"file_path": "str"},
             execute=lambda *, file_path: {},
         )
@@ -19,8 +21,10 @@ class TestToolSpecJsonSchema:
 
     def test_json_schema_format_detected(self):
         from looplet.tools import ToolSpec
+
         spec = ToolSpec(
-            name="read", description="Read file",
+            name="read",
+            description="Read file",
             parameters={
                 "type": "object",
                 "properties": {
@@ -34,8 +38,10 @@ class TestToolSpecJsonSchema:
 
     def test_parameter_names_simple(self):
         from looplet.tools import ToolSpec
+
         spec = ToolSpec(
-            name="test", description="Test",
+            name="test",
+            description="Test",
             parameters={"a": "str", "b": "int"},
             execute=lambda *, a, b: {},
         )
@@ -43,8 +49,10 @@ class TestToolSpecJsonSchema:
 
     def test_parameter_names_json_schema(self):
         from looplet.tools import ToolSpec
+
         spec = ToolSpec(
-            name="test", description="Test",
+            name="test",
+            description="Test",
             parameters={
                 "type": "object",
                 "properties": {
@@ -58,8 +66,10 @@ class TestToolSpecJsonSchema:
 
     def test_required_parameters_simple(self):
         from looplet.tools import ToolSpec
+
         spec = ToolSpec(
-            name="test", description="Test",
+            name="test",
+            description="Test",
             parameters={"a": "str", "b": "int"},
             execute=lambda *, a, b: {},
         )
@@ -68,8 +78,10 @@ class TestToolSpecJsonSchema:
 
     def test_required_parameters_json_schema(self):
         from looplet.tools import ToolSpec
+
         spec = ToolSpec(
-            name="test", description="Test",
+            name="test",
+            description="Test",
             parameters={
                 "type": "object",
                 "properties": {
@@ -84,8 +96,10 @@ class TestToolSpecJsonSchema:
 
     def test_spec_text_simple(self):
         from looplet.tools import ToolSpec
+
         spec = ToolSpec(
-            name="read", description="Read a file",
+            name="read",
+            description="Read a file",
             parameters={"path": "str"},
             execute=lambda *, path: {},
         )
@@ -95,8 +109,10 @@ class TestToolSpecJsonSchema:
 
     def test_spec_text_json_schema(self):
         from looplet.tools import ToolSpec
+
         spec = ToolSpec(
-            name="read", description="Read a file",
+            name="read",
+            description="Read a file",
             parameters={
                 "type": "object",
                 "properties": {
@@ -114,8 +130,10 @@ class TestToolSpecJsonSchema:
 
     def test_to_api_schema_simple(self):
         from looplet.tools import ToolSpec
+
         spec = ToolSpec(
-            name="test", description="Test tool",
+            name="test",
+            description="Test tool",
             parameters={"q": "search query"},
             execute=lambda *, q: {},
         )
@@ -126,6 +144,7 @@ class TestToolSpecJsonSchema:
 
     def test_to_api_schema_json_schema_passthrough(self):
         from looplet.tools import ToolSpec
+
         params = {
             "type": "object",
             "properties": {
@@ -135,7 +154,8 @@ class TestToolSpecJsonSchema:
             "required": ["query"],
         }
         spec = ToolSpec(
-            name="search", description="Search",
+            name="search",
+            description="Search",
             parameters=params,
             execute=lambda *, query, limit=10: {},
         )
@@ -144,8 +164,10 @@ class TestToolSpecJsonSchema:
 
     def test_to_json_schema_from_simple(self):
         from looplet.tools import ToolSpec
+
         spec = ToolSpec(
-            name="test", description="Test",
+            name="test",
+            description="Test",
             parameters={"name": "person name", "age": "integer"},
             execute=lambda *, name, age: {},
         )
@@ -157,13 +179,15 @@ class TestToolSpecJsonSchema:
 
     def test_to_json_schema_from_json_schema(self):
         from looplet.tools import ToolSpec
+
         params = {
             "type": "object",
             "properties": {"q": {"type": "string"}},
             "required": ["q"],
         }
         spec = ToolSpec(
-            name="test", description="Test",
+            name="test",
+            description="Test",
             parameters=params,
             execute=lambda *, q: {},
         )
@@ -173,19 +197,22 @@ class TestToolSpecJsonSchema:
     def test_dispatch_works_with_json_schema(self):
         from looplet.tools import BaseToolRegistry, ToolSpec
         from looplet.types import ToolCall
+
         reg = BaseToolRegistry()
-        reg.register(ToolSpec(
-            name="search",
-            description="Search",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "Search query"},
+        reg.register(
+            ToolSpec(
+                name="search",
+                description="Search",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Search query"},
+                    },
+                    "required": ["query"],
                 },
-                "required": ["query"],
-            },
-            execute=lambda *, query: {"results": [query]},
-        ))
+                execute=lambda *, query: {"results": [query]},
+            )
+        )
         result = reg.dispatch(ToolCall(tool="search", args={"query": "hello"}))
         assert result.error is None
         assert result.data == {"results": ["hello"]}
@@ -196,6 +223,7 @@ class TestRegistryIntrospect:
 
     def test_introspect_empty_registry(self):
         from looplet.tools import BaseToolRegistry
+
         reg = BaseToolRegistry()
         info = reg.introspect()
         assert info["tool_count"] == 0
@@ -203,18 +231,25 @@ class TestRegistryIntrospect:
 
     def test_introspect_with_tools(self):
         from looplet.tools import BaseToolRegistry, ToolSpec
+
         reg = BaseToolRegistry()
-        reg.register(ToolSpec(
-            name="echo", description="Echo input",
-            parameters={"text": "str"},
-            execute=lambda *, text: {"echoed": text},
-            concurrent_safe=True,
-        ))
-        reg.register(ToolSpec(
-            name="done", description="Finish",
-            parameters={"summary": "str"},
-            execute=lambda *, summary: {},
-        ))
+        reg.register(
+            ToolSpec(
+                name="echo",
+                description="Echo input",
+                parameters={"text": "str"},
+                execute=lambda *, text: {"echoed": text},
+                concurrent_safe=True,
+            )
+        )
+        reg.register(
+            ToolSpec(
+                name="done",
+                description="Finish",
+                parameters={"summary": "str"},
+                execute=lambda *, summary: {},
+            )
+        )
         info = reg.introspect()
         assert info["tool_count"] == 2
         assert len(info["tools"]) == 2
@@ -229,6 +264,7 @@ class TestRegistryIntrospect:
 
     def test_introspect_json_schema_passthrough(self):
         from looplet.tools import BaseToolRegistry, ToolSpec
+
         reg = BaseToolRegistry()
         params = {
             "type": "object",
@@ -238,11 +274,14 @@ class TestRegistryIntrospect:
             },
             "required": ["query"],
         }
-        reg.register(ToolSpec(
-            name="search", description="Search items",
-            parameters=params,
-            execute=lambda *, query, limit=10: {},
-        ))
+        reg.register(
+            ToolSpec(
+                name="search",
+                description="Search items",
+                parameters=params,
+                execute=lambda *, query, limit=10: {},
+            )
+        )
         info = reg.introspect()
         tool_info = info["tools"][0]
         assert tool_info["parameters"] == params

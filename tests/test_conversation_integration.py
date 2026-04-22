@@ -1,4 +1,5 @@
 """Tests for Conversation integration with composable_loop."""
+
 from __future__ import annotations
 
 import json
@@ -50,16 +51,22 @@ class _SimpleState:
 
 def _make_registry():
     reg = BaseToolRegistry()
-    reg.register(ToolSpec(
-        name="echo", description="Echo input",
-        parameters={"text": "text to echo"},
-        execute=lambda text="": {"echoed": text},
-    ))
-    reg.register(ToolSpec(
-        name="done", description="Finish",
-        parameters={},
-        execute=lambda **kw: {"status": "done"},
-    ))
+    reg.register(
+        ToolSpec(
+            name="echo",
+            description="Echo input",
+            parameters={"text": "text to echo"},
+            execute=lambda text="": {"echoed": text},
+        )
+    )
+    reg.register(
+        ToolSpec(
+            name="done",
+            description="Finish",
+            parameters={},
+            execute=lambda **kw: {"status": "done"},
+        )
+    )
     return reg
 
 
@@ -69,18 +76,25 @@ def _make_registry():
 class TestConversationIntegration:
     def test_conversation_records_messages(self):
         """Conversation receives USER/ASSISTANT/TOOL messages during loop."""
-        llm = _ScriptedLLM([
-            '{"tool": "echo", "args": {"text": "hello"}}',
-            '{"tool": "done", "args": {}}',
-        ])
+        llm = _ScriptedLLM(
+            [
+                '{"tool": "echo", "args": {"text": "hello"}}',
+                '{"tool": "done", "args": {}}',
+            ]
+        )
         state = _SimpleState()
         conv = Conversation()
         config = LoopConfig(max_steps=5, done_tool="done")
 
-        steps = list(composable_loop(
-            llm, tools=_make_registry(), config=config,
-            state=state, conversation=conv,
-        ))
+        steps = list(
+            composable_loop(
+                llm,
+                tools=_make_registry(),
+                config=config,
+                state=state,
+                conversation=conv,
+            )
+        )
 
         assert len(steps) >= 2
         # Conversation should have messages: at least USER+ASSISTANT for each LLM call
@@ -94,18 +108,25 @@ class TestConversationIntegration:
 
     def test_conversation_has_tool_calls(self):
         """Tool calls and results are recorded in conversation."""
-        llm = _ScriptedLLM([
-            '{"tool": "echo", "args": {"text": "test"}}',
-            '{"tool": "done", "args": {}}',
-        ])
+        llm = _ScriptedLLM(
+            [
+                '{"tool": "echo", "args": {"text": "test"}}',
+                '{"tool": "done", "args": {}}',
+            ]
+        )
         state = _SimpleState()
         conv = Conversation()
         config = LoopConfig(max_steps=5, done_tool="done")
 
-        list(composable_loop(
-            llm, tools=_make_registry(), config=config,
-            state=state, conversation=conv,
-        ))
+        list(
+            composable_loop(
+                llm,
+                tools=_make_registry(),
+                config=config,
+                state=state,
+                conversation=conv,
+            )
+        )
 
         # Find tool call messages
         tool_call_msgs = [m for m in conv.messages if m.tool_call is not None]
@@ -116,32 +137,46 @@ class TestConversationIntegration:
 
     def test_conversation_none_doesnt_break(self):
         """Loop works fine without conversation (default behavior)."""
-        llm = _ScriptedLLM([
-            '{"tool": "done", "args": {}}',
-        ])
+        llm = _ScriptedLLM(
+            [
+                '{"tool": "done", "args": {}}',
+            ]
+        )
         state = _SimpleState()
         config = LoopConfig(max_steps=5, done_tool="done")
 
-        steps = list(composable_loop(
-            llm, tools=_make_registry(), config=config,
-            state=state, conversation=None,
-        ))
+        steps = list(
+            composable_loop(
+                llm,
+                tools=_make_registry(),
+                config=config,
+                state=state,
+                conversation=None,
+            )
+        )
         assert len(steps) >= 1
 
     def test_conversation_serialize_after_loop(self):
         """Conversation can be serialized after a loop run."""
-        llm = _ScriptedLLM([
-            '{"tool": "echo", "args": {"text": "x"}}',
-            '{"tool": "done", "args": {}}',
-        ])
+        llm = _ScriptedLLM(
+            [
+                '{"tool": "echo", "args": {"text": "x"}}',
+                '{"tool": "done", "args": {}}',
+            ]
+        )
         state = _SimpleState()
         conv = Conversation()
         config = LoopConfig(max_steps=5, done_tool="done")
 
-        list(composable_loop(
-            llm, tools=_make_registry(), config=config,
-            state=state, conversation=conv,
-        ))
+        list(
+            composable_loop(
+                llm,
+                tools=_make_registry(),
+                config=config,
+                state=state,
+                conversation=conv,
+            )
+        )
 
         data = conv.serialize()
         restored = Conversation.deserialize(data)

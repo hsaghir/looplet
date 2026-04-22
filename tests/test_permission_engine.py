@@ -26,7 +26,8 @@ class TestRuleMatching:
 
     def test_arg_matcher_gates_rule(self):
         r = PermissionRule(
-            tool="bash", decision=PermissionDecision.DENY,
+            tool="bash",
+            decision=PermissionDecision.DENY,
             arg_matcher=lambda a: "rm" in str(a.get("cmd", "")),
         )
         assert r.matches(ToolCall(tool="bash", args={"cmd": "rm -rf /"}))
@@ -35,7 +36,8 @@ class TestRuleMatching:
     def test_buggy_matcher_fails_closed(self):
         """A buggy arg_matcher raises but the rule still matches (fail closed)."""
         r = PermissionRule(
-            tool="bash", decision=PermissionDecision.DENY,
+            tool="bash",
+            decision=PermissionDecision.DENY,
             arg_matcher=lambda a: 1 / 0,
         )
         # Fail closed: rule matches even though matcher raised — safe for DENY rules.
@@ -44,7 +46,8 @@ class TestRuleMatching:
     def test_buggy_matcher_on_allow_rule_does_not_grant(self):
         """A buggy arg_matcher on an ALLOW rule must NOT match (fail closed)."""
         r = PermissionRule(
-            tool="bash", decision=PermissionDecision.ALLOW,
+            tool="bash",
+            decision=PermissionDecision.ALLOW,
             arg_matcher=lambda a: 1 / 0,
         )
         # Fail closed for ALLOW means: skip this rule so it doesn't grant access.
@@ -103,15 +106,23 @@ class _LLM(LLMBackend):
 class TestLoopIntegration:
     def _reg(self, ran: list[str]):
         reg = BaseToolRegistry()
-        reg.register(ToolSpec(
-            name="danger", description="d", parameters={"cmd": "c"},
-            execute=lambda cmd="": (ran.append(cmd) or {"ok": True}),
-            concurrent_safe=False,
-        ))
-        reg.register(ToolSpec(
-            name="done", description="", parameters={"summary": "s"},
-            execute=lambda summary="": {"done": True, "summary": summary},
-        ))
+        reg.register(
+            ToolSpec(
+                name="danger",
+                description="d",
+                parameters={"cmd": "c"},
+                execute=lambda cmd="": ran.append(cmd) or {"ok": True},
+                concurrent_safe=False,
+            )
+        )
+        reg.register(
+            ToolSpec(
+                name="done",
+                description="",
+                parameters={"summary": "s"},
+                execute=lambda summary="": {"done": True, "summary": summary},
+            )
+        )
         return reg
 
     def test_engine_blocks_dispatch(self):
@@ -123,11 +134,16 @@ class TestLoopIntegration:
             '```json\n{"tool": "danger", "args": {"cmd": "rm -rf /"}}\n```',
             '```json\n{"tool": "done", "args": {"summary": "x"}}\n```',
         )
-        steps = list(composable_loop(
-            llm=llm, task={"id": "T"}, tools=self._reg(ran),
-            config=cfg, state=DefaultState(max_steps=3),
-            hooks=[PermissionHook(eng)],
-        ))
+        steps = list(
+            composable_loop(
+                llm=llm,
+                task={"id": "T"},
+                tools=self._reg(ran),
+                config=cfg,
+                state=DefaultState(max_steps=3),
+                hooks=[PermissionHook(eng)],
+            )
+        )
         assert ran == []  # tool body never ran
         # The denied step should have a ToolError with PERMISSION_DENIED.
         denied_step = steps[0]
@@ -144,9 +160,14 @@ class TestLoopIntegration:
             '```json\n{"tool": "danger", "args": {"cmd": "ls"}}\n```',
             '```json\n{"tool": "done", "args": {"summary": "x"}}\n```',
         )
-        list(composable_loop(
-            llm=llm, task={"id": "T"}, tools=self._reg(ran),
-            config=cfg, state=DefaultState(max_steps=3),
-            hooks=[PermissionHook(eng)],
-        ))
+        list(
+            composable_loop(
+                llm=llm,
+                task={"id": "T"},
+                tools=self._reg(ran),
+                config=cfg,
+                state=DefaultState(max_steps=3),
+                hooks=[PermissionHook(eng)],
+            )
+        )
         assert ran == ["ls"]

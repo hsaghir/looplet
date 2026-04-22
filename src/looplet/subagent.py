@@ -96,15 +96,20 @@ def run_sub_loop(
     # correlate SUBAGENT_START / SUBAGENT_STOP payloads.
     if subagent_id is None:
         import uuid  # noqa: PLC0415
+
         subagent_id = uuid.uuid4().hex[:12]
 
     # Fire SUBAGENT_START on the parent's hooks so observers see the
     # spawn. Import lazily to avoid a circular import with loop.py.
     from looplet.events import LifecycleEvent as _LE  # noqa: PLC0415
     from looplet.loop import emit_event  # noqa: PLC0415
+
     emit_event(
-        hooks or [], _LE.SUBAGENT_START,
-        state=state, context=context, subagent_id=subagent_id,
+        hooks or [],
+        _LE.SUBAGENT_START,
+        state=state,
+        context=context,
+        subagent_id=subagent_id,
     )
 
     config = LoopConfig(
@@ -165,8 +170,11 @@ def run_sub_loop(
     # the llm-call cost via EventPayload.extra. Swallowing exceptions
     # is already handled by emit_event.
     emit_event(
-        hooks or [], _LE.SUBAGENT_STOP,
-        state=state, context=context, subagent_id=subagent_id,
+        hooks or [],
+        _LE.SUBAGENT_STOP,
+        state=state,
+        context=context,
+        subagent_id=subagent_id,
         extra={
             "llm_calls": result["llm_calls"],
             "step_count": len(steps),
@@ -185,7 +193,9 @@ class _MinimalState:
     context_summary(), snapshot().
     """
 
-    def __init__(self, task: dict[str, Any] | None = None, max_steps: int = 5, **kwargs: Any) -> None:
+    def __init__(
+        self, task: dict[str, Any] | None = None, max_steps: int = 5, **kwargs: Any
+    ) -> None:
         self.task = task or {}
         self.max_steps = max_steps
         self.steps: list = []
@@ -222,12 +232,14 @@ def clone_tools_excluding(parent_tools: Any, exclude: list[str]) -> Any:
     for name, spec in parent_tools._tools.items():
         if name in exclude:
             continue
-        sub.register(ToolSpec(
-            name=spec.name,
-            description=spec.description,
-            parameters=spec.parameters,
-            execute=spec.execute,
-            concurrent_safe=spec.concurrent_safe,
-            free=spec.free,
-        ))
+        sub.register(
+            ToolSpec(
+                name=spec.name,
+                description=spec.description,
+                parameters=spec.parameters,
+                execute=spec.execute,
+                concurrent_safe=spec.concurrent_safe,
+                free=spec.free,
+            )
+        )
     return sub

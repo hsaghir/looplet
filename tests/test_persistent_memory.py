@@ -38,9 +38,11 @@ class TestMemorySourceShape:
 
     def test_callable_memory_source_invokes_fn_with_state(self):
         seen = {}
+
         def fn(state):
             seen["state"] = state
             return "dynamic memory"
+
         s = CallableMemorySource(fn)
         out = s.load(state={"k": 1})
         assert out == "dynamic memory"
@@ -50,6 +52,7 @@ class TestMemorySourceShape:
         class Custom:
             def load(self, state):
                 return "x"
+
         # Structural check
         assert isinstance(Custom(), PersistentMemorySource)
 
@@ -68,16 +71,14 @@ class TestRenderMemory:
 
     def test_empty_sources_are_skipped(self):
         out = render_memory(
-            [StaticMemorySource(""), StaticMemorySource("real"),
-             StaticMemorySource("   ")],
+            [StaticMemorySource(""), StaticMemorySource("real"), StaticMemorySource("   ")],
             state=None,
         )
         assert out == "real"
 
     def test_none_returning_source_is_safe(self):
         out = render_memory(
-            [CallableMemorySource(lambda s: None),
-             StaticMemorySource("kept")],
+            [CallableMemorySource(lambda s: None), StaticMemorySource("kept")],
             state=None,
         )
         assert out == "kept"
@@ -101,7 +102,9 @@ class TestPromptIntegration:
 
     def test_no_memory_means_no_header(self):
         prompt = build_prompt(
-            task={"id": "T-1"}, tool_catalog="- noop", memory="",
+            task={"id": "T-1"},
+            tool_catalog="- noop",
+            memory="",
         )
         assert "═══ MEMORY ═══" not in prompt
         # TASK still first
@@ -109,6 +112,8 @@ class TestPromptIntegration:
 
     def test_none_memory_means_no_header(self):
         prompt = build_prompt(
-            task={"id": "T-1"}, tool_catalog="- noop", memory=None,
+            task={"id": "T-1"},
+            tool_catalog="- noop",
+            memory=None,
         )
         assert "═══ MEMORY ═══" not in prompt

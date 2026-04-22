@@ -123,4 +123,5 @@ class AsyncMockLLMBackend:
 def _is_llm_backend_subclass(obj: Any) -> bool:
     """Internal smoke-test helper — verifies Mock backends satisfy the protocol."""
     from looplet.types import LLMBackend  # noqa: PLC0415
+
     return isinstance(obj, LLMBackend)

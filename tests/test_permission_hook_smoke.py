@@ -1,4 +1,5 @@
 """Smoke tests for :class:`PermissionHook` — the unified permission path."""
+
 from __future__ import annotations
 
 import pytest
@@ -20,24 +21,30 @@ pytestmark = pytest.mark.smoke
 
 def _tools() -> BaseToolRegistry:
     reg = BaseToolRegistry()
-    reg.register(ToolSpec(
-        name="dangerous",
-        description="dangerous",
-        parameters={"cmd": "str"},
-        execute=lambda *, cmd: {"ran": cmd},
-    ))
-    reg.register(ToolSpec(
-        name="safe",
-        description="safe",
-        parameters={},
-        execute=lambda: {"ok": True},
-    ))
-    reg.register(ToolSpec(
-        name="done",
-        description="done",
-        parameters={"answer": "str"},
-        execute=lambda *, answer: {"answer": answer},
-    ))
+    reg.register(
+        ToolSpec(
+            name="dangerous",
+            description="dangerous",
+            parameters={"cmd": "str"},
+            execute=lambda *, cmd: {"ran": cmd},
+        )
+    )
+    reg.register(
+        ToolSpec(
+            name="safe",
+            description="safe",
+            parameters={},
+            execute=lambda: {"ok": True},
+        )
+    )
+    reg.register(
+        ToolSpec(
+            name="done",
+            description="done",
+            parameters={"answer": "str"},
+            execute=lambda *, answer: {"answer": answer},
+        )
+    )
     return reg
 
 
@@ -48,13 +55,15 @@ def _run(hooks, *, calls=None):
         '{"tool":"done","args":{"answer":"ok"},"reasoning":"r"}',
     ]
     state = DefaultState(max_steps=5)
-    return list(composable_loop(
-        llm=MockLLMBackend(responses=calls),
-        tools=_tools(),
-        state=state,
-        hooks=hooks,
-        config=LoopConfig(max_steps=5),
-    ))
+    return list(
+        composable_loop(
+            llm=MockLLMBackend(responses=calls),
+            tools=_tools(),
+            state=state,
+            hooks=hooks,
+            config=LoopConfig(max_steps=5),
+        )
+    )
 
 
 class TestPermissionHook:
@@ -103,6 +112,7 @@ class TestPermissionHook:
         hook = PermissionHook(engine)
 
         from looplet.types import ToolCall
+
         tc = ToolCall(tool="dangerous", args={"cmd": "x"}, reasoning="r")
         assert hook.check_permission(tc, None) is False
 

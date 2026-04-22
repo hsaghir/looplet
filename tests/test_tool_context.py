@@ -65,10 +65,14 @@ class TestDispatchPassesToolContext:
     def test_tool_without_ctx_param_works_unchanged(self):
         """Existing tools without ctx in signature must keep working."""
         registry = BaseToolRegistry()
-        registry.register(ToolSpec(
-            name="echo", description="echo", parameters={"x": "input"},
-            execute=lambda x: {"got": x},
-        ))
+        registry.register(
+            ToolSpec(
+                name="echo",
+                description="echo",
+                parameters={"x": "input"},
+                execute=lambda x: {"got": x},
+            )
+        )
         result = registry.dispatch(ToolCall(tool="echo", args={"x": "hi"}))
         assert result.error is None
         assert result.data == {"got": "hi"}
@@ -82,10 +86,14 @@ class TestDispatchPassesToolContext:
             return {"x": x, "cwd": ctx.cwd if ctx else None}
 
         registry = BaseToolRegistry()
-        registry.register(ToolSpec(
-            name="peek", description="peek", parameters={"x": "input"},
-            execute=run,
-        ))
+        registry.register(
+            ToolSpec(
+                name="peek",
+                description="peek",
+                parameters={"x": "input"},
+                execute=run,
+            )
+        )
         ctx = ToolContext(cwd="/tmp/work")
         result = registry.dispatch(ToolCall(tool="peek", args={"x": "hi"}), ctx=ctx)
         assert result.error is None
@@ -101,10 +109,14 @@ class TestDispatchPassesToolContext:
             return {}
 
         registry = BaseToolRegistry()
-        registry.register(ToolSpec(
-            name="peek", description="peek", parameters={"x": "input"},
-            execute=run,
-        ))
+        registry.register(
+            ToolSpec(
+                name="peek",
+                description="peek",
+                parameters={"x": "input"},
+                execute=run,
+            )
+        )
         registry.dispatch(ToolCall(tool="peek", args={"x": "hi"}))
         assert seen_ctx == [None]
 
@@ -116,10 +128,15 @@ class TestDispatchPassesToolContext:
             return x
 
         registry = BaseToolRegistry()
-        registry.register(ToolSpec(
-            name="t", description="", parameters={"x": "x"},
-            execute=run, concurrent_safe=True,
-        ))
+        registry.register(
+            ToolSpec(
+                name="t",
+                description="",
+                parameters={"x": "x"},
+                execute=run,
+                concurrent_safe=True,
+            )
+        )
         ctx = ToolContext(cwd="/ws")
         registry.dispatch_batch(
             [ToolCall(tool="t", args={"x": "a"}), ToolCall(tool="t", args={"x": "b"})],
@@ -132,10 +149,14 @@ class TestDispatchPassesToolContext:
         instead of invoking the tool."""
         ran = []
         registry = BaseToolRegistry()
-        registry.register(ToolSpec(
-            name="slow", description="", parameters={},
-            execute=lambda: ran.append(1) or {"ok": True},
-        ))
+        registry.register(
+            ToolSpec(
+                name="slow",
+                description="",
+                parameters={},
+                execute=lambda: ran.append(1) or {"ok": True},
+            )
+        )
         tok = CancelToken()
         tok.cancel()
         ctx = ToolContext(cancel_token=tok)

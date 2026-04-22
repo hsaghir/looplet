@@ -56,6 +56,7 @@ __all__ = ["ApprovalHook", "ApprovalRequest"]
 
 logger = logging.getLogger(__name__)
 
+
 @dataclass(frozen=True)
 class ApprovalRequest:
     """Record of a pending approval request.
@@ -69,6 +70,7 @@ class ApprovalRequest:
     tool: str
     description: str = ""
     options: list[str] = field(default_factory=lambda: ["approve", "deny"])
+
 
 class ApprovalHook:
     """Hook that stops the loop when a tool requests approval.
@@ -126,10 +128,11 @@ class ApprovalHook:
         )
         logger.info(
             "approval_required step=%d tool=%s desc=%s",
-            step_num, self._pending.tool, self._pending.description,
+            step_num,
+            self._pending.tool,
+            self._pending.description,
         )
         return HookDecision(stop="waiting_for_approval")
 
     def should_stop(self, state: AgentState, step_num: int, new_entities: int) -> bool:
         return False
-

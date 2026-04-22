@@ -26,10 +26,15 @@ class TestCompactionStripsHeavyBlocks:
     def _mk(self):
         conv = Conversation()
         for _ in range(3):
-            conv.append(Message(role=MessageRole.USER, content=[
-                ContentBlock(kind="text", data={"text": "plan: do thing"}),
-                ContentBlock(kind="image", data={"url": "x"}),
-            ]))
+            conv.append(
+                Message(
+                    role=MessageRole.USER,
+                    content=[
+                        ContentBlock(kind="text", data={"text": "plan: do thing"}),
+                        ContentBlock(kind="image", data={"url": "x"}),
+                    ],
+                )
+            )
         conv.append(Message(role=MessageRole.ASSISTANT, content="ok"))
         conv.append(Message(role=MessageRole.ASSISTANT, content="done"))
         return conv

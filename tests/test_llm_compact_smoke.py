@@ -1,4 +1,5 @@
 """Smoke tests for :class:`SummarizeCompact`."""
+
 from __future__ import annotations
 
 import pytest
@@ -11,6 +12,7 @@ pytestmark = pytest.mark.smoke
 
 class _SummaryLLM:
     """Backend that returns a fixed summary."""
+
     def __init__(self, text="TASK: demo. FINDINGS: a, b. OPEN: c."):
         self.text = text
         self.calls = 0
@@ -29,7 +31,9 @@ def _populated_log() -> SessionLog:
     log = SessionLog()
     for i in range(1, 6):
         log.record(
-            step=i, theory="t", tool=f"tool_{i}",
+            step=i,
+            theory="t",
+            tool=f"tool_{i}",
             reasoning=f"step {i}",
             findings=[f"f-{i}"],
         )
@@ -43,8 +47,12 @@ class TestLLMCompact:
         before = len(log.entries)
         llm = _SummaryLLM()
         out = svc.compact(
-            state=object(), session_log=log, llm=llm,
-            conversation=None, step_num=5, reason="test",
+            state=object(),
+            session_log=log,
+            llm=llm,
+            conversation=None,
+            step_num=5,
+            reason="test",
         )
         assert llm.calls == 1
         assert out.llm_calls_spent == 1
@@ -59,8 +67,12 @@ class TestLLMCompact:
         svc = SummarizeCompact(keep_recent=1)
         log = _populated_log()
         out = svc.compact(
-            state=object(), session_log=log, llm=_FailingLLM(),
-            conversation=None, step_num=5, reason="test",
+            state=object(),
+            session_log=log,
+            llm=_FailingLLM(),
+            conversation=None,
+            step_num=5,
+            reason="test",
         )
         # Fallback mode — no summary entry, but deterministic keep_recent ran.
         assert out.extra["mode"] == "llm_fallback"
@@ -70,9 +82,12 @@ class TestLLMCompact:
     def test_empty_log_short_circuits(self):
         svc = SummarizeCompact()
         out = svc.compact(
-            state=object(), session_log=SessionLog(),
-            llm=_SummaryLLM(), conversation=None,
-            step_num=0, reason="test",
+            state=object(),
+            session_log=SessionLog(),
+            llm=_SummaryLLM(),
+            conversation=None,
+            step_num=0,
+            reason="test",
         )
         assert out.extra["mode"] == "empty_fallback"
         assert out.llm_calls_spent == 0

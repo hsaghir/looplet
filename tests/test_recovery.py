@@ -1,4 +1,5 @@
 """Tests for looplet.recovery — pluggable failure recovery strategies."""
+
 from __future__ import annotations
 
 import pytest
@@ -35,6 +36,7 @@ def test_failure_scenario_count():
 
 def test_failure_scenario_is_enum():
     from enum import Enum
+
     assert issubclass(FailureScenario, Enum)
 
 
@@ -231,16 +233,20 @@ def test_registry_handler_receives_context():
 def test_registry_independent_attempt_counts():
     """Counts for different scenarios are independent."""
     registry = RecoveryRegistry()
-    registry.register(RecoveryRecipe(
-        scenario=FailureScenario.PARSE_ERROR,
-        handler=lambda ctx: RecoveryAction(action_type="retry"),
-        max_attempts=2,
-    ))
-    registry.register(RecoveryRecipe(
-        scenario=FailureScenario.LLM_ERROR,
-        handler=lambda ctx: RecoveryAction(action_type="retry"),
-        max_attempts=2,
-    ))
+    registry.register(
+        RecoveryRecipe(
+            scenario=FailureScenario.PARSE_ERROR,
+            handler=lambda ctx: RecoveryAction(action_type="retry"),
+            max_attempts=2,
+        )
+    )
+    registry.register(
+        RecoveryRecipe(
+            scenario=FailureScenario.LLM_ERROR,
+            handler=lambda ctx: RecoveryAction(action_type="retry"),
+            max_attempts=2,
+        )
+    )
 
     registry.attempt_recovery(FailureScenario.PARSE_ERROR, {})
     registry.attempt_recovery(FailureScenario.PARSE_ERROR, {})

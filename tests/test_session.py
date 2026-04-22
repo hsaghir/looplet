@@ -13,6 +13,7 @@ pytestmark = pytest.mark.smoke
 class TestLogEntryDefaults:
     def test_creation_required_fields(self):
         from looplet.session import LogEntry
+
         entry = LogEntry(step=1, theory="T1", tool="search", reasoning="find stuff")
         assert entry.step == 1
         assert entry.theory == "T1"
@@ -21,6 +22,7 @@ class TestLogEntryDefaults:
 
     def test_optional_fields_default(self):
         from looplet.session import LogEntry
+
         entry = LogEntry(step=1, theory="T", tool="t", reasoning="r")
         assert entry.entities_seen == []
         assert entry.findings == []
@@ -29,11 +31,13 @@ class TestLogEntryDefaults:
 
     def test_no_iocs_found_property(self):
         from looplet.session import LogEntry
+
         entry = LogEntry(step=1, theory="T", tool="t", reasoning="r")
         assert not hasattr(entry, "iocs_found"), "iocs_found alias must be removed"
 
     def test_render_basic(self):
         from looplet.session import LogEntry
+
         entry = LogEntry(step=2, theory="T", tool="query", reasoning="check events")
         text = entry.render()
         assert "S2" in text
@@ -41,24 +45,26 @@ class TestLogEntryDefaults:
 
     def test_render_with_entities(self):
         from looplet.session import LogEntry
-        entry = LogEntry(step=1, theory="T", tool="t", reasoning="r",
-                         entities_seen=["host-1", "user-bob"])
+
+        entry = LogEntry(
+            step=1, theory="T", tool="t", reasoning="r", entities_seen=["host-1", "user-bob"]
+        )
         text = entry.render()
         assert "host-1" in text
         assert "user-bob" in text
 
     def test_render_with_highlights(self):
         from looplet.session import LogEntry
-        entry = LogEntry(step=1, theory="T", tool="t", reasoning="r",
-                         highlights=["important-item"])
+
+        entry = LogEntry(step=1, theory="T", tool="t", reasoning="r", highlights=["important-item"])
         text = entry.render(highlights_label="notable")
         assert "notable" in text
         assert "important-item" in text
 
     def test_render_with_recall_key(self):
         from looplet.session import LogEntry
-        entry = LogEntry(step=1, theory="T", tool="t", reasoning="r",
-                         recall_key="result_001")
+
+        entry = LogEntry(step=1, theory="T", tool="t", reasoning="r", recall_key="result_001")
         text = entry.render()
         assert "result_001" in text
 
@@ -69,6 +75,7 @@ class TestLogEntryDefaults:
 class TestSessionLogRecord:
     def test_record_creates_entry(self):
         from looplet.session import SessionLog
+
         log = SessionLog()
         log.record(step=1, theory="H1", tool="search", reasoning="looking")
         assert len(log.entries) == 1
@@ -76,6 +83,7 @@ class TestSessionLogRecord:
 
     def test_record_persists_theory(self):
         from looplet.session import SessionLog
+
         log = SessionLog()
         log.record(step=1, theory="H1", tool="a", reasoning="r")
         log.record(step=2, theory="", tool="b", reasoning="r2")
@@ -83,6 +91,7 @@ class TestSessionLogRecord:
 
     def test_record_updates_current_theory(self):
         from looplet.session import SessionLog
+
         log = SessionLog()
         log.record(step=1, theory="H1", tool="a", reasoning="r")
         assert log.current_theory == "H1"
@@ -91,18 +100,25 @@ class TestSessionLogRecord:
 
     def test_record_entities_and_findings(self):
         from looplet.session import SessionLog
+
         log = SessionLog()
-        log.record(step=1, theory="T", tool="t", reasoning="r",
-                   entities=["host-a"], findings=["found something"])
+        log.record(
+            step=1,
+            theory="T",
+            tool="t",
+            reasoning="r",
+            entities=["host-a"],
+            findings=["found something"],
+        )
         e = log.entries[0]
         assert "host-a" in e.entities_seen
         assert "found something" in e.findings
 
     def test_record_highlights(self):
         from looplet.session import SessionLog
+
         log = SessionLog()
-        log.record(step=1, theory="T", tool="t", reasoning="r",
-                   highlights=["key-item"])
+        log.record(step=1, theory="T", tool="t", reasoning="r", highlights=["key-item"])
         assert "key-item" in log.entries[0].highlights
 
 
@@ -112,11 +128,13 @@ class TestSessionLogRecord:
 class TestSessionLogRender:
     def test_render_empty(self):
         from looplet.session import SessionLog
+
         log = SessionLog()
         assert log.render() == ""
 
     def test_render_contains_title(self):
         from looplet.session import SessionLog
+
         log = SessionLog()
         log.record(step=1, theory="T", tool="search", reasoning="r")
         text = log.render()
@@ -124,19 +142,21 @@ class TestSessionLogRender:
 
     def test_render_custom_title(self):
         from looplet.session import SessionLog
+
         log = SessionLog(title="MY AGENT LOG")
         log.record(step=1, theory="T", tool="t", reasoning="r")
         assert "MY AGENT LOG" in log.render()
 
     def test_render_custom_highlights_label(self):
         from looplet.session import SessionLog
+
         log = SessionLog(highlights_label="notable items")
-        log.record(step=1, theory="T", tool="t", reasoning="r",
-                   highlights=["item-x"])
+        log.record(step=1, theory="T", tool="t", reasoning="r", highlights=["item-x"])
         assert "notable items" in log.render()
 
     def test_render_shows_theory(self):
         from looplet.session import SessionLog
+
         log = SessionLog()
         log.record(step=1, theory="root cause is X", tool="t", reasoning="r")
         assert "root cause is X" in log.render()
@@ -144,6 +164,7 @@ class TestSessionLogRender:
     def test_render_no_legacy_terms(self):
         import looplet.session as sm
         from looplet.session import LogEntry, SessionLog
+
         src = open(sm.__file__).read().lower()
         for term in ["iocs_found"]:
             assert term not in src, f"Forbidden term '{term}' found in session.py"
@@ -155,11 +176,10 @@ class TestSessionLogRender:
 class TestAllEntities:
     def test_aggregates_across_steps(self):
         from looplet.session import SessionLog
+
         log = SessionLog()
-        log.record(step=1, theory="T", tool="a", reasoning="r",
-                   entities=["host-1", "user-a"])
-        log.record(step=2, theory="T", tool="b", reasoning="r",
-                   entities=["host-2"])
+        log.record(step=1, theory="T", tool="a", reasoning="r", entities=["host-1", "user-a"])
+        log.record(step=2, theory="T", tool="b", reasoning="r", entities=["host-2"])
         ents = log.all_entities()
         assert "host-1" in ents
         assert "user-a" in ents
@@ -167,17 +187,17 @@ class TestAllEntities:
 
     def test_includes_highlights(self):
         from looplet.session import SessionLog
+
         log = SessionLog()
-        log.record(step=1, theory="T", tool="t", reasoning="r",
-                   highlights=["notable-thing"])
+        log.record(step=1, theory="T", tool="t", reasoning="r", highlights=["notable-thing"])
         ents = log.all_entities()
         assert "notable-thing" in ents
 
     def test_returns_set(self):
         from looplet.session import SessionLog
+
         log = SessionLog()
-        log.record(step=1, theory="T", tool="t", reasoning="r",
-                   entities=["x", "x"])
+        log.record(step=1, theory="T", tool="t", reasoning="r", entities=["x", "x"])
         ents = log.all_entities()
         assert isinstance(ents, set)
         assert len(ents) == 1
@@ -189,13 +209,27 @@ class TestAllEntities:
 class TestRenderCompact:
     def _build_log(self):
         from looplet.session import SessionLog
+
         log = SessionLog()
-        log.record(step=1, theory="H1", tool="search", reasoning="first step",
-                   entities=["host-a"], findings=["found A"])
-        log.record(step=2, theory="H1", tool="query", reasoning="second step",
-                   entities=["host-b"], findings=["found B"])
-        log.record(step=3, theory="H2", tool="search", reasoning="third step",
-                   highlights=["key-item"])
+        log.record(
+            step=1,
+            theory="H1",
+            tool="search",
+            reasoning="first step",
+            entities=["host-a"],
+            findings=["found A"],
+        )
+        log.record(
+            step=2,
+            theory="H1",
+            tool="query",
+            reasoning="second step",
+            entities=["host-b"],
+            findings=["found B"],
+        )
+        log.record(
+            step=3, theory="H2", tool="search", reasoning="third step", highlights=["key-item"]
+        )
         return log
 
     def test_compact_not_empty(self):
@@ -227,6 +261,7 @@ class TestRenderCompact:
 
     def test_compact_empty_log(self):
         from looplet.session import SessionLog
+
         log = SessionLog()
         assert log.render_compact() == ""
 
@@ -237,26 +272,27 @@ class TestRenderCompact:
 class TestCompact:
     def test_compact_not_triggered_when_few_entries(self):
         from looplet.session import SessionLog
+
         log = SessionLog()
         for i in range(3):
-            log.record(step=i+1, theory="T", tool="t", reasoning="r")
+            log.record(step=i + 1, theory="T", tool="t", reasoning="r")
         assert log.compact(max_entries_to_keep=5) is False
 
     def test_compact_triggered_when_many_entries(self):
         from looplet.session import SessionLog
+
         log = SessionLog()
         for i in range(10):
-            log.record(step=i+1, theory="T", tool="search", reasoning="r",
-                       entities=[f"host-{i}"])
+            log.record(step=i + 1, theory="T", tool="search", reasoning="r", entities=[f"host-{i}"])
         result = log.compact(max_entries_to_keep=5)
         assert result is True
 
     def test_compact_preserves_entity_count(self):
         from looplet.session import SessionLog
+
         log = SessionLog()
         for i in range(10):
-            log.record(step=i+1, theory="T", tool="search", reasoning="r",
-                       entities=[f"host-{i}"])
+            log.record(step=i + 1, theory="T", tool="search", reasoning="r", entities=[f"host-{i}"])
         all_before = log.all_entities()
         log.compact(max_entries_to_keep=5)
         all_after = log.all_entities()
@@ -264,9 +300,10 @@ class TestCompact:
 
     def test_compact_reduces_entry_count(self):
         from looplet.session import SessionLog
+
         log = SessionLog()
         for i in range(10):
-            log.record(step=i+1, theory="T", tool="search", reasoning="r")
+            log.record(step=i + 1, theory="T", tool="search", reasoning="r")
         log.compact(max_entries_to_keep=5)
         assert len(log.entries) < 10
 
@@ -277,8 +314,10 @@ class TestCompact:
 class TestExports:
     def test_exported_from_looplet(self):
         import looplet as oh
+
         assert hasattr(oh, "SessionLog"), "SessionLog not exported"
 
     def test_logentry_importable_from_submodule(self):
         from looplet.session import LogEntry
+
         assert LogEntry is not None

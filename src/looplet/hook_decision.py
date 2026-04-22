@@ -213,8 +213,7 @@ def normalize_hook_return(
             return Stop("hook_requested_stop") if value else None
         # Bools from other slots are nonsense — signal cleanly.
         raise TypeError(
-            f"hook slot {slot!r} received bool {value!r}; expected "
-            f"HookDecision | str | None"
+            f"hook slot {slot!r} received bool {value!r}; expected HookDecision | str | None"
         )
     if isinstance(value, str):
         if slot in ("pre_prompt", "post_dispatch"):
@@ -229,5 +228,3 @@ def normalize_hook_return(
         f"hook slot {slot!r} returned {type(value).__name__} "
         f"{value!r}; expected HookDecision | str | bool | ToolResult | None"
     )
-
-

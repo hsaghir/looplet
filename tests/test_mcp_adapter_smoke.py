@@ -1,4 +1,5 @@
 """Smoke tests for MCPToolAdapter — MCP protocol adapter."""
+
 from __future__ import annotations
 
 import pytest
@@ -45,4 +46,5 @@ class TestMCPToolAdapter:
 
     def test_from_looplet_import(self):
         from looplet import MCPToolAdapter as MCP
+
         assert MCP is MCPToolAdapter

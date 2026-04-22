@@ -28,9 +28,15 @@ class _CancelAwareLLM(LLMBackend):
     def __init__(self) -> None:
         self.cancel_tokens_seen: list[CancelToken | None] = []
 
-    def generate(self, prompt: str, *, max_tokens: int = 2000,
-                 system_prompt: str = "", temperature: float = 0.2,
-                 cancel_token: CancelToken | None = None) -> str:
+    def generate(
+        self,
+        prompt: str,
+        *,
+        max_tokens: int = 2000,
+        system_prompt: str = "",
+        temperature: float = 0.2,
+        cancel_token: CancelToken | None = None,
+    ) -> str:
         self.cancel_tokens_seen.append(cancel_token)
         if cancel_token is not None and cancel_token.is_cancelled:
             raise RuntimeError("cancelled")
@@ -43,19 +49,28 @@ class _VanillaLLM(LLMBackend):
     def __init__(self) -> None:
         self.calls = 0
 
-    def generate(self, prompt: str, *, max_tokens: int = 2000,
-                 system_prompt: str = "", temperature: float = 0.2) -> str:
+    def generate(
+        self,
+        prompt: str,
+        *,
+        max_tokens: int = 2000,
+        system_prompt: str = "",
+        temperature: float = 0.2,
+    ) -> str:
         self.calls += 1
         return '```json\n{"tool": "done", "args": {"summary": "ok"}}\n```'
 
 
 def _reg() -> BaseToolRegistry:
     reg = BaseToolRegistry()
-    reg.register(ToolSpec(
-        name="done", description="finish",
-        parameters={"summary": "s"},
-        execute=lambda summary="": {"done": True, "summary": summary},
-    ))
+    reg.register(
+        ToolSpec(
+            name="done",
+            description="finish",
+            parameters={"summary": "s"},
+            execute=lambda summary="": {"done": True, "summary": summary},
+        )
+    )
     return reg
 
 
@@ -81,15 +96,21 @@ class TestLoopThreadsCancelToken:
         llm = _CancelAwareLLM()
         tok = CancelToken()
         cfg = LoopConfig(max_steps=2, cancel_token=tok)
-        list(composable_loop(
-            llm=llm, task={"id": "T-1"}, tools=_reg(),
-            config=cfg, state=DefaultState(max_steps=2),
-        ))
+        list(
+            composable_loop(
+                llm=llm,
+                task={"id": "T-1"},
+                tools=_reg(),
+                config=cfg,
+                state=DefaultState(max_steps=2),
+            )
+        )
         assert tok in llm.cancel_tokens_seen
 
     def test_loop_exits_early_when_token_cancelled_before_next_turn(self):
         """If the token is flipped between steps the loop must stop
         cleanly rather than call the LLM again."""
+
         class _CountingLLM(LLMBackend):
             def __init__(self) -> None:
                 self.calls = 0
@@ -106,20 +127,34 @@ class TestLoopThreadsCancelToken:
             tok.cancel()
             return {"ok": True}
 
-        reg.register(ToolSpec(
-            name="noop", description="n", parameters={},
-            execute=_cancel_once, concurrent_safe=False,
-        ))
-        reg.register(ToolSpec(
-            name="done", description="d", parameters={"summary": "s"},
-            execute=lambda summary="": {"done": True, "summary": summary},
-        ))
+        reg.register(
+            ToolSpec(
+                name="noop",
+                description="n",
+                parameters={},
+                execute=_cancel_once,
+                concurrent_safe=False,
+            )
+        )
+        reg.register(
+            ToolSpec(
+                name="done",
+                description="d",
+                parameters={"summary": "s"},
+                execute=lambda summary="": {"done": True, "summary": summary},
+            )
+        )
         llm = _CountingLLM()
         cfg = LoopConfig(max_steps=5, cancel_token=tok)
-        steps = list(composable_loop(
-            llm=llm, task={"id": "T-1"}, tools=reg,
-            config=cfg, state=DefaultState(max_steps=5),
-        ))
+        steps = list(
+            composable_loop(
+                llm=llm,
+                task={"id": "T-1"},
+                tools=reg,
+                config=cfg,
+                state=DefaultState(max_steps=5),
+            )
+        )
         # Tool ran once, then the loop noticed cancellation and stopped.
         assert len(steps) == 1
         assert llm.calls == 1, f"LLM called {llm.calls} times after cancel"
@@ -134,14 +169,23 @@ class TestToolContextSharesCancelToken:
             return {"ok": True}
 
         reg = BaseToolRegistry()
-        reg.register(ToolSpec(
-            name="probe", description="p", parameters={},
-            execute=_tool, concurrent_safe=False,
-        ))
-        reg.register(ToolSpec(
-            name="done", description="d", parameters={"summary": "s"},
-            execute=lambda summary="": {"done": True, "summary": summary},
-        ))
+        reg.register(
+            ToolSpec(
+                name="probe",
+                description="p",
+                parameters={},
+                execute=_tool,
+                concurrent_safe=False,
+            )
+        )
+        reg.register(
+            ToolSpec(
+                name="done",
+                description="d",
+                parameters={"summary": "s"},
+                execute=lambda summary="": {"done": True, "summary": summary},
+            )
+        )
 
         class _LLM(LLMBackend):
             def __init__(self) -> None:
@@ -155,9 +199,13 @@ class TestToolContextSharesCancelToken:
 
         tok = CancelToken()
         cfg = LoopConfig(max_steps=5, cancel_token=tok)
-        list(composable_loop(
-            llm=_LLM(), task={"id": "T-1"}, tools=reg,
-            config=cfg, state=DefaultState(max_steps=5),
-        ))
+        list(
+            composable_loop(
+                llm=_LLM(),
+                task={"id": "T-1"},
+                tools=reg,
+                config=cfg,
+                state=DefaultState(max_steps=5),
+            )
+        )
         assert seen["tool"] is tok
-

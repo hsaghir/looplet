@@ -141,7 +141,9 @@ def build_prompt(
 
     # ── §7 STEP (counter + action instruction) ───────────────
     budget = state_summary.get("budget_remaining", "?")
-    parts.append(f"═══ {headers['step']} {step_number}/{max_steps} — budget: {budget} steps remaining ═══")
+    parts.append(
+        f"═══ {headers['step']} {step_number}/{max_steps} — budget: {budget} steps remaining ═══"
+    )
     if isinstance(budget, int) and budget <= 3:
         parts.append(low_budget_warning)
     parts.append(action_prompt)
@@ -219,7 +221,9 @@ def preview_prompt(
     _task = task or {}
     _catalog = tools.tool_catalog_text() if tools is not None else ""
     _state = state.snapshot() if state is not None and hasattr(state, "snapshot") else {}
-    _log = session_log.render() if session_log is not None and hasattr(session_log, "render") else ""
+    _log = (
+        session_log.render() if session_log is not None and hasattr(session_log, "render") else ""
+    )
     _max = getattr(config, "max_steps", 15) if config else 15
     _briefing = ""
     _memory = ""

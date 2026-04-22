@@ -38,15 +38,18 @@ class _CaptureEmitter:
 def _mk_state(n: int, payload_len: int) -> DefaultState:
     state = DefaultState()
     for i in range(1, n + 1):
-        state.steps.append(Step(
-            number=i,
-            tool_call=ToolCall(tool="t", args={}, reasoning="r"),
-            tool_result=ToolResult(
-                tool="t", args_summary="",
-                data={"blob": "A" * payload_len},
-                result_key=f"k{i}",
-            ),
-        ))
+        state.steps.append(
+            Step(
+                number=i,
+                tool_call=ToolCall(tool="t", args={}, reasoning="r"),
+                tool_result=ToolResult(
+                    tool="t",
+                    args_summary="",
+                    data={"blob": "A" * payload_len},
+                    result_key=f"k{i}",
+                ),
+            )
+        )
     return state
 
 
@@ -70,9 +73,9 @@ class TestHookEmitsPressure:
         emitter = _CaptureEmitter()
         state = _mk_state(1, 10)  # tiny payload
         from looplet.session import SessionLog
+
         hook = ContextPressureHook(llm=None, emitter=emitter)
-        hook.pre_prompt(state=state, session_log=SessionLog(),
-                        context=None, step_num=2)
+        hook.pre_prompt(state=state, session_log=SessionLog(), context=None, step_num=2)
         assert emitter.events, "no pressure event emitted"
         ev = emitter.events[-1]
         assert isinstance(ev, ContextPressureEvent)
@@ -85,25 +88,26 @@ class TestHookEmitsPressure:
         # use explicit buffers that put us in the warning band.
         state = _mk_state(3, 20_000)  # ~15K tokens estimated
         from looplet.session import SessionLog
+
         hook = ContextPressureHook(
             llm=None,
             context_window=20_000,
-            compact_buffer=2_000,       # compact at 18K
-            warning_buffer=8_000,       # warn at 12K
-            blocking_buffer=500,        # block at 19_500
+            compact_buffer=2_000,  # compact at 18K
+            warning_buffer=8_000,  # warn at 12K
+            blocking_buffer=500,  # block at 19_500
             emitter=emitter,
         )
-        hook.pre_prompt(state=state, session_log=SessionLog(),
-                        context=None, step_num=4)
+        hook.pre_prompt(state=state, session_log=SessionLog(), context=None, step_num=4)
         levels = [e.level for e in emitter.events if isinstance(e, ContextPressureEvent)]
         assert levels, "no pressure events"
-        assert levels[-1] in ("warning", "compact", "blocking"), \
+        assert levels[-1] in ("warning", "compact", "blocking"), (
             f"expected elevated pressure, got {levels}"
+        )
 
     def test_no_emitter_no_error(self):
         state = _mk_state(1, 10)
         from looplet.session import SessionLog
+
         hook = ContextPressureHook(llm=None)  # no emitter
         # Must not raise
-        hook.pre_prompt(state=state, session_log=SessionLog(),
-                        context=None, step_num=2)
+        hook.pre_prompt(state=state, session_log=SessionLog(), context=None, step_num=2)

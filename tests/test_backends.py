@@ -1,4 +1,5 @@
 """Tests for LLM backend adapters (using mocks — no API keys needed)."""
+
 from __future__ import annotations
 
 import pytest
@@ -39,11 +40,19 @@ class _MockOpenAIClient:
     """Mock openai.OpenAI client."""
 
     def __init__(self) -> None:
-        self.chat = type("Chat", (), {
-            "completions": type("Completions", (), {
-                "create": self._create,
-            })(),
-        })()
+        self.chat = type(
+            "Chat",
+            (),
+            {
+                "completions": type(
+                    "Completions",
+                    (),
+                    {
+                        "create": self._create,
+                    },
+                )(),
+            },
+        )()
         self._last_kwargs: dict = {}
 
     def _create(self, **kwargs):
@@ -78,10 +87,14 @@ class _MockAnthropicClient:
     """Mock anthropic.Anthropic client."""
 
     def __init__(self) -> None:
-        self.messages = type("Messages", (), {
-            "create": self._create,
-            "stream": self._stream,
-        })()
+        self.messages = type(
+            "Messages",
+            (),
+            {
+                "create": self._create,
+                "stream": self._stream,
+            },
+        )()
 
     def _create(self, **kwargs):
         return _MockAnthropicResponse()
@@ -125,6 +138,7 @@ class TestOpenAIBackend:
 
     def test_satisfies_llm_backend_protocol(self):
         from looplet.types import LLMBackend
+
         client = _MockOpenAIClient()
         llm = OpenAIBackend(client)
         assert isinstance(llm, LLMBackend)
@@ -153,6 +167,7 @@ class TestAnthropicBackend:
 
     def test_satisfies_llm_backend_protocol(self):
         from looplet.types import LLMBackend
+
         client = _MockAnthropicClient()
         llm = AnthropicBackend(client)
         assert isinstance(llm, LLMBackend)
@@ -169,6 +184,7 @@ class TestAnthropicStreamingBackend:
 class TestLLMChunkEvent:
     def test_chunk_event_creation(self):
         from looplet.streaming import LLMChunkEvent
+
         e = LLMChunkEvent(step_num=3, chunk="hello", chunk_index=0)
         assert e.event_type == "LLMChunkEvent"
         assert e.step_num == 3

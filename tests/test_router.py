@@ -1,4 +1,5 @@
 """Tests for looplet.router — multi-model routing and cost tracking."""
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock

@@ -1,4 +1,5 @@
 """Tests for looplet.streaming — structured event emission for agent observability."""
+
 from __future__ import annotations
 
 import queue
@@ -221,11 +222,13 @@ def test_composite_emitter_empty_list():
 
 def test_composite_emitter_three_emitters():
     received = [[], [], []]
-    composite = CompositeEmitter([
-        CallbackEmitter(received[0].append),
-        CallbackEmitter(received[1].append),
-        CallbackEmitter(received[2].append),
-    ])
+    composite = CompositeEmitter(
+        [
+            CallbackEmitter(received[0].append),
+            CallbackEmitter(received[1].append),
+            CallbackEmitter(received[2].append),
+        ]
+    )
     ev = StepStartEvent(step_num=7)
     composite.emit(ev)
     for r in received:
@@ -242,6 +245,7 @@ def test_composite_emitter_satisfies_protocol():
 
 def test_streaming_hook_is_loop_hook():
     from looplet.loop import LoopHook
+
     received: list[Event] = []
     hook = StreamingHook(CallbackEmitter(received.append))
     assert isinstance(hook, LoopHook)

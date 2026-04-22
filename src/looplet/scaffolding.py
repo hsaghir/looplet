@@ -33,9 +33,8 @@ TOOL_RESULT_MAX_ROWS = 50  # max rows per result
 DIMINISHING_RETURNS_WINDOW = 5  # steps to track
 DIMINISHING_RETURNS_THRESHOLD = 0  # new items in window to be "diminishing"
 
-RESULT_BUDGET_PER_RESULT = 50_000   # 50K chars per individual result
-RESULT_BUDGET_AGGREGATE = 500_000   # 500K chars total across all results
-
+RESULT_BUDGET_PER_RESULT = 50_000  # 50K chars per individual result
+RESULT_BUDGET_AGGREGATE = 500_000  # 500K chars total across all results
 
 
 # ── LLM Error Types ──────────────────────────────────────────────
@@ -202,7 +201,9 @@ def llm_call_with_retry(
             if use_native:
                 call = llm.generate_with_tools
                 extra_kwargs: dict[str, Any] = {}
-                if cancel_token is not None and _backend_accepts_cancel_token(llm, "generate_with_tools"):
+                if cancel_token is not None and _backend_accepts_cancel_token(
+                    llm, "generate_with_tools"
+                ):
                     extra_kwargs["cancel_token"] = cancel_token
                 if cache_breakpoints and _accepts_kwarg(call, "cache_breakpoints"):
                     extra_kwargs["cache_breakpoints"] = cache_breakpoints
@@ -274,16 +275,20 @@ def llm_call_with_retry(
                 logger.warning("Prompt too long (not retrying): %s", e)
                 return LLMResult(None, e)
             if attempt < max_retries:
-                wait = RETRY_BACKOFF_BASE * (2 ** attempt)
+                wait = RETRY_BACKOFF_BASE * (2**attempt)
                 logger.warning(
                     "LLM call failed (attempt %d/%d): %s — retrying in %.1fs",
-                    attempt + 1, max_retries + 1, e, wait,
+                    attempt + 1,
+                    max_retries + 1,
+                    e,
+                    wait,
                 )
                 time.sleep(wait)
             else:
                 logger.error(
                     "LLM call failed after %d attempts: %s",
-                    max_retries + 1, last_error,
+                    max_retries + 1,
+                    last_error,
                 )
     return LLMResult(None, last_error)
 
@@ -339,7 +344,9 @@ class StallDetector:
         Pass ``new_items`` directly, or use the named keyword args
         (new_findings, new_highlights, new_entities) which are summed.
         """
-        total_new = new_items if new_items is not None else (new_findings + new_highlights + new_entities)
+        total_new = (
+            new_items if new_items is not None else (new_findings + new_highlights + new_entities)
+        )
         self._history.append(total_new)
         if total_new == 0:
             self.consecutive_empty += 1
@@ -351,7 +358,7 @@ class StallDetector:
         """True when the last ``window`` steps all produced zero new items."""
         if len(self._history) < self.window:
             return False
-        return sum(self._history[-self.window:]) <= DIMINISHING_RETURNS_THRESHOLD
+        return sum(self._history[-self.window :]) <= DIMINISHING_RETURNS_THRESHOLD
 
     @property
     def total_steps(self) -> int:
@@ -383,9 +390,7 @@ class StallDetector:
 
 def _normalize_call(tool_name: str, tool_args: dict) -> str:
     """Deterministic key for a tool call (for dedup detection)."""
-    clean = sorted(
-        (k, str(v)) for k, v in tool_args.items() if not k.startswith("__")
-    )
+    clean = sorted((k, str(v)) for k, v in tool_args.items() if not k.startswith("__"))
     return f"{tool_name}:{clean}"
 
 
@@ -403,8 +408,8 @@ class StepProgressTracker:
 
     PRODUCTIVE = "productive"
     REDUNDANT = "redundant"  # same tool+args called before, no new info
-    EMPTY = "empty"          # new call, no new info
-    ERROR = "error"          # tool returned error
+    EMPTY = "empty"  # new call, no new info
+    ERROR = "error"  # tool returned error
 
     def __init__(self, window: int = DIMINISHING_RETURNS_WINDOW) -> None:
         self._window = window
@@ -454,7 +459,7 @@ class StepProgressTracker:
         """True when the last ``window`` steps all produced zero new items."""
         if len(self._new_items_history) < self._window:
             return False
-        return sum(self._new_items_history[-self._window:]) <= DIMINISHING_RETURNS_THRESHOLD
+        return sum(self._new_items_history[-self._window :]) <= DIMINISHING_RETURNS_THRESHOLD
 
     @property
     def redundant_count(self) -> int:
@@ -487,7 +492,9 @@ class StepProgressTracker:
         new_items: int | None = None,
     ) -> None:
         """Backward-compat: record a step like StallDetector."""
-        total = new_items if new_items is not None else (new_findings + new_highlights + new_entities)
+        total = (
+            new_items if new_items is not None else (new_findings + new_highlights + new_entities)
+        )
         self.classify_turn(total, self.total_steps + 1)
 
     def guidance_text(self) -> str:
@@ -673,6 +680,7 @@ def trim_results(
     Skips results already compacted (marked with ``__compacted__`` key)
     to avoid progressive degradation.
     """
+
     def _is_compacted(data: Any) -> bool:
         return bool(isinstance(data, dict) and data.get("__compacted__"))
 
@@ -722,7 +730,7 @@ def trim_results(
                 new_size = len(json.dumps(r.data, default=str))
             except (TypeError, ValueError):
                 new_size = len(str(r.data))
-            total -= (old_size - new_size)
+            total -= old_size - new_size
 
 
 def _compact_result(data: Any, result_key: str | None, max_chars: int) -> Any:
@@ -757,7 +765,9 @@ def _compact_result(data: Any, result_key: str | None, max_chars: int) -> Any:
             elif isinstance(val, (list, dict)):
                 s = json.dumps(val, default=str)
                 if len(s) > budget // 4:
-                    result[key] = f"[{type(val).__name__}, {len(val) if isinstance(val, list) else len(str(val))} items — compacted]"
+                    result[key] = (
+                        f"[{type(val).__name__}, {len(val) if isinstance(val, list) else len(str(val))} items — compacted]"
+                    )
                 else:
                     result[key] = val
             else:
@@ -791,10 +801,7 @@ def emergency_truncate(
     if not hasattr(session_log, "entries") or len(session_log.entries) <= keep_recent:
         return None
 
-    to_compress = [
-        e for e in session_log.entries[:-keep_recent]
-        if e.tool != "__summary__"
-    ]
+    to_compress = [e for e in session_log.entries[:-keep_recent] if e.tool != "__summary__"]
     if not to_compress:
         return None
 
@@ -809,5 +816,3 @@ def emergency_truncate(
                 if e.tool == "__summary__":
                     return "\n\n".join(e.findings) if e.findings else "compacted"
     return None
-
-

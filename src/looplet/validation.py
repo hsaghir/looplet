@@ -117,20 +117,16 @@ def validate_args(schema: OutputSchema, args: dict[str, Any]) -> ValidationResul
             if expected is not None:
                 # bool is a subclass of int — check bool before int to avoid false positives
                 if spec.field_type == "int" and isinstance(value, bool):
-                    errors.append(
-                        f"field {name!r}: expected int, got {type(value).__name__}"
-                    )
+                    errors.append(f"field {name!r}: expected int, got {type(value).__name__}")
                 elif not isinstance(value, expected):
                     errors.append(
-                        f"field {name!r}: expected {spec.field_type}, "
-                        f"got {type(value).__name__}"
+                        f"field {name!r}: expected {spec.field_type}, got {type(value).__name__}"
                     )
 
         # allowed_values check
         if spec.allowed_values is not None and value not in spec.allowed_values:
             errors.append(
-                f"field {name!r}: value {value!r} not in allowed values "
-                f"{spec.allowed_values}"
+                f"field {name!r}: value {value!r} not in allowed values {spec.allowed_values}"
             )
 
     # Unknown fields
@@ -159,6 +155,7 @@ class ValidatingToolRegistry:
     def __init__(self) -> None:
         # Import lazily to avoid circular dependencies and allow tools.py to be optional
         from looplet.tools import BaseToolRegistry
+
         self._base = BaseToolRegistry.__new__(BaseToolRegistry)
         BaseToolRegistry.__init__(self._base)
         self._schemas: dict[str, OutputSchema] = {}

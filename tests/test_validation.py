@@ -170,16 +170,20 @@ class TestValidateArgs:
             assert result.valid is True
 
     def test_allowed_values_valid(self) -> None:
-        schema = OutputSchema(fields={
-            "color": FieldSpec(name="color", field_type="str", allowed_values=["red", "blue"])
-        })
+        schema = OutputSchema(
+            fields={
+                "color": FieldSpec(name="color", field_type="str", allowed_values=["red", "blue"])
+            }
+        )
         result = validate_args(schema, {"color": "red"})
         assert result.valid is True
 
     def test_allowed_values_invalid(self) -> None:
-        schema = OutputSchema(fields={
-            "color": FieldSpec(name="color", field_type="str", allowed_values=["red", "blue"])
-        })
+        schema = OutputSchema(
+            fields={
+                "color": FieldSpec(name="color", field_type="str", allowed_values=["red", "blue"])
+            }
+        )
         result = validate_args(schema, {"color": "green"})
         assert result.valid is False
         assert any("green" in e or "allowed" in e.lower() for e in result.errors)
@@ -226,9 +230,11 @@ class TestValidatingToolRegistry:
             parameters={"query": "search query"},
             execute=lambda query="": {"rows": [{"q": query}]},
         )
-        schema = OutputSchema(fields={
-            "query": FieldSpec(name="query", field_type="str", required=True),
-        })
+        schema = OutputSchema(
+            fields={
+                "query": FieldSpec(name="query", field_type="str", required=True),
+            }
+        )
         registry.register_with_schema(spec, schema)
         return registry
 
@@ -258,9 +264,11 @@ class TestValidatingToolRegistry:
             parameters={"x": "an int"},
             execute=lambda x=0: executed.append(True) or {"ok": True},
         )
-        schema = OutputSchema(fields={
-            "x": FieldSpec(name="x", field_type="int", required=True),
-        })
+        schema = OutputSchema(
+            fields={
+                "x": FieldSpec(name="x", field_type="int", required=True),
+            }
+        )
         registry.register_with_schema(spec, schema)
 
         call = ToolCall(tool="op", args={"x": "not-int"}, reasoning="r")

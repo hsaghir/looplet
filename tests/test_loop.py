@@ -38,6 +38,7 @@ class SimpleState:
 def _make_done_llm(pre_responses: list[str], done_summary: str = "all done") -> Any:
     """LLM that returns pre_responses then done() JSON."""
     from tests.conftest import MockLLMBackend
+
     done_json = f'{{"tool": "done", "args": {{"summary": "{done_summary}"}}}}'
     return MockLLMBackend(pre_responses + [done_json])
 
@@ -51,12 +52,14 @@ def _make_registry_with_done(*extra_tools):
     def _done_fn(**kwargs):
         return {"ok": True, "summary": kwargs.get("summary", "")}
 
-    reg.register(ToolSpec(
-        name="done",
-        description="Signal task completion.",
-        parameters={"summary": "Summary of what was accomplished."},
-        execute=_done_fn,
-    ))
+    reg.register(
+        ToolSpec(
+            name="done",
+            description="Signal task completion.",
+            parameters={"summary": "Summary of what was accomplished."},
+            execute=_done_fn,
+        )
+    )
     for spec in extra_tools:
         reg.register(spec)
     return reg
@@ -70,6 +73,7 @@ def _make_registry_with_done(*extra_tools):
 class TestParseToolCall:
     def test_simple_json(self):
         from looplet.parse import parse_tool_call
+
         tc = parse_tool_call('{"tool": "search", "args": {"q": "hello"}}')
         assert tc is not None
         assert tc.tool == "search"
@@ -77,6 +81,7 @@ class TestParseToolCall:
 
     def test_markdown_fence(self):
         from looplet.parse import parse_tool_call
+
         raw = '```json\n{"tool": "search", "args": {}}\n```'
         tc = parse_tool_call(raw)
         assert tc is not None
@@ -84,14 +89,17 @@ class TestParseToolCall:
 
     def test_invalid_returns_none(self):
         from looplet.parse import parse_tool_call
+
         assert parse_tool_call("not json at all") is None
 
     def test_no_tool_key(self):
         from looplet.parse import parse_tool_call
+
         assert parse_tool_call('{"foo": "bar"}') is None
 
     def test_reasoning_captured(self):
         from looplet.parse import parse_tool_call
+
         tc = parse_tool_call('{"tool": "think", "args": {}, "reasoning": "why not"}')
         assert tc is not None
         assert tc.reasoning == "why not"
@@ -100,12 +108,14 @@ class TestParseToolCall:
 class TestParseMultiToolCalls:
     def test_single_tool(self):
         from looplet.parse import parse_multi_tool_calls
+
         calls = parse_multi_tool_calls('{"tool": "search", "args": {"q": "x"}}')
         assert len(calls) == 1
         assert calls[0].tool == "search"
 
     def test_multi_tool_format(self):
         from looplet.parse import parse_multi_tool_calls
+
         raw = '{"tools": [{"tool": "search", "args": {}}, {"tool": "think", "args": {}}]}'
         calls = parse_multi_tool_calls(raw)
         assert len(calls) == 2
@@ -114,16 +124,19 @@ class TestParseMultiToolCalls:
 
     def test_empty_on_invalid(self):
         from looplet.parse import parse_multi_tool_calls
+
         assert parse_multi_tool_calls("bad text") == []
 
     def test_theory_propagated_to_args(self):
         from looplet.parse import parse_multi_tool_calls
+
         raw = '{"theory": "my-theory", "tools": [{"tool": "search", "args": {}}]}'
         calls = parse_multi_tool_calls(raw)
         assert calls[0].args.get("__theory__") == "my-theory"
 
     def test_markdown_fenced(self):
         from looplet.parse import parse_multi_tool_calls
+
         raw = '```json\n{"tool": "done", "args": {}}\n```'
         calls = parse_multi_tool_calls(raw)
         assert len(calls) == 1
@@ -133,6 +146,7 @@ class TestParseMultiToolCalls:
 class TestParseNativeToolUse:
     def test_parses_tool_use_blocks(self):
         from looplet.parse import parse_native_tool_use
+
         blocks = [
             {"type": "tool_use", "id": "abc", "name": "search", "input": {"q": "x"}},
         ]
@@ -143,6 +157,7 @@ class TestParseNativeToolUse:
 
     def test_skips_non_tool_use(self):
         from looplet.parse import parse_native_tool_use
+
         blocks = [
             {"type": "text", "text": "hello"},
             {"type": "tool_use", "id": "x", "name": "think", "input": {}},
@@ -152,12 +167,14 @@ class TestParseNativeToolUse:
 
     def test_empty_on_no_blocks(self):
         from looplet.parse import parse_native_tool_use
+
         assert parse_native_tool_use([]) == []
 
     def test_no_domain_specific_imports(self):
         import inspect
 
         import looplet.parse as m
+
         assert "primal_security" not in inspect.getsource(m)
 
 
@@ -169,6 +186,7 @@ class TestParseNativeToolUse:
 class TestLoopConfig:
     def test_defaults(self):
         from looplet.loop import LoopConfig
+
         c = LoopConfig()
         assert c.max_steps == 15
         assert c.max_tokens == 2000
@@ -189,6 +207,7 @@ class TestLoopConfig:
         import inspect
 
         from looplet.loop import composable_loop
+
         sig = inspect.signature(composable_loop)
         assert "alert" not in sig.parameters
         assert "exploration" not in sig.parameters
@@ -247,17 +266,27 @@ class TestLoopHookProtocol:
         import inspect
 
         from looplet.loop import LoopHook
+
         members = {
-            name for name, _ in inspect.getmembers(LoopHook, predicate=callable)
+            name
+            for name, _ in inspect.getmembers(LoopHook, predicate=callable)
             if not name.startswith("_")
         }
-        required = {"pre_prompt", "pre_dispatch", "post_dispatch", "check_done", "should_stop", "on_loop_end"}
+        required = {
+            "pre_prompt",
+            "pre_dispatch",
+            "post_dispatch",
+            "check_done",
+            "should_stop",
+            "on_loop_end",
+        }
         assert required.issubset(members)
 
     def test_no_domain_specific_imports(self):
         import inspect
 
         import looplet.loop as m
+
         assert "primal_security" not in inspect.getsource(m)
 
 
@@ -269,8 +298,10 @@ class TestLoopHookProtocol:
 class TestComposableLoopBasic:
     def test_tools_required(self):
         from looplet.loop import composable_loop
+
         state = SimpleState()
         from tests.conftest import MockLLMBackend
+
         gen = composable_loop(MockLLMBackend(), state=state)
         with pytest.raises((ValueError, TypeError)):
             next(gen)
@@ -321,9 +352,11 @@ class TestComposableLoopBasic:
         state = SimpleState(max_steps=2)
         # LLM never calls done — just calls search forever
         from tests.conftest import MockLLMBackend
+
         llm = MockLLMBackend(['{"tool": "search", "args": {}}'] * 10)
 
         from looplet.tools import ToolSpec
+
         def _search(**kwargs):
             return {}
 
@@ -345,6 +378,7 @@ class TestComposableLoopBasic:
 
         state = SimpleState(max_steps=3)
         from tests.conftest import MockLLMBackend
+
         # First response: bad JSON; second: done (for recovery attempt too)
         done_json = '{"tool": "done", "args": {}}'
         llm = MockLLMBackend(["not json at all", "not json either", done_json])
@@ -415,6 +449,7 @@ class TestComposableLoopHooks:
         search_json = '{"tool": "search", "args": {}}'
         done_json = '{"tool": "done", "args": {}}'
         from tests.conftest import MockLLMBackend
+
         llm = MockLLMBackend([search_json, done_json])
 
         def _search(**kwargs):
@@ -422,17 +457,23 @@ class TestComposableLoopHooks:
 
         reg = _make_registry_with_done(
             ToolSpec(
-                name="search", description="s",
+                name="search",
+                description="s",
                 parameters={},
                 execute=_search,
             )
         )
         hook, events = self._make_hook_spy()
 
-        list(composable_loop(
-            llm, state=state, tools=reg, hooks=[hook],
-            config=LoopConfig(max_steps=5),
-        ))
+        list(
+            composable_loop(
+                llm,
+                state=state,
+                tools=reg,
+                hooks=[hook],
+                config=LoopConfig(max_steps=5),
+            )
+        )
 
         # pre_prompt fires before dispatch
         pre_prompt_idx = next(i for i, e in enumerate(events) if e[0] == "pre_prompt")
@@ -449,6 +490,7 @@ class TestComposableLoopHooks:
         done_json = '{"tool": "done", "args": {}}'
         real_done_json = '{"tool": "done", "args": {}}'
         from tests.conftest import MockLLMBackend
+
         llm = MockLLMBackend([done_json, real_done_json])
         reg = _make_registry_with_done()
 
@@ -461,13 +503,23 @@ class TestComposableLoopHooks:
                     return "not enough evidence yet"
                 return None
 
-        steps = list(composable_loop(
-            llm, state=state, tools=reg, hooks=[RejectOnce()],
-            config=LoopConfig(max_steps=5),
-        ))
+        steps = list(
+            composable_loop(
+                llm,
+                state=state,
+                tools=reg,
+                hooks=[RejectOnce()],
+                config=LoopConfig(max_steps=5),
+            )
+        )
         # Should see a rejected done step and then a real done step
-        rejected = [s for s in steps if s.tool_call.tool == "done" and
-                    isinstance(s.tool_result.data, dict) and s.tool_result.data.get("rejected")]
+        rejected = [
+            s
+            for s in steps
+            if s.tool_call.tool == "done"
+            and isinstance(s.tool_result.data, dict)
+            and s.tool_result.data.get("rejected")
+        ]
         assert len(rejected) >= 1
 
     def test_pre_dispatch_interception(self):
@@ -477,8 +529,8 @@ class TestComposableLoopHooks:
 
         state = SimpleState()
         from tests.conftest import MockLLMBackend
-        llm = MockLLMBackend(['{"tool": "search", "args": {}}',
-                               '{"tool": "done", "args": {}}'])
+
+        llm = MockLLMBackend(['{"tool": "search", "args": {}}', '{"tool": "done", "args": {}}'])
 
         dispatched = []
 
@@ -488,7 +540,8 @@ class TestComposableLoopHooks:
 
         reg = _make_registry_with_done(
             ToolSpec(
-                name="search", description="s",
+                name="search",
+                description="s",
                 parameters={},
                 execute=_search,
             )
@@ -497,14 +550,20 @@ class TestComposableLoopHooks:
         class InterceptHook:
             def pre_dispatch(self, state, session_log, tool_call, step_num):
                 if tool_call.tool == "search":
-                    return ToolResult(tool="search", args_summary="intercepted",
-                                      data={"cached": True})
+                    return ToolResult(
+                        tool="search", args_summary="intercepted", data={"cached": True}
+                    )
                 return None
 
-        list(composable_loop(
-            llm, state=state, tools=reg, hooks=[InterceptHook()],
-            config=LoopConfig(max_steps=5),
-        ))
+        list(
+            composable_loop(
+                llm,
+                state=state,
+                tools=reg,
+                hooks=[InterceptHook()],
+                config=LoopConfig(max_steps=5),
+            )
+        )
         # Real search should NOT have been called — intercepted
         assert "real_search" not in dispatched
 
@@ -516,24 +575,28 @@ class TestComposableLoopHooks:
         multi_json = '{"tools": [{"tool": "search", "args": {}}, {"tool": "think", "args": {}}]}'
         done_json = '{"tool": "done", "args": {}}'
         from tests.conftest import MockLLMBackend
+
         llm = MockLLMBackend([multi_json, done_json])
 
         def _search(**kwargs):
             return {"r": 1}
+
         def _think(**kwargs):
             return {"thought": "ok"}
 
         reg = _make_registry_with_done(
-            ToolSpec(name="search", description="s",
-                     parameters={}, execute=_search),
-            ToolSpec(name="think", description="t", free=True,
-                     parameters={}, execute=_think),
+            ToolSpec(name="search", description="s", parameters={}, execute=_search),
+            ToolSpec(name="think", description="t", free=True, parameters={}, execute=_think),
         )
 
-        steps = list(composable_loop(
-            llm, state=state, tools=reg,
-            config=LoopConfig(max_steps=10),
-        ))
+        steps = list(
+            composable_loop(
+                llm,
+                state=state,
+                tools=reg,
+                config=LoopConfig(max_steps=10),
+            )
+        )
         tool_names = [s.tool_call.tool for s in steps]
         assert "search" in tool_names
         assert "think" in tool_names
@@ -544,23 +607,28 @@ class TestComposableLoopHooks:
 
         state = SimpleState(max_steps=20)
         from tests.conftest import MockLLMBackend
+
         llm = MockLLMBackend(['{"tool": "search", "args": {}}'] * 20)
 
         def _search(**kwargs):
             return {}
 
         reg = _make_registry_with_done(
-            ToolSpec(name="search", description="s",
-                     parameters={}, execute=_search)
+            ToolSpec(name="search", description="s", parameters={}, execute=_search)
         )
 
         class StopAfterOneHook:
             def should_stop(self, state, step_num, new_entities):
                 return step_num >= 1
 
-        steps = list(composable_loop(
-            llm, state=state, tools=reg, hooks=[StopAfterOneHook()],
-            config=LoopConfig(max_steps=20),
-        ))
+        steps = list(
+            composable_loop(
+                llm,
+                state=state,
+                tools=reg,
+                hooks=[StopAfterOneHook()],
+                config=LoopConfig(max_steps=20),
+            )
+        )
         # Should stop very early
         assert len(steps) <= 3

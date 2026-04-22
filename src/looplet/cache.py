@@ -54,6 +54,7 @@ CacheSection = Literal["system_prompt", "tool_schemas", "memory"]
 only prompt regions that are (a) stable across turns within a
 session and (b) large enough to justify a cache entry."""
 
+
 @dataclass(frozen=True)
 class CacheControl:
     """Per-section caching declaration. Frozen so it's safe to share
@@ -67,6 +68,7 @@ class CacheControl:
     ttl: _CacheTTL = "ephemeral"
     """Cache TTL. Default 5-min ephemeral; use ``"1h"`` when you know
     sessions will last long enough to amortise the higher write cost."""
+
 
 @dataclass(frozen=True)
 class CacheBreakpoint:
@@ -85,6 +87,7 @@ class CacheBreakpoint:
     hash: str
     content: str
     control: CacheControl = field(default_factory=CacheControl)
+
 
 @dataclass
 class CachePolicy:
@@ -117,10 +120,12 @@ class CachePolicy:
             out.append(("memory", self.memory))
         return out
 
+
 def _hash(text: str) -> str:
     """Stable 16-char hex hash for cache-break detection. SHA-256
     truncated — collision risk is irrelevant at session scale."""
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
 
 def compute_breakpoints(
     policy: CachePolicy,
@@ -142,10 +147,16 @@ def compute_breakpoints(
             "tool_schemas": tool_schemas_text,
             "memory": memory_text,
         }[label]
-        out.append(CacheBreakpoint(
-            label=label, hash=_hash(content), content=content, control=ctl,
-        ))
+        out.append(
+            CacheBreakpoint(
+                label=label,
+                hash=_hash(content),
+                content=content,
+                control=ctl,
+            )
+        )
     return out
+
 
 class CacheBreakDetector:
     """Observer :class:`LoopHook` that records section hashes per turn
@@ -192,7 +203,10 @@ class CacheBreakDetector:
                 self._breaks.append((step_num, bp.label, prior, bp.hash))
                 logger.warning(
                     "cache_break at step=%d section=%s prior=%s new=%s",
-                    step_num, bp.label, prior, bp.hash,
+                    step_num,
+                    bp.label,
+                    prior,
+                    bp.hash,
                 )
             self._last[bp.label] = bp.hash
         return bps
@@ -208,4 +222,3 @@ class CacheBreakDetector:
     # So an instance can be registered in ``hooks=[...]`` directly
     # without wrapping. The loop calls record() itself from the
     # prompt-build path; these are just here to satisfy the protocol.
-

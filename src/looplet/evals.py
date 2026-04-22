@@ -71,6 +71,7 @@ logger = logging.getLogger(__name__)
 
 # ── Core data types ──────────────────────────────────────────────
 
+
 @dataclass
 class EvalContext:
     """Everything an evaluator sees — the same data you see when debugging.
@@ -107,9 +108,9 @@ class EvalContext:
     def errors(self) -> list[Any]:
         """Steps where the tool returned an error."""
         return [
-            s for s in self.steps
-            if hasattr(s, "tool_result") and s.tool_result
-            and getattr(s.tool_result, "error", None)
+            s
+            for s in self.steps
+            if hasattr(s, "tool_result") and s.tool_result and getattr(s.tool_result, "error", None)
         ]
 
     @property
@@ -186,6 +187,7 @@ class EvalContext:
             metadata=metadata,
         )
 
+
 @dataclass
 class _DictStep:
     """Lightweight step wrapper for trajectories loaded from JSON.
@@ -202,17 +204,16 @@ class _DictStep:
         tc = self._data.get("tool_call", {})
         if not tc and "tool" in self._data:
             # Flat format: tool name at top level
-            tc = {"tool": self._data["tool"],
-                  "args": self._data.get("args", {})}
+            tc = {"tool": self._data["tool"], "args": self._data.get("args", {})}
         return _DictView(tc)
 
     @property
     def tool_result(self) -> Any:
         tr = self._data.get("tool_result", {})
         if not tr and "error" in self._data:
-            tr = {"error": self._data.get("error"),
-                  "data": self._data.get("data", {})}
+            tr = {"error": self._data.get("error"), "data": self._data.get("data", {})}
         return _DictView(tr)
+
 
 class _DictView:
     """Attribute-access wrapper for dicts (so eval functions can use dot notation)."""
@@ -225,6 +226,7 @@ class _DictView:
 
     def get(self, key: str, default: Any = None) -> Any:
         return self._d.get(key, default)
+
 
 @dataclass
 class EvalResult:
@@ -264,22 +266,22 @@ class EvalResult:
                 value.name = name
             return value
         if isinstance(value, bool):
-            return cls(name=name, score=1.0 if value else 0.0,
-                       label="pass" if value else "fail")
+            return cls(name=name, score=1.0 if value else 0.0, label="pass" if value else "fail")
         if isinstance(value, (int, float)):
             return cls(name=name, score=float(value))
         if isinstance(value, str):
             return cls(name=name, label=value)
         if isinstance(value, dict):
-            metrics = {k: float(v) for k, v in value.items()
-                       if isinstance(v, (int, float))}
-            details = [f"{k}: {v}" for k, v in value.items()
-                       if not isinstance(v, (int, float))]
+            metrics = {k: float(v) for k, v in value.items() if isinstance(v, (int, float))}
+            details = [f"{k}: {v}" for k, v in value.items() if not isinstance(v, (int, float))]
             # Try to find a primary score
-            score = (metrics.get("score") or metrics.get("f1")
-                     or metrics.get("accuracy") or metrics.get("overall"))
-            return cls(name=name, score=score, metrics=metrics,
-                       details=details)
+            score = (
+                metrics.get("score")
+                or metrics.get("f1")
+                or metrics.get("accuracy")
+                or metrics.get("overall")
+            )
+            return cls(name=name, score=score, metrics=metrics, details=details)
         return cls(name=name, explanation=str(value))
 
     def pretty(self) -> str:
@@ -290,8 +292,11 @@ class EvalResult:
         if self.label:
             parts.append(self.label)
         if self.metrics:
-            metric_strs = [f"{k}={v:.2f}" for k, v in self.metrics.items()
-                           if k not in ("score", "f1", "accuracy", "overall")]
+            metric_strs = [
+                f"{k}={v:.2f}"
+                for k, v in self.metrics.items()
+                if k not in ("score", "f1", "accuracy", "overall")
+            ]
             if metric_strs:
                 parts.append(" ".join(metric_strs))
         if self.explanation:
@@ -318,7 +323,9 @@ class EvalResult:
             d["duration_ms"] = round(self.duration_ms, 1)
         return d
 
+
 # ── Discovery ────────────────────────────────────────────────────
+
 
 def eval_discover(
     path: str | Path,
@@ -347,7 +354,8 @@ def eval_discover(
     for fpath in files:
         try:
             spec = importlib.util.spec_from_file_location(
-                f"_eval_{fpath.stem}", fpath,
+                f"_eval_{fpath.stem}",
+                fpath,
             )
             if spec is None or spec.loader is None:
                 continue
@@ -362,7 +370,9 @@ def eval_discover(
 
     return evaluators
 
+
 # ── Runner ───────────────────────────────────────────────────────
+
 
 def eval_run(
     evaluators: list[Callable],
@@ -401,10 +411,13 @@ def eval_run(
                         "Eval %s requires llm but no judge_llm provided; skipping",
                         name,
                     )
-                    results.append(EvalResult(
-                        name=name, label="skipped",
-                        explanation="requires judge_llm",
-                    ))
+                    results.append(
+                        EvalResult(
+                            name=name,
+                            label="skipped",
+                            explanation="requires judge_llm",
+                        )
+                    )
                     continue
                 raw = fn(ctx, judge_llm)
             else:
@@ -412,11 +425,11 @@ def eval_run(
             result = EvalResult.from_return(raw, name=name)
         except Exception as e:  # noqa: BLE001
             logger.warning("Eval %s raised: %s", name, e, exc_info=True)
-            result = EvalResult(name=name, label="error",
-                                explanation=str(e))
+            result = EvalResult(name=name, label="error", explanation=str(e))
         result.duration_ms = (time.time() - t0) * 1000
         results.append(result)
     return results
+
 
 def _format_summary(results: list[EvalResult]) -> str:
     """One-line summary of eval results."""
@@ -433,7 +446,9 @@ def _format_summary(results: list[EvalResult]) -> str:
         parts.append(f"{len(errors)} errors")
     return ", ".join(parts) if parts else "no results"
 
+
 # ── Hook ─────────────────────────────────────────────────────────
+
 
 class EvalHook:
     """LoopHook that runs evaluators at the end of each agent run.
@@ -498,7 +513,11 @@ class EvalHook:
     # ── LoopHook interface ─────────────────────────────────────
 
     def on_loop_end(
-        self, state: AgentState, session_log: SessionLog, context: Any, llm: LLMBackend,
+        self,
+        state: AgentState,
+        session_log: SessionLog,
+        context: Any,
+        llm: LLMBackend,
     ) -> int:
         """Run all evaluators after the loop finishes."""
         steps = getattr(state, "steps", [])
@@ -526,7 +545,9 @@ class EvalHook:
         )
 
         self._results = eval_run(
-            self.evaluators, ctx, judge_llm=self.judge_llm,
+            self.evaluators,
+            ctx,
+            judge_llm=self.judge_llm,
         )
 
         if self.verbose:
@@ -539,8 +560,7 @@ class EvalHook:
 
         return 0
 
-    def pre_loop(self, state: AgentState, session_log: SessionLog,
-                 context: Any) -> None:
+    def pre_loop(self, state: AgentState, session_log: SessionLog, context: Any) -> None:
         """Capture the task from context for eval."""
         # The task is passed via composable_loop's task= kwarg and
         # threaded through the loop. We capture it from state or
@@ -549,7 +569,9 @@ class EvalHook:
 
     # Protocol stubs
 
+
 # ── Marks ────────────────────────────────────────────────────────
+
 
 def eval_mark(*tags: str) -> Callable:
     """Tag an eval function with category marks for filtering.
@@ -570,16 +592,21 @@ def eval_mark(*tags: str) -> Callable:
         # Skip "slow" evals in CI:
         results = eval_run(evals, ctx, exclude=["slow"])
     """
+
     def decorator(fn: Callable) -> Callable:
         fn._eval_marks = set(tags)
         return fn
+
     return decorator
+
 
 def _get_marks(fn: Callable) -> set[str]:
     """Get eval marks from a function (empty set if unmarked)."""
     return getattr(fn, "_eval_marks", set())
 
+
 # ── Batch runner ─────────────────────────────────────────────────
+
 
 def eval_run_batch(
     evaluators: list[Callable],
@@ -620,11 +647,11 @@ def eval_run_batch(
     summary: list[dict[str, Any]] = []
     for i, fn in enumerate(filtered):
         scores: list[float] = [
-            s for s in (
-                all_results[j][i].score
-                for j in range(len(contexts))
-                if i < len(all_results[j])
-            ) if s is not None
+            s
+            for s in (
+                all_results[j][i].score for j in range(len(contexts)) if i < len(all_results[j])
+            )
+            if s is not None
         ]
         entry: dict[str, Any] = {
             "name": fn.__name__,
@@ -636,13 +663,12 @@ def eval_run_batch(
             entry["min_score"] = round(min(scores), 3)
             entry["max_score"] = round(max(scores), 3)
         entry["per_run"] = [
-            all_results[j][i].to_dict()
-            for j in range(len(contexts))
-            if i < len(all_results[j])
+            all_results[j][i].to_dict() for j in range(len(contexts)) if i < len(all_results[j])
         ]
         summary.append(entry)
 
     return summary
+
 
 def _filter_evals(
     evaluators: list[Callable],
@@ -662,7 +688,9 @@ def _filter_evals(
         result.append(fn)
     return result
 
+
 # ── CLI runner ───────────────────────────────────────────────────
+
 
 def eval_cli(args: list[str] | None = None) -> int:
     """CLI entry point for running evals.
@@ -684,16 +712,20 @@ def eval_cli(args: list[str] | None = None) -> int:
         description="Run evals against saved agent trajectories.",
     )
     parser.add_argument("traces", help="Directory containing trajectory dirs")
-    parser.add_argument("--evals", default=None,
-                        help="Eval file or directory (default: discover in cwd)")
-    parser.add_argument("--threshold", type=float, default=0.0,
-                        help="Fail if any eval avg score < threshold (default: 0)")
-    parser.add_argument("--include", nargs="*", default=None,
-                        help="Only run evals with these marks")
-    parser.add_argument("--exclude", nargs="*", default=None,
-                        help="Skip evals with these marks")
-    parser.add_argument("-v", "--verbose", action="store_true",
-                        help="Show per-run details")
+    parser.add_argument(
+        "--evals", default=None, help="Eval file or directory (default: discover in cwd)"
+    )
+    parser.add_argument(
+        "--threshold",
+        type=float,
+        default=0.0,
+        help="Fail if any eval avg score < threshold (default: 0)",
+    )
+    parser.add_argument(
+        "--include", nargs="*", default=None, help="Only run evals with these marks"
+    )
+    parser.add_argument("--exclude", nargs="*", default=None, help="Skip evals with these marks")
+    parser.add_argument("-v", "--verbose", action="store_true", help="Show per-run details")
 
     parsed = parser.parse_args(args)
 
@@ -728,8 +760,10 @@ def eval_cli(args: list[str] | None = None) -> int:
 
     # Run batch
     table = eval_run_batch(
-        evaluators, contexts,
-        include=parsed.include, exclude=parsed.exclude,
+        evaluators,
+        contexts,
+        include=parsed.include,
+        exclude=parsed.exclude,
     )
 
     # Print results
@@ -740,10 +774,12 @@ def eval_cli(args: list[str] | None = None) -> int:
             marker = "✓" if avg >= parsed.threshold else "✗"
             if avg < parsed.threshold:
                 below_threshold = True
-            print(f"  {marker} {row['name']:40s} avg={avg:.2f}  "
-                  f"min={row.get('min_score', 0):.2f}  "
-                  f"max={row.get('max_score', 0):.2f}  "
-                  f"({row['runs']} runs)")
+            print(
+                f"  {marker} {row['name']:40s} avg={avg:.2f}  "
+                f"min={row.get('min_score', 0):.2f}  "
+                f"max={row.get('max_score', 0):.2f}  "
+                f"({row['runs']} runs)"
+            )
         else:
             print(f"  - {row['name']:40s} (no scores)")
 

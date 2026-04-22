@@ -20,7 +20,9 @@ def _mk_step(num: int, tool: str = "t", data: object | None = None) -> Step:
         number=num,
         tool_call=ToolCall(tool=tool, args={"a": 1}, reasoning=f"r{num}"),
         tool_result=ToolResult(
-            tool=tool, args_summary=f"a={num}", data=data or {"x": num},
+            tool=tool,
+            args_summary=f"a={num}",
+            data=data or {"x": num},
             result_key=f"k{num}",
         ),
     )
@@ -38,8 +40,14 @@ class TestHistoryRecorderRecordStep:
         log = SessionLog()
         rec = HistoryRecorder(session_log=log)
         step = _mk_step(2, tool="search")
-        rec.record_step(step, theory="theory-A", entities=["host1"],
-                        findings=["finding1"], highlights=["h"], recall_key="k2")
+        rec.record_step(
+            step,
+            theory="theory-A",
+            entities=["host1"],
+            findings=["finding1"],
+            highlights=["h"],
+            recall_key="k2",
+        )
         assert len(log.entries) == 1
         e = log.entries[0]
         assert e.step == 2
@@ -70,8 +78,9 @@ class TestHistoryRecorderRecordStep:
         conv = Conversation()
         rec = HistoryRecorder(state=state, session_log=log, conversation=conv)
         step = _mk_step(4)
-        rec.record_step(step, theory="Tx", entities=["e"], findings=["f"],
-                        highlights=["h"], recall_key="k4")
+        rec.record_step(
+            step, theory="Tx", entities=["e"], findings=["f"], highlights=["h"], recall_key="k4"
+        )
         assert state.steps == [step]
         assert len(log.entries) == 1 and log.entries[0].step == 4
         assert len(conv.messages) == 2

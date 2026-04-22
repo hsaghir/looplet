@@ -19,8 +19,14 @@ class _CapturingLLM(LLMBackend):
         self.last_prompt: str = ""
         self.calls: int = 0
 
-    def generate(self, prompt: str, *, max_tokens: int = 2000,
-                 system_prompt: str = "", temperature: float = 0.2) -> str:
+    def generate(
+        self,
+        prompt: str,
+        *,
+        max_tokens: int = 2000,
+        system_prompt: str = "",
+        temperature: float = 0.2,
+    ) -> str:
         self.last_prompt = prompt
         self.calls += 1
         # Stop immediately after one turn via the done tool.
@@ -30,16 +36,23 @@ class _CapturingLLM(LLMBackend):
 class TestDefaultBuildPrompt:
     def _registry(self) -> BaseToolRegistry:
         reg = BaseToolRegistry()
-        reg.register(ToolSpec(
-            name="search", description="find something",
-            parameters={"q": "query"},
-            execute=lambda q: {"results": [q]},
-            concurrent_safe=True,
-        ))
-        reg.register(ToolSpec(
-            name="done", description="finish", parameters={"summary": "final"},
-            execute=lambda summary="": {"done": True, "summary": summary},
-        ))
+        reg.register(
+            ToolSpec(
+                name="search",
+                description="find something",
+                parameters={"q": "query"},
+                execute=lambda q: {"results": [q]},
+                concurrent_safe=True,
+            )
+        )
+        reg.register(
+            ToolSpec(
+                name="done",
+                description="finish",
+                parameters={"summary": "final"},
+                execute=lambda summary="": {"done": True, "summary": summary},
+            )
+        )
         return reg
 
     def test_loop_produces_structured_prompt_with_no_build_prompt_supplied(self):
@@ -50,13 +63,15 @@ class TestDefaultBuildPrompt:
         reg = self._registry()
         # Intentionally omit build_prompt / build_briefing / extract_entities.
         config = LoopConfig(max_steps=3)
-        list(composable_loop(
-            llm=llm,
-            task={"id": "T-1", "title": "demo", "description": "find stuff"},
-            tools=reg,
-            config=config,
-            state=state,
-        ))
+        list(
+            composable_loop(
+                llm=llm,
+                task={"id": "T-1", "title": "demo", "description": "find stuff"},
+                tools=reg,
+                config=config,
+                state=state,
+            )
+        )
         p = llm.last_prompt
         assert p, "LLM received no prompt"
         assert "═══ TASK ═══" in p
@@ -75,9 +90,15 @@ class TestDefaultBuildPrompt:
             return "CUSTOM PROMPT " + str(kw.get("step_number"))
 
         config = LoopConfig(max_steps=3, build_prompt=custom)
-        list(composable_loop(
-            llm=llm, task={"id": "T-1"}, tools=reg, config=config, state=state,
-        ))
+        list(
+            composable_loop(
+                llm=llm,
+                task={"id": "T-1"},
+                tools=reg,
+                config=config,
+                state=state,
+            )
+        )
         assert llm.last_prompt.startswith("CUSTOM PROMPT ")
 
     def test_default_prompt_includes_budget_warning_when_low(self):
@@ -86,8 +107,13 @@ class TestDefaultBuildPrompt:
         # We can't easily inspect mid-run; just assert the STEP section carries budget info.
         state = DefaultState(max_steps=2)
         reg = self._registry()
-        list(composable_loop(
-            llm=llm, task={"id": "T-2", "title": "t"},
-            tools=reg, config=LoopConfig(max_steps=2), state=state,
-        ))
+        list(
+            composable_loop(
+                llm=llm,
+                task={"id": "T-2", "title": "t"},
+                tools=reg,
+                config=LoopConfig(max_steps=2),
+                state=state,
+            )
+        )
         assert "budget:" in llm.last_prompt

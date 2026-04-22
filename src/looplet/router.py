@@ -142,16 +142,24 @@ class _FallbackLLM:
     ) -> Any:
         try:
             if hasattr(self._primary, "generate_with_tools"):
-                return self._primary.generate_with_tools( # pyright: ignore[reportAttributeAccessIssue]
-                    prompt, tools=tools, max_tokens=max_tokens,
-                    system_prompt=system_prompt, temperature=temperature,
+                return self._primary.generate_with_tools(  # pyright: ignore[reportAttributeAccessIssue]
+                    prompt,
+                    tools=tools,
+                    max_tokens=max_tokens,
+                    system_prompt=system_prompt,
+                    temperature=temperature,
                 )
         except Exception as exc:
-            logger.warning("Primary LLM generate_with_tools failed (%s); switching to fallback", exc)
+            logger.warning(
+                "Primary LLM generate_with_tools failed (%s); switching to fallback", exc
+            )
         if hasattr(self._fallback, "generate_with_tools"):
-            return self._fallback.generate_with_tools( # pyright: ignore[reportAttributeAccessIssue]
-                prompt, tools=tools, max_tokens=max_tokens,
-                system_prompt=system_prompt, temperature=temperature,
+            return self._fallback.generate_with_tools(  # pyright: ignore[reportAttributeAccessIssue]
+                prompt,
+                tools=tools,
+                max_tokens=max_tokens,
+                system_prompt=system_prompt,
+                temperature=temperature,
             )
         raise AttributeError("Neither primary nor fallback supports generate_with_tools")
 
@@ -276,9 +284,12 @@ class CostTracker:
         system_prompt: str = "",
         temperature: float = 0.2,
     ) -> Any:
-        response = self._backend.generate_with_tools( # pyright: ignore[reportAttributeAccessIssue]
-            prompt, tools=tools, max_tokens=max_tokens,
-            system_prompt=system_prompt, temperature=temperature,
+        response = self._backend.generate_with_tools(  # pyright: ignore[reportAttributeAccessIssue]
+            prompt,
+            tools=tools,
+            max_tokens=max_tokens,
+            system_prompt=system_prompt,
+            temperature=temperature,
         )
         input_tokens = self._estimate_tokens(prompt)
         if system_prompt:
@@ -356,9 +367,12 @@ class RoutingLLMBackend:
     ) -> Any:
         """Proxy to the selected backend's native tool calling."""
         backend = self._router.select(self._purpose)
-        return backend.generate_with_tools( # pyright: ignore[reportAttributeAccessIssue]
-            prompt, tools=tools, max_tokens=max_tokens,
-            system_prompt=system_prompt, temperature=temperature,
+        return backend.generate_with_tools(  # pyright: ignore[reportAttributeAccessIssue]
+            prompt,
+            tools=tools,
+            max_tokens=max_tokens,
+            system_prompt=system_prompt,
+            temperature=temperature,
         )
 
     def __getattr__(self, name: str) -> Any:

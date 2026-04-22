@@ -13,6 +13,7 @@ pytestmark = pytest.mark.smoke
 class TestToolSpec:
     def test_creation(self):
         from looplet.tools import ToolSpec
+
         spec = ToolSpec(
             name="echo",
             description="Echo the input back",
@@ -27,16 +28,19 @@ class TestToolSpec:
 
     def test_concurrent_safe_default(self):
         from looplet.tools import ToolSpec
+
         spec = ToolSpec(name="x", description="d", parameters={}, execute=lambda: None)
         assert spec.concurrent_safe is False
 
     def test_free_default(self):
         from looplet.tools import ToolSpec
+
         spec = ToolSpec(name="x", description="d", parameters={}, execute=lambda: None)
         assert spec.free is False
 
     def test_to_api_schema(self):
         from looplet.tools import ToolSpec
+
         spec = ToolSpec(
             name="search",
             description="Search for events",
@@ -54,6 +58,7 @@ class TestToolSpec:
 
     def test_spec_text(self):
         from looplet.tools import ToolSpec
+
         spec = ToolSpec(
             name="lookup",
             description="Look up a value",
@@ -72,13 +77,16 @@ class TestToolSpec:
 class TestBaseToolRegistry:
     def _make_registry_with_echo(self):
         from looplet.tools import BaseToolRegistry, ToolSpec
+
         reg = BaseToolRegistry()
-        reg.register(ToolSpec(
-            name="echo",
-            description="Echo back",
-            parameters={"text": "text to echo"},
-            execute=lambda text="": {"echoed": text},
-        ))
+        reg.register(
+            ToolSpec(
+                name="echo",
+                description="Echo back",
+                parameters={"text": "text to echo"},
+                execute=lambda text="": {"echoed": text},
+            )
+        )
         return reg
 
     def test_register_and_tool_names(self):
@@ -87,6 +95,7 @@ class TestBaseToolRegistry:
 
     def test_dispatch_success(self):
         from looplet.types import ToolCall
+
         reg = self._make_registry_with_echo()
         call = ToolCall(tool="echo", args={"text": "hello"})
         result = reg.dispatch(call)
@@ -96,6 +105,7 @@ class TestBaseToolRegistry:
 
     def test_dispatch_timing(self):
         from looplet.types import ToolCall
+
         reg = self._make_registry_with_echo()
         call = ToolCall(tool="echo", args={"text": "hi"})
         result = reg.dispatch(call)
@@ -104,6 +114,7 @@ class TestBaseToolRegistry:
     def test_dispatch_unknown_tool(self):
         from looplet.tools import BaseToolRegistry
         from looplet.types import ToolCall
+
         reg = BaseToolRegistry()
         call = ToolCall(tool="nonexistent", args={})
         result = reg.dispatch(call)
@@ -113,13 +124,16 @@ class TestBaseToolRegistry:
     def test_dispatch_error_handling(self):
         from looplet.tools import BaseToolRegistry, ToolSpec
         from looplet.types import ToolCall
+
         reg = BaseToolRegistry()
-        reg.register(ToolSpec(
-            name="boom",
-            description="Always raises",
-            parameters={},
-            execute=lambda: (_ for _ in ()).throw(ValueError("kaboom")),
-        ))
+        reg.register(
+            ToolSpec(
+                name="boom",
+                description="Always raises",
+                parameters={},
+                execute=lambda: (_ for _ in ()).throw(ValueError("kaboom")),
+            )
+        )
         call = ToolCall(tool="boom", args={})
         result = reg.dispatch(call)
         assert result.error is not None
@@ -129,6 +143,7 @@ class TestBaseToolRegistry:
 
     def test_dispatch_call_id_propagated(self):
         from looplet.types import ToolCall
+
         reg = self._make_registry_with_echo()
         call = ToolCall(tool="echo", args={"text": "x"}, call_id="my-id-123")
         result = reg.dispatch(call)
@@ -136,6 +151,7 @@ class TestBaseToolRegistry:
 
     def test_dispatch_strips_dunder_args(self):
         from looplet.types import ToolCall
+
         reg = self._make_registry_with_echo()
         call = ToolCall(tool="echo", args={"text": "hi", "__internal": "secret"})
         result = reg.dispatch(call)
@@ -149,6 +165,7 @@ class TestBaseToolRegistry:
 
     def test_to_api_schema(self):
         from looplet.tools import BaseToolRegistry
+
         reg = self._make_registry_with_echo()
         schemas = reg.tool_schemas()
         assert isinstance(schemas, list)
@@ -162,30 +179,37 @@ class TestBaseToolRegistry:
 class TestBatchDispatch:
     def _make_registry(self):
         from looplet.tools import BaseToolRegistry, ToolSpec
+
         reg = BaseToolRegistry()
-        reg.register(ToolSpec(
-            name="read",
-            description="Read-only concurrent-safe",
-            parameters={"key": "key"},
-            execute=lambda key="": f"value:{key}",
-            concurrent_safe=True,
-        ))
-        reg.register(ToolSpec(
-            name="write",
-            description="Write — serial only",
-            parameters={"key": "key", "val": "value"},
-            execute=lambda key="", val="": f"wrote:{key}={val}",
-            concurrent_safe=False,
-        ))
+        reg.register(
+            ToolSpec(
+                name="read",
+                description="Read-only concurrent-safe",
+                parameters={"key": "key"},
+                execute=lambda key="": f"value:{key}",
+                concurrent_safe=True,
+            )
+        )
+        reg.register(
+            ToolSpec(
+                name="write",
+                description="Write — serial only",
+                parameters={"key": "key", "val": "value"},
+                execute=lambda key="", val="": f"wrote:{key}={val}",
+                concurrent_safe=False,
+            )
+        )
         return reg
 
     def test_dispatch_batch_empty(self):
         from looplet.tools import BaseToolRegistry
+
         reg = BaseToolRegistry()
         assert reg.dispatch_batch([]) == []
 
     def test_dispatch_batch_returns_all_results(self):
         from looplet.types import ToolCall
+
         reg = self._make_registry()
         calls = [
             ToolCall(tool="read", args={"key": "a"}),
@@ -198,6 +222,7 @@ class TestBatchDispatch:
 
     def test_partition_concurrent_vs_serial(self):
         from looplet.types import ToolCall
+
         reg = self._make_registry()
         calls = [
             ToolCall(tool="read", args={"key": "a"}),
@@ -214,6 +239,7 @@ class TestBatchDispatch:
 
     def test_concurrent_batch_dispatches_parallel(self):
         from looplet.types import ToolCall
+
         reg = self._make_registry()
         calls = [ToolCall(tool="read", args={"key": str(i)}) for i in range(5)]
         results = reg._dispatch_concurrent_batch(calls)
@@ -227,12 +253,14 @@ class TestBatchDispatch:
 class TestThinkTool:
     def test_think_tool_registered(self):
         from looplet.tools import BaseToolRegistry, register_think_tool
+
         reg = BaseToolRegistry()
         register_think_tool(reg)
         assert "think" in reg.tool_names
 
     def test_think_tool_is_free(self):
         from looplet.tools import BaseToolRegistry, register_think_tool
+
         reg = BaseToolRegistry()
         register_think_tool(reg)
         spec = reg._tools["think"]
@@ -240,6 +268,7 @@ class TestThinkTool:
 
     def test_think_tool_is_concurrent_safe(self):
         from looplet.tools import BaseToolRegistry, register_think_tool
+
         reg = BaseToolRegistry()
         register_think_tool(reg)
         spec = reg._tools["think"]
@@ -248,6 +277,7 @@ class TestThinkTool:
     def test_think_tool_dispatch(self):
         from looplet.tools import BaseToolRegistry, register_think_tool
         from looplet.types import ToolCall
+
         reg = BaseToolRegistry()
         register_think_tool(reg)
         call = ToolCall(tool="think", args={"analysis": "weighing pros and cons"})
@@ -259,6 +289,7 @@ class TestThinkTool:
         import inspect
 
         from looplet.tools import register_think_tool
+
         doc = inspect.getdoc(register_think_tool) or ""
         lower_doc = doc.lower()
         for term in ["brute force", "vpn", "lateral movement", "security"]:
@@ -266,6 +297,7 @@ class TestThinkTool:
 
     def test_think_description_no_security_terms(self):
         from looplet.tools import BaseToolRegistry, register_think_tool
+
         reg = BaseToolRegistry()
         register_think_tool(reg)
         desc = reg._tools["think"].description.lower()
@@ -279,9 +311,11 @@ class TestThinkTool:
 class TestExports:
     def test_all_tools_exported_from_looplet(self):
         import looplet as oh
+
         for name in ["ToolSpec", "BaseToolRegistry"]:
             assert hasattr(oh, name), f"{name} not exported from looplet"
 
     def test_register_think_tool_importable(self):
         from looplet.tools import register_think_tool
+
         assert register_think_tool is not None

@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 
 # ── Checkpoint dataclass ────────────────────────────────────────────
 
+
 @dataclass
 class Checkpoint:
     """Serializable snapshot of agent loop state at a given step.
@@ -78,7 +79,9 @@ class Checkpoint:
             created_at=data.get("created_at", time.time()),
         )
 
+
 # ── CheckpointStore Protocol ────────────────────────────────────────
+
 
 @runtime_checkable
 class CheckpointStore(Protocol):
@@ -95,7 +98,9 @@ class CheckpointStore(Protocol):
         """Load a checkpoint by key; returns None if not found."""
         ...
 
+
 # ── FileCheckpointStore ─────────────────────────────────────────────
+
 
 class FileCheckpointStore:
     """Saves and loads checkpoints as JSON files in a directory.
@@ -142,7 +147,9 @@ class FileCheckpointStore:
                 logger.warning("Skipping corrupt checkpoint: %s", path)
         return best
 
+
 # ── CheckpointHook ─────────────────────────────────────────────────
+
 
 class CheckpointHook:
     """Loop hook that auto-saves checkpoints every N steps.
@@ -231,7 +238,9 @@ class CheckpointHook:
     ) -> int:
         return 0
 
+
 # ── resume_loop_state ───────────────────────────────────────────────
+
 
 def resume_loop_state(checkpoint: Checkpoint) -> dict[str, Any]:
     """Reconstruct runnable loop state from a checkpoint.
@@ -268,13 +277,12 @@ def resume_loop_state(checkpoint: Checkpoint) -> dict[str, Any]:
     log.current_theory = checkpoint.session_log_data.get("current_theory", "")
 
     cfg = checkpoint.config_snapshot or {}
-    state_counters = {
-        k: cfg[k] for k in ("queries_used", "budget_remaining") if k in cfg
-    }
+    state_counters = {k: cfg[k] for k in ("queries_used", "budget_remaining") if k in cfg}
 
     conv = None
     if checkpoint.conversation_data:
         from looplet.conversation import Conversation  # noqa: PLC0415
+
         conv = Conversation.deserialize(checkpoint.conversation_data)
 
     return {

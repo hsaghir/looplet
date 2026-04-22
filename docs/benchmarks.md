@@ -60,7 +60,7 @@ python scripts/bench_dep_footprint.py --markdown
 `looplet[all]` pulls in the official `openai` and `anthropic` SDKs
 plus their transitive deps. If you bring your own HTTP client, stay on
 core `looplet` and write a 20-line `LLMBackend` adapter — see
-[docs/recipes.md](recipes.md#byo-backend).
+[`docs/recipes.md`](recipes.md).
 
 Why it matters: every package in your environment is a potential
 supply-chain surface, a potential version-conflict, and a potential

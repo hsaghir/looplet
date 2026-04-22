@@ -262,4 +262,4 @@ captures a complete structured record of every loop run —
 `pre_loop` → `pre_prompt` → `post_dispatch` → `on_loop_end` — and
 serialises it to disk alongside per-LLM-call prompt/response files.
 Use it whenever you want a git-diffable audit trail of what your
-agent did. See [PROVENANCE_GUIDE.md](PROVENANCE_GUIDE.md).
+agent did. See [provenance.md](provenance.md).

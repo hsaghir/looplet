@@ -18,10 +18,15 @@ frameworks, shown as one agent that actually needs them:
 
 Run::
 
-    python -m looplet.examples.data_agent                 # mock LLM (no key)
-    python -m looplet.examples.data_agent --live          # real LLM
-    python -m looplet.examples.data_agent --resume        # resume latest ckpt
-    python -m looplet.examples.data_agent --clean         # wipe checkpoints
+    # Real LLM (default) — reads OPENAI_BASE_URL / OPENAI_API_KEY /
+    # OPENAI_MODEL. Works with OpenAI, Ollama, Together, Groq, vLLM, …
+    python -m looplet.examples.data_agent
+    python -m looplet.examples.data_agent --resume   # resume latest ckpt
+    python -m looplet.examples.data_agent --clean    # wipe checkpoints
+
+    # Scripted MockLLMBackend (for CI / offline testing) — the LLM is
+    # fixed so the tool sequence is identical every run.
+    python -m looplet.examples.data_agent --mock --auto-approve
 
 Keep the example self-contained: the CSV is generated in a temp dir
 so you don't need any data files.
@@ -233,7 +238,11 @@ def cli_approval_handler(prompt: str, options: list[str] | None) -> str | None:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n", 1)[0])
-    ap.add_argument("--live", action="store_true", help="use a real LLM backend")
+    ap.add_argument(
+        "--mock",
+        action="store_true",
+        help="use scripted MockLLMBackend (no API key needed; CI / offline)",
+    )
     ap.add_argument("--resume", action="store_true", help="resume from latest checkpoint")
     ap.add_argument("--clean", action="store_true", help="wipe checkpoints first")
     ap.add_argument(
@@ -282,20 +291,32 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     # ── LLM.
-    if args.live:
-        from openai import OpenAI  # type: ignore[import-not-found]
+    if args.mock:
+        llm = scripted_llm(str(csv_path))
+    else:
+        try:
+            from openai import OpenAI  # type: ignore[import-not-found]
+        except ImportError:  # pragma: no cover
+            raise SystemExit(
+                "openai not installed — run `pip install 'looplet[openai]'`, "
+                "or re-run with --mock for a scripted demo."
+            ) from None
 
         from looplet.backends import OpenAIBackend
 
+        base_url = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
+        api_key = os.environ.get("OPENAI_API_KEY")
+        if api_key is None:
+            raise SystemExit(
+                "OPENAI_API_KEY is not set. Set it (or use Ollama with "
+                "OPENAI_BASE_URL=http://127.0.0.1:11434/v1 OPENAI_API_KEY=ollama), "
+                "or re-run with --mock for a scripted demo."
+            )
+        model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+        print(f"# llm: {model} via {base_url}")
         llm = OpenAIBackend(
-            OpenAI(
-                base_url=os.environ.get("OPENAI_BASE_URL", "http://127.0.0.1:11434/v1"),
-                api_key=os.environ.get("OPENAI_API_KEY", "x"),
-            ),
-            model=os.environ.get("OPENAI_MODEL", "llama3.1"),
+            OpenAI(base_url=base_url, api_key=api_key), model=model
         )
-    else:
-        llm = scripted_llm(str(csv_path))
 
     config = LoopConfig(
         max_steps=10,

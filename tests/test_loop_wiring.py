@@ -9,6 +9,7 @@ Covers:
   - stream: EventEmitter receives all expected event types
   - initial_checkpoint: crash-resume starts from correct step
 """
+
 from __future__ import annotations
 
 import json
@@ -45,27 +46,33 @@ class SimpleState:
 
 def _make_registry(extra_tools=None):
     from looplet.tools import BaseToolRegistry, ToolSpec
+
     reg = BaseToolRegistry()
-    reg.register(ToolSpec(
-        name="done",
-        description="finish",
-        parameters={"summary": "summary"},
-        execute=lambda summary="ok": {"done": True, "summary": summary},
-    ))
-    for name, fn in (extra_tools or []):
+    reg.register(
+        ToolSpec(
+            name="done",
+            description="finish",
+            parameters={"summary": "summary"},
+            execute=lambda summary="ok": {"done": True, "summary": summary},
+        )
+    )
+    for name, fn in extra_tools or []:
         reg.register(ToolSpec(name=name, description=name, parameters={}, execute=fn))
     return reg
 
 
 def _make_scripted_llm(responses: list[str]):
     """Return an LLM that cycles through scripted JSON responses."""
+
     class ScriptedLLM:
         def __init__(self):
             self._idx = 0
+
         def generate(self, prompt, *, max_tokens=2000, system_prompt="", temperature=0.2):
             r = responses[min(self._idx, len(responses) - 1)]
             self._idx += 1
             return r
+
     return ScriptedLLM()
 
 
@@ -74,6 +81,7 @@ def _make_scripted_llm(responses: list[str]):
 
 def test_loopconfig_has_router_field():
     from looplet.loop import LoopConfig
+
     cfg = LoopConfig()
     assert hasattr(cfg, "router")
     assert cfg.router is None
@@ -81,6 +89,7 @@ def test_loopconfig_has_router_field():
 
 def test_loopconfig_has_checkpoint_dir_field():
     from looplet.loop import LoopConfig
+
     cfg = LoopConfig()
     assert hasattr(cfg, "checkpoint_dir")
     assert cfg.checkpoint_dir is None
@@ -88,6 +97,7 @@ def test_loopconfig_has_checkpoint_dir_field():
 
 def test_loopconfig_has_tracer_field():
     from looplet.loop import LoopConfig
+
     cfg = LoopConfig()
     assert hasattr(cfg, "tracer")
     assert cfg.tracer is None
@@ -95,6 +105,7 @@ def test_loopconfig_has_tracer_field():
 
 def test_loopconfig_has_recovery_registry_field():
     from looplet.loop import LoopConfig
+
     cfg = LoopConfig()
     assert hasattr(cfg, "recovery_registry")
     assert cfg.recovery_registry is None
@@ -102,6 +113,7 @@ def test_loopconfig_has_recovery_registry_field():
 
 def test_loopconfig_has_output_schema_field():
     from looplet.loop import LoopConfig
+
     cfg = LoopConfig()
     assert hasattr(cfg, "output_schema")
     assert cfg.output_schema is None
@@ -109,6 +121,7 @@ def test_loopconfig_has_output_schema_field():
 
 def test_loopconfig_has_initial_checkpoint_field():
     from looplet.loop import LoopConfig
+
     cfg = LoopConfig()
     assert hasattr(cfg, "initial_checkpoint")
     assert cfg.initial_checkpoint is None
@@ -118,6 +131,7 @@ def test_composable_loop_accepts_stream_param():
     import inspect
 
     from looplet.loop import LoopConfig, composable_loop
+
     sig = inspect.signature(composable_loop)
     assert "stream" in sig.parameters
 
@@ -137,6 +151,7 @@ def test_router_selects_backend():
             self._label = label
             self._idx = 0
             self._responses = ['{"tool": "done", "args": {"summary": "routed"}}']
+
         def generate(self, prompt, *, max_tokens=2000, system_prompt="", temperature=0.2):
             calls_received.append(self._label)
             r = self._responses[min(self._idx, len(self._responses) - 1)]
@@ -233,14 +248,17 @@ def test_auto_resume_from_checkpoint_dir():
     with tempfile.TemporaryDirectory() as tmpdir:
         # Pre-seed a checkpoint at step 1
         store = FileCheckpointStore(tmpdir)
-        store.save(Checkpoint(
-            step_number=1,
-            session_log_data={"entries": [], "current_theory": ""},
-            conversation_data=None,
-            config_snapshot={"max_steps": 5, "queries_used": 1, "budget_remaining": 4},
-            tool_results_store={},
-            metadata={},
-        ), "step_1")
+        store.save(
+            Checkpoint(
+                step_number=1,
+                session_log_data={"entries": [], "current_theory": ""},
+                conversation_data=None,
+                config_snapshot={"max_steps": 5, "queries_used": 1, "budget_remaining": 4},
+                tool_results_store={},
+                metadata={},
+            ),
+            "step_1",
+        )
 
         # Run with checkpoint_dir but NO initial_checkpoint — should auto-resume
         responses = ['{"tool": "done", "args": {"summary": "resumed"}}']
@@ -314,11 +332,13 @@ def test_recovery_registry_consulted_on_parse_error():
         return RecoveryAction(action_type="log_and_continue", payload={"handled": True})
 
     registry = RecoveryRegistry()
-    registry.register(RecoveryRecipe(
-        scenario=FailureScenario.PARSE_ERROR,
-        handler=custom_handler,
-        max_attempts=3,
-    ))
+    registry.register(
+        RecoveryRecipe(
+            scenario=FailureScenario.PARSE_ERROR,
+            handler=custom_handler,
+            max_attempts=3,
+        )
+    )
 
     # LLM returns unparseable then valid
     responses = [
@@ -345,24 +365,29 @@ def test_output_schema_rejects_invalid_done():
     from looplet.loop import LoopConfig, composable_loop
     from looplet.validation import FieldSpec, OutputSchema
 
-    schema = OutputSchema(fields={
-        "report": FieldSpec(name="report", field_type="str", required=True),
-    }, strict=False)
+    schema = OutputSchema(
+        fields={
+            "report": FieldSpec(name="report", field_type="str", required=True),
+        },
+        strict=False,
+    )
 
     # First done() call missing "report" field, second has it
     responses = [
         '{"tool": "done", "args": {"summary": "missing report"}}',  # invalid
-        '{"tool": "done", "args": {"report": "valid report"}}',       # valid
+        '{"tool": "done", "args": {"report": "valid report"}}',  # valid
     ]
     llm = _make_scripted_llm(responses)
     state = SimpleState()
     reg = _make_registry()
-    reg.register(__import__("looplet.tools", fromlist=["ToolSpec"]).ToolSpec(
-        name="done",  # override done to accept report too
-        description="finish",
-        parameters={"summary": "summary", "report": "report"},
-        execute=lambda summary="", report="": {"done": True},
-    ))
+    reg.register(
+        __import__("looplet.tools", fromlist=["ToolSpec"]).ToolSpec(
+            name="done",  # override done to accept report too
+            description="finish",
+            parameters={"summary": "summary", "report": "report"},
+            execute=lambda summary="", report="": {"done": True},
+        )
+    )
 
     config = LoopConfig(output_schema=schema, max_steps=10)
     steps = list(composable_loop(llm, tools=reg, config=config, state=state))
@@ -376,9 +401,11 @@ def test_output_schema_allows_valid_done():
     from looplet.loop import LoopConfig, composable_loop
     from looplet.validation import FieldSpec, OutputSchema
 
-    schema = OutputSchema(fields={
-        "summary": FieldSpec(name="summary", field_type="str", required=True),
-    })
+    schema = OutputSchema(
+        fields={
+            "summary": FieldSpec(name="summary", field_type="str", required=True),
+        }
+    )
 
     responses = ['{"tool": "done", "args": {"summary": "all good"}}']
     llm = _make_scripted_llm(responses)
@@ -481,6 +508,7 @@ def test_initial_checkpoint_restores_step_offset():
     class TrackingLLM:
         _responses = ['{"tool": "done", "args": {"summary": "resumed"}}']
         _idx = 0
+
         def generate(self, prompt, **kwargs):
             r = self._responses[min(self._idx, len(self._responses) - 1)]
             self._idx += 1
@@ -521,8 +549,16 @@ def test_initial_checkpoint_restores_session_log():
         step_number=2,
         session_log_data={
             "entries": [
-                {"step": 1, "theory": "initial", "tool": "search", "reasoning": "test",
-                 "entities_seen": ["host-1"], "findings": [], "highlights": [], "recall_key": ""},
+                {
+                    "step": 1,
+                    "theory": "initial",
+                    "tool": "search",
+                    "reasoning": "test",
+                    "entities_seen": ["host-1"],
+                    "findings": [],
+                    "highlights": [],
+                    "recall_key": "",
+                },
             ],
             "current_theory": "resumed theory",
         },
@@ -533,7 +569,9 @@ def test_initial_checkpoint_restores_session_log():
     )
     restored_log = SessionLog()
     config = LoopConfig(initial_checkpoint=ckpt, max_steps=10)
-    steps = list(composable_loop(llm, tools=reg, config=config, state=state, session_log=restored_log))
+    steps = list(
+        composable_loop(llm, tools=reg, config=config, state=state, session_log=restored_log)
+    )
 
     # The session log should have entries from the checkpoint
     assert restored_log.current_theory == "resumed theory" or len(restored_log.entries) >= 1
@@ -545,9 +583,16 @@ def test_initial_checkpoint_restores_session_log():
 def test_all_new_params_default_to_none():
     """All new LoopConfig fields default to None — no behavior change."""
     from looplet.loop import LoopConfig
+
     cfg = LoopConfig()
-    for field_name in ("router", "checkpoint_dir", "tracer", "recovery_registry",
-                       "output_schema", "initial_checkpoint"):
+    for field_name in (
+        "router",
+        "checkpoint_dir",
+        "tracer",
+        "recovery_registry",
+        "output_schema",
+        "initial_checkpoint",
+    ):
         assert getattr(cfg, field_name) is None, f"{field_name} should default to None"
 
 

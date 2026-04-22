@@ -1,4 +1,5 @@
 """Smoke tests for Skill — composable tool+context bundles."""
+
 from __future__ import annotations
 
 import pytest
@@ -10,8 +11,7 @@ pytestmark = pytest.mark.smoke
 
 
 def _spec(name: str) -> ToolSpec:
-    return ToolSpec(name=name, description=f"{name} tool",
-                    parameters={}, execute=lambda: {})
+    return ToolSpec(name=name, description=f"{name} tool", parameters={}, execute=lambda: {})
 
 
 class TestSkill:
@@ -46,4 +46,5 @@ class TestSkill:
 
     def test_from_looplet_import(self):
         from looplet import Skill as S
+
         assert S is Skill

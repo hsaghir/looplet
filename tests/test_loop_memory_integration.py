@@ -12,18 +12,28 @@ class _CapturingLLM(LLMBackend):
     def __init__(self) -> None:
         self.last_prompt: str = ""
 
-    def generate(self, prompt: str, *, max_tokens: int = 2000,
-                 system_prompt: str = "", temperature: float = 0.2) -> str:
+    def generate(
+        self,
+        prompt: str,
+        *,
+        max_tokens: int = 2000,
+        system_prompt: str = "",
+        temperature: float = 0.2,
+    ) -> str:
         self.last_prompt = prompt
         return '```json\n{"tool": "done", "args": {"summary": "x"}}\n```'
 
 
 def _reg() -> BaseToolRegistry:
     reg = BaseToolRegistry()
-    reg.register(ToolSpec(
-        name="done", description="finish", parameters={"summary": "s"},
-        execute=lambda summary="": {"done": True, "summary": summary},
-    ))
+    reg.register(
+        ToolSpec(
+            name="done",
+            description="finish",
+            parameters={"summary": "s"},
+            execute=lambda summary="": {"done": True, "summary": summary},
+        )
+    )
     return reg
 
 
@@ -34,10 +44,15 @@ class TestLoopRendersMemory:
             max_steps=2,
             memory_sources=[StaticMemorySource("Always use UTC timestamps.")],
         )
-        list(composable_loop(
-            llm=llm, task={"id": "T-1"}, tools=_reg(),
-            config=cfg, state=DefaultState(max_steps=2),
-        ))
+        list(
+            composable_loop(
+                llm=llm,
+                task={"id": "T-1"},
+                tools=_reg(),
+                config=cfg,
+                state=DefaultState(max_steps=2),
+            )
+        )
         assert "═══ MEMORY ═══" in llm.last_prompt
         assert "Always use UTC timestamps." in llm.last_prompt
 
@@ -51,10 +66,15 @@ class TestLoopRendersMemory:
             ],
         )
         state = DefaultState(max_steps=2)
-        list(composable_loop(
-            llm=llm, task={"id": "T-1"}, tools=_reg(),
-            config=cfg, state=state,
-        ))
+        list(
+            composable_loop(
+                llm=llm,
+                task={"id": "T-1"},
+                tools=_reg(),
+                config=cfg,
+                state=state,
+            )
+        )
         # First turn: step_count starts at 0
         assert "step=0" in llm.last_prompt
         assert "budget=" in llm.last_prompt

@@ -39,11 +39,13 @@ class TestPresetsImports:
 class TestAgentPreset:
     def test_coding_preset_returns_agent_preset(self, tmp_path):
         from looplet.presets import AgentPreset, coding_agent_preset
+
         preset = coding_agent_preset(workspace=str(tmp_path))
         assert isinstance(preset, AgentPreset)
 
     def test_coding_preset_has_tools(self, tmp_path):
         from looplet.presets import coding_agent_preset
+
         preset = coding_agent_preset(workspace=str(tmp_path))
         names = preset.tools.tool_names
         assert "bash" in names
@@ -57,11 +59,13 @@ class TestAgentPreset:
 
     def test_coding_preset_has_hooks(self, tmp_path):
         from looplet.presets import coding_agent_preset
+
         preset = coding_agent_preset(workspace=str(tmp_path))
         assert len(preset.hooks) >= 1  # guardrail + budget hook
 
     def test_coding_preset_has_config(self, tmp_path):
         from looplet.presets import coding_agent_preset
+
         preset = coding_agent_preset(workspace=str(tmp_path))
         assert preset.config.max_steps == 20
         assert preset.config.system_prompt != ""
@@ -69,18 +73,21 @@ class TestAgentPreset:
 
     def test_coding_preset_has_state(self, tmp_path):
         from looplet.presets import coding_agent_preset
+
         preset = coding_agent_preset(workspace=str(tmp_path))
         assert preset.state.max_steps == 20
         assert preset.state.step_count == 0
 
     def test_coding_preset_custom_max_steps(self, tmp_path):
         from looplet.presets import coding_agent_preset
+
         preset = coding_agent_preset(workspace=str(tmp_path), max_steps=50)
         assert preset.config.max_steps == 50
         assert preset.state.max_steps == 50
 
     def test_coding_preset_custom_system_prompt(self, tmp_path):
         from looplet.presets import coding_agent_preset
+
         preset = coding_agent_preset(
             workspace=str(tmp_path),
             system_prompt="You are a Go developer.",
@@ -89,6 +96,7 @@ class TestAgentPreset:
 
     def test_coding_preset_no_tests_requirement(self, tmp_path):
         from looplet.presets import coding_agent_preset
+
         preset_with = coding_agent_preset(workspace=str(tmp_path), require_tests=True)
         preset_without = coding_agent_preset(workspace=str(tmp_path), require_tests=False)
         # With tests: guardrail hook + budget hook = 2
@@ -97,6 +105,7 @@ class TestAgentPreset:
 
     def test_coding_preset_memory_sources(self, tmp_path):
         from looplet.presets import coding_agent_preset
+
         preset = coding_agent_preset(workspace=str(tmp_path))
         assert len(preset.config.memory_sources) >= 1
 
@@ -107,16 +116,19 @@ class TestAgentPreset:
 class TestResearchPreset:
     def test_returns_agent_preset(self, tmp_path):
         from looplet.presets import AgentPreset, research_agent_preset
+
         preset = research_agent_preset(workspace=str(tmp_path))
         assert isinstance(preset, AgentPreset)
 
     def test_has_larger_budget(self, tmp_path):
         from looplet.presets import research_agent_preset
+
         preset = research_agent_preset(workspace=str(tmp_path))
         assert preset.config.max_steps == 30
 
     def test_has_tools(self, tmp_path):
         from looplet.presets import research_agent_preset
+
         preset = research_agent_preset(workspace=str(tmp_path))
         names = preset.tools.tool_names
         assert "read" in names
@@ -130,33 +142,43 @@ class TestResearchPreset:
 class TestMinimalPreset:
     def test_returns_agent_preset(self):
         from looplet.presets import AgentPreset, minimal_preset
+
         preset = minimal_preset()
         assert isinstance(preset, AgentPreset)
 
     def test_has_done_tool(self):
         from looplet.presets import minimal_preset
+
         preset = minimal_preset()
         assert "done" in preset.tools.tool_names
 
     def test_custom_tools(self):
         from looplet.presets import minimal_preset
         from looplet.tools import ToolSpec
-        preset = minimal_preset(tools=[
-            ToolSpec(name="search", description="Search",
-                     parameters={"q": "str"},
-                     execute=lambda *, q: {"results": []}),
-        ])
+
+        preset = minimal_preset(
+            tools=[
+                ToolSpec(
+                    name="search",
+                    description="Search",
+                    parameters={"q": "str"},
+                    execute=lambda *, q: {"results": []},
+                ),
+            ]
+        )
         assert "search" in preset.tools.tool_names
         assert "done" in preset.tools.tool_names  # auto-added
 
     def test_custom_max_steps(self):
         from looplet.presets import minimal_preset
+
         preset = minimal_preset(max_steps=5)
         assert preset.config.max_steps == 5
         assert preset.state.max_steps == 5
 
     def test_no_hooks(self):
         from looplet.presets import minimal_preset
+
         preset = minimal_preset()
         assert preset.hooks == []
 
@@ -171,16 +193,23 @@ class TestPresetIntegration:
         from looplet.presets import coding_agent_preset
         from looplet.testing import MockLLMBackend
 
-        llm = MockLLMBackend(responses=[
-            '{"tool": "bash", "args": {"command": "echo hello"}, "reasoning": "test"}',
-            '{"tool": "done", "args": {"summary": "done"}, "reasoning": "finished"}',
-        ])
+        llm = MockLLMBackend(
+            responses=[
+                '{"tool": "bash", "args": {"command": "echo hello"}, "reasoning": "test"}',
+                '{"tool": "done", "args": {"summary": "done"}, "reasoning": "finished"}',
+            ]
+        )
         preset = coding_agent_preset(workspace=str(tmp_path), require_tests=False)
-        steps = list(composable_loop(
-            llm=llm, tools=preset.tools, state=preset.state,
-            config=preset.config, hooks=preset.hooks,
-            task={"description": "echo hello"},
-        ))
+        steps = list(
+            composable_loop(
+                llm=llm,
+                tools=preset.tools,
+                state=preset.state,
+                config=preset.config,
+                hooks=preset.hooks,
+                task={"description": "echo hello"},
+            )
+        )
         assert len(steps) >= 1
         assert steps[0].tool_call.tool == "bash"
 
@@ -190,14 +219,21 @@ class TestPresetIntegration:
         from looplet.presets import minimal_preset
         from looplet.testing import MockLLMBackend
 
-        llm = MockLLMBackend(responses=[
-            '{"tool": "done", "args": {"summary": "all good"}, "reasoning": "done"}',
-        ])
+        llm = MockLLMBackend(
+            responses=[
+                '{"tool": "done", "args": {"summary": "all good"}, "reasoning": "done"}',
+            ]
+        )
         preset = minimal_preset()
-        steps = list(composable_loop(
-            llm=llm, tools=preset.tools, state=preset.state,
-            config=preset.config, hooks=preset.hooks,
-            task={"goal": "finish"},
-        ))
+        steps = list(
+            composable_loop(
+                llm=llm,
+                tools=preset.tools,
+                state=preset.state,
+                config=preset.config,
+                hooks=preset.hooks,
+                task={"goal": "finish"},
+            )
+        )
         assert len(steps) == 1
         assert steps[0].tool_call.tool == "done"

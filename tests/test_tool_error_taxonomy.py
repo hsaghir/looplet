@@ -46,10 +46,11 @@ class TestToolResultAccessors:
         assert r.error_retriable is False
 
     def test_structured_error(self):
-        te = ToolError(kind=ErrorKind.PERMISSION_DENIED,
-                       message="denied", retriable=False)
+        te = ToolError(kind=ErrorKind.PERMISSION_DENIED, message="denied", retriable=False)
         r = ToolResult(
-            tool="t", args_summary="", data=None,
+            tool="t",
+            args_summary="",
+            data=None,
             error=te.message,
             error_detail=te,
         )
@@ -66,7 +67,9 @@ class TestToolResultAccessors:
     def test_to_dict_serialises_structured_error(self):
         te = ToolError(kind=ErrorKind.TIMEOUT, message="slow", retriable=True)
         r = ToolResult(
-            tool="t", args_summary="", data=None,
+            tool="t",
+            args_summary="",
+            data=None,
             error=te.message,
             error_detail=te,
         )

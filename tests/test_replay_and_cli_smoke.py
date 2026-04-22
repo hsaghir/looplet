@@ -1,4 +1,5 @@
 """Smoke tests for replay_loop and the `python -m looplet show` CLI."""
+
 from __future__ import annotations
 
 import io
@@ -22,18 +23,22 @@ from looplet.tools import ToolSpec
 
 def _make_tools() -> BaseToolRegistry:
     tools = BaseToolRegistry()
-    tools.register(ToolSpec(
-        name="add",
-        description="Add two integers",
-        parameters={"a": "int", "b": "int"},
-        execute=lambda *, a, b: {"sum": a + b},
-    ))
-    tools.register(ToolSpec(
-        name="done",
-        description="Finish",
-        parameters={"answer": "str"},
-        execute=lambda *, answer: {"answer": answer},
-    ))
+    tools.register(
+        ToolSpec(
+            name="add",
+            description="Add two integers",
+            parameters={"a": "int", "b": "int"},
+            execute=lambda *, a, b: {"sum": a + b},
+        )
+    )
+    tools.register(
+        ToolSpec(
+            name="done",
+            description="Finish",
+            parameters={"answer": "str"},
+            execute=lambda *, answer: {"answer": answer},
+        )
+    )
     return tools
 
 
@@ -84,7 +89,12 @@ class TestReplayLoopSmoke:
                 self.post = 0
 
             def post_dispatch(
-                self, state, session_log, tool_call, tool_result, step_num,
+                self,
+                state,
+                session_log,
+                tool_call,
+                tool_result,
+                step_num,
             ):
                 self.post += 1
                 return None

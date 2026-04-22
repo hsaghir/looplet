@@ -270,9 +270,7 @@ class RecordingLLMBackend(_RecordingBase):
         max_chars_per_call: int = 200_000,
         redact: Callable[[str], str] | None = None,
     ) -> None:
-        super().__init__(
-            backend, max_chars_per_call=max_chars_per_call, redact=redact
-        )
+        super().__init__(backend, max_chars_per_call=max_chars_per_call, redact=redact)
         if hasattr(backend, "generate_with_tools"):
             self.generate_with_tools = self._generate_with_tools_impl
 
@@ -359,9 +357,7 @@ class AsyncRecordingLLMBackend(_RecordingBase):
         max_chars_per_call: int = 200_000,
         redact: Callable[[str], str] | None = None,
     ) -> None:
-        super().__init__(
-            backend, max_chars_per_call=max_chars_per_call, redact=redact
-        )
+        super().__init__(backend, max_chars_per_call=max_chars_per_call, redact=redact)
         if hasattr(backend, "generate_with_tools"):
             self.generate_with_tools = self._generate_with_tools_impl
 
@@ -573,17 +569,23 @@ class TrajectoryRecorder:
                 pretty = last.pretty()
         llm_indices: list[int] = []
         if self._recording_llm is not None:
-            llm_indices = list(
-                range(self._pending_llm_start, len(self._recording_llm.calls))
-            )
-        tc_dict = tool_call.to_dict() if hasattr(tool_call, "to_dict") else {
-            "tool": getattr(tool_call, "tool", "?"),
-            "args": getattr(tool_call, "args", {}),
-        }
-        tr_dict = tool_result.to_dict() if hasattr(tool_result, "to_dict") else {
-            "tool": getattr(tool_result, "tool", "?"),
-            "error": getattr(tool_result, "error", None),
-        }
+            llm_indices = list(range(self._pending_llm_start, len(self._recording_llm.calls)))
+        tc_dict = (
+            tool_call.to_dict()
+            if hasattr(tool_call, "to_dict")
+            else {
+                "tool": getattr(tool_call, "tool", "?"),
+                "args": getattr(tool_call, "args", {}),
+            }
+        )
+        tr_dict = (
+            tool_result.to_dict()
+            if hasattr(tool_result, "to_dict")
+            else {
+                "tool": getattr(tool_result, "tool", "?"),
+                "error": getattr(tool_result, "error", None),
+            }
+        )
         self.trajectory.steps.append(
             StepRecord(
                 step_num=step_num,
@@ -748,12 +750,8 @@ class ProvenanceSink:
         if async_ is None:
             gen = getattr(backend, "generate", None)
             async_ = bool(gen) and inspect.iscoroutinefunction(gen)
-        cls: type[_RecordingBase] = (
-            AsyncRecordingLLMBackend if async_ else RecordingLLMBackend
-        )
-        self._recording_llm = cls(
-            backend, max_chars_per_call=self._max_chars, redact=self._redact
-        )
+        cls: type[_RecordingBase] = AsyncRecordingLLMBackend if async_ else RecordingLLMBackend
+        self._recording_llm = cls(backend, max_chars_per_call=self._max_chars, redact=self._redact)
         return self._recording_llm
 
     def trajectory_hook(self) -> TrajectoryRecorder:
@@ -883,11 +881,13 @@ def _load_trace_calls(trace_dir: Path) -> list[dict[str, Any]]:
                 response: Any = _extract_content_blocks(response_txt)
             else:
                 response = _extract_response_text(response_txt)
-            calls.append({
-                "index": idx,
-                "method": entry.get("method", "generate"),
-                "response": response,
-            })
+            calls.append(
+                {
+                    "index": idx,
+                    "method": entry.get("method", "generate"),
+                    "response": response,
+                }
+            )
     else:
         # Fallback: scan call_NN_response.txt files.
         idx = 0
@@ -895,11 +895,13 @@ def _load_trace_calls(trace_dir: Path) -> list[dict[str, Any]]:
             body = _read_call_body(trace_dir, idx)
             if body is None:
                 break
-            calls.append({
-                "index": idx,
-                "method": "generate",
-                "response": _extract_response_text(body),
-            })
+            calls.append(
+                {
+                    "index": idx,
+                    "method": "generate",
+                    "response": _extract_response_text(body),
+                }
+            )
             idx += 1
     if not calls:
         raise FileNotFoundError(

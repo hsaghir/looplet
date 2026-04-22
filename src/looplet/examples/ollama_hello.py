@@ -10,6 +10,7 @@ Run:
     python -m looplet.examples.ollama_hello
     OLLAMA_MODEL=qwen2.5:7b python -m looplet.examples.ollama_hello
 """
+
 from __future__ import annotations
 
 import os
@@ -36,18 +37,22 @@ def main() -> None:
     llm = OpenAIBackend(OpenAI(base_url=base_url, api_key="ollama"), model=model)
 
     tools = BaseToolRegistry()
-    tools.register(ToolSpec(
-        name="greet",
-        description="Return a greeting for a person.",
-        parameters={"name": "str"},
-        execute=lambda *, name: {"greeting": f"Hello, {name}!"},
-    ))
-    tools.register(ToolSpec(
-        name="done",
-        description="Finish with a final answer.",
-        parameters={"answer": "str"},
-        execute=lambda *, answer: {"answer": answer},
-    ))
+    tools.register(
+        ToolSpec(
+            name="greet",
+            description="Return a greeting for a person.",
+            parameters={"name": "str"},
+            execute=lambda *, name: {"greeting": f"Hello, {name}!"},
+        )
+    )
+    tools.register(
+        ToolSpec(
+            name="done",
+            description="Finish with a final answer.",
+            parameters={"answer": "str"},
+            execute=lambda *, answer: {"answer": answer},
+        )
+    )
 
     for step in composable_loop(
         llm=llm,

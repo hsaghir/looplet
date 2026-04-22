@@ -91,16 +91,20 @@ class HistoryRecorder:
             )
 
         if self._conversation is not None:
-            self._conversation.append(Message(
-                role=MessageRole.ASSISTANT,
-                content="",
-                tool_call=step.tool_call,
-            ))
-            self._conversation.append(Message(
-                role=MessageRole.TOOL,
-                content="",
-                tool_result=step.tool_result,
-            ))
+            self._conversation.append(
+                Message(
+                    role=MessageRole.ASSISTANT,
+                    content="",
+                    tool_call=step.tool_call,
+                )
+            )
+            self._conversation.append(
+                Message(
+                    role=MessageRole.TOOL,
+                    content="",
+                    tool_result=step.tool_result,
+                )
+            )
 
     # ── Compaction boundary recording ───────────────────────────
 
@@ -124,15 +128,17 @@ class HistoryRecorder:
         """
         if self._conversation is None:
             return
-        self._conversation.append(Message(
-            role=MessageRole.SYSTEM,
-            content=summary,
-            metadata={
-                "kind": "compaction_boundary",
-                "summary": summary,
-                "dropped_step_range": dropped_step_range,
-            },
-        ))
+        self._conversation.append(
+            Message(
+                role=MessageRole.SYSTEM,
+                content=summary,
+                metadata={
+                    "kind": "compaction_boundary",
+                    "summary": summary,
+                    "dropped_step_range": dropped_step_range,
+                },
+            )
+        )
 
     # ── LLM turn recording ──────────────────────────────────────
 
@@ -147,14 +153,18 @@ class HistoryRecorder:
         """
         if self._conversation is None:
             return
-        self._conversation.append(Message(
-            role=MessageRole.USER,
-            content=str(prompt)[: self._max_chars],
-        ))
+        self._conversation.append(
+            Message(
+                role=MessageRole.USER,
+                content=str(prompt)[: self._max_chars],
+            )
+        )
         if response is None:
             return
         response_text = response if isinstance(response, str) else str(response)
-        self._conversation.append(Message(
-            role=MessageRole.ASSISTANT,
-            content=response_text[: self._max_chars],
-        ))
+        self._conversation.append(
+            Message(
+                role=MessageRole.ASSISTANT,
+                content=response_text[: self._max_chars],
+            )
+        )

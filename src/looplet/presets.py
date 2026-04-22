@@ -55,6 +55,7 @@ __all__ = [
 
 # ── Preset container ─────────────────────────────────────────────
 
+
 @dataclass
 class AgentPreset:
     """Complete agent configuration returned by preset functions.
@@ -75,7 +76,9 @@ class AgentPreset:
     state: DefaultState
     """Agent state with budget tracking."""
 
+
 # ── Tool implementations ─────────────────────────────────────────
+
 
 def _bash(*, command: str, workspace: str = "") -> dict:
     """Execute a bash command.
@@ -89,7 +92,9 @@ def _bash(*, command: str, workspace: str = "") -> dict:
     try:
         result = subprocess.run(
             ["bash", "-c", command],
-            capture_output=True, text=True, timeout=120,
+            capture_output=True,
+            text=True,
+            timeout=120,
             cwd=workspace or None,
         )
         output = result.stdout.strip()
@@ -103,13 +108,16 @@ def _bash(*, command: str, workspace: str = "") -> dict:
             "exit_code": result.returncode,
             "next_step": (
                 "Command succeeded."
-                if result.returncode == 0 else
-                f"Command failed (exit {result.returncode}). Read stderr and fix."
+                if result.returncode == 0
+                else f"Command failed (exit {result.returncode}). Read stderr and fix."
             ),
         }
     except subprocess.TimeoutExpired:
-        return {"error": "Command timed out after 120s",
-                "remediation": "Check for infinite loops or blocking I/O."}
+        return {
+            "error": "Command timed out after 120s",
+            "remediation": "Check for infinite loops or blocking I/O.",
+        }
+
 
 def _read(*, file_path: str, workspace: str = "") -> dict:
     """Read a file with line numbers."""
@@ -122,8 +130,11 @@ def _read(*, file_path: str, workspace: str = "") -> dict:
             numbered = numbered[:6000] + "\n...(truncated)...\n" + numbered[-6000:]
         return {"path": file_path, "content": numbered, "line_count": len(lines)}
     except FileNotFoundError:
-        return {"error": f"File not found: {file_path}",
-                "remediation": "Use glob to find files, or write to create."}
+        return {
+            "error": f"File not found: {file_path}",
+            "remediation": "Use glob to find files, or write to create.",
+        }
+
 
 def _write(*, file_path: str, content: str, workspace: str = "") -> dict:
     """Create or overwrite a file."""
@@ -133,29 +144,37 @@ def _write(*, file_path: str, content: str, workspace: str = "") -> dict:
         f.write(content)
     return {"written": file_path, "lines": content.count("\n") + 1}
 
-def _edit(*, file_path: str, old_string: str, new_string: str,
-          workspace: str = "") -> dict:
+
+def _edit(*, file_path: str, old_string: str, new_string: str, workspace: str = "") -> dict:
     """Replace exact string match in a file."""
     full = os.path.join(workspace, file_path) if workspace else file_path
     try:
         text = open(full).read()
     except FileNotFoundError:
-        return {"error": f"File not found: {file_path}",
-                "remediation": "Use write to create the file first."}
+        return {
+            "error": f"File not found: {file_path}",
+            "remediation": "Use write to create the file first.",
+        }
     count = text.count(old_string)
     if count == 0:
-        return {"error": "old_string not found",
-                "remediation": "Use read to see current content. Match exactly."}
+        return {
+            "error": "old_string not found",
+            "remediation": "Use read to see current content. Match exactly.",
+        }
     if count > 1:
-        return {"error": f"old_string matches {count} locations — ambiguous",
-                "remediation": "Include more context to make it unique."}
+        return {
+            "error": f"old_string matches {count} locations — ambiguous",
+            "remediation": "Include more context to make it unique.",
+        }
     with open(full, "w") as f:
         f.write(text.replace(old_string, new_string, 1))
     return {"edited": file_path, "replacements": 1}
 
+
 def _glob(*, pattern: str, workspace: str = "") -> dict:
     """Find files matching a glob pattern."""
     import glob as globmod
+
     base = workspace or "."
     matches = sorted(globmod.glob(os.path.join(base, pattern), recursive=True))
     rel = [os.path.relpath(m, base) for m in matches]
@@ -163,15 +182,29 @@ def _glob(*, pattern: str, workspace: str = "") -> dict:
         return {"pattern": pattern, "files": rel[:100], "truncated": True, "total": len(matches)}
     return {"pattern": pattern, "files": rel, "total": len(rel)}
 
+
 def _grep(*, pattern: str, path: str = ".", workspace: str = "") -> dict:
     """Search file contents with regex."""
     full = os.path.join(workspace, path) if workspace else path
     try:
         result = subprocess.run(
-            ["grep", "-rn", "--include=*.py", "--include=*.ts", "--include=*.js",
-             "--include=*.md", "--include=*.yaml", "--include=*.yml",
-             "--include=*.json", "--include=*.toml", pattern, full],
-            capture_output=True, text=True, timeout=10,
+            [
+                "grep",
+                "-rn",
+                "--include=*.py",
+                "--include=*.ts",
+                "--include=*.js",
+                "--include=*.md",
+                "--include=*.yaml",
+                "--include=*.yml",
+                "--include=*.json",
+                "--include=*.toml",
+                pattern,
+                full,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         lines = result.stdout.strip().splitlines()
         if len(lines) > 50:
@@ -180,69 +213,91 @@ def _grep(*, pattern: str, path: str = ".", workspace: str = "") -> dict:
     except subprocess.TimeoutExpired:
         return {"error": "Search timed out", "remediation": "Narrow your pattern."}
 
+
 def _build_coding_tools(workspace: str) -> BaseToolRegistry:
     """Build a coding agent tool registry (bash, read, write, edit, glob, grep, think, done)."""
     reg = BaseToolRegistry()
 
-    reg.register(ToolSpec(
-        name="bash",
-        description=(
-            "Execute a bash command. Use for running tests (pytest), installing packages, "
-            "searching, compiling, and any shell operation."
-        ),
-        parameters={"command": "str"},
-        execute=lambda *, command: _bash(command=command, workspace=workspace),
-    ))
-    reg.register(ToolSpec(
-        name="read",
-        description="Read a file with line numbers. Use relative paths.",
-        parameters={"file_path": "str"},
-        execute=lambda *, file_path: _read(file_path=file_path, workspace=workspace),
-        concurrent_safe=True,
-    ))
-    reg.register(ToolSpec(
-        name="write",
-        description="Create or overwrite a file. Use relative paths.",
-        parameters={"file_path": "str", "content": "str"},
-        execute=lambda *, file_path, content: _write(
-            file_path=file_path, content=content, workspace=workspace),
-    ))
-    reg.register(ToolSpec(
-        name="edit",
-        description=(
-            "Edit a file by replacing an exact string. Provide the exact text to find "
-            "and the replacement. Use read first to see current content."
-        ),
-        parameters={"file_path": "str", "old_string": "str", "new_string": "str"},
-        execute=lambda *, file_path, old_string, new_string: _edit(
-            file_path=file_path, old_string=old_string, new_string=new_string,
-            workspace=workspace),
-    ))
-    reg.register(ToolSpec(
-        name="glob",
-        description="Find files by glob pattern (e.g. '**/*.py', 'test_*.py').",
-        parameters={"pattern": "str"},
-        execute=lambda *, pattern: _glob(pattern=pattern, workspace=workspace),
-        concurrent_safe=True,
-    ))
-    reg.register(ToolSpec(
-        name="grep",
-        description="Search file contents with regex. Returns matching lines with file:line.",
-        parameters={"pattern": "str", "path": "str"},
-        execute=lambda *, pattern, path=".": _grep(
-            pattern=pattern, path=path, workspace=workspace),
-        concurrent_safe=True,
-    ))
+    reg.register(
+        ToolSpec(
+            name="bash",
+            description=(
+                "Execute a bash command. Use for running tests (pytest), installing packages, "
+                "searching, compiling, and any shell operation."
+            ),
+            parameters={"command": "str"},
+            execute=lambda *, command: _bash(command=command, workspace=workspace),
+        )
+    )
+    reg.register(
+        ToolSpec(
+            name="read",
+            description="Read a file with line numbers. Use relative paths.",
+            parameters={"file_path": "str"},
+            execute=lambda *, file_path: _read(file_path=file_path, workspace=workspace),
+            concurrent_safe=True,
+        )
+    )
+    reg.register(
+        ToolSpec(
+            name="write",
+            description="Create or overwrite a file. Use relative paths.",
+            parameters={"file_path": "str", "content": "str"},
+            execute=lambda *, file_path, content: _write(
+                file_path=file_path, content=content, workspace=workspace
+            ),
+        )
+    )
+    reg.register(
+        ToolSpec(
+            name="edit",
+            description=(
+                "Edit a file by replacing an exact string. Provide the exact text to find "
+                "and the replacement. Use read first to see current content."
+            ),
+            parameters={"file_path": "str", "old_string": "str", "new_string": "str"},
+            execute=lambda *, file_path, old_string, new_string: _edit(
+                file_path=file_path,
+                old_string=old_string,
+                new_string=new_string,
+                workspace=workspace,
+            ),
+        )
+    )
+    reg.register(
+        ToolSpec(
+            name="glob",
+            description="Find files by glob pattern (e.g. '**/*.py', 'test_*.py').",
+            parameters={"pattern": "str"},
+            execute=lambda *, pattern: _glob(pattern=pattern, workspace=workspace),
+            concurrent_safe=True,
+        )
+    )
+    reg.register(
+        ToolSpec(
+            name="grep",
+            description="Search file contents with regex. Returns matching lines with file:line.",
+            parameters={"pattern": "str", "path": "str"},
+            execute=lambda *, pattern, path=".": _grep(
+                pattern=pattern, path=path, workspace=workspace
+            ),
+            concurrent_safe=True,
+        )
+    )
     register_think_tool(reg)
-    reg.register(ToolSpec(
-        name="done",
-        description="Signal task completion. Only call when ALL tests pass.",
-        parameters={"summary": "str"},
-        execute=lambda *, summary: {"summary": summary},
-    ))
+    reg.register(
+        ToolSpec(
+            name="done",
+            description="Signal task completion. Only call when ALL tests pass.",
+            parameters={"summary": "str"},
+            execute=lambda *, summary: {"summary": summary},
+        )
+    )
     return reg
 
+
 # ── Coding agent hook ────────────────────────────────────────────
+
 
 class _CodingGuardrailHook:
     """Just-in-time guardrails: test enforcement and review nudges."""
@@ -253,8 +308,12 @@ class _CodingGuardrailHook:
         self._has_tests: bool = False
 
     def post_dispatch(
-        self, state: Any, session_log: Any,
-        tool_call: Any, tool_result: Any, step_num: int,
+        self,
+        state: Any,
+        session_log: Any,
+        tool_call: Any,
+        tool_result: Any,
+        step_num: int,
     ) -> Any:
         from looplet.hook_decision import InjectContext  # noqa: PLC0415
 
@@ -264,9 +323,7 @@ class _CodingGuardrailHook:
             if path.startswith("test_") or "/test_" in path:
                 self._has_tests = True
             elif not self._has_tests:
-                return InjectContext(
-                    "You wrote source code but no tests yet. Write tests first."
-                )
+                return InjectContext("You wrote source code but no tests yet. Write tests first.")
 
         if tool_call.tool == "bash":
             cmd = tool_call.args.get("command", "")
@@ -291,7 +348,9 @@ class _CodingGuardrailHook:
     def should_stop(self, state: Any, step_num: int, new_entities: int) -> bool:
         return False
 
+
 # ── Preset functions ─────────────────────────────────────────────
+
 
 def coding_agent_preset(
     workspace: str = ".",
@@ -330,15 +389,20 @@ def coding_agent_preset(
     hooks: list[Any] = []
     if require_tests:
         hooks.append(_CodingGuardrailHook())
-    hooks.append(ThresholdCompactHook(ContextBudget(
-        context_window=context_window,
-        warning_at=int(context_window * 0.6),
-        error_at=int(context_window * 0.8),
-    )))
+    hooks.append(
+        ThresholdCompactHook(
+            ContextBudget(
+                context_window=context_window,
+                warning_at=int(context_window * 0.6),
+                error_at=int(context_window * 0.8),
+            )
+        )
+    )
 
     config = LoopConfig(
         max_steps=max_steps,
-        system_prompt=system_prompt or (
+        system_prompt=system_prompt
+        or (
             "You are a software engineer working in a project directory. "
             "Use relative file paths. Use bash to run tests (python -m pytest), "
             "install packages, and execute commands. Use edit for targeted "
@@ -349,14 +413,16 @@ def coding_agent_preset(
             SummarizeCompact(keep_recent=2),
             TruncateCompact(keep_recent=1),
         ),
-        memory_sources=[StaticMemorySource(
-            "## Coding Standards (persistent)\n"
-            "1. Write test file before or alongside implementation.\n"
-            "2. Type hints on all function signatures.\n"
-            "3. Docstrings on public functions.\n"
-            "4. No bare except — catch specific exceptions.\n"
-            "5. snake_case for functions, PascalCase for classes.\n"
-        )],
+        memory_sources=[
+            StaticMemorySource(
+                "## Coding Standards (persistent)\n"
+                "1. Write test file before or alongside implementation.\n"
+                "2. Type hints on all function signatures.\n"
+                "3. Docstrings on public functions.\n"
+                "4. No bare except — catch specific exceptions.\n"
+                "5. snake_case for functions, PascalCase for classes.\n"
+            )
+        ],
         context_window=context_window,
     )
 
@@ -366,6 +432,7 @@ def coding_agent_preset(
         tools=tools,
         state=DefaultState(max_steps=max_steps),
     )
+
 
 def research_agent_preset(
     workspace: str = ".",
@@ -398,16 +465,19 @@ def research_agent_preset(
     tools = _build_coding_tools(workspace)
 
     hooks: list[Any] = [
-        ThresholdCompactHook(ContextBudget(
-            context_window=context_window,
-            warning_at=int(context_window * 0.6),
-            error_at=int(context_window * 0.8),
-        )),
+        ThresholdCompactHook(
+            ContextBudget(
+                context_window=context_window,
+                warning_at=int(context_window * 0.6),
+                error_at=int(context_window * 0.8),
+            )
+        ),
     ]
 
     config = LoopConfig(
         max_steps=max_steps,
-        system_prompt=system_prompt or (
+        system_prompt=system_prompt
+        or (
             "You are a research analyst. Read files, search code, run commands "
             "to understand the codebase. Produce clear, structured findings. "
             "Call done with a comprehensive summary when finished."
@@ -426,6 +496,7 @@ def research_agent_preset(
         tools=tools,
         state=DefaultState(max_steps=max_steps),
     )
+
 
 def minimal_preset(
     *,
@@ -458,12 +529,14 @@ def minimal_preset(
             reg.register(spec)
     # Always include done
     if "done" not in reg.tool_names:
-        reg.register(ToolSpec(
-            name="done",
-            description="Signal task completion.",
-            parameters={"summary": "str"},
-            execute=lambda *, summary: {"summary": summary},
-        ))
+        reg.register(
+            ToolSpec(
+                name="done",
+                description="Signal task completion.",
+                parameters={"summary": "str"},
+                execute=lambda *, summary: {"summary": summary},
+            )
+        )
 
     config = LoopConfig(
         max_steps=max_steps,

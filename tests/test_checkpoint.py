@@ -219,6 +219,7 @@ class TestCheckpointHook:
 
     def _make_tool_call_result(self) -> tuple[Any, Any]:
         from looplet.types import ToolCall, ToolResult
+
         tc = ToolCall(tool="search", args={}, reasoning="r")
         tr = ToolResult(tool="search", args_summary="", data={}, error=None)
         return tc, tr

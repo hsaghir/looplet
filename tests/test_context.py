@@ -13,9 +13,13 @@ from looplet.types import Step, ToolCall, ToolResult
 # ── Helpers ───────────────────────────────────────────────────────
 
 
-def _make_step(number: int, data: Any, error: str | None = None, result_key: str | None = None) -> Step:
+def _make_step(
+    number: int, data: Any, error: str | None = None, result_key: str | None = None
+) -> Step:
     tc = ToolCall(tool="search", args={"q": "test"}, reasoning="some reasoning")
-    tr = ToolResult(tool="search", args_summary="q=test", data=data, error=error, result_key=result_key)
+    tr = ToolResult(
+        tool="search", args_summary="q=test", data=data, error=error, result_key=result_key
+    )
     return Step(number=number, tool_call=tc, tool_result=tr)
 
 
@@ -38,10 +42,12 @@ def _make_session_log(entities: set | None = None, render_output: str = "") -> A
 class TestImports:
     def test_context_manager_hook_importable(self):
         from looplet.context import ContextPressureHook
+
         assert ContextPressureHook is not None
 
     def test_compact_data_importable(self):
         from looplet.context import _compact_data
+
         assert _compact_data is not None
 
     def test_default_constants_importable(self):
@@ -52,6 +58,7 @@ class TestImports:
             DEFAULT_RESULT_MAX_AGE_FULL,
             DEFAULT_WARNING_BUFFER,
         )
+
         assert DEFAULT_CONTEXT_WINDOW == 128_000
         assert DEFAULT_COMPACT_BUFFER == 20_000
         assert DEFAULT_WARNING_BUFFER == 30_000
@@ -65,6 +72,7 @@ class TestImports:
 class TestContextManagerHookConstructor:
     def test_default_params(self):
         from looplet.context import ContextPressureHook
+
         hook = ContextPressureHook(llm=None)
         assert hook._context_window == 128_000
         assert hook._compact_threshold == 128_000 - 20_000
@@ -76,12 +84,14 @@ class TestContextManagerHookConstructor:
 
     def test_configurable_context_window(self):
         from looplet.context import ContextPressureHook
+
         hook = ContextPressureHook(llm=None, context_window=200_000)
         assert hook._context_window == 200_000
         assert hook._compact_threshold == 200_000 - 20_000
 
     def test_configurable_buffers(self):
         from looplet.context import ContextPressureHook
+
         hook = ContextPressureHook(
             llm=None,
             context_window=100_000,
@@ -96,6 +106,7 @@ class TestContextManagerHookConstructor:
     def test_absolute_not_fraction(self):
         """Buffer thresholds are absolute token counts, NOT fractions."""
         from looplet.context import ContextPressureHook
+
         hook = ContextPressureHook(llm=None, context_window=100_000, compact_buffer=20_000)
         # If fractions were used, threshold would be around 80_000 * some_fraction
         # With absolute offsets: 100_000 - 20_000 = 80_000
@@ -103,22 +114,26 @@ class TestContextManagerHookConstructor:
 
     def test_configurable_result_params(self):
         from looplet.context import ContextPressureHook
+
         hook = ContextPressureHook(llm=None, per_result_chars=10_000, aggregate_chars=100_000)
         assert hook._per_result_chars == 10_000
         assert hook._aggregate_chars == 100_000
 
     def test_configurable_result_max_age(self):
         from looplet.context import ContextPressureHook
+
         hook = ContextPressureHook(llm=None, result_max_age_full=5)
         assert hook._result_max_age_full == 5
 
     def test_extra_llm_calls_starts_at_zero(self):
         from looplet.context import ContextPressureHook
+
         hook = ContextPressureHook(llm=None)
         assert hook._extra_llm_calls == 0
 
     def test_compact_failures_starts_at_zero(self):
         from looplet.context import ContextPressureHook
+
         hook = ContextPressureHook(llm=None)
         assert hook._compact_failures == 0
 
@@ -129,6 +144,7 @@ class TestContextManagerHookConstructor:
 class TestResultAging:
     def test_fresh_result_not_compacted(self):
         from looplet.context import ContextPressureHook
+
         hook = ContextPressureHook(llm=None, result_max_age_full=3)
         step = _make_step(1, data=["item1", "item2"])
         state = _make_state([step])
@@ -138,6 +154,7 @@ class TestResultAging:
 
     def test_old_result_compacted(self):
         from looplet.context import ContextPressureHook
+
         hook = ContextPressureHook(llm=None, result_max_age_full=3)
         step = _make_step(1, data=["item1", "item2", "item3"])
         state = _make_state([step])
@@ -149,6 +166,7 @@ class TestResultAging:
     def test_already_compacted_skipped(self):
         """Idempotency: already-compacted results are not re-processed."""
         from looplet.context import ContextPressureHook
+
         hook = ContextPressureHook(llm=None, result_max_age_full=3)
         compacted_data = {"__compacted__": True, "type": "list", "original_count": 5}
         step = _make_step(1, data=compacted_data)
@@ -160,6 +178,7 @@ class TestResultAging:
     def test_error_results_skipped(self):
         """Results with errors are not aged."""
         from looplet.context import ContextPressureHook
+
         hook = ContextPressureHook(llm=None, result_max_age_full=3)
         step = _make_step(1, data=None, error="Tool failed")
         state = _make_state([step])
@@ -169,6 +188,7 @@ class TestResultAging:
     def test_none_data_results_skipped(self):
         """Results with None data are not aged."""
         from looplet.context import ContextPressureHook
+
         hook = ContextPressureHook(llm=None, result_max_age_full=3)
         step = _make_step(1, data=None)
         state = _make_state([step])
@@ -178,6 +198,7 @@ class TestResultAging:
     def test_exact_age_boundary_not_compacted(self):
         """At exactly result_max_age_full, result should NOT be compacted (> not >=)."""
         from looplet.context import ContextPressureHook
+
         hook = ContextPressureHook(llm=None, result_max_age_full=3)
         step = _make_step(1, data=["x"])
         state = _make_state([step])
@@ -187,6 +208,7 @@ class TestResultAging:
     def test_no_steps_attr_safe(self):
         """Works gracefully when state has no steps attribute."""
         from looplet.context import ContextPressureHook
+
         hook = ContextPressureHook(llm=None)
         state = SimpleNamespace()  # no .steps
         hook._age_results(state, step_num=5)  # should not raise
@@ -194,6 +216,7 @@ class TestResultAging:
     def test_configurable_max_age(self):
         """result_max_age_full is configurable."""
         from looplet.context import ContextPressureHook
+
         hook = ContextPressureHook(llm=None, result_max_age_full=1)
         step = _make_step(1, data=["x"])
         state = _make_state([step])
@@ -208,6 +231,7 @@ class TestResultAging:
 class TestCompactData:
     def test_compacts_list(self):
         from looplet.context import _compact_data
+
         data = list(range(100))
         result = _compact_data(data, "my_key")
         assert result["__compacted__"] is True
@@ -218,6 +242,7 @@ class TestCompactData:
 
     def test_compacts_list_without_key(self):
         from looplet.context import _compact_data
+
         data = [1, 2, 3]
         result = _compact_data(data, None)
         assert result["__compacted__"] is True
@@ -225,6 +250,7 @@ class TestCompactData:
 
     def test_compacts_dict_with_rows(self):
         from looplet.context import _compact_data
+
         data = {"rows": list(range(50)), "total": 50}
         result = _compact_data(data, "key1")
         assert result["__compacted__"] is True
@@ -235,6 +261,7 @@ class TestCompactData:
 
     def test_compacts_plain_dict(self):
         from looplet.context import _compact_data
+
         data = {"foo": "bar", "baz": 42}
         result = _compact_data(data, None)
         assert result["__compacted__"] is True
@@ -242,6 +269,7 @@ class TestCompactData:
 
     def test_compacts_string(self):
         from looplet.context import _compact_data
+
         data = "some string result"
         result = _compact_data(data, "k")
         assert result["__compacted__"] is True
@@ -251,6 +279,7 @@ class TestCompactData:
     def test_compacted_result_is_dict(self):
         """Always returns a dict (no type confusion)."""
         from looplet.context import _compact_data
+
         for data in [[1, 2], {"x": 1}, "text", 42]:
             result = _compact_data(data, None)
             assert isinstance(result, dict)
@@ -262,6 +291,7 @@ class TestCompactData:
 class TestHealthProbe:
     def test_no_all_entities_method_returns_none(self):
         from looplet.context import ContextPressureHook
+
         hook = ContextPressureHook(llm=None)
         log = SimpleNamespace()  # no all_entities method
         state = _make_state([])
@@ -269,6 +299,7 @@ class TestHealthProbe:
 
     def test_empty_entities_returns_none(self):
         from looplet.context import ContextPressureHook
+
         hook = ContextPressureHook(llm=None)
         log = _make_session_log(entities=set())
         state = _make_state([])
@@ -277,6 +308,7 @@ class TestHealthProbe:
     def test_few_entities_returns_none(self):
         """With <= 3 entities, no probe needed."""
         from looplet.context import ContextPressureHook
+
         hook = ContextPressureHook(llm=None)
         log = _make_session_log(entities={"a", "b", "c"})
         state = _make_state([])
@@ -284,17 +316,18 @@ class TestHealthProbe:
 
     def test_all_entities_visible_returns_none(self):
         from looplet.context import ContextPressureHook
+
         hook = ContextPressureHook(llm=None)
         entities = {"entity1", "entity2", "entity3", "entity4", "entity5"}
         log = _make_session_log(
-            entities=entities,
-            render_output="entity1 entity2 entity3 entity4 entity5 in context"
+            entities=entities, render_output="entity1 entity2 entity3 entity4 entity5 in context"
         )
         state = _make_state([])
         assert hook._health_probe(state, log) is None
 
     def test_many_missing_entities_returns_reminder(self):
         from looplet.context import ContextPressureHook
+
         hook = ContextPressureHook(llm=None)
         entities = {f"entity{i}" for i in range(20)}
         # Only first 5 appear in render
@@ -309,6 +342,7 @@ class TestHealthProbe:
     def test_reminder_has_no_ioc_reference(self):
         """No 'IOC' text — uses 'highlight' or 'notable item'."""
         from looplet.context import ContextPressureHook
+
         hook = ContextPressureHook(llm=None)
         entities = {f"entity{i}" for i in range(20)}
         log = _make_session_log(entities=entities, render_output="entity0")
@@ -324,6 +358,7 @@ class TestHealthProbe:
 class TestEstimateContextTokens:
     def test_returns_int(self):
         from looplet.context import ContextPressureHook
+
         hook = ContextPressureHook(llm=None)
         state = _make_state([])
         log = _make_session_log(render_output="")
@@ -333,6 +368,7 @@ class TestEstimateContextTokens:
     def test_includes_overhead(self):
         """Even empty state has overhead tokens."""
         from looplet.context import ContextPressureHook
+
         hook = ContextPressureHook(llm=None)
         state = _make_state([])
         log = _make_session_log(render_output="")
@@ -341,6 +377,7 @@ class TestEstimateContextTokens:
 
     def test_increases_with_more_steps(self):
         from looplet.context import ContextPressureHook
+
         hook = ContextPressureHook(llm=None)
         log = _make_session_log(render_output="")
         state_empty = _make_state([])
@@ -351,6 +388,7 @@ class TestEstimateContextTokens:
 
     def test_increases_with_larger_session_log(self):
         from looplet.context import ContextPressureHook
+
         hook = ContextPressureHook(llm=None)
         state = _make_state([])
         small_log = _make_session_log(render_output="small")
@@ -361,6 +399,7 @@ class TestEstimateContextTokens:
 
     def test_no_steps_attr_safe(self):
         from looplet.context import ContextPressureHook
+
         hook = ContextPressureHook(llm=None)
         state = SimpleNamespace()  # no .steps
         log = _make_session_log(render_output="some log text")
@@ -375,6 +414,7 @@ class TestPrePrompt:
     def test_returns_none_when_under_threshold(self):
         """When context is well below threshold, returns None (no intervention)."""
         from looplet.context import ContextPressureHook
+
         hook = ContextPressureHook(llm=None, context_window=128_000)
         state = _make_state([])
         log = _make_session_log(render_output="short log")
@@ -384,6 +424,7 @@ class TestPrePrompt:
     def test_ages_results_called(self):
         """pre_prompt calls _age_results to compact old data."""
         from looplet.context import ContextPressureHook
+
         hook = ContextPressureHook(llm=None, result_max_age_full=1)
         # Step 1 with data, at step 5 it should be aged
         step = _make_step(1, data=["x", "y"])
@@ -397,6 +438,7 @@ class TestPrePrompt:
     def test_enforces_result_budget(self):
         """pre_prompt calls trim_results from scaffolding."""
         from looplet.context import ContextPressureHook
+
         hook = ContextPressureHook(llm=None, per_result_chars=100, aggregate_chars=1000)
         # Oversized result
         big_data = {"rows": ["x" * 200] * 10}
@@ -410,6 +452,7 @@ class TestPrePrompt:
     def test_blocking_threshold_returns_warning(self):
         """When context is at blocking threshold, returns a warning string."""
         from looplet.context import ContextPressureHook
+
         # Very small context window so estimate exceeds blocking threshold easily
         hook = ContextPressureHook(llm=None, context_window=100, blocking_buffer=90)
         # block threshold = 100 - 90 = 10 tokens
@@ -423,10 +466,13 @@ class TestPrePrompt:
     def test_compact_threshold_triggers_compaction(self):
         """When context approaches compact threshold, age_session_entries is called."""
         from looplet.context import ContextPressureHook
+
         with patch("looplet.context.age_session_entries") as mock_compress:
             mock_compress.return_value = "compressed"
             # Very small context window so estimate exceeds compact threshold
-            hook = ContextPressureHook(llm=None, context_window=100, compact_buffer=90, blocking_buffer=5)
+            hook = ContextPressureHook(
+                llm=None, context_window=100, compact_buffer=90, blocking_buffer=5
+            )
             # compact threshold = 100 - 90 = 10 (still triggers compact before blocking)
             state = _make_state([])
             log = _make_session_log(render_output="x" * 100)
@@ -437,6 +483,7 @@ class TestPrePrompt:
 
     def test_on_loop_end_returns_extra_llm_calls(self):
         from looplet.context import ContextPressureHook
+
         hook = ContextPressureHook(llm=None)
         hook._extra_llm_calls = 3
         result = hook.on_loop_end(state=None, session_log=None, context=None, llm=None)
@@ -452,6 +499,7 @@ class TestNoIOCReferences:
         import inspect
 
         import looplet.context as mod
+
         source = inspect.getsource(mod)
         assert "IOC" not in source, "Found 'IOC' reference in context.py"
 
@@ -460,6 +508,7 @@ class TestNoIOCReferences:
         import inspect
 
         import looplet.context as mod
+
         source = inspect.getsource(mod)
         assert "primal_security" not in source
 
@@ -470,10 +519,12 @@ class TestNoIOCReferences:
 class TestLoopHookCompatibility:
     def test_has_pre_prompt(self):
         from looplet.context import ContextPressureHook
+
         hook = ContextPressureHook(llm=None)
         assert callable(hook.pre_prompt)
 
     def test_has_on_loop_end(self):
         from looplet.context import ContextPressureHook
+
         hook = ContextPressureHook(llm=None)
         assert callable(hook.on_loop_end)

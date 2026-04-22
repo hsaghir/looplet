@@ -1,4 +1,5 @@
 """Smoke tests for :attr:`LifecycleEvent.TOOL_PROGRESS` emission."""
+
 from __future__ import annotations
 
 import pytest
@@ -26,16 +27,22 @@ def _tools():
             ctx.report_progress("done", {"pct": 100})
         return {"ok": True}
 
-    reg.register(ToolSpec(
-        name="work", description="long op",
-        parameters={"msg": "str"},
-        execute=long_running,
-    ))
-    reg.register(ToolSpec(
-        name="done", description="finish",
-        parameters={"answer": "str"},
-        execute=lambda *, answer: {"answer": answer},
-    ))
+    reg.register(
+        ToolSpec(
+            name="work",
+            description="long op",
+            parameters={"msg": "str"},
+            execute=long_running,
+        )
+    )
+    reg.register(
+        ToolSpec(
+            name="done",
+            description="finish",
+            parameters={"answer": "str"},
+            execute=lambda *, answer: {"answer": answer},
+        )
+    )
     return reg
 
 
@@ -47,24 +54,39 @@ class _Observer:
         if payload.event is LifecycleEvent.TOOL_PROGRESS:
             self.progress_events.append(payload)
 
-    def pre_loop(self, *a, **k): return None
-    def pre_prompt(self, *a, **k): return None
-    def post_dispatch(self, *a, **k): return None
-    def check_done(self, *a, **k): return None
-    def should_stop(self, *a, **k): return False
+    def pre_loop(self, *a, **k):
+        return None
+
+    def pre_prompt(self, *a, **k):
+        return None
+
+    def post_dispatch(self, *a, **k):
+        return None
+
+    def check_done(self, *a, **k):
+        return None
+
+    def should_stop(self, *a, **k):
+        return False
 
 
 class TestToolProgressEvents:
     def test_progress_emitted_and_observed(self):
         obs = _Observer()
-        list(composable_loop(
-            llm=MockLLMBackend(responses=[
-                '{"tool":"work","args":{"msg":"go"},"reasoning":"r"}',
-                '{"tool":"done","args":{"answer":"ok"},"reasoning":"r"}',
-            ]),
-            tools=_tools(), state=DefaultState(max_steps=3),
-            hooks=[obs], config=LoopConfig(max_steps=3),
-        ))
+        list(
+            composable_loop(
+                llm=MockLLMBackend(
+                    responses=[
+                        '{"tool":"work","args":{"msg":"go"},"reasoning":"r"}',
+                        '{"tool":"done","args":{"answer":"ok"},"reasoning":"r"}',
+                    ]
+                ),
+                tools=_tools(),
+                state=DefaultState(max_steps=3),
+                hooks=[obs],
+                config=LoopConfig(max_steps=3),
+            )
+        )
         assert len(obs.progress_events) == 3
         stages = [p.extra["stage"] for p in obs.progress_events]
         assert stages == ["started", "half", "done"]
@@ -75,11 +97,17 @@ class TestToolProgressEvents:
     def test_no_subscribers_no_context_overhead(self):
         # With zero hooks and no cancel/approval, ctx is None — tool's
         # progress calls become no-ops (ctx is None in the tool).
-        list(composable_loop(
-            llm=MockLLMBackend(responses=[
-                '{"tool":"work","args":{"msg":"go"},"reasoning":"r"}',
-                '{"tool":"done","args":{"answer":"ok"},"reasoning":"r"}',
-            ]),
-            tools=_tools(), state=DefaultState(max_steps=3),
-            hooks=[], config=LoopConfig(max_steps=3),
-        ))
+        list(
+            composable_loop(
+                llm=MockLLMBackend(
+                    responses=[
+                        '{"tool":"work","args":{"msg":"go"},"reasoning":"r"}',
+                        '{"tool":"done","args":{"answer":"ok"},"reasoning":"r"}',
+                    ]
+                ),
+                tools=_tools(),
+                state=DefaultState(max_steps=3),
+                hooks=[],
+                config=LoopConfig(max_steps=3),
+            )
+        )

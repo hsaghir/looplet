@@ -30,6 +30,7 @@ pytestmark = pytest.mark.smoke
 
 # ── Helpers ──────────────────────────────────────────────────────
 
+
 class _FakeLLM:
     """Minimal LLMBackend-like object for testing."""
 
@@ -38,8 +39,14 @@ class _FakeLLM:
         self.fail_after = fail_after
         self.call_count = 0
 
-    def generate(self, prompt: str, *, max_tokens: int = 2000,
-                 system_prompt: str = "", temperature: float = 0.2) -> str:
+    def generate(
+        self,
+        prompt: str,
+        *,
+        max_tokens: int = 2000,
+        system_prompt: str = "",
+        temperature: float = 0.2,
+    ) -> str:
         self.call_count += 1
         if self.fail_after >= 0 and self.call_count > self.fail_after:
             raise RuntimeError("LLM failure")
@@ -85,12 +92,20 @@ class TestLLMResult:
 
     def test_is_prompt_too_long_not_a_constructor_param(self) -> None:
         import inspect
+
         sig = inspect.signature(LLMResult.__init__)
         assert "is_prompt_too_long" not in sig.parameters
 
     def test_prompt_too_long_markers(self) -> None:
-        for marker in ["context_length_exceeded", "maximum context length", "token limit",
-                       "too many tokens", "input is too long", "request too large", "413"]:
+        for marker in [
+            "context_length_exceeded",
+            "maximum context length",
+            "token limit",
+            "too many tokens",
+            "input is too long",
+            "request too large",
+            "413",
+        ]:
             r = LLMResult(None, Exception(marker))
             assert r.is_prompt_too_long is True, f"Expected True for: {marker}"
 
@@ -220,6 +235,7 @@ class TestBuildParseRecoveryPrompt:
         import inspect
 
         import looplet.scaffolding as m
+
         src = inspect.getsource(m)
         assert "primal_security" not in src
 
@@ -292,7 +308,9 @@ class TestEnforceResultBudget:
         big_data = list(range(10000))
         step = self._make_step(big_data)
         trim_results([step], per_result_chars=1000)
-        assert not isinstance(step.tool_result.data, list) or isinstance(step.tool_result.data, dict)
+        assert not isinstance(step.tool_result.data, list) or isinstance(
+            step.tool_result.data, dict
+        )
 
     def test_error_results_skipped(self) -> None:
         tc = ToolCall(tool="test", args={})
@@ -337,16 +355,19 @@ class TestCompressSessionLog:
 
     def test_returns_none_for_short_real_log(self) -> None:
         from looplet.session import SessionLog
+
         log = SessionLog()
         result = age_session_entries(log, max_entries_to_keep=5)
         assert result is None
 
     def test_compacts_long_real_log(self) -> None:
         from looplet.session import SessionLog
+
         log = SessionLog()
         for i in range(10):
-            log.record(step=i + 1, theory="t", tool="search", reasoning=f"q{i}",
-                       findings=[f"finding {i}"])
+            log.record(
+                step=i + 1, theory="t", tool="search", reasoning=f"q{i}", findings=[f"finding {i}"]
+            )
         result = age_session_entries(log, max_entries_to_keep=3)
         assert result is None or isinstance(result, str)
 
@@ -608,15 +629,18 @@ class TestContextOverflowDetection:
 class TestNoDomainSpecificCode:
     def test_check_done_quality_not_present(self) -> None:
         import looplet.scaffolding as s
+
         assert not hasattr(s, "check_done_quality")
 
     def test_no_domain_specific_importss(self) -> None:
         import looplet.scaffolding as s
+
         src = open(s.__file__).read()
         assert "primal_security" not in src
 
     def test_no_legacy_aliases(self) -> None:
         import looplet.scaffolding as m
+
         assert not hasattr(m, "compress_investigation_log")
 
 
@@ -642,8 +666,9 @@ class TestReactiveCompact:
 
         log = SessionLog()
         for i in range(8):
-            log.record(step=i + 1, theory="t", tool="search", reasoning=f"q{i}",
-                       findings=[f"finding {i}"])
+            log.record(
+                step=i + 1, theory="t", tool="search", reasoning=f"q{i}", findings=[f"finding {i}"]
+            )
         result = emergency_truncate(FakeState(), log, keep_recent=3)
         assert result is None or isinstance(result, str)
 
@@ -661,6 +686,7 @@ class TestConstants:
             TOOL_RESULT_MAX_CHARS,
             TOOL_RESULT_MAX_ROWS,
         )
+
         assert MAX_LLM_RETRIES >= 1
         assert PARSE_RECOVERY_MAX >= 1
         assert TOOL_RESULT_MAX_CHARS > 0

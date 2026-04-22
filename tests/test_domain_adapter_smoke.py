@@ -1,4 +1,5 @@
 """Smoke tests for :class:`DomainAdapter` bundling."""
+
 from __future__ import annotations
 
 import pytest
@@ -18,11 +19,14 @@ pytestmark = pytest.mark.smoke
 
 def _tools():
     reg = BaseToolRegistry()
-    reg.register(ToolSpec(
-        name="done", description="finish",
-        parameters={"answer": "str"},
-        execute=lambda *, answer: {"answer": answer},
-    ))
+    reg.register(
+        ToolSpec(
+            name="done",
+            description="finish",
+            parameters={"answer": "str"},
+            execute=lambda *, answer: {"answer": answer},
+        )
+    )
     return reg
 
 
@@ -40,10 +44,15 @@ class TestDomainAdapter:
     def test_adapter_briefing_used_when_config_field_none(self):
         b = _RecordingBackend(['{"tool":"done","args":{"answer":"ok"},"reasoning":"r"}'])
         dom = DomainAdapter(build_briefing=lambda *a, **k: "ADAPTER-BRIEF")
-        list(composable_loop(
-            llm=b, tools=_tools(), state=DefaultState(max_steps=2),
-            hooks=[], config=LoopConfig(max_steps=2, domain=dom),
-        ))
+        list(
+            composable_loop(
+                llm=b,
+                tools=_tools(),
+                state=DefaultState(max_steps=2),
+                hooks=[],
+                config=LoopConfig(max_steps=2, domain=dom),
+            )
+        )
         assert "ADAPTER-BRIEF" in b.prompts[0]
 
     def test_flat_field_overrides_adapter(self):
@@ -54,20 +63,29 @@ class TestDomainAdapter:
             domain=dom,
             build_briefing=lambda *a, **k: "FLAT-WINS",
         )
-        list(composable_loop(
-            llm=b, tools=_tools(), state=DefaultState(max_steps=2),
-            hooks=[], config=cfg,
-        ))
+        list(
+            composable_loop(
+                llm=b,
+                tools=_tools(),
+                state=DefaultState(max_steps=2),
+                hooks=[],
+                config=cfg,
+            )
+        )
         assert "FLAT-WINS" in b.prompts[0]
         assert "ADAPTER-BRIEF" not in b.prompts[0]
 
     def test_adapter_build_trace_used(self):
-        def _trace(**kw): return {"custom": True, "task": kw["task"]}
+        def _trace(**kw):
+            return {"custom": True, "task": kw["task"]}
+
         dom = DomainAdapter(build_trace=_trace)
         gen = composable_loop(
             llm=_RecordingBackend(['{"tool":"done","args":{"answer":"ok"},"reasoning":"r"}']),
-            tools=_tools(), state=DefaultState(max_steps=2),
-            hooks=[], config=LoopConfig(max_steps=2, domain=dom),
+            tools=_tools(),
+            state=DefaultState(max_steps=2),
+            hooks=[],
+            config=LoopConfig(max_steps=2, domain=dom),
             task={"goal": "hello"},
         )
         trace = None
@@ -80,9 +98,14 @@ class TestDomainAdapter:
 
     def test_empty_adapter_noop(self):
         b = _RecordingBackend(['{"tool":"done","args":{"answer":"ok"},"reasoning":"r"}'])
-        list(composable_loop(
-            llm=b, tools=_tools(), state=DefaultState(max_steps=2),
-            hooks=[], config=LoopConfig(max_steps=2, domain=DomainAdapter()),
-        ))
+        list(
+            composable_loop(
+                llm=b,
+                tools=_tools(),
+                state=DefaultState(max_steps=2),
+                hooks=[],
+                config=LoopConfig(max_steps=2, domain=DomainAdapter()),
+            )
+        )
         # No crash; default briefing used.
         assert b.prompts

@@ -53,14 +53,23 @@ class TestLoopPlumbsApproval:
             return {"ok": True, "reply": reply}
 
         reg = BaseToolRegistry()
-        reg.register(ToolSpec(
-            name="confirm", description="", parameters={},
-            execute=tool, concurrent_safe=False,
-        ))
-        reg.register(ToolSpec(
-            name="done", description="", parameters={"summary": "s"},
-            execute=lambda summary="": {"done": True, "summary": summary},
-        ))
+        reg.register(
+            ToolSpec(
+                name="confirm",
+                description="",
+                parameters={},
+                execute=tool,
+                concurrent_safe=False,
+            )
+        )
+        reg.register(
+            ToolSpec(
+                name="done",
+                description="",
+                parameters={"summary": "s"},
+                execute=lambda summary="": {"done": True, "summary": summary},
+            )
+        )
 
         handler = lambda prompt, options: "y"
         cfg = LoopConfig(max_steps=3, approval_handler=handler)
@@ -68,8 +77,13 @@ class TestLoopPlumbsApproval:
             '```json\n{"tool": "confirm", "args": {}}\n```',
             '```json\n{"tool": "done", "args": {"summary": "x"}}\n```',
         )
-        list(composable_loop(
-            llm=llm, task={"id": "T"}, tools=reg,
-            config=cfg, state=DefaultState(max_steps=3),
-        ))
+        list(
+            composable_loop(
+                llm=llm,
+                task={"id": "T"},
+                tools=reg,
+                config=cfg,
+                state=DefaultState(max_steps=3),
+            )
+        )
         assert seen == {"reply": "y"}

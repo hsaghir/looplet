@@ -296,9 +296,7 @@ class MetricsCollector:
         self.total_input_tokens_est += input_tokens
         self.total_output_tokens_est += output_tokens
         self.total_duration_ms += duration_ms
-        self.tool_call_histogram[tool_name] = (
-            self.tool_call_histogram.get(tool_name, 0) + 1
-        )
+        self.tool_call_histogram[tool_name] = self.tool_call_histogram.get(tool_name, 0) + 1
         self.step_classifications[classification] = (
             self.step_classifications.get(classification, 0) + 1
         )
@@ -310,22 +308,17 @@ class MetricsCollector:
         lines: list[str] = ["═══ AGENT METRICS ═══"]
         lines.append(f"Steps: {self.total_steps}  |  Errors: {self.total_errors}")
         lines.append(
-            f"Tokens (est): {self.total_input_tokens_est} in / "
-            f"{self.total_output_tokens_est} out"
+            f"Tokens (est): {self.total_input_tokens_est} in / {self.total_output_tokens_est} out"
         )
         lines.append(f"Duration: {self.total_duration_ms:.1f}ms")
 
         if self.tool_call_histogram:
-            top = sorted(
-                self.tool_call_histogram.items(), key=lambda x: -x[1]
-            )
+            top = sorted(self.tool_call_histogram.items(), key=lambda x: -x[1])
             tool_str = ", ".join(f"{t}×{c}" for t, c in top[:10])
             lines.append(f"Tools: {tool_str}")
 
         if self.step_classifications:
-            cls_str = ", ".join(
-                f"{k}={v}" for k, v in sorted(self.step_classifications.items())
-            )
+            cls_str = ", ".join(f"{k}={v}" for k, v in sorted(self.step_classifications.items()))
             lines.append(f"Classifications: {cls_str}")
 
         if self.total_llm_calls > 0:

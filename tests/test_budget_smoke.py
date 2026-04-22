@@ -1,4 +1,5 @@
 """Smoke tests for context budgeting + threshold-based compaction."""
+
 from __future__ import annotations
 
 import pytest
@@ -22,7 +23,10 @@ pytestmark = pytest.mark.smoke
 class TestContextBudget:
     def test_tier_ordering(self):
         b = ContextBudget(
-            context_window=1000, warning_at=500, error_at=700, compact_buffer=100,
+            context_window=1000,
+            warning_at=500,
+            error_at=700,
+            compact_buffer=100,
         )
         assert b.blocking_at == 900
         assert b.classify(100) == "ok"
@@ -52,13 +56,17 @@ class TestThresholdCompactHook:
     def test_fires_when_over_error_threshold(self):
         # Tight budget so any small log crosses error tier.
         b = ContextBudget(
-            context_window=200, warning_at=20, error_at=50, compact_buffer=10,
+            context_window=200,
+            warning_at=20,
+            error_at=50,
+            compact_buffer=10,
         )
         h = ThresholdCompactHook(b)
         log = SessionLog()
         for i in range(1, 20):
             log.record(
-                step=i, theory="some theory",
+                step=i,
+                theory="some theory",
                 tool=f"tool_name_{i}",
                 reasoning="long reasoning text " * 5,
                 findings=[f"finding_{j}" for j in range(5)],
@@ -68,7 +76,10 @@ class TestThresholdCompactHook:
 
     def test_warning_tier_fires_when_configured(self):
         b = ContextBudget(
-            context_window=200, warning_at=10, error_at=100, compact_buffer=10,
+            context_window=200,
+            warning_at=10,
+            error_at=100,
+            compact_buffer=10,
         )
         h = ThresholdCompactHook(b, fire_tier="warning")
         log = SessionLog()
@@ -92,16 +103,22 @@ class TestBudgetTelemetry:
 class TestLoopIntegration:
     def test_threshold_hook_triggers_compact(self):
         reg = BaseToolRegistry()
-        reg.register(ToolSpec(
-            name="echo", description="e",
-            parameters={"msg": "str"},
-            execute=lambda *, msg: {"msg": msg},
-        ))
-        reg.register(ToolSpec(
-            name="done", description="d",
-            parameters={"answer": "str"},
-            execute=lambda *, answer: {"answer": answer},
-        ))
+        reg.register(
+            ToolSpec(
+                name="echo",
+                description="e",
+                parameters={"msg": "str"},
+                execute=lambda *, msg: {"msg": msg},
+            )
+        )
+        reg.register(
+            ToolSpec(
+                name="done",
+                description="d",
+                parameters={"answer": "str"},
+                execute=lambda *, answer: {"answer": answer},
+            )
+        )
 
         class _Backend:
             def __init__(self):
@@ -109,22 +126,32 @@ class TestLoopIntegration:
                     '{"tool":"echo","args":{"msg":"a"},"reasoning":"r"}',
                     '{"tool":"done","args":{"answer":"ok"},"reasoning":"r"}',
                 ]
-            def generate(self, *a, **k): return self._r.pop(0)
+
+            def generate(self, *a, **k):
+                return self._r.pop(0)
 
         class _CountingCompact(TruncateCompact):
             calls = 0
+
             def compact(self, **kw):
                 type(self).calls += 1
                 return super().compact(**kw)
 
         # Very tight budget — forces fire on step 2.
         b = ContextBudget(
-            context_window=100, warning_at=5, error_at=10, compact_buffer=5,
+            context_window=100,
+            warning_at=5,
+            error_at=10,
+            compact_buffer=5,
         )
         svc = _CountingCompact()
-        list(composable_loop(
-            llm=_Backend(), tools=reg, state=DefaultState(max_steps=3),
-            hooks=[ThresholdCompactHook(b, fire_tier="warning")],
-            config=LoopConfig(max_steps=3, compact_service=svc),
-        ))
+        list(
+            composable_loop(
+                llm=_Backend(),
+                tools=reg,
+                state=DefaultState(max_steps=3),
+                hooks=[ThresholdCompactHook(b, fire_tier="warning")],
+                config=LoopConfig(max_steps=3, compact_service=svc),
+            )
+        )
         assert _CountingCompact.calls >= 1

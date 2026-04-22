@@ -32,18 +32,19 @@ logger = logging.getLogger(__name__)
 
 # ── Constants ────────────────────────────────────────────────────
 
-DEFAULT_CONTEXT_WINDOW = 128_000    # tokens
-DEFAULT_RESULT_MAX_AGE_FULL = 3     # steps before result is compacted
+DEFAULT_CONTEXT_WINDOW = 128_000  # tokens
+DEFAULT_RESULT_MAX_AGE_FULL = 3  # steps before result is compacted
 
 # Multi-tier thresholds for context pressure.
 # Each tier is a buffer subtracted from the context window.
 # Larger buffer = triggers earlier.
-DEFAULT_COMPACT_BUFFER = 20_000     # tokens reserved before compaction fires
-DEFAULT_WARNING_BUFFER = 30_000     # soft warning to hooks
-DEFAULT_BLOCKING_BUFFER = 5_000     # refuse to send LLM call (prevent wasted API call)
+DEFAULT_COMPACT_BUFFER = 20_000  # tokens reserved before compaction fires
+DEFAULT_WARNING_BUFFER = 30_000  # soft warning to hooks
+DEFAULT_BLOCKING_BUFFER = 5_000  # refuse to send LLM call (prevent wasted API call)
 
 # Sentinel marking a result as already compacted (skip re-processing)
 _COMPACTED_MARKER = "__compacted__"
+
 
 class ContextPressureHook:
     """Progressive context management as a composable loop hook.
@@ -131,7 +132,8 @@ class ContextPressureHook:
         if estimated >= self._blocking_threshold:
             logger.warning(
                 "Context at ~%d tokens (blocking threshold %d) — forcing emergency compact",
-                estimated, self._blocking_threshold,
+                estimated,
+                self._blocking_threshold,
             )
             # Emergency: compact session log + clear old results
             dropped_range = self._step_range(state)
@@ -141,7 +143,7 @@ class ContextPressureHook:
                     step.tool_result.data = None
             self._emit_boundary(
                 summary=f"Emergency compaction at step {step_num}: "
-                        f"old tool result data cleared, session log compressed.",
+                f"old tool result data cleared, session log compressed.",
                 dropped_step_range=dropped_range,
             )
             return (
@@ -155,18 +157,20 @@ class ContextPressureHook:
             if estimated >= self._compact_threshold:
                 logger.info(
                     "Context at ~%d tokens (compact threshold %d) — compacting",
-                    estimated, self._compact_threshold,
+                    estimated,
+                    self._compact_threshold,
                 )
                 dropped_range = self._step_range(state)
-                result = age_session_entries(session_log, llm=self._llm,
-                                              must_preserve=self._must_preserve)
+                result = age_session_entries(
+                    session_log, llm=self._llm, must_preserve=self._must_preserve
+                )
                 if result is not None:
                     if self._llm is not None:
                         self._extra_llm_calls += 1
                     self._compact_failures = 0  # reset on success
                     self._emit_boundary(
                         summary=f"Proactive compaction at step {step_num}: "
-                                f"session log summarized near token threshold.",
+                        f"session log summarized near token threshold.",
                         dropped_step_range=dropped_range,
                     )
                     # Health probe: verify entities survived compaction
@@ -176,8 +180,10 @@ class ContextPressureHook:
                 else:
                     self._compact_failures += 1
                     if self._compact_failures >= self._max_compact_failures:
-                        logger.warning("Compaction circuit breaker tripped after %d failures",
-                                       self._compact_failures)
+                        logger.warning(
+                            "Compaction circuit breaker tripped after %d failures",
+                            self._compact_failures,
+                        )
 
         return None
 
@@ -201,9 +207,7 @@ class ContextPressureHook:
             return (0, 0)
         return (steps[0].number, steps[-1].number)
 
-    def _emit_boundary(
-        self, *, summary: str, dropped_step_range: tuple[int, int]
-    ) -> None:
+    def _emit_boundary(self, *, summary: str, dropped_step_range: tuple[int, int]) -> None:
         """Record a compaction boundary on the attached recorder, if any.
 
         No-op when no ``recorder`` was supplied. Never raises — boundary
@@ -248,6 +252,7 @@ class ContextPressureHook:
         self._last_pressure_level = level
         try:
             from looplet.streaming import ContextPressureEvent  # noqa: PLC0415
+
             threshold = {
                 "blocking": self._blocking_threshold,
                 "compact": self._compact_threshold,
@@ -255,13 +260,15 @@ class ContextPressureHook:
                 "ok": 0,
             }[level]
             pct = (estimated / self.context_window * 100.0) if self.context_window else 0.0
-            self._emitter.emit(ContextPressureEvent(
-                level=level,
-                estimated_tokens=estimated,
-                threshold=threshold,
-                context_window=self.context_window,
-                percent_used=round(pct, 1),
-            ))
+            self._emitter.emit(
+                ContextPressureEvent(
+                    level=level,
+                    estimated_tokens=estimated,
+                    threshold=threshold,
+                    context_window=self.context_window,
+                    percent_used=round(pct, 1),
+                )
+            )
         except Exception:  # pragma: no cover - defensive
             logger.exception("Failed to emit context pressure event")
 
@@ -338,6 +345,7 @@ class ContextPressureHook:
         total_chars += 13_000
         return total_chars // 4
 
+
 def _compact_data(data: Any, result_key: str | None) -> dict:
     """Compact result data to a summary dict.
 
@@ -352,10 +360,14 @@ def _compact_data(data: Any, result_key: str | None) -> dict:
             "type": "list",
             "original_count": len(data),
             "sample": data[:3],
-            **({
-                "recall_key": result_key,
-                "note": f"Full data available via result_key '{result_key}'",
-            } if result_key else {}),
+            **(
+                {
+                    "recall_key": result_key,
+                    "note": f"Full data available via result_key '{result_key}'",
+                }
+                if result_key
+                else {}
+            ),
         }
     if isinstance(data, dict):
         rows = data.get("rows")
@@ -383,4 +395,3 @@ def _compact_data(data: Any, result_key: str | None) -> dict:
 
 # Back-compat alias — consumer code imports ``ContextManagerHook``.
 ContextManagerHook = ContextPressureHook
-

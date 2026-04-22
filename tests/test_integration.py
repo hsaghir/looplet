@@ -38,8 +38,7 @@ class _State:
 
     def context_summary(self) -> str:
         return "\n".join(
-            f"Step {s.number}: {s.tool_call.tool}({s.tool_call.args})"
-            for s in self.steps
+            f"Step {s.number}: {s.tool_call.tool}({s.tool_call.args})" for s in self.steps
         )
 
     def snapshot(self) -> dict[str, Any]:
@@ -94,8 +93,17 @@ def _make_registry_with_done() -> Any:
     from looplet.tools import BaseToolRegistry, ToolSpec
 
     registry = BaseToolRegistry()
-    registry.register(ToolSpec("think", "Record a thought", {"thought": "a thought to record"}, lambda thought="": thought))
-    registry.register(ToolSpec("done", "Finish task", {"answer": "final answer"}, lambda answer="": answer))
+    registry.register(
+        ToolSpec(
+            "think",
+            "Record a thought",
+            {"thought": "a thought to record"},
+            lambda thought="": thought,
+        )
+    )
+    registry.register(
+        ToolSpec("done", "Finish task", {"answer": "final answer"}, lambda answer="": answer)
+    )
     return registry
 
 
@@ -129,9 +137,7 @@ def test_full_loop_with_all_capabilities():
         def pre_loop(self, st: Any, log: Any, ctx: Any) -> None:
             self._span = tracer.start_span("loop.run")
 
-        def post_dispatch(
-            self, st: Any, log: Any, tc: Any, tr: Any, step_num: int
-        ) -> None:
+        def post_dispatch(self, st: Any, log: Any, tc: Any, tr: Any, step_num: int) -> None:
             collector.record_step(
                 tool_name=tc.tool,
                 classification="productive",
@@ -152,9 +158,7 @@ def test_full_loop_with_all_capabilities():
 
         # Checkpoint hook compatible with loop.py's hook calling convention
         class SimpleCheckpointHook:
-            def post_dispatch(
-                self, st: Any, log: Any, tc: Any, tr: Any, step_num: int
-            ) -> None:
+            def post_dispatch(self, st: Any, log: Any, tc: Any, tr: Any, step_num: int) -> None:
                 cp = Checkpoint(
                     step_number=step_num,
                     session_log_data={},
@@ -175,7 +179,14 @@ def test_full_loop_with_all_capabilities():
         config = LoopConfig(max_steps=10, done_tool="done")
 
         steps = list(
-            composable_loop(llm, task={"description": "test"}, tools=registry, hooks=hooks, config=config, state=state)
+            composable_loop(
+                llm,
+                task={"description": "test"},
+                tools=registry,
+                hooks=hooks,
+                config=config,
+                state=state,
+            )
         )
 
         # Checkpoint files written for each step
@@ -208,16 +219,22 @@ def test_checkpoint_resume():
     from looplet.loop import LoopConfig, composable_loop
     from looplet.session import SessionLog
 
-    llm = _ScriptedLLM([
-        _tool_response("think", thought="first step"),
-        _tool_response("done", answer="done"),
-    ])
+    llm = _ScriptedLLM(
+        [
+            _tool_response("think", thought="first step"),
+            _tool_response("done", answer="done"),
+        ]
+    )
     registry = _make_registry_with_done()
     state = _State(max_steps=10)
     session_log = SessionLog()
 
     config = LoopConfig(max_steps=10, done_tool="done")
-    steps = list(composable_loop(llm, task={}, tools=registry, config=config, state=state, session_log=session_log))
+    steps = list(
+        composable_loop(
+            llm, task={}, tools=registry, config=config, state=state, session_log=session_log
+        )
+    )
     completed_steps = len(steps)
     assert completed_steps >= 1
 
@@ -298,7 +315,9 @@ def test_recovery_fires_on_parse_error():
     registry.register(recipe)
 
     # Trigger recovery
-    action = registry.attempt_recovery(FailureScenario.PARSE_ERROR, {"error": "invalid json", "step": 1})
+    action = registry.attempt_recovery(
+        FailureScenario.PARSE_ERROR, {"error": "invalid json", "step": 1}
+    )
     assert action is not None
     assert action.action_type == "inject_guidance"
     assert len(fired) == 1
@@ -307,7 +326,9 @@ def test_recovery_fires_on_parse_error():
     # Respects max_attempts
     registry.attempt_recovery(FailureScenario.PARSE_ERROR, {"error": "again", "step": 2})
     registry.attempt_recovery(FailureScenario.PARSE_ERROR, {"error": "third", "step": 3})
-    exhausted = registry.attempt_recovery(FailureScenario.PARSE_ERROR, {"error": "fourth", "step": 4})
+    exhausted = registry.attempt_recovery(
+        FailureScenario.PARSE_ERROR, {"error": "fourth", "step": 4}
+    )
     assert exhausted is None  # max_attempts=3 exceeded
 
 
@@ -320,15 +341,20 @@ def test_validation_rejects_bad_done():
     from looplet.validation import FieldSpec, OutputSchema, ValidatingToolRegistry
 
     # Mock LLM: returns done without required 'summary' field, then valid done
-    llm = _ScriptedLLM([
-        _tool_response("done"),               # missing 'summary' — should fail validation
-        _tool_response("done", summary="ok"),  # valid done
-    ])
+    llm = _ScriptedLLM(
+        [
+            _tool_response("done"),  # missing 'summary' — should fail validation
+            _tool_response("done", summary="ok"),  # valid done
+        ]
+    )
 
     # ValidatingToolRegistry owns its own internal registry
     val_registry = ValidatingToolRegistry()
     from looplet.tools import ToolSpec
-    val_registry.register(ToolSpec("think", "Record thought", {"thought": "a thought"}, lambda thought="": thought))
+
+    val_registry.register(
+        ToolSpec("think", "Record thought", {"thought": "a thought"}, lambda thought="": thought)
+    )
 
     schema = OutputSchema(
         fields={"summary": FieldSpec("summary", str, required=True)},
@@ -341,9 +367,7 @@ def test_validation_rejects_bad_done():
     state = _State(max_steps=5)
     config = LoopConfig(max_steps=5, done_tool="done")
 
-    steps = list(
-        composable_loop(llm, task={}, tools=val_registry, config=config, state=state)
-    )
+    steps = list(composable_loop(llm, task={}, tools=val_registry, config=config, state=state))
 
     # The loop should have run at least 1 step (and the first done call should fail validation)
     assert len(steps) >= 1
@@ -368,10 +392,12 @@ def test_streaming_event_sequence():
         ToolDispatchEvent,
     )
 
-    llm = _ScriptedLLM([
-        _tool_response("think", thought="checking"),
-        _tool_response("done", answer="done"),
-    ])
+    llm = _ScriptedLLM(
+        [
+            _tool_response("think", thought="checking"),
+            _tool_response("done", answer="done"),
+        ]
+    )
     registry = _make_registry_with_done()
     state = _State(max_steps=10)
 

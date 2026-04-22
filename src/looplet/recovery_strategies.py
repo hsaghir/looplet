@@ -42,9 +42,15 @@ def recovery_clear_old_results(state: Any, session_log: Any, llm: Any, step_num:
 
 
 def rebuild_prompt(
-    state: Any, session_log: Any, context: Any,
-    build_briefing: Any, build_prompt_fn: Any,
-    task: dict, tools: Any, config: Any, step_num: int,
+    state: Any,
+    session_log: Any,
+    context: Any,
+    build_briefing: Any,
+    build_prompt_fn: Any,
+    task: dict,
+    tools: Any,
+    config: Any,
+    step_num: int,
 ) -> str:
     """Rebuild prompt after a recovery strategy modified state."""
     context_history = state.context_summary()
@@ -54,6 +60,7 @@ def rebuild_prompt(
     _memory_sources = getattr(config, "memory_sources", None)
     if _memory_sources:
         from looplet.memory import render_memory as _render_memory  # noqa: PLC0415
+
         _rendered_memory = _render_memory(_memory_sources, state)
     else:
         _rendered_memory = ""
@@ -72,6 +79,7 @@ def rebuild_prompt(
         )
     # Fallback: use the same structured default prompt as the main loop.
     from looplet.prompts import build_prompt as _default_build_prompt  # noqa: PLC0415
+
     return _default_build_prompt(
         task=task,
         tool_catalog=tools.tool_catalog_text(),
@@ -83,4 +91,3 @@ def rebuild_prompt(
         briefing=briefing,
         memory=_rendered_memory,
     )
-

@@ -22,7 +22,6 @@ __all__ = [
 ]
 
 
-
 def _classify_exception(e: BaseException) -> ToolError:
     """Map a Python exception to a :class:`ToolError`.
 
@@ -37,6 +36,7 @@ def _classify_exception(e: BaseException) -> ToolError:
     # Cooperative cancellation — asyncio.CancelledError inherits from
     # BaseException, so check it before the stdlib Exception branches.
     import asyncio as _asyncio  # noqa: PLC0415
+
     if isinstance(e, _asyncio.CancelledError):
         return ToolError(kind=ErrorKind.CANCELLED, message=msg, retriable=False)
     if isinstance(e, TimeoutError):
@@ -52,9 +52,13 @@ def _classify_exception(e: BaseException) -> ToolError:
     text = str(e).lower()
     if "ratelimit" in cls_name or "rate_limit" in cls_name or "429" in text:
         return ToolError(kind=ErrorKind.RATE_LIMIT, message=msg, retriable=True)
-    if "contextlengthexceeded" in cls_name or "context_length" in cls_name \
-            or "context window" in text or "too many tokens" in text \
-            or "input is too long" in text:
+    if (
+        "contextlengthexceeded" in cls_name
+        or "context_length" in cls_name
+        or "context window" in text
+        or "too many tokens" in text
+        or "input is too long" in text
+    ):
         return ToolError(kind=ErrorKind.CONTEXT_OVERFLOW, message=msg, retriable=False)
     if "parseerror" in cls_name or "jsondecode" in cls_name:
         return ToolError(kind=ErrorKind.PARSE, message=msg, retriable=False)
@@ -409,13 +413,15 @@ class BaseToolRegistry:
         """
         tools_info = []
         for spec in self._tools.values():
-            tools_info.append({
-                "name": spec.name,
-                "description": spec.description,
-                "parameters": spec.to_json_schema(),
-                "concurrent_safe": spec.concurrent_safe,
-                "free": spec.free,
-            })
+            tools_info.append(
+                {
+                    "name": spec.name,
+                    "description": spec.description,
+                    "parameters": spec.to_json_schema(),
+                    "concurrent_safe": spec.concurrent_safe,
+                    "free": spec.free,
+                }
+            )
         return {
             "tool_count": len(self._tools),
             "tools": tools_info,
@@ -445,21 +451,23 @@ def register_think_tool(registry: BaseToolRegistry) -> None:
       - Plan the next 2-3 steps before executing them
       - Reflect on what prior steps have established so far
     """
-    registry.register(ToolSpec(
-        name="think",
-        description=(
-            "Pause to reason without taking an action. Use this to analyze "
-            "competing hypotheses, weigh pros and cons, plan your next steps, "
-            "or reflect on what you've found so far. Does NOT count against "
-            "your budget. The analysis is preserved in your step log.\n"
-            "Example: think(analysis='I have two plausible paths. "
-            "To decide, I should first gather more data on option A, "
-            "then compare against option B before committing.')"
-        ),
-        parameters={
-            "analysis": "Your reasoning, analysis, or plan (free text)",
-        },
-        execute=lambda analysis="": {"acknowledged": True, "analysis": analysis},
-        concurrent_safe=True,
-        free=True,
-    ))
+    registry.register(
+        ToolSpec(
+            name="think",
+            description=(
+                "Pause to reason without taking an action. Use this to analyze "
+                "competing hypotheses, weigh pros and cons, plan your next steps, "
+                "or reflect on what you've found so far. Does NOT count against "
+                "your budget. The analysis is preserved in your step log.\n"
+                "Example: think(analysis='I have two plausible paths. "
+                "To decide, I should first gather more data on option A, "
+                "then compare against option B before committing.')"
+            ),
+            parameters={
+                "analysis": "Your reasoning, analysis, or plan (free text)",
+            },
+            execute=lambda analysis="": {"acknowledged": True, "analysis": analysis},
+            concurrent_safe=True,
+            free=True,
+        )
+    )

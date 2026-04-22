@@ -1,6 +1,6 @@
 # looplet
 
-![demo — 3-step investigation loop](docs/demo.gif)
+![demo — 4-tool data-cleanup loop with a DebugHook trace and a human approval pause](docs/demo.gif)
 
 [![CI](https://github.com/hsaghir/looplet/actions/workflows/ci.yml/badge.svg)](https://github.com/hsaghir/looplet/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/hsaghir/looplet/branch/master/graph/badge.svg)](https://codecov.io/gh/hsaghir/looplet)
@@ -11,7 +11,7 @@
 
 **A small, framework-agnostic Python library for building LLM agents that call tools in a loop.**
 It hands you a `for step in loop(...):` iterator so you can observe, filter, or interrupt
-*any* step — no graph DSL, no subclassing, no vendor lock-in. One runtime dependency.
+*any* step — no graph DSL, no subclassing, no vendor lock-in. **Zero runtime dependencies.**
 
 ```python
 from looplet import composable_loop
@@ -23,6 +23,7 @@ for step in composable_loop(llm=llm, tools=tools, task=task, config=cfg, state=s
 ```
 
 ```bash
+pip install looplet               # core — zero third-party packages pulled in
 pip install "looplet[openai]"     # works with OpenAI, Ollama, Together, Groq, vLLM, …
 pip install "looplet[anthropic]"  # or Anthropic directly
 ```
@@ -31,14 +32,33 @@ pip install "looplet[anthropic]"  # or Anthropic directly
 
 ## Why it exists
 
-Most agent frameworks give you `agent.run(task)` and a black box. When the agent
-does something wrong at step 7, you can't step in between step 6 and step 8.
-You end up forking the library or writing a second agent to babysit the first.
+Most agent frameworks give you `agent.run(task)` and a black box. When the
+agent does something wrong at step 7, you can't step in between step 6 and
+step 8. You end up forking the library or writing a second agent to babysit
+the first.
 
-`looplet` does the opposite: the loop is the whole product. Every tool call
-is a `Step` object, every phase (`pre_prompt`, `pre_dispatch`, `post_dispatch`,
-`check_done`, `should_stop`, `on_loop_end`) is a `Protocol` method you can
-implement in 3 lines. Hooks compose without inheritance. Nothing is hidden.
+`looplet` does the opposite: **the loop is the whole product, and hooks are
+the whole API.** Every tool call is a `Step` object you can print, save, or
+diff. Every decision the loop makes — what goes in the next prompt, whether
+to compact context, whether to dispatch a dangerous tool, whether to stop —
+is a `Protocol` method you implement in 3 lines. Hooks compose without
+inheritance. Nothing is hidden.
+
+That one design choice is where the library's three practical superpowers
+come from:
+
+* **Shape agent behaviour** without forking — a 10-line hook can redact PII
+  from every prompt, inject retrieved docs, rewrite tool arguments, or
+  rate-limit calls to a single tool. Hooks are the extension point the
+  framework *can't* close off because the loop itself is built on them.
+* **Manage context on your terms** — `compact_chain(Prune, Summarize,
+  Truncate)` is three hooks you wire together. Swap the strategy, change
+  the budget, fire on a different threshold — no monkey-patching.
+* **Debug and eval without a second tool** — `step.pretty()` is a
+  human-readable trace, `ProvenanceSink` dumps every prompt the LLM saw
+  plus every tool result into a diff-friendly directory, and pytest-style
+  `eval_*` functions turn that trace into a regression suite. Your debug
+  output *is* your eval harness.
 
 It's what you'd build if you wrote an agent once, got tired of fighting
 the framework, and decided the framework was the problem.
@@ -129,7 +149,7 @@ marker so your editor knows the types.
 | **Crash-resume checkpoints**             | ✅ | ❌ | ❌ | ⚠️ add-on | ✅ |
 | **Built-in evals**                       | ✅ pytest-style | ❌ | ❌ | ❌ | ❌ |
 | **OSI license**                          | Apache-2.0 | Anthropic terms | Apache-2.0 | MIT | MIT |
-| **Core runtime deps**                    | **1** | CLI binary | several | many | many |
+| **Core runtime deps**                    | **0** | CLI binary | several | many | many |
 
 Numbers on import time and dependency footprint: [docs/benchmarks.md](docs/benchmarks.md).
 On a fresh Python 3.11 venv, `looplet` cold-imports in 289 ms against 1.9–4.0 s

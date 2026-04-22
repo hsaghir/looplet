@@ -45,7 +45,7 @@ uv run mypy src/looplet          # optional type check
   tests for both paths.
 - **Avoid bare `except`**: catch the narrowest exception you can.
 - **No new runtime dependencies without discussion** — the core runtime
-  depends only on the standard library + `pyyaml`. Optional extras are
+  depends only on the standard library. Optional extras are
   fine under `[project.optional-dependencies]`.
 - **Public API surface** — if you add a public symbol, export it from
   `looplet/__init__.py`, document it with a docstring, and add a

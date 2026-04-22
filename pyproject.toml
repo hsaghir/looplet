@@ -1,6 +1,6 @@
 [project]
 name = "looplet"
-version = "0.1.6"
+version = "0.1.7"
 description = "The tool-calling loop for LLM agents — iterator-first, protocol-hooked, one dependency."
 readme = "README.md"
 license = { text = "Apache-2.0" }

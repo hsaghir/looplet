@@ -75,43 +75,56 @@ That's the whole thing:
 %%{init: {"theme":"base","themeVariables":{
   "fontFamily":"ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
   "fontSize":"15px",
-  "lineColor":"#64748b"
+  "lineColor":"#94a3b8"
 }}}%%
 flowchart LR
-    you(["<b>your code</b><br/><span style='font-size:11px;opacity:.8'>for step in loop(...)</span>"]):::you
+    you(["<b>your code</b><br/><span style='font-size:11px;opacity:.75'>for&nbsp;step&nbsp;in&nbsp;loop(...)</span>"]):::you
 
-    subgraph loop["&nbsp;&nbsp;&nbsp;&nbsp;<b>composable_loop</b>&nbsp;·&nbsp;<span style='font-size:11px;opacity:.75;font-weight:400'>you own every edge</span>&nbsp;&nbsp;&nbsp;&nbsp;"]
+    h1["<b>pre_prompt</b><br/><span style='font-size:11px;opacity:.9'>redact&nbsp;·&nbsp;inject&nbsp;·&nbsp;compact</span>"]:::hookBlue
+    h2["<b>pre_dispatch</b><br/><span style='font-size:11px;opacity:.9'>permissions&nbsp;·&nbsp;approval&nbsp;·&nbsp;rewrite</span>"]:::hookAmber
+    h3["<b>post_dispatch</b><br/><span style='font-size:11px;opacity:.9'>trace&nbsp;·&nbsp;metrics&nbsp;·&nbsp;checkpoint</span>"]:::hookAmber
+    h4["<b>check_done</b><br/><span style='font-size:11px;opacity:.9'>stop&nbsp;rules&nbsp;·&nbsp;budgets</span>"]:::hookGreen
+
+    subgraph loop[" "]
       direction LR
-      prompt(["<b>prompt</b><br/><span style='font-size:11px;opacity:.85'>build · call · parse</span>"]):::phase
-      dispatch(["<b>dispatch</b><br/><span style='font-size:11px;opacity:.85'>validate · run tool</span>"]):::phase
-      done{{"<b>done?</b>"}}:::done
+      prompt(["<b>PROMPT</b><br/><span style='font-size:11px;opacity:.85'>build&nbsp;·&nbsp;call&nbsp;LLM</span>"]):::phaseBlue
+      dispatch(["<b>DISPATCH</b><br/><span style='font-size:11px;opacity:.85'>validate&nbsp;·&nbsp;run&nbsp;tool</span>"]):::phaseAmber
+      done{{"<b>DONE?</b>"}}:::phaseGreen
       prompt -- "tool call" --> dispatch
       dispatch -- "observation" --> done
       done -- "no" --> prompt
     end
 
-    step[/"<b>Step</b><br/><span style='font-size:11px;opacity:.85'>prompt · call · result · usage</span>"/]:::step
+    step[/"<b>Step</b><br/><span style='font-size:11px;opacity:.85'>prompt&nbsp;·&nbsp;call&nbsp;·&nbsp;result&nbsp;·&nbsp;usage</span>"/]:::step
 
     you == "task" ==> prompt
     done == "yes" ==> step
     step == "yield" ==> you
-
-    h1["<b>pre_prompt</b><br/><span style='font-size:11px;opacity:.85'>redact · inject · compact · retry</span>"]:::hook
-    h2["<b>pre_dispatch</b><br/><span style='font-size:11px;opacity:.85'>permissions · approval · rewrite · cache</span>"]:::hook
-    h3["<b>post_dispatch</b><br/><span style='font-size:11px;opacity:.85'>trace · metrics · checkpoint · eval</span>"]:::hook
-    h4["<b>check_done</b><br/><span style='font-size:11px;opacity:.85'>stop rules · budgets</span>"]:::hook
 
     h1 -.-> prompt
     h2 -.-> dispatch
     h3 -.-> dispatch
     h4 -.-> done
 
-    classDef you    fill:#0f172a,stroke:#475569,stroke-width:2px,color:#f8fafc;
-    classDef phase  fill:#1d4ed8,stroke:#93c5fd,stroke-width:2px,color:#f8fafc;
-    classDef done   fill:#047857,stroke:#6ee7b7,stroke-width:2px,color:#ecfdf5;
-    classDef step   fill:#4338ca,stroke:#c7d2fe,stroke-width:2px,color:#eef2ff;
-    classDef hook   fill:#fef3c7,stroke:#d97706,stroke-width:1.5px,color:#78350f;
-    style loop fill:#f8fafc,stroke:#94a3b8,stroke-width:1.5px,stroke-dasharray:8 5,color:#1e293b;
+    linkStyle 0,1,2 stroke:#94a3b8,stroke-width:2px
+    linkStyle 3 stroke:#475569,stroke-width:3px
+    linkStyle 4 stroke:#059669,stroke-width:3px
+    linkStyle 5 stroke:#475569,stroke-width:3px
+    linkStyle 6 stroke:#3b82f6,stroke-width:1.5px
+    linkStyle 7 stroke:#f59e0b,stroke-width:1.5px
+    linkStyle 8 stroke:#f59e0b,stroke-width:1.5px
+    linkStyle 9 stroke:#10b981,stroke-width:1.5px
+
+    classDef you        fill:#0f172a,stroke:#334155,stroke-width:2px,color:#f8fafc;
+    classDef phaseBlue  fill:#dbeafe,stroke:#2563eb,stroke-width:2.5px,color:#1e3a8a;
+    classDef phaseAmber fill:#fef3c7,stroke:#d97706,stroke-width:2.5px,color:#78350f;
+    classDef phaseGreen fill:#d1fae5,stroke:#059669,stroke-width:2.5px,color:#064e3b;
+    classDef step       fill:#eef2ff,stroke:#4338ca,stroke-width:2.5px,color:#312e81;
+    classDef hookBlue   fill:#eff6ff,stroke:#3b82f6,stroke-width:1.5px,color:#1e40af;
+    classDef hookAmber  fill:#fffbeb,stroke:#f59e0b,stroke-width:1.5px,color:#92400e;
+    classDef hookGreen  fill:#ecfdf5,stroke:#10b981,stroke-width:1.5px,color:#065f46;
+
+    style loop fill:#f8fafc,stroke:#cbd5e1,stroke-width:2px,stroke-dasharray:10 6,color:#1e293b;
 ```
 
 Every amber box is a `Protocol` method. A hook is any object that

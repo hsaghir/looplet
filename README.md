@@ -124,36 +124,51 @@ of **`Protocol` methods** you can implement in a few lines to change any
 part of the loop. That's the whole mental model:
 
 ```mermaid
-flowchart LR
-    User([your for-loop<br/>yields Step])
-    User -.-> P
+%%{init: {'theme':'base', 'themeVariables': {
+  'primaryColor':'#1e40af',
+  'primaryTextColor':'#f8fafc',
+  'primaryBorderColor':'#60a5fa',
+  'lineColor':'#64748b',
+  'fontSize':'14px'
+}}}%%
+flowchart TB
+    classDef user fill:#0f172a,stroke:#475569,stroke-width:2px,color:#f1f5f9
+    classDef phase fill:#1e40af,stroke:#60a5fa,stroke-width:2px,color:#f8fafc
+    classDef done fill:#065f46,stroke:#34d399,stroke-width:2px,color:#ecfdf5
+    classDef hook fill:#fde68a,stroke:#b45309,stroke-width:1.5px,color:#451a03
+    classDef step fill:#4338ca,stroke:#a5b4fc,stroke-width:2px,color:#eef2ff
 
-    subgraph LoopBox["composable_loop(llm, tools, hooks, …)"]
-      direction LR
-      P([prompt LLM])
-      D([dispatch tool])
-      Done{done?}
-      P --> D --> Done
-      Done -- no --> P
+    User["🧑‍💻 <b>your</b> <tt>for step in loop(...)</tt><br/><i>you own the control flow</i>"]:::user
+
+    subgraph LL[" ⚙️  composable_loop "]
+      direction TB
+      P("🗣️  prompt LLM"):::phase
+      D("🛠️  dispatch tool"):::phase
+      DD{{"🎯 done?"}}:::done
+      P --> D --> DD
+      DD -- "no" --> P
     end
 
-    Done --> Out([return])
-    Out -.-> User
+    User ==> LL
+    DD == "yes" ==> Step["📦 <b>Step</b> — <tt>step.pretty()</tt>"]:::step
+    Step ==> User
 
-    H1[/"pre_prompt<br/><i>redact · inject context ·<br/>compact · retry</i>"/]:::hook
-    H2[/"pre_dispatch<br/><i>permissions · approval ·<br/>rewrite args · cache</i>"/]:::hook
-    H3[/"post_dispatch<br/><i>trace · metrics ·<br/>checkpoint · provenance</i>"/]:::hook
-    H4[/"check_done / should_stop<br/><i>custom stop rules ·<br/>max steps · budget</i>"/]:::hook
+    H1["🧩 <b>pre_prompt</b><br/>─────────────<br/>redact · inject context<br/>compact · retry"]:::hook
+    H2["🛡️ <b>pre_dispatch</b><br/>─────────────<br/>permissions · approval<br/>rewrite args · cache"]:::hook
+    H3["📝 <b>post_dispatch</b><br/>─────────────<br/>trace · metrics<br/>checkpoint · provenance"]:::hook
+    H4["🏁 <b>check_done / should_stop</b><br/>─────────────<br/>custom stop rules<br/>max steps · budget"]:::hook
 
     H1 -.-> P
     H2 -.-> D
     H3 -.-> D
-    H4 -.-> Done
+    H4 -.-> DD
 
-    classDef hook fill:#fff4d1,stroke:#b8860b,stroke-width:1.2px,color:#6b4f00;
+    linkStyle 0,1,2,3 stroke:#60a5fa,stroke-width:2px
+    linkStyle 4,5,6 stroke:#a5b4fc,stroke-width:3px
+    linkStyle 7,8,9,10 stroke:#d97706,stroke-width:2px,stroke-dasharray: 6 4
 ```
 
-Every orange box is a `Protocol` method. A hook is any object that
+Every amber box is a `Protocol` method. A hook is any object that
 implements one or more of them — no base class, no inheritance:
 
 ```python

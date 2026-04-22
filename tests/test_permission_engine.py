@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-from openharness.loop import LoopConfig, composable_loop
-from openharness.permissions import (
+from looplet.loop import LoopConfig, composable_loop
+from looplet.permissions import (
     PermissionDecision,
     PermissionEngine,
     PermissionHook,
     PermissionOutcome,
     PermissionRule,
 )
-from openharness.tools import BaseToolRegistry, ToolSpec
-from openharness.types import DefaultState, ErrorKind, LLMBackend, ToolCall
+from looplet.tools import BaseToolRegistry, ToolSpec
+from looplet.types import DefaultState, ErrorKind, LLMBackend, ToolCall
 
 
 class TestRuleMatching:

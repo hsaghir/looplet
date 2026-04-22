@@ -1,4 +1,4 @@
-"""Tests for openharness.scaffolding — LLM retry, truncation, trackers."""
+"""Tests for looplet.scaffolding — LLM retry, truncation, trackers."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from openharness.scaffolding import (
+from looplet.scaffolding import (
     PARSE_RECOVERY_MAX,
     LLMResult,
     StallDetector,
@@ -23,7 +23,7 @@ from openharness.scaffolding import (
     trim_results,
     truncate_tool_result,
 )
-from openharness.types import Step, ToolCall, ToolResult
+from looplet.types import Step, ToolCall, ToolResult
 
 pytestmark = pytest.mark.smoke
 
@@ -122,7 +122,7 @@ class TestLlmCallWithRetry:
     def test_retry_on_failure_then_success(self) -> None:
         llm = MagicMock()
         llm.generate.side_effect = [ValueError("fail"), "success"]
-        with patch("openharness.scaffolding.time.sleep"):
+        with patch("looplet.scaffolding.time.sleep"):
             result = llm_call_with_retry(llm, "prompt", max_retries=1)
         assert result.ok is True
         assert llm.generate.call_count == 2
@@ -146,7 +146,7 @@ class TestLlmCallWithRetry:
     def test_exhausts_retries_returns_error(self) -> None:
         llm = MagicMock()
         llm.generate.side_effect = ValueError("always fails")
-        with patch("openharness.scaffolding.time.sleep"):
+        with patch("looplet.scaffolding.time.sleep"):
             result = llm_call_with_retry(llm, "prompt", max_retries=2)
         assert result.ok is False
         assert result.error is not None
@@ -219,7 +219,7 @@ class TestBuildParseRecoveryPrompt:
     def test_no_domain_specific_imports(self) -> None:
         import inspect
 
-        import openharness.scaffolding as m
+        import looplet.scaffolding as m
         src = inspect.getsource(m)
         assert "primal_security" not in src
 
@@ -336,13 +336,13 @@ class TestCompressSessionLog:
         assert "finding 1" in result
 
     def test_returns_none_for_short_real_log(self) -> None:
-        from openharness.session import SessionLog
+        from looplet.session import SessionLog
         log = SessionLog()
         result = age_session_entries(log, max_entries_to_keep=5)
         assert result is None
 
     def test_compacts_long_real_log(self) -> None:
-        from openharness.session import SessionLog
+        from looplet.session import SessionLog
         log = SessionLog()
         for i in range(10):
             log.record(step=i + 1, theory="t", tool="search", reasoning=f"q{i}",
@@ -607,16 +607,16 @@ class TestContextOverflowDetection:
 
 class TestNoDomainSpecificCode:
     def test_check_done_quality_not_present(self) -> None:
-        import openharness.scaffolding as s
+        import looplet.scaffolding as s
         assert not hasattr(s, "check_done_quality")
 
     def test_no_domain_specific_importss(self) -> None:
-        import openharness.scaffolding as s
+        import looplet.scaffolding as s
         src = open(s.__file__).read()
         assert "primal_security" not in src
 
     def test_no_legacy_aliases(self) -> None:
-        import openharness.scaffolding as m
+        import looplet.scaffolding as m
         assert not hasattr(m, "compress_investigation_log")
 
 
@@ -625,7 +625,7 @@ class TestNoDomainSpecificCode:
 
 class TestReactiveCompact:
     def test_returns_none_for_short_log(self) -> None:
-        from openharness.session import SessionLog
+        from looplet.session import SessionLog
 
         class FakeState:
             steps: list = []
@@ -635,7 +635,7 @@ class TestReactiveCompact:
         assert result is None
 
     def test_compacts_long_log(self) -> None:
-        from openharness.session import SessionLog
+        from looplet.session import SessionLog
 
         class FakeState:
             steps: list = []
@@ -653,7 +653,7 @@ class TestReactiveCompact:
 
 class TestConstants:
     def test_constants_exist(self) -> None:
-        from openharness.scaffolding import (
+        from looplet.scaffolding import (
             DIMINISHING_RETURNS_THRESHOLD,
             DIMINISHING_RETURNS_WINDOW,
             MAX_LLM_RETRIES,

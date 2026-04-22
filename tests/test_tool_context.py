@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import pytest
 
-from openharness.tools import BaseToolRegistry, ToolSpec
-from openharness.types import CancelToken, ToolCall, ToolContext
+from looplet.tools import BaseToolRegistry, ToolSpec
+from looplet.types import CancelToken, ToolCall, ToolContext
 
 
 class TestCancelToken:

@@ -1,9 +1,9 @@
-# openharness — Agent Guide
+# looplet — Agent Guide
 
 > This file is optimized for coding agents (Copilot, Claude Code, etc.).
 > For human-oriented docs, see [README.md](README.md).
 
-## What is openharness?
+## What is looplet?
 
 A composable tool-calling loop for LLM agents. You own the loop as a
 Python iterator (`for step in composable_loop(...)`) and inject behavior
@@ -54,7 +54,7 @@ composable_loop(llm, tools, state, config, hooks)
 ## Recipe 1 — Minimal agent (5 lines)
 
 ```python
-from openharness import composable_loop, LoopConfig, DefaultState, BaseToolRegistry, ToolSpec
+from looplet import composable_loop, LoopConfig, DefaultState, BaseToolRegistry, ToolSpec
 
 tools = BaseToolRegistry()
 tools.register(ToolSpec(name="greet", description="Greet someone",
@@ -74,7 +74,7 @@ for step in composable_loop(
 ## Recipe 2 — Coding agent with presets
 
 ```python
-from openharness.presets import coding_agent_preset
+from looplet.presets import coding_agent_preset
 
 preset = coding_agent_preset(workspace="/path/to/project")
 
@@ -92,7 +92,7 @@ for step in composable_loop(
 ## Recipe 3 — Custom coding agent (full control)
 
 ```python
-from openharness import (
+from looplet import (
     composable_loop, LoopConfig, DefaultState, BaseToolRegistry, ToolSpec,
     HookDecision, InjectContext, StaticMemorySource,
     compact_chain, PruneToolResults, SummarizeCompact, TruncateCompact,
@@ -151,7 +151,7 @@ for step in composable_loop(
 ## Recipe 4 — Add a tool
 
 ```python
-from openharness import BaseToolRegistry, ToolSpec
+from looplet import BaseToolRegistry, ToolSpec
 
 def my_tool(*, query: str, limit: int = 10) -> dict:
     """Search for items. Returns {"results": [...], "total": int}."""
@@ -180,7 +180,7 @@ class SecurityGuard:
         if tool_call.tool == "bash":
             cmd = tool_call.args.get("command", "")
             if any(danger in cmd for danger in ["rm -rf", "sudo", "> /dev/"]):
-                from openharness import ToolResult
+                from looplet import ToolResult
                 return ToolResult(
                     tool="bash", args_summary=cmd[:50],
                     data=None, error="Blocked: dangerous command",
@@ -200,8 +200,8 @@ class SecurityGuard:
 ## Recipe 6 — Test without a real LLM
 
 ```python
-from openharness import composable_loop, LoopConfig, DefaultState, BaseToolRegistry, ToolSpec
-from openharness.testing import MockLLMBackend
+from looplet import composable_loop, LoopConfig, DefaultState, BaseToolRegistry, ToolSpec
+from looplet.testing import MockLLMBackend
 
 def test_my_agent():
     llm = MockLLMBackend(responses=[
@@ -230,8 +230,8 @@ def test_my_agent():
 ## Recipe 7 — MCP server tools
 
 ```python
-from openharness import BaseToolRegistry
-from openharness.mcp import MCPToolAdapter
+from looplet import BaseToolRegistry
+from looplet.mcp import MCPToolAdapter
 
 tools = BaseToolRegistry()
 
@@ -244,7 +244,7 @@ with MCPToolAdapter("npx @modelcontextprotocol/server-filesystem /tmp") as mcp:
 ## Recipe 8 — Sub-agent for focused task
 
 ```python
-from openharness.subagent import run_sub_loop
+from looplet.subagent import run_sub_loop
 
 result = run_sub_loop(
     llm=my_llm,
@@ -260,7 +260,7 @@ print(result["findings"])  # list of issues found
 ## Recipe 9 — Permissions
 
 ```python
-from openharness import PermissionEngine, PermissionHook, PermissionDecision
+from looplet import PermissionEngine, PermissionHook, PermissionDecision
 
 engine = PermissionEngine(default=PermissionDecision.ALLOW)
 engine.allow("read", reason="safe read operation")
@@ -331,13 +331,13 @@ uv run pytest                 # full suite (~1008 tests, ~4s)
 uv run pytest -m smoke        # smoke tests only
 uv run ruff check .           # lint
 uv run ruff format --check .  # format check
-uv run mypy src/openharness   # type check
+uv run mypy src/looplet   # type check
 ```
 
 ## File structure
 
 ```
-src/openharness/
+src/looplet/
   __init__.py          # Public API — all exports here
   loop.py              # Core loop: composable_loop, LoopConfig, LoopHook
   types.py             # Step, ToolCall, ToolResult, LLMBackend, DefaultState
@@ -486,8 +486,8 @@ over bare `HookDecision(...)` for single-intent cases.
 
 ## Symbol index (A–Z)
 
-Everything in `from openharness import X` is listed here. Submodule-only
-symbols live in `openharness.<module>`.
+Everything in `from looplet import X` is listed here. Submodule-only
+symbols live in `looplet.<module>`.
 
 | Symbol | Module | Purpose |
 |---|---|---|

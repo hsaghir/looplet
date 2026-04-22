@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-`openharness` is pre-1.0; only the latest minor release receives
+`looplet` is pre-1.0; only the latest minor release receives
 security fixes. Please upgrade to the current version before filing a
 report.
 
@@ -22,7 +22,7 @@ Instead, use GitHub's private vulnerability reporting:
 
 If private vulnerability reporting is not available, email the
 maintainers listed in `pyproject.toml` with the same information and
-the subject line `[openharness security]`.
+the subject line `[looplet security]`.
 
 ## What to expect
 
@@ -47,7 +47,7 @@ In scope:
 
 Out of scope:
 
-- Issues in downstream agents built on top of `openharness` (report to
+- Issues in downstream agents built on top of `looplet` (report to
   that project).
 - Issues in optional LLM SDKs (`anthropic`, `openai`) — report
   upstream.
@@ -58,7 +58,7 @@ Out of scope:
 
 ## Hardening recommendations
 
-When deploying `openharness`:
+When deploying `looplet`:
 
 - Always configure a `PermissionEngine` with an explicit `default`
   (usually `DENY`) instead of relying on rule coverage.
@@ -66,5 +66,5 @@ When deploying `openharness`:
   them cleanly.
 - Treat checkpoint files as sensitive — they contain prompt and tool
   result history.
-- Pin the `openharness` version in your lock file and review
+- Pin the `looplet` version in your lock file and review
   `CHANGELOG.md` before upgrading.

@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from openharness.context import ContextPressureHook
-from openharness.conversation import Conversation
-from openharness.history import HistoryRecorder
-from openharness.session import SessionLog
-from openharness.types import DefaultState, Step, ToolCall, ToolResult
+from looplet.context import ContextPressureHook
+from looplet.conversation import Conversation
+from looplet.history import HistoryRecorder
+from looplet.session import SessionLog
+from looplet.types import DefaultState, Step, ToolCall, ToolResult
 
 
 def _mk_state_with_huge_log(n_steps: int = 3) -> DefaultState:

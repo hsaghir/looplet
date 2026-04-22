@@ -3,15 +3,15 @@ from __future__ import annotations
 
 import pytest
 
-from openharness import (
+from looplet import (
     BaseToolRegistry,
     CachePolicy,
     DefaultState,
     LoopConfig,
     composable_loop,
 )
-from openharness.cache import CacheBreakDetector, CacheBreakpoint, CacheControl, compute_breakpoints
-from openharness.tools import ToolSpec
+from looplet.cache import CacheBreakDetector, CacheBreakpoint, CacheControl, compute_breakpoints
+from looplet.tools import ToolSpec
 
 pytestmark = pytest.mark.smoke
 

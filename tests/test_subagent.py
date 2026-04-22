@@ -1,4 +1,4 @@
-"""Tests for openharness.subagent — run_sub_loop and _MinimalState."""
+"""Tests for looplet.subagent — run_sub_loop and _MinimalState."""
 
 from __future__ import annotations
 
@@ -64,12 +64,12 @@ def _make_loop_generator(steps: list, return_value: dict | None = None):
 
 
 def _inject_mocks(mock_session_log: Any, mock_registry: Any):
-    """Inject mock openharness.session, openharness.loop, openharness.tools into sys.modules."""
-    # Mock openharness.session
+    """Inject mock looplet.session, looplet.loop, looplet.tools into sys.modules."""
+    # Mock looplet.session
     mock_session_mod = MagicMock()
     mock_session_mod.SessionLog.return_value = mock_session_log
 
-    # Mock openharness.tools
+    # Mock looplet.tools
     mock_tools_mod = MagicMock()
     mock_tools_mod.BaseToolRegistry.return_value = _make_mock_registry([])
 
@@ -81,13 +81,13 @@ def _inject_mocks(mock_session_log: Any, mock_registry: Any):
     mock_tool_spec_cls = MagicMock(side_effect=lambda **kw: MagicMock(**kw))
     mock_tools_mod.ToolSpec = mock_tool_spec_cls
 
-    # Mock openharness.loop
+    # Mock looplet.loop
     mock_loop_mod = MagicMock()
 
     return {
-        "openharness.session": mock_session_mod,
-        "openharness.tools": mock_tools_mod,
-        "openharness.loop": mock_loop_mod,
+        "looplet.session": mock_session_mod,
+        "looplet.tools": mock_tools_mod,
+        "looplet.loop": mock_loop_mod,
     }
 
 
@@ -96,11 +96,11 @@ def _inject_mocks(mock_session_log: Any, mock_registry: Any):
 
 class TestMinimalState:
     def test_importable(self):
-        from openharness.subagent import _MinimalState
+        from looplet.subagent import _MinimalState
         assert _MinimalState is not None
 
     def test_initial_state(self):
-        from openharness.subagent import _MinimalState
+        from looplet.subagent import _MinimalState
         state = _MinimalState(task={"id": "t1"}, max_steps=5)
         assert state.steps == []
         assert state.queries_used == 0
@@ -109,7 +109,7 @@ class TestMinimalState:
         assert state.max_steps == 5
 
     def test_budget_remaining_decreases(self):
-        from openharness.subagent import _MinimalState
+        from looplet.subagent import _MinimalState
         state = _MinimalState(max_steps=5)
         mock_step = MagicMock()
         mock_step.summary.return_value = "S1 ✓ search"
@@ -117,20 +117,20 @@ class TestMinimalState:
         assert state.budget_remaining == 4
 
     def test_step_count_reflects_steps(self):
-        from openharness.subagent import _MinimalState
+        from looplet.subagent import _MinimalState
         state = _MinimalState()
         assert state.step_count == 0
         state.steps.append(MagicMock())
         assert state.step_count == 1
 
     def test_context_summary_empty(self):
-        from openharness.subagent import _MinimalState
+        from looplet.subagent import _MinimalState
         state = _MinimalState()
         result = state.context_summary()
         assert "no steps" in result.lower()
 
     def test_context_summary_with_steps(self):
-        from openharness.subagent import _MinimalState
+        from looplet.subagent import _MinimalState
         state = _MinimalState()
         step = MagicMock()
         step.summary.return_value = "S1 ✓ search"
@@ -139,7 +139,7 @@ class TestMinimalState:
         assert "S1" in result
 
     def test_snapshot(self):
-        from openharness.subagent import _MinimalState
+        from looplet.subagent import _MinimalState
         state = _MinimalState(max_steps=3)
         snap = state.snapshot()
         assert "step_count" in snap
@@ -147,18 +147,18 @@ class TestMinimalState:
         assert snap["budget_remaining"] == 3
 
     def test_task_stored(self):
-        from openharness.subagent import _MinimalState
+        from looplet.subagent import _MinimalState
         task = {"id": "abc", "description": "test"}
         state = _MinimalState(task=task)
         assert state.task == task
 
     def test_default_task_empty_dict(self):
-        from openharness.subagent import _MinimalState
+        from looplet.subagent import _MinimalState
         state = _MinimalState()
         assert state.task == {}
 
     def test_budget_never_negative(self):
-        from openharness.subagent import _MinimalState
+        from looplet.subagent import _MinimalState
         state = _MinimalState(max_steps=1)
         for _ in range(5):
             state.steps.append(MagicMock())
@@ -170,14 +170,14 @@ class TestMinimalState:
 
 class TestRunSubLoopSignature:
     def test_importable(self):
-        from openharness.subagent import run_sub_loop
+        from looplet.subagent import run_sub_loop
         assert callable(run_sub_loop)
 
     def test_no_alert_param(self):
         """Backward-compat 'alert' param must NOT be present."""
         import inspect
 
-        from openharness.subagent import run_sub_loop
+        from looplet.subagent import run_sub_loop
         sig = inspect.signature(run_sub_loop)
         assert "alert" not in sig.parameters, "alert param should be removed"
 
@@ -185,14 +185,14 @@ class TestRunSubLoopSignature:
         """Backward-compat 'exploration' param must NOT be present."""
         import inspect
 
-        from openharness.subagent import run_sub_loop
+        from looplet.subagent import run_sub_loop
         sig = inspect.signature(run_sub_loop)
         assert "exploration" not in sig.parameters, "exploration param should be removed"
 
     def test_has_required_params(self):
         import inspect
 
-        from openharness.subagent import run_sub_loop
+        from looplet.subagent import run_sub_loop
         sig = inspect.signature(run_sub_loop)
         params = sig.parameters
         assert "llm" in params
@@ -210,8 +210,8 @@ class TestRunSubLoopSignature:
 class TestRunSubLoopExecution:
     def _run_with_mocks(self, steps=None, entities=None, findings=None, highlights=None,
                         build_summary=None, tools=None, state_mutating_tools=None):
-        """Helper: run run_sub_loop with all openharness deps mocked."""
-        from openharness.subagent import run_sub_loop
+        """Helper: run run_sub_loop with all looplet deps mocked."""
+        from looplet.subagent import run_sub_loop
 
         mock_log = _make_mock_session_log(
             entities=entities or {"entity1", "entity2"},
@@ -245,9 +245,9 @@ class TestRunSubLoopExecution:
         mock_tools_mod.ToolSpec = MagicMock(side_effect=lambda **kw: MagicMock(**kw))
 
         with patch.dict(sys.modules, {
-            "openharness.loop": mock_loop_mod,
-            "openharness.session": mock_session_mod,
-            "openharness.tools": mock_tools_mod,
+            "looplet.loop": mock_loop_mod,
+            "looplet.session": mock_session_mod,
+            "looplet.tools": mock_tools_mod,
         }):
             result = run_sub_loop(
                 llm=MagicMock(),
@@ -343,7 +343,7 @@ class TestRunSubLoopExecution:
 class TestToolRegistryCloning:
     def _run_and_get_cloned_registry(self, parent_tools: list[str], exclude: list[str] | None = None):
         """Run sub_loop and capture what tools were registered in sub-registry."""
-        from openharness.subagent import run_sub_loop
+        from looplet.subagent import run_sub_loop
 
         registered: list[str] = []
 
@@ -386,9 +386,9 @@ class TestToolRegistryCloning:
         parent_registry = _make_mock_registry(parent_tools)
 
         with patch.dict(sys.modules, {
-            "openharness.loop": mock_loop_mod,
-            "openharness.session": mock_session_mod,
-            "openharness.tools": mock_tools_mod,
+            "looplet.loop": mock_loop_mod,
+            "looplet.session": mock_session_mod,
+            "looplet.tools": mock_tools_mod,
         }):
             run_sub_loop(
                 llm=MagicMock(),
@@ -426,7 +426,7 @@ class TestToolRegistryCloning:
 class TestParentStateIsolation:
     def test_parent_state_unaffected(self):
         """Parent state budget/steps unchanged after sub_loop."""
-        from openharness.subagent import run_sub_loop
+        from looplet.subagent import run_sub_loop
 
         parent_state = SimpleNamespace()
         parent_state.steps = []
@@ -453,9 +453,9 @@ class TestParentStateIsolation:
         mock_tools_mod.ToolSpec = MagicMock(side_effect=lambda **kw: MagicMock(**kw))
 
         with patch.dict(sys.modules, {
-            "openharness.loop": mock_loop_mod,
-            "openharness.session": mock_session_mod,
-            "openharness.tools": mock_tools_mod,
+            "looplet.loop": mock_loop_mod,
+            "looplet.session": mock_session_mod,
+            "looplet.tools": mock_tools_mod,
         }):
             run_sub_loop(
                 llm=MagicMock(),
@@ -469,7 +469,7 @@ class TestParentStateIsolation:
 
     def test_sub_loop_uses_minimal_state_not_parent(self):
         """When no state provided, _MinimalState is used (not parent state)."""
-        from openharness.subagent import _MinimalState, run_sub_loop
+        from looplet.subagent import _MinimalState, run_sub_loop
 
         captured_states = []
 
@@ -493,9 +493,9 @@ class TestParentStateIsolation:
         mock_tools_mod.ToolSpec = MagicMock(side_effect=lambda **kw: MagicMock(**kw))
 
         with patch.dict(sys.modules, {
-            "openharness.loop": mock_loop_mod,
-            "openharness.session": mock_session_mod,
-            "openharness.tools": mock_tools_mod,
+            "looplet.loop": mock_loop_mod,
+            "looplet.session": mock_session_mod,
+            "looplet.tools": mock_tools_mod,
         }):
             run_sub_loop(
                 llm=MagicMock(),
@@ -514,7 +514,7 @@ class TestNoDomainSpecificCode:
     def test_no_domain_specific_imports(self):
         import inspect
 
-        import openharness.subagent as mod
+        import looplet.subagent as mod
         source = inspect.getsource(mod)
         assert "primal_security" not in source
 
@@ -522,12 +522,12 @@ class TestNoDomainSpecificCode:
         """No backward-compat 'alert' param in source."""
         import inspect
 
-        import openharness.subagent as mod
+        import looplet.subagent as mod
         source = inspect.getsource(mod)
         assert "alert" not in source or "# alert" in source or "alert_id" in source
         # More precise: check function signature
         import inspect as ins
 
-        import openharness.subagent
-        sig = ins.signature(openharness.subagent.run_sub_loop)
+        import looplet.subagent
+        sig = ins.signature(looplet.subagent.run_sub_loop)
         assert "alert" not in sig.parameters

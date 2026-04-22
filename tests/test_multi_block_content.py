@@ -11,7 +11,7 @@ and existing constructors still accept plain strings.
 
 from __future__ import annotations
 
-from openharness.conversation import (
+from looplet.conversation import (
     ContentBlock,
     Conversation,
     Message,

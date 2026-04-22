@@ -5,16 +5,16 @@ import tempfile
 
 import pytest
 
-from openharness import (
+from looplet import (
     ApprovalHook,
     BaseToolRegistry,
     DefaultState,
     LoopConfig,
     composable_loop,
 )
-from openharness.approval import ApprovalRequest
-from openharness.testing import MockLLMBackend
-from openharness.tools import ToolSpec
+from looplet.approval import ApprovalRequest
+from looplet.testing import MockLLMBackend
+from looplet.tools import ToolSpec
 
 pytestmark = pytest.mark.smoke
 

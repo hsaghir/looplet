@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from openharness import (
+from looplet import (
     BaseToolRegistry,
     ContextBudget,
     DefaultState,
@@ -12,9 +12,9 @@ from openharness import (
     TruncateCompact,
     composable_loop,
 )
-from openharness.budget import BudgetTelemetry, classify_tier
-from openharness.session import SessionLog
-from openharness.tools import ToolSpec
+from looplet.budget import BudgetTelemetry, classify_tier
+from looplet.session import SessionLog
+from looplet.tools import ToolSpec
 
 pytestmark = pytest.mark.smoke
 

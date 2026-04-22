@@ -1,4 +1,4 @@
-"""Tests for openharness.prompts — structured prompt assembly."""
+"""Tests for looplet.prompts — structured prompt assembly."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import inspect
 
 import pytest
 
-from openharness.prompts import build_prompt
+from looplet.prompts import build_prompt
 
 pytestmark = pytest.mark.smoke
 

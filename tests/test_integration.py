@@ -1,6 +1,6 @@
-"""End-to-end integration tests for openharness — all components working together.
+"""End-to-end integration tests for looplet — all components working together.
 
-Each test scenario exercises multiple openharness components simultaneously to
+Each test scenario exercises multiple looplet components simultaneously to
 verify correct composition and cross-module integration.
 """
 
@@ -91,7 +91,7 @@ def _tool_response(tool: str, **args: Any) -> str:
 
 
 def _make_registry_with_done() -> Any:
-    from openharness.tools import BaseToolRegistry, ToolSpec
+    from looplet.tools import BaseToolRegistry, ToolSpec
 
     registry = BaseToolRegistry()
     registry.register(ToolSpec("think", "Record a thought", {"thought": "a thought to record"}, lambda thought="": thought))
@@ -104,11 +104,11 @@ def _make_registry_with_done() -> Any:
 
 def test_full_loop_with_all_capabilities():
     """Run a 3-step mock loop with all capabilities active simultaneously."""
-    from openharness.checkpoint import Checkpoint, FileCheckpointStore
-    from openharness.context import ContextPressureHook
-    from openharness.loop import LoopConfig, composable_loop
-    from openharness.streaming import CallbackEmitter, LoopEndEvent, LoopStartEvent, StreamingHook
-    from openharness.telemetry import MetricsCollector, Tracer
+    from looplet.checkpoint import Checkpoint, FileCheckpointStore
+    from looplet.context import ContextPressureHook
+    from looplet.loop import LoopConfig, composable_loop
+    from looplet.streaming import CallbackEmitter, LoopEndEvent, LoopStartEvent, StreamingHook
+    from looplet.telemetry import MetricsCollector, Tracer
 
     llm_responses = [
         _tool_response("think", thought="step 1"),
@@ -204,9 +204,9 @@ def test_full_loop_with_all_capabilities():
 
 def test_checkpoint_resume():
     """Run 2-step loop, save checkpoint, verify resume gives step_offset > 0."""
-    from openharness.checkpoint import Checkpoint, FileCheckpointStore, resume_loop_state
-    from openharness.loop import LoopConfig, composable_loop
-    from openharness.session import SessionLog
+    from looplet.checkpoint import Checkpoint, FileCheckpointStore, resume_loop_state
+    from looplet.loop import LoopConfig, composable_loop
+    from looplet.session import SessionLog
 
     llm = _ScriptedLLM([
         _tool_response("think", thought="first step"),
@@ -250,7 +250,7 @@ def test_checkpoint_resume():
 
 def test_router_model_selection():
     """SimpleRouter selects correct backend based on purpose tag."""
-    from openharness.router import ModelProfile, SimpleRouter
+    from looplet.router import ModelProfile, SimpleRouter
 
     backend_a = _ScriptedLLM(["response_a"])
     backend_b = _ScriptedLLM(["response_b"])
@@ -275,7 +275,7 @@ def test_router_model_selection():
 
 def test_recovery_fires_on_parse_error():
     """Custom recovery strategy executes when PARSE_ERROR triggered."""
-    from openharness.recovery import (
+    from looplet.recovery import (
         FailureScenario,
         RecoveryAction,
         RecoveryRecipe,
@@ -316,8 +316,8 @@ def test_recovery_fires_on_parse_error():
 
 def test_validation_rejects_bad_done():
     """Loop continues (doesn't terminate) when done() payload fails schema validation."""
-    from openharness.loop import LoopConfig, composable_loop
-    from openharness.validation import FieldSpec, OutputSchema, ValidatingToolRegistry
+    from looplet.loop import LoopConfig, composable_loop
+    from looplet.validation import FieldSpec, OutputSchema, ValidatingToolRegistry
 
     # Mock LLM: returns done without required 'summary' field, then valid done
     llm = _ScriptedLLM([
@@ -327,7 +327,7 @@ def test_validation_rejects_bad_done():
 
     # ValidatingToolRegistry owns its own internal registry
     val_registry = ValidatingToolRegistry()
-    from openharness.tools import ToolSpec
+    from looplet.tools import ToolSpec
     val_registry.register(ToolSpec("think", "Record thought", {"thought": "a thought"}, lambda thought="": thought))
 
     schema = OutputSchema(
@@ -358,8 +358,8 @@ def test_validation_rejects_bad_done():
 
 def test_streaming_event_sequence():
     """LoopStartEvent arrives first; LoopEndEvent arrives last."""
-    from openharness.loop import LoopConfig, composable_loop
-    from openharness.streaming import (
+    from looplet.loop import LoopConfig, composable_loop
+    from looplet.streaming import (
         CallbackEmitter,
         LoopEndEvent,
         LoopStartEvent,

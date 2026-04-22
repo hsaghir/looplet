@@ -1,4 +1,4 @@
-"""Tests for openharness.tools — ToolSpec, BaseToolRegistry, register_think_tool."""
+"""Tests for looplet.tools — ToolSpec, BaseToolRegistry, register_think_tool."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ pytestmark = pytest.mark.smoke
 
 class TestToolSpec:
     def test_creation(self):
-        from openharness.tools import ToolSpec
+        from looplet.tools import ToolSpec
         spec = ToolSpec(
             name="echo",
             description="Echo the input back",
@@ -26,17 +26,17 @@ class TestToolSpec:
         assert spec.free is False
 
     def test_concurrent_safe_default(self):
-        from openharness.tools import ToolSpec
+        from looplet.tools import ToolSpec
         spec = ToolSpec(name="x", description="d", parameters={}, execute=lambda: None)
         assert spec.concurrent_safe is False
 
     def test_free_default(self):
-        from openharness.tools import ToolSpec
+        from looplet.tools import ToolSpec
         spec = ToolSpec(name="x", description="d", parameters={}, execute=lambda: None)
         assert spec.free is False
 
     def test_to_api_schema(self):
-        from openharness.tools import ToolSpec
+        from looplet.tools import ToolSpec
         spec = ToolSpec(
             name="search",
             description="Search for events",
@@ -53,7 +53,7 @@ class TestToolSpec:
         assert "limit" in props
 
     def test_spec_text(self):
-        from openharness.tools import ToolSpec
+        from looplet.tools import ToolSpec
         spec = ToolSpec(
             name="lookup",
             description="Look up a value",
@@ -71,7 +71,7 @@ class TestToolSpec:
 
 class TestBaseToolRegistry:
     def _make_registry_with_echo(self):
-        from openharness.tools import BaseToolRegistry, ToolSpec
+        from looplet.tools import BaseToolRegistry, ToolSpec
         reg = BaseToolRegistry()
         reg.register(ToolSpec(
             name="echo",
@@ -86,7 +86,7 @@ class TestBaseToolRegistry:
         assert "echo" in reg.tool_names
 
     def test_dispatch_success(self):
-        from openharness.types import ToolCall
+        from looplet.types import ToolCall
         reg = self._make_registry_with_echo()
         call = ToolCall(tool="echo", args={"text": "hello"})
         result = reg.dispatch(call)
@@ -95,15 +95,15 @@ class TestBaseToolRegistry:
         assert result.tool == "echo"
 
     def test_dispatch_timing(self):
-        from openharness.types import ToolCall
+        from looplet.types import ToolCall
         reg = self._make_registry_with_echo()
         call = ToolCall(tool="echo", args={"text": "hi"})
         result = reg.dispatch(call)
         assert result.duration_ms >= 0.0
 
     def test_dispatch_unknown_tool(self):
-        from openharness.tools import BaseToolRegistry
-        from openharness.types import ToolCall
+        from looplet.tools import BaseToolRegistry
+        from looplet.types import ToolCall
         reg = BaseToolRegistry()
         call = ToolCall(tool="nonexistent", args={})
         result = reg.dispatch(call)
@@ -111,8 +111,8 @@ class TestBaseToolRegistry:
         assert "Unknown tool" in result.error
 
     def test_dispatch_error_handling(self):
-        from openharness.tools import BaseToolRegistry, ToolSpec
-        from openharness.types import ToolCall
+        from looplet.tools import BaseToolRegistry, ToolSpec
+        from looplet.types import ToolCall
         reg = BaseToolRegistry()
         reg.register(ToolSpec(
             name="boom",
@@ -128,14 +128,14 @@ class TestBaseToolRegistry:
         assert result.data is None
 
     def test_dispatch_call_id_propagated(self):
-        from openharness.types import ToolCall
+        from looplet.types import ToolCall
         reg = self._make_registry_with_echo()
         call = ToolCall(tool="echo", args={"text": "x"}, call_id="my-id-123")
         result = reg.dispatch(call)
         assert result.call_id == "my-id-123"
 
     def test_dispatch_strips_dunder_args(self):
-        from openharness.types import ToolCall
+        from looplet.types import ToolCall
         reg = self._make_registry_with_echo()
         call = ToolCall(tool="echo", args={"text": "hi", "__internal": "secret"})
         result = reg.dispatch(call)
@@ -148,7 +148,7 @@ class TestBaseToolRegistry:
         assert "echo" in catalog
 
     def test_to_api_schema(self):
-        from openharness.tools import BaseToolRegistry
+        from looplet.tools import BaseToolRegistry
         reg = self._make_registry_with_echo()
         schemas = reg.tool_schemas()
         assert isinstance(schemas, list)
@@ -161,7 +161,7 @@ class TestBaseToolRegistry:
 
 class TestBatchDispatch:
     def _make_registry(self):
-        from openharness.tools import BaseToolRegistry, ToolSpec
+        from looplet.tools import BaseToolRegistry, ToolSpec
         reg = BaseToolRegistry()
         reg.register(ToolSpec(
             name="read",
@@ -180,12 +180,12 @@ class TestBatchDispatch:
         return reg
 
     def test_dispatch_batch_empty(self):
-        from openharness.tools import BaseToolRegistry
+        from looplet.tools import BaseToolRegistry
         reg = BaseToolRegistry()
         assert reg.dispatch_batch([]) == []
 
     def test_dispatch_batch_returns_all_results(self):
-        from openharness.types import ToolCall
+        from looplet.types import ToolCall
         reg = self._make_registry()
         calls = [
             ToolCall(tool="read", args={"key": "a"}),
@@ -197,7 +197,7 @@ class TestBatchDispatch:
         assert all(r.error is None for r in results)
 
     def test_partition_concurrent_vs_serial(self):
-        from openharness.types import ToolCall
+        from looplet.types import ToolCall
         reg = self._make_registry()
         calls = [
             ToolCall(tool="read", args={"key": "a"}),
@@ -213,7 +213,7 @@ class TestBatchDispatch:
         assert len(batches[1]["calls"]) == 1
 
     def test_concurrent_batch_dispatches_parallel(self):
-        from openharness.types import ToolCall
+        from looplet.types import ToolCall
         reg = self._make_registry()
         calls = [ToolCall(tool="read", args={"key": str(i)}) for i in range(5)]
         results = reg._dispatch_concurrent_batch(calls)
@@ -226,28 +226,28 @@ class TestBatchDispatch:
 
 class TestThinkTool:
     def test_think_tool_registered(self):
-        from openharness.tools import BaseToolRegistry, register_think_tool
+        from looplet.tools import BaseToolRegistry, register_think_tool
         reg = BaseToolRegistry()
         register_think_tool(reg)
         assert "think" in reg.tool_names
 
     def test_think_tool_is_free(self):
-        from openharness.tools import BaseToolRegistry, register_think_tool
+        from looplet.tools import BaseToolRegistry, register_think_tool
         reg = BaseToolRegistry()
         register_think_tool(reg)
         spec = reg._tools["think"]
         assert spec.free is True
 
     def test_think_tool_is_concurrent_safe(self):
-        from openharness.tools import BaseToolRegistry, register_think_tool
+        from looplet.tools import BaseToolRegistry, register_think_tool
         reg = BaseToolRegistry()
         register_think_tool(reg)
         spec = reg._tools["think"]
         assert spec.concurrent_safe is True
 
     def test_think_tool_dispatch(self):
-        from openharness.tools import BaseToolRegistry, register_think_tool
-        from openharness.types import ToolCall
+        from looplet.tools import BaseToolRegistry, register_think_tool
+        from looplet.types import ToolCall
         reg = BaseToolRegistry()
         register_think_tool(reg)
         call = ToolCall(tool="think", args={"analysis": "weighing pros and cons"})
@@ -258,14 +258,14 @@ class TestThinkTool:
     def test_think_docstring_no_security_terms(self):
         import inspect
 
-        from openharness.tools import register_think_tool
+        from looplet.tools import register_think_tool
         doc = inspect.getdoc(register_think_tool) or ""
         lower_doc = doc.lower()
         for term in ["brute force", "vpn", "lateral movement", "security"]:
             assert term not in lower_doc, f"Security term '{term}' found in think tool docstring"
 
     def test_think_description_no_security_terms(self):
-        from openharness.tools import BaseToolRegistry, register_think_tool
+        from looplet.tools import BaseToolRegistry, register_think_tool
         reg = BaseToolRegistry()
         register_think_tool(reg)
         desc = reg._tools["think"].description.lower()
@@ -277,11 +277,11 @@ class TestThinkTool:
 
 
 class TestExports:
-    def test_all_tools_exported_from_openharness(self):
-        import openharness as oh
+    def test_all_tools_exported_from_looplet(self):
+        import looplet as oh
         for name in ["ToolSpec", "BaseToolRegistry"]:
-            assert hasattr(oh, name), f"{name} not exported from openharness"
+            assert hasattr(oh, name), f"{name} not exported from looplet"
 
     def test_register_think_tool_importable(self):
-        from openharness.tools import register_think_tool
+        from looplet.tools import register_think_tool
         assert register_think_tool is not None

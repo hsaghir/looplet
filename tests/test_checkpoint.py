@@ -1,4 +1,4 @@
-"""Tests for openharness.checkpoint — save/restore loop state."""
+"""Tests for looplet.checkpoint — save/restore loop state."""
 
 from __future__ import annotations
 
@@ -10,14 +10,14 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from openharness.checkpoint import (
+from looplet.checkpoint import (
     Checkpoint,
     CheckpointHook,
     CheckpointStore,
     FileCheckpointStore,
     resume_loop_state,
 )
-from openharness.session import SessionLog
+from looplet.session import SessionLog
 
 # ── Helpers ────────────────────────────────────────────────────────
 
@@ -218,7 +218,7 @@ class TestCheckpointHook:
         return store
 
     def _make_tool_call_result(self) -> tuple[Any, Any]:
-        from openharness.types import ToolCall, ToolResult
+        from looplet.types import ToolCall, ToolResult
         tc = ToolCall(tool="search", args={}, reasoning="r")
         tr = ToolResult(tool="search", args_summary="", data={}, error=None)
         return tc, tr

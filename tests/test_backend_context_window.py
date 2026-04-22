@@ -26,7 +26,7 @@ Invariants:
 
 from __future__ import annotations
 
-from openharness.context import DEFAULT_CONTEXT_WINDOW, ContextPressureHook
+from looplet.context import DEFAULT_CONTEXT_WINDOW, ContextPressureHook
 
 
 class _BackendWithWindow:

@@ -1,6 +1,6 @@
 # Hook Authoring Guide
 
-Hooks are the primary extension mechanism in `openharness`. They let you
+Hooks are the primary extension mechanism in `looplet`. They let you
 inject domain-specific behavior into the generic loop without modifying
 any framework code.
 
@@ -257,7 +257,7 @@ def test_quality_gate_allows_enough():
 
 ## Related: provenance hook
 
-`TrajectoryRecorder` (in `openharness.provenance`) is a hook that
+`TrajectoryRecorder` (in `looplet.provenance`) is a hook that
 captures a complete structured record of every loop run —
 `pre_loop` → `pre_prompt` → `post_dispatch` → `on_loop_end` — and
 serialises it to disk alongside per-LLM-call prompt/response files.

@@ -9,7 +9,7 @@ the level of detail they can expect from answers.
 
 ## 1. Category: Q&A — "Why not LangGraph?"
 
-**Title:** Why would I pick openharness over LangGraph?
+**Title:** Why would I pick looplet over LangGraph?
 
 **Body:**
 
@@ -18,14 +18,14 @@ searchable. LangGraph is great for workflows that are *actually*
 graphs — branches, joins, parallel fan-out, recoverable sub-graphs.
 If that's your shape, use LangGraph; no hard feelings.
 
-`openharness` is for the case where you don't have a graph — you
+`looplet` is for the case where you don't have a graph — you
 have a single tool-calling loop and you want to **step through it**.
 You want `for step in loop(...)` so you can `if step.tool_result.error:
 break` or mutate state between steps. LangGraph's `StateGraph` is a
 great tool, but you pay for graph semantics whether you need them or
 not.
 
-Other reasons people pick `openharness`:
+Other reasons people pick `looplet`:
 
 - 1 runtime dep vs LangGraph's ~15.
 - Hooks are `Protocol` objects, not subclasses — no framework vocab
@@ -38,7 +38,7 @@ Not a competition. Different problems.
 
 ---
 
-## 2. Category: Show and tell — "What are you building with openharness?"
+## 2. Category: Show and tell — "What are you building with looplet?"
 
 **Title:** Share what you're building
 
@@ -61,7 +61,7 @@ If you're willing, drop a link — we'll add you to
 
 ## 3. Category: Ideas — "What's the right MCP story?"
 
-**Title:** How do you use (or want to use) MCP servers with openharness?
+**Title:** How do you use (or want to use) MCP servers with looplet?
 
 **Body:**
 

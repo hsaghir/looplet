@@ -9,10 +9,10 @@ updates all attached surfaces so they stay in lockstep — removing the
 
 from __future__ import annotations
 
-from openharness.conversation import Conversation, MessageRole
-from openharness.history import HistoryRecorder
-from openharness.session import SessionLog
-from openharness.types import DefaultState, Step, ToolCall, ToolResult
+from looplet.conversation import Conversation, MessageRole
+from looplet.history import HistoryRecorder
+from looplet.session import SessionLog
+from looplet.types import DefaultState, Step, ToolCall, ToolResult
 
 
 def _mk_step(num: int, tool: str = "t", data: object | None = None) -> Step:

@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import pytest
 
-from openharness import BaseToolRegistry, Skill, StaticMemorySource
-from openharness.tools import ToolSpec
+from looplet import BaseToolRegistry, Skill, StaticMemorySource
+from looplet.tools import ToolSpec
 
 pytestmark = pytest.mark.smoke
 
@@ -44,6 +44,6 @@ class TestSkill:
         assert skill.register(BaseToolRegistry()) == 0
         assert skill.tool_names() == []
 
-    def test_from_openharness_import(self):
-        from openharness import Skill as S
+    def test_from_looplet_import(self):
+        from looplet import Skill as S
         assert S is Skill

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from openharness.mcp import MCPToolAdapter
+from looplet.mcp import MCPToolAdapter
 
 pytestmark = pytest.mark.smoke
 
@@ -43,6 +43,6 @@ class TestMCPToolAdapter:
         adapter.close()  # Should not raise
         adapter.close()  # Idempotent
 
-    def test_from_openharness_import(self):
-        from openharness import MCPToolAdapter as MCP
+    def test_from_looplet_import(self):
+        from looplet import MCPToolAdapter as MCP
         assert MCP is MCPToolAdapter

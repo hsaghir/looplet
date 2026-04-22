@@ -6,7 +6,7 @@ Covers:
  - ``llm_call_with_retry`` routes to ``generate_with_tools`` when ``tools`` is
    passed and the backend supports it; falls back to ``generate`` otherwise.
  - The composable loop passes tool schemas through only when
-   ``OPENHARNESS_NATIVE_TOOLS`` (via FLAGS.native_tools) or
+   ``LOOPLET_NATIVE_TOOLS`` (via FLAGS.native_tools) or
    ``LoopConfig.use_native_tools`` is set, and routes the resulting
    ``list[dict]`` response through ``parse_native_tool_use``.
 """
@@ -18,15 +18,15 @@ from typing import Any
 
 import pytest
 
-from openharness.backends import (
+from looplet.backends import (
     AnthropicBackend,
     OpenAIBackend,
     _anthropic_response_to_blocks,
     _openai_message_to_blocks,
     _to_openai_tools,
 )
-from openharness.scaffolding import llm_call_with_retry
-from openharness.types import NativeToolBackend
+from looplet.scaffolding import llm_call_with_retry
+from looplet.types import NativeToolBackend
 
 # ── Helpers ──────────────────────────────────────────────────────
 
@@ -257,9 +257,9 @@ class TestLoopGatingCall:
 
     def test_loop_imports_flag_and_parser(self):
         # Sanity: the module-level branch uses these symbols.
-        from openharness import loop as loop_module
-        from openharness.flags import FLAGS
-        from openharness.parse import parse_native_tool_use
+        from looplet import loop as loop_module
+        from looplet.flags import FLAGS
+        from looplet.parse import parse_native_tool_use
 
         assert "parse_native_tool_use" in loop_module.__dict__
         assert FLAGS is not None
@@ -272,6 +272,6 @@ class TestLoopGatingCall:
         ("", False),
     ])
     def test_flag_respects_env(self, monkeypatch, env_val, expected):
-        from openharness.flags import _Flags
-        monkeypatch.setenv("OPENHARNESS_NATIVE_TOOLS", env_val)
+        from looplet.flags import _Flags
+        monkeypatch.setenv("LOOPLET_NATIVE_TOOLS", env_val)
         assert _Flags().native_tools is expected

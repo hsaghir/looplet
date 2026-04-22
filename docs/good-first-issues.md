@@ -11,13 +11,13 @@ existing one) so we don't duplicate work.
 
 ### 1. Add a Gemini (Google) backend
 
-**Where:** new file `src/openharness/backends_gemini.py`, exported from
-`openharness/__init__.py` as `GeminiBackend`.
+**Where:** new file `src/looplet/backends_gemini.py`, exported from
+`looplet/__init__.py` as `GeminiBackend`.
 
 **What:** implement the `LLMBackend` protocol on top of the
 `google-generativeai` Python SDK. Follow the shape of
 `AnthropicBackend` / `OpenAIBackend` in
-[`src/openharness/backends.py`](../src/openharness/backends.py).
+[`src/looplet/backends.py`](../src/looplet/backends.py).
 
 **Acceptance:**
 - Add `google-generativeai` to an optional extra `[gemini]`.
@@ -50,9 +50,9 @@ summarise) that demonstrates `run_sub_loop` for a specialist subtask.
 
 ## Evals
 
-### 6. Ship reusable eval recipes as `openharness.evals.recipes`
+### 6. Ship reusable eval recipes as `looplet.evals.recipes`
 
-**Where:** new file `src/openharness/evals_recipes.py`.
+**Where:** new file `src/looplet/evals_recipes.py`.
 
 **What:** port these common evals into stable importable functions:
 
@@ -69,7 +69,7 @@ one test against a fixture trajectory under `tests/fixtures/`.
 
 ### 7. Fill in missing docstrings
 
-Run `uv run pyright src/openharness/` and fix any public symbol that
+Run `uv run pyright src/looplet/` and fix any public symbol that
 is missing a docstring. Start with the smallest modules
 (`events.py`, `flags.py`, `memory.py`).
 

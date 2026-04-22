@@ -8,9 +8,9 @@ method returns ``None`` so tools can proceed unattended.
 
 from __future__ import annotations
 
-from openharness.loop import LoopConfig, composable_loop
-from openharness.tools import BaseToolRegistry, ToolSpec
-from openharness.types import DefaultState, LLMBackend, ToolContext
+from looplet.loop import LoopConfig, composable_loop
+from looplet.tools import BaseToolRegistry, ToolSpec
+from looplet.types import DefaultState, LLMBackend, ToolContext
 
 
 class TestToolContextApproval:

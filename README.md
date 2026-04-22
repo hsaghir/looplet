@@ -74,49 +74,44 @@ That's the whole thing:
 ```mermaid
 %%{init: {"theme":"base","themeVariables":{
   "fontFamily":"ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
-  "fontSize":"14px",
-  "primaryColor":"#1e3a8a",
-  "primaryTextColor":"#f8fafc",
-  "primaryBorderColor":"#60a5fa",
-  "lineColor":"#94a3b8"
+  "fontSize":"15px",
+  "lineColor":"#64748b"
 }}}%%
 flowchart LR
-    %% ─── you (outside the loop) ───
-    you(["👤&nbsp;&nbsp;your&nbsp;for-loop"]):::you
+    you(["<b>your code</b><br/><span style='font-size:11px;opacity:.8'>for step in loop(...)</span>"]):::you
 
-    %% ─── the loop itself ───
-    subgraph loop["&nbsp;&nbsp;⭕&nbsp;&nbsp;<b>composable_loop</b>&nbsp;&nbsp;"]
+    subgraph loop["&nbsp;&nbsp;&nbsp;&nbsp;<b>composable_loop</b>&nbsp;·&nbsp;<span style='font-size:11px;opacity:.75;font-weight:400'>you own every edge</span>&nbsp;&nbsp;&nbsp;&nbsp;"]
       direction LR
-      prompt(["💬&nbsp;&nbsp;<b>prompt LLM</b>"]):::phase
-      dispatch(["🛠️&nbsp;&nbsp;<b>dispatch tool</b>"]):::phase
+      prompt(["<b>prompt</b><br/><span style='font-size:11px;opacity:.85'>build · call · parse</span>"]):::phase
+      dispatch(["<b>dispatch</b><br/><span style='font-size:11px;opacity:.85'>validate · run tool</span>"]):::phase
       done{{"<b>done?</b>"}}:::done
-      prompt --> dispatch --> done
+      prompt -- "tool call" --> dispatch
+      dispatch -- "observation" --> done
       done -- "no" --> prompt
     end
 
-    step[/"📦&nbsp;&nbsp;<b>Step</b>"/]:::step
+    step[/"<b>Step</b><br/><span style='font-size:11px;opacity:.85'>prompt · call · result · usage</span>"/]:::step
 
-    you ==> prompt
-    done == "yes" ==> step ==> you
+    you == "task" ==> prompt
+    done == "yes" ==> step
+    step == "yield" ==> you
 
-    %% ─── hooks (the extension points) ───
-    h1["🧩&nbsp;&nbsp;<b>pre_prompt</b><br/><span style='font-size:11px;opacity:.85'>redact · inject · compact · retry</span>"]:::hook
-    h2["🛡️&nbsp;&nbsp;<b>pre_dispatch</b><br/><span style='font-size:11px;opacity:.85'>permissions · approval · rewrite · cache</span>"]:::hook
-    h3["📝&nbsp;&nbsp;<b>post_dispatch</b><br/><span style='font-size:11px;opacity:.85'>trace · metrics · checkpoint · provenance</span>"]:::hook
-    h4["🏁&nbsp;&nbsp;<b>check_done</b><br/><span style='font-size:11px;opacity:.85'>custom stop rules · budgets</span>"]:::hook
+    h1["<b>pre_prompt</b><br/><span style='font-size:11px;opacity:.85'>redact · inject · compact · retry</span>"]:::hook
+    h2["<b>pre_dispatch</b><br/><span style='font-size:11px;opacity:.85'>permissions · approval · rewrite · cache</span>"]:::hook
+    h3["<b>post_dispatch</b><br/><span style='font-size:11px;opacity:.85'>trace · metrics · checkpoint · eval</span>"]:::hook
+    h4["<b>check_done</b><br/><span style='font-size:11px;opacity:.85'>stop rules · budgets</span>"]:::hook
 
     h1 -.-> prompt
     h2 -.-> dispatch
     h3 -.-> dispatch
     h4 -.-> done
 
-    %% ─── styles ───
-    classDef you    fill:#0f172a,stroke:#64748b,stroke-width:2px,color:#f8fafc;
-    classDef phase  fill:#1e3a8a,stroke:#60a5fa,stroke-width:2px,color:#f8fafc;
-    classDef done   fill:#065f46,stroke:#34d399,stroke-width:2px,color:#d1fae5;
-    classDef step   fill:#4338ca,stroke:#a5b4fc,stroke-width:2px,color:#eef2ff;
-    classDef hook   fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#78350f;
-    style loop fill:#f8fafc,stroke:#cbd5e1,stroke-width:2px,stroke-dasharray:6 4,color:#334155;
+    classDef you    fill:#0f172a,stroke:#475569,stroke-width:2px,color:#f8fafc;
+    classDef phase  fill:#1d4ed8,stroke:#93c5fd,stroke-width:2px,color:#f8fafc;
+    classDef done   fill:#047857,stroke:#6ee7b7,stroke-width:2px,color:#ecfdf5;
+    classDef step   fill:#4338ca,stroke:#c7d2fe,stroke-width:2px,color:#eef2ff;
+    classDef hook   fill:#fef3c7,stroke:#d97706,stroke-width:1.5px,color:#78350f;
+    style loop fill:#f8fafc,stroke:#94a3b8,stroke-width:1.5px,stroke-dasharray:8 5,color:#1e293b;
 ```
 
 Every amber box is a `Protocol` method. A hook is any object that

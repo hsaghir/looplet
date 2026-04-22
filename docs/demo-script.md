@@ -21,12 +21,14 @@ clear
 ```bash
 cd <repo-root>
 rm -f docs/demo.cast docs/demo.gif
-asciinema rec docs/demo.cast --overwrite --cols 90 --rows 14 \
-    --command "uv run --quiet python -m looplet.examples.scripted_demo"
-agg docs/demo.cast docs/demo.gif --theme monokai --cols 90 --rows 14 --font-size 18
+asciinema rec docs/demo.cast --overwrite --cols 90 --rows 22 \
+    --command "uv run --quiet --active python -m looplet.examples.scripted_demo"
+agg docs/demo.cast docs/demo.gif --theme monokai --cols 90 --rows 22 --font-size 18
 ```
 
-Output: ~3-second, 7-frame, ~20 KB GIF that loops forever.
+Output: ~5-second, 16-frame, ~40 KB GIF that loops forever. Shows a
+`DebugHook` printing per-dispatch/per-result lines, an `ApprovalHook`
+pause on the destructive `delete_rows` call, and a clean resume.
 
 ## Real-LLM version (optional)
 

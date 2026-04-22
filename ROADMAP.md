@@ -14,9 +14,9 @@ contract](#v10-api-contract).
    tool-calling loop. Anything that dilutes that focus is out of scope.
 2. **Composition over configuration.** New behaviour ships as hooks or
    protocols, not as flags on `LoopConfig`.
-3. **Boring dependencies.** Core runtime stays at 1 dependency
-   (`pyyaml`). New features land in optional extras or separate
-   packages.
+3. **Boring dependencies.** Core runtime has **zero** third-party
+   packages — the standard library only. New features land in
+   optional extras or separate packages.
 4. **Frozen public surface, fluid internals.** Once a symbol is in
    `looplet/__init__.py`, breaking it requires a major bump.
 

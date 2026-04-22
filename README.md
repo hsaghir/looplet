@@ -259,6 +259,7 @@ Not a usage reference.
 | [docs/provenance.md](docs/provenance.md) | Capturing prompts + trajectories |
 | [docs/recipes.md](docs/recipes.md) | Ollama, OTel, MCP, cost accounting, checkpoints |
 | [docs/benchmarks.md](docs/benchmarks.md) | Cold-import time & dep footprint vs alternatives |
+| [docs/faq.md](docs/faq.md) | FAQ, including "why not LangGraph?" |
 | [ROADMAP.md](ROADMAP.md) | What's planned, what's frozen, what's out of scope |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Dev setup, conventions, PR checklist |
 | [CHANGELOG.md](CHANGELOG.md) | Release notes |

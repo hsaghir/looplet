@@ -321,9 +321,12 @@ def main(argv: list[str] | None = None) -> int:
     config = LoopConfig(
         max_steps=10,
         system_prompt=(
-            "You are a careful data analyst. Describe the CSV, inspect a "
-            "sample, group rows, then clean up cancelled orders. Any "
-            "destructive action must be explicitly approved."
+            f"You are a careful data analyst. The CSV to analyse is at the "
+            f"absolute path: {csv_path}\n"
+            "Use that exact path in every tool call. Describe the CSV, "
+            "inspect a sample with head_csv, group rows by status with "
+            "groupby_count, then call delete_rows to clean up cancelled "
+            "orders. Any destructive action must be explicitly approved."
         ),
         compact_service=compact_service,
         checkpoint_dir=str(CHECKPOINT_DIR),
@@ -341,7 +344,12 @@ def main(argv: list[str] | None = None) -> int:
         tools=tools,
         state=DefaultState(max_steps=10),
         config=config,
-        task={"goal": "inspect orders.csv and clean up cancelled orders"},
+        task={
+            "goal": (
+                f"inspect the orders CSV at {csv_path} and clean up "
+                "cancelled orders"
+            )
+        },
         hooks=hooks,
     ):
         print(step.pretty())

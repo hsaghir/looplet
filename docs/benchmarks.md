@@ -50,7 +50,7 @@ python scripts/bench_dep_footprint.py --markdown
 
 | Install | Packages installed |
 | --- | ---: |
-| `pip install looplet` | **2** |
+| `pip install looplet` | **1** (just `looplet` — zero runtime deps) |
 | `pip install looplet[all]` | **20** |
 | `pip install claude-agent-sdk` | **30** |
 | `pip install langgraph` | **31** |

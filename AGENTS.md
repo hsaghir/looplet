@@ -7,7 +7,7 @@
 
 A composable tool-calling loop for LLM agents. You own the loop as a
 Python iterator (`for step in composable_loop(...)`) and inject behavior
-via hook protocols. One runtime dependency (PyYAML). Provider-agnostic.
+via hook protocols. Zero runtime dependencies. Provider-agnostic.
 
 ## Architecture (30-second version)
 

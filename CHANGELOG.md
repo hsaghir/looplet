@@ -6,6 +6,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- `docs/faq.md`: "Why not LangGraph?" honest comparison (thanks @mvanhorn, #17)
+
 ## [0.1.7] - 2026-04-21
 
 First public release of `looplet`.

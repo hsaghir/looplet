@@ -278,13 +278,21 @@ looplet>=0.1.7,<0.2
 See [ROADMAP.md § v1.0 API contract](ROADMAP.md#v10-api-contract) for the
 frozen surface and the path to `1.0`.
 
+## Contributors
+
+Thanks to everyone who has contributed to `looplet`:
+
+- [@mvanhorn](https://github.com/mvanhorn) - "Why not LangGraph?" FAQ (#17)
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for how to get started.
+
 ## Contributing
 
-Contributions welcome — bug reports, docs, backends, examples, evals.
+Contributions welcome: bug reports, docs, backends, examples, evals.
 Start with [CONTRIBUTING.md](CONTRIBUTING.md) and
 [docs/good-first-issues.md](docs/good-first-issues.md). Security issues
 go through [SECURITY.md](SECURITY.md).
 
 ## License
 
-Apache 2.0 — see [LICENSE](LICENSE).
+Apache 2.0. See [LICENSE](LICENSE).

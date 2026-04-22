@@ -6,6 +6,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-04-21
+
 ### Changed (project rename)
 - **Renamed from `openharness` to `looplet`.** The PyPI name
   `openharness` was taken by an unrelated project, so we renamed
@@ -13,6 +15,18 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   names, protocols) is unchanged except for the top-level package
   name — update imports from `openharness` to `looplet`. The GitHub
   repository is also renamed; old URLs redirect automatically.
+
+### Added (launch polish)
+- `ROADMAP.md` with a frozen v1.0 API contract and explicit
+  out-of-scope list.
+- `docs/` site scaffold (tutorial, evals, recipes, hooks, good-first-issues,
+  discussions-seed, demo-script) + mkdocs-material config + GitHub
+  Pages workflow.
+- `THIRD_PARTY_USERS.md` social-proof seed.
+- `src/looplet/examples/ollama_hello.py` — zero-API-key onboarding.
+- Codecov upload step in CI (non-blocking).
+- Leaner README (<170 lines) with the pydantic-ai-harness disambiguation
+  moved to the top.
 
 ### Added (evals — pytest-style agent evaluation)
 - **Eval framework** (`looplet.evals`). Write `eval_*` functions

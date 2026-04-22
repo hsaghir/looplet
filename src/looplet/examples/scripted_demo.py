@@ -114,9 +114,7 @@ def main() -> None:
         if reply is None:
             return {
                 "needs_approval": True,
-                "approval_description": (
-                    f"delete_rows(where_status={where_status!r})"
-                ),
+                "approval_description": (f"delete_rows(where_status={where_status!r})"),
             }
         if reply != "yes":
             return {"deleted": 0, "reason": f"denied: {reply!r}"}
@@ -145,9 +143,7 @@ def main() -> None:
         responses=[
             json.dumps({"tool": "head", "args": {"n": 4}}),
             json.dumps({"tool": "count_by_status", "args": {}}),
-            json.dumps(
-                {"tool": "delete_rows", "args": {"where_status": "cancelled"}}
-            ),
+            json.dumps({"tool": "delete_rows", "args": {"where_status": "cancelled"}}),
             json.dumps(
                 {
                     "tool": "done",
@@ -197,8 +193,7 @@ def main() -> None:
 
     print()
     _slow_print(
-        f"✓ done — {len(approval_calls)} approval prompt, "
-        "4 tools, deterministic replay.",
+        f"✓ done — {len(approval_calls)} approval prompt, 4 tools, deterministic replay.",
         delay=0.0,
     )
 

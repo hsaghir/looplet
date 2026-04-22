@@ -16,13 +16,14 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 Then from the repo root:
 
 ```bash
-uv sync                              # install dev + runtime deps
-uv run pytest                        # run the full suite (~4s, 865 tests)
-uv run pytest -m smoke -q            # fast smoke run
-uv run ruff check .                  # lint
-uv run ruff format --check .         # format check
-uv run mypy src/looplet          # optional type check
+make install           # uv sync --all-extras (matches CI)
+make check             # everything CI runs: lint + format + pyright + pytest
+make test              # just the tests (~2s, 1055 tests)
+make install-hooks     # one-time: install a pre-push git hook that runs `make check`
 ```
+
+The rule is simple: if `make check` passes locally, CI passes.
+Run it before every push, or let the pre-push hook do it for you.
 
 ## Branching & commits
 
@@ -67,8 +68,7 @@ uv run mypy src/looplet          # optional type check
 
 Before opening a PR, please verify:
 
-- [ ] `uv run pytest` passes (865+ tests).
-- [ ] `uv run ruff check .` reports no new issues.
+- [ ] `make check` passes (lint + format + pyright + 1055 tests).
 - [ ] New public API has docstrings and tests.
 - [ ] `CHANGELOG.md` has an entry under `## Unreleased` describing your
       change (unless it's a docs-only or internal refactor with no

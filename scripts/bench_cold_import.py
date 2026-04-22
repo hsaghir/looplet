@@ -21,7 +21,6 @@ import argparse
 import statistics
 import subprocess
 import sys
-import time
 from dataclasses import dataclass
 
 
@@ -63,28 +62,20 @@ TARGETS: tuple[Target, ...] = (
 
 def time_one_import(py: str, stmt: str) -> float:
     """Launch a fresh Python subprocess, time the import, return seconds."""
-    script = (
-        "import time; t0 = time.perf_counter(); "
-        f"{stmt}; "
-        "print(time.perf_counter() - t0)"
-    )
-    t0 = time.perf_counter()
+    script = f"import time; t0 = time.perf_counter(); {stmt}; print(time.perf_counter() - t0)"
     result = subprocess.run(
         [py, "-c", script],
         capture_output=True,
         text=True,
         check=True,
     )
-    wall = time.perf_counter() - t0
-    inner = float(result.stdout.strip())
-    # Wall includes subprocess startup; inner is just the import.
-    return inner
+    # Timing is self-reported by the subprocess so wall-clock subprocess
+    # startup overhead is not included.
+    return float(result.stdout.strip())
 
 
 def get_version(py: str, stmt: str) -> str:
-    result = subprocess.run(
-        [py, "-c", stmt], capture_output=True, text=True, check=False
-    )
+    result = subprocess.run([py, "-c", stmt], capture_output=True, text=True, check=False)
     return result.stdout.strip() or "unknown"
 
 
@@ -116,9 +107,7 @@ def main() -> int:
         if not samples:
             continue
         median = statistics.median(samples) * 1000.0
-        stdev = (
-            statistics.stdev(samples) * 1000.0 if len(samples) > 1 else 0.0
-        )
+        stdev = statistics.stdev(samples) * 1000.0 if len(samples) > 1 else 0.0
         rows.append((target.name, version, median, stdev))
         print(
             f"{target.name:<20} {version:<10}  "
@@ -130,18 +119,16 @@ def main() -> int:
     rows.sort(key=lambda r: r[2])
     if args.markdown:
         print()
-        print(f"> Python {sys.version_info.major}.{sys.version_info.minor}, "
-              f"median of {args.runs} cold-start subprocess runs")
+        print(
+            f"> Python {sys.version_info.major}.{sys.version_info.minor}, "
+            f"median of {args.runs} cold-start subprocess runs"
+        )
         print()
         print("| Framework | Version | Median cold import | vs looplet |")
         print("| --- | --- | ---: | ---: |")
         looplet_med = next((r[2] for r in rows if r[0] == "looplet"), None)
         for name, version, median, _ in rows:
-            ratio = (
-                f"{median / looplet_med:.1f}×"
-                if looplet_med and name != "looplet"
-                else "—"
-            )
+            ratio = f"{median / looplet_med:.1f}×" if looplet_med and name != "looplet" else "—"
             print(f"| `{name}` | {version} | **{median:.0f} ms** | {ratio} |")
 
     return 0

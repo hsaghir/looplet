@@ -119,18 +119,20 @@ def delete_rows(*, path: str, where_status: str, ctx=None) -> dict:
       :class:`ApprovalHook` halts the loop so an external system can
       approve and resume later (webhook / Slack / ticket).
     """
-    reply = ctx.approve(  # returns None in async / headless mode
-        prompt=f"Delete all rows in {path} where status={where_status!r}?",
-        options=["yes", "no"],
-    ) if ctx is not None else None
+    reply = (
+        ctx.approve(  # returns None in async / headless mode
+            prompt=f"Delete all rows in {path} where status={where_status!r}?",
+            options=["yes", "no"],
+        )
+        if ctx is not None
+        else None
+    )
 
     if reply is None:
         # Async path — tell ApprovalHook to stop the loop.
         return {
             "needs_approval": True,
-            "approval_description": (
-                f"delete_rows(path={path!r}, where_status={where_status!r})"
-            ),
+            "approval_description": (f"delete_rows(path={path!r}, where_status={where_status!r})"),
         }
     if reply.strip().lower() != "yes":
         return {"deleted": 0, "reason": f"user declined: {reply!r}"}
@@ -202,9 +204,7 @@ def scripted_llm(csv_path: str) -> MockLLMBackend:
         responses=[
             json.dumps({"tool": "describe_csv", "args": {"path": csv_path}}),
             json.dumps({"tool": "head_csv", "args": {"path": csv_path, "n": 3}}),
-            json.dumps(
-                {"tool": "groupby_count", "args": {"path": csv_path, "column": "status"}}
-            ),
+            json.dumps({"tool": "groupby_count", "args": {"path": csv_path, "column": "status"}}),
             json.dumps(
                 {
                     "tool": "delete_rows",
@@ -237,7 +237,8 @@ def cli_approval_handler(prompt: str, options: list[str] | None) -> str | None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__.split("\n\n", 1)[0])
+    summary = (__doc__ or "").split("\n\n", 1)[0]
+    ap = argparse.ArgumentParser(description=summary)
     ap.add_argument(
         "--mock",
         action="store_true",
@@ -278,17 +279,14 @@ def main(argv: list[str] | None = None) -> int:
     CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
     if args.resume:
         from looplet.checkpoint import FileCheckpointStore
+
         store = FileCheckpointStore(str(CHECKPOINT_DIR))
         latest = store.load_latest()
         if latest is not None:
             print(f"# resuming from step {latest.step_number}")
 
     # ── Approval: sync stdin handler (or auto-yes for CI).
-    approval = (
-        (lambda _prompt, _opts: "yes")
-        if args.auto_approve
-        else cli_approval_handler
-    )
+    approval = (lambda _prompt, _opts: "yes") if args.auto_approve else cli_approval_handler
 
     # ── LLM.
     if args.mock:
@@ -314,9 +312,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
         print(f"# llm: {model} via {base_url}")
-        llm = OpenAIBackend(
-            OpenAI(base_url=base_url, api_key=api_key), model=model
-        )
+        llm = OpenAIBackend(OpenAI(base_url=base_url, api_key=api_key), model=model)
 
     config = LoopConfig(
         max_steps=10,
@@ -344,12 +340,7 @@ def main(argv: list[str] | None = None) -> int:
         tools=tools,
         state=DefaultState(max_steps=10),
         config=config,
-        task={
-            "goal": (
-                f"inspect the orders CSV at {csv_path} and clean up "
-                "cancelled orders"
-            )
-        },
+        task={"goal": (f"inspect the orders CSV at {csv_path} and clean up cancelled orders")},
         hooks=hooks,
     ):
         print(step.pretty())
@@ -358,8 +349,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"# checkpoints saved to: {CHECKPOINT_DIR}")
     print(f"# compact fired at steps: {threshold_hook.fired_at or '—'}")
     print(
-        "# run again with --resume to continue from the last saved step, "
-        "or --clean to start over."
+        "# run again with --resume to continue from the last saved step, or --clean to start over."
     )
     return 0
 

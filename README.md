@@ -1,5 +1,7 @@
 # looplet
 
+![demo — three-step investigation loop](docs/demo.gif)
+
 [![CI](https://github.com/hsaghir/looplet/actions/workflows/ci.yml/badge.svg)](https://github.com/hsaghir/looplet/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/hsaghir/looplet/branch/master/graph/badge.svg)](https://codecov.io/gh/hsaghir/looplet)
 [![PyPI version](https://img.shields.io/pypi/v/looplet.svg)](https://pypi.org/project/looplet/)
@@ -117,6 +119,7 @@ provider.
 | Doc                                                    | What's in it                                         |
 | ------------------------------------------------------ | ---------------------------------------------------- |
 | [docs/tutorial.md](docs/tutorial.md)                   | Build your first agent in 5 steps                    |
+| [docs/benchmarks.md](docs/benchmarks.md)               | Cold-import time & dep footprint vs alternatives     |
 | [HOOK_GUIDE.md](HOOK_GUIDE.md)                         | Writing and composing hooks                          |
 | [docs/evals.md](docs/evals.md)                         | pytest-style agent evaluation                        |
 | [PROVENANCE_GUIDE.md](PROVENANCE_GUIDE.md)             | Capturing prompts + trajectories                     |
@@ -131,9 +134,12 @@ marker.
 ## Examples
 
 ```bash
-python -m looplet.examples.hello_world                            # 30-line starter
+python -m looplet.examples.scripted_demo                          # 3-step deterministic demo, no API key
+python -m looplet.examples.hello_world                            # 30-line starter (needs LLM)
 python -m looplet.examples.coding_agent "implement fizzbuzz"      # bash/read/write/edit/grep
 python -m looplet.examples.coding_agent --trace ./traces/         # save full trajectory
+python -m looplet.examples.data_agent --clean                     # approval + compact + checkpoints
+python -m looplet.examples.data_agent --resume                    # resume from last checkpoint
 ```
 
 ## Stability

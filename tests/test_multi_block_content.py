@@ -65,18 +65,28 @@ class TestMessageWithBlocks:
 class TestConversationWithBlocks:
     def test_render_flattens_multimodal_content(self):
         conv = Conversation()
-        conv.append(Message(role=MessageRole.USER, content=[
-            ContentBlock(kind="text", data={"text": "check screenshot"}),
-            ContentBlock(kind="image", data={"url": "x"}),
-        ]))
+        conv.append(
+            Message(
+                role=MessageRole.USER,
+                content=[
+                    ContentBlock(kind="text", data={"text": "check screenshot"}),
+                    ContentBlock(kind="image", data={"url": "x"}),
+                ],
+            )
+        )
         rendered = conv.render()
         assert "check screenshot" in rendered
         assert "[image attached]" in rendered
 
     def test_fork_preserves_multimodal(self):
         conv = Conversation()
-        conv.append(Message(role=MessageRole.USER, content=[
-            ContentBlock(kind="image", data={"url": "x"}),
-        ]))
+        conv.append(
+            Message(
+                role=MessageRole.USER,
+                content=[
+                    ContentBlock(kind="image", data={"url": "x"}),
+                ],
+            )
+        )
         f = conv.fork()
         assert f.messages[0].blocks[0].kind == "image"

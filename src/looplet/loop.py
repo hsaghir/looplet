@@ -592,9 +592,7 @@ def _build_tool_ctx(
     observers can stream intermediate output from long-running tools.
     """
     _hooks = hooks or []
-    _has_progress_subscribers = any(
-        hasattr(h, "on_event") for h in _hooks
-    )
+    _has_progress_subscribers = any(hasattr(h, "on_event") for h in _hooks)
     if (
         config.cancel_token is None
         and config.approval_handler is None
@@ -608,8 +606,10 @@ def _build_tool_ctx(
 
         def _on_progress(stage: str, data: dict) -> None:
             emit_event(
-                _hooks, _LE.TOOL_PROGRESS,
-                step_num=step_num, state=state,
+                _hooks,
+                _LE.TOOL_PROGRESS,
+                step_num=step_num,
+                state=state,
                 session_log=session_log,
                 tool_call=tool_call,
                 extra={"stage": stage, "data": data},
@@ -677,6 +677,7 @@ _EVENT_METHOD_EQUIV: dict[Any, str] = {}  # populated after LifecycleEvent impor
 
 def _init_event_method_equiv() -> None:
     from looplet.events import LifecycleEvent as _LE  # noqa: PLC0415
+
     _EVENT_METHOD_EQUIV[_LE.PRE_TOOL_USE] = "pre_dispatch"
     _EVENT_METHOD_EQUIV[_LE.POST_TOOL_USE] = "post_dispatch"
     _EVENT_METHOD_EQUIV[_LE.POST_TOOL_FAILURE] = "post_dispatch"
@@ -687,11 +688,22 @@ _init_event_method_equiv()
 
 # ── Hook method names (for typo detection) ──────────────────────
 
-_KNOWN_HOOK_METHODS = frozenset({
-    "pre_loop", "pre_prompt", "pre_dispatch", "post_dispatch",
-    "check_done", "check_permission", "should_stop", "should_compact",
-    "build_briefing", "build_prompt", "on_loop_end", "on_event",
-})
+_KNOWN_HOOK_METHODS = frozenset(
+    {
+        "pre_loop",
+        "pre_prompt",
+        "pre_dispatch",
+        "post_dispatch",
+        "check_done",
+        "check_permission",
+        "should_stop",
+        "should_compact",
+        "build_briefing",
+        "build_prompt",
+        "on_loop_end",
+        "on_event",
+    }
+)
 
 
 def _validate_hooks(hooks: list[Any]) -> None:
@@ -702,6 +714,7 @@ def _validate_hooks(hooks: list[Any]) -> None:
     at least one valid method — partial implementations are the norm.
     """
     import warnings  # noqa: PLC0415
+
     for hook in hooks:
         has_any = any(hasattr(hook, m) for m in _KNOWN_HOOK_METHODS)
         if not has_any:
@@ -758,9 +771,12 @@ def _intercept_tool_calls(
 
         # ── Event-style hooks (on_event) ────────────────────
         _pre_tool_decisions = emit_event(
-            hooks, _LE.PRE_TOOL_USE,
-            step_num=cur_step, state=state,
-            session_log=session_log, context=context,
+            hooks,
+            _LE.PRE_TOOL_USE,
+            step_num=cur_step,
+            state=state,
+            session_log=session_log,
+            context=context,
             tool_call=tc,
         )
         _handled = False
@@ -774,8 +790,11 @@ def _intercept_tool_calls(
                     retriable=False,
                 )
                 result.intercepted[tc_idx] = ToolResult(
-                    tool=tc.tool, args_summary=str(tc.args)[:100],
-                    data=None, error=_te.message, error_detail=_te,
+                    tool=tc.tool,
+                    args_summary=str(tc.args)[:100],
+                    data=None,
+                    error=_te.message,
+                    error_detail=_te,
                 )
                 _handled = True
                 break
@@ -808,8 +827,11 @@ def _intercept_tool_calls(
                     retriable=False,
                 )
                 result.intercepted[tc_idx] = ToolResult(
-                    tool=tc.tool, args_summary=str(tc.args)[:100],
-                    data=None, error=_te.message, error_detail=_te,
+                    tool=tc.tool,
+                    args_summary=str(tc.args)[:100],
+                    data=None,
+                    error=_te.message,
+                    error_detail=_te,
                 )
                 break
             if _decision.updated_result is not None:
@@ -830,7 +852,8 @@ def _intercept_tool_calls(
             allowed = _decision is None or _decision.permission != "deny"
             if not allowed:
                 _msg = (
-                    _decision.block if _decision and _decision.block
+                    _decision.block
+                    if _decision and _decision.block
                     else f"Permission denied for tool '{tc.tool}'"
                 )
                 _te = ToolError(
@@ -839,8 +862,11 @@ def _intercept_tool_calls(
                     retriable=False,
                 )
                 result.intercepted[tc_idx] = ToolResult(
-                    tool=tc.tool, args_summary=str(tc.args)[:100],
-                    data=None, error=_te.message, error_detail=_te,
+                    tool=tc.tool,
+                    args_summary=str(tc.args)[:100],
+                    data=None,
+                    error=_te.message,
+                    error_detail=_te,
                 )
                 break
 
@@ -895,13 +921,15 @@ def _run_post_dispatch_hooks(
                 outcome.stop_reason = _decision.stop
 
     # ── Event-style POST_TOOL_USE / POST_TOOL_FAILURE ──────
-    _post_tool_event = (
-        _LE.POST_TOOL_FAILURE if tool_result.error else _LE.POST_TOOL_USE
-    )
+    _post_tool_event = _LE.POST_TOOL_FAILURE if tool_result.error else _LE.POST_TOOL_USE
     _post_tool_decisions = emit_event(
-        hooks, _post_tool_event,
-        step_num=step_num, state=state, session_log=session_log,
-        context=context, tool_call=tool_call,
+        hooks,
+        _post_tool_event,
+        step_num=step_num,
+        state=state,
+        session_log=session_log,
+        context=context,
+        tool_call=tool_call,
         tool_result=tool_result,
     )
     for _d in _post_tool_decisions:
@@ -972,6 +1000,7 @@ def composable_loop(
 
     # Default state when none provided.
     from looplet.types import DefaultState as _DefaultState  # noqa: PLC0415
+
     if state is None:
         state = _DefaultState(max_steps=config.max_steps)
 
@@ -980,6 +1009,7 @@ def composable_loop(
     # the first time.
     if isinstance(state, _DefaultState) and state.max_steps != config.max_steps:
         import warnings  # noqa: PLC0415
+
         warnings.warn(
             f"DefaultState(max_steps={state.max_steps}) differs from "
             f"LoopConfig(max_steps={config.max_steps}); using the config "
@@ -999,6 +1029,7 @@ def composable_loop(
 
     # ── Conversation thread — always active (single source of truth) ──
     from looplet.conversation import Conversation as _Conversation  # noqa: PLC0415
+
     _conv = conversation if conversation is not None else _Conversation()
 
     # ── Unified history recorder — single write path for step/turn events ──
@@ -1082,19 +1113,14 @@ def composable_loop(
     # built-in defaults.
     _dom = config.domain
     build_briefing = (
-        config.build_briefing
-        or (_dom.build_briefing if _dom else None)
-        or _default_build_briefing
+        config.build_briefing or (_dom.build_briefing if _dom else None) or _default_build_briefing
     )
     extract_entities = (
         config.extract_entities
         or (_dom.extract_entities if _dom else None)
         or _default_extract_entities
     )
-    build_prompt_fn = (
-        config.build_prompt
-        or (_dom.build_prompt if _dom else None)
-    )
+    build_prompt_fn = config.build_prompt or (_dom.build_prompt if _dom else None)
 
     # ── Loop state ──────────────────────────────────────────
     consecutive_parse_failures = 0
@@ -1124,15 +1150,20 @@ def composable_loop(
     # Fire SESSION_START — single-slot subscribers to lifecycle
     # events get it in one place alongside the per-method pre_loop.
     from looplet.events import LifecycleEvent as _LE  # noqa: PLC0415
+
     emit_event(
-        hooks, _LE.SESSION_START,
-        state=state, session_log=session_log, context=context,
+        hooks,
+        _LE.SESSION_START,
+        state=state,
+        session_log=session_log,
+        context=context,
     )
 
     # ── Emit LoopStartEvent ─────────────────────────────────────
     # Skip if a StreamingHook is in hooks — it already emits LoopStartEvent
     # from its pre_loop method and we don't want duplicates.
     from looplet.streaming import StreamingHook as _StreamingHook  # noqa: PLC0415
+
     _has_streaming_hook = any(isinstance(h, _StreamingHook) for h in hooks)
     if stream is not None and _LoopStartEvent is not None and not _has_streaming_hook:
         _task_id = task.get("id", "") if isinstance(task, dict) else str(task)[:80]
@@ -1162,10 +1193,15 @@ def composable_loop(
                     logger.exception("should_compact hook raised; skipping")
         if _want_compact and config.compact_service is not None:
             from looplet.compact import run_compact as _run_compact  # noqa: PLC0415
+
             _run_compact(
                 config.compact_service,
-                hooks=hooks, state=state, session_log=session_log,
-                llm=_get_llm(), conversation=_conv, step_num=step_num,
+                hooks=hooks,
+                state=state,
+                session_log=session_log,
+                llm=_get_llm(),
+                conversation=_conv,
+                step_num=step_num,
                 reason="proactive",
             )
 
@@ -1199,9 +1235,7 @@ def composable_loop(
                     if _briefing_budget:
                         text_tokens = len(text) // 4
                         if _briefing_used + text_tokens > _briefing_budget:
-                            briefing_parts.append(
-                                "(briefing truncated — token budget exceeded)"
-                            )
+                            briefing_parts.append("(briefing truncated — token budget exceeded)")
                             break
                         _briefing_used += text_tokens
                     briefing_parts.append(text)
@@ -1221,6 +1255,7 @@ def composable_loop(
         _memory_sources = getattr(config, "memory_sources", None)
         if _memory_sources:
             from looplet.memory import render_memory as _render_memory  # noqa: PLC0415
+
             _rendered_memory = _render_memory(_memory_sources, state)
         else:
             _rendered_memory = ""
@@ -1259,6 +1294,7 @@ def composable_loop(
                 from looplet.prompts import (
                     build_prompt as _default_build_prompt,  # noqa: PLC0415
                 )
+
                 prompt = _default_build_prompt(**_prompt_kwargs)  # pyright: ignore[reportArgumentType]
 
         # ── Byte-exact escape hatch (render_messages_override) ──
@@ -1290,9 +1326,13 @@ def composable_loop(
         # prompt string is already built at this point; mutating it
         # would invalidate the briefing budget accounting).
         _pre_llm_decisions = emit_event(
-            hooks, _LE.PRE_LLM_CALL,
-            step_num=step_num, state=state, session_log=session_log,
-            context=context, prompt=prompt,
+            hooks,
+            _LE.PRE_LLM_CALL,
+            step_num=step_num,
+            state=state,
+            session_log=session_log,
+            context=context,
+            prompt=prompt,
         )
         for _d in _pre_llm_decisions:
             if _d.additional_context:
@@ -1304,7 +1344,8 @@ def composable_loop(
         if preflight_too_long and config.reactive_recovery:
             logger.warning(
                 "Pre-flight block: prompt ~%d tokens exceeds safe limit — "
-                "running recovery before LLM call", estimated_tokens,
+                "running recovery before LLM call",
+                estimated_tokens,
             )
             llm_result = LLMResult(None, Exception("pre-flight: prompt is too long"))
         else:
@@ -1319,9 +1360,7 @@ def composable_loop(
                     f"llm.call.step_{step_num}",
                     attributes={"step": step_num},
                 )
-            _native_on = (config.use_native_tools) and hasattr(
-                effective_llm, "generate_with_tools"
-            )
+            _native_on = (config.use_native_tools) and hasattr(effective_llm, "generate_with_tools")
             _tool_schemas = tools.tool_schemas() if _native_on else None
             # ── Prompt cache breakpoints (opt-in) ─────────────────
             # When a ``cache_policy`` is configured, compute hashes for
@@ -1336,9 +1375,11 @@ def composable_loop(
                 from looplet.cache import (
                     compute_breakpoints as _compute_bps,
                 )
+
                 _schemas_text = tools.tool_catalog_text()
                 _detector = next(
-                    (h for h in hooks if isinstance(h, _CBD)), None,
+                    (h for h in hooks if isinstance(h, _CBD)),
+                    None,
                 )
                 if _detector is not None:
                     _cache_bps = _detector.record(
@@ -1355,7 +1396,8 @@ def composable_loop(
                         memory_text=_rendered_memory,
                     )
             llm_result = llm_call_with_retry(
-                effective_llm, prompt,
+                effective_llm,
+                prompt,
                 max_tokens=config.max_tokens,
                 system_prompt=config.system_prompt,
                 temperature=config.temperature,
@@ -1371,10 +1413,20 @@ def composable_loop(
         # Reactive recovery: if prompt-too-long, try chained strategies
         if not llm_result.ok and llm_result.is_prompt_too_long and config.reactive_recovery:
             raw_response = _recovery_chain(
-                llm_result, recovery_state, state, session_log, effective_llm,
-                tools, context, build_briefing, build_prompt_fn,
-                task, config, step_num,
-                hooks=hooks, conversation=_conv,
+                llm_result,
+                recovery_state,
+                state,
+                session_log,
+                effective_llm,
+                tools,
+                context,
+                build_briefing,
+                build_prompt_fn,
+                task,
+                config,
+                step_num,
+                hooks=hooks,
+                conversation=_conv,
             )
             llm_calls += recovery_state.get("_last_recovery_llm_calls", 0)
             llm_result = LLMResult(raw_response)
@@ -1387,9 +1439,14 @@ def composable_loop(
         # Fire POST_LLM_RESPONSE — hooks can observe raw text before
         # it hits the parser. Stop requests are honored at end-of-step.
         _post_llm_decisions = emit_event(
-            hooks, _LE.POST_LLM_RESPONSE,
-            step_num=step_num, state=state, session_log=session_log,
-            context=context, prompt=prompt, raw_response=raw_response,
+            hooks,
+            _LE.POST_LLM_RESPONSE,
+            step_num=step_num,
+            state=state,
+            session_log=session_log,
+            context=context,
+            prompt=prompt,
+            raw_response=raw_response,
         )
         for _d in _post_llm_decisions:
             if _d.stop is not None:
@@ -1400,19 +1457,25 @@ def composable_loop(
 
         if raw_response is None:
             # If cancellation caused the failure, exit cleanly — no error step.
-            if config.cancel_token is not None and getattr(config.cancel_token, "is_cancelled", False):
+            if config.cancel_token is not None and getattr(
+                config.cancel_token, "is_cancelled", False
+            ):
                 stop_reason = "cancelled"
                 break
             logger.error("LLM call failed after retries at step %d", step_num)
             error_call = ToolCall(tool="__llm_error__", reasoning="LLM call failed after retries")
             error_result = ToolResult(
-                tool="__llm_error__", args_summary="", data=None,
+                tool="__llm_error__",
+                args_summary="",
+                data=None,
                 error="LLM call failed after all retry attempts",
             )
             step = Step(number=step_num, tool_call=error_call, tool_result=error_result)
             state.steps.append(step)
             yield step
-            _history.record_step(step, theory="", entities=[], findings=[], highlights=[], recall_key="")
+            _history.record_step(
+                step, theory="", entities=[], findings=[], highlights=[], recall_key=""
+            )
             break
 
         # ── Parse response (native tool_use or JSON text) ────
@@ -1431,26 +1494,35 @@ def composable_loop(
                 )
                 if _recovery_action is not None and _recovery_action.action_type == "abort":
                     logger.warning("Recovery registry aborted parse recovery at step %d", step_num)
-                    tool_call = ToolCall(tool="__parse_error__", reasoning=(to_text(raw_response) or "")[:200])
+                    tool_call = ToolCall(
+                        tool="__parse_error__", reasoning=(to_text(raw_response) or "")[:200]
+                    )
                     tool_result = ToolResult(
-                        tool="__parse_error__", args_summary="", data=None,
+                        tool="__parse_error__",
+                        args_summary="",
+                        data=None,
                         error=f"Parse error — recovery aborted: {_recovery_action.message}",
                     )
                     step = Step(number=step_num, tool_call=tool_call, tool_result=tool_result)
                     state.steps.append(step)
                     yield step
-                    _history.record_step(step, theory="", entities=[], findings=[], highlights=[], recall_key="")
+                    _history.record_step(
+                        step, theory="", entities=[], findings=[], highlights=[], recall_key=""
+                    )
                     continue
                 if _recovery_action is not None and _recovery_action.message:
                     post_dispatch_parts.append(_recovery_action.message)
             if consecutive_parse_failures <= PARSE_RECOVERY_MAX:
                 logger.warning(
                     "Parse failure %d/%d at step %d — attempting recovery",
-                    consecutive_parse_failures, PARSE_RECOVERY_MAX, step_num,
+                    consecutive_parse_failures,
+                    PARSE_RECOVERY_MAX,
+                    step_num,
                 )
                 recovery_prompt = build_parse_recovery_prompt(prompt, to_text(raw_response) or "")
                 recovery_result = llm_call_with_retry(
-                    effective_llm, recovery_prompt,
+                    effective_llm,
+                    recovery_prompt,
                     max_tokens=config.max_tokens,
                     system_prompt=config.system_prompt,
                     temperature=config.recovery_temperature,
@@ -1462,15 +1534,21 @@ def composable_loop(
 
             if not tool_calls:
                 logger.warning("Unparseable LLM response at step %d after recovery", step_num)
-                tool_call = ToolCall(tool="__parse_error__", reasoning=(to_text(raw_response) or "")[:200])
+                tool_call = ToolCall(
+                    tool="__parse_error__", reasoning=(to_text(raw_response) or "")[:200]
+                )
                 tool_result = ToolResult(
-                    tool="__parse_error__", args_summary="", data=None,
+                    tool="__parse_error__",
+                    args_summary="",
+                    data=None,
                     error=f"Could not parse JSON: {(to_text(raw_response) or '')[:200]}",
                 )
                 step = Step(number=step_num, tool_call=tool_call, tool_result=tool_result)
                 state.steps.append(step)
                 yield step
-                _history.record_step(step, theory="", entities=[], findings=[], highlights=[], recall_key="")
+                _history.record_step(
+                    step, theory="", entities=[], findings=[], highlights=[], recall_key=""
+                )
                 continue
         else:
             consecutive_parse_failures = 0
@@ -1490,7 +1568,12 @@ def composable_loop(
         if regular_calls:
             # ── Pre-dispatch interception (hooks + permissions) ──
             _intercept = _intercept_tool_calls(
-                regular_calls, hooks, state, session_log, context, step_num,
+                regular_calls,
+                hooks,
+                state,
+                session_log,
+                context,
+                step_num,
             )
             intercepted_results = _intercept.intercepted
             post_dispatch_parts.extend(_intercept.extra_context)
@@ -1501,12 +1584,17 @@ def composable_loop(
             ]
 
             if calls_to_dispatch:
+
                 def _ctx_for(_c: ToolCall) -> ToolContext | None:
                     return _build_tool_ctx(
-                        config, hooks=hooks, tool_call=_c,
-                        step_num=step_num, state=state,
+                        config,
+                        hooks=hooks,
+                        tool_call=_c,
+                        step_num=step_num,
+                        state=state,
                         session_log=session_log,
                     )
+
                 if config.concurrent_dispatch:
                     _tool_ctx = _ctx_for(calls_to_dispatch[0])
                     _dispatch_kw = {"ctx": _tool_ctx} if _tool_ctx is not None else {}
@@ -1539,16 +1627,23 @@ def composable_loop(
 
                 # Emit ToolDispatchEvent
                 if stream is not None and _ToolDispatchEvent is not None:
-                    stream.emit(_ToolDispatchEvent(
-                        step_num=cur_step,
-                        tool_name=tool_call.tool,
-                        args_summary=str(tool_call.args)[:200],
-                    ))
+                    stream.emit(
+                        _ToolDispatchEvent(
+                            step_num=cur_step,
+                            tool_name=tool_call.tool,
+                            args_summary=str(tool_call.args)[:200],
+                        )
+                    )
 
                 # ── Post-dispatch hooks + events ────────────────
                 _pd = _run_post_dispatch_hooks(
-                    tool_call, tool_result, hooks,
-                    state, session_log, context, cur_step,
+                    tool_call,
+                    tool_result,
+                    hooks,
+                    state,
+                    session_log,
+                    context,
+                    cur_step,
                 )
                 tool_result = _pd.tool_result
                 post_dispatch_parts.extend(_pd.extra_context)
@@ -1566,7 +1661,10 @@ def composable_loop(
                     _ckpt_store.save(
                         _Checkpoint(
                             step_number=cur_step,
-                            session_log_data={"entries": session_log.to_list(), "current_theory": session_log.current_theory},
+                            session_log_data={
+                                "entries": session_log.to_list(),
+                                "current_theory": session_log.current_theory,
+                            },
                             conversation_data=_conv.serialize(),
                             config_snapshot={
                                 "max_steps": config.max_steps,
@@ -1614,21 +1712,26 @@ def composable_loop(
             if gate_warning is None and config.output_schema is not None:
                 validation = _validate_args(config.output_schema, tool_call.args)
                 if not validation.valid:
-                    gate_warning = f"Output schema validation failed: {'; '.join(validation.errors)}"
+                    gate_warning = (
+                        f"Output schema validation failed: {'; '.join(validation.errors)}"
+                    )
 
             # Emit ToolDispatchEvent for done
             if stream is not None and _ToolDispatchEvent is not None:
-                stream.emit(_ToolDispatchEvent(
-                    step_num=cur_step,
-                    tool_name=tool_call.tool,
-                    args_summary=str(tool_call.args)[:200],
-                ))
+                stream.emit(
+                    _ToolDispatchEvent(
+                        step_num=cur_step,
+                        tool_name=tool_call.tool,
+                        args_summary=str(tool_call.args)[:200],
+                    )
+                )
 
             if gate_warning is not None:
                 logger.info("Quality gate rejected done() at step %d", step_num)
                 quality_gate_message = gate_warning
                 tool_result = ToolResult(
-                    tool=done_tool_name, args_summary="rejected",
+                    tool=done_tool_name,
+                    args_summary="rejected",
                     data={"rejected": True, "reason": gate_warning},
                 )
                 step = Step(number=cur_step, tool_call=tool_call, tool_result=tool_result)
@@ -1647,11 +1750,18 @@ def composable_loop(
                 # a loop signal, not a side-effecting tool. Permission-gating a
                 # termination signal would prevent the agent from ever stopping.
                 _ctx = _build_tool_ctx(
-                    config, hooks=hooks, tool_call=tool_call,
-                    step_num=step_num, state=state,
+                    config,
+                    hooks=hooks,
+                    tool_call=tool_call,
+                    step_num=step_num,
+                    state=state,
                     session_log=session_log,
                 )
-                tool_result = tools.dispatch(tool_call, ctx=_ctx) if _ctx is not None else tools.dispatch(tool_call)
+                tool_result = (
+                    tools.dispatch(tool_call, ctx=_ctx)
+                    if _ctx is not None
+                    else tools.dispatch(tool_call)
+                )
                 step = Step(number=cur_step, tool_call=tool_call, tool_result=tool_result)
                 state.steps.append(step)
                 yield step
@@ -1669,7 +1779,10 @@ def composable_loop(
                     _ckpt_store.save(
                         _Checkpoint(
                             step_number=cur_step,
-                            session_log_data={"entries": session_log.to_list(), "current_theory": session_log.current_theory},
+                            session_log_data={
+                                "entries": session_log.to_list(),
+                                "current_theory": session_log.current_theory,
+                            },
                             conversation_data=_conv.serialize(),
                             config_snapshot={
                                 "max_steps": config.max_steps,
@@ -1700,8 +1813,7 @@ def composable_loop(
                 if _stopped:
                     logger.info("Hook %s requested stop at step %d", type(hook).__name__, step_num)
                     done = True
-                    stop_reason = (_decision.stop if _decision and _decision.stop
-                                   else "hook_stop")
+                    stop_reason = _decision.stop if _decision and _decision.stop else "hook_stop"
                     break
         if done:
             break
@@ -1716,8 +1828,11 @@ def composable_loop(
     # is already exiting); hooks should use on_loop_end for llm-call
     # side effects.
     emit_event(
-        hooks, _LE.STOP,
-        state=state, session_log=session_log, context=context,
+        hooks,
+        _LE.STOP,
+        state=state,
+        session_log=session_log,
+        context=context,
         termination_reason=stop_reason,
     )
 
@@ -1729,27 +1844,33 @@ def composable_loop(
 
     # Emit LoopEndEvent — skip if StreamingHook already emits it
     if stream is not None and _LoopEndEvent is not None and not _has_streaming_hook:
-        stream.emit(_LoopEndEvent(
-            total_steps=state.step_count,
-            total_llm_calls=llm_calls,
-            reason=stop_reason,
-        ))
+        stream.emit(
+            _LoopEndEvent(
+                total_steps=state.step_count,
+                total_llm_calls=llm_calls,
+                reason=stop_reason,
+            )
+        )
 
     # Build trace via injected callable
     elapsed = (time.time() - t0) * 1000
-    _build_trace_fn = (
-        config.build_trace
-        or (config.domain.build_trace if config.domain else None)
-    )
+    _build_trace_fn = config.build_trace or (config.domain.build_trace if config.domain else None)
     if _build_trace_fn is not None:
         trace = _build_trace_fn(
-            task=task, state=state, session_log=session_log,
-            done=stop_reason == "done", llm=llm, llm_calls=llm_calls, elapsed_ms=elapsed,
+            task=task,
+            state=state,
+            session_log=session_log,
+            done=stop_reason == "done",
+            llm=llm,
+            llm_calls=llm_calls,
+            elapsed_ms=elapsed,
         )
     else:
         trace = {
-            "task": task, "steps": [s.to_dict() for s in state.steps],
-            "llm_calls": llm_calls, "total_time_ms": elapsed,
+            "task": task,
+            "steps": [s.to_dict() for s in state.steps],
+            "llm_calls": llm_calls,
+            "total_time_ms": elapsed,
             "conversation": _conv,
         }
     return trace
@@ -1793,6 +1914,7 @@ def _recovery_chain(
 
     # Pick the compact service: user-supplied or the built-in default.
     from looplet.compact import TruncateCompact, run_compact  # noqa: PLC0415
+
     _compact_service = config.compact_service or TruncateCompact()
 
     def _run_emergency_truncate(_state: Any, _sl: Any, _llm: Any, _sn: int) -> int:
@@ -1825,11 +1947,19 @@ def _recovery_chain(
         extra_llm_calls += strategy_llm_calls
 
         prompt = _rebuild_prompt(
-            state, session_log, context, build_briefing, build_prompt_fn,
-            task, tools, config, step_num,
+            state,
+            session_log,
+            context,
+            build_briefing,
+            build_prompt_fn,
+            task,
+            tools,
+            config,
+            step_num,
         )
         retry_result = llm_call_with_retry(
-            llm, prompt,
+            llm,
+            prompt,
             max_tokens=config.max_tokens,
             system_prompt=config.system_prompt,
             temperature=config.temperature,

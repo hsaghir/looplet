@@ -17,6 +17,7 @@ pytestmark = pytest.mark.smoke
 class TestMessageRole:
     def test_has_all_four_roles(self):
         from looplet.conversation import MessageRole
+
         assert hasattr(MessageRole, "SYSTEM")
         assert hasattr(MessageRole, "USER")
         assert hasattr(MessageRole, "ASSISTANT")
@@ -24,11 +25,13 @@ class TestMessageRole:
 
     def test_enum_values_are_strings(self):
         from looplet.conversation import MessageRole
+
         assert isinstance(MessageRole.SYSTEM.value, str)
         assert isinstance(MessageRole.USER.value, str)
 
     def test_enum_distinct_values(self):
         from looplet.conversation import MessageRole
+
         values = [r.value for r in MessageRole]
         assert len(values) == len(set(values))
 
@@ -41,6 +44,7 @@ class TestMessageRole:
 class TestMessage:
     def test_basic_creation(self):
         from looplet.conversation import Message, MessageRole
+
         msg = Message(role=MessageRole.USER, content="hello")
         assert msg.role == MessageRole.USER
         assert msg.content == "hello"
@@ -51,6 +55,7 @@ class TestMessage:
 
     def test_timestamp_is_recent(self):
         from looplet.conversation import Message, MessageRole
+
         t0 = time.time()
         msg = Message(role=MessageRole.ASSISTANT, content="hi")
         assert msg.timestamp >= t0
@@ -58,6 +63,7 @@ class TestMessage:
     def test_with_tool_call(self):
         from looplet.conversation import Message, MessageRole
         from looplet.types import ToolCall
+
         tc = ToolCall(tool="search", args={"q": "test"})
         msg = Message(role=MessageRole.ASSISTANT, content="", tool_call=tc)
         assert msg.tool_call is tc
@@ -65,12 +71,14 @@ class TestMessage:
     def test_with_tool_result(self):
         from looplet.conversation import Message, MessageRole
         from looplet.types import ToolResult
+
         tr = ToolResult(tool="search", args_summary="q=test", data={"r": 1})
         msg = Message(role=MessageRole.TOOL, content="", tool_result=tr)
         assert msg.tool_result is tr
 
     def test_metadata_default_is_empty_dict(self):
         from looplet.conversation import Message, MessageRole
+
         m1 = Message(role=MessageRole.USER, content="a")
         m2 = Message(role=MessageRole.USER, content="b")
         # Must be independent dicts (default_factory)
@@ -79,11 +87,13 @@ class TestMessage:
 
     def test_system_role(self):
         from looplet.conversation import Message, MessageRole
+
         msg = Message(role=MessageRole.SYSTEM, content="You are an agent.")
         assert msg.role == MessageRole.SYSTEM
 
     def test_all_roles_usable(self):
         from looplet.conversation import Message, MessageRole
+
         for role in MessageRole:
             msg = Message(role=role, content=f"test {role.value}")
             assert msg.role == role
@@ -97,11 +107,13 @@ class TestMessage:
 class TestConversationAppend:
     def test_empty_conversation(self):
         from looplet.conversation import Conversation
+
         c = Conversation()
         assert c.messages == []
 
     def test_append_single_message(self):
         from looplet.conversation import Conversation, Message, MessageRole
+
         c = Conversation()
         msg = Message(role=MessageRole.USER, content="hello")
         c.append(msg)
@@ -110,6 +122,7 @@ class TestConversationAppend:
 
     def test_append_preserves_order(self):
         from looplet.conversation import Conversation, Message, MessageRole
+
         c = Conversation()
         roles = [MessageRole.SYSTEM, MessageRole.USER, MessageRole.ASSISTANT]
         for r in roles:
@@ -120,6 +133,7 @@ class TestConversationAppend:
 class TestConversationFork:
     def test_fork_returns_new_conversation(self):
         from looplet.conversation import Conversation, Message, MessageRole
+
         c = Conversation()
         c.append(Message(role=MessageRole.USER, content="original"))
         fork = c.fork()
@@ -128,6 +142,7 @@ class TestConversationFork:
 
     def test_fork_is_deep_independent_copy(self):
         from looplet.conversation import Conversation, Message, MessageRole
+
         c = Conversation()
         c.append(Message(role=MessageRole.USER, content="original"))
         fork = c.fork()
@@ -139,6 +154,7 @@ class TestConversationFork:
 
     def test_fork_content_is_independent(self):
         from looplet.conversation import Conversation, Message, MessageRole
+
         c = Conversation()
         c.append(Message(role=MessageRole.USER, content="original"))
         fork = c.fork()
@@ -149,6 +165,7 @@ class TestConversationFork:
 
     def test_fork_has_same_initial_messages(self):
         from looplet.conversation import Conversation, Message, MessageRole
+
         c = Conversation()
         c.append(Message(role=MessageRole.SYSTEM, content="system"))
         c.append(Message(role=MessageRole.USER, content="user"))
@@ -161,6 +178,7 @@ class TestConversationFork:
 class TestConversationTruncate:
     def _make_conversation(self, n: int, with_system: bool = True):
         from looplet.conversation import Conversation, Message, MessageRole
+
         c = Conversation()
         if with_system:
             c.append(Message(role=MessageRole.SYSTEM, content="system prompt"))
@@ -171,6 +189,7 @@ class TestConversationTruncate:
 
     def test_truncate_keeps_last_n(self):
         from looplet.conversation import MessageRole
+
         c = self._make_conversation(10, with_system=False)
         c.truncate(keep_last=3)
         assert len(c.messages) == 3
@@ -178,6 +197,7 @@ class TestConversationTruncate:
 
     def test_truncate_preserves_system_messages_by_default(self):
         from looplet.conversation import MessageRole
+
         c = self._make_conversation(10, with_system=True)
         c.truncate(keep_last=3)
         # System message should be kept
@@ -186,6 +206,7 @@ class TestConversationTruncate:
 
     def test_truncate_no_preserve_system(self):
         from looplet.conversation import MessageRole
+
         c = self._make_conversation(10, with_system=True)
         c.truncate(keep_last=3, preserve_system=False)
         # With preserve_system=False, only last 3 are kept
@@ -196,6 +217,7 @@ class TestConversationTruncate:
 
     def test_truncate_noop_when_small(self):
         from looplet.conversation import Conversation, Message, MessageRole
+
         c = Conversation()
         c.append(Message(role=MessageRole.USER, content="a"))
         c.append(Message(role=MessageRole.USER, content="b"))
@@ -205,6 +227,7 @@ class TestConversationTruncate:
     def test_truncate_returns_self(self):
         c = self._make_conversation(5)
         from looplet.conversation import Conversation
+
         result = c.truncate(keep_last=2)
         assert result is c
 
@@ -213,6 +236,7 @@ class TestConversationCompact:
     def _make_conversation_with_tools(self):
         from looplet.conversation import Conversation, Message, MessageRole
         from looplet.types import ToolCall, ToolResult
+
         c = Conversation()
         c.append(Message(role=MessageRole.SYSTEM, content="You are an agent."))
         c.append(Message(role=MessageRole.USER, content="Investigate something"))
@@ -232,6 +256,7 @@ class TestConversationCompact:
 
     def test_compact_adds_summary_system_message(self):
         from looplet.conversation import MessageRole
+
         c = self._make_conversation_with_tools()
         c.compact()
         roles = [m.role for m in c.messages]
@@ -239,6 +264,7 @@ class TestConversationCompact:
 
     def test_compact_with_custom_summarizer(self):
         from looplet.conversation import MessageRole
+
         c = self._make_conversation_with_tools()
 
         def custom_summarizer(messages):
@@ -256,6 +282,7 @@ class TestConversationCompact:
 
     def test_compact_preserves_last_user_message(self):
         from looplet.conversation import MessageRole
+
         c = self._make_conversation_with_tools()
         c.compact()
         # Last user message should be in the compacted conversation
@@ -267,6 +294,7 @@ class TestConversationCompact:
 class TestConversationRender:
     def test_render_returns_string(self):
         from looplet.conversation import Conversation, Message, MessageRole
+
         c = Conversation()
         c.append(Message(role=MessageRole.USER, content="test"))
         result = c.render()
@@ -274,6 +302,7 @@ class TestConversationRender:
 
     def test_render_includes_content(self):
         from looplet.conversation import Conversation, Message, MessageRole
+
         c = Conversation()
         c.append(Message(role=MessageRole.USER, content="unique-marker-xyz"))
         result = c.render()
@@ -281,6 +310,7 @@ class TestConversationRender:
 
     def test_render_includes_role_labels(self):
         from looplet.conversation import Conversation, Message, MessageRole
+
         c = Conversation()
         c.append(Message(role=MessageRole.SYSTEM, content="system msg"))
         c.append(Message(role=MessageRole.USER, content="user msg"))
@@ -290,6 +320,7 @@ class TestConversationRender:
 
     def test_render_with_max_tokens(self):
         from looplet.conversation import Conversation, Message, MessageRole
+
         c = Conversation()
         for i in range(100):
             c.append(Message(role=MessageRole.USER, content=f"message {i} " * 50))
@@ -302,6 +333,7 @@ class TestConversationRender:
 class TestConversationSerialize:
     def test_serialize_returns_dict(self):
         from looplet.conversation import Conversation, Message, MessageRole
+
         c = Conversation()
         c.append(Message(role=MessageRole.USER, content="hello"))
         data = c.serialize()
@@ -311,6 +343,7 @@ class TestConversationSerialize:
         import json
 
         from looplet.conversation import Conversation, Message, MessageRole
+
         c = Conversation()
         c.append(Message(role=MessageRole.SYSTEM, content="system"))
         c.append(Message(role=MessageRole.USER, content="user"))
@@ -321,6 +354,7 @@ class TestConversationSerialize:
 
     def test_deserialize_roundtrip(self):
         from looplet.conversation import Conversation, Message, MessageRole
+
         c = Conversation()
         c.append(Message(role=MessageRole.SYSTEM, content="system prompt"))
         c.append(Message(role=MessageRole.USER, content="user message"))
@@ -337,6 +371,7 @@ class TestConversationSerialize:
     def test_deserialize_with_tool_call(self):
         from looplet.conversation import Conversation, Message, MessageRole
         from looplet.types import ToolCall
+
         c = Conversation()
         tc = ToolCall(tool="search", args={"q": "test"}, reasoning="because")
         c.append(Message(role=MessageRole.ASSISTANT, content="", tool_call=tc))
@@ -350,6 +385,7 @@ class TestConversationSerialize:
     def test_deserialize_with_tool_result(self):
         from looplet.conversation import Conversation, Message, MessageRole
         from looplet.types import ToolResult
+
         c = Conversation()
         tr = ToolResult(tool="search", args_summary="q=test", data={"results": ["r1"]})
         c.append(Message(role=MessageRole.TOOL, content="", tool_result=tr))
@@ -363,6 +399,7 @@ class TestConversationSerialize:
         import json
 
         from looplet.conversation import Conversation, Message, MessageRole
+
         c = Conversation()
         msg = Message(role=MessageRole.USER, content="hi", metadata={"key": "value"})
         c.append(msg)
@@ -374,11 +411,13 @@ class TestConversationSerialize:
 class TestConversationProperties:
     def test_token_estimate_zero_for_empty(self):
         from looplet.conversation import Conversation
+
         c = Conversation()
         assert c.token_estimate >= 0
 
     def test_token_estimate_grows_with_messages(self):
         from looplet.conversation import Conversation, Message, MessageRole
+
         c = Conversation()
         t0 = c.token_estimate
         c.append(Message(role=MessageRole.USER, content="x" * 100))
@@ -386,6 +425,7 @@ class TestConversationProperties:
 
     def test_entities_empty_for_no_results(self):
         from looplet.conversation import Conversation, Message, MessageRole
+
         c = Conversation()
         c.append(Message(role=MessageRole.USER, content="hello"))
         assert isinstance(c.entities, set)
@@ -393,9 +433,11 @@ class TestConversationProperties:
     def test_entities_from_tool_results(self):
         from looplet.conversation import Conversation, Message, MessageRole
         from looplet.types import ToolResult
+
         c = Conversation()
         tr = ToolResult(
-            tool="search", args_summary="",
+            tool="search",
+            args_summary="",
             data={"entities": ["entity_a", "entity_b"]},
         )
         c.append(Message(role=MessageRole.TOOL, content="", tool_result=tr))
@@ -407,6 +449,7 @@ class TestConversationProperties:
     def test_entities_union_across_messages(self):
         from looplet.conversation import Conversation, Message, MessageRole
         from looplet.types import ToolResult
+
         c = Conversation()
         for names in [["a", "b"], ["c"]]:
             tr = ToolResult(tool="t", args_summary="", data={"entities": names})
@@ -417,6 +460,7 @@ class TestConversationProperties:
 class TestDefaultSummarizer:
     def test_default_summarizer_returns_string(self):
         from looplet.conversation import Message, MessageRole, default_summarizer
+
         messages = [
             Message(role=MessageRole.USER, content="Do something"),
             Message(role=MessageRole.ASSISTANT, content="ok"),
@@ -428,12 +472,15 @@ class TestDefaultSummarizer:
     def test_default_summarizer_includes_role_counts(self):
         from looplet.conversation import Message, MessageRole, default_summarizer
         from looplet.types import ToolCall
+
         messages = [
             Message(role=MessageRole.USER, content="task"),
-            Message(role=MessageRole.ASSISTANT, content="",
-                    tool_call=ToolCall(tool="search", args={})),
-            Message(role=MessageRole.ASSISTANT, content="",
-                    tool_call=ToolCall(tool="think", args={})),
+            Message(
+                role=MessageRole.ASSISTANT, content="", tool_call=ToolCall(tool="search", args={})
+            ),
+            Message(
+                role=MessageRole.ASSISTANT, content="", tool_call=ToolCall(tool="think", args={})
+            ),
         ]
         result = default_summarizer(messages)
         # Should mention the tools called
@@ -443,4 +490,5 @@ class TestDefaultSummarizer:
         import inspect
 
         from looplet.conversation import default_summarizer
+
         assert callable(default_summarizer)

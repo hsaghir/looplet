@@ -63,14 +63,16 @@ def _to_openai_tools(schemas: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Convert Anthropic-style schemas to OpenAI function-tool format."""
     out: list[dict[str, Any]] = []
     for s in schemas:
-        out.append({
-            "type": "function",
-            "function": {
-                "name": s["name"],
-                "description": s.get("description", ""),
-                "parameters": s.get("input_schema", {"type": "object", "properties": {}}),
-            },
-        })
+        out.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": s["name"],
+                    "description": s.get("description", ""),
+                    "parameters": s.get("input_schema", {"type": "object", "properties": {}}),
+                },
+            }
+        )
     return out
 
 
@@ -98,12 +100,14 @@ def _openai_message_to_blocks(message: Any) -> list[dict[str, Any]]:
                 input_args = {}
         except (ValueError, TypeError):
             input_args = {"_raw_arguments": raw_args}
-        blocks.append({
-            "type": "tool_use",
-            "id": getattr(tc, "id", "") or "",
-            "name": name,
-            "input": input_args,
-        })
+        blocks.append(
+            {
+                "type": "tool_use",
+                "id": getattr(tc, "id", "") or "",
+                "name": name,
+                "input": input_args,
+            }
+        )
     return blocks
 
 
@@ -115,12 +119,14 @@ def _anthropic_response_to_blocks(response: Any) -> list[dict[str, Any]]:
         if btype == "text":
             blocks.append({"type": "text", "text": getattr(block, "text", "")})
         elif btype == "tool_use":
-            blocks.append({
-                "type": "tool_use",
-                "id": getattr(block, "id", "") or "",
-                "name": getattr(block, "name", "") or "",
-                "input": dict(getattr(block, "input", {}) or {}),
-            })
+            blocks.append(
+                {
+                    "type": "tool_use",
+                    "id": getattr(block, "id", "") or "",
+                    "name": getattr(block, "name", "") or "",
+                    "input": dict(getattr(block, "input", {}) or {}),
+                }
+            )
     return blocks
 
 

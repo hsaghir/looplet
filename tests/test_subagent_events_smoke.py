@@ -1,4 +1,5 @@
 """Smoke tests for SUBAGENT_START / SUBAGENT_STOP lifecycle events."""
+
 from __future__ import annotations
 
 import pytest
@@ -16,18 +17,22 @@ pytestmark = pytest.mark.smoke
 
 def _tools() -> BaseToolRegistry:
     reg = BaseToolRegistry()
-    reg.register(ToolSpec(
-        name="add",
-        description="Add",
-        parameters={"a": "int", "b": "int"},
-        execute=lambda *, a, b: {"sum": a + b},
-    ))
-    reg.register(ToolSpec(
-        name="done",
-        description="Finish",
-        parameters={"answer": "str"},
-        execute=lambda *, answer: {"answer": answer},
-    ))
+    reg.register(
+        ToolSpec(
+            name="add",
+            description="Add",
+            parameters={"a": "int", "b": "int"},
+            execute=lambda *, a, b: {"sum": a + b},
+        )
+    )
+    reg.register(
+        ToolSpec(
+            name="done",
+            description="Finish",
+            parameters={"answer": "str"},
+            execute=lambda *, answer: {"answer": answer},
+        )
+    )
     return reg
 
 
@@ -46,10 +51,12 @@ class TestSubagentLifecycleEvents:
     def test_subagent_start_and_stop_fire(self):
         r = _Recorder()
         run_sub_loop(
-            llm=MockLLMBackend(responses=[
-                '{"tool":"add","args":{"a":1,"b":2},"reasoning":"r"}',
-                '{"tool":"done","args":{"answer":"ok"},"reasoning":"r"}',
-            ]),
+            llm=MockLLMBackend(
+                responses=[
+                    '{"tool":"add","args":{"a":1,"b":2},"reasoning":"r"}',
+                    '{"tool":"done","args":{"answer":"ok"},"reasoning":"r"}',
+                ]
+            ),
             tools=_tools(),
             max_steps=3,
             hooks=[r],
@@ -60,25 +67,30 @@ class TestSubagentLifecycleEvents:
     def test_subagent_id_correlates_events(self):
         r = _Recorder()
         run_sub_loop(
-            llm=MockLLMBackend(responses=[
-                '{"tool":"done","args":{"answer":"ok"},"reasoning":"r"}',
-            ]),
+            llm=MockLLMBackend(
+                responses=[
+                    '{"tool":"done","args":{"answer":"ok"},"reasoning":"r"}',
+                ]
+            ),
             tools=_tools(),
             max_steps=3,
             hooks=[r],
             subagent_id="custom-id",
         )
         ids = [
-            p.subagent_id for p in r.payloads
+            p.subagent_id
+            for p in r.payloads
             if p.event in (LifecycleEvent.SUBAGENT_START, LifecycleEvent.SUBAGENT_STOP)
         ]
         assert ids == ["custom-id", "custom-id"]
 
     def test_result_carries_subagent_id(self):
         result = run_sub_loop(
-            llm=MockLLMBackend(responses=[
-                '{"tool":"done","args":{"answer":"ok"},"reasoning":"r"}',
-            ]),
+            llm=MockLLMBackend(
+                responses=[
+                    '{"tool":"done","args":{"answer":"ok"},"reasoning":"r"}',
+                ]
+            ),
             tools=_tools(),
             max_steps=3,
             subagent_id="correlation-7",
@@ -88,9 +100,11 @@ class TestSubagentLifecycleEvents:
     def test_auto_generated_id_when_not_supplied(self):
         r = _Recorder()
         result = run_sub_loop(
-            llm=MockLLMBackend(responses=[
-                '{"tool":"done","args":{"answer":"ok"},"reasoning":"r"}',
-            ]),
+            llm=MockLLMBackend(
+                responses=[
+                    '{"tool":"done","args":{"answer":"ok"},"reasoning":"r"}',
+                ]
+            ),
             tools=_tools(),
             max_steps=3,
             hooks=[r],

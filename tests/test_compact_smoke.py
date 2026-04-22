@@ -1,4 +1,5 @@
 """Smoke tests for :mod:`looplet.compact` and the compaction lifecycle."""
+
 from __future__ import annotations
 
 import pytest
@@ -24,10 +25,15 @@ class TestDefaultCompactService:
         # Minimal mutable state + session_log stubs.
         state = type("S", (), {"steps": []})()
         from looplet.session import SessionLog
+
         sl = SessionLog()
         outcome = svc.compact(
-            state=state, session_log=sl, llm=None,
-            conversation=None, step_num=0, reason="test",
+            state=state,
+            session_log=sl,
+            llm=None,
+            conversation=None,
+            step_num=0,
+            reason="test",
         )
         assert isinstance(outcome, CompactOutcome)
         assert outcome.reason == "test"
@@ -44,12 +50,17 @@ class TestRunCompactEvents:
 
         state = type("S", (), {"steps": []})()
         from looplet.session import SessionLog
+
         sl = SessionLog()
         outcome = run_compact(
             TruncateCompact(),
             hooks=[Observer()],
-            state=state, session_log=sl, llm=None, conversation=None,
-            step_num=0, reason="test",
+            state=state,
+            session_log=sl,
+            llm=None,
+            conversation=None,
+            step_num=0,
+            reason="test",
         )
         assert LifecycleEvent.PRE_COMPACT in seen
         assert LifecycleEvent.POST_COMPACT in seen
@@ -71,12 +82,17 @@ class TestRunCompactEvents:
 
         state = type("S", (), {"steps": []})()
         from looplet.session import SessionLog
+
         sl = SessionLog()
         outcome = run_compact(
             AngryService(),
             hooks=[Aborter()],
-            state=state, session_log=sl, llm=None, conversation=None,
-            step_num=0, reason="x",
+            state=state,
+            session_log=sl,
+            llm=None,
+            conversation=None,
+            step_num=0,
+            reason="x",
         )
         assert "aborted" in outcome.reason
 
@@ -92,11 +108,17 @@ class TestRunCompactEvents:
         svc = Counter()
         state = type("S", (), {"steps": []})()
         from looplet.session import SessionLog
+
         sl = SessionLog()
         outcome = run_compact(
-            svc, hooks=[],
-            state=state, session_log=sl, llm=None, conversation=None,
-            step_num=0, reason="x",
+            svc,
+            hooks=[],
+            state=state,
+            session_log=sl,
+            llm=None,
+            conversation=None,
+            step_num=0,
+            reason="x",
         )
         assert svc.calls == 1
         assert outcome.llm_calls_spent == 7
@@ -105,5 +127,6 @@ class TestRunCompactEvents:
 class TestLoopIntegration:
     def test_compact_service_is_a_LoopConfig_field(self):
         from looplet import LoopConfig
+
         cfg = LoopConfig(compact_service=TruncateCompact())
         assert cfg.compact_service is not None

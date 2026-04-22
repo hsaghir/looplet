@@ -15,16 +15,19 @@ pytestmark = pytest.mark.smoke
 class TestToolCallDefaults:
     def test_creation_with_required_fields(self):
         from looplet.types import ToolCall
+
         tc = ToolCall(tool="search")
         assert tc.tool == "search"
 
     def test_args_default_is_empty_dict(self):
         from looplet.types import ToolCall
+
         tc = ToolCall(tool="search")
         assert tc.args == {}
 
     def test_args_are_independent_per_instance(self):
         from looplet.types import ToolCall
+
         tc1 = ToolCall(tool="a")
         tc2 = ToolCall(tool="b")
         tc1.args["key"] = "val"
@@ -32,17 +35,20 @@ class TestToolCallDefaults:
 
     def test_reasoning_defaults_to_empty_string(self):
         from looplet.types import ToolCall
+
         tc = ToolCall(tool="search")
         assert tc.reasoning == ""
 
     def test_call_id_auto_generated(self):
         from looplet.types import ToolCall
+
         tc = ToolCall(tool="search")
         assert tc.call_id
         assert isinstance(tc.call_id, str)
 
     def test_call_id_unique_per_instance(self):
         from looplet.types import ToolCall
+
         tc1 = ToolCall(tool="search")
         tc2 = ToolCall(tool="search")
         assert tc1.call_id != tc2.call_id
@@ -51,22 +57,26 @@ class TestToolCallDefaults:
 class TestToolCallCustomArgs:
     def test_custom_args(self):
         from looplet.types import ToolCall
+
         tc = ToolCall(tool="query", args={"limit": 10, "filter": "active"})
         assert tc.args["limit"] == 10
         assert tc.args["filter"] == "active"
 
     def test_custom_reasoning(self):
         from looplet.types import ToolCall
+
         tc = ToolCall(tool="query", reasoning="Need recent events")
         assert tc.reasoning == "Need recent events"
 
     def test_custom_call_id(self):
         from looplet.types import ToolCall
+
         tc = ToolCall(tool="query", call_id="my-id-123")
         assert tc.call_id == "my-id-123"
 
     def test_to_dict(self):
         from looplet.types import ToolCall
+
         tc = ToolCall(tool="search", args={"q": "test"}, reasoning="why", call_id="abc")
         d = tc.to_dict()
         assert d["tool"] == "search"
@@ -81,6 +91,7 @@ class TestToolCallCustomArgs:
 class TestToolResultWithoutError:
     def test_basic_construction(self):
         from looplet.types import ToolResult
+
         tr = ToolResult(tool="search", args_summary="q=test", data=["result1"])
         assert tr.tool == "search"
         assert tr.args_summary == "q=test"
@@ -88,21 +99,25 @@ class TestToolResultWithoutError:
 
     def test_error_defaults_to_none(self):
         from looplet.types import ToolResult
+
         tr = ToolResult(tool="search", args_summary="q=test", data=[])
         assert tr.error is None
 
     def test_duration_ms_defaults_to_zero(self):
         from looplet.types import ToolResult
+
         tr = ToolResult(tool="search", args_summary="q=test", data=[])
         assert tr.duration_ms == 0.0
 
     def test_result_key_defaults_to_none(self):
         from looplet.types import ToolResult
+
         tr = ToolResult(tool="search", args_summary="q=test", data=[])
         assert tr.result_key is None
 
     def test_call_id_defaults_to_none(self):
         from looplet.types import ToolResult
+
         tr = ToolResult(tool="search", args_summary="q=test", data=[])
         assert tr.call_id is None
 
@@ -110,11 +125,13 @@ class TestToolResultWithoutError:
 class TestToolResultWithError:
     def test_error_field(self):
         from looplet.types import ToolResult
+
         tr = ToolResult(tool="search", args_summary="q=test", data=None, error="timeout")
         assert tr.error == "timeout"
 
     def test_all_optional_fields(self):
         from looplet.types import ToolResult
+
         tr = ToolResult(
             tool="search",
             args_summary="q=test",
@@ -135,6 +152,7 @@ class TestToolResultWithError:
 class TestStepConstruction:
     def test_basic_construction(self):
         from looplet.types import Step, ToolCall, ToolResult
+
         tc = ToolCall(tool="search", call_id="id1")
         tr = ToolResult(tool="search", args_summary="q=test", data=[], call_id="id1")
         step = Step(number=1, tool_call=tc, tool_result=tr)
@@ -144,6 +162,7 @@ class TestStepConstruction:
 
     def test_to_dict(self):
         from looplet.types import Step, ToolCall, ToolResult
+
         tc = ToolCall(tool="search", call_id="id1")
         tr = ToolResult(tool="search", args_summary="q=test", data=[], call_id="id1")
         step = Step(number=2, tool_call=tc, tool_result=tr)
@@ -154,6 +173,7 @@ class TestStepConstruction:
 
     def test_summary_success(self):
         from looplet.types import Step, ToolCall, ToolResult
+
         tc = ToolCall(tool="search")
         tr = ToolResult(tool="search", args_summary="q=test", data=["a", "b"])
         step = Step(number=1, tool_call=tc, tool_result=tr)
@@ -163,6 +183,7 @@ class TestStepConstruction:
 
     def test_summary_error(self):
         from looplet.types import Step, ToolCall, ToolResult
+
         tc = ToolCall(tool="search")
         tr = ToolResult(tool="search", args_summary="q=test", data=None, error="timeout")
         step = Step(number=3, tool_call=tc, tool_result=tr)
@@ -172,9 +193,12 @@ class TestStepConstruction:
 
     def test_pretty_success_with_duration(self):
         from looplet.types import Step, ToolCall, ToolResult
+
         tc = ToolCall(tool="search")
         tr = ToolResult(
-            tool="search", args_summary="q=test", data=["a", "b", "c"],
+            tool="search",
+            args_summary="q=test",
+            data=["a", "b", "c"],
             duration_ms=182.4,
         )
         step = Step(number=1, tool_call=tc, tool_result=tr)
@@ -185,9 +209,13 @@ class TestStepConstruction:
 
     def test_pretty_error(self):
         from looplet.types import Step, ToolCall, ToolResult
+
         tc = ToolCall(tool="shell")
         tr = ToolResult(
-            tool="shell", args_summary="cmd=ls", data=None, error="permission denied",
+            tool="shell",
+            args_summary="cmd=ls",
+            data=None,
+            error="permission denied",
         )
         step = Step(number=2, tool_call=tc, tool_result=tr)
         pretty = step.pretty()
@@ -196,6 +224,7 @@ class TestStepConstruction:
 
     def test_pretty_no_duration_when_zero(self):
         from looplet.types import Step, ToolCall, ToolResult
+
         tc = ToolCall(tool="noop")
         tr = ToolResult(tool="noop", args_summary="", data=None)
         step = Step(number=1, tool_call=tc, tool_result=tr)
@@ -230,6 +259,7 @@ class ConcreteAgentState:
 class TestAgentStateProtocol:
     def test_isinstance_check(self):
         from looplet.types import AgentState
+
         state = ConcreteAgentState()
         assert isinstance(state, AgentState)
 
@@ -240,14 +270,18 @@ class TestAgentStateProtocol:
             queries_used = 0
 
             @property
-            def step_count(self): return 0
+            def step_count(self):
+                return 0
 
             @property
-            def budget_remaining(self): return 0
+            def budget_remaining(self):
+                return 0
 
-            def context_summary(self): return ""
+            def context_summary(self):
+                return ""
 
-            def snapshot(self): return {}
+            def snapshot(self):
+                return {}
 
         # Protocol runtime check relies on attributes — missing 'steps'
         bad = BadState()
@@ -281,6 +315,7 @@ class ConcreteLLMBackend:
 class TestLLMBackendProtocol:
     def test_isinstance_check(self):
         from looplet.types import LLMBackend
+
         backend = ConcreteLLMBackend()
         assert isinstance(backend, LLMBackend)
 
@@ -304,9 +339,11 @@ class TestLLMBackendProtocol:
 class TestExports:
     def test_all_types_exported_from_looplet(self):
         import looplet as oh
+
         for name in ["ToolCall", "ToolResult", "Step", "DefaultState", "LLMBackend"]:
             assert hasattr(oh, name), f"{name} not exported from looplet"
 
     def test_agent_state_importable(self):
         from looplet.types import AgentState
+
         assert AgentState is not None

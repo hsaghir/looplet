@@ -1,5 +1,6 @@
 """Smoke tests for PruneToolResults, compact_chain, cleanup callback,
 and the TruncateCompact / SummarizeCompact renames."""
+
 from __future__ import annotations
 
 import pytest
@@ -34,33 +35,39 @@ def _conv_with_tool_results(n: int) -> Conversation:
     """Build a conversation with n TOOL messages carrying result data."""
     conv = Conversation()
     for i in range(n):
-        conv.append(Message(
-            role=MessageRole.ASSISTANT,
-            content=f"Calling tool_{i}",
-        ))
-        conv.append(Message(
-            role=MessageRole.TOOL,
-            content=f'{{"rows": [{{"col": "val_{i}"}}]}}',
-            tool_result=ToolResult(tool=f"tool_{i}", args_summary="", data={"i": i}),
-        ))
+        conv.append(
+            Message(
+                role=MessageRole.ASSISTANT,
+                content=f"Calling tool_{i}",
+            )
+        )
+        conv.append(
+            Message(
+                role=MessageRole.TOOL,
+                content=f'{{"rows": [{{"col": "val_{i}"}}]}}',
+                tool_result=ToolResult(tool=f"tool_{i}", args_summary="", data={"i": i}),
+            )
+        )
     return conv
 
 
 def _tools():
     reg = BaseToolRegistry()
-    reg.register(ToolSpec(
-        name="done", description="d",
-        parameters={"answer": "str"},
-        execute=lambda *, answer: {"answer": answer},
-    ))
+    reg.register(
+        ToolSpec(
+            name="done",
+            description="d",
+            parameters={"answer": "str"},
+            execute=lambda *, answer: {"answer": answer},
+        )
+    )
     return reg
 
 
 def _log(n: int = 5) -> SessionLog:
     log = SessionLog()
     for i in range(1, n + 1):
-        log.record(step=i, theory="t", tool=f"tool_{i}",
-                   reasoning=f"r{i}", findings=[f"f{i}"])
+        log.record(step=i, theory="t", tool=f"tool_{i}", reasoning=f"r{i}", findings=[f"f{i}"])
     return log
 
 
@@ -87,8 +94,12 @@ class TestPruneToolResults:
         conv = _conv_with_tool_results(6)
         svc = PruneToolResults(keep_recent=2)
         out = svc.compact(
-            state=None, session_log=None, llm=None,
-            conversation=conv, step_num=6, reason="test",
+            state=None,
+            session_log=None,
+            llm=None,
+            conversation=conv,
+            step_num=6,
+            reason="test",
         )
         # 6 tool messages, keep 2 → 4 cleared
         assert out.extra["cleared"] == 4
@@ -107,8 +118,12 @@ class TestPruneToolResults:
     def test_no_conversation_noop(self):
         svc = PruneToolResults()
         out = svc.compact(
-            state=None, session_log=None, llm=None,
-            conversation=None, step_num=0, reason="test",
+            state=None,
+            session_log=None,
+            llm=None,
+            conversation=None,
+            step_num=0,
+            reason="test",
         )
         assert out.extra["mode"] == "no_conversation"
 
@@ -116,8 +131,12 @@ class TestPruneToolResults:
         conv = _conv_with_tool_results(3)
         svc = PruneToolResults(keep_recent=5)
         out = svc.compact(
-            state=None, session_log=None, llm=None,
-            conversation=conv, step_num=3, reason="test",
+            state=None,
+            session_log=None,
+            llm=None,
+            conversation=conv,
+            step_num=3,
+            reason="test",
         )
         assert out.extra["cleared"] == 0
 
@@ -129,8 +148,12 @@ class TestPruneToolResults:
             compactable_tools=frozenset({"tool_0", "tool_1"}),
         )
         out = svc.compact(
-            state=None, session_log=None, llm=None,
-            conversation=conv, step_num=4, reason="test",
+            state=None,
+            session_log=None,
+            llm=None,
+            conversation=conv,
+            step_num=4,
+            reason="test",
         )
         # 2 matching tools, keep 1 → 1 cleared
         assert out.extra["cleared"] == 1
@@ -138,10 +161,12 @@ class TestPruneToolResults:
     def test_idempotent(self):
         conv = _conv_with_tool_results(4)
         svc = PruneToolResults(keep_recent=2)
-        svc.compact(state=None, session_log=None, llm=None,
-                    conversation=conv, step_num=4, reason="1st")
-        out2 = svc.compact(state=None, session_log=None, llm=None,
-                           conversation=conv, step_num=4, reason="2nd")
+        svc.compact(
+            state=None, session_log=None, llm=None, conversation=conv, step_num=4, reason="1st"
+        )
+        out2 = svc.compact(
+            state=None, session_log=None, llm=None, conversation=conv, step_num=4, reason="2nd"
+        )
         # Already cleared — nothing new to clear
         assert out2.extra["cleared"] == 0
 
@@ -173,7 +198,7 @@ class TestCompactChain:
         conv = _conv_with_tool_results(2)  # only 2 → nothing to prune
         chain = compact_chain(
             PruneToolResults(keep_recent=5),  # won't fire
-            TruncateCompact(keep_recent=1),   # will fire
+            TruncateCompact(keep_recent=1),  # will fire
         )
         out = chain.compact(
             state=type("S", (), {"steps": []})(),
@@ -218,8 +243,14 @@ class TestCleanupCallback:
                 )
 
         run_compact(
-            _Svc(), hooks=[], state=None, session_log=None,
-            llm=None, conversation=None, step_num=0, reason="test",
+            _Svc(),
+            hooks=[],
+            state=None,
+            session_log=None,
+            llm=None,
+            conversation=None,
+            step_num=0,
+            reason="test",
         )
         assert called == ["cleaned"]
 
@@ -233,8 +264,14 @@ class TestCleanupCallback:
 
         # Must not raise
         run_compact(
-            _Svc(), hooks=[], state=None, session_log=None,
-            llm=None, conversation=None, step_num=0, reason="test",
+            _Svc(),
+            hooks=[],
+            state=None,
+            session_log=None,
+            llm=None,
+            conversation=None,
+            step_num=0,
+            reason="test",
         )
 
     def test_no_cleanup_noop(self):
@@ -249,16 +286,22 @@ class TestLoopIntegration:
     def test_chain_in_loop(self):
         """compact_chain plugs into LoopConfig.compact_service."""
         reg = BaseToolRegistry()
-        reg.register(ToolSpec(
-            name="echo", description="e",
-            parameters={"msg": "str"},
-            execute=lambda *, msg: {"msg": msg},
-        ))
-        reg.register(ToolSpec(
-            name="done", description="d",
-            parameters={"answer": "str"},
-            execute=lambda *, answer: {"answer": answer},
-        ))
+        reg.register(
+            ToolSpec(
+                name="echo",
+                description="e",
+                parameters={"msg": "str"},
+                execute=lambda *, msg: {"msg": msg},
+            )
+        )
+        reg.register(
+            ToolSpec(
+                name="done",
+                description="d",
+                parameters={"answer": "str"},
+                execute=lambda *, answer: {"answer": answer},
+            )
+        )
 
         chain = compact_chain(
             PruneToolResults(keep_recent=2),
@@ -266,12 +309,18 @@ class TestLoopIntegration:
         )
         cfg = LoopConfig(max_steps=3, compact_service=chain)
 
-        steps = list(composable_loop(
-            llm=MockLLMBackend(responses=[
-                '{"tool":"echo","args":{"msg":"a"},"reasoning":"r"}',
-                '{"tool":"done","args":{"answer":"ok"},"reasoning":"r"}',
-            ]),
-            tools=reg, state=DefaultState(max_steps=3),
-            hooks=[], config=cfg,
-        ))
+        steps = list(
+            composable_loop(
+                llm=MockLLMBackend(
+                    responses=[
+                        '{"tool":"echo","args":{"msg":"a"},"reasoning":"r"}',
+                        '{"tool":"done","args":{"answer":"ok"},"reasoning":"r"}',
+                    ]
+                ),
+                tools=reg,
+                state=DefaultState(max_steps=3),
+                hooks=[],
+                config=cfg,
+            )
+        )
         assert len(steps) == 2

@@ -170,120 +170,134 @@ def build_default_registry() -> RecoveryRegistry:
     """
     registry = RecoveryRegistry()
 
-    registry.register(RecoveryRecipe(
-        scenario=FailureScenario.PARSE_ERROR,
-        handler=lambda ctx: RecoveryAction(
-            action_type="modify_prompt",
-            payload={"simplify": True},
-            message=(
-                "Your previous response could not be parsed as a tool call. "
-                "Please respond using ONLY the JSON tool-call format with no "
-                "extra text before or after the JSON."
+    registry.register(
+        RecoveryRecipe(
+            scenario=FailureScenario.PARSE_ERROR,
+            handler=lambda ctx: RecoveryAction(
+                action_type="modify_prompt",
+                payload={"simplify": True},
+                message=(
+                    "Your previous response could not be parsed as a tool call. "
+                    "Please respond using ONLY the JSON tool-call format with no "
+                    "extra text before or after the JSON."
+                ),
             ),
-        ),
-        max_attempts=2,
-        description="Simplify prompt when LLM output cannot be parsed",
-    ))
+            max_attempts=2,
+            description="Simplify prompt when LLM output cannot be parsed",
+        )
+    )
 
-    registry.register(RecoveryRecipe(
-        scenario=FailureScenario.PROMPT_TOO_LONG,
-        handler=lambda ctx: RecoveryAction(
-            action_type="inject_guidance",
-            payload={"compact": True},
-            message=(
-                "The context has grown too large. "
-                "Please summarise what you have found so far and continue "
-                "with a focused next step rather than repeating prior context."
+    registry.register(
+        RecoveryRecipe(
+            scenario=FailureScenario.PROMPT_TOO_LONG,
+            handler=lambda ctx: RecoveryAction(
+                action_type="inject_guidance",
+                payload={"compact": True},
+                message=(
+                    "The context has grown too large. "
+                    "Please summarise what you have found so far and continue "
+                    "with a focused next step rather than repeating prior context."
+                ),
             ),
-        ),
-        max_attempts=3,
-        description="Compact context when prompt exceeds token limit",
-    ))
+            max_attempts=3,
+            description="Compact context when prompt exceeds token limit",
+        )
+    )
 
-    registry.register(RecoveryRecipe(
-        scenario=FailureScenario.TOOL_ERROR,
-        handler=lambda ctx: RecoveryAction(
-            action_type="retry",
-            payload={"backoff": True},
-            message=(
-                "The last tool call returned an error. "
-                "You may retry with different arguments or choose an alternative tool."
+    registry.register(
+        RecoveryRecipe(
+            scenario=FailureScenario.TOOL_ERROR,
+            handler=lambda ctx: RecoveryAction(
+                action_type="retry",
+                payload={"backoff": True},
+                message=(
+                    "The last tool call returned an error. "
+                    "You may retry with different arguments or choose an alternative tool."
+                ),
             ),
-        ),
-        max_attempts=3,
-        description="Retry tool calls that return errors",
-    ))
+            max_attempts=3,
+            description="Retry tool calls that return errors",
+        )
+    )
 
-    registry.register(RecoveryRecipe(
-        scenario=FailureScenario.EMPTY_RESULT,
-        handler=lambda ctx: RecoveryAction(
-            action_type="inject_guidance",
-            payload={"suggest_alternative": True},
-            message=(
-                "The last tool returned no results. "
-                "Try a broader query, different keywords, or a different tool "
-                "to find the information you need."
+    registry.register(
+        RecoveryRecipe(
+            scenario=FailureScenario.EMPTY_RESULT,
+            handler=lambda ctx: RecoveryAction(
+                action_type="inject_guidance",
+                payload={"suggest_alternative": True},
+                message=(
+                    "The last tool returned no results. "
+                    "Try a broader query, different keywords, or a different tool "
+                    "to find the information you need."
+                ),
             ),
-        ),
-        max_attempts=3,
-        description="Guide agent to try alternative approaches on empty results",
-    ))
+            max_attempts=3,
+            description="Guide agent to try alternative approaches on empty results",
+        )
+    )
 
-    registry.register(RecoveryRecipe(
-        scenario=FailureScenario.REPEATED_TOOL,
-        handler=lambda ctx: RecoveryAction(
-            action_type="inject_guidance",
-            payload={"dedup": True},
-            message=(
-                "You have called the same tool with the same arguments more "
-                "than once. Please avoid repeating queries you have already made "
-                "and instead try a different approach or tool."
+    registry.register(
+        RecoveryRecipe(
+            scenario=FailureScenario.REPEATED_TOOL,
+            handler=lambda ctx: RecoveryAction(
+                action_type="inject_guidance",
+                payload={"dedup": True},
+                message=(
+                    "You have called the same tool with the same arguments more "
+                    "than once. Please avoid repeating queries you have already made "
+                    "and instead try a different approach or tool."
+                ),
             ),
-        ),
-        max_attempts=3,
-        description="Warn agent about duplicate tool calls",
-    ))
+            max_attempts=3,
+            description="Warn agent about duplicate tool calls",
+        )
+    )
 
-    registry.register(RecoveryRecipe(
-        scenario=FailureScenario.STAGNATION,
-        handler=lambda ctx: RecoveryAction(
-            action_type="inject_guidance",
-            payload={"pivot": True},
-            message=(
-                "Progress has stalled — no new information found in recent steps. "
-                "Consider pivoting to a different angle, summarising current "
-                "findings, or calling done() if the task is complete."
+    registry.register(
+        RecoveryRecipe(
+            scenario=FailureScenario.STAGNATION,
+            handler=lambda ctx: RecoveryAction(
+                action_type="inject_guidance",
+                payload={"pivot": True},
+                message=(
+                    "Progress has stalled — no new information found in recent steps. "
+                    "Consider pivoting to a different angle, summarising current "
+                    "findings, or calling done() if the task is complete."
+                ),
             ),
-        ),
-        max_attempts=3,
-        description="Encourage the agent to pivot or conclude when stagnant",
-    ))
+            max_attempts=3,
+            description="Encourage the agent to pivot or conclude when stagnant",
+        )
+    )
 
-    registry.register(RecoveryRecipe(
-        scenario=FailureScenario.LLM_ERROR,
-        handler=lambda ctx: RecoveryAction(
-            action_type="retry",
-            payload={},
-            message=(
-                "The language model returned an error. Retrying the request."
+    registry.register(
+        RecoveryRecipe(
+            scenario=FailureScenario.LLM_ERROR,
+            handler=lambda ctx: RecoveryAction(
+                action_type="retry",
+                payload={},
+                message=("The language model returned an error. Retrying the request."),
             ),
-        ),
-        max_attempts=3,
-        description="Retry on transient LLM API errors",
-    ))
+            max_attempts=3,
+            description="Retry on transient LLM API errors",
+        )
+    )
 
-    registry.register(RecoveryRecipe(
-        scenario=FailureScenario.TIMEOUT,
-        handler=lambda ctx: RecoveryAction(
-            action_type="skip",
-            payload={"warn": True},
-            message=(
-                "A tool call timed out and has been skipped. "
-                "Continue with the information you have."
+    registry.register(
+        RecoveryRecipe(
+            scenario=FailureScenario.TIMEOUT,
+            handler=lambda ctx: RecoveryAction(
+                action_type="skip",
+                payload={"warn": True},
+                message=(
+                    "A tool call timed out and has been skipped. "
+                    "Continue with the information you have."
+                ),
             ),
-        ),
-        max_attempts=3,
-        description="Skip timed-out tool calls",
-    ))
+            max_attempts=3,
+            description="Skip timed-out tool calls",
+        )
+    )
 
     return registry

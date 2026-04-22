@@ -15,7 +15,6 @@ __all__ = [
 ]
 
 
-
 @dataclass
 class LogEntry:
     """One step in the session log.
@@ -114,16 +113,18 @@ class SessionLog:
         """
         if theory:
             self.current_theory = theory
-        self.entries.append(LogEntry(
-            step=step,
-            theory=theory or self.current_theory,
-            tool=tool,
-            reasoning=reasoning,
-            entities_seen=entities or [],
-            findings=findings or [],
-            highlights=highlights or [],
-            recall_key=recall_key,
-        ))
+        self.entries.append(
+            LogEntry(
+                step=step,
+                theory=theory or self.current_theory,
+                tool=tool,
+                reasoning=reasoning,
+                entities_seen=entities or [],
+                findings=findings or [],
+                highlights=highlights or [],
+                recall_key=recall_key,
+            )
+        )
 
     def render(self) -> str:
         """Render the full session log for prompt context inclusion."""

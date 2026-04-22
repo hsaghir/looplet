@@ -1,4 +1,5 @@
 """Smoke tests for prompt caching primitives."""
+
 from __future__ import annotations
 
 import pytest
@@ -18,23 +19,32 @@ pytestmark = pytest.mark.smoke
 
 def _tools():
     reg = BaseToolRegistry()
-    reg.register(ToolSpec(
-        name="done", description="finish",
-        parameters={"answer": "str"},
-        execute=lambda *, answer: {"answer": answer},
-    ))
+    reg.register(
+        ToolSpec(
+            name="done",
+            description="finish",
+            parameters={"answer": "str"},
+            execute=lambda *, answer: {"answer": answer},
+        )
+    )
     return reg
 
 
 class _CacheAwareBackend:
     """Records every ``cache_breakpoints`` kwarg it receives."""
+
     def __init__(self, responses):
         self._r = list(responses)
         self.received: list[list[CacheBreakpoint] | None] = []
 
     def generate(
-        self, prompt, *, max_tokens=2000, system_prompt="",
-        temperature=0.2, cache_breakpoints=None,
+        self,
+        prompt,
+        *,
+        max_tokens=2000,
+        system_prompt="",
+        temperature=0.2,
+        cache_breakpoints=None,
     ):
         self.received.append(cache_breakpoints)
         return self._r.pop(0)
@@ -61,7 +71,10 @@ class TestCachePolicy:
 
     def test_empty_policy_no_breakpoints(self):
         pol = CachePolicy()
-        assert compute_breakpoints(pol, system_prompt="x", tool_schemas_text="x", memory_text="x") == []
+        assert (
+            compute_breakpoints(pol, system_prompt="x", tool_schemas_text="x", memory_text="x")
+            == []
+        )
 
 
 class TestCacheBreakDetector:
@@ -87,10 +100,15 @@ class TestLoopIntegration:
     def test_policy_threads_breakpoints_into_backend(self):
         b = _CacheAwareBackend(['{"tool":"done","args":{"answer":"ok"},"reasoning":"r"}'])
         pol = CachePolicy(system_prompt=CacheControl(), tool_schemas=CacheControl())
-        list(composable_loop(
-            llm=b, tools=_tools(), state=DefaultState(max_steps=2),
-            hooks=[], config=LoopConfig(max_steps=2, system_prompt="SYS", cache_policy=pol),
-        ))
+        list(
+            composable_loop(
+                llm=b,
+                tools=_tools(),
+                state=DefaultState(max_steps=2),
+                hooks=[],
+                config=LoopConfig(max_steps=2, system_prompt="SYS", cache_policy=pol),
+            )
+        )
         assert len(b.received) == 1
         bps = b.received[0]
         assert bps is not None
@@ -100,37 +118,56 @@ class TestLoopIntegration:
 
     def test_no_policy_no_breakpoints(self):
         b = _CacheAwareBackend(['{"tool":"done","args":{"answer":"ok"},"reasoning":"r"}'])
-        list(composable_loop(
-            llm=b, tools=_tools(), state=DefaultState(max_steps=2),
-            hooks=[], config=LoopConfig(max_steps=2),
-        ))
+        list(
+            composable_loop(
+                llm=b,
+                tools=_tools(),
+                state=DefaultState(max_steps=2),
+                hooks=[],
+                config=LoopConfig(max_steps=2),
+            )
+        )
         assert b.received == [None]
 
     def test_backend_without_kwarg_still_works(self):
         class _Plain:
-            def generate(self, prompt, **kw): return '{"tool":"done","args":{"answer":"ok"},"reasoning":"r"}'
+            def generate(self, prompt, **kw):
+                return '{"tool":"done","args":{"answer":"ok"},"reasoning":"r"}'
+
         pol = CachePolicy(system_prompt=CacheControl())
         # Should not raise — cache_breakpoints is filtered out when backend
         # doesn't declare it.
-        list(composable_loop(
-            llm=_Plain(), tools=_tools(), state=DefaultState(max_steps=2),
-            hooks=[], config=LoopConfig(max_steps=2, cache_policy=pol),
-        ))
+        list(
+            composable_loop(
+                llm=_Plain(),
+                tools=_tools(),
+                state=DefaultState(max_steps=2),
+                hooks=[],
+                config=LoopConfig(max_steps=2, cache_policy=pol),
+            )
+        )
 
     def test_detector_hook_integration(self):
         """CacheBreakDetector is detected by the loop via isinstance, not via hook methods."""
         import warnings
 
-        b = _CacheAwareBackend([
-            '{"tool":"done","args":{"answer":"ok"},"reasoning":"r"}',
-        ])
+        b = _CacheAwareBackend(
+            [
+                '{"tool":"done","args":{"answer":"ok"},"reasoning":"r"}',
+            ]
+        )
         pol = CachePolicy(system_prompt=CacheControl())
         det = CacheBreakDetector(pol)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", UserWarning)
-            list(composable_loop(
-                llm=b, tools=_tools(), state=DefaultState(max_steps=2),
-                hooks=[det], config=LoopConfig(max_steps=2, system_prompt="S", cache_policy=pol),
-            ))
+            list(
+                composable_loop(
+                    llm=b,
+                    tools=_tools(),
+                    state=DefaultState(max_steps=2),
+                    hooks=[det],
+                    config=LoopConfig(max_steps=2, system_prompt="S", cache_policy=pol),
+                )
+            )
         # Detector recorded one turn, no breaks (only one turn).
         assert det.breaks == []

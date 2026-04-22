@@ -1,4 +1,5 @@
 """Smoke tests for the eval framework."""
+
 from __future__ import annotations
 
 import json
@@ -31,19 +32,23 @@ pytestmark = pytest.mark.smoke
 
 # ── Helpers ──────────────────────────────────────────────────────
 
-def _step(tool: str, args: dict | None = None, data: dict | None = None,
-          error: str | None = None) -> Step:
+
+def _step(
+    tool: str, args: dict | None = None, data: dict | None = None, error: str | None = None
+) -> Step:
     tc = ToolCall(tool=tool, args=args or {})
     tr = ToolResult(tool=tool, args_summary="", data=data, error=error)
     return Step(number=1, tool_call=tc, tool_result=tr)
 
 
 def _ctx(**kw) -> EvalContext:
-    return EvalContext(steps=kw.get("steps", []), task=kw.get("task", {}),
-                       final_output=kw.get("final_output", {}))
+    return EvalContext(
+        steps=kw.get("steps", []), task=kw.get("task", {}), final_output=kw.get("final_output", {})
+    )
 
 
 # ── EvalResult.from_return ───────────────────────────────────────
+
 
 class TestEvalResultFromReturn:
     def test_float(self):
@@ -84,6 +89,7 @@ class TestEvalResultFromReturn:
 
 # ── eval_run ─────────────────────────────────────────────────────
 
+
 class TestEvalRun:
     def test_runs_simple_evaluators(self):
         def eval_step_count(ctx: EvalContext) -> float:
@@ -109,7 +115,8 @@ class TestEvalRun:
 
     def test_passes_llm_to_judge_eval(self):
         class FakeJudge:
-            def generate(self, prompt, **kw): return "0.75"
+            def generate(self, prompt, **kw):
+                return "0.75"
 
         def eval_with_judge(ctx, llm):
             return float(llm.generate("x"))
@@ -135,6 +142,7 @@ class TestEvalRun:
 
 
 # ── eval_discover ────────────────────────────────────────────────
+
 
 class TestEvalDiscover:
     def test_discovers_eval_functions(self):
@@ -166,6 +174,7 @@ class TestEvalDiscover:
 
 # ── EvalContext.from_trajectory_dir ──────────────────────────────
 
+
 class TestEvalContextFromDir:
     def test_loads_trajectory(self):
         with tempfile.TemporaryDirectory() as d:
@@ -174,10 +183,14 @@ class TestEvalContextFromDir:
                 "started_at": 1.0,
                 "ended_at": 2.0,
                 "steps": [
-                    {"tool_call": {"tool": "bash", "args": {"command": "ls"}},
-                     "tool_result": {"tool": "bash", "data": {}}},
-                    {"tool_call": {"tool": "done", "args": {"answer": "ok"}},
-                     "tool_result": {"tool": "done", "data": {}}},
+                    {
+                        "tool_call": {"tool": "bash", "args": {"command": "ls"}},
+                        "tool_result": {"tool": "bash", "data": {}},
+                    },
+                    {
+                        "tool_call": {"tool": "done", "args": {"answer": "ok"}},
+                        "tool_result": {"tool": "done", "data": {}},
+                    },
                 ],
                 "task": {"goal": "test"},
             }
@@ -190,6 +203,7 @@ class TestEvalContextFromDir:
 
 # ── EvalHook integration ────────────────────────────────────────
 
+
 class TestEvalHookIntegration:
     def test_runs_evals_after_loop(self):
         def eval_completed(ctx: EvalContext) -> bool:
@@ -199,56 +213,94 @@ class TestEvalHookIntegration:
             return min(3 / max(ctx.step_count, 1), 1.0)
 
         reg = BaseToolRegistry()
-        reg.register(ToolSpec(name="done", description="d",
-                              parameters={"answer": "str"},
-                              execute=lambda *, answer: {"answer": answer}))
+        reg.register(
+            ToolSpec(
+                name="done",
+                description="d",
+                parameters={"answer": "str"},
+                execute=lambda *, answer: {"answer": answer},
+            )
+        )
 
         hook = EvalHook(evaluators=[eval_completed, eval_efficient])
-        list(composable_loop(
-            llm=MockLLMBackend(responses=[
-                '{"tool":"done","args":{"answer":"ok"},"reasoning":"r"}',
-            ]),
-            tools=reg, state=DefaultState(max_steps=3),
-            hooks=[hook], config=LoopConfig(max_steps=3),
-        ))
+        list(
+            composable_loop(
+                llm=MockLLMBackend(
+                    responses=[
+                        '{"tool":"done","args":{"answer":"ok"},"reasoning":"r"}',
+                    ]
+                ),
+                tools=reg,
+                state=DefaultState(max_steps=3),
+                hooks=[hook],
+                config=LoopConfig(max_steps=3),
+            )
+        )
         assert len(hook.results) == 2
         assert hook.results[0].score == 1.0  # completed
         assert hook.results[1].score == pytest.approx(1.0)  # 3/1 capped at 1
 
     def test_summary_and_report(self):
-        def eval_a(ctx): return 0.8
-        def eval_b(ctx): return "pass"
+        def eval_a(ctx):
+            return 0.8
+
+        def eval_b(ctx):
+            return "pass"
 
         hook = EvalHook(evaluators=[eval_a, eval_b])
         reg = BaseToolRegistry()
-        reg.register(ToolSpec(name="done", description="d",
-                              parameters={"answer": "str"},
-                              execute=lambda *, answer: {"answer": answer}))
-        list(composable_loop(
-            llm=MockLLMBackend(responses=[
-                '{"tool":"done","args":{"answer":"ok"},"reasoning":"r"}',
-            ]),
-            tools=reg, state=DefaultState(max_steps=3),
-            hooks=[hook], config=LoopConfig(max_steps=3),
-        ))
+        reg.register(
+            ToolSpec(
+                name="done",
+                description="d",
+                parameters={"answer": "str"},
+                execute=lambda *, answer: {"answer": answer},
+            )
+        )
+        list(
+            composable_loop(
+                llm=MockLLMBackend(
+                    responses=[
+                        '{"tool":"done","args":{"answer":"ok"},"reasoning":"r"}',
+                    ]
+                ),
+                tools=reg,
+                state=DefaultState(max_steps=3),
+                hooks=[hook],
+                config=LoopConfig(max_steps=3),
+            )
+        )
         assert "0.80" in hook.summary() or "scored" in hook.summary()
         assert "eval_a" in hook.report()
         assert "eval_b" in hook.report()
 
     def test_save(self):
-        def eval_x(ctx): return 0.5
+        def eval_x(ctx):
+            return 0.5
+
         hook = EvalHook(evaluators=[eval_x])
         reg = BaseToolRegistry()
-        reg.register(ToolSpec(name="done", description="d",
-                              parameters={"answer": "str"},
-                              execute=lambda *, answer: {"answer": answer}))
-        list(composable_loop(
-            llm=MockLLMBackend(responses=[
-                '{"tool":"done","args":{"answer":"ok"},"reasoning":"r"}',
-            ]),
-            tools=reg, state=DefaultState(max_steps=3),
-            hooks=[hook], config=LoopConfig(max_steps=3),
-        ))
+        reg.register(
+            ToolSpec(
+                name="done",
+                description="d",
+                parameters={"answer": "str"},
+                execute=lambda *, answer: {"answer": answer},
+            )
+        )
+        list(
+            composable_loop(
+                llm=MockLLMBackend(
+                    responses=[
+                        '{"tool":"done","args":{"answer":"ok"},"reasoning":"r"}',
+                    ]
+                ),
+                tools=reg,
+                state=DefaultState(max_steps=3),
+                hooks=[hook],
+                config=LoopConfig(max_steps=3),
+            )
+        )
         with tempfile.TemporaryDirectory() as d:
             hook.save(Path(d) / "results.json")
             data = json.loads((Path(d) / "results.json").read_text())
@@ -256,6 +308,7 @@ class TestEvalHookIntegration:
 
 
 # ── EvalResult.pretty + to_dict ──────────────────────────────────
+
 
 class TestEvalResultOutput:
     def test_pretty_score(self):
@@ -269,8 +322,7 @@ class TestEvalResultOutput:
         assert "missed: y" in p
 
     def test_to_dict(self):
-        r = EvalResult(name="t", score=0.5, label="partial",
-                       metrics={"p": 0.9}, details=["a"])
+        r = EvalResult(name="t", score=0.5, label="partial", metrics={"p": 0.9}, details=["a"])
         d = r.to_dict()
         assert d["score"] == 0.5
         assert d["label"] == "partial"
@@ -280,20 +332,22 @@ class TestEvalResultOutput:
 # ── eval_mark + filtering ───────────────────────────────────────
 
 
-
 class TestEvalMark:
     def test_marks_stored_on_function(self):
         @eval_mark("verdict", "fast")
-        def eval_x(ctx): return 1.0
+        def eval_x(ctx):
+            return 1.0
 
         assert eval_x._eval_marks == {"verdict", "fast"}
 
     def test_include_filter(self):
         @eval_mark("verdict")
-        def eval_a(ctx): return 1.0
+        def eval_a(ctx):
+            return 1.0
 
         @eval_mark("ioc")
-        def eval_b(ctx): return 0.5
+        def eval_b(ctx):
+            return 0.5
 
         results = eval_run([eval_a, eval_b], _ctx(), include=["verdict"])
         assert len(results) == 1
@@ -301,9 +355,11 @@ class TestEvalMark:
 
     def test_exclude_filter(self):
         @eval_mark("slow")
-        def eval_slow(ctx): return 0.5
+        def eval_slow(ctx):
+            return 0.5
 
-        def eval_fast(ctx): return 1.0
+        def eval_fast(ctx):
+            return 1.0
 
         results = eval_run([eval_slow, eval_fast], _ctx(), exclude=["slow"])
         assert len(results) == 1
@@ -311,7 +367,9 @@ class TestEvalMark:
 
     def test_unmarked_passes_include(self):
         """Unmarked evals are excluded when include is set."""
-        def eval_unmarked(ctx): return 1.0
+
+        def eval_unmarked(ctx):
+            return 1.0
 
         results = eval_run([eval_unmarked], _ctx(), include=["verdict"])
         assert len(results) == 0
@@ -322,7 +380,8 @@ class TestEvalMark:
 
 class TestEvalRunBatch:
     def test_batch_across_contexts(self):
-        def eval_steps(ctx): return min(ctx.step_count / 5, 1.0)
+        def eval_steps(ctx):
+            return min(ctx.step_count / 5, 1.0)
 
         ctx1 = _ctx(steps=[_step("a"), _step("b")])
         ctx2 = _ctx(steps=[_step("a")])
@@ -334,10 +393,12 @@ class TestEvalRunBatch:
 
     def test_batch_with_marks_filter(self):
         @eval_mark("fast")
-        def eval_a(ctx): return 1.0
+        def eval_a(ctx):
+            return 1.0
 
         @eval_mark("slow")
-        def eval_b(ctx): return 0.0
+        def eval_b(ctx):
+            return 0.0
 
         table = eval_run_batch([eval_a, eval_b], [_ctx()], include=["fast"])
         assert len(table) == 1

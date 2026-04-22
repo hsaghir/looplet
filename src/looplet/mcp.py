@@ -97,12 +97,14 @@ class MCPToolAdapter:
             name = schema["name"]
             desc = schema.get("description", "")
             params = self._extract_params(schema)
-            specs.append(ToolSpec(
-                name=name,
-                description=desc,
-                parameters=params,
-                execute=self._make_executor(name),
-            ))
+            specs.append(
+                ToolSpec(
+                    name=name,
+                    description=desc,
+                    parameters=params,
+                    execute=self._make_executor(name),
+                )
+            )
         return specs
 
     def register_all(self, registry: BaseToolRegistry) -> int:
@@ -140,11 +142,14 @@ class MCPToolAdapter:
             env=self._env,
         )
         # Initialize the MCP session
-        init_resp = self._send_request("initialize", {
-            "protocolVersion": "2024-11-05",
-            "capabilities": {},
-            "clientInfo": {"name": "looplet", "version": "0.1"},
-        })
+        init_resp = self._send_request(
+            "initialize",
+            {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "looplet", "version": "0.1"},
+            },
+        )
         if init_resp is None:
             raise RuntimeError(f"MCP server failed to initialize: {self._command}")
         # Send initialized notification
@@ -153,8 +158,7 @@ class MCPToolAdapter:
         tools_resp = self._send_request("tools/list", {})
         if tools_resp and "tools" in tools_resp:
             self._tool_schemas = tools_resp["tools"]
-            logger.info("MCP: loaded %d tools from %s",
-                        len(self._tool_schemas), self._command)
+            logger.info("MCP: loaded %d tools from %s", len(self._tool_schemas), self._command)
         self._started = True
 
     def _send_request(self, method: str, params: dict) -> dict | None:
@@ -221,11 +225,15 @@ class MCPToolAdapter:
 
     def _make_executor(self, tool_name: str) -> Any:
         """Create an execute function that calls the MCP server."""
+
         def execute(**kwargs: Any) -> dict:
-            resp = self._send_request("tools/call", {
-                "name": tool_name,
-                "arguments": kwargs,
-            })
+            resp = self._send_request(
+                "tools/call",
+                {
+                    "name": tool_name,
+                    "arguments": kwargs,
+                },
+            )
             if resp is None:
                 return {"error": f"MCP tool '{tool_name}' returned no response"}
             # MCP returns content as list of content blocks
@@ -240,6 +248,7 @@ class MCPToolAdapter:
                     except (json.JSONDecodeError, ValueError):
                         return {"text": text}
             return {"content": content}
+
         return execute
 
     @staticmethod

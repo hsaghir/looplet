@@ -12,16 +12,19 @@ from looplet.types import DefaultState, Step, ToolCall, ToolResult
 def _mk_state_with_huge_log(n_steps: int = 3) -> DefaultState:
     state = DefaultState()
     for i in range(1, n_steps + 1):
-        state.steps.append(Step(
-            number=i,
-            tool_call=ToolCall(tool="t", args={}, reasoning="r" * 50),
-            tool_result=ToolResult(
-                tool="t", args_summary="",
-                # Huge payload so blocking threshold trips
-                data={"rows": [{"x": i}] * 2000, "blob": "A" * 200_000},
-                result_key=f"k{i}",
-            ),
-        ))
+        state.steps.append(
+            Step(
+                number=i,
+                tool_call=ToolCall(tool="t", args={}, reasoning="r" * 50),
+                tool_result=ToolResult(
+                    tool="t",
+                    args_summary="",
+                    # Huge payload so blocking threshold trips
+                    data={"rows": [{"x": i}] * 2000, "blob": "A" * 200_000},
+                    result_key=f"k{i}",
+                ),
+            )
+        )
     return state
 
 
@@ -29,8 +32,16 @@ class TestContextManagerEmitsBoundary:
     def test_emergency_compact_records_boundary(self):
         conv = Conversation()
         log = SessionLog()
-        log.record(step=1, theory="t", tool="noop", reasoning="r",
-                   entities=["e"], findings=[], highlights=[], recall_key="k")
+        log.record(
+            step=1,
+            theory="t",
+            tool="noop",
+            reasoning="r",
+            entities=["e"],
+            findings=[],
+            highlights=[],
+            recall_key="k",
+        )
         state = _mk_state_with_huge_log(3)
 
         recorder = HistoryRecorder(state=state, session_log=log, conversation=conv)

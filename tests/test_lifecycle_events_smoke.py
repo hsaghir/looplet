@@ -1,4 +1,5 @@
 """Smoke tests for lifecycle event dispatch (:meth:`LoopHook.on_event`)."""
+
 from __future__ import annotations
 
 import pytest
@@ -33,18 +34,22 @@ class _Recorder:
 
 def _tools() -> BaseToolRegistry:
     reg = BaseToolRegistry()
-    reg.register(ToolSpec(
-        name="add",
-        description="Add",
-        parameters={"a": "int", "b": "int"},
-        execute=lambda *, a, b: {"sum": a + b},
-    ))
-    reg.register(ToolSpec(
-        name="done",
-        description="Finish",
-        parameters={"answer": "str"},
-        execute=lambda *, answer: {"answer": answer},
-    ))
+    reg.register(
+        ToolSpec(
+            name="add",
+            description="Add",
+            parameters={"a": "int", "b": "int"},
+            execute=lambda *, a, b: {"sum": a + b},
+        )
+    )
+    reg.register(
+        ToolSpec(
+            name="done",
+            description="Finish",
+            parameters={"answer": "str"},
+            execute=lambda *, answer: {"answer": answer},
+        )
+    )
     return reg
 
 
@@ -54,13 +59,15 @@ def _run_simple(hook, *, responses=None):
         '{"tool":"done","args":{"answer":"ok"},"reasoning":"r"}',
     ]
     state = DefaultState(max_steps=5)
-    return list(composable_loop(
-        llm=MockLLMBackend(responses=responses),
-        tools=_tools(),
-        state=state,
-        hooks=[hook],
-        config=LoopConfig(max_steps=5),
-    ))
+    return list(
+        composable_loop(
+            llm=MockLLMBackend(responses=responses),
+            tools=_tools(),
+            state=state,
+            hooks=[hook],
+            config=LoopConfig(max_steps=5),
+        )
+    )
 
 
 class TestLifecycleEventDispatch:
@@ -129,10 +136,14 @@ class TestLifecycleEventDecisions:
             def on_event(self, payload):
                 if payload.event == LifecycleEvent.PRE_TOOL_USE:
                     if payload.tool_call.tool == "add":
-                        return HookDecision(updated_result=ToolResult(
-                            tool="add", args_summary="cached",
-                            data={"sum": 999}, error=None,
-                        ))
+                        return HookDecision(
+                            updated_result=ToolResult(
+                                tool="add",
+                                args_summary="cached",
+                                data={"sum": 999},
+                                error=None,
+                            )
+                        )
                 return None
 
         steps = _run_simple(Cacher())
@@ -145,12 +156,14 @@ class TestLifecycleEventDecisions:
         class Scrubber:
             def on_event(self, payload):
                 if payload.event == LifecycleEvent.POST_TOOL_USE:
-                    return HookDecision(updated_result=ToolResult(
-                        tool=payload.tool_result.tool,
-                        args_summary=payload.tool_result.args_summary,
-                        data={"sum": "SCRUBBED"},
-                        error=None,
-                    ))
+                    return HookDecision(
+                        updated_result=ToolResult(
+                            tool=payload.tool_result.tool,
+                            args_summary=payload.tool_result.args_summary,
+                            data={"sum": "SCRUBBED"},
+                            error=None,
+                        )
+                    )
                 return None
 
         steps = _run_simple(Scrubber())

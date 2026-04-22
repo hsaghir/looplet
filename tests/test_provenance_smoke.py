@@ -1,4 +1,5 @@
 """Smoke tests for looplet.provenance."""
+
 from __future__ import annotations
 
 import asyncio
@@ -222,11 +223,18 @@ class TestProvenanceSinkSmoke:
 
     def test_wrap_llm_detects_async(self):
         sink = ProvenanceSink(dir=Path("/tmp/does-not-matter"))
+
+
 class TestDataclassSmoke:
     def test_llm_call_to_dict(self):
         c = LLMCall(
-            index=0, timestamp=1.0, duration_ms=5.0, method="generate",
-            prompt="p", system_prompt="", response="r",
+            index=0,
+            timestamp=1.0,
+            duration_ms=5.0,
+            method="generate",
+            prompt="p",
+            system_prompt="",
+            response="r",
         )
         d = c.to_dict()
         assert d["index"] == 0
@@ -236,8 +244,12 @@ class TestDataclassSmoke:
 
     def test_step_record_to_dict(self):
         s = StepRecord(
-            step_num=1, timestamp=1.0, duration_ms=2.0, pretty="#1 ✓",
-            tool_call={"tool": "x"}, tool_result={"tool": "x"},
+            step_num=1,
+            timestamp=1.0,
+            duration_ms=2.0,
+            pretty="#1 ✓",
+            tool_call={"tool": "x"},
+            tool_result={"tool": "x"},
         )
         assert s.to_dict()["step_num"] == 1
 

@@ -100,11 +100,13 @@ def parse_multi_tool_calls(raw: "str | list[Any] | None") -> list[ToolCall]:
                     args = {}
                 if theory:
                     args["__theory__"] = theory
-                calls.append(ToolCall(
-                    tool=str(item["tool"]),
-                    args=args,
-                    reasoning=str(item.get("reasoning", reasoning)),
-                ))
+                calls.append(
+                    ToolCall(
+                        tool=str(item["tool"]),
+                        args=args,
+                        reasoning=str(item.get("reasoning", reasoning)),
+                    )
+                )
         return calls
 
     # Single tool format
@@ -161,11 +163,12 @@ def parse_native_tool_use(blocks: list[dict]) -> list[ToolCall]:
         input_args = block.get("input", {})
         if not name:
             continue
-        calls.append(ToolCall(
-            tool=str(name),
-            args=dict(input_args) if isinstance(input_args, dict) else {},
-            reasoning="",  # native tool_use doesn't include reasoning
-            call_id=block.get("id") or "",
-        ))
+        calls.append(
+            ToolCall(
+                tool=str(name),
+                args=dict(input_args) if isinstance(input_args, dict) else {},
+                reasoning="",  # native tool_use doesn't include reasoning
+                call_id=block.get("id") or "",
+            )
+        )
     return calls
-

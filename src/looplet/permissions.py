@@ -76,7 +76,10 @@ class PermissionRule:
             logger.warning(
                 "PermissionRule arg_matcher for '%s' (decision=%s) raised %s — "
                 "failing closed (matches=%s)",
-                self.tool, self.decision.value, exc, fail_closed_match,
+                self.tool,
+                self.decision.value,
+                exc,
+                fail_closed_match,
             )
             return fail_closed_match
 
@@ -118,28 +121,43 @@ class PermissionEngine:
     ask_handler: Callable[[ToolCall, PermissionRule], PermissionDecision] | None = None
     denials: list[dict[str, Any]] = field(default_factory=list)
 
-    def allow(self, tool: str, *, arg_matcher: ArgMatcher | None = None,
-              reason: str = "") -> "PermissionEngine":
-        self.rules.append(PermissionRule(
-            tool=tool, decision=PermissionDecision.ALLOW,
-            arg_matcher=arg_matcher, reason=reason,
-        ))
+    def allow(
+        self, tool: str, *, arg_matcher: ArgMatcher | None = None, reason: str = ""
+    ) -> "PermissionEngine":
+        self.rules.append(
+            PermissionRule(
+                tool=tool,
+                decision=PermissionDecision.ALLOW,
+                arg_matcher=arg_matcher,
+                reason=reason,
+            )
+        )
         return self
 
-    def deny(self, tool: str, *, arg_matcher: ArgMatcher | None = None,
-             reason: str = "") -> "PermissionEngine":
-        self.rules.append(PermissionRule(
-            tool=tool, decision=PermissionDecision.DENY,
-            arg_matcher=arg_matcher, reason=reason,
-        ))
+    def deny(
+        self, tool: str, *, arg_matcher: ArgMatcher | None = None, reason: str = ""
+    ) -> "PermissionEngine":
+        self.rules.append(
+            PermissionRule(
+                tool=tool,
+                decision=PermissionDecision.DENY,
+                arg_matcher=arg_matcher,
+                reason=reason,
+            )
+        )
         return self
 
-    def ask(self, tool: str, *, arg_matcher: ArgMatcher | None = None,
-            reason: str = "") -> "PermissionEngine":
-        self.rules.append(PermissionRule(
-            tool=tool, decision=PermissionDecision.ASK,
-            arg_matcher=arg_matcher, reason=reason,
-        ))
+    def ask(
+        self, tool: str, *, arg_matcher: ArgMatcher | None = None, reason: str = ""
+    ) -> "PermissionEngine":
+        self.rules.append(
+            PermissionRule(
+                tool=tool,
+                decision=PermissionDecision.ASK,
+                arg_matcher=arg_matcher,
+                reason=reason,
+            )
+        )
         return self
 
     def evaluate(self, call: ToolCall) -> PermissionOutcome:
@@ -162,20 +180,22 @@ class PermissionEngine:
                             logger.warning(
                                 "ask_handler returned %r for tool '%s' — "
                                 "treating as DENY (must return ALLOW or DENY)",
-                                decision, call.tool,
+                                decision,
+                                call.tool,
                             )
                             decision = PermissionDecision.DENY
                     else:
                         decision = self._resolve_default(call)
                 outcome = PermissionOutcome(
-                    decision=decision, rule=rule, reason=rule.reason,
+                    decision=decision,
+                    rule=rule,
+                    reason=rule.reason,
                 )
                 if outcome.denied:
                     self._record_denial(call, rule, rule.reason)
                 return outcome
 
-        outcome = PermissionOutcome(decision=self._resolve_default(call),
-                                    reason="no rule matched")
+        outcome = PermissionOutcome(decision=self._resolve_default(call), reason="no rule matched")
         if outcome.denied:
             self._record_denial(call, None, outcome.reason)
         return outcome
@@ -194,18 +214,20 @@ class PermissionEngine:
         logger.warning(
             "PermissionEngine.default=%r is ambiguous for '%s' — "
             "collapsing to DENY (configure default=ALLOW or DENY to silence)",
-            self.default, call.tool,
+            self.default,
+            call.tool,
         )
         return PermissionDecision.DENY
 
-    def _record_denial(self, call: ToolCall, rule: PermissionRule | None,
-                       reason: str) -> None:
-        self.denials.append({
-            "tool": call.tool,
-            "args": dict(call.args),
-            "rule": rule.tool if rule else None,
-            "reason": reason,
-        })
+    def _record_denial(self, call: ToolCall, rule: PermissionRule | None, reason: str) -> None:
+        self.denials.append(
+            {
+                "tool": call.tool,
+                "args": dict(call.args),
+                "rule": rule.tool if rule else None,
+                "reason": reason,
+            }
+        )
 
 
 # ── Permission hook helper ─────────────────────────────────────

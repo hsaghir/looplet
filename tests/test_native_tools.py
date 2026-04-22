@@ -32,15 +32,17 @@ from looplet.types import NativeToolBackend
 
 
 def _weather_schema() -> list[dict[str, Any]]:
-    return [{
-        "name": "get_weather",
-        "description": "Get current weather",
-        "input_schema": {
-            "type": "object",
-            "properties": {"city": {"type": "string"}},
-            "required": ["city"],
-        },
-    }]
+    return [
+        {
+            "name": "get_weather",
+            "description": "Get current weather",
+            "input_schema": {
+                "type": "object",
+                "properties": {"city": {"type": "string"}},
+                "required": ["city"],
+            },
+        }
+    ]
 
 
 class _FakeOpenAIClient:
@@ -83,18 +85,20 @@ class _FakeAnthropicClient:
 class TestToOpenAITools:
     def test_wraps_schema_in_function_envelope(self):
         out = _to_openai_tools(_weather_schema())
-        assert out == [{
-            "type": "function",
-            "function": {
-                "name": "get_weather",
-                "description": "Get current weather",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"city": {"type": "string"}},
-                    "required": ["city"],
+        assert out == [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "description": "Get current weather",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"city": {"type": "string"}},
+                        "required": ["city"],
+                    },
                 },
-            },
-        }]
+            }
+        ]
 
     def test_missing_input_schema_yields_empty_object(self):
         out = _to_openai_tools([{"name": "noop", "description": "no-op"}])
@@ -108,29 +112,38 @@ class TestOpenAIMessageNormaliser:
     def test_tool_calls_and_content(self):
         msg = SimpleNamespace(
             content="Let me check.",
-            tool_calls=[SimpleNamespace(
-                id="call_1",
-                function=SimpleNamespace(name="get_weather", arguments='{"city":"Paris"}'),
-            )],
+            tool_calls=[
+                SimpleNamespace(
+                    id="call_1",
+                    function=SimpleNamespace(name="get_weather", arguments='{"city":"Paris"}'),
+                )
+            ],
         )
         blocks = _openai_message_to_blocks(msg)
         assert blocks == [
             {"type": "text", "text": "Let me check."},
-            {"type": "tool_use", "id": "call_1", "name": "get_weather",
-             "input": {"city": "Paris"}},
+            {"type": "tool_use", "id": "call_1", "name": "get_weather", "input": {"city": "Paris"}},
         ]
 
     def test_malformed_arguments_kept_as_raw(self):
         msg = SimpleNamespace(
             content=None,
-            tool_calls=[SimpleNamespace(
-                id="call_2",
-                function=SimpleNamespace(name="x", arguments='not-json'),
-            )],
+            tool_calls=[
+                SimpleNamespace(
+                    id="call_2",
+                    function=SimpleNamespace(name="x", arguments="not-json"),
+                )
+            ],
         )
         blocks = _openai_message_to_blocks(msg)
-        assert blocks == [{"type": "tool_use", "id": "call_2", "name": "x",
-                           "input": {"_raw_arguments": "not-json"}}]
+        assert blocks == [
+            {
+                "type": "tool_use",
+                "id": "call_2",
+                "name": "x",
+                "input": {"_raw_arguments": "not-json"},
+            }
+        ]
 
     def test_no_tool_calls(self):
         msg = SimpleNamespace(content="Hello", tool_calls=None)
@@ -139,15 +152,17 @@ class TestOpenAIMessageNormaliser:
 
 class TestAnthropicResponseNormaliser:
     def test_mixed_text_and_tool_use(self):
-        response = SimpleNamespace(content=[
-            SimpleNamespace(type="text", text="Let me check."),
-            SimpleNamespace(type="tool_use", id="tu_1", name="get_weather",
-                            input={"city": "Paris"}),
-        ])
+        response = SimpleNamespace(
+            content=[
+                SimpleNamespace(type="text", text="Let me check."),
+                SimpleNamespace(
+                    type="tool_use", id="tu_1", name="get_weather", input={"city": "Paris"}
+                ),
+            ]
+        )
         assert _anthropic_response_to_blocks(response) == [
             {"type": "text", "text": "Let me check."},
-            {"type": "tool_use", "id": "tu_1", "name": "get_weather",
-             "input": {"city": "Paris"}},
+            {"type": "tool_use", "id": "tu_1", "name": "get_weather", "input": {"city": "Paris"}},
         ]
 
 
@@ -166,31 +181,39 @@ class TestBackendImplementsProtocol:
 
 class TestGenerateWithTools:
     def test_openai_passes_tools_and_returns_blocks(self):
-        client = _FakeOpenAIClient(SimpleNamespace(
-            content=None,
-            tool_calls=[SimpleNamespace(
-                id="c1",
-                function=SimpleNamespace(name="get_weather", arguments='{"city":"Tokyo"}'),
-            )],
-        ))
+        client = _FakeOpenAIClient(
+            SimpleNamespace(
+                content=None,
+                tool_calls=[
+                    SimpleNamespace(
+                        id="c1",
+                        function=SimpleNamespace(name="get_weather", arguments='{"city":"Tokyo"}'),
+                    )
+                ],
+            )
+        )
         backend = OpenAIBackend(client, model="gpt-x")
         blocks = backend.generate_with_tools("Weather?", tools=_weather_schema())
-        assert blocks == [{"type": "tool_use", "id": "c1", "name": "get_weather",
-                           "input": {"city": "Tokyo"}}]
+        assert blocks == [
+            {"type": "tool_use", "id": "c1", "name": "get_weather", "input": {"city": "Tokyo"}}
+        ]
         assert client.last_kwargs["tools"][0]["type"] == "function"
         assert client.last_kwargs["tool_choice"] == "auto"
 
     def test_anthropic_passes_tools_as_is(self):
-        client = _FakeAnthropicClient([
-            SimpleNamespace(type="tool_use", id="tu_1", name="get_weather",
-                            input={"city": "Tokyo"}),
-        ])
+        client = _FakeAnthropicClient(
+            [
+                SimpleNamespace(
+                    type="tool_use", id="tu_1", name="get_weather", input={"city": "Tokyo"}
+                ),
+            ]
+        )
         backend = AnthropicBackend(client, model="claude-x")
         schemas = _weather_schema()
-        blocks = backend.generate_with_tools("Weather?", tools=schemas,
-                                             system_prompt="be brief")
-        assert blocks == [{"type": "tool_use", "id": "tu_1", "name": "get_weather",
-                           "input": {"city": "Tokyo"}}]
+        blocks = backend.generate_with_tools("Weather?", tools=schemas, system_prompt="be brief")
+        assert blocks == [
+            {"type": "tool_use", "id": "tu_1", "name": "get_weather", "input": {"city": "Tokyo"}}
+        ]
         assert client.last_kwargs["tools"] == schemas
         assert client.last_kwargs["system"] == "be brief"
 
@@ -210,8 +233,9 @@ class _NativeBackend:
     def generate(self, prompt, *, max_tokens=2000, system_prompt="", temperature=0.2):
         raise AssertionError("generate() should not be called in native mode")
 
-    def generate_with_tools(self, prompt, *, tools, max_tokens=2000,
-                            system_prompt="", temperature=0.2):
+    def generate_with_tools(
+        self, prompt, *, tools, max_tokens=2000, system_prompt="", temperature=0.2
+    ):
         self.calls.append({"prompt": prompt, "tools": tools})
         return [{"type": "tool_use", "id": "n1", "name": "done", "input": {}}]
 
@@ -265,13 +289,17 @@ class TestLoopGatingCall:
         assert FLAGS is not None
         assert callable(parse_native_tool_use)
 
-    @pytest.mark.parametrize("env_val,expected", [
-        ("1", True),
-        ("true", True),
-        ("0", False),
-        ("", False),
-    ])
+    @pytest.mark.parametrize(
+        "env_val,expected",
+        [
+            ("1", True),
+            ("true", True),
+            ("0", False),
+            ("", False),
+        ],
+    )
     def test_flag_respects_env(self, monkeypatch, env_val, expected):
         from looplet.flags import _Flags
+
         monkeypatch.setenv("LOOPLET_NATIVE_TOOLS", env_val)
         assert _Flags().native_tools is expected

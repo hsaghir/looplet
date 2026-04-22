@@ -24,7 +24,6 @@ __all__ = [
 ]
 
 
-
 class MessageRole(str, Enum):
     """Role of a message in a conversation thread."""
 
@@ -197,8 +196,7 @@ class Conversation:
 
         # Preserve every compaction boundary — they must survive re-compaction
         boundaries_to_keep = [
-            m for m in to_compact
-            if m.metadata.get("kind") == "compaction_boundary"
+            m for m in to_compact if m.metadata.get("kind") == "compaction_boundary"
         ]
 
         if not to_compact:
@@ -227,10 +225,7 @@ class Conversation:
 
     def find_compaction_boundaries(self) -> list[Message]:
         """Return all compaction-boundary messages in order of insertion."""
-        return [
-            m for m in self.messages
-            if m.metadata.get("kind") == "compaction_boundary"
-        ]
+        return [m for m in self.messages if m.metadata.get("kind") == "compaction_boundary"]
 
     # ── Rendering ────────────────────────────────────────────────
 
@@ -249,8 +244,9 @@ class Conversation:
             role_label = msg.role.value.upper()
             if msg.tool_call:
                 tc = msg.tool_call
-                args_str = ", ".join(f"{k}={v!r}" for k, v in tc.args.items()
-                                     if not k.startswith("__"))
+                args_str = ", ".join(
+                    f"{k}={v!r}" for k, v in tc.args.items() if not k.startswith("__")
+                )
                 lines.append(f"[{role_label}] → {tc.tool}({args_str})")
                 if tc.reasoning:
                     lines.append(f"  reasoning: {tc.reasoning}")
@@ -343,10 +339,12 @@ def _strip_large_content(msg: Message) -> Message:
     stripped: list[ContentBlock] = []
     for b in msg.content:
         if b.kind in LARGE_CONTENT_TYPES:
-            stripped.append(ContentBlock(
-                kind="text",
-                data={"text": f"[{b.kind} omitted during compaction]"},
-            ))
+            stripped.append(
+                ContentBlock(
+                    kind="text",
+                    data={"text": f"[{b.kind} omitted during compaction]"},
+                )
+            )
         else:
             stripped.append(b)
     return Message(
@@ -381,9 +379,7 @@ def default_summarizer(messages: list[Message]) -> str:
     parts: list[str] = []
 
     if role_counts:
-        counts_str = ", ".join(
-            f"{count} {role}" for role, count in sorted(role_counts.items())
-        )
+        counts_str = ", ".join(f"{count} {role}" for role, count in sorted(role_counts.items()))
         parts.append(f"Prior context: {counts_str} messages.")
 
     if tools_called:
@@ -440,8 +436,9 @@ def _deserialize_message(d: dict[str, Any]) -> Message:
     content_raw = d.get("content", "")
     content: str | list[ContentBlock]
     if isinstance(content_raw, list):
-        content = [ContentBlock(kind=b.get("kind", "text"), data=b.get("data", {}))
-                   for b in content_raw]
+        content = [
+            ContentBlock(kind=b.get("kind", "text"), data=b.get("data", {})) for b in content_raw
+        ]
     else:
         content = content_raw
     timestamp = d.get("timestamp", time.time())
@@ -464,6 +461,7 @@ def _deserialize_message(d: dict[str, Any]) -> Message:
         _error_detail = None
         if tr_data.get("error_kind"):
             from looplet.types import ErrorKind, ToolError  # noqa: PLC0415
+
             _error_detail = ToolError(
                 kind=ErrorKind(tr_data["error_kind"]),
                 message=tr_data.get("error", ""),
@@ -489,4 +487,3 @@ def _deserialize_message(d: dict[str, Any]) -> Message:
         metadata=metadata,
         timestamp=timestamp,
     )
-

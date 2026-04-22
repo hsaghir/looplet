@@ -25,8 +25,9 @@ def _make_mock_step(number: int, tool: str = "search") -> Any:
     return step
 
 
-def _make_mock_session_log(entities: set | None = None, findings: list | None = None,
-                            highlights: list | None = None) -> Any:
+def _make_mock_session_log(
+    entities: set | None = None, findings: list | None = None, highlights: list | None = None
+) -> Any:
     log = MagicMock()
     log.all_entities.return_value = entities if entities is not None else set()
     log.render.return_value = ""
@@ -56,10 +57,12 @@ def _make_mock_registry(tool_names: list[str]) -> Any:
 
 def _make_loop_generator(steps: list, return_value: dict | None = None):
     """Create a generator that yields steps and returns a dict via StopIteration."""
+
     def _gen():
         for step in steps:
             yield step
         return return_value or {"llm_calls": 2, "total_time_ms": 100}
+
     return _gen()
 
 
@@ -97,10 +100,12 @@ def _inject_mocks(mock_session_log: Any, mock_registry: Any):
 class TestMinimalState:
     def test_importable(self):
         from looplet.subagent import _MinimalState
+
         assert _MinimalState is not None
 
     def test_initial_state(self):
         from looplet.subagent import _MinimalState
+
         state = _MinimalState(task={"id": "t1"}, max_steps=5)
         assert state.steps == []
         assert state.queries_used == 0
@@ -110,6 +115,7 @@ class TestMinimalState:
 
     def test_budget_remaining_decreases(self):
         from looplet.subagent import _MinimalState
+
         state = _MinimalState(max_steps=5)
         mock_step = MagicMock()
         mock_step.summary.return_value = "S1 ✓ search"
@@ -118,6 +124,7 @@ class TestMinimalState:
 
     def test_step_count_reflects_steps(self):
         from looplet.subagent import _MinimalState
+
         state = _MinimalState()
         assert state.step_count == 0
         state.steps.append(MagicMock())
@@ -125,12 +132,14 @@ class TestMinimalState:
 
     def test_context_summary_empty(self):
         from looplet.subagent import _MinimalState
+
         state = _MinimalState()
         result = state.context_summary()
         assert "no steps" in result.lower()
 
     def test_context_summary_with_steps(self):
         from looplet.subagent import _MinimalState
+
         state = _MinimalState()
         step = MagicMock()
         step.summary.return_value = "S1 ✓ search"
@@ -140,6 +149,7 @@ class TestMinimalState:
 
     def test_snapshot(self):
         from looplet.subagent import _MinimalState
+
         state = _MinimalState(max_steps=3)
         snap = state.snapshot()
         assert "step_count" in snap
@@ -148,17 +158,20 @@ class TestMinimalState:
 
     def test_task_stored(self):
         from looplet.subagent import _MinimalState
+
         task = {"id": "abc", "description": "test"}
         state = _MinimalState(task=task)
         assert state.task == task
 
     def test_default_task_empty_dict(self):
         from looplet.subagent import _MinimalState
+
         state = _MinimalState()
         assert state.task == {}
 
     def test_budget_never_negative(self):
         from looplet.subagent import _MinimalState
+
         state = _MinimalState(max_steps=1)
         for _ in range(5):
             state.steps.append(MagicMock())
@@ -171,6 +184,7 @@ class TestMinimalState:
 class TestRunSubLoopSignature:
     def test_importable(self):
         from looplet.subagent import run_sub_loop
+
         assert callable(run_sub_loop)
 
     def test_no_alert_param(self):
@@ -178,6 +192,7 @@ class TestRunSubLoopSignature:
         import inspect
 
         from looplet.subagent import run_sub_loop
+
         sig = inspect.signature(run_sub_loop)
         assert "alert" not in sig.parameters, "alert param should be removed"
 
@@ -186,6 +201,7 @@ class TestRunSubLoopSignature:
         import inspect
 
         from looplet.subagent import run_sub_loop
+
         sig = inspect.signature(run_sub_loop)
         assert "exploration" not in sig.parameters, "exploration param should be removed"
 
@@ -193,6 +209,7 @@ class TestRunSubLoopSignature:
         import inspect
 
         from looplet.subagent import run_sub_loop
+
         sig = inspect.signature(run_sub_loop)
         params = sig.parameters
         assert "llm" in params
@@ -208,8 +225,16 @@ class TestRunSubLoopSignature:
 
 
 class TestRunSubLoopExecution:
-    def _run_with_mocks(self, steps=None, entities=None, findings=None, highlights=None,
-                        build_summary=None, tools=None, state_mutating_tools=None):
+    def _run_with_mocks(
+        self,
+        steps=None,
+        entities=None,
+        findings=None,
+        highlights=None,
+        build_summary=None,
+        tools=None,
+        state_mutating_tools=None,
+    ):
         """Helper: run run_sub_loop with all looplet deps mocked."""
         from looplet.subagent import run_sub_loop
 
@@ -244,11 +269,14 @@ class TestRunSubLoopExecution:
         mock_tools_mod.BaseToolRegistry.return_value = mock_new_registry
         mock_tools_mod.ToolSpec = MagicMock(side_effect=lambda **kw: MagicMock(**kw))
 
-        with patch.dict(sys.modules, {
-            "looplet.loop": mock_loop_mod,
-            "looplet.session": mock_session_mod,
-            "looplet.tools": mock_tools_mod,
-        }):
+        with patch.dict(
+            sys.modules,
+            {
+                "looplet.loop": mock_loop_mod,
+                "looplet.session": mock_session_mod,
+                "looplet.tools": mock_tools_mod,
+            },
+        ):
             result = run_sub_loop(
                 llm=MagicMock(),
                 task={"id": "test"},
@@ -341,7 +369,9 @@ class TestRunSubLoopExecution:
 
 
 class TestToolRegistryCloning:
-    def _run_and_get_cloned_registry(self, parent_tools: list[str], exclude: list[str] | None = None):
+    def _run_and_get_cloned_registry(
+        self, parent_tools: list[str], exclude: list[str] | None = None
+    ):
         """Run sub_loop and capture what tools were registered in sub-registry."""
         from looplet.subagent import run_sub_loop
 
@@ -385,11 +415,14 @@ class TestToolRegistryCloning:
 
         parent_registry = _make_mock_registry(parent_tools)
 
-        with patch.dict(sys.modules, {
-            "looplet.loop": mock_loop_mod,
-            "looplet.session": mock_session_mod,
-            "looplet.tools": mock_tools_mod,
-        }):
+        with patch.dict(
+            sys.modules,
+            {
+                "looplet.loop": mock_loop_mod,
+                "looplet.session": mock_session_mod,
+                "looplet.tools": mock_tools_mod,
+            },
+        ):
             run_sub_loop(
                 llm=MagicMock(),
                 task={},
@@ -412,8 +445,7 @@ class TestToolRegistryCloning:
     def test_custom_exclusions(self):
         """Custom state_mutating_tools are excluded."""
         registered = self._run_and_get_cloned_registry(
-            ["search", "done", "write_file"],
-            exclude=["done", "write_file"]
+            ["search", "done", "write_file"], exclude=["done", "write_file"]
         )
         assert "done" not in registered
         assert "write_file" not in registered
@@ -435,8 +467,7 @@ class TestParentStateIsolation:
         mock_log = _make_mock_session_log()
 
         def mock_composable_loop(**kwargs):
-            return _make_loop_generator([_make_mock_step(1), _make_mock_step(2)],
-                                        {"llm_calls": 2})
+            return _make_loop_generator([_make_mock_step(1), _make_mock_step(2)], {"llm_calls": 2})
 
         mock_loop_mod = MagicMock()
         mock_loop_mod.composable_loop = mock_composable_loop
@@ -452,11 +483,14 @@ class TestParentStateIsolation:
         mock_tools_mod.BaseToolRegistry.return_value = mock_new_registry
         mock_tools_mod.ToolSpec = MagicMock(side_effect=lambda **kw: MagicMock(**kw))
 
-        with patch.dict(sys.modules, {
-            "looplet.loop": mock_loop_mod,
-            "looplet.session": mock_session_mod,
-            "looplet.tools": mock_tools_mod,
-        }):
+        with patch.dict(
+            sys.modules,
+            {
+                "looplet.loop": mock_loop_mod,
+                "looplet.session": mock_session_mod,
+                "looplet.tools": mock_tools_mod,
+            },
+        ):
             run_sub_loop(
                 llm=MagicMock(),
                 task={},
@@ -492,11 +526,14 @@ class TestParentStateIsolation:
         mock_tools_mod.BaseToolRegistry.return_value = mock_new_registry
         mock_tools_mod.ToolSpec = MagicMock(side_effect=lambda **kw: MagicMock(**kw))
 
-        with patch.dict(sys.modules, {
-            "looplet.loop": mock_loop_mod,
-            "looplet.session": mock_session_mod,
-            "looplet.tools": mock_tools_mod,
-        }):
+        with patch.dict(
+            sys.modules,
+            {
+                "looplet.loop": mock_loop_mod,
+                "looplet.session": mock_session_mod,
+                "looplet.tools": mock_tools_mod,
+            },
+        ):
             run_sub_loop(
                 llm=MagicMock(),
                 task={"id": "t"},
@@ -515,6 +552,7 @@ class TestNoDomainSpecificCode:
         import inspect
 
         import looplet.subagent as mod
+
         source = inspect.getsource(mod)
         assert "primal_security" not in source
 
@@ -523,11 +561,13 @@ class TestNoDomainSpecificCode:
         import inspect
 
         import looplet.subagent as mod
+
         source = inspect.getsource(mod)
         assert "alert" not in source or "# alert" in source or "alert_id" in source
         # More precise: check function signature
         import inspect as ins
 
         import looplet.subagent
+
         sig = ins.signature(looplet.subagent.run_sub_loop)
         assert "alert" not in sig.parameters

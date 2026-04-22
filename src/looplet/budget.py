@@ -53,6 +53,7 @@ BudgetTier = Literal["ok", "warning", "error", "blocking"]
   recovery (prompt-too-long) is imminent if no action is taken.
 """
 
+
 @dataclass
 class ContextBudget:
     """Threshold-tier budgeting for a loop's context window.
@@ -99,6 +100,7 @@ class ContextBudget:
             return "warning"
         return "ok"
 
+
 def classify_tier(
     budget: ContextBudget,
     *,
@@ -135,7 +137,9 @@ def classify_tier(
     est += int(extra_estimate)
     return budget.classify(est), est
 
+
 # ── Hooks ─────────────────────────────────────────────────────────
+
 
 class ThresholdCompactHook:
     """Proactive-compaction hook driven by a :class:`ContextBudget`.
@@ -185,22 +189,28 @@ class ThresholdCompactHook:
         step_num: int,
     ) -> bool:
         tier, est = classify_tier(
-            self.budget, session_log=session_log, conversation=conversation,
+            self.budget,
+            session_log=session_log,
+            conversation=conversation,
         )
-        if tier == "blocking" or (
-            self.fire_tier == "warning" and tier in ("warning", "error")
-        ) or (
-            self.fire_tier == "error" and tier == "error"
+        if (
+            tier == "blocking"
+            or (self.fire_tier == "warning" and tier in ("warning", "error"))
+            or (self.fire_tier == "error" and tier == "error")
         ):
             logger.info(
                 "threshold_compact step=%d tier=%s est=%d blocking_at=%d",
-                step_num, tier, est, self.budget.blocking_at,
+                step_num,
+                tier,
+                est,
+                self.budget.blocking_at,
             )
             self._fired_at.append(step_num)
             return True
         return False
 
     # LoopHook Protocol no-ops so this can be registered directly.
+
 
 class BudgetTelemetry:
     """Observer hook that records tier transitions per step.

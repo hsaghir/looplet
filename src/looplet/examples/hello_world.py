@@ -5,6 +5,7 @@ This is the starting point. One tool. Real LLM. With eval.
     python -m looplet.examples.hello_world
     python -m looplet.examples.hello_world --model claude-sonnet-4
 """
+
 from __future__ import annotations
 
 import os
@@ -20,6 +21,7 @@ from looplet import (
 from looplet.tools import ToolSpec
 
 # ── Eval: did the agent greet everyone? ──────────────────────────
+
 
 def eval_greeted_everyone(ctx: EvalContext) -> float:
     """Check that the agent greeted both Alice and Bob."""
@@ -39,6 +41,7 @@ def eval_completed(ctx: EvalContext) -> bool:
 
 # ── Main ─────────────────────────────────────────────────────────
 
+
 def main() -> None:
     from looplet.backends import OpenAIBackend
 
@@ -52,18 +55,22 @@ def main() -> None:
     llm = OpenAIBackend(OpenAI(base_url=url, api_key="x"), model=model)
 
     tools = BaseToolRegistry()
-    tools.register(ToolSpec(
-        name="greet",
-        description="Return a greeting for a person.",
-        parameters={"name": "str"},
-        execute=lambda *, name: {"greeting": f"Hello, {name}!"},
-    ))
-    tools.register(ToolSpec(
-        name="done",
-        description="Signal completion.",
-        parameters={"answer": "str"},
-        execute=lambda *, answer: {"answer": answer},
-    ))
+    tools.register(
+        ToolSpec(
+            name="greet",
+            description="Return a greeting for a person.",
+            parameters={"name": "str"},
+            execute=lambda *, name: {"greeting": f"Hello, {name}!"},
+        )
+    )
+    tools.register(
+        ToolSpec(
+            name="done",
+            description="Signal completion.",
+            parameters={"answer": "str"},
+            execute=lambda *, answer: {"answer": answer},
+        )
+    )
 
     for step in composable_loop(
         llm=llm,
@@ -71,10 +78,12 @@ def main() -> None:
         state=DefaultState(max_steps=5),
         config=LoopConfig(max_steps=5),
         task={"goal": "Greet Alice and Bob, then finish."},
-        hooks=[EvalHook(
-            evaluators=[eval_greeted_everyone, eval_completed],
-            verbose=True,
-        )],
+        hooks=[
+            EvalHook(
+                evaluators=[eval_greeted_everyone, eval_completed],
+                verbose=True,
+            )
+        ],
     ):
         print(step.pretty())
 

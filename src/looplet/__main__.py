@@ -48,8 +48,11 @@ def _render_show(trace_dir: Path) -> int:
                 continue
 
     if not traj and not calls:
-        print(f"error: {trace_dir} contains no trajectory.json or "
-              "manifest.jsonl — not a trace directory", file=sys.stderr)
+        print(
+            f"error: {trace_dir} contains no trajectory.json or "
+            "manifest.jsonl — not a trace directory",
+            file=sys.stderr,
+        )
         return 1
 
     # ── Header ──────────────────────────────────────────────────
@@ -93,8 +96,7 @@ def _render_show(trace_dir: Path) -> int:
         dur = _fmt_ms(s.get("duration_ms"))
         linked = s.get("llm_call_indices") or []
         link_str = f"call {linked[0]}" if linked else ""
-        print(f"#{num}  {ok} {tool}({str(args)[:30]:<30}) "
-              f"→ {tail:<20} [{dur}] {link_str}")
+        print(f"#{num}  {ok} {tool}({str(args)[:30]:<30}) → {tail:<20} [{dur}] {link_str}")
 
     # ── LLM summary ─────────────────────────────────────────────
     if calls:

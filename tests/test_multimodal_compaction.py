@@ -7,7 +7,7 @@ payloads.
 
 from __future__ import annotations
 
-from openharness.conversation import (
+from looplet.conversation import (
     LARGE_CONTENT_TYPES,
     ContentBlock,
     Conversation,

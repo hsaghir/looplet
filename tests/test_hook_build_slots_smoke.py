@@ -3,14 +3,14 @@ from __future__ import annotations
 
 import pytest
 
-from openharness import (
+from looplet import (
     BaseToolRegistry,
     DefaultState,
     LoopConfig,
     composable_loop,
 )
-from openharness.testing import MockLLMBackend
-from openharness.tools import ToolSpec
+from looplet.testing import MockLLMBackend
+from looplet.tools import ToolSpec
 
 pytestmark = pytest.mark.smoke
 

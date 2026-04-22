@@ -1,8 +1,8 @@
 # Third-party users
 
-Projects built on top of `openharness`. If you're shipping something
+Projects built on top of `looplet`. If you're shipping something
 real with it, please send a PR or reply in the [Show and tell
-discussion](https://github.com/hsaghir/openharness/discussions) — we'd
+discussion](https://github.com/hsaghir/looplet/discussions) — we'd
 love to feature your work.
 
 | Project | What it does | Scale / status |

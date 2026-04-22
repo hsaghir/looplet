@@ -1,4 +1,4 @@
-"""Smoke tests for the openharness package scaffold."""
+"""Smoke tests for the looplet package scaffold."""
 
 import pytest
 
@@ -6,22 +6,22 @@ pytestmark = pytest.mark.smoke
 
 
 def test_version_is_string() -> None:
-    import openharness
+    import looplet
 
-    assert isinstance(openharness.__version__, str)
+    assert isinstance(looplet.__version__, str)
 
 
 def test_version_value() -> None:
-    import openharness
+    import looplet
 
-    assert openharness.__version__ == "0.1.6"
+    assert looplet.__version__ == "0.1.6"
 
 
 def test_package_docstring() -> None:
-    import openharness
+    import looplet
 
-    assert openharness.__doc__ is not None
-    assert "openharness" in openharness.__doc__.lower() or "openharness" in openharness.__doc__.lower()
+    assert looplet.__doc__ is not None
+    assert "looplet" in looplet.__doc__.lower() or "looplet" in looplet.__doc__.lower()
 
 
 def test_mock_llm_backend_no_external_imports(mock_llm) -> None:

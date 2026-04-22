@@ -1,10 +1,10 @@
 # Roadmap
 
 > Note: this is not a confused-with [`pydantic-ai-harness`](https://github.com/pydantic/pydantic-ai-harness)
-> project — `openharness` is a framework-agnostic *loop* library. See
-> [README.md](README.md#what-openharness-is) for the full positioning.
+> project — `looplet` is a framework-agnostic *loop* library. See
+> [README.md](README.md#what-looplet-is) for the full positioning.
 
-This document describes what `openharness` will and will **not** become.
+This document describes what `looplet` will and will **not** become.
 Dates are aspirational; the only firm commitment is the [v1.0 API
 contract](#v10-api-contract).
 
@@ -18,7 +18,7 @@ contract](#v10-api-contract).
    (`pyyaml`). New features land in optional extras or separate
    packages.
 4. **Frozen public surface, fluid internals.** Once a symbol is in
-   `openharness/__init__.py`, breaking it requires a major bump.
+   `looplet/__init__.py`, breaking it requires a major bump.
 
 ## Current status — `0.1.x` (Beta)
 
@@ -48,7 +48,7 @@ contract](#v10-api-contract).
 - **Deterministic replay** — given a saved trajectory + a deterministic
   LLM cassette, re-run the loop bit-for-bit for regression testing
 - **Expanded eval library** — reusable `eval_*` recipes shipped as
-  `openharness.evals.recipes` (efficiency, parse-quality, IOC coverage,
+  `looplet.evals.recipes` (efficiency, parse-quality, IOC coverage,
   tool-error rate)
 - **OpenTelemetry exporter** as a first-party optional extra
 
@@ -64,7 +64,7 @@ contract](#v10-api-contract).
 
 ## Explicitly **not** on the roadmap
 
-These belong in *other* projects, not in `openharness`:
+These belong in *other* projects, not in `looplet`:
 
 - **A graph DSL / branching orchestrator.** Use
   [`langgraph`](https://pypi.org/project/langgraph/) or
@@ -75,7 +75,7 @@ These belong in *other* projects, not in `openharness`:
 - **A prompt-templating DSL.** Use
   [`dspy`](https://pypi.org/project/dspy/) or plain f-strings.
 - **A vector DB / memory store.** Memory is a tool; plug in your own.
-- **A web UI / dashboard.** `openharness` emits events; wire any UI
+- **A web UI / dashboard.** `looplet` emits events; wire any UI
   you want on top.
 - **A CLI agent-in-a-box.** Use
   [`claude-agent-sdk`](https://pypi.org/project/claude-agent-sdk/).
@@ -155,7 +155,7 @@ and the `register` / `dispatch` / `catalog` method signatures are frozen.
 
 - Patch (`0.1.x`): as soon as bug fixes accumulate, weekly at most.
 - Minor (`0.2`, `0.3`, …): roughly monthly, with a two-week release
-  candidate on PyPI (`pip install openharness==0.2.0rc1`).
+  candidate on PyPI (`pip install looplet==0.2.0rc1`).
 - Major: only when the v1.0 contract above changes, or every 12+
   months after `1.0`.
 

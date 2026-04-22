@@ -1,5 +1,5 @@
 name: Bug report
-description: Report a bug in openharness
+description: Report a bug in looplet
 labels: ["bug"]
 body:
   - type: textarea
@@ -33,7 +33,7 @@ body:
   - type: input
     id: version
     attributes:
-      label: openharness version
+      label: looplet version
       placeholder: "0.1.5"
     validations:
       required: true

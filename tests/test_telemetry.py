@@ -1,4 +1,4 @@
-"""Tests for openharness.telemetry — spans, tracer, metrics, and hooks."""
+"""Tests for looplet.telemetry — spans, tracer, metrics, and hooks."""
 
 from __future__ import annotations
 
@@ -8,14 +8,14 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from openharness.telemetry import (
+from looplet.telemetry import (
     MetricsCollector,
     MetricsHook,
     Span,
     Tracer,
     TracingHook,
 )
-from openharness.types import Step, ToolCall, ToolResult
+from looplet.types import Step, ToolCall, ToolResult
 
 # ── Helpers ────────────────────────────────────────────────────────
 

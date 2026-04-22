@@ -1,6 +1,6 @@
 # Provenance Guide
 
-`openharness.provenance` captures exactly what your agent saw and did —
+`looplet.provenance` captures exactly what your agent saw and did —
 every prompt, every response, every step — and writes them to a
 diff-friendly directory you can `cat`, `grep`, and check into git.
 
@@ -16,10 +16,10 @@ for step in composable_loop(llm=llm, tools=tools, state=state,
 sink.flush()
 
 # 2. Read (from the shell)
-$ python -m openharness show traces/run_1/
+$ python -m looplet show traces/run_1/
 
 # 3. Replay (change hooks/tools, no LLM cost)
-from openharness import replay_loop
+from looplet import replay_loop
 for step in replay_loop("traces/run_1/", tools=tools):
     print(step.pretty())
 ```
@@ -33,7 +33,7 @@ for step in replay_loop("traces/run_1/", tools=tools):
 | `TrajectoryRecorder` | Every loop step, with context-before and linked LLM calls | `LoopHook` |
 | `ProvenanceSink` | Both of the above in a 3-line drop-in | — |
 | `replay_loop(dir, ...)` | Rerun the loop against cached LLM output | generator |
-| `python -m openharness show <dir>` | One-page readable summary | CLI |
+| `python -m looplet show <dir>` | One-page readable summary | CLI |
 
 All of it is zero-dependency, safe by default, and preserves the
 `NativeToolBackend` capability surface of whatever they wrap.
@@ -43,8 +43,8 @@ All of it is zero-dependency, safe by default, and preserves the
 ## Quick start — `ProvenanceSink`
 
 ```python
-from openharness import ProvenanceSink, composable_loop, DefaultState
-from openharness.backends import AnthropicBackend
+from looplet import ProvenanceSink, composable_loop, DefaultState
+from looplet.backends import AnthropicBackend
 
 sink = ProvenanceSink(dir="traces/run_1/")
 
@@ -85,7 +85,7 @@ If you don't need the full trajectory (e.g. you're debugging prompt
 rendering in isolation), just wrap the backend:
 
 ```python
-from openharness.provenance import RecordingLLMBackend
+from looplet.provenance import RecordingLLMBackend
 
 llm = RecordingLLMBackend(MyBackend())
 
@@ -153,7 +153,7 @@ Install `TrajectoryRecorder` as a hook. It captures a structured
 the loop are needed.
 
 ```python
-from openharness.provenance import TrajectoryRecorder
+from looplet.provenance import TrajectoryRecorder
 
 hook = TrajectoryRecorder()
 for step in composable_loop(llm=llm, tools=tools, state=state, hooks=[hook]):
@@ -211,7 +211,7 @@ sweeps `state.steps` at `on_loop_end` to catch that final step.
 needed. Pass your own if you want to export spans elsewhere:
 
 ```python
-from openharness import Tracer
+from looplet import Tracer
 my_tracer = Tracer()
 hook = TrajectoryRecorder(tracer=my_tracer)
 ...
@@ -223,7 +223,7 @@ hook = TrajectoryRecorder(tracer=my_tracer)
 ## Replay a captured run
 
 ```python
-from openharness import replay_loop
+from looplet import replay_loop
 
 for step in replay_loop("traces/run_1/", tools=my_tools):
     print(step.pretty())
@@ -239,7 +239,7 @@ those, diff the step output, and you get a cost-free A/B.
 
 - **Change a hook, re-run.** Add a new permission rule or logging
   hook, replay, see how step outputs differ.
-- **Upgrade openharness and diff the loop.** If the replay produces
+- **Upgrade looplet and diff the loop.** If the replay produces
   different steps with the same LLM output, the loop behavior changed.
 - **Golden tests.** Capture once, check the directory into git,
   `replay_loop` in CI.
@@ -262,7 +262,7 @@ those, diff the step output, and you get a cost-free A/B.
 ## Inspect a trace from the CLI
 
 ```
-$ python -m openharness show traces/run_1/
+$ python -m looplet show traces/run_1/
 154a1edb893c  ✓ done  4 steps  4 LLM calls  0ms
 
 #1  ✓ add(a=1, b=2)       → 1 keys    [   12ms] call 0

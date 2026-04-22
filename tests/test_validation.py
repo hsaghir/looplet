@@ -1,4 +1,4 @@
-"""Tests for openharness.validation — schema enforcement for tool call args and done payloads."""
+"""Tests for looplet.validation — schema enforcement for tool call args and done payloads."""
 
 from __future__ import annotations
 
@@ -7,8 +7,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from openharness.types import ToolCall, ToolResult
-from openharness.validation import (
+from looplet.types import ToolCall, ToolResult
+from looplet.validation import (
     DoneValidator,
     FieldSpec,
     OutputSchema,
@@ -216,8 +216,8 @@ class TestValidateArgs:
 
 class TestValidatingToolRegistry:
     def _make_registry(self) -> "ValidatingToolRegistry":
-        from openharness.tools import ToolSpec
-        from openharness.validation import FieldSpec, OutputSchema, ValidatingToolRegistry
+        from looplet.tools import ToolSpec
+        from looplet.validation import FieldSpec, OutputSchema, ValidatingToolRegistry
 
         registry = ValidatingToolRegistry()
         spec = ToolSpec(
@@ -248,8 +248,8 @@ class TestValidatingToolRegistry:
 
     def test_invalid_call_does_not_execute_tool(self) -> None:
         executed: list[bool] = []
-        from openharness.tools import ToolSpec
-        from openharness.validation import FieldSpec, OutputSchema, ValidatingToolRegistry
+        from looplet.tools import ToolSpec
+        from looplet.validation import FieldSpec, OutputSchema, ValidatingToolRegistry
 
         registry = ValidatingToolRegistry()
         spec = ToolSpec(
@@ -274,8 +274,8 @@ class TestValidatingToolRegistry:
         assert result.error is not None
 
     def test_tool_without_schema_dispatches_normally(self) -> None:
-        from openharness.tools import ToolSpec
-        from openharness.validation import ValidatingToolRegistry
+        from looplet.tools import ToolSpec
+        from looplet.validation import ValidatingToolRegistry
 
         registry = ValidatingToolRegistry()
         spec = ToolSpec(

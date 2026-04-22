@@ -1,4 +1,4 @@
-"""Smoke tests for the ``openharness.testing`` helpers."""
+"""Smoke tests for the ``looplet.testing`` helpers."""
 
 from __future__ import annotations
 
@@ -6,8 +6,8 @@ import asyncio
 
 import pytest
 
-from openharness.testing import MockLLMBackend
-from openharness.types import LLMBackend
+from looplet.testing import MockLLMBackend
+from looplet.types import LLMBackend
 
 pytestmark = pytest.mark.smoke
 

@@ -1,22 +1,22 @@
-# openharness
+# looplet
 
-[![CI](https://github.com/hsaghir/openharness/actions/workflows/ci.yml/badge.svg)](https://github.com/hsaghir/openharness/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/hsaghir/openharness/branch/master/graph/badge.svg)](https://codecov.io/gh/hsaghir/openharness)
-[![PyPI version](https://img.shields.io/pypi/v/openharness.svg)](https://pypi.org/project/openharness/)
+[![CI](https://github.com/hsaghir/looplet/actions/workflows/ci.yml/badge.svg)](https://github.com/hsaghir/looplet/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/hsaghir/looplet/branch/master/graph/badge.svg)](https://codecov.io/gh/hsaghir/looplet)
+[![PyPI version](https://img.shields.io/pypi/v/looplet.svg)](https://pypi.org/project/looplet/)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Status: Beta](https://img.shields.io/badge/status-beta-orange.svg)](ROADMAP.md)
 
 > **Not [`pydantic-ai-harness`](https://github.com/pydantic/pydantic-ai-harness)** — that's a *capability* library for pydantic-ai.
-> `openharness` is a framework-agnostic *loop* library. Works with any LLM backend, one dependency.
+> `looplet` is a framework-agnostic *loop* library. Works with any LLM backend, one dependency.
 
 **The tool-calling loop you can actually step through.**
 
-Every agent framework gives you `agent.run()`. `openharness` gives you
+Every agent framework gives you `agent.run()`. `looplet` gives you
 `for step in loop(...):` — and that's the whole product.
 
 ```python
-from openharness import composable_loop
+from looplet import composable_loop
 
 for step in composable_loop(llm=llm, tools=tools, task=task, ...):
     print(step.pretty())          # → "#1 ✓ search(query='…') → 12 items [182ms]"
@@ -37,7 +37,7 @@ for step in composable_loop(llm=llm, tools=tools, task=task, ...):
 
 ## How it compares
 
-|                                          | openharness | claude-agent-sdk | strands-agents | pydantic-ai | langgraph |
+|                                          | looplet | claude-agent-sdk | strands-agents | pydantic-ai | langgraph |
 | ---------------------------------------- | ----------- | ---------------- | -------------- | ----------- | --------- |
 | **You own the loop (iterator)**          | ✅ `for step in loop(...)` | ❌ async stream | ❌ closed `agent()` | ❌ `run_sync()` | ❌ graph |
 | **Provider-agnostic**                    | ✅ | ❌ Claude-only | ✅ | ✅ | ✅ |
@@ -52,17 +52,17 @@ for step in composable_loop(llm=llm, tools=tools, task=task, ...):
 ## Install
 
 ```bash
-pip install openharness                    # core only
-pip install "openharness[openai]"          # + OpenAI / Ollama / any OAI-compat
-pip install "openharness[anthropic]"       # + Anthropic
-pip install "openharness[all]"             # both
+pip install looplet                    # core only
+pip install "looplet[openai]"          # + OpenAI / Ollama / any OAI-compat
+pip install "looplet[anthropic]"       # + Anthropic
+pip install "looplet[all]"             # both
 ```
 
 ## 60-second example
 
 ```python
-from openharness import composable_loop, LoopConfig, DefaultState, BaseToolRegistry, ToolSpec
-from openharness.backends import OpenAIBackend
+from looplet import composable_loop, LoopConfig, DefaultState, BaseToolRegistry, ToolSpec
+from looplet.backends import OpenAIBackend
 from openai import OpenAI
 
 llm = OpenAIBackend(OpenAI(), model="gpt-4o-mini")
@@ -88,7 +88,7 @@ Runs against any OpenAI-compatible endpoint (OpenAI, Ollama, Together,
 Groq, vLLM, …). Set `OPENAI_BASE_URL` and `OPENAI_MODEL` to your
 provider.
 
-## What `openharness` gives you
+## What `looplet` gives you
 
 - **Composable loop** — `composable_loop` yields `Step`s you can
   observe or interrupt. Hooks (`pre_prompt`, `pre_dispatch`,
@@ -131,19 +131,19 @@ marker.
 ## Examples
 
 ```bash
-python -m openharness.examples.hello_world                            # 30-line starter
-python -m openharness.examples.coding_agent "implement fizzbuzz"      # bash/read/write/edit/grep
-python -m openharness.examples.coding_agent --trace ./traces/         # save full trajectory
+python -m looplet.examples.hello_world                            # 30-line starter
+python -m looplet.examples.coding_agent "implement fizzbuzz"      # bash/read/write/edit/grep
+python -m looplet.examples.coding_agent --trace ./traces/         # save full trajectory
 ```
 
 ## Stability
 
-`openharness` follows [SemVer](https://semver.org/). Pre-`1.0`, minor
+`looplet` follows [SemVer](https://semver.org/). Pre-`1.0`, minor
 versions may introduce breaking changes as the design stabilises —
 pin conservatively:
 
 ```toml
-openharness>=0.1.6,<0.2
+looplet>=0.1.6,<0.2
 ```
 
 See [ROADMAP.md § v1.0 API contract](ROADMAP.md#v10-api-contract) for

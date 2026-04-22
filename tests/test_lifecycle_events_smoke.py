@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from openharness import (
+from looplet import (
     BaseToolRegistry,
     DefaultState,
     HookDecision,
@@ -11,9 +11,9 @@ from openharness import (
     LoopConfig,
     composable_loop,
 )
-from openharness.events import EventPayload
-from openharness.testing import MockLLMBackend
-from openharness.tools import ToolSpec
+from looplet.events import EventPayload
+from looplet.testing import MockLLMBackend
+from looplet.tools import ToolSpec
 
 pytestmark = pytest.mark.smoke
 
@@ -123,7 +123,7 @@ class TestLifecycleEventDecisions:
         assert add_step.tool_result.data == {"sum": 30}
 
     def test_pre_tool_use_short_circuits_with_result(self):
-        from openharness.types import ToolResult
+        from looplet.types import ToolResult
 
         class Cacher:
             def on_event(self, payload):
@@ -140,7 +140,7 @@ class TestLifecycleEventDecisions:
         assert add_step.tool_result.data == {"sum": 999}
 
     def test_post_tool_use_rewrites_result(self):
-        from openharness.types import ToolResult
+        from looplet.types import ToolResult
 
         class Scrubber:
             def on_event(self, payload):

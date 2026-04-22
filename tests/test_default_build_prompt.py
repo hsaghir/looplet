@@ -7,9 +7,9 @@ A key "domain-agnostic" property: callers should be able to drop
 
 from __future__ import annotations
 
-from openharness.loop import LoopConfig, composable_loop
-from openharness.tools import BaseToolRegistry, ToolSpec
-from openharness.types import DefaultState, LLMBackend
+from looplet.loop import LoopConfig, composable_loop
+from looplet.tools import BaseToolRegistry, ToolSpec
+from looplet.types import DefaultState, LLMBackend
 
 
 class _CapturingLLM(LLMBackend):

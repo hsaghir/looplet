@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from openharness import (
+from looplet import (
     BaseToolRegistry,
     DefaultState,
     LoopConfig,
@@ -11,9 +11,9 @@ from openharness import (
     PermissionHook,
     composable_loop,
 )
-from openharness.permissions import PermissionDecision
-from openharness.testing import MockLLMBackend
-from openharness.tools import ToolSpec
+from looplet.permissions import PermissionDecision
+from looplet.testing import MockLLMBackend
+from looplet.tools import ToolSpec
 
 pytestmark = pytest.mark.smoke
 
@@ -102,7 +102,7 @@ class TestPermissionHook:
         engine.deny("dangerous")
         hook = PermissionHook(engine)
 
-        from openharness.types import ToolCall
+        from looplet.types import ToolCall
         tc = ToolCall(tool="dangerous", args={"cmd": "x"}, reasoning="r")
         assert hook.check_permission(tc, None) is False
 

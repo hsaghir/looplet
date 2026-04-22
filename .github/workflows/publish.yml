@@ -44,7 +44,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: pypi
-      url: https://pypi.org/p/openharness
+      url: https://pypi.org/p/looplet
     permissions:
       id-token: write  # required for PyPI trusted publishing
     steps:
@@ -58,5 +58,5 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           # Uses PyPI trusted publishing — no API token needed.
-          # Configure at: https://pypi.org/manage/project/openharness/settings/publishing/
+          # Configure at: https://pypi.org/manage/project/looplet/settings/publishing/
           skip-existing: true

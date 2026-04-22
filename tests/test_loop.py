@@ -1,4 +1,4 @@
-"""Tests for openharness.loop and openharness.parse."""
+"""Tests for looplet.loop and looplet.parse."""
 
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ def _make_done_llm(pre_responses: list[str], done_summary: str = "all done") -> 
 
 def _make_registry_with_done(*extra_tools):
     """Build a registry with a done tool and optional extras."""
-    from openharness.tools import BaseToolRegistry, ToolSpec
+    from looplet.tools import BaseToolRegistry, ToolSpec
 
     reg = BaseToolRegistry()
 
@@ -69,29 +69,29 @@ def _make_registry_with_done(*extra_tools):
 
 class TestParseToolCall:
     def test_simple_json(self):
-        from openharness.parse import parse_tool_call
+        from looplet.parse import parse_tool_call
         tc = parse_tool_call('{"tool": "search", "args": {"q": "hello"}}')
         assert tc is not None
         assert tc.tool == "search"
         assert tc.args["q"] == "hello"
 
     def test_markdown_fence(self):
-        from openharness.parse import parse_tool_call
+        from looplet.parse import parse_tool_call
         raw = '```json\n{"tool": "search", "args": {}}\n```'
         tc = parse_tool_call(raw)
         assert tc is not None
         assert tc.tool == "search"
 
     def test_invalid_returns_none(self):
-        from openharness.parse import parse_tool_call
+        from looplet.parse import parse_tool_call
         assert parse_tool_call("not json at all") is None
 
     def test_no_tool_key(self):
-        from openharness.parse import parse_tool_call
+        from looplet.parse import parse_tool_call
         assert parse_tool_call('{"foo": "bar"}') is None
 
     def test_reasoning_captured(self):
-        from openharness.parse import parse_tool_call
+        from looplet.parse import parse_tool_call
         tc = parse_tool_call('{"tool": "think", "args": {}, "reasoning": "why not"}')
         assert tc is not None
         assert tc.reasoning == "why not"
@@ -99,13 +99,13 @@ class TestParseToolCall:
 
 class TestParseMultiToolCalls:
     def test_single_tool(self):
-        from openharness.parse import parse_multi_tool_calls
+        from looplet.parse import parse_multi_tool_calls
         calls = parse_multi_tool_calls('{"tool": "search", "args": {"q": "x"}}')
         assert len(calls) == 1
         assert calls[0].tool == "search"
 
     def test_multi_tool_format(self):
-        from openharness.parse import parse_multi_tool_calls
+        from looplet.parse import parse_multi_tool_calls
         raw = '{"tools": [{"tool": "search", "args": {}}, {"tool": "think", "args": {}}]}'
         calls = parse_multi_tool_calls(raw)
         assert len(calls) == 2
@@ -113,17 +113,17 @@ class TestParseMultiToolCalls:
         assert calls[1].tool == "think"
 
     def test_empty_on_invalid(self):
-        from openharness.parse import parse_multi_tool_calls
+        from looplet.parse import parse_multi_tool_calls
         assert parse_multi_tool_calls("bad text") == []
 
     def test_theory_propagated_to_args(self):
-        from openharness.parse import parse_multi_tool_calls
+        from looplet.parse import parse_multi_tool_calls
         raw = '{"theory": "my-theory", "tools": [{"tool": "search", "args": {}}]}'
         calls = parse_multi_tool_calls(raw)
         assert calls[0].args.get("__theory__") == "my-theory"
 
     def test_markdown_fenced(self):
-        from openharness.parse import parse_multi_tool_calls
+        from looplet.parse import parse_multi_tool_calls
         raw = '```json\n{"tool": "done", "args": {}}\n```'
         calls = parse_multi_tool_calls(raw)
         assert len(calls) == 1
@@ -132,7 +132,7 @@ class TestParseMultiToolCalls:
 
 class TestParseNativeToolUse:
     def test_parses_tool_use_blocks(self):
-        from openharness.parse import parse_native_tool_use
+        from looplet.parse import parse_native_tool_use
         blocks = [
             {"type": "tool_use", "id": "abc", "name": "search", "input": {"q": "x"}},
         ]
@@ -142,7 +142,7 @@ class TestParseNativeToolUse:
         assert calls[0].args == {"q": "x"}
 
     def test_skips_non_tool_use(self):
-        from openharness.parse import parse_native_tool_use
+        from looplet.parse import parse_native_tool_use
         blocks = [
             {"type": "text", "text": "hello"},
             {"type": "tool_use", "id": "x", "name": "think", "input": {}},
@@ -151,13 +151,13 @@ class TestParseNativeToolUse:
         assert len(calls) == 1
 
     def test_empty_on_no_blocks(self):
-        from openharness.parse import parse_native_tool_use
+        from looplet.parse import parse_native_tool_use
         assert parse_native_tool_use([]) == []
 
     def test_no_domain_specific_imports(self):
         import inspect
 
-        import openharness.parse as m
+        import looplet.parse as m
         assert "primal_security" not in inspect.getsource(m)
 
 
@@ -168,7 +168,7 @@ class TestParseNativeToolUse:
 
 class TestLoopConfig:
     def test_defaults(self):
-        from openharness.loop import LoopConfig
+        from looplet.loop import LoopConfig
         c = LoopConfig()
         assert c.max_steps == 15
         assert c.max_tokens == 2000
@@ -188,7 +188,7 @@ class TestLoopConfig:
         """Backward-compat params must not exist."""
         import inspect
 
-        from openharness.loop import composable_loop
+        from looplet.loop import composable_loop
         sig = inspect.signature(composable_loop)
         assert "alert" not in sig.parameters
         assert "exploration" not in sig.parameters
@@ -201,7 +201,7 @@ class TestLoopConfig:
 
 class TestLoopHookProtocol:
     def test_protocol_runtime_checkable(self):
-        from openharness.loop import LoopHook
+        from looplet.loop import LoopHook
 
         class MinimalHook:
             def pre_loop(self, state, session_log, context):
@@ -246,7 +246,7 @@ class TestLoopHookProtocol:
     def test_protocol_has_six_methods(self):
         import inspect
 
-        from openharness.loop import LoopHook
+        from looplet.loop import LoopHook
         members = {
             name for name, _ in inspect.getmembers(LoopHook, predicate=callable)
             if not name.startswith("_")
@@ -257,7 +257,7 @@ class TestLoopHookProtocol:
     def test_no_domain_specific_imports(self):
         import inspect
 
-        import openharness.loop as m
+        import looplet.loop as m
         assert "primal_security" not in inspect.getsource(m)
 
 
@@ -268,7 +268,7 @@ class TestLoopHookProtocol:
 
 class TestComposableLoopBasic:
     def test_tools_required(self):
-        from openharness.loop import composable_loop
+        from looplet.loop import composable_loop
         state = SimpleState()
         from tests.conftest import MockLLMBackend
         gen = composable_loop(MockLLMBackend(), state=state)
@@ -276,8 +276,8 @@ class TestComposableLoopBasic:
             next(gen)
 
     def test_basic_loop_yields_step_and_terminates(self):
-        from openharness.loop import LoopConfig, composable_loop
-        from openharness.types import Step
+        from looplet.loop import LoopConfig, composable_loop
+        from looplet.types import Step
 
         state = SimpleState()
         # LLM immediately returns done()
@@ -291,8 +291,8 @@ class TestComposableLoopBasic:
         assert steps[-1].tool_call.tool == "done"
 
     def test_loop_after_two_tool_steps(self):
-        from openharness.loop import LoopConfig, composable_loop
-        from openharness.tools import ToolSpec
+        from looplet.loop import LoopConfig, composable_loop
+        from looplet.tools import ToolSpec
 
         state = SimpleState()
         search_json = '{"tool": "search", "args": {"q": "test"}}'
@@ -316,14 +316,14 @@ class TestComposableLoopBasic:
         assert "done" in tools_called
 
     def test_max_steps_enforced(self):
-        from openharness.loop import LoopConfig, composable_loop
+        from looplet.loop import LoopConfig, composable_loop
 
         state = SimpleState(max_steps=2)
         # LLM never calls done — just calls search forever
         from tests.conftest import MockLLMBackend
         llm = MockLLMBackend(['{"tool": "search", "args": {}}'] * 10)
 
-        from openharness.tools import ToolSpec
+        from looplet.tools import ToolSpec
         def _search(**kwargs):
             return {}
 
@@ -341,7 +341,7 @@ class TestComposableLoopBasic:
         assert len(steps) <= 4  # budget_remaining=0 breaks loop
 
     def test_parse_error_yields_parse_error_step(self):
-        from openharness.loop import LoopConfig, composable_loop
+        from looplet.loop import LoopConfig, composable_loop
 
         state = SimpleState(max_steps=3)
         from tests.conftest import MockLLMBackend
@@ -355,7 +355,7 @@ class TestComposableLoopBasic:
         assert "__parse_error__" in tool_names
 
     def test_return_value_is_trace(self):
-        from openharness.loop import LoopConfig, composable_loop
+        from looplet.loop import LoopConfig, composable_loop
 
         state = SimpleState()
         llm = _make_done_llm([])
@@ -408,8 +408,8 @@ class TestComposableLoopHooks:
         return SpyHook(), events
 
     def test_hook_firing_order(self):
-        from openharness.loop import LoopConfig, composable_loop
-        from openharness.tools import ToolSpec
+        from looplet.loop import LoopConfig, composable_loop
+        from looplet.tools import ToolSpec
 
         state = SimpleState()
         search_json = '{"tool": "search", "args": {}}'
@@ -443,7 +443,7 @@ class TestComposableLoopHooks:
         assert events[-1] == "on_loop_end"
 
     def test_quality_gate_rejection(self):
-        from openharness.loop import LoopConfig, composable_loop
+        from looplet.loop import LoopConfig, composable_loop
 
         state = SimpleState()
         done_json = '{"tool": "done", "args": {}}'
@@ -471,9 +471,9 @@ class TestComposableLoopHooks:
         assert len(rejected) >= 1
 
     def test_pre_dispatch_interception(self):
-        from openharness.loop import LoopConfig, composable_loop
-        from openharness.tools import ToolSpec
-        from openharness.types import ToolResult
+        from looplet.loop import LoopConfig, composable_loop
+        from looplet.tools import ToolSpec
+        from looplet.types import ToolResult
 
         state = SimpleState()
         from tests.conftest import MockLLMBackend
@@ -509,8 +509,8 @@ class TestComposableLoopHooks:
         assert "real_search" not in dispatched
 
     def test_multi_tool_in_one_response(self):
-        from openharness.loop import LoopConfig, composable_loop
-        from openharness.tools import ToolSpec
+        from looplet.loop import LoopConfig, composable_loop
+        from looplet.tools import ToolSpec
 
         state = SimpleState()
         multi_json = '{"tools": [{"tool": "search", "args": {}}, {"tool": "think", "args": {}}]}'
@@ -539,8 +539,8 @@ class TestComposableLoopHooks:
         assert "think" in tool_names
 
     def test_should_stop_hook(self):
-        from openharness.loop import LoopConfig, composable_loop
-        from openharness.tools import ToolSpec
+        from looplet.loop import LoopConfig, composable_loop
+        from looplet.tools import ToolSpec
 
         state = SimpleState(max_steps=20)
         from tests.conftest import MockLLMBackend

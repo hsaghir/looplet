@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
   - name: Security vulnerability
-    url: https://github.com/hsaghir/openharness/security/advisories/new
+    url: https://github.com/hsaghir/looplet/security/advisories/new
     about: Report security issues privately via GitHub Security Advisories.
   - name: Discussion / question
-    url: https://github.com/hsaghir/openharness/discussions
+    url: https://github.com/hsaghir/looplet/discussions
     about: For questions and open-ended discussion.

@@ -1,4 +1,4 @@
-"""Smoke tests for openharness.provenance."""
+"""Smoke tests for looplet.provenance."""
 from __future__ import annotations
 
 import asyncio
@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from openharness.provenance import (
+from looplet.provenance import (
     LLMCall,
     ProvenanceSink,
     RecordingLLMBackend,
@@ -15,8 +15,8 @@ from openharness.provenance import (
     Trajectory,
     TrajectoryRecorder,
 )
-from openharness.testing import MockLLMBackend
-from openharness.types import LLMBackend, Step, ToolCall, ToolResult
+from looplet.testing import MockLLMBackend
+from looplet.types import LLMBackend, Step, ToolCall, ToolResult
 
 
 class TestRecordingLLMBackendSmoke:

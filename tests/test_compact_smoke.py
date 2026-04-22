@@ -1,9 +1,9 @@
-"""Smoke tests for :mod:`openharness.compact` and the compaction lifecycle."""
+"""Smoke tests for :mod:`looplet.compact` and the compaction lifecycle."""
 from __future__ import annotations
 
 import pytest
 
-from openharness import (
+from looplet import (
     CompactOutcome,
     CompactService,
     EventPayload,
@@ -23,7 +23,7 @@ class TestDefaultCompactService:
         svc = TruncateCompact()
         # Minimal mutable state + session_log stubs.
         state = type("S", (), {"steps": []})()
-        from openharness.session import SessionLog
+        from looplet.session import SessionLog
         sl = SessionLog()
         outcome = svc.compact(
             state=state, session_log=sl, llm=None,
@@ -43,7 +43,7 @@ class TestRunCompactEvents:
                 return None
 
         state = type("S", (), {"steps": []})()
-        from openharness.session import SessionLog
+        from looplet.session import SessionLog
         sl = SessionLog()
         outcome = run_compact(
             TruncateCompact(),
@@ -56,7 +56,7 @@ class TestRunCompactEvents:
         assert outcome.reason == "test"
 
     def test_pre_compact_can_abort(self):
-        from openharness import HookDecision
+        from looplet import HookDecision
 
         class Aborter:
             def on_event(self, payload: EventPayload):
@@ -70,7 +70,7 @@ class TestRunCompactEvents:
                 raise RuntimeError("should not run")
 
         state = type("S", (), {"steps": []})()
-        from openharness.session import SessionLog
+        from looplet.session import SessionLog
         sl = SessionLog()
         outcome = run_compact(
             AngryService(),
@@ -91,7 +91,7 @@ class TestRunCompactEvents:
 
         svc = Counter()
         state = type("S", (), {"steps": []})()
-        from openharness.session import SessionLog
+        from looplet.session import SessionLog
         sl = SessionLog()
         outcome = run_compact(
             svc, hooks=[],
@@ -104,6 +104,6 @@ class TestRunCompactEvents:
 
 class TestLoopIntegration:
     def test_compact_service_is_a_LoopConfig_field(self):
-        from openharness import LoopConfig
+        from looplet import LoopConfig
         cfg = LoopConfig(compact_service=TruncateCompact())
         assert cfg.compact_service is not None

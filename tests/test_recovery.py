@@ -1,9 +1,9 @@
-"""Tests for openharness.recovery — pluggable failure recovery strategies."""
+"""Tests for looplet.recovery — pluggable failure recovery strategies."""
 from __future__ import annotations
 
 import pytest
 
-from openharness.recovery import (
+from looplet.recovery import (
     FailureScenario,
     RecoveryAction,
     RecoveryRecipe,

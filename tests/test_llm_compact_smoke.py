@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import pytest
 
-from openharness import SummarizeCompact
-from openharness.session import SessionLog
+from looplet import SummarizeCompact
+from looplet.session import SessionLog
 
 pytestmark = pytest.mark.smoke
 

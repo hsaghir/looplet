@@ -1,12 +1,12 @@
 [project]
-name = "openharness"
+name = "looplet"
 version = "0.1.6"
 description = "The tool-calling loop for LLM agents — iterator-first, protocol-hooked, one dependency."
 readme = "README.md"
 license = { text = "Apache-2.0" }
 requires-python = ">=3.11"
 authors = [
-    { name = "openharness contributors" },
+    { name = "looplet contributors" },
 ]
 keywords = [
     "llm",
@@ -41,10 +41,10 @@ openai = ["openai>=1.30"]
 all = ["anthropic>=0.34", "openai>=1.30"]
 
 [project.urls]
-Homepage = "https://github.com/hsaghir/openharness"
-Repository = "https://github.com/hsaghir/openharness"
-Issues = "https://github.com/hsaghir/openharness/issues"
-Changelog = "https://github.com/hsaghir/openharness/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/hsaghir/looplet"
+Repository = "https://github.com/hsaghir/looplet"
+Issues = "https://github.com/hsaghir/looplet/issues"
+Changelog = "https://github.com/hsaghir/looplet/blob/main/CHANGELOG.md"
 
 [dependency-groups]
 dev = [
@@ -61,12 +61,12 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/openharness"]
+packages = ["src/looplet"]
 
 [tool.hatch.build.targets.sdist]
 include = [
-    "src/openharness",
-    "src/openharness/py.typed",
+    "src/looplet",
+    "src/looplet/py.typed",
     "tests",
     "README.md",
     "LICENSE",

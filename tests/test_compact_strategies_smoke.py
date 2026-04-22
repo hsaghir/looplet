@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from openharness import (
+from looplet import (
     BaseToolRegistry,
     DefaultState,
     LoopConfig,
     composable_loop,
 )
-from openharness.compact import (
+from looplet.compact import (
     CompactOutcome,
     PruneToolResults,
     SummarizeCompact,
@@ -18,11 +18,11 @@ from openharness.compact import (
     compact_chain,
     run_compact,
 )
-from openharness.conversation import Conversation, Message, MessageRole
-from openharness.session import SessionLog
-from openharness.testing import MockLLMBackend
-from openharness.tools import ToolSpec
-from openharness.types import ToolResult
+from looplet.conversation import Conversation, Message, MessageRole
+from looplet.session import SessionLog
+from looplet.testing import MockLLMBackend
+from looplet.tools import ToolSpec
+from looplet.types import ToolResult
 
 pytestmark = pytest.mark.smoke
 

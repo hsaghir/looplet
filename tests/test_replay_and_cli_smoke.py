@@ -1,4 +1,4 @@
-"""Smoke tests for replay_loop and the `python -m openharness show` CLI."""
+"""Smoke tests for replay_loop and the `python -m looplet show` CLI."""
 from __future__ import annotations
 
 import io
@@ -8,16 +8,16 @@ from pathlib import Path
 
 import pytest
 
-from openharness import (
+from looplet import (
     BaseToolRegistry,
     DefaultState,
     LoopConfig,
     composable_loop,
 )
-from openharness.__main__ import main as cli_main
-from openharness.provenance import ProvenanceSink, replay_loop
-from openharness.testing import MockLLMBackend
-from openharness.tools import ToolSpec
+from looplet.__main__ import main as cli_main
+from looplet.provenance import ProvenanceSink, replay_loop
+from looplet.testing import MockLLMBackend
+from looplet.tools import ToolSpec
 
 
 def _make_tools() -> BaseToolRegistry:

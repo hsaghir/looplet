@@ -117,43 +117,89 @@ python -m looplet.examples.hello_world
 
 ---
 
-## What you get
+## What you get — one diagram
 
-| Capability | Why it matters |
-| --- | --- |
-| **Composable loop** — `composable_loop` yields `Step`s, hooks layer behaviour per-phase. | You can see every tool call *and* intercept it before it happens. |
-| **Tool registry** — `ToolSpec` + JSON-schema, concurrent batching, auto-`ctx` threading, typed `ToolError`. | Tools are data, not classes. Adding one is one `register()` call. |
-| **Permissions** — declarative `ALLOW/DENY/ASK` rules with arg matchers, audit log. | You can fail-closed on destructive tools without editing the tool. |
-| **Context management** — `compact_chain(Prune, Summarize, Truncate)` fires on budget pressure. | Long sessions don't crash with *prompt too long*. You choose the strategy. |
-| **Checkpoints** — step-by-step JSON snapshots; `resume_loop_state()` reconstructs the run. | Kill the process, restart, resume at step N. Works with crashes *and* approvals. |
-| **Human approval** — `ApprovalHook` suspends the loop for out-of-band sign-off, resumes with injected context. | CI-safe automation, Slack-bot sign-off, real audit trails. |
-| **Provenance** — `ProvenanceSink` dumps every prompt the LLM saw + every tool result, in a diff-friendly directory. | Replay a failing run exactly. Diff two runs at the prompt level. |
-| **Evals** — pytest-style `eval_*` functions discovered and batched by a CLI. | Your debug output becomes your regression suite. |
-| **MCP + skills** — `MCPToolAdapter` without the official SDK; `Skill` bundles tools + prompt + memory. | Use MCP servers without pulling in their dependency graph. |
-| **Backends** — sync / async / streaming adapters for OpenAI and Anthropic; `LLMBackend` protocol for your own. | Swap providers in one line. Local-first is a first-class citizen. |
+`looplet` is just a `for`-loop you own, three loop phases, and a handful
+of **`Protocol` methods** you can implement in a few lines to change any
+part of the loop. That's the whole mental model:
 
-Every public symbol has a docstring and the package ships a `py.typed`
-marker so your editor knows the types.
+```mermaid
+flowchart LR
+    User([your for-loop<br/>yields Step])
+    User -.-> P
+
+    subgraph LoopBox["composable_loop(llm, tools, hooks, …)"]
+      direction LR
+      P([prompt LLM])
+      D([dispatch tool])
+      Done{done?}
+      P --> D --> Done
+      Done -- no --> P
+    end
+
+    Done --> Out([return])
+    Out -.-> User
+
+    H1[/"pre_prompt<br/><i>redact · inject context ·<br/>compact · retry</i>"/]:::hook
+    H2[/"pre_dispatch<br/><i>permissions · approval ·<br/>rewrite args · cache</i>"/]:::hook
+    H3[/"post_dispatch<br/><i>trace · metrics ·<br/>checkpoint · provenance</i>"/]:::hook
+    H4[/"check_done / should_stop<br/><i>custom stop rules ·<br/>max steps · budget</i>"/]:::hook
+
+    H1 -.-> P
+    H2 -.-> D
+    H3 -.-> D
+    H4 -.-> Done
+
+    classDef hook fill:#fff4d1,stroke:#b8860b,stroke-width:1.2px,color:#6b4f00;
+```
+
+Every orange box is a `Protocol` method. A hook is any object that
+implements one or more of them — no base class, no inheritance:
+
+```python
+class RedactPII:
+    def pre_prompt(self, state, log, ctx, step):
+        return _scrub_emails(ctx)          # mutates the next LLM prompt
+
+class RetryFlakyTool:
+    def pre_dispatch(self, state, log, tc, step):
+        if tc.tool == "web_search" and state.last_error:
+            return Deny("retry with backoff", retry=True)
+
+for step in composable_loop(..., hooks=[RedactPII(), RetryFlakyTool()]):
+    ...
+```
+
+Ship-ready hooks already wired in: `ApprovalHook`, `PermissionHook`,
+`CheckpointHook`, `ContextPressureHook`, `ThresholdCompactHook`,
+`ProvenanceSink`, `TracingHook`, `MetricsHook`, `EvalHook`, plus the
+`compact_chain(Prune, Summarize, Truncate)` context strategy. Use any,
+all, or none — and [drop in your own](docs/hooks.md) in 10 lines.
 
 ---
 
-## How it compares
+## When should you reach for `looplet`?
 
-|                                          | looplet | claude-agent-sdk | strands-agents | pydantic-ai | langgraph |
-| ---------------------------------------- | ----------- | ---------------- | -------------- | ----------- | --------- |
-| **You own the loop (iterator)**          | ✅ `for step in loop(...)` | ❌ async stream | ❌ closed `agent()` | ❌ `run_sync()` | ❌ graph |
-| **Provider-agnostic**                    | ✅ | ❌ Claude-only | ✅ | ✅ | ✅ |
-| **No subprocess / bundled binary**       | ✅ | ❌ | ✅ | ✅ | ✅ |
-| **Hooks as `Protocol` objects**          | ✅ | ⚠️ dict callbacks | ⚠️ inheritance | ⚠️ `Capability` | ⚠️ nodes |
-| **Fail-closed permissions**              | ✅ built in | ⚠️ hooks only | ❌ | ⚠️ deferred tools | ❌ |
-| **Crash-resume checkpoints**             | ✅ | ❌ | ❌ | ⚠️ add-on | ✅ |
-| **Built-in evals**                       | ✅ pytest-style | ❌ | ❌ | ❌ | ❌ |
-| **OSI license**                          | Apache-2.0 | Anthropic terms | Apache-2.0 | MIT | MIT |
-| **Core runtime deps**                    | **0** | CLI binary | several | many | many |
+**Use it when you want to build your own agent loop and actually own
+the details.** Concretely:
 
-Numbers on import time and dependency footprint: [docs/benchmarks.md](docs/benchmarks.md).
-On a fresh Python 3.11 venv, `looplet` cold-imports in 289 ms against 1.9–4.0 s
-for the alternatives.
+* You need to **insert logic at an exact phase** of the loop — before
+  the prompt is built, before a tool is dispatched, after a tool
+  returns — without forking a framework.
+* You need to **swap context-management strategy at runtime** (prune,
+  summarize, truncate, your own) without losing the rest of your stack.
+* You need the loop to **pause for human approval**, then resume where
+  it left off when approval arrives.
+* You want **first-class debugging and evaluation** — a printable
+  `Step`, a prompt-level provenance dump, pytest-style `eval_*`
+  functions — without bolting on a second tool.
+* You want **zero runtime dependencies** and a loop that cold-imports
+  in ~300 ms (numbers in [docs/benchmarks.md](docs/benchmarks.md)).
+
+**Don't reach for `looplet` if** you want `agent.run(task)` to handle
+everything and return a string, or if you want a visual graph DSL — a
+higher-level framework will feel more natural and the overlap in
+features won't be worth the extra control `looplet` gives you.
 
 ---
 

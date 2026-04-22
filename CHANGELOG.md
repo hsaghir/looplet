@@ -8,13 +8,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [0.1.7] - 2026-04-21
 
-### Changed (project rename)
-- **Renamed from `openharness` to `looplet`.** The PyPI name
-  `openharness` was taken by an unrelated project, so we renamed
-  before the first public release. The public API (imports, symbol
-  names, protocols) is unchanged except for the top-level package
-  name — update imports from `openharness` to `looplet`. The GitHub
-  repository is also renamed; old URLs redirect automatically.
+First public release of `looplet`.
 
 ### Added (launch polish)
 - `ROADMAP.md` with a frozen v1.0 API contract and explicit

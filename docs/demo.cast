@@ -1,0 +1,8 @@
+{"version": 2, "width": 90, "height": 14, "timestamp": 1776835416, "env": {"SHELL": "/bin/bash", "TERM": "xterm-256color"}}
+[0.133694, "o", "$ python -m looplet.examples.scripted_demo\r\n"]
+[0.729221, "o", "# investigating: 'why did the auth alert fire?'\r\n"]
+[1.429299, "o", "\r\n"]
+[1.429743, "o", "#1 ✓ search(table=auth, pattern=admin) → 2 keys [0ms]\r\n"]
+[1.880924, "o", "#2 ✓ rank(table=auth, by=user) → 1 keys [0ms]\r\n"]
+[2.331305, "o", "#3 ✓ done(verdict=jsmith had 847 failed logins — brute force) → 1 keys [0ms]\r\n"]
+[2.781574, "o", "\r\n✓ done — 3 steps, 0 errors, deterministic.\r\n"]

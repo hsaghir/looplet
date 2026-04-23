@@ -52,7 +52,10 @@ class PerToolLimitHook:
 
     Args:
         limits: Mapping of tool name to max invocations.  Tools not
-            listed are unbounded.
+            listed fall back to ``default_limit``.
+        default_limit: Max invocations for any tool not in ``limits``.
+            ``None`` means unlimited.  At least one of ``limits`` or
+            ``default_limit`` must be provided.
         message: Message template for the short-circuit error.
             Substitutions available: ``{tool}``, ``{limit}``,
             ``{used}``.
@@ -64,14 +67,26 @@ class PerToolLimitHook:
     def __init__(
         self,
         *,
-        limits: dict[str, int],
+        limits: dict[str, int] | None = None,
+        default_limit: int | None = None,
         message: str = (
             "Tool '{tool}' reached its per-loop limit ({used}/{limit}). Try a different approach."
         ),
     ) -> None:
-        if any(v < 0 for v in limits.values()):
+        if limits is not None and any(v < 0 for v in limits.values()):
             raise ValueError("limits values must be >= 0")
-        self._limits = dict(limits)
+        if default_limit is not None and default_limit < 0:
+            raise ValueError("default_limit must be >= 0")
+        if limits is None and default_limit is None:
+            raise TypeError(
+                "PerToolLimitHook requires at least one of limits={...} "
+                "or default_limit=N. Example:\n"
+                "  PerToolLimitHook(default_limit=10)\n"
+                '  PerToolLimitHook(limits={"search": 3, "bash": 5})\n'
+                '  PerToolLimitHook(default_limit=10, limits={"search": 3})'
+            )
+        self._limits = dict(limits or {})
+        self._default_limit = default_limit
         self._message = message
         self._counts: Counter[str] = Counter()
 
@@ -94,7 +109,7 @@ class PerToolLimitHook:
         step_num: int,
     ) -> ToolResult | None:
         tool = getattr(tool_call, "tool", "")
-        limit = self._limits.get(tool)
+        limit = self._limits.get(tool, self._default_limit)
         if limit is None:
             return None  # unlimited
 

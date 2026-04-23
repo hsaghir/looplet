@@ -502,6 +502,7 @@ class Trajectory:
     run_id: str
     started_at: float
     ended_at: float | None = None
+    task: dict[str, Any] = field(default_factory=dict)
     steps: list[StepRecord] = field(default_factory=list)
     llm_calls: list[LLMCall] = field(default_factory=list)
     spans: list[Span] = field(default_factory=list)
@@ -513,6 +514,7 @@ class Trajectory:
             "run_id": self.run_id,
             "started_at": self.started_at,
             "ended_at": self.ended_at,
+            "task": self.task,
             "termination_reason": self.termination_reason,
             "metadata": self.metadata,
             "step_count": len(self.steps),
@@ -544,6 +546,7 @@ class TrajectoryRecorder:
         recording_llm: _RecordingBase | None = None,
         capture_context: bool = True,
         tracer: Tracer | None = None,
+        output_dir: str | Path | None = None,
     ) -> None:
         self.trajectory = Trajectory(
             run_id=uuid4().hex[:12],
@@ -556,12 +559,18 @@ class TrajectoryRecorder:
         self._pending_context: str = ""
         self._pending_llm_start: int = 0
         self._step_start_time: float = 0.0
+        self._output_dir: Path | None = Path(output_dir) if output_dir is not None else None
 
     # ── hook methods ────────────────────────────────────────────
 
     def pre_loop(self, state: Any, session_log: Any, context: Any) -> None:
         if self._loop_span is None and self._tracer is not None:
             self._loop_span = self._tracer.start_span("loop.run")
+        # Capture the task from state so trajectory.json includes it
+        # for round-tripping via EvalContext.from_trajectory_dir().
+        task = getattr(state, "task", None)
+        if task is not None and isinstance(task, dict):
+            self.trajectory.task = dict(task)
 
     def pre_prompt(
         self,
@@ -678,6 +687,11 @@ class TrajectoryRecorder:
                 self.trajectory.termination_reason = "max_steps_or_stop"
         else:
             self.trajectory.termination_reason = "no_steps"
+
+        # Auto-save when output_dir was specified at construction time.
+        if self._output_dir is not None:
+            self.save(self._output_dir)
+
         return 0
 
     # ── summary ─────────────────────────────────────────────────

@@ -168,8 +168,8 @@ class TestStepConstruction:
         step = Step(number=2, tool_call=tc, tool_result=tr)
         d = step.to_dict()
         assert d["step"] == 2
-        assert "call" in d
-        assert "result" in d
+        assert "tool_call" in d
+        assert "tool_result" in d
 
     def test_summary_success(self):
         from looplet.types import Step, ToolCall, ToolResult

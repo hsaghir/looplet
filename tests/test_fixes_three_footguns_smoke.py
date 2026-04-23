@@ -37,11 +37,7 @@ def test_eval_discover_skips_reexported_decorator(tmp_path: Path) -> None:
     """``from looplet import eval_mark`` must not be collected as an eval."""
     f = tmp_path / "eval_me.py"
     f.write_text(
-        "from looplet import eval_mark\n"
-        "\n"
-        "@eval_mark('x')\n"
-        "def eval_one(ctx):\n"
-        "    return True\n"
+        "from looplet import eval_mark\n\n@eval_mark('x')\ndef eval_one(ctx):\n    return True\n"
     )
     evaluators = eval_discover(f)
     names = [e.__name__ for e in evaluators]
@@ -53,10 +49,7 @@ def test_eval_discover_skips_reexported_decorator(tmp_path: Path) -> None:
 def test_eval_discover_skips_imported_from_other_module(tmp_path: Path) -> None:
     """Any function whose __module__ isn't the eval file is filtered out."""
     lib = tmp_path / "my_lib.py"
-    lib.write_text(
-        "def eval_helper(ctx):\n"
-        "    return 1.0\n"
-    )
+    lib.write_text("def eval_helper(ctx):\n    return 1.0\n")
     f = tmp_path / "eval_discover_test.py"
     f.write_text(
         "import sys\n"
@@ -80,8 +73,14 @@ class _EchoBackend:
         self.last_prompt: str = ""
         self.last_system: str = ""
 
-    def generate(self, prompt: str, *, max_tokens: int = 2000,
-                 system_prompt: str = "", temperature: float = 0.2) -> str:
+    def generate(
+        self,
+        prompt: str,
+        *,
+        max_tokens: int = 2000,
+        system_prompt: str = "",
+        temperature: float = 0.2,
+    ) -> str:
         self.last_prompt = prompt
         self.last_system = system_prompt
         return '{"tool": "done", "args": {"answer": "ok"}, "reasoning": "done"}'
@@ -134,18 +133,27 @@ def test_redact_upstream_can_be_disabled(tmp_path: Path) -> None:
 def test_eval_context_stop_reason_done() -> None:
     """Normal completion sets stop_reason == 'done'."""
     tools = BaseToolRegistry()
-    tools.register(ToolSpec(name="done",
-                            description="finish",
-                            parameters={"answer": "str"},
-                            execute=lambda *, answer: {"answer": answer}))
+    tools.register(
+        ToolSpec(
+            name="done",
+            description="finish",
+            parameters={"answer": "str"},
+            execute=lambda *, answer: {"answer": answer},
+        )
+    )
 
-    llm = MockLLMBackend(responses=[
-        '{"tool": "done", "args": {"answer": "ok"}, "reasoning": "done"}',
-    ])
+    llm = MockLLMBackend(
+        responses=[
+            '{"tool": "done", "args": {"answer": "ok"}, "reasoning": "done"}',
+        ]
+    )
     state = DefaultState(max_steps=5)
     for _ in composable_loop(
-        llm=llm, tools=tools, state=state,
-        config=LoopConfig(max_steps=5), task={"goal": "x"},
+        llm=llm,
+        tools=tools,
+        state=state,
+        config=LoopConfig(max_steps=5),
+        task={"goal": "x"},
     ):
         pass
     assert getattr(state, "_stop_reason", None) == "done"
@@ -153,28 +161,37 @@ def test_eval_context_stop_reason_done() -> None:
 
 def test_eval_context_stop_reason_hook_stop() -> None:
     """Hook-triggered termination sets stop_reason to the hook's label."""
+
     class StopAfterOne:
         def should_stop(self, state, step_num, new_entities):
             return True
 
     tools = BaseToolRegistry()
-    tools.register(ToolSpec(name="noop",
-                            description="noop",
-                            parameters={},
-                            execute=lambda: {"ok": True}))
-    tools.register(ToolSpec(name="done",
-                            description="finish",
-                            parameters={"answer": "str"},
-                            execute=lambda *, answer: {"answer": answer}))
+    tools.register(
+        ToolSpec(name="noop", description="noop", parameters={}, execute=lambda: {"ok": True})
+    )
+    tools.register(
+        ToolSpec(
+            name="done",
+            description="finish",
+            parameters={"answer": "str"},
+            execute=lambda *, answer: {"answer": answer},
+        )
+    )
 
-    llm = MockLLMBackend(responses=[
-        '{"tool": "noop", "args": {}, "reasoning": "step 1"}',
-        '{"tool": "done", "args": {"answer": "never"}, "reasoning": "never reached"}',
-    ])
+    llm = MockLLMBackend(
+        responses=[
+            '{"tool": "noop", "args": {}, "reasoning": "step 1"}',
+            '{"tool": "done", "args": {"answer": "never"}, "reasoning": "never reached"}',
+        ]
+    )
     state = DefaultState(max_steps=5)
     for _ in composable_loop(
-        llm=llm, tools=tools, state=state,
-        config=LoopConfig(max_steps=5), task={"goal": "x"},
+        llm=llm,
+        tools=tools,
+        state=state,
+        config=LoopConfig(max_steps=5),
+        task={"goal": "x"},
         hooks=[StopAfterOne()],
     ):
         pass

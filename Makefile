@@ -38,8 +38,10 @@ check: install lint format-check typecheck test
 ci: check
 
 install-hooks:
+	@install -m 0755 scripts/pre-commit.sh .git/hooks/pre-commit
 	@install -m 0755 scripts/pre-push.sh .git/hooks/pre-push
-	@echo "✓ pre-push hook installed — \`git push\` now runs \`make check\` first."
+	@echo "✓ pre-commit hook installed — \`git commit\` auto-formats + lints staged files."
+	@echo "✓ pre-push hook installed   — \`git push\` runs full \`make check\` first."
 
 clean:
 	rm -rf .pytest_cache .ruff_cache dist build site coverage.xml .coverage

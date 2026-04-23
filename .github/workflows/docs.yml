@@ -37,7 +37,7 @@ jobs:
         # docs/index.md is committed directly.
         # docs/{roadmap,contributing,changelog}.md are symlinks to
         # the root-level canonical files — mkdocs follows them.
-        run: mkdocs build
+        run: mkdocs build --strict
 
       - uses: actions/upload-pages-artifact@v3
         with: { path: site }

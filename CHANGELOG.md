@@ -245,7 +245,7 @@ First public release of `looplet`.
     `call_NN_response.txt` per LLM call plus a `manifest.jsonl`.
   - Both recorders accept `redact=` for secret scrubbing and
     `max_chars_per_call=` for bounded memory.
-  - See [PROVENANCE_GUIDE.md](PROVENANCE_GUIDE.md) for API reference,
+  - See [Provenance guide](provenance.md) for API reference,
     recipes, and performance notes.
 - `Step.pretty()` — human-readable CLI formatter complementing
   `Step.summary()` (which is tuned for LLM context assembly).

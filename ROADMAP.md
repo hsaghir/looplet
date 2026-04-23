@@ -2,7 +2,7 @@
 
 > Note: this is not a confused-with [`pydantic-ai-harness`](https://github.com/pydantic/pydantic-ai-harness)
 > project — `looplet` is a framework-agnostic *loop* library. See
-> [README.md](README.md#what-looplet-is) for the full positioning.
+> [README.md](https://github.com/hsaghir/looplet#what-looplet-is) for the full positioning.
 
 This document describes what `looplet` will and will **not** become.
 Dates are aspirational; the only firm commitment is the [v1.0 API
@@ -34,7 +34,7 @@ contract](#v10-api-contract).
 ## Near-term (`0.2` — ~1 month out)
 
 - **Gemini + Bedrock backends** (community contributions welcome — see
-  [good-first-issues](docs/good-first-issues.md))
+  [good-first-issues](good-first-issues.md))
 - **First-class Ollama recipe** with `examples/ollama_hello.py` and
   docs page
 - **Structured-output helper** — optional `response_schema` support

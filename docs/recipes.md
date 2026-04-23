@@ -15,7 +15,7 @@ llm = OpenAIBackend(
 )
 ```
 
-See [`examples/ollama_hello.py`](../src/looplet/examples/ollama_hello.py)
+See [`examples/ollama_hello.py`](https://github.com/hsaghir/looplet/blob/master/src/looplet/examples/ollama_hello.py)
 for a runnable end-to-end example.
 
 ## Groq / Together / any OpenAI-compatible endpoint

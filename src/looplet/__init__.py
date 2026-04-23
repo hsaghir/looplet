@@ -68,7 +68,7 @@ from looplet.presets import (
 from looplet.prompts import preview_prompt
 from looplet.provenance import ProvenanceSink, TrajectoryRecorder, replay_loop
 from looplet.session import SessionLog
-from looplet.skills import Skill
+from looplet.skills import Skill, install_skills
 from looplet.streaming import StreamingHook
 from looplet.subagent import run_sub_loop
 from looplet.telemetry import MetricsCollector, MetricsHook, Tracer, TracingHook
@@ -99,6 +99,7 @@ __all__ = [
     "ToolSpec",
     "BaseToolRegistry",
     "Skill",
+    "install_skills",
     "DefaultState",
     "LLMBackend",
     "HookDecision",

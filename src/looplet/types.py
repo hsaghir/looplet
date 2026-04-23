@@ -592,8 +592,17 @@ class Step:
         if isinstance(r.data, list):
             return f"S{self.number} ✓ {r.tool}({r.args_summary}) → {len(r.data)} items"
         if isinstance(r.data, dict):
-            total = r.data.get("total", r.data.get("total_items", "?"))
-            return f"S{self.number} ✓ {r.tool}({r.args_summary}) → {total}"
+            total = r.data.get("total", r.data.get("total_items"))
+            if total is not None:
+                return f"S{self.number} ✓ {r.tool}({r.args_summary}) → {total}"
+            # Show a compact preview of the dict
+            preview = ", ".join(
+                f"{k}: {v!r}" if not isinstance(v, (list, dict)) else f"{k}: ({len(v)})"
+                for k, v in list(r.data.items())[:3]
+            )
+            if len(r.data) > 3:
+                preview += f", … ({len(r.data)} keys)"
+            return f"S{self.number} ✓ {r.tool}({r.args_summary}) → {preview}"
         return f"S{self.number} ✓ {r.tool}({r.args_summary})"
 
     def pretty(self) -> str:

@@ -112,7 +112,22 @@ class RecoveryRegistry:
         self._attempt_counts: dict[FailureScenario, int] = {}
 
     def register(self, recipe: RecoveryRecipe) -> None:
-        """Register a recipe for a failure scenario."""
+        """Register a recipe for a failure scenario.
+
+        Warns when a recipe for the same scenario is already registered
+        — silent overwrites when composing registries are a real
+        footgun (e.g. ``build_default_registry()`` followed by a
+        caller adding their own ``PARSE_ERROR`` recipe would overwrite
+        the default without any signal). The overwrite still happens
+        so existing behaviour is preserved; only the warning is new.
+        """
+        if recipe.scenario in self._recipes:
+            logger.warning(
+                "Recovery recipe for %s is already registered — overwriting. "
+                "If this is intentional, silence this warning by clearing the "
+                "registry before re-registering.",
+                recipe.scenario.name,
+            )
         self._recipes[recipe.scenario] = recipe
 
     def attempt_recovery(
@@ -125,9 +140,20 @@ class RecoveryRegistry:
         Returns:
             A ``RecoveryAction`` if the recipe exists and has not exceeded
             ``max_attempts``; ``None`` otherwise.
+
+        Both "no recipe registered" and "max_attempts exceeded" return
+        ``None``, but they are distinguishable in the logs: the
+        former emits an ``info`` line (an unregistered scenario is
+        often intentional), while the latter emits a ``warning``.
+        Callers who need to branch programmatically can check
+        :meth:`has_recipe` before calling.
         """
         recipe = self._recipes.get(scenario)
         if recipe is None:
+            logger.info(
+                "No recovery recipe registered for %s — aborting recovery.",
+                scenario.name,
+            )
             return None
 
         current = self._attempt_counts.get(scenario, 0)
@@ -142,6 +168,10 @@ class RecoveryRegistry:
 
         self._attempt_counts[scenario] = current + 1
         return recipe.handler(context)
+
+    def has_recipe(self, scenario: FailureScenario) -> bool:
+        """Return True iff a recipe is registered for ``scenario``."""
+        return scenario in self._recipes
 
     def reset(self) -> None:
         """Clear all attempt counts — call at the start of a new session."""

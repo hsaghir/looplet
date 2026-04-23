@@ -257,6 +257,37 @@ print(result["summary"])   # concise finding
 print(result["findings"])  # list of issues found
 ```
 
+## Recipe 8b — Compose agents as tools
+
+Any agent can be exposed to another agent as a normal tool:
+
+```python
+from looplet import BaseToolRegistry, ToolSpec
+from looplet.subagent import run_sub_loop
+
+def deep_research(question: str) -> str:
+    """Multi-step research. Returns a cited summary."""
+    result = run_sub_loop(
+        llm=cheap_llm, tools=research_tools,
+        task={"question": question},
+        system_prompt="Research deeply. Cite every claim.",
+        max_steps=20,
+    )
+    return result["summary"]
+
+tools = BaseToolRegistry()
+tools.register(ToolSpec(
+    name="deep_research",
+    description="Run a deep-research sub-agent and return a cited summary.",
+    parameters={"question": "str"},
+    execute=lambda *, question: {"summary": deep_research(question)},
+))
+# Parent loop now sees `deep_research` as a regular tool.
+```
+
+The parent's `ProvenanceSink` will record only the parent trajectory;
+wire a separate sink inside the sub-agent for parent-child linked traces.
+
 ## Recipe 9 — Permissions
 
 ```python
@@ -282,6 +313,76 @@ config = LoopConfig(
     checkpoint_dir="./checkpoints",  # auto-save every step, auto-resume on restart
 )
 # If the process crashes, restart the same script — it resumes from last checkpoint.
+```
+
+## Recipe 11 — PII redaction + trajectory capture
+
+```python
+import re
+from looplet import ProvenanceSink, composable_loop
+
+EMAIL_RE = re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b")
+
+def scrub(s: str) -> str:
+    return EMAIL_RE.sub("[EMAIL]", s)
+
+sink = ProvenanceSink(dir="traces/run_1", redact=scrub)
+llm  = sink.wrap_llm(AnthropicBackend(...))     # PII scrubbed before Anthropic sees it
+
+for step in composable_loop(llm=llm, tools=tools, hooks=[sink.trajectory_hook()], ...):
+    print(step.pretty())
+sink.flush()
+```
+
+**By default `redact` scrubs upstream too:** secrets never reach the
+provider or the trace file. Pass `redact_upstream=False` to get the
+legacy record-only behaviour.
+
+## Recipe 12 — Budget-capped loop with meaningful stop reason
+
+```python
+from looplet import HookDecision, composable_loop
+
+class TokenBudget:
+    def __init__(self, cap: int) -> None:
+        self.cap, self.total = cap, 0
+
+    def post_dispatch(self, state, session_log, tool_call, tool_result, step_num):
+        usage = getattr(state.steps[-1], "usage", None)
+        if usage is not None:
+            self.total = getattr(usage, "total_tokens", self.total)
+        return None
+
+    def should_stop(self, state, step_num, new_entities):
+        if self.total >= self.cap:
+            return HookDecision(stop="budget_exceeded")   # shows up as ctx.stop_reason
+        return False
+```
+
+Evaluators can then dispatch on the reason:
+
+```python
+def eval_finished_cleanly(ctx):
+    return ctx.completed                     # shorthand for stop_reason == "done"
+
+def eval_no_hard_timeout(ctx):
+    return ctx.stop_reason != "timeout"
+```
+
+## Recipe 13 — Discovery-safe eval file
+
+`eval_discover` only collects functions defined IN the eval file.
+Imports (decorators, helpers, library functions) are filtered out by
+`__module__`, so the following is safe:
+
+```python
+# eval_my_agent.py
+from looplet import eval_mark              # decorator — not collected
+from my_helpers import eval_tool_count     # helper from another module — not collected
+
+@eval_mark("verdict")
+def eval_correct_answer(ctx):              # collected
+    return ctx.final_output.get("answer") == ctx.task.get("expected")
 ```
 
 ## Common patterns
@@ -323,15 +424,84 @@ config = LoopConfig(
 )
 ```
 
+## Pitfalls (read this before generating code)
+
+These are the sharp edges coding agents hit most often. All have
+principled fixes in the library; the notes below are the "right way."
+
+1. **`LoopConfig.max_steps` and `DefaultState(max_steps=...)` must
+   match.** The loop warns and syncs to the config value, but pass the
+   same N to both to silence it:
+   ```python
+   N = 20
+   config = LoopConfig(max_steps=N)
+   state  = DefaultState(max_steps=N)
+   ```
+
+2. **`redact=` in `ProvenanceSink` / `RecordingLLMBackend` scrubs
+   UPSTREAM by default.** Secrets never reach the provider OR the
+   trace. Do NOT double-wrap the LLM in a separate redactor — pass the
+   callable to the sink:
+   ```python
+   # ✓ do this
+   sink = ProvenanceSink(dir="traces/", redact=scrub_pii)
+   llm  = sink.wrap_llm(AnthropicBackend(...))
+   # ✗ not this (record-only; PII still hits the provider)
+   ```
+
+3. **Use `HookDecision(stop="reason")` in `should_stop`**, not a bare
+   `True`. The reason string becomes `EvalContext.stop_reason` and
+   lets evaluators tell `"budget_exceeded"` apart from `"timeout"`.
+
+4. **`eval_discover` only collects functions defined in the eval
+   file.** Imported decorators and helpers are filtered by
+   `__module__`. This is intentional — do not work around it by
+   defining pass-through wrappers; just import normally.
+
+5. **`should_stop` fires AFTER the current step**, so the last step in
+   the trajectory may not be a `done()` call. Trajectory evaluators
+   must handle this via `ctx.stop_reason` / `ctx.completed`, not by
+   assuming a terminal `done()` exists.
+
+6. **Tool results with errors should include remediation.** The LLM
+   reads `tool_result.error` and `tool_result.data` verbatim. A good
+   error includes "what went wrong" and "what to try next":
+   ```python
+   return {"error": "File not found: x.py",
+           "remediation": "Use glob to list existing files."}
+   ```
+
+7. **Never swallow exceptions in hooks silently.** Let them propagate
+   unless you have a specific recovery. A hook that eats
+   `KeyError` can mask a missing `tool_call.args` key that should
+   have surfaced as a prompt for the model.
+
+8. **`composable_loop` is a generator.** The `for step in ...` pattern
+   is mandatory — the loop does not run if you only call
+   `composable_loop(...)`. Consume the iterator, or wrap with
+   `list(...)` when you don't care about streaming.
+
+9. **`NativeToolBackend.generate_with_tools`** is surfaced via
+   `hasattr` on the wrapped backend. Recording/redacting wrappers
+   preserve this automatically; custom wrappers must forward it or
+   native tool-calling silently falls back to JSON parsing.
+
+10. **Prefer Protocol-conforming classes over inheritance.** All hooks,
+    LLM backends, and states are `@runtime_checkable` Protocols —
+    any object with the right methods works. No `LoopHook`
+    subclassing, no registration.
+
 ## Development commands
 
 ```bash
 uv sync                       # install deps
-uv run pytest                 # full suite (~1008 tests, ~4s)
+uv run pytest                 # full suite (~1062 tests, ~1s)
 uv run pytest -m smoke        # smoke tests only
 uv run ruff check .           # lint
 uv run ruff format --check .  # format check
-uv run mypy src/looplet   # type check
+uv run pyright src/looplet/   # type check
+make check                    # all of the above (matches CI)
+make install-hooks            # install pre-commit + pre-push git hooks
 ```
 
 ## File structure
@@ -346,12 +516,12 @@ src/looplet/
   permissions.py       # PermissionEngine, rules
   compact.py           # Context compaction strategies
   checkpoint.py        # Crash-resume
-  hooks.py             # HookDecision, InjectContext
+  hook_decision.py     # HookDecision, Allow/Deny/Block/Stop/InjectContext
   skills.py            # Skill bundles
-  subagent.py          # Sub-agent spawning
+  subagent.py          # run_sub_loop — sub-agents as tools
   mcp.py               # MCP server adapter
-  evals.py             # Evaluation system
-  provenance.py        # Trajectory recording
+  evals.py             # Evaluation system + EvalContext.stop_reason
+  provenance.py        # Trajectory recording + redact (scrubs upstream by default)
   testing.py           # MockLLMBackend
   presets.py           # One-liner presets (coding, research, minimal)
   memory.py            # Persistent memory sources
@@ -364,9 +534,15 @@ src/looplet/
   conversation.py      # Message/conversation management
   session.py           # Session log
   recovery.py          # Error recovery registry
+  recovery_strategies.py  # Built-in recovery handlers
   context.py           # Context pressure hook
   events.py            # Lifecycle event types
   flags.py             # Feature flags (env vars)
+  parse.py             # LLM response parsing
+  history.py           # Single-writer turn/step history
+  approval.py          # ApprovalHook
+  cache.py             # Prompt caching
+  telemetry.py         # Tracer / MetricsCollector / MetricsHook / TracingHook
   examples/
     hello_world.py     # Minimal example
     coding_agent.py    # Production reference (bash/read/write/edit/glob/grep)

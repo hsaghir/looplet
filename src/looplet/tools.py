@@ -307,7 +307,7 @@ class BaseToolRegistry:
             )
             return ToolResult(
                 tool=call.tool,
-                args_summary=str(clean_args)[:100],
+                args_summary=_summarize_args_dict(clean_args),
                 data=None,
                 error=_te.message,
                 error_detail=_te,
@@ -477,13 +477,25 @@ class BaseToolRegistry:
 
     def _summarize_args(self, call: ToolCall) -> str:
         """Compact arg summary for logging and context."""
-        parts: list[str] = []
-        for k, v in call.args.items():
-            s = str(v)
-            if len(s) > 50:
-                s = s[:50] + "..."
-            parts.append(f"{k}={s}")
-        return ", ".join(parts)
+        return _summarize_args_dict(call.args)
+
+
+def _summarize_args_dict(args: dict[str, Any]) -> str:
+    """Format tool args as ``k=v, k=v`` for consistent step rendering.
+
+    Module-level helper so loop.py, validation.py, and permission
+    denial paths can all render args the same way as successful
+    dispatch. Without this, the same call looks like
+    ``bash(cmd=ls)`` when allowed and ``bash({'cmd': 'ls'})`` when
+    denied or intercepted — visually jarring in logs.
+    """
+    parts: list[str] = []
+    for k, v in args.items():
+        s = str(v)
+        if len(s) > 50:
+            s = s[:50] + "..."
+        parts.append(f"{k}={s}")
+    return ", ".join(parts)
 
 
 def register_think_tool(registry: BaseToolRegistry) -> None:

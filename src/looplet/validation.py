@@ -198,10 +198,12 @@ class ValidatingToolRegistry:
             schema = self._schemas[call.tool]
             result = validate_args(schema, clean_args)
             if not result.valid:
+                from looplet.tools import _summarize_args_dict  # noqa: PLC0415
+
                 error_msg = "Validation failed: " + "; ".join(result.errors)
                 return ToolResult(
                     tool=call.tool,
-                    args_summary=str(clean_args)[:100],
+                    args_summary=_summarize_args_dict(clean_args),
                     data=None,
                     error=error_msg,
                     call_id=call.call_id,

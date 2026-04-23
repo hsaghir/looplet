@@ -43,7 +43,7 @@ from looplet.scaffolding import (
     truncate_tool_result,
 )
 from looplet.session import SessionLog
-from looplet.tools import BaseToolRegistry
+from looplet.tools import BaseToolRegistry, _summarize_args_dict
 from looplet.types import AgentState, Step, ToolCall, ToolContext, ToolResult
 from looplet.validation import validate_args as _validate_args
 
@@ -791,7 +791,7 @@ def _intercept_tool_calls(
                 )
                 result.intercepted[tc_idx] = ToolResult(
                     tool=tc.tool,
-                    args_summary=str(tc.args)[:100],
+                    args_summary=_summarize_args_dict(tc.args),
                     data=None,
                     error=_te.message,
                     error_detail=_te,
@@ -828,7 +828,7 @@ def _intercept_tool_calls(
                 )
                 result.intercepted[tc_idx] = ToolResult(
                     tool=tc.tool,
-                    args_summary=str(tc.args)[:100],
+                    args_summary=_summarize_args_dict(tc.args),
                     data=None,
                     error=_te.message,
                     error_detail=_te,
@@ -863,7 +863,7 @@ def _intercept_tool_calls(
                 )
                 result.intercepted[tc_idx] = ToolResult(
                     tool=tc.tool,
-                    args_summary=str(tc.args)[:100],
+                    args_summary=_summarize_args_dict(tc.args),
                     data=None,
                     error=_te.message,
                     error_detail=_te,
@@ -1631,7 +1631,7 @@ def composable_loop(
                         _ToolDispatchEvent(
                             step_num=cur_step,
                             tool_name=tool_call.tool,
-                            args_summary=str(tool_call.args)[:200],
+                            args_summary=_summarize_args_dict(tool_call.args),
                         )
                     )
 
@@ -1722,7 +1722,7 @@ def composable_loop(
                     _ToolDispatchEvent(
                         step_num=cur_step,
                         tool_name=tool_call.tool,
-                        args_summary=str(tool_call.args)[:200],
+                        args_summary=_summarize_args_dict(tool_call.args),
                     )
                 )
 

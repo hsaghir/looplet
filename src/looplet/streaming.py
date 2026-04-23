@@ -341,11 +341,13 @@ class StreamingHook:
         step_num: int,
     ) -> ToolResult | None:
         """Emit ``ToolDispatchEvent``; never intercepts execution."""
+        from looplet.tools import _summarize_args_dict  # noqa: PLC0415
+
         self._emitter.emit(
             ToolDispatchEvent(
                 step_num=step_num,
                 tool_name=tool_call.tool,
-                args_summary=str(tool_call.args)[:200],
+                args_summary=_summarize_args_dict(tool_call.args),
             )
         )
         return None

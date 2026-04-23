@@ -1,61 +1,117 @@
 site_name: looplet
-site_description: The tool-calling loop you can actually step through.
+site_description: A for-loop you own for LLM tool-calling agents. Zero deps, four hooks, one iterator.
 site_url: https://hsaghir.github.io/looplet/
 repo_url: https://github.com/hsaghir/looplet
 repo_name: hsaghir/looplet
-edit_uri: edit/master/
+edit_uri: edit/master/docs/
 
 theme:
   name: material
+  icon:
+    repo: fontawesome/brands/github
+    logo: material/loop
+  font:
+    text: Inter
+    code: JetBrains Mono
   features:
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.path
+    - navigation.top
+    - navigation.footer
     - navigation.instant
     - navigation.tracking
-    - navigation.sections
-    - navigation.top
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - search.share
     - content.code.copy
     - content.code.annotate
-    - search.suggest
-    - toc.follow
+    - content.code.select
+    - content.tabs.link
+    - content.tooltips
+    - content.action.edit
   palette:
     - media: "(prefers-color-scheme: light)"
       scheme: default
       primary: indigo
-      toggle: { icon: material/weather-night, name: Dark mode }
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: Dark mode
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
       primary: indigo
-      toggle: { icon: material/weather-sunny, name: Light mode }
+      accent: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Light mode
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/hsaghir/looplet
+    - icon: fontawesome/brands/python
+      link: https://pypi.org/project/looplet/
+
+extra_css:
+  - stylesheets/extra.css
 
 markdown_extensions:
+  - abbr
   - admonition
   - attr_list
+  - def_list
+  - footnotes
   - md_in_html
+  - tables
   - toc:
       permalink: true
+      permalink_title: Anchor link
+  - pymdownx.betterem
+  - pymdownx.caret
   - pymdownx.details
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
   - pymdownx.highlight:
       anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
   - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.mark
+  - pymdownx.smartsymbols
+  - pymdownx.snippets
   - pymdownx.superfences
   - pymdownx.tabbed:
       alternate_style: true
   - pymdownx.tasklist:
       custom_checkbox: true
+  - pymdownx.tilde
 
 nav:
   - Home: index.md
-  - Tutorial: tutorial.md
-  - Benchmarks: benchmarks.md
-  - Hooks: hooks.md
-  - Evals: evals.md
-  - Provenance: provenance.md
-  - Recipes: recipes.md
-  - Roadmap: roadmap.md
-  - Contributing: contributing.md
-  - Good first issues: good-first-issues.md
-  - FAQ: faq.md
-  - Demo script: demo-script.md
-  - Changelog: changelog.md
+  - Get started:
+      - Quickstart: quickstart.md
+      - Tutorial: tutorial.md
+      - Recipes: recipes.md
+  - Build:
+      - Hooks: hooks.md
+      - Evals: evals.md
+      - Provenance: provenance.md
+      - Pitfalls: pitfalls.md
+  - Ship:
+      - Benchmarks: benchmarks.md
+      - FAQ: faq.md
+      - Changelog: changelog.md
+      - Roadmap: roadmap.md
+  - Contribute:
+      - Contributing: contributing.md
+      - Good first issues: good-first-issues.md
+      - Demo script: demo-script.md
 
 plugins:
-  - search
+  - search:
+      separator: '[\s\-,:!=\[\]()"/]+|(?!\b)(?=[A-Z][a-z])|\.(?!\d)|&[lg]t;'

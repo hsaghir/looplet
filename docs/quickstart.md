@@ -1,0 +1,158 @@
+# Quickstart
+
+Five minutes from zero to a running agent you understand every line of.
+
+## 1. Install
+
+```bash
+pip install "looplet[openai]"
+# or
+pip install "looplet[anthropic]"
+```
+
+!!! speed "Cold import: 289 ms"
+    looplet has zero required runtime dependencies. The `[openai]` /
+    `[anthropic]` extras are imported lazily only when you instantiate
+    a backend.
+
+## 2. Point it at any OpenAI-compatible endpoint
+
+```bash
+export OPENAI_BASE_URL=https://api.openai.com/v1   # or Ollama, Groq, Together, vLLM, …
+export OPENAI_API_KEY=sk-…
+export OPENAI_MODEL=gpt-4o-mini
+```
+
+Run the bundled hello-world to sanity-check the wiring:
+
+```bash
+python -m looplet.examples.hello_world
+```
+
+You should see three lines of `#1 greet(name='…') → {…} [Xms]` trace
+followed by a final `#N ✓ done(...)`. If that works, you are ready.
+
+## 3. Write your first loop
+
+```python title="my_agent.py"
+from looplet import (
+    composable_loop, LoopConfig, DefaultState,
+    BaseToolRegistry, ToolSpec, OpenAIBackend,
+)
+from openai import OpenAI
+
+llm = OpenAIBackend(OpenAI(), model="gpt-4o-mini")
+
+# Register two tools: your domain tool + a `done` sink.
+def search(query: str) -> dict:
+    return {"results": [f"result for {query}"]}
+
+tools = BaseToolRegistry()
+tools.register(ToolSpec(
+    name="search",
+    description="Search the docs.",
+    parameters={"query": "str"},
+    execute=lambda *, query: search(query),
+))
+tools.register(ToolSpec(
+    name="done",
+    description="Finish with an answer.",
+    parameters={"answer": "str"},
+    execute=lambda *, answer: {"answer": answer},
+))
+
+# Run.  You own the iteration.
+for step in composable_loop(
+    llm=llm,
+    tools=tools,
+    state=DefaultState(max_steps=5),
+    config=LoopConfig(max_steps=5),
+    task={"goal": "What is looplet?"},
+):
+    print(step.pretty())
+```
+
+That's it. The whole agent is 30 lines.
+
+## 4. Add a hook
+
+Hooks are plain classes. Implement only the methods you want — the loop
+checks with `hasattr` before calling.
+
+```python
+class BudgetCap:
+    def __init__(self, tokens: int) -> None:
+        self.cap, self.total = tokens, 0
+
+    def post_dispatch(self, state, session_log, tool_call, tool_result, step_num):
+        usage = getattr(state.steps[-1], "usage", None)
+        if usage is not None:
+            self.total = getattr(usage, "total_tokens", self.total)
+
+    def should_stop(self, state, step_num, new_entities):
+        if self.total >= self.cap:
+            from looplet import HookDecision
+            return HookDecision(stop="budget_exceeded")
+        return False
+
+# ... then in composable_loop(...):
+hooks=[BudgetCap(tokens=10_000)]
+```
+
+See [Hooks](hooks.md) for the full protocol and a dozen recipes.
+
+## 5. Capture the trajectory
+
+```python
+from looplet import ProvenanceSink
+
+sink = ProvenanceSink(dir="traces/run_1", redact=lambda s: s.replace("secret", "[REDACTED]"))
+llm  = sink.wrap_llm(OpenAIBackend(OpenAI(), model="gpt-4o-mini"))
+
+for step in composable_loop(llm=llm, tools=tools, hooks=[sink.trajectory_hook()], ...):
+    print(step.pretty())
+sink.flush()     # writes trajectory.json + steps/*.json + call_*.txt
+```
+
+Inspect it from the shell:
+
+```bash
+python -m looplet show traces/run_1/
+```
+
+## 6. Turn debugging into an eval
+
+```python title="eval_my_agent.py"
+from looplet import eval_mark
+
+@eval_mark("verdict")
+def eval_returns_answer(ctx):
+    return "answer" in ctx.final_output
+
+@eval_mark("budget")
+def eval_stopped_cleanly(ctx):
+    return ctx.completed            # stop_reason == "done"
+```
+
+Run against any saved trajectory:
+
+```bash
+looplet eval traces/ --evals eval_my_agent.py --threshold 0.7 -v
+```
+
+---
+
+## Next steps
+
+- [Tutorial](tutorial.md) — hooks, compaction, crash-resume, approval, in five steps.
+- [Recipes](recipes.md) — Ollama, MCP, cost accounting, multi-model routing.
+- [Pitfalls](pitfalls.md) — ten sharp edges worth knowing.
+- [Hooks reference](hooks.md) — every extension point, every signature.
+
+??? question "Where are the sub-agents, the planner, the memory manager?"
+    There aren't any. A sub-agent is a function that calls
+    `composable_loop` and returns a value — then you expose it as a
+    `ToolSpec`. A planner is a hook that inspects `session_log` and
+    returns an `InjectContext(...)` in `pre_prompt`. A memory manager
+    is `StaticMemorySource` plus a `compact_service`. Nothing is
+    hidden.

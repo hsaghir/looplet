@@ -1,0 +1,165 @@
+/* looplet docs — visual polish */
+
+:root {
+  --md-primary-fg-color:        #4F46E5;
+  --md-primary-fg-color--light: #6366F1;
+  --md-primary-fg-color--dark:  #4338CA;
+  --md-accent-fg-color:         #4F46E5;
+}
+
+/* ── Hero ─────────────────────────────────────────────────────── */
+
+.hero {
+  display: grid;
+  gap: 1rem;
+  padding: 2.5rem 0 1.5rem;
+  border-bottom: 1px solid var(--md-default-fg-color--lightest);
+  margin-bottom: 2rem;
+}
+
+.hero-eyebrow {
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--md-primary-fg-color);
+  margin: 0;
+}
+
+.hero h1,
+.hero-title {
+  font-size: 2.6rem;
+  line-height: 1.1;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin: 0;
+}
+
+.hero-sub {
+  font-size: 1.15rem;
+  line-height: 1.55;
+  color: var(--md-default-fg-color--light);
+  max-width: 46rem;
+  margin: 0;
+}
+
+.hero-cta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin-top: 0.5rem;
+}
+
+.hero-cta a.md-button {
+  font-weight: 600;
+}
+
+/* ── Feature cards ────────────────────────────────────────────── */
+
+.grid.cards {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  margin: 1.2rem 0 2rem;
+}
+
+.grid.cards > :is(ul, ol) {
+  display: contents;
+}
+
+.grid.cards > :is(ul, ol) > li,
+.grid.cards > .card {
+  list-style: none;
+  padding: 1.1rem 1.2rem;
+  background: var(--md-default-bg-color);
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 0.5rem;
+  transition: border-color 120ms ease, transform 120ms ease;
+}
+
+.grid.cards > :is(ul, ol) > li:hover,
+.grid.cards > .card:hover {
+  border-color: var(--md-primary-fg-color);
+  transform: translateY(-1px);
+}
+
+.grid.cards h3,
+.grid.cards p:first-child strong {
+  margin-top: 0;
+  font-size: 1rem;
+}
+
+.grid.cards p:last-child {
+  margin-bottom: 0;
+  color: var(--md-default-fg-color--light);
+  font-size: 0.88rem;
+}
+
+/* ── Tighter comparison tables ────────────────────────────────── */
+
+article table:not([class]) th,
+article table:not([class]) td {
+  padding: 0.45rem 0.75rem;
+}
+
+article table:not([class]) th {
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--md-default-fg-color--light);
+}
+
+/* Numeric cell mono */
+article table:not([class]) td:has(> code) {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Subtle header bar ────────────────────────────────────────── */
+
+.md-header {
+  background: linear-gradient(135deg, #4F46E5 0%, #6366F1 100%);
+}
+
+/* ── Footer ───────────────────────────────────────────────────── */
+
+.md-footer-meta {
+  background: var(--md-default-fg-color--lightest);
+  color: var(--md-default-fg-color--light);
+}
+
+[data-md-color-scheme="slate"] .md-footer-meta {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+/* ── Callout variants ─────────────────────────────────────────── */
+
+.md-typeset .admonition.speed,
+.md-typeset details.speed {
+  border-color: #0EA5E9;
+}
+.md-typeset .speed > .admonition-title,
+.md-typeset .speed > summary {
+  background: rgba(14, 165, 233, 0.12);
+}
+.md-typeset .speed > .admonition-title::before,
+.md-typeset .speed > summary::before {
+  background: #0EA5E9;
+  -webkit-mask-image: var(--md-admonition-icon--tip);
+          mask-image: var(--md-admonition-icon--tip);
+}
+
+/* ── Small fixes ──────────────────────────────────────────────── */
+
+.md-typeset h1 {
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.md-typeset code {
+  font-size: 0.86em;
+}
+
+.md-typeset pre > code {
+  font-size: 0.82em;
+  line-height: 1.5;
+}

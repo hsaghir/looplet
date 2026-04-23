@@ -7,6 +7,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- `state.step_context`: per-step ephemeral dict for hook-to-hook communication.
+  The loop clears it at step start; hooks write/read within the step.
+  See [hooks.md](hooks.md#hook-to-hook-communication-step_context).
 - `docs/faq.md`: "Why not LangGraph?" honest comparison (thanks @mvanhorn, #17)
 
 ## [0.1.7] - 2026-04-21

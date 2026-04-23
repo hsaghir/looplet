@@ -86,7 +86,13 @@ from looplet.streaming import StreamingHook
 from looplet.subagent import run_sub_loop
 from looplet.telemetry import MetricsCollector, MetricsHook, Tracer, TracingHook
 from looplet.testing import AsyncMockLLMBackend, MockLLMBackend
-from looplet.tools import BaseToolRegistry, ToolSpec, register_done_tool, suggest_similar
+from looplet.tools import (
+    BaseToolRegistry,
+    ToolSpec,
+    excerpt_around_match,
+    register_done_tool,
+    suggest_similar,
+)
 from looplet.types import (
     CancelToken,
     DefaultState,
@@ -195,6 +201,7 @@ __all__ = [
     "ErrorKind",
     "ToolValidationError",
     "suggest_similar",
+    "excerpt_around_match",
     "SessionLog",
     "Conversation",
     "Message",

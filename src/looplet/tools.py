@@ -28,6 +28,7 @@ __all__ = [
     "register_think_tool",
     "register_done_tool",
     "suggest_similar",
+    "excerpt_around_match",
 ]
 
 
@@ -51,6 +52,61 @@ def suggest_similar(
 
     matches = difflib.get_close_matches(name, list(choices), n=1, cutoff=cutoff)
     return matches[0] if matches else None
+
+
+def excerpt_around_match(
+    text: str | None,
+    pattern: str,
+    *,
+    context: int = 40,
+    case_insensitive: bool = True,
+    collapse_newlines: bool = True,
+) -> str:
+    """Return a short excerpt of ``text`` centered on the first match of
+    ``pattern``, with ellipses added when the excerpt is a strict
+    substring.
+
+    Intended for building **witness snippets** in search / grep / retrieval
+    tools: when a tool reports an aggregate like ``"35275 matches in
+    column=message"``, the agent has no way to act without seeing *what*
+    was matched. Returning a ``context``-wide window around the first
+    match lets the caller (agent or human) immediately judge relevance.
+
+    Behavior:
+      - Empty / ``None`` ``text`` → empty string.
+      - Pattern not found literally → plain head truncation (still a
+        useful preview, so tool results degrade gracefully).
+      - ``collapse_newlines`` (default ``True``) replaces ``\\n`` with
+        ``" \u21b5 "`` so multi-line blobs (syslog, stack traces, log
+        messages) stay readable on one line.
+      - Pure text helper: no regex, no tokenization, no domain
+        assumptions. Deterministic and dependency-free.
+    """
+    if not text:
+        return ""
+    if not pattern:
+        s = text[: 2 * context]
+        if collapse_newlines:
+            s = s.replace("\n", " \u21b5 ")
+        return s + ("…" if len(text) > len(s) else "")
+
+    haystack = text.lower() if case_insensitive else text
+    needle = pattern.lower() if case_insensitive else pattern
+    idx = haystack.find(needle)
+    if idx < 0:
+        s = text[: 2 * context + len(pattern)]
+        if collapse_newlines:
+            s = s.replace("\n", " \u21b5 ")
+        return s + ("…" if len(text) > len(s) else "")
+
+    start = max(0, idx - context)
+    end = min(len(text), idx + len(pattern) + context)
+    prefix = "…" if start > 0 else ""
+    suffix = "…" if end < len(text) else ""
+    body = text[start:end]
+    if collapse_newlines:
+        body = body.replace("\n", " \u21b5 ")
+    return f"{prefix}{body}{suffix}"
 
 
 def _classify_exception(e: BaseException) -> ToolError:

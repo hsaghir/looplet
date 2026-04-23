@@ -30,6 +30,12 @@ from looplet.compact import (
     run_compact,
 )
 from looplet.conversation import Conversation, Message
+from looplet.done_steps import (
+    is_rejected_done,
+    iter_done_steps,
+    last_accepted_done,
+    last_rejected_done,
+)
 from looplet.evals import (
     EvalContext,
     EvalHook,
@@ -67,13 +73,19 @@ from looplet.presets import (
 )
 from looplet.prompts import preview_prompt
 from looplet.provenance import ProvenanceSink, TrajectoryRecorder, replay_loop
+from looplet.resilient import ResilientBackend, RetryExhausted
 from looplet.session import SessionLog
 from looplet.skills import Skill, install_skills
+from looplet.stagnation import (
+    StagnationHook,
+    result_size_fingerprint,
+    tool_call_fingerprint,
+)
 from looplet.streaming import StreamingHook
 from looplet.subagent import run_sub_loop
 from looplet.telemetry import MetricsCollector, MetricsHook, Tracer, TracingHook
 from looplet.testing import AsyncMockLLMBackend, MockLLMBackend
-from looplet.tools import BaseToolRegistry, ToolSpec
+from looplet.tools import BaseToolRegistry, ToolSpec, register_done_tool
 from looplet.types import (
     CancelToken,
     DefaultState,
@@ -98,6 +110,7 @@ __all__ = [
     "ToolResult",
     "ToolSpec",
     "BaseToolRegistry",
+    "register_done_tool",
     "Skill",
     "install_skills",
     "DefaultState",
@@ -110,6 +123,10 @@ __all__ = [
     "Stop",
     "InjectContext",
     "preview_prompt",
+    "last_accepted_done",
+    "last_rejected_done",
+    "iter_done_steps",
+    "is_rejected_done",
     # ── BACKENDS ─────────────────────────────────────────────────
     "OpenAIBackend",
     "AnthropicBackend",
@@ -157,6 +174,12 @@ __all__ = [
     # ── TESTING ─────────────────────────────────────────────────
     "MockLLMBackend",
     "AsyncMockLLMBackend",
+    # ── RESILIENCE & CONTROL ────────────────────────────────────
+    "ResilientBackend",
+    "RetryExhausted",
+    "StagnationHook",
+    "tool_call_fingerprint",
+    "result_size_fingerprint",
     # ── ADVANCED (power users import from submodules directly) ──
     "DomainAdapter",
     "emit_event",

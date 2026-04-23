@@ -19,6 +19,7 @@ __all__ = [
     "ToolSpec",
     "BaseToolRegistry",
     "register_think_tool",
+    "register_done_tool",
 ]
 
 
@@ -543,5 +544,47 @@ def register_think_tool(registry: BaseToolRegistry) -> None:
             execute=lambda analysis="": {"acknowledged": True, "analysis": analysis},
             concurrent_safe=True,
             free=True,
+        )
+    )
+
+
+def register_done_tool(
+    registry: BaseToolRegistry,
+    *,
+    name: str = "done",
+    parameters: dict[str, Any] | None = None,
+) -> None:
+    """Register the done() completion-signal tool on a tool registry.
+
+    The composable loop expects a tool matching ``LoopConfig.done_tool``
+    (default ``"done"``) to be registered. When absent, the LLM's
+    ``done()`` call lands on "Unknown tool" — a common first-use
+    footgun since there is no error at setup time.
+
+    Call this alongside ``register_think_tool`` when building a
+    registry manually (presets call it automatically)::
+
+        tools = BaseToolRegistry()
+        register_done_tool(tools)
+        register_think_tool(tools)
+        tools.register(ToolSpec(name="search", ...))
+
+    Args:
+        registry: The tool registry to add the done tool to.
+        name: Tool name — must match ``LoopConfig.done_tool``.
+        parameters: Custom parameter schema. Defaults to
+            ``{"summary": "Brief summary of what was accomplished"}``.
+    """
+    params = parameters or {"summary": "Brief summary of what was accomplished"}
+    registry.register(
+        ToolSpec(
+            name=name,
+            description=(
+                "Signal that the task is complete. Call this when you have "
+                "finished the task and have no more actions to take. Provide "
+                "a brief summary of what was accomplished."
+            ),
+            parameters=params,
+            execute=lambda **kwargs: {"status": "completed", **kwargs},
         )
     )

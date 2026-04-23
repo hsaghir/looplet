@@ -137,18 +137,49 @@ class OpenAIBackend:
     """Sync LLM backend for OpenAI-compatible APIs.
 
     Args:
-        client: An ``openai.OpenAI`` client instance.
+        client: An ``openai.OpenAI`` client instance. Optional if
+            ``base_url`` and ``api_key`` are provided instead.
         model: Model name (e.g. ``"gpt-4o"``, ``"gpt-4o-mini"``).
         default_max_tokens: Default max_tokens when not overridden per call.
+        base_url: Convenience shorthand — when provided without ``client``,
+            an ``openai.OpenAI(base_url=..., api_key=...)`` client is
+            created automatically. Most users hit this friction point
+            immediately: ``OpenAIBackend(base_url="...", api_key="...")``
+            is the natural first attempt but used to fail.
+        api_key: API key for the auto-created client.
+
+    Example (explicit client)::
+
+        from openai import OpenAI
+        llm = OpenAIBackend(OpenAI(), model="gpt-4o")
+
+    Example (convenience)::
+
+        llm = OpenAIBackend(base_url="http://localhost:8080/v1",
+                            api_key="x", model="gpt-4o")
     """
 
     def __init__(
         self,
-        client: Any,
+        client: Any = None,
         *,
         model: str = "gpt-4o",
         default_max_tokens: int = 2000,
+        base_url: str | None = None,
+        api_key: str | None = None,
     ) -> None:
+        if client is None:
+            if base_url is None:
+                raise TypeError(
+                    "OpenAIBackend requires either a client instance as the "
+                    "first argument or base_url=... (and optionally api_key=...) "
+                    "to auto-create one. Example:\n"
+                    '  OpenAIBackend(base_url="http://localhost:8080/v1", api_key="x")\n'
+                    '  OpenAIBackend(OpenAI(), model="gpt-4o")'
+                )
+            from openai import OpenAI  # noqa: PLC0415
+
+            client = OpenAI(base_url=base_url, api_key=api_key or "")
         self._client = client
         self._model = model
         self._default_max_tokens = default_max_tokens
@@ -257,18 +288,42 @@ class AnthropicBackend:
     """Sync LLM backend for the Anthropic Messages API.
 
     Args:
-        client: An ``anthropic.Anthropic`` client instance.
+        client: An ``anthropic.Anthropic`` client instance. Optional if
+            ``api_key`` is provided instead.
         model: Model name (e.g. ``"claude-sonnet-4-20250514"``).
         default_max_tokens: Default max_tokens when not overridden per call.
+        api_key: Convenience shorthand — when provided without ``client``,
+            an ``anthropic.Anthropic(api_key=...)`` client is created.
+
+    Example (explicit client)::
+
+        from anthropic import Anthropic
+        llm = AnthropicBackend(Anthropic(), model="claude-sonnet-4-20250514")
+
+    Example (convenience)::
+
+        llm = AnthropicBackend(api_key="sk-ant-...", model="claude-sonnet-4-20250514")
     """
 
     def __init__(
         self,
-        client: Any,
+        client: Any = None,
         *,
         model: str = "claude-sonnet-4-20250514",
         default_max_tokens: int = 2000,
+        api_key: str | None = None,
     ) -> None:
+        if client is None:
+            if api_key is None:
+                raise TypeError(
+                    "AnthropicBackend requires either a client instance as the "
+                    "first argument or api_key=... to auto-create one. Example:\n"
+                    '  AnthropicBackend(api_key="sk-ant-...")\n'
+                    '  AnthropicBackend(Anthropic(), model="claude-sonnet-4-20250514")'
+                )
+            from anthropic import Anthropic  # noqa: PLC0415
+
+            client = Anthropic(api_key=api_key)
         self._client = client
         self._model = model
         self._default_max_tokens = default_max_tokens
@@ -362,17 +417,31 @@ class AsyncOpenAIBackend:
     """Async LLM backend for OpenAI-compatible APIs.
 
     Args:
-        client: An ``openai.AsyncOpenAI`` client instance.
+        client: An ``openai.AsyncOpenAI`` client instance. Optional if
+            ``base_url`` and ``api_key`` are provided instead.
         model: Model name (e.g. ``"gpt-4o"``).
+        base_url: Convenience shorthand — auto-creates an AsyncOpenAI client.
+        api_key: API key for the auto-created client.
     """
 
     def __init__(
         self,
-        client: Any,
+        client: Any = None,
         *,
         model: str = "gpt-4o",
         default_max_tokens: int = 2000,
+        base_url: str | None = None,
+        api_key: str | None = None,
     ) -> None:
+        if client is None:
+            if base_url is None:
+                raise TypeError(
+                    "AsyncOpenAIBackend requires either a client instance or "
+                    "base_url=... to auto-create one."
+                )
+            from openai import AsyncOpenAI  # noqa: PLC0415
+
+            client = AsyncOpenAI(base_url=base_url, api_key=api_key or "")
         self._client = client
         self._model = model
         self._default_max_tokens = default_max_tokens

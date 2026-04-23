@@ -74,7 +74,9 @@ class TestCompactionBoundary:
             conv.append(Message(role=MessageRole.USER, content=f"user-{i}"))
         # Compact aggressively (keep only last 5 messages)
         conv.compact(keep_recent=5)
-        # Boundary must still be present
+        # Boundary must still be present — plus the new summary message
+        # from compact() itself is now also marked as a boundary, so we
+        # expect 2: the original 'keep-me' + the compact-generated one.
         boundaries = conv.find_compaction_boundaries()
-        assert len(boundaries) == 1, "boundary was dropped by compact()"
+        assert len(boundaries) == 2, "original boundary was dropped by compact()"
         assert boundaries[0].metadata["summary"] == "keep-me"

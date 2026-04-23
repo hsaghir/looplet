@@ -274,6 +274,21 @@ class EvalResult:
     duration_ms: float = 0.0
     """How long the evaluator took to run."""
 
+    @property
+    def passed(self) -> bool:
+        """Whether this evaluation passed.
+
+        True when ``score`` is not ``None`` and ``>= 0.5``, OR when
+        ``label`` is in ``{"pass", "correct", "yes"}`` (case-insensitive).
+        Returns ``False`` otherwise, including when both ``score`` and
+        ``label`` are unset.
+        """
+        if self.score is not None:
+            return self.score >= 0.5
+        if self.label is not None:
+            return self.label.lower() in {"pass", "correct", "yes"}
+        return False
+
     @classmethod
     def from_return(cls, value: Any, *, name: str = "") -> "EvalResult":
         """Normalize any return type into an EvalResult."""

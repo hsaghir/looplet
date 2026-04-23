@@ -213,6 +213,11 @@ class Conversation:
         summary_msg = Message(
             role=MessageRole.SYSTEM,
             content=f"[Summary of prior context]\n{summary_text}",
+            metadata={
+                "kind": "compaction_boundary",
+                "summary": summary_text,
+                "dropped_message_count": len(to_compact) - len(boundaries_to_keep),
+            },
         )
 
         head: list[Message] = list(boundaries_to_keep)

@@ -262,6 +262,44 @@ def test_quality_gate_allows_enough():
 
 ---
 
+## Hook-to-hook communication: `step_context`
+
+Hooks sometimes need to share data within the same step — e.g. an
+entity-extraction hook writes entities in `post_dispatch`, and a
+briefing hook reads them in the next step's `pre_prompt`.
+
+Use `state.step_context` for this. The loop clears it to `{}` at the
+start of every step, so it's ephemeral — no manual cleanup needed:
+
+```python
+class EntityExtractor:
+    def post_dispatch(self, state, session_log, tool_call, tool_result, step_num):
+        entities = extract_from(tool_result.data)
+        state.step_context["entities"] = entities
+        return None
+
+class BriefingBuilder:
+    def pre_prompt(self, state, session_log, context, step_num):
+        entities = state.step_context.get("entities", [])
+        if entities:
+            return f"Entities found so far: {', '.join(entities)}"
+        return None
+
+# Both hooks share data within each step:
+hooks = [EntityExtractor(), BriefingBuilder()]
+```
+
+**`step_context` vs `metadata`:**
+
+| | `state.step_context` | `state.metadata` |
+|---|---|---|
+| **Lifetime** | Cleared every step | Persists entire run |
+| **Use for** | Ephemeral hook-to-hook data | Persistent agent metadata |
+| **Cleanup** | Automatic (loop clears it) | Manual |
+| **In `snapshot()`** | No | Yes |
+
+---
+
 ## Related: provenance hook
 
 `TrajectoryRecorder` (in `looplet.provenance`) is a hook that

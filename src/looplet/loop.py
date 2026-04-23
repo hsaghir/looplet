@@ -1053,8 +1053,14 @@ def composable_loop(
     # ── Lazy streaming imports (avoid circular: streaming imports loop.LoopHook)
     _LoopStartEvent = _StepStartEvent = _LLMCallStartEvent = None
     _ToolDispatchEvent = _LoopEndEvent = None
+    _LLMCallEndEvent = None
+    _ToolResultEvent = None
+    _StepEndEvent = None
     if stream is not None:
         try:
+            from looplet.streaming import (
+                LLMCallEndEvent as _LLMCallEndEvent,
+            )
             from looplet.streaming import (
                 LLMCallStartEvent as _LLMCallStartEvent,
             )
@@ -1065,10 +1071,16 @@ def composable_loop(
                 LoopStartEvent as _LoopStartEvent,
             )
             from looplet.streaming import (
+                StepEndEvent as _StepEndEvent,
+            )
+            from looplet.streaming import (
                 StepStartEvent as _StepStartEvent,
             )
             from looplet.streaming import (
                 ToolDispatchEvent as _ToolDispatchEvent,
+            )
+            from looplet.streaming import (
+                ToolResultEvent as _ToolResultEvent,
             )
         except ImportError:
             pass
@@ -1154,6 +1166,13 @@ def composable_loop(
     )
 
     # ── Pre-loop hooks ──────────────────────────────────────────
+    # Stash task on state so hooks (EvalHook, trajectory recorders)
+    # can read it without needing an extra parameter. Use setattr so
+    # this works on any AgentState subclass.
+    try:
+        setattr(state, "task", task)  # noqa: B010
+    except AttributeError:
+        pass
     for hook in hooks:
         if hasattr(hook, "pre_loop"):
             hook.pre_loop(state, session_log, context)
@@ -1406,6 +1425,7 @@ def composable_loop(
                         tool_schemas_text=_schemas_text,
                         memory_text=_rendered_memory,
                     )
+            _llm_t0 = time.perf_counter()
             llm_result = llm_call_with_retry(
                 effective_llm,
                 prompt,
@@ -1417,9 +1437,19 @@ def composable_loop(
                 max_continuations=config.max_turn_continuations,
                 cache_breakpoints=_cache_bps,
             )
+            _llm_dur_ms = (time.perf_counter() - _llm_t0) * 1000.0
             if _llm_span is not None and config.tracer is not None:
                 config.tracer.end_span(_llm_span)
             llm_calls += 1
+            # Emit LLMCallEndEvent
+            if stream is not None and _LLMCallEndEvent is not None:
+                stream.emit(
+                    _LLMCallEndEvent(
+                        step_num=step_num,
+                        response_length=len(llm_result.text or ""),
+                        duration_ms=_llm_dur_ms,
+                    )
+                )
 
         # Reactive recovery: if prompt-too-long, try chained strategies
         if not llm_result.ok and llm_result.is_prompt_too_long and config.reactive_recovery:
@@ -1667,6 +1697,25 @@ def composable_loop(
                 state.steps.append(step)
                 yield step
 
+                # Emit ToolResultEvent + StepEndEvent
+                if stream is not None and _ToolResultEvent is not None:
+                    stream.emit(
+                        _ToolResultEvent(
+                            step_num=cur_step,
+                            tool_name=tool_result.tool,
+                            duration_ms=tool_result.duration_ms,
+                            has_error=tool_result.error is not None,
+                        )
+                    )
+                if stream is not None and _StepEndEvent is not None:
+                    stream.emit(
+                        _StepEndEvent(
+                            step_num=cur_step,
+                            classification="continue",
+                            new_entities_count=0,
+                        )
+                    )
+
                 # Save checkpoint after each step
                 if _ckpt_store is not None:
                     _ckpt_store.save(
@@ -1792,6 +1841,24 @@ def composable_loop(
                 step = Step(number=cur_step, tool_call=tool_call, tool_result=tool_result)
                 state.steps.append(step)
                 yield step
+                # Emit ToolResultEvent + StepEndEvent for the done step
+                if stream is not None and _ToolResultEvent is not None:
+                    stream.emit(
+                        _ToolResultEvent(
+                            step_num=cur_step,
+                            tool_name=tool_result.tool,
+                            duration_ms=tool_result.duration_ms,
+                            has_error=tool_result.error is not None,
+                        )
+                    )
+                if stream is not None and _StepEndEvent is not None:
+                    stream.emit(
+                        _StepEndEvent(
+                            step_num=cur_step,
+                            classification="done",
+                            new_entities_count=0,
+                        )
+                    )
                 # Record accepted done() to session_log + conversation
                 _history.record_step(
                     step,

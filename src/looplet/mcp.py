@@ -141,25 +141,31 @@ class MCPToolAdapter:
             stderr=subprocess.PIPE,
             env=self._env,
         )
-        # Initialize the MCP session
-        init_resp = self._send_request(
-            "initialize",
-            {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {},
-                "clientInfo": {"name": "looplet", "version": "0.1"},
-            },
-        )
-        if init_resp is None:
-            raise RuntimeError(f"MCP server failed to initialize: {self._command}")
-        # Send initialized notification
-        self._send_notification("notifications/initialized", {})
-        # List tools
-        tools_resp = self._send_request("tools/list", {})
-        if tools_resp and "tools" in tools_resp:
-            self._tool_schemas = tools_resp["tools"]
-            logger.info("MCP: loaded %d tools from %s", len(self._tool_schemas), self._command)
-        self._started = True
+        try:
+            # Initialize the MCP session
+            init_resp = self._send_request(
+                "initialize",
+                {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "looplet", "version": "0.1"},
+                },
+            )
+            if init_resp is None:
+                raise RuntimeError(f"MCP server failed to initialize: {self._command}")
+            # Send initialized notification
+            self._send_notification("notifications/initialized", {})
+            # List tools
+            tools_resp = self._send_request("tools/list", {})
+            if tools_resp and "tools" in tools_resp:
+                self._tool_schemas = tools_resp["tools"]
+                logger.info("MCP: loaded %d tools from %s", len(self._tool_schemas), self._command)
+            self._started = True
+        except BaseException:
+            # Any failure during init leaves a live subprocess —
+            # clean it up so callers don't leak a server per retry.
+            self.close()
+            raise
 
     def _send_request(self, method: str, params: dict) -> dict | None:
         """Send a JSON-RPC request and wait for the response."""

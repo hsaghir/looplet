@@ -232,7 +232,11 @@ class BudgetTelemetry:
         context: Any,
         step_num: int,
     ) -> None:
-        tier, est = classify_tier(self.budget, session_log=session_log)
+        # Prefer conversation from state (stashed by composable_loop)
+        # for a more accurate token estimate — in long sessions
+        # session_log-only estimates can be off by 2-3×.
+        conversation = getattr(state, "conversation", None)
+        tier, est = classify_tier(self.budget, session_log=session_log, conversation=conversation)
         self.samples.append((step_num, tier, est))
         return None
 

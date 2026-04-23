@@ -1166,11 +1166,15 @@ def composable_loop(
     )
 
     # ── Pre-loop hooks ──────────────────────────────────────────
-    # Stash task on state so hooks (EvalHook, trajectory recorders)
-    # can read it without needing an extra parameter. Use setattr so
-    # this works on any AgentState subclass.
+    # Stash task + conversation on state so hooks (EvalHook, budget
+    # telemetry, trajectory recorders) can read them without needing
+    # extra parameters. Use setattr so this works on any AgentState.
     try:
         setattr(state, "task", task)  # noqa: B010
+    except AttributeError:
+        pass
+    try:
+        setattr(state, "conversation", _conv)  # noqa: B010
     except AttributeError:
         pass
     for hook in hooks:

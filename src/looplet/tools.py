@@ -464,10 +464,25 @@ class BaseToolRegistry:
             )
 
         t0 = time.time()
+        # Snapshot the warnings list length on the shared ctx (if any)
+        # so we can slice out only those added during this call. This
+        # keeps per-call ToolResult.warnings scoped to the invocation
+        # that produced them, while the caller's long-lived ctx still
+        # accumulates the full history for its own observability.
+        warn_start = len(ctx.warnings) if ctx is not None else 0
+
         try:
             result_data = spec.execute(**exec_kwargs)
         except Exception as e:
             _te = _classify_exception(e)
+            # Even on failure, surface any warnings the tool had
+            # already emitted before it raised — they often diagnose
+            # the root cause (e.g. "heuristic X fell back to …").
+            warns = (
+                list(ctx.warnings[warn_start:])
+                if ctx is not None and len(ctx.warnings) > warn_start
+                else []
+            )
             return ToolResult(
                 tool=call.tool,
                 args_summary=self._summarize_args(call),
@@ -476,10 +491,16 @@ class BaseToolRegistry:
                 error_detail=_te,
                 duration_ms=(time.time() - t0) * 1000,
                 call_id=call.call_id,
+                warnings=warns,
             )
 
         elapsed = (time.time() - t0) * 1000
         result_key = self._store_result(call, result_data)
+        warns = (
+            list(ctx.warnings[warn_start:])
+            if ctx is not None and len(ctx.warnings) > warn_start
+            else []
+        )
 
         return ToolResult(
             tool=call.tool,
@@ -488,6 +509,7 @@ class BaseToolRegistry:
             duration_ms=elapsed,
             result_key=result_key,
             call_id=call.call_id,
+            warnings=warns,
         )
 
     def _store_result(self, call: ToolCall, result_data: Any) -> str | None:

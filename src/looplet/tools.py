@@ -269,11 +269,16 @@ class ToolSpec:
         """Return required parameter names.
 
         For JSON Schema, reads the ``required`` field.
-        For simple format, all parameters are assumed required.
+        For simple format, parameters whose description starts with
+        ``(optional)`` are excluded; the rest are required.
         """
         if self.is_json_schema:
             return list(self.parameters.get("required", []))
-        return list(self.parameters.keys())
+        return [
+            name
+            for name, desc in self.parameters.items()
+            if not str(desc).lower().lstrip().startswith("(optional)")
+        ]
 
     def spec_text(self) -> str:
         """Format for LLM prompt inclusion."""

@@ -7,6 +7,12 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- `ctx.llm`: tools that accept a `ctx` parameter now receive the loop's
+  LLM backend via `ctx.llm`. Internal calls are tracked by
+  `RecordingLLMBackend` with `scope="tool:<name>"` for nested provenance.
+  See [hooks.md](hooks.md#tool-internal-llm-access-ctxllm).
+- `LLMCall.scope`: provenance field distinguishing loop-level calls
+  (`None`) from tool-internal calls (`"tool:<name>"`).
 - `state.step_context`: per-step ephemeral dict for hook-to-hook communication.
   The loop clears it at step start; hooks write/read within the step.
   See [hooks.md](hooks.md#hook-to-hook-communication-step_context).

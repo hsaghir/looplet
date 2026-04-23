@@ -94,6 +94,13 @@ class LLMCall:
     tools: list[dict[str, Any]] | None = None
     step_num: int | None = None
     error: str | None = None
+    scope: str | None = None
+    """When set, identifies the origin of this call within the loop.
+
+    ``None`` (default) means a loop-level call (prompt → LLM → parse).
+    ``"tool:<name>"`` means the call was made inside a tool via
+    ``ctx.llm.generate()``.  Used by provenance consumers to group
+    and filter calls by origin."""
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -109,6 +116,7 @@ class LLMCall:
             "tool_count": len(self.tools) if self.tools else 0,
             "step_num": self.step_num,
             "error": self.error,
+            "scope": self.scope,
         }
         return d
 

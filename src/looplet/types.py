@@ -198,6 +198,34 @@ class ToolContext:
     on_progress: Callable[[str, dict], None] | None = None
     session_id: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    llm: Any = None
+    """LLM backend available for tool-internal use (summarize, classify,
+    extract). ``None`` in headless/test contexts.
+
+    The loop populates this from the active backend (or from
+    ``router.select("tool_internal")`` when a router is configured).
+    Tool-internal calls made through ``ctx.llm`` are:
+
+    * Tracked by :class:`RecordingLLMBackend` (same manifest, tagged
+      with ``scope="tool:<name>"``)
+    * Accounted for by :class:`CostTracker`
+    * Visible in ``trajectory.json`` alongside the loop's own calls
+
+    Use for single-call operations inside a tool (summarize a large
+    result, classify text, extract fields). For multi-step sub-tasks,
+    use :func:`run_sub_loop` instead.
+
+    Example::
+
+        def search(*, query: str, ctx: ToolContext) -> dict:
+            raw = external_api(query)
+            if len(raw) > 10_000 and ctx.llm is not None:
+                summary = ctx.llm.generate(
+                    f"Summarize in 3 bullets:\\n{raw[:8000]}"
+                )
+                return {"summary": summary, "raw_chars": len(raw)}
+            return {"results": raw}
+    """
     request_approval: Callable[[str, list[str] | None], str | None] | None = None
     """Optional handler that lets a tool request approval from the
     caller (user, upstream agent, webhook) mid-execution. Signature is

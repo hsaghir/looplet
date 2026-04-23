@@ -13,14 +13,44 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from looplet.types import ErrorKind, ToolCall, ToolContext, ToolError, ToolResult
+from looplet.types import (
+    ErrorKind,
+    ToolCall,
+    ToolContext,
+    ToolError,
+    ToolResult,
+    ToolValidationError,
+)
 
 __all__ = [
     "ToolSpec",
     "BaseToolRegistry",
     "register_think_tool",
     "register_done_tool",
+    "suggest_similar",
 ]
+
+
+def suggest_similar(
+    name: str, choices: list[str] | tuple[str, ...], *, cutoff: float = 0.6
+) -> str | None:
+    """Return the closest match for ``name`` in ``choices``, or ``None``.
+
+    Thin, cached wrapper around :func:`difflib.get_close_matches`.
+    Intended for building "did you mean '<x>'?" messages in tool error
+    text — both inside tool implementations (via
+    :class:`~looplet.types.ToolValidationError`) and inside the
+    dispatcher's own unknown-tool / unknown-argument diagnostics.
+
+    Returns ``None`` when no choice scores above ``cutoff`` so callers
+    can format the hint conditionally.
+    """
+    if not name or not choices:
+        return None
+    import difflib  # noqa: PLC0415
+
+    matches = difflib.get_close_matches(name, list(choices), n=1, cutoff=cutoff)
+    return matches[0] if matches else None
 
 
 def _classify_exception(e: BaseException) -> ToolError:
@@ -40,6 +70,11 @@ def _classify_exception(e: BaseException) -> ToolError:
 
     if isinstance(e, _asyncio.CancelledError):
         return ToolError(kind=ErrorKind.CANCELLED, message=msg, retriable=False)
+    # Tool authors signalling a caller-fixable input mistake — treat
+    # the message as the full, LLM-facing explanation (skip the type
+    # prefix) so "did you mean …?" hints render cleanly.
+    if isinstance(e, ToolValidationError):
+        return ToolError(kind=ErrorKind.VALIDATION, message=str(e), retriable=False)
     if isinstance(e, TimeoutError):
         return ToolError(kind=ErrorKind.TIMEOUT, message=msg, retriable=True)
     if isinstance(e, (ValueError, TypeError, KeyError)):
@@ -315,9 +350,17 @@ class BaseToolRegistry:
         clean_args = {k: v for k, v in call.args.items() if not k.startswith("__")}
 
         if call.tool not in self._tools:
+            # "Unknown tool: 'scann'. Did you mean 'scan'? Available: …"
+            # The suggestion is the single biggest UX win for LLM
+            # self-recovery: without it the model often repeats the
+            # same typo rather than scanning the full catalog.
+            hint = suggest_similar(call.tool, self.tool_names)
+            did_you_mean = f" Did you mean {hint!r}?" if hint else ""
             _te = ToolError(
                 kind=ErrorKind.VALIDATION,
-                message=f"Unknown tool: {call.tool}. Available: {self.tool_names}",
+                message=(
+                    f"Unknown tool: {call.tool!r}.{did_you_mean} Available: {self.tool_names}"
+                ),
                 retriable=False,
             )
             return ToolResult(
@@ -361,8 +404,46 @@ class BaseToolRegistry:
         # schema — not as opaque ``TypeError: <lambda>() missing 1
         # required keyword-only argument: 'x'`` tracebacks that the LLM
         # cannot easily recover from.
-        missing = [p for p in spec.required_parameters() if p not in clean_args]
+        known_params = spec.parameter_names()
+        required = spec.required_parameters()
+        missing = [p for p in required if p not in clean_args]
+        # Unknown / mistyped extra args — the common case is the LLM
+        # sending ``file_pth`` instead of ``file_path``. Without this
+        # check the extra arg slides into the ``**kwargs`` of the tool
+        # callable (or raises an opaque ``TypeError: got an unexpected
+        # keyword argument``). Surface it as VALIDATION with a
+        # "did you mean?" hint so the model can self-correct on the
+        # next turn.
+        unknown = [a for a in clean_args if a not in known_params]
+        if unknown:
+            first = unknown[0]
+            hint = suggest_similar(first, known_params)
+            did_you_mean = f" Did you mean {hint!r}?" if hint else ""
+            schema_hint = _format_param_hint(spec)
+            _te = ToolError(
+                kind=ErrorKind.VALIDATION,
+                message=(
+                    f"Tool {spec.name!r} got unexpected argument"
+                    f"{'s' if len(unknown) > 1 else ''}: {unknown}."
+                    f"{did_you_mean} Expected: {schema_hint}"
+                ),
+                retriable=False,
+            )
+            return ToolResult(
+                tool=call.tool,
+                args_summary=self._summarize_args(call),
+                data=None,
+                error=_te.message,
+                error_detail=_te,
+                call_id=call.call_id,
+            )
         if missing:
+            # If a missing required name is close to one of the extras
+            # we already stripped (above we returned early on unknown;
+            # here that means the LLM could still have supplied a
+            # superset), fall back to just naming the missing args with
+            # the schema hint — the "unknown" branch handled the
+            # "did-you-mean" case for typos.
             schema_hint = _format_param_hint(spec)
             _te = ToolError(
                 kind=ErrorKind.VALIDATION,

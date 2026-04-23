@@ -91,6 +91,47 @@ class ToolError:
         return self.message
 
 
+# ── Tool-author exceptions ───────────────────────────────────────
+
+
+class ToolValidationError(Exception):
+    """Raised by tool implementations to signal a caller/input mistake.
+
+    Tool authors should raise this instead of returning pseudo-error
+    sentinels inside their normal output (e.g. ``{"error": "..."}``
+    mixed into a result list). Agents — and human callers — then see a
+    uniform :class:`ToolResult` shape: successful results carry
+    ``data``; bad inputs carry ``error`` / ``error_kind = VALIDATION``
+    / ``error_retriable = False``.
+
+    This is the recommended pattern for:
+
+    * Unknown or mistyped column / field / path names, with a
+      "did you mean '<x>'?" suggestion baked into the message.
+    * Nested-path lookups that would return all-NULL (silent-empty
+      footgun) — raise with a diagnostic instead of returning ``[]``.
+    * Any precondition the LLM itself could fix on the next turn by
+      adjusting its arguments.
+
+    Example::
+
+        def rank(column: str, choices: list[str]) -> list[dict]:
+            if column not in choices:
+                hint = suggest_similar(column, choices)
+                raise ToolValidationError(
+                    f"column {column!r} not found."
+                    + (f" Did you mean {hint!r}?" if hint else "")
+                )
+            ...
+
+    The dispatcher classifies this as
+    :attr:`ErrorKind.VALIDATION`, non-retriable. Use plain exceptions
+    (or :class:`TimeoutError`, :class:`ConnectionError`, etc.) for
+    infrastructure failures instead, so retries / backoff hooks can
+    still kick in.
+    """
+
+
 # ── Cancellation ─────────────────────────────────────────────────
 
 

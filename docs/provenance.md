@@ -128,8 +128,30 @@ Each entry in `llm.calls` exposes:
 llm = RecordingLLMBackend(
     backend,
     max_chars_per_call=200_000,     # truncate huge prompts with an elision marker
-    redact=lambda s: SECRET_RE.sub("[REDACTED]", s),  # scrub before storage
+    redact=lambda s: SECRET_RE.sub("[REDACTED]", s),  # scrub PII/secrets
 )
+```
+
+**By default, `redact` scrubs the prompt BEFORE it is forwarded to the
+wrapped backend AND before it is written to disk.** PII and secrets
+never leave the process. This is the right default for compliance,
+approval gates, and staging deployments.
+
+`ProvenanceSink(redact=...)` accepts the same callable and inherits the
+same semantics:
+
+```python
+sink = ProvenanceSink(dir="traces/", redact=redact_pii)
+llm  = sink.wrap_llm(AnthropicBackend(...))
+# PII is stripped before Anthropic sees it AND before the trace is written.
+```
+
+If you want the legacy record-only behaviour (scrub the trace but
+forward the raw prompt to the provider — useful when the provider
+itself needs the PII to respond correctly), opt out:
+
+```python
+sink = ProvenanceSink(dir="traces/", redact=redact_pii, redact_upstream=False)
 ```
 
 ### `generate_with_tools` is preserved

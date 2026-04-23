@@ -74,6 +74,13 @@ composable_loop(llm, tools=reg, hooks=hooks, ...)
 - `check_done`: First hook to return non-None rejects the done() call
 - `should_stop`: First True stops the loop
 
+> When a hook terminates the loop via `should_stop`, return
+> `HookDecision(stop="my_reason")` instead of a plain `True`. The reason
+> string surfaces as `EvalContext.stop_reason` in saved trajectories, so
+> evaluators can distinguish "agent called done()" from "budget hook
+> stopped us" from "timeout hook stopped us." See the
+> [evals guide](evals.md#distinguish-done-from-hook-triggered-early-stops).
+
 ## Common Hook Patterns
 
 ### 1. Progress Tracking

@@ -236,8 +236,26 @@ class _MinimalState:
 
 
 def clone_tools_excluding(parent_tools: Any, exclude: list[str]) -> Any:
-    """Clone a tool registry, excluding specified tool names."""
+    """Clone a tool registry, excluding specified tool names.
+
+    Warns (via the module logger) when ``exclude`` contains names that
+    are not present in ``parent_tools``. Typos here are silent
+    correctness bugs — e.g. a caller passing
+    ``exclude=["finish"]`` when the parent's done tool is named
+    ``"finalize"`` would otherwise ship the state-mutating tool into
+    the sub-agent without any signal.
+    """
     from looplet.tools import BaseToolRegistry, ToolSpec
+
+    parent_names = set(parent_tools._tools.keys())
+    missing = [name for name in exclude if name not in parent_names]
+    if missing:
+        logger.warning(
+            "clone_tools_excluding: names %s are not registered on the parent "
+            "(available: %s) — nothing to exclude for those entries. Typo?",
+            missing,
+            sorted(parent_names),
+        )
 
     sub = BaseToolRegistry()
     for name, spec in parent_tools._tools.items():

@@ -220,10 +220,15 @@ class PermissionEngine:
         return PermissionDecision.DENY
 
     def _record_denial(self, call: ToolCall, rule: PermissionRule | None, reason: str) -> None:
+        # Strip internal ``__…__`` scaffolding keys (e.g. ``__theory__``)
+        # that parse.py stamps onto tool args — those are agent-internal
+        # metadata, not user-visible args, and leaking them into an
+        # audit log is noisy + potentially sensitive.
+        clean_args = {k: v for k, v in call.args.items() if not k.startswith("__")}
         self.denials.append(
             {
                 "tool": call.tool,
-                "args": dict(call.args),
+                "args": clean_args,
                 "rule": rule.tool if rule else None,
                 "reason": reason,
             }

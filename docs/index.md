@@ -33,6 +33,42 @@ any OpenAI-compatible endpoint or Anthropic directly.
 
 </div>
 
+<div class="stats-row" markdown>
+
+<div class="stat" markdown>
+**289ms**
+{ .stat-num }
+
+Cold import
+{ .stat-label }
+</div>
+
+<div class="stat" markdown>
+**0**
+{ .stat-num }
+
+Runtime deps
+{ .stat-label }
+</div>
+
+<div class="stat" markdown>
+**4**
+{ .stat-num }
+
+Hook protocols
+{ .stat-label }
+</div>
+
+<div class="stat" markdown>
+**1,062**
+{ .stat-num }
+
+Tests, ~1s
+{ .stat-label }
+</div>
+
+</div>
+
 === "Run one"
 
     ```python
@@ -190,15 +226,27 @@ need. The loop uses `hasattr` — no base class, no registration.
 All numbers regenerate in one command on a fresh Python 3.11 venv.
 See [Benchmarks](benchmarks.md) for the full methodology.
 
-| Framework | Cold import | PyPI deps | vs looplet |
-| --- | ---: | ---: | ---: |
-| **looplet** | **289 ms** | **0** | — |
-| strands-agents | 1,885 ms | 6 | 6.5× slower |
-| LangGraph | 2,294 ms | 31 | 7.9× slower |
-| Claude Agent SDK | 2,409 ms | 13 | 8.3× slower |
-| Pydantic AI | 3,975 ms | 12 | 13.8× slower |
+<div class="bench" markdown>
 
-<small>Median of 9 fresh subprocess runs. Python 3.11.13, Linux x86_64, PyPI wheels from 2026-04-21.</small>
+<div class="bench-row" style="--pct:7.3%;"  markdown>
+**looplet** <span class="bench-bar"></span> <span class="bench-val">289 ms · 0 deps</span>
+</div>
+<div class="bench-row" style="--pct:47.4%;" markdown>
+strands-agents <span class="bench-bar"></span> <span class="bench-val">1,885 ms · 6 deps</span>
+</div>
+<div class="bench-row" style="--pct:57.7%;" markdown>
+LangGraph <span class="bench-bar"></span> <span class="bench-val">2,294 ms · 31 deps</span>
+</div>
+<div class="bench-row" style="--pct:60.6%;" markdown>
+Claude Agent SDK <span class="bench-bar"></span> <span class="bench-val">2,409 ms · 13 deps</span>
+</div>
+<div class="bench-row" style="--pct:100%;"  markdown>
+Pydantic AI <span class="bench-bar"></span> <span class="bench-val">3,975 ms · 12 deps</span>
+</div>
+
+</div>
+
+<small>Cold-import time, median of 9 fresh subprocess runs. Python 3.11.13, Linux x86_64, PyPI wheels from 2026-04-21.</small>
 
 ---
 

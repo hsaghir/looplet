@@ -322,6 +322,20 @@ class DefaultState:
     queries_used: int = 0
     max_steps: int = 15
     metadata: dict[str, Any] = field(default_factory=dict)
+    step_context: dict[str, Any] = field(default_factory=dict)
+    """Ephemeral per-step shared state for hook-to-hook communication.
+
+    The loop clears this dict at the start of every step.  Hooks write
+    to it during the step (e.g. ``state.step_context["entities"] = [...]``);
+    other hooks read from it within the same step.  Unlike ``metadata``
+    (which persists across the entire run), ``step_context`` is scoped
+    to a single step and automatically cleaned up.
+
+    Use this instead of ``metadata`` for data that is:
+    - Produced by one hook and consumed by another in the same step
+    - Not meaningful after the step completes
+    - Not part of the agent's persistent state
+    """
 
     @property
     def step_count(self) -> int:

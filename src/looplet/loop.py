@@ -1207,6 +1207,15 @@ def composable_loop(
         step_num = state.step_count + 1 + _step_offset
         _hook_requested_stop = False  # reset per step; honored after dispatch
 
+        # Clear per-step hook context so hooks start each step with
+        # a clean slate.  Hooks write to state.step_context during a
+        # step; other hooks read from it within the same step.  The
+        # loop owns the lifecycle — cleared here, populated by hooks.
+        try:
+            setattr(state, "step_context", {})  # noqa: B010
+        except AttributeError:
+            pass
+
         # Cancellation check between turns — stop cleanly, no more LLM calls.
         if config.cancel_token is not None and getattr(config.cancel_token, "is_cancelled", False):
             stop_reason = "cancelled"

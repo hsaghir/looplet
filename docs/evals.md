@@ -66,6 +66,47 @@ The workflow: debug a run → notice a failure pattern → write a 5-line
 `eval_*` function → it runs automatically on every future run. Your
 debugging becomes your eval suite.
 
+> **Discovery scope.** `eval_discover` only collects functions *defined
+> in* each `eval_*.py` file. Re-exports like `from looplet import
+> eval_mark` are filtered out, so you can freely import decorators and
+> helpers without them accidentally being run as evaluators.
+
+## Distinguish "done" from hook-triggered early stops
+
+Hooks that terminate the loop early (budget caps, source counters,
+timeouts, quality gates) leave the agent without a `done()` call in the
+trajectory. Evals should dispatch on `ctx.stop_reason`:
+
+```python
+def eval_completed_normally(ctx):
+    """Agent called done() itself (not stopped by a hook)."""
+    return ctx.completed          # shorthand for ctx.stop_reason == "done"
+
+def eval_stopped_within_budget(ctx):
+    """Either finished normally OR stopped by the budget hook (both are fine)."""
+    return ctx.stop_reason in {"done", "budget_exceeded"}
+
+def eval_not_hit_timeout(ctx):
+    return ctx.stop_reason != "timeout"
+```
+
+`stop_reason` is populated from both live `EvalHook` runs (read from
+state) and saved trajectories (read from `trajectory.json`). Hooks
+should pass a meaningful label when they stop the loop:
+
+```python
+from looplet import HookDecision
+
+class BudgetCap:
+    def should_stop(self, state, step_num, new_entities):
+        if self.tokens > self.budget:
+            return HookDecision(stop="budget_exceeded")   # shows up as ctx.stop_reason
+        return False
+```
+
+Returning a plain `True` from `should_stop` is still supported; it
+records `stop_reason="hook_stop"`.
+
 ## Tag evals with marks for filtering
 
 ```python

@@ -59,6 +59,24 @@ class CompactOutcome:
     context, reset token baselines) that the loop shouldn't know
     about."""
 
+    @property
+    def compacted(self) -> bool:
+        """True when the compaction actually reduced context size.
+
+        Checks ``messages_before`` vs ``messages_after`` when both are
+        set; also returns True when ``extra`` contains a positive
+        ``"cleared"`` count (from :class:`PruneToolResults`).
+        """
+        if (
+            self.messages_before is not None
+            and self.messages_after is not None
+            and self.messages_after < self.messages_before
+        ):
+            return True
+        if self.extra and self.extra.get("cleared", 0) > 0:
+            return True
+        return False
+
 
 @runtime_checkable
 class CompactService(Protocol):

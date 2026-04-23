@@ -211,10 +211,48 @@ class ToolContext:
     Tools should treat ``None`` as "proceed without approval" to
     remain usable in headless runs."""
 
+    warnings: list[str] = field(default_factory=list)
+    """Soft advisories emitted by the tool during execution.
+
+    Populated via :meth:`warn`. After ``execute`` returns, the dispatcher
+    copies this list into :attr:`ToolResult.warnings` and clears it, so
+    the next call starts with a clean slate.
+
+    Use warnings for information the caller *should* see but which is
+    not a failure — e.g. "result used a low-confidence heuristic",
+    "truncated to first 20 items of 3345", "column X may not contain
+    the expected schema". This avoids the historical anti-pattern of
+    either (a) staying silent and producing a confidently-wrong result
+    or (b) failing hard with :class:`ToolValidationError` when the
+    caller could still act on the partial data."""
+
     def report_progress(self, stage: str, data: dict | None = None) -> None:
         """Invoke the progress callback if one is installed. Silent if not."""
         if self.on_progress is not None:
             self.on_progress(stage, data or {})
+
+    def warn(self, message: str) -> None:
+        """Record a soft advisory about the in-flight tool result.
+
+        Complements :class:`ToolValidationError` — which aborts the
+        call — and plain errors — which report pure failure. A warning
+        lets the tool say "here is your data, *and* you should know
+        something about how I got it". The dispatcher attaches every
+        warning to :attr:`ToolResult.warnings` for the agent to see.
+
+        Example::
+
+            def detect_timestamp(ctx, rows):
+                col = pick_timestamp_column(rows)
+                if col.confidence < 0.7:
+                    ctx.warn(
+                        f"time column {col.name!r} was a low-confidence "
+                        f"guess — results may be inaccurate"
+                    )
+                return col.name
+        """
+        if message:
+            self.warnings.append(str(message))
 
     def approve(self, prompt: str, options: list[str] | None = None) -> str | None:
         """Request approval from the configured handler.
@@ -455,6 +493,19 @@ class ToolResult:
     call_id: str | None = None
     """Links back to the ToolCall that produced this result."""
 
+    warnings: list[str] = field(default_factory=list)
+    """Soft advisories emitted by the tool alongside a successful result.
+
+    Populated from :attr:`ToolContext.warnings` by the dispatcher when a
+    tool calls :meth:`ToolContext.warn`. Unlike :attr:`error`, a
+    warning does not indicate failure — the ``data`` field still carries
+    the tool's output. Rendered into :meth:`to_dict` so agents see them
+    when building their next-step prompt.
+
+    Example: a timestamp-detection tool returns the column name in
+    ``data`` but adds a warning when the pick was a low-confidence
+    substring match."""
+
     @property
     def error_message(self) -> str | None:
         """Human-readable message — same as ``error``."""
@@ -498,6 +549,8 @@ class ToolResult:
             d["data"] = self.data
         else:
             d["data"] = str(self.data)[:2000]
+        if self.warnings:
+            d["warnings"] = list(self.warnings)
         return d
 
 

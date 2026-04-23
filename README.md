@@ -156,17 +156,14 @@ all, or none — and [drop in your own](docs/hooks.md) in 10 lines.
 
 ```python
 from looplet import (
-    BaseToolRegistry, DefaultState, LoopConfig, ToolSpec, composable_loop,
+    BaseToolRegistry, DefaultState, LoopConfig, OpenAIBackend,
+    ToolSpec, composable_loop, register_done_tool,
 )
-from looplet.backends import OpenAIBackend
-from openai import OpenAI
 import os
 
 llm = OpenAIBackend(
-    OpenAI(
-        base_url=os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
-        api_key=os.environ["OPENAI_API_KEY"],
-    ),
+    base_url=os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+    api_key=os.environ.get("OPENAI_API_KEY", ""),
     model=os.environ.get("OPENAI_MODEL", "gpt-4o-mini"),
 )
 
@@ -176,11 +173,7 @@ tools.register(ToolSpec(
     parameters={"name": "str"},
     execute=lambda *, name: {"greeting": f"Hello, {name}!"},
 ))
-tools.register(ToolSpec(
-    name="done", description="Finish.",
-    parameters={"answer": "str"},
-    execute=lambda *, answer: {"answer": answer},
-))
+register_done_tool(tools)
 
 for step in composable_loop(
     llm=llm, tools=tools,

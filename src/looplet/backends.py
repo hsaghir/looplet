@@ -1,35 +1,36 @@
 """LLM backend adapters for popular API providers.
 
 Ready-to-use adapters that satisfy the ``LLMBackend`` and ``AsyncLLMBackend``
-protocols for OpenAI-compatible and Anthropic APIs.  Each adapter accepts the
-provider's native client object so looplet stays dependency-free — import the
-SDK you already use and pass the client in.
+protocols for OpenAI-compatible and Anthropic APIs.  Each adapter accepts
+convenience ``base_url`` / ``api_key`` kwargs for quick setup, or a
+pre-built provider client object for full control.
 
 Typical usage::
 
-    # OpenAI
-    from openai import OpenAI
+    # OpenAI (convenience — auto-creates client)
     from looplet.backends import OpenAIBackend
 
+    llm = OpenAIBackend(base_url="https://api.openai.com/v1",
+                        api_key="sk-...", model="gpt-4o")
+
+    # OpenAI (explicit client — full control)
+    from openai import OpenAI
     llm = OpenAIBackend(OpenAI(), model="gpt-4o")
-    result = llm.generate("What is 2+2?")
 
     # Anthropic
-    from anthropic import Anthropic
     from looplet.backends import AnthropicBackend
 
-    llm = AnthropicBackend(Anthropic(), model="claude-sonnet-4-20250514")
-    result = llm.generate("What is 2+2?")
+    llm = AnthropicBackend(api_key="sk-ant-...", model="claude-sonnet-4-20250514")
 
     # Async
-    from openai import AsyncOpenAI
     from looplet.backends import AsyncOpenAIBackend
 
-    llm = AsyncOpenAIBackend(AsyncOpenAI(), model="gpt-4o")
-    result = await llm.generate("What is 2+2?")
+    llm = AsyncOpenAIBackend(base_url="https://api.openai.com/v1",
+                             api_key="sk-...", model="gpt-4o")
 
     # Streaming (token-level)
     from looplet.backends import OpenAIStreamingBackend
+    from openai import OpenAI
 
     llm = OpenAIStreamingBackend(OpenAI(), model="gpt-4o")
     for chunk in llm.stream("What is 2+2?"):

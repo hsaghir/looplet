@@ -37,13 +37,13 @@ followed by a final `#N ✓ done(...)`. If that works, you are ready.
 ```python title="my_agent.py"
 from looplet import (
     composable_loop, LoopConfig, DefaultState,
-    BaseToolRegistry, ToolSpec, OpenAIBackend,
+    BaseToolRegistry, ToolSpec, OpenAIBackend, register_done_tool,
 )
-from openai import OpenAI
 
-llm = OpenAIBackend(OpenAI(), model="gpt-4o-mini")
+llm = OpenAIBackend(base_url="https://api.openai.com/v1",
+                    api_key="sk-...", model="gpt-4o-mini")
 
-# Register two tools: your domain tool + a `done` sink.
+# Register your domain tool + done().
 def search(query: str) -> dict:
     return {"results": [f"result for {query}"]}
 
@@ -54,12 +54,7 @@ tools.register(ToolSpec(
     parameters={"query": "str"},
     execute=lambda *, query: search(query),
 ))
-tools.register(ToolSpec(
-    name="done",
-    description="Finish with an answer.",
-    parameters={"answer": "str"},
-    execute=lambda *, answer: {"answer": answer},
-))
+register_done_tool(tools)
 
 # Run.  You own the iteration.
 for step in composable_loop(
@@ -107,7 +102,8 @@ See [Hooks](hooks.md) for the full protocol and a dozen recipes.
 from looplet import ProvenanceSink
 
 sink = ProvenanceSink(dir="traces/run_1", redact=lambda s: s.replace("secret", "[REDACTED]"))
-llm  = sink.wrap_llm(OpenAIBackend(OpenAI(), model="gpt-4o-mini"))
+llm  = sink.wrap_llm(OpenAIBackend(base_url="https://api.openai.com/v1",
+                                    api_key="sk-...", model="gpt-4o-mini"))
 
 for step in composable_loop(llm=llm, tools=tools, hooks=[sink.trajectory_hook()], ...):
     print(step.pretty())

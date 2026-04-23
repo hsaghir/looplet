@@ -45,14 +45,12 @@ def eval_completed(ctx: EvalContext) -> bool:
 def main() -> None:
     from looplet.backends import OpenAIBackend
 
-    try:
-        from openai import OpenAI
-    except ImportError:
-        raise SystemExit("pip install openai")
-
     url = os.environ.get("OPENAI_BASE_URL", "http://127.0.0.1:19823/v1")
     model = os.environ.get("OPENAI_MODEL", "gpt-4.1")
-    llm = OpenAIBackend(OpenAI(base_url=url, api_key="x"), model=model)
+    api_key = os.environ.get("OPENAI_API_KEY", "x")
+    llm = OpenAIBackend(base_url=url, api_key=api_key, model=model)
+
+    from looplet.tools import register_done_tool  # noqa: PLC0415
 
     tools = BaseToolRegistry()
     tools.register(
@@ -63,14 +61,7 @@ def main() -> None:
             execute=lambda *, name: {"greeting": f"Hello, {name}!"},
         )
     )
-    tools.register(
-        ToolSpec(
-            name="done",
-            description="Signal completion.",
-            parameters={"answer": "str"},
-            execute=lambda *, answer: {"answer": answer},
-        )
-    )
+    register_done_tool(tools, parameters={"answer": "str"})
 
     for step in composable_loop(
         llm=llm,

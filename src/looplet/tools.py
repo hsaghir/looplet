@@ -438,18 +438,14 @@ class BaseToolRegistry:
                 call_id=call.call_id,
             )
         if missing:
-            # If a missing required name is close to one of the extras
-            # we already stripped (above we returned early on unknown;
-            # here that means the LLM could still have supplied a
-            # superset), fall back to just naming the missing args with
-            # the schema hint — the "unknown" branch handled the
-            # "did-you-mean" case for typos.
             schema_hint = _format_param_hint(spec)
+            provided = sorted(clean_args.keys()) if clean_args else []
             _te = ToolError(
                 kind=ErrorKind.VALIDATION,
                 message=(
                     f"Tool '{spec.name}' missing required argument"
                     f"{'s' if len(missing) > 1 else ''}: {missing}. "
+                    f"You provided: {provided}. "
                     f"Expected: {schema_hint}"
                 ),
                 retriable=False,

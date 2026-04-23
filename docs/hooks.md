@@ -262,6 +262,37 @@ def test_quality_gate_allows_enough():
 
 ---
 
+## Tool-internal LLM access: `ctx.llm`
+
+Tools that accept a `ctx` parameter receive `ctx.llm` — the same LLM
+backend the loop is using. This lets tools make internal LLM calls
+(summarize, classify, extract) without closing over the backend:
+
+```python
+def search(*, query: str, ctx: ToolContext) -> dict:
+    raw = external_api(query)
+    if len(raw) > 10_000 and ctx.llm is not None:
+        summary = ctx.llm.generate(f"Summarize in 3 bullets:\n{raw[:8000]}")
+        return {"summary": summary, "raw_chars": len(raw)}
+    return {"results": raw}
+```
+
+Tool-internal calls are:
+
+- **Tracked** — when a `RecordingLLMBackend` is in use, internal calls
+  appear in the same `manifest.jsonl` with `scope: "tool:<name>"`
+- **Cost-accounted** — `CostTracker` sees them
+- **Debuggable** — `python -m looplet show traces/` shows them alongside
+  loop-level calls
+
+`ctx.llm` is `None` when no LLM is available (e.g. in unit tests
+without a backend). Always guard with `if ctx.llm is not None`.
+
+For multi-step sub-tasks, use `run_sub_loop()` instead — `ctx.llm`
+is for single-call internal operations.
+
+---
+
 ## Hook-to-hook communication: `step_context`
 
 Hooks sometimes need to share data within the same step — e.g. an

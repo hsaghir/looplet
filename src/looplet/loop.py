@@ -581,11 +581,12 @@ def _build_tool_ctx(
     step_num: int = 0,
     state: Any = None,
     session_log: Any = None,
+    llm: Any = None,
 ) -> ToolContext | None:
     """Build a ToolContext for tool dispatch.
 
     Returns ``None`` only when nothing would be carried — no cancel
-    token, no approval handler, and no hooks subscribing to
+    token, no approval handler, no LLM, and no hooks subscribing to
     :attr:`LifecycleEvent.TOOL_PROGRESS`. When hooks are present an
     ``on_progress`` callback is installed that fires
     ``TOOL_PROGRESS`` with the current ``tool_call`` payload so
@@ -597,6 +598,7 @@ def _build_tool_ctx(
         config.cancel_token is None
         and config.approval_handler is None
         and not _has_progress_subscribers
+        and llm is None
     ):
         return None
 
@@ -617,11 +619,107 @@ def _build_tool_ctx(
 
         _progress_fn = _on_progress
 
+    # Build a scoped LLM for tool-internal use.  If the effective LLM
+    # is a recording backend, wrap it so tool-internal calls are tagged
+    # with scope="tool:<name>" for nested provenance.
+    _tool_llm = _scope_llm_for_tool(llm, tool_call) if llm is not None else None
+
     return ToolContext(
         cancel_token=config.cancel_token,
         request_approval=config.approval_handler,
         on_progress=_progress_fn,
+        llm=_tool_llm,
     )
+
+
+def _scope_llm_for_tool(llm: Any, tool_call: ToolCall | None) -> Any:
+    """Wrap a recording LLM so tool-internal calls get a scope tag.
+
+    If ``llm`` is (or wraps) a ``_RecordingBase``, returns a thin proxy
+    that sets ``scope`` on every captured :class:`LLMCall`.  Otherwise
+    returns ``llm`` unchanged — no overhead for non-recording backends.
+    """
+    tool_name = getattr(tool_call, "tool", "unknown") if tool_call else "unknown"
+
+    # Unwrap ResilientBackend / CostTracker to find the recording layer
+    inner = llm
+    recording = None
+    for _ in range(5):  # bounded unwrap
+        if hasattr(inner, "calls") and hasattr(inner, "_record"):
+            recording = inner
+            break
+        inner = getattr(inner, "_inner", None) or getattr(inner, "_backend", None)
+        if inner is None:
+            break
+
+    if recording is None:
+        return llm  # no recording layer — pass through unchanged
+
+    return _ScopedLLMProxy(llm, recording, f"tool:{tool_name}")
+
+
+class _ScopedLLMProxy:
+    """Thin proxy that tags recorded LLM calls with a scope string.
+
+    Delegates ``generate`` (and ``generate_with_tools`` when present)
+    to the wrapped backend. After each call, stamps
+    ``scope=<scope_str>`` on the most-recently-recorded
+    :class:`LLMCall` so provenance consumers can distinguish
+    loop-level calls from tool-internal calls.
+
+    Zero overhead when the backend isn't recording — the proxy is only
+    created by :func:`_scope_llm_for_tool` when a recording layer is
+    detected.
+    """
+
+    def __init__(self, backend: Any, recording: Any, scope: str) -> None:
+        self._backend = backend
+        self._recording = recording
+        self._scope = scope
+        if hasattr(backend, "generate_with_tools"):
+            self.generate_with_tools = self._generate_with_tools_impl
+
+    def generate(
+        self,
+        prompt: str,
+        *,
+        max_tokens: int = 2000,
+        system_prompt: str = "",
+        temperature: float = 0.2,
+    ) -> str:
+        n_before = len(self._recording.calls)
+        result = self._backend.generate(
+            prompt,
+            max_tokens=max_tokens,
+            system_prompt=system_prompt,
+            temperature=temperature,
+        )
+        self._tag_new_calls(n_before)
+        return result
+
+    def _generate_with_tools_impl(
+        self,
+        prompt: str,
+        *,
+        tools: list,
+        max_tokens: int = 2000,
+        system_prompt: str = "",
+        temperature: float = 0.2,
+    ) -> Any:
+        n_before = len(self._recording.calls)
+        result = self._backend.generate_with_tools(
+            prompt,
+            tools=tools,
+            max_tokens=max_tokens,
+            system_prompt=system_prompt,
+            temperature=temperature,
+        )
+        self._tag_new_calls(n_before)
+        return result
+
+    def _tag_new_calls(self, n_before: int) -> None:
+        for call in self._recording.calls[n_before:]:
+            call.scope = self._scope
 
 
 def emit_event(
@@ -1647,6 +1745,7 @@ def composable_loop(
                         step_num=step_num,
                         state=state,
                         session_log=session_log,
+                        llm=effective_llm,
                     )
 
                 if config.concurrent_dispatch:
@@ -1829,6 +1928,7 @@ def composable_loop(
                     step_num=step_num,
                     state=state,
                     session_log=session_log,
+                    llm=effective_llm,
                 )
                 tool_result = (
                     tools.dispatch(tool_call, ctx=_ctx)

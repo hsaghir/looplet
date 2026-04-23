@@ -265,7 +265,21 @@ class BaseToolRegistry:
 
         Args:
             spec: The tool specification to register.
+
+        Warns (via ``logging.getLogger(__name__).warning``) when a
+        tool with the same name is already registered — silent
+        overwrites are a common source of bugs when composing
+        multiple ``Skill`` bundles that happen to share a tool name.
         """
+        if spec.name in self._tools:
+            import logging  # noqa: PLC0415
+
+            logging.getLogger(__name__).warning(
+                "Tool %r is already registered — overwriting. "
+                "This usually indicates a name collision between skills "
+                "or tool bundles; give one of them a unique name.",
+                spec.name,
+            )
         # Eagerly compute ctx-acceptance so dispatch is thread-safe.
         if spec._accepts_ctx is None:
             spec._accepts_ctx = _accepts_ctx(spec.execute)

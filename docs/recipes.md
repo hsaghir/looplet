@@ -7,10 +7,10 @@ self-contained snippet you can drop into your agent.
 
 ```python
 from looplet.backends import OpenAIBackend
-from openai import OpenAI
 
 llm = OpenAIBackend(
-    OpenAI(base_url="http://localhost:11434/v1", api_key="ollama"),
+    base_url="http://localhost:11434/v1",
+    api_key="ollama",
     model="llama3.1:8b",
 )
 ```
@@ -23,10 +23,10 @@ for a runnable end-to-end example.
 ```python
 import os
 from looplet.backends import OpenAIBackend
-from openai import OpenAI
 
 llm = OpenAIBackend(
-    OpenAI(base_url=os.environ["OPENAI_BASE_URL"], api_key=os.environ["OPENAI_API_KEY"]),
+    base_url=os.environ["OPENAI_BASE_URL"],
+    api_key=os.environ["OPENAI_API_KEY"],
     model=os.environ["OPENAI_MODEL"],
 )
 ```
@@ -35,9 +35,8 @@ llm = OpenAIBackend(
 
 ```python
 from looplet.backends import AnthropicBackend
-from anthropic import Anthropic
 
-llm = AnthropicBackend(Anthropic(), model="claude-sonnet-4-latest")
+llm = AnthropicBackend(api_key="sk-ant-...", model="claude-sonnet-4-latest")
 ```
 
 ## OpenTelemetry

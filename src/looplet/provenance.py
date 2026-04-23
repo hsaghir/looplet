@@ -129,14 +129,26 @@ class _RecordingBase:
         *,
         max_chars_per_call: int = 200_000,
         redact: Callable[[str], str] | None = None,
+        redact_upstream: bool = True,
     ) -> None:
         self._backend = backend
         self._max_chars = max_chars_per_call
         self._redact = redact
+        # When True (default), ``redact`` is also applied to the prompt
+        # and system_prompt BEFORE they are forwarded to the wrapped
+        # backend — so secrets never leave the process, not just the
+        # trace.  Set to False to record-only.
+        self._redact_upstream = redact_upstream
         self.calls: list[LLMCall] = []
         # Set by a TrajectoryRecorder hook so captured calls link back to
         # the step they happened in; optional.
         self.current_step_num: int | None = None
+
+    def _upstream(self, s: str) -> str:
+        """Scrub a prompt before it is sent to the wrapped backend."""
+        if self._redact is not None and self._redact_upstream:
+            return self._redact(s)
+        return s
 
     def _scrub(self, s: str) -> str:
         out = self._redact(s) if self._redact is not None else s
@@ -269,8 +281,14 @@ class RecordingLLMBackend(_RecordingBase):
         *,
         max_chars_per_call: int = 200_000,
         redact: Callable[[str], str] | None = None,
+        redact_upstream: bool = True,
     ) -> None:
-        super().__init__(backend, max_chars_per_call=max_chars_per_call, redact=redact)
+        super().__init__(
+            backend,
+            max_chars_per_call=max_chars_per_call,
+            redact=redact,
+            redact_upstream=redact_upstream,
+        )
         if hasattr(backend, "generate_with_tools"):
             self.generate_with_tools = self._generate_with_tools_impl
 
@@ -285,11 +303,13 @@ class RecordingLLMBackend(_RecordingBase):
         started = time.time()
         error: str | None = None
         response: str = ""
+        upstream_prompt = self._upstream(prompt)
+        upstream_system = self._upstream(system_prompt)
         try:
             response = self._backend.generate(
-                prompt,
+                upstream_prompt,
                 max_tokens=max_tokens,
-                system_prompt=system_prompt,
+                system_prompt=upstream_system,
                 temperature=temperature,
             )
             return response
@@ -299,8 +319,8 @@ class RecordingLLMBackend(_RecordingBase):
         finally:
             self._record(
                 method="generate",
-                prompt=prompt,
-                system_prompt=system_prompt,
+                prompt=upstream_prompt,
+                system_prompt=upstream_system,
                 response=response,
                 temperature=temperature,
                 max_tokens=max_tokens,
@@ -321,12 +341,14 @@ class RecordingLLMBackend(_RecordingBase):
         started = time.time()
         error: str | None = None
         response: list[dict[str, Any]] = []
+        upstream_prompt = self._upstream(prompt)
+        upstream_system = self._upstream(system_prompt)
         try:
             response = self._backend.generate_with_tools(
-                prompt,
+                upstream_prompt,
                 tools=tools,
                 max_tokens=max_tokens,
-                system_prompt=system_prompt,
+                system_prompt=upstream_system,
                 temperature=temperature,
             )
             return response
@@ -336,8 +358,8 @@ class RecordingLLMBackend(_RecordingBase):
         finally:
             self._record(
                 method="generate_with_tools",
-                prompt=prompt,
-                system_prompt=system_prompt,
+                prompt=upstream_prompt,
+                system_prompt=upstream_system,
                 response=response,
                 temperature=temperature,
                 max_tokens=max_tokens,
@@ -356,8 +378,14 @@ class AsyncRecordingLLMBackend(_RecordingBase):
         *,
         max_chars_per_call: int = 200_000,
         redact: Callable[[str], str] | None = None,
+        redact_upstream: bool = True,
     ) -> None:
-        super().__init__(backend, max_chars_per_call=max_chars_per_call, redact=redact)
+        super().__init__(
+            backend,
+            max_chars_per_call=max_chars_per_call,
+            redact=redact,
+            redact_upstream=redact_upstream,
+        )
         if hasattr(backend, "generate_with_tools"):
             self.generate_with_tools = self._generate_with_tools_impl
 
@@ -372,11 +400,13 @@ class AsyncRecordingLLMBackend(_RecordingBase):
         started = time.time()
         error: str | None = None
         response: str = ""
+        upstream_prompt = self._upstream(prompt)
+        upstream_system = self._upstream(system_prompt)
         try:
             response = await self._backend.generate(
-                prompt,
+                upstream_prompt,
                 max_tokens=max_tokens,
-                system_prompt=system_prompt,
+                system_prompt=upstream_system,
                 temperature=temperature,
             )
             return response
@@ -386,8 +416,8 @@ class AsyncRecordingLLMBackend(_RecordingBase):
         finally:
             self._record(
                 method="generate",
-                prompt=prompt,
-                system_prompt=system_prompt,
+                prompt=upstream_prompt,
+                system_prompt=upstream_system,
                 response=response,
                 temperature=temperature,
                 max_tokens=max_tokens,
@@ -408,12 +438,14 @@ class AsyncRecordingLLMBackend(_RecordingBase):
         started = time.time()
         error: str | None = None
         response: list[dict[str, Any]] = []
+        upstream_prompt = self._upstream(prompt)
+        upstream_system = self._upstream(system_prompt)
         try:
             response = await self._backend.generate_with_tools(
-                prompt,
+                upstream_prompt,
                 tools=tools,
                 max_tokens=max_tokens,
-                system_prompt=system_prompt,
+                system_prompt=upstream_system,
                 temperature=temperature,
             )
             return response
@@ -423,8 +455,8 @@ class AsyncRecordingLLMBackend(_RecordingBase):
         finally:
             self._record(
                 method="generate_with_tools",
-                prompt=prompt,
-                system_prompt=system_prompt,
+                prompt=upstream_prompt,
+                system_prompt=upstream_system,
                 response=response,
                 temperature=temperature,
                 max_tokens=max_tokens,
@@ -729,11 +761,13 @@ class ProvenanceSink:
         *,
         max_chars_per_call: int = 200_000,
         redact: Callable[[str], str] | None = None,
+        redact_upstream: bool = True,
         capture_context: bool = True,
     ) -> None:
         self._dir = Path(dir)
         self._max_chars = max_chars_per_call
         self._redact = redact
+        self._redact_upstream = redact_upstream
         self._capture_context = capture_context
         self._recording_llm: _RecordingBase | None = None
         self._hook: TrajectoryRecorder | None = None
@@ -751,7 +785,12 @@ class ProvenanceSink:
             gen = getattr(backend, "generate", None)
             async_ = bool(gen) and inspect.iscoroutinefunction(gen)
         cls: type[_RecordingBase] = AsyncRecordingLLMBackend if async_ else RecordingLLMBackend
-        self._recording_llm = cls(backend, max_chars_per_call=self._max_chars, redact=self._redact)
+        self._recording_llm = cls(
+            backend,
+            max_chars_per_call=self._max_chars,
+            redact=self._redact,
+            redact_upstream=self._redact_upstream,
+        )
         return self._recording_llm
 
     def trajectory_hook(self) -> TrajectoryRecorder:

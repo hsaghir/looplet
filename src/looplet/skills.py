@@ -32,7 +32,7 @@ from typing import Any
 
 from looplet.tools import BaseToolRegistry, ToolSpec
 
-__all__ = ["Skill"]
+__all__ = ["Skill", "install_skills"]
 
 
 @dataclass
@@ -82,3 +82,50 @@ class Skill:
         tools = ", ".join(self.tool_names()) or "(no tools)"
         desc = self.description or self.instructions[:80]
         return f"[{self.name}] {desc} — tools: {tools}"
+
+
+def install_skills(
+    skills: list["Skill"],
+    registry: BaseToolRegistry,
+    *,
+    base_system_prompt: str = "",
+    base_memory_sources: list[Any] | None = None,
+    separator: str = "\n\n",
+) -> dict[str, Any]:
+    """Load every skill into ``registry`` and return the config updates.
+
+    Without this helper users have to (a) call ``skill.register(registry)``
+    for each skill, (b) concatenate the skill instructions onto the
+    system prompt themselves, and (c) extend the memory_sources list
+    — forgetting any of the three silently drops part of the skill.
+
+    Returns a dict with ``system_prompt`` and ``memory_sources`` keys,
+    suitable for ``LoopConfig(**install_skills(...))`` or merging into
+    an existing config via ``dataclasses.replace``.
+
+    Example::
+
+        cfg_updates = install_skills([python_skill, shell_skill], registry)
+        config = LoopConfig(max_steps=10, **cfg_updates)
+
+    Args:
+        skills: List of :class:`Skill` instances to install.
+        registry: Tool registry to register skill tools into.
+        base_system_prompt: Existing system prompt to prepend.
+        base_memory_sources: Existing memory sources to prepend.
+        separator: String joining instruction fragments (default blank line).
+    """
+    prompt_parts: list[str] = []
+    if base_system_prompt:
+        prompt_parts.append(base_system_prompt)
+    memory_sources: list[Any] = list(base_memory_sources or [])
+    for skill in skills:
+        skill.register(registry)
+        if skill.instructions:
+            prompt_parts.append(skill.instructions)
+        if skill.memory is not None:
+            memory_sources.append(skill.memory)
+    return {
+        "system_prompt": separator.join(prompt_parts),
+        "memory_sources": memory_sources,
+    }

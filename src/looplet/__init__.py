@@ -56,6 +56,7 @@ from looplet.hook_decision import (
     InjectContext,
     Stop,
 )
+from looplet.limits import BudgetWarningHook, PerToolLimitHook
 from looplet.loop import DomainAdapter, LoopConfig, LoopHook, composable_loop, emit_event
 from looplet.mcp import MCPToolAdapter
 from looplet.memory import CallableMemorySource, StaticMemorySource
@@ -180,6 +181,8 @@ __all__ = [
     "StagnationHook",
     "tool_call_fingerprint",
     "result_size_fingerprint",
+    "PerToolLimitHook",
+    "BudgetWarningHook",
     # ── ADVANCED (power users import from submodules directly) ──
     "DomainAdapter",
     "emit_event",

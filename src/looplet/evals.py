@@ -6,25 +6,24 @@ framework discovers them, runs them, and aggregates results.
 
 Quick start::
 
-    # eval_investigation.py (anywhere in your project)
+    # eval_my_agent.py (anywhere in your project)
 
-    def eval_evidence_density(ctx):
-        claims = ctx.final_output.get("findings", [])
-        evidenced = [c for c in claims if c.get("evidence")]
-        return len(evidenced) / max(len(claims), 1)
+    def eval_task_completed(ctx):
+        return "correct" if ctx.final_output.get("answer") == ctx.task.get("expected") else "wrong"
 
-    def eval_triage_correct(ctx):
-        return "correct" if ctx.final_output.get("verdict") == ctx.task.get("expected") else "wrong"
+    def eval_step_efficiency(ctx):
+        budget = ctx.task.get("max_steps", 10)
+        return max(0.0, 1.0 - len(ctx.steps) / budget)
 
-    def eval_reasoning_gaps(ctx, llm):
-        resp = llm.generate(f"Score 0-1: are claims in {ctx.final_output} supported by {ctx.session_log_text}?")
+    def eval_reasoning_quality(ctx, llm):
+        resp = llm.generate(f"Score 0-1: is {ctx.final_output} a well-supported answer given {ctx.session_log_text}?")
         return float(resp.strip())
 
 Run evals::
 
     from looplet.evals import eval_discover, eval_run, EvalContext
 
-    fns = eval_discover("eval_investigation.py")
+    fns = eval_discover("eval_my_agent.py")
     ctx = EvalContext.from_trajectory_dir("traces/run_1/")
     results = eval_run(fns, ctx)
     for r in results:
@@ -34,7 +33,7 @@ Or attach to the loop for live scoring::
 
     from looplet.evals import EvalHook
 
-    hook = EvalHook(evaluators=[eval_evidence_density, eval_triage_correct])
+    hook = EvalHook(evaluators=[eval_task_completed, eval_step_efficiency])
     for step in composable_loop(..., hooks=[hook]):
         ...
     print(hook.summary())
@@ -167,32 +166,24 @@ class EvalContext:
                 final_output = tc.get("args", {})
                 break
 
-        # Also load from metrics.json if available (richer data)
+        # Also load from metrics.json if available (ground-truth data)
         metrics_path = root / "metrics.json"
         if metrics_path.exists():
             try:
                 metrics_data = json.loads(metrics_path.read_text())
-                # Merge ground truth into task
-                if "expected_verdict" in metrics_data and "expected_verdict" not in task:
-                    task["expected_verdict"] = metrics_data["expected_verdict"]
-                if "expected_iocs" in metrics_data and "expected_iocs" not in task:
-                    task["expected_iocs"] = metrics_data["expected_iocs"]
-                # Use predicted_iocs as final output if not already set
-                if not final_output and "predicted_iocs" in metrics_data:
-                    final_output = {
-                        "promoted_iocs": metrics_data["predicted_iocs"],
-                        "verdict": metrics_data.get("verdict", ""),
-                    }
-                elif "verdict" in metrics_data and "verdict" not in final_output:
-                    final_output["verdict"] = metrics_data["verdict"]
+                # Merge any ground-truth fields into task (so evaluators
+                # can compare expected vs actual without knowing the
+                # file layout). Only copies keys that don't already
+                # exist in task to avoid overwriting user-supplied values.
+                for key, value in metrics_data.items():
+                    if key.startswith("expected_") and key not in task:
+                        task[key] = value
+                # If no done() output was found in the trajectory but
+                # metrics.json has a top-level "output" dict, promote it.
+                if not final_output and isinstance(metrics_data.get("output"), dict):
+                    final_output = metrics_data["output"]
             except Exception:  # noqa: BLE001
                 pass
-
-        # Also pull verdict from top-level trajectory data
-        if "verdict" not in final_output and data.get("verdict"):
-            final_output["verdict"] = data["verdict"]
-        if "expected_verdict" not in task and data.get("expected_verdict"):
-            task["expected_verdict"] = data["expected_verdict"]
 
         return cls(
             steps=[_DictStep(s) for s in steps],
@@ -266,7 +257,7 @@ class EvalResult:
     """Named numeric metrics (precision, recall, F1, etc.)."""
 
     details: list[str] = field(default_factory=list)
-    """Specific findings (missed IOCs, unsupported claims, etc.)."""
+    """Specific findings (missed items, unsupported claims, etc.)."""
 
     explanation: str = ""
     """Human-readable summary of the evaluation."""
@@ -627,16 +618,16 @@ def eval_mark(*tags: str) -> Callable:
 
     Like pytest.mark — lets you group and filter evals::
 
-        @eval_mark("verdict", "fast")
-        def eval_verdict_correct(ctx):
+        @eval_mark("accuracy", "fast")
+        def eval_answer_correct(ctx):
             ...
 
-        @eval_mark("ioc", "slow")
-        def eval_ioc_quality(ctx, llm):
+        @eval_mark("quality", "slow")
+        def eval_reasoning_depth(ctx, llm):
             ...
 
-        # Run only "verdict" evals:
-        results = eval_run(evals, ctx, include=["verdict"])
+        # Run only "accuracy" evals:
+        results = eval_run(evals, ctx, include=["accuracy"])
 
         # Skip "slow" evals in CI:
         results = eval_run(evals, ctx, exclude=["slow"])
@@ -749,7 +740,7 @@ def eval_cli(args: list[str] | None = None) -> int:
         looplet eval traces/                          # score all runs
         looplet eval traces/ --evals eval_agent.py    # specific eval file
         looplet eval traces/ --threshold 0.7          # fail if avg < 0.7
-        looplet eval traces/ --include verdict        # only verdict evals
+        looplet eval traces/ --include accuracy      # only accuracy evals
         looplet eval traces/ --exclude slow            # skip slow evals
 
     Returns 0 if all evals pass threshold, 1 otherwise.

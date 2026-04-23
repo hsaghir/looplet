@@ -11,7 +11,7 @@ What the GIF shows:
    "debugging story" of this library.
 2. A destructive tool (``delete_rows``) trips ``ApprovalHook``; the
    loop pauses on an ``APPROVAL NEEDED`` prompt. A scripted ``"yes"``
-   lets it resume — the same flow your SOC analyst, Slack bot, or
+   lets it resume — the same flow your ops engineer, Slack bot, or
    HITL pipeline would use.
 3. The loop returns cleanly. All 5 steps are visible. No magic.
 
@@ -132,9 +132,9 @@ def main() -> None:
     tools.register(
         ToolSpec(
             name="done",
-            description="Finish with a verdict.",
-            parameters={"verdict": "str"},
-            execute=lambda *, verdict: {"verdict": verdict},
+            description="Finish with a summary.",
+            parameters={"summary": "str"},
+            execute=lambda *, summary: {"summary": summary},
         )
     )
 
@@ -147,7 +147,7 @@ def main() -> None:
             json.dumps(
                 {
                     "tool": "done",
-                    "args": {"verdict": "cleaned 2 cancelled rows; 2 remain"},
+                    "args": {"summary": "cleaned 2 cancelled rows; 2 remain"},
                 }
             ),
         ]

@@ -17,7 +17,7 @@ the marker convention:
 - :func:`last_rejected_done` — return the most recent rejected
   ``done()`` step (intent lives in ``step.tool_call.args``).
 
-Typical use — recovering the agent's intended verdict when the gate
+Typical use — recovering the agent's intended output when the gate
 rejected ``done()`` and budget then ran out::
 
     from looplet.done_steps import last_accepted_done, last_rejected_done
@@ -25,7 +25,7 @@ rejected ``done()`` and budget then ran out::
     accepted = last_accepted_done(state)
     if accepted is not None:
         payload = accepted.tool_result.data
-        ...  # consume the verdict
+        ...  # consume the final output
 
     rejected = last_rejected_done(state)
     if rejected is not None:
@@ -96,7 +96,7 @@ def last_accepted_done(
     "Accepted" means the step is a ``done()`` call whose
     ``tool_result.data`` is not a rejection marker.  The returned
     step's ``tool_result.data`` is the payload the ``done`` tool
-    produced (typically a dict of verdict / reasoning / etc. — shape
+    produced (typically a dict of summary / reasoning / etc. — shape
     is consumer-defined).
     """
     for step in iter_done_steps(state, tool_name=tool_name):

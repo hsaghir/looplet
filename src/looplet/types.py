@@ -527,8 +527,8 @@ class Step:
         """Serialise to a plain dict for logging or state snapshots."""
         return {
             "step": self.number,
-            "call": self.tool_call.to_dict(),
-            "result": self.tool_result.to_dict(),
+            "tool_call": self.tool_call.to_dict(),
+            "tool_result": self.tool_result.to_dict(),
         }
 
     def summary(self) -> str:

@@ -87,7 +87,7 @@ Open an issue on GitHub with:
 ## Security issues
 
 Please **do not** open a public issue for vulnerabilities; see
-[SECURITY.md](SECURITY.md) for the private disclosure channel.
+[SECURITY.md](https://github.com/hsaghir/looplet/blob/master/SECURITY.md) for the private disclosure channel.
 
 ## License
 

@@ -17,7 +17,7 @@ existing one) so we don't duplicate work.
 **What:** implement the `LLMBackend` protocol on top of the
 `google-generativeai` Python SDK. Follow the shape of
 `AnthropicBackend` / `OpenAIBackend` in
-[`src/looplet/backends.py`](../src/looplet/backends.py).
+[`src/looplet/backends.py`](https://github.com/hsaghir/looplet/blob/master/src/looplet/backends.py).
 
 **Acceptance:**
 - Add `google-generativeai` to an optional extra `[gemini]`.

@@ -17,6 +17,18 @@
   margin-bottom: 2rem;
 }
 
+.hero-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin: 0.25rem 0 0;
+}
+
+.hero-badges img {
+  margin: 0;
+  vertical-align: middle;
+}
+
 .hero-eyebrow {
   font-size: 0.78rem;
   font-weight: 600;
@@ -162,4 +174,34 @@ article table:not([class]) td:has(> code) {
 .md-typeset pre > code {
   font-size: 0.82em;
   line-height: 1.5;
+}
+
+/* ── Mermaid ──────────────────────────────────────────────────── */
+
+.md-typeset .mermaid {
+  text-align: center;
+  margin: 1.5rem 0;
+}
+
+/* ── Home footer row ─────────────────────────────────────────── */
+
+.home-footer {
+  text-align: center;
+  margin: 2rem 0 1rem;
+  display: flex;
+  justify-content: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+/* ── Smooth scroll + focus ───────────────────────────────────── */
+
+html {
+  scroll-behavior: smooth;
+}
+
+a:focus-visible {
+  outline: 2px solid var(--md-primary-fg-color);
+  outline-offset: 2px;
+  border-radius: 2px;
 }

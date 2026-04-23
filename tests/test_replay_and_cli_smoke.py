@@ -101,7 +101,7 @@ class TestReplayLoopSmoke:
 
         counter = Counter()
         steps = list(replay_loop(trace_dir, tools=_make_tools(), hooks=[counter]))
-        assert counter.post == len(steps) - 1  # done step skips post_dispatch
+        assert counter.post == len(steps)  # post_dispatch fires for done() too
 
     def test_fallback_without_manifest(self, tmp_path: Path):
         """Replay should work from call_NN_response.txt even without manifest."""

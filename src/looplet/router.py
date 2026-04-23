@@ -197,11 +197,13 @@ class CostTracker:
 
     def __init__(
         self,
+        backend: LLMBackend | None = None,
         *,
-        backend: LLMBackend,
-        cost_per_1k_input: float,
-        cost_per_1k_output: float,
+        cost_per_1k_input: float = 0.0,
+        cost_per_1k_output: float = 0.0,
     ) -> None:
+        if backend is None:
+            raise TypeError("CostTracker(backend=..., ...) — backend is required")
         self._backend = backend
         self._cost_per_1k_input = cost_per_1k_input
         self._cost_per_1k_output = cost_per_1k_output

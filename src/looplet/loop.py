@@ -895,11 +895,19 @@ def _run_post_dispatch_hooks(
     session_log: SessionLog,
     context: Any,
     step_num: int,
+    *,
+    emit_lifecycle: bool = True,
 ) -> _PostDispatchOutcome:
     """Run post_dispatch hooks + POST_TOOL_USE/FAILURE events.
 
     Returns a potentially rewritten ToolResult, additional context
     parts, and an optional stop reason.
+
+    ``emit_lifecycle`` is set to ``False`` for the terminal ``done()``
+    dispatch: done is a loop signal rather than a side-effecting tool,
+    so PRE/POST_TOOL_USE events deliberately skip it. Per-method
+    post_dispatch hooks still run in both modes so metrics/tracing/
+    audit hooks see the final step.
     """
     from looplet.events import LifecycleEvent as _LE  # noqa: PLC0415
 
@@ -919,6 +927,9 @@ def _run_post_dispatch_hooks(
                 outcome.extra_context.append(_decision.additional_context)
             if _decision.stop is not None:
                 outcome.stop_reason = _decision.stop
+
+    if not emit_lifecycle:
+        return outcome
 
     # ── Event-style POST_TOOL_USE / POST_TOOL_FAILURE ──────
     _post_tool_event = _LE.POST_TOOL_FAILURE if tool_result.error else _LE.POST_TOOL_USE
@@ -1762,6 +1773,22 @@ def composable_loop(
                     if _ctx is not None
                     else tools.dispatch(tool_call)
                 )
+                # Run post_dispatch hooks for done() too — otherwise
+                # MetricsHook / TracingHook / AuditHook silently miss
+                # the final step of every run. Lifecycle events
+                # (PRE/POST_TOOL_USE) deliberately skip done since it
+                # is a loop signal, not a side-effecting tool call.
+                _pd_done = _run_post_dispatch_hooks(
+                    tool_call,
+                    tool_result,
+                    hooks,
+                    state,
+                    session_log,
+                    context,
+                    cur_step,
+                    emit_lifecycle=False,
+                )
+                tool_result = _pd_done.tool_result
                 step = Step(number=cur_step, tool_call=tool_call, tool_result=tool_result)
                 state.steps.append(step)
                 yield step

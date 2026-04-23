@@ -49,7 +49,10 @@ def build_prompt(
     memory: str | None = "",
     render_facts: Callable[[dict], list[str]] | None = None,
     task_fields: list[str] | None = None,
-    action_prompt: str = "What do you want to do next? Respond with JSON.",
+    action_prompt: str = (
+        "What do you want to do next? Respond with JSON only, no prose:\n"
+        '{"tool": "<tool_name>", "args": {...all required arguments...}, "reasoning": "<short>"}'
+    ),
     low_budget_warning: str = "⚠ LOW BUDGET — consolidate and prepare your conclusion.",
     section_headers: dict[str, str] | None = None,
 ) -> str:

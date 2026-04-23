@@ -223,6 +223,7 @@ class ToolSpec:
             "input_schema": {
                 "type": "object",
                 "properties": properties,
+                "required": list(self.parameters.keys()),
             },
         }
 

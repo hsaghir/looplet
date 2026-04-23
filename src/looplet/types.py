@@ -519,6 +519,12 @@ class Step:
         header = f"#{self.number} {status} {r.tool}({r.args_summary})"
         if r.error:
             tail = f"ERROR: {r.error[:80]}"
+        elif isinstance(r.data, dict) and r.data.get("needs_approval"):
+            # Surface approval-gated tool calls clearly — otherwise
+            # ApprovalHook silently stops the loop and the user sees
+            # a ✓ step with no indication that anything is pending.
+            desc = str(r.data.get("approval_description", "")).strip()
+            tail = f"⏸ awaiting approval: {desc[:80]}" if desc else "⏸ awaiting approval"
         elif isinstance(r.data, list):
             tail = f"{len(r.data)} items"
         elif isinstance(r.data, dict):
@@ -530,6 +536,13 @@ class Step:
             if len(list_keys) == 1:
                 k, v = list_keys[0]
                 tail = f"{len(v)} {k}"
+            elif len(r.data) == 1:
+                # Single-scalar-value dict (e.g. {"answer": "..."} from
+                # a done tool) — show the value, not "1 keys".
+                k, v = next(iter(r.data.items()))
+                snippet = str(v)
+                snippet = snippet if len(snippet) <= 60 else snippet[:57] + "..."
+                tail = f"{k}: {snippet}"
             else:
                 tail = f"{len(r.data)} keys"
         elif r.data is None:

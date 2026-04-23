@@ -546,6 +546,15 @@ class EvalHook:
         """Run all evaluators after the loop finishes."""
         steps = getattr(state, "steps", [])
 
+        # Capture task from state (stashed by composable_loop) if the
+        # hook wasn't handed one explicitly.
+        if not self._task:
+            _state_task = getattr(state, "task", None)
+            if isinstance(_state_task, dict):
+                self._task = _state_task
+            elif _state_task is not None:
+                self._task = {"description": str(_state_task)}
+
         # Extract final_output from done() step
         final_output: dict[str, Any] = {}
         for s in reversed(steps):

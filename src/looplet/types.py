@@ -522,7 +522,16 @@ class Step:
         elif isinstance(r.data, list):
             tail = f"{len(r.data)} items"
         elif isinstance(r.data, dict):
-            tail = f"{len(r.data)} keys"
+            # Prefer showing list-valued fields — a {"files": [...]} or
+            # {"results": [...]} shape is common and "N keys" throws
+            # away the most useful part for both humans and skimmable
+            # eval output.
+            list_keys = [(k, v) for k, v in r.data.items() if isinstance(v, list)]
+            if len(list_keys) == 1:
+                k, v = list_keys[0]
+                tail = f"{len(v)} {k}"
+            else:
+                tail = f"{len(r.data)} keys"
         elif r.data is None:
             tail = ""
         else:

@@ -65,6 +65,27 @@ def _classify_exception(e: BaseException) -> ToolError:
     return ToolError(kind=ErrorKind.EXECUTION, message=msg, retriable=False)
 
 
+def _format_param_hint(spec: "ToolSpec") -> str:
+    """Render a ToolSpec's parameter schema as a short LLM-readable hint.
+
+    For simple dicts this is ``{name: str, path: file path}``.
+    For JSON Schema it is ``{name: string (required), age: integer}``.
+    """
+    params = spec.parameters
+    if spec.is_json_schema:
+        props = params.get("properties", {})
+        required = set(params.get("required", []))
+        parts = []
+        for name, schema in props.items():
+            typ = schema.get("type", "any") if isinstance(schema, dict) else "any"
+            tag = f"{name}: {typ}" + (" (required)" if name in required else "")
+            parts.append(tag)
+        return "{" + ", ".join(parts) + "}"
+    # Simple format — all params are required by convention.
+    parts = [f"{name}: {desc}" for name, desc in params.items()]
+    return "{" + ", ".join(parts) + "}"
+
+
 def _accepts_ctx(fn: Callable[..., Any]) -> bool:
     """True if ``fn`` declares a ``ctx`` parameter (by name).
 
@@ -318,6 +339,32 @@ class BaseToolRegistry:
         exec_kwargs: dict[str, Any] = dict(clean_args)
         if spec._accepts_ctx:
             exec_kwargs["ctx"] = ctx
+
+        # Pre-validate required args so missing-param failures surface
+        # as structured VALIDATION errors with the tool's parameter
+        # schema — not as opaque ``TypeError: <lambda>() missing 1
+        # required keyword-only argument: 'x'`` tracebacks that the LLM
+        # cannot easily recover from.
+        missing = [p for p in spec.required_parameters() if p not in clean_args]
+        if missing:
+            schema_hint = _format_param_hint(spec)
+            _te = ToolError(
+                kind=ErrorKind.VALIDATION,
+                message=(
+                    f"Tool '{spec.name}' missing required argument"
+                    f"{'s' if len(missing) > 1 else ''}: {missing}. "
+                    f"Expected: {schema_hint}"
+                ),
+                retriable=False,
+            )
+            return ToolResult(
+                tool=call.tool,
+                args_summary=self._summarize_args(call),
+                data=None,
+                error=_te.message,
+                error_detail=_te,
+                call_id=call.call_id,
+            )
 
         t0 = time.time()
         try:

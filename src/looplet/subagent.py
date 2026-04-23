@@ -43,6 +43,7 @@ def run_sub_loop(
     state_mutating_tools: list[str] | None = None,
     conversation: Any | None = None,
     subagent_id: str | None = None,
+    config: Any | None = None,
 ) -> dict[str, Any]:
     """Run a sub-agent loop with isolated state.
 
@@ -61,6 +62,10 @@ def run_sub_loop(
             If None, builds a generic summary from session log entities.
         state_mutating_tools: Tool names to exclude when cloning parent tools.
             Defaults to ["done"]. Only used when sub_tools is None.
+        config: Optional full LoopConfig. When supplied, its
+            ``max_steps`` and ``system_prompt`` override the matching
+            kwargs so that callers who already have a LoopConfig can
+            pass it through uniformly with ``composable_loop``.
 
     Returns a dict with:
       - summary: one-line summary of what was found
@@ -112,10 +117,16 @@ def run_sub_loop(
         subagent_id=subagent_id,
     )
 
-    config = LoopConfig(
-        max_steps=max_steps,
-        system_prompt=system_prompt,
-    )
+    # Allow callers to pass a full LoopConfig for parity with
+    # composable_loop. If provided, its values override the shorthand
+    # kwargs (max_steps, system_prompt).
+    if config is not None:
+        sub_config = config
+    else:
+        sub_config = LoopConfig(
+            max_steps=max_steps,
+            system_prompt=system_prompt,
+        )
 
     gen = composable_loop(
         llm=llm,
@@ -123,7 +134,7 @@ def run_sub_loop(
         tools=sub_tools,
         context=context,
         hooks=hooks or [],
-        config=config,
+        config=sub_config,
         state=state,
         session_log=session_log,
         conversation=_sub_conv,

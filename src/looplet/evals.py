@@ -95,6 +95,21 @@ class EvalContext:
     metadata: dict[str, Any] = field(default_factory=dict)
     """Extra context: run_id, model, timestamp, etc."""
 
+    stop_reason: str | None = None
+    """Why the loop terminated: ``\"done\"`` if the agent called ``done()``,
+    otherwise a hook-supplied reason (``\"hook_stop\"``, ``\"budget\"``, ...)
+    or ``None`` when unknown.  Evaluators should dispatch on this to
+    handle early termination, e.g.::
+
+        def eval_completed(ctx):
+            return ctx.stop_reason == \"done\"
+    """
+
+    @property
+    def completed(self) -> bool:
+        """True when the agent called ``done()`` itself (not stopped by a hook)."""
+        return self.stop_reason == "done"
+
     @property
     def tool_sequence(self) -> list[str]:
         """Ordered list of tool names called during the run."""
@@ -185,6 +200,7 @@ class EvalContext:
             final_output=final_output,
             session_log_text="",  # not saved in trajectory by default
             metadata=metadata,
+            stop_reason=data.get("termination_reason") or metadata.get("termination_reason"),
         )
 
 
@@ -363,8 +379,16 @@ def eval_discover(
             sys.modules[mod.__name__] = mod
             spec.loader.exec_module(mod)
             for name, obj in inspect.getmembers(mod, inspect.isfunction):
-                if name.startswith(prefix):
-                    evaluators.append(obj)
+                if not name.startswith(prefix):
+                    continue
+                # Only pick up functions defined in THIS module, not
+                # re-exports (e.g. `from looplet import eval_mark`
+                # silently turns the decorator itself into a discovered
+                # eval).  Unwrap decorator chains first.
+                target = inspect.unwrap(obj)
+                if getattr(target, "__module__", None) != mod.__name__:
+                    continue
+                evaluators.append(obj)
         except Exception:  # noqa: BLE001
             logger.warning("Failed to load eval file: %s", fpath, exc_info=True)
 
@@ -542,6 +566,7 @@ class EvalHook:
             task=self._task,
             final_output=final_output,
             session_log_text=log_text,
+            stop_reason=getattr(state, "_stop_reason", None),
         )
 
         self._results = eval_run(

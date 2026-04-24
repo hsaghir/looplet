@@ -456,18 +456,37 @@ class BaseToolRegistry:
         # _tools without going through register().
         if spec._accepts_ctx is None:
             spec._accepts_ctx = _accepts_ctx(spec.execute)
-        exec_kwargs: dict[str, Any] = dict(clean_args)
+
+        # Sanitize string args: LLMs frequently emit leading/trailing
+        # whitespace, newlines, or wrapping quotes that cause silent
+        # failures (empty bash commands, wrong file paths). Strip them
+        # at the framework level so every tool benefits.
+        sanitized: dict[str, Any] = {}
+        for k, v in clean_args.items():
+            if isinstance(v, str):
+                v = v.strip()
+            sanitized[k] = v
+
+        exec_kwargs: dict[str, Any] = dict(sanitized)
         if spec._accepts_ctx:
             exec_kwargs["ctx"] = ctx
 
-        # Pre-validate required args so missing-param failures surface
-        # as structured VALIDATION errors with the tool's parameter
-        # schema — not as opaque ``TypeError: <lambda>() missing 1
-        # required keyword-only argument: 'x'`` tracebacks that the LLM
-        # cannot easily recover from.
+        # Auto-coerce _raw_arg: when the parser received a bare string
+        # instead of a dict and there's exactly one required parameter,
+        # map the string to that parameter automatically. This handles
+        # the common case of LLMs sending {"tool": "bash", "args": "ls"}
+        # instead of {"tool": "bash", "args": {"command": "ls"}}.
         known_params = spec.parameter_names()
         required = spec.required_parameters()
-        missing = [p for p in required if p not in clean_args]
+        if "_raw_arg" in exec_kwargs and len(required) == 1:
+            raw = exec_kwargs.pop("_raw_arg")
+            target_param = required[0]
+            if target_param not in exec_kwargs:
+                exec_kwargs[target_param] = raw
+                sanitized[target_param] = raw
+                sanitized.pop("_raw_arg", None)
+
+        missing = [p for p in required if p not in sanitized]
         # Unknown / mistyped extra args — the common case is the LLM
         # sending ``file_pth`` instead of ``file_path``. Without this
         # check the extra arg slides into the ``**kwargs`` of the tool
@@ -475,7 +494,7 @@ class BaseToolRegistry:
         # keyword argument``). Surface it as VALIDATION with a
         # "did you mean?" hint so the model can self-correct on the
         # next turn.
-        unknown = [a for a in clean_args if a not in known_params]
+        unknown = [a for a in sanitized if a not in known_params]
         if unknown:
             first = unknown[0]
             hint = suggest_similar(first, known_params)
@@ -500,7 +519,7 @@ class BaseToolRegistry:
             )
         if missing:
             schema_hint = _format_param_hint(spec)
-            provided = sorted(clean_args.keys()) if clean_args else []
+            provided = sorted(sanitized.keys()) if sanitized else []
             _te = ToolError(
                 kind=ErrorKind.VALIDATION,
                 message=(

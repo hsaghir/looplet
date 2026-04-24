@@ -129,7 +129,13 @@ def _dict_to_tool_call(d: dict) -> ToolCall | None:
     if not tool:
         return None
     args = d.get("args", {})
-    if not isinstance(args, dict):
+    if isinstance(args, str):
+        # LLM sent a bare string instead of a dict — stash it under
+        # "_raw_arg" so dispatch can still see it (and the validation
+        # error will show what was provided).  Common with simple
+        # single-param tools where the model skips the key.
+        args = {"_raw_arg": args}
+    elif not isinstance(args, dict):
         args = {}
     theory = d.get("theory", "")
     if theory:

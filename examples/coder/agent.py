@@ -56,6 +56,27 @@ from looplet.types import ToolContext  # noqa: F401
 
 
 def _run(cmd: str, cwd: str, timeout: int = 120) -> dict:
+    # Sanitize: strip whitespace/newlines, handle None/empty
+    if not cmd or not isinstance(cmd, str):
+        return {
+            "stdout": "",
+            "stderr": "Error: empty command. Provide a bash command to execute.",
+            "exit_code": 1,
+        }
+    cmd = cmd.strip()
+    if not cmd:
+        return {
+            "stdout": "",
+            "stderr": "Error: empty command after stripping whitespace.",
+            "exit_code": 1,
+        }
+    # Remove common LLM artifacts: leading $, backtick fences
+    if cmd.startswith("$ "):
+        cmd = cmd[2:]
+    if cmd.startswith("```") and cmd.endswith("```"):
+        cmd = cmd[3:-3].strip()
+        if cmd.startswith("bash\n") or cmd.startswith("sh\n"):
+            cmd = cmd.split("\n", 1)[1].strip()
     try:
         r = subprocess.run(
             ["bash", "-c", cmd],

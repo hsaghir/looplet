@@ -16,6 +16,7 @@ __version__ = "0.1.7"
 # ruff: noqa: F401 — __init__.py intentionally re-exports for `from looplet import X`
 
 from looplet.approval import ApprovalHook
+from looplet.async_loop import async_composable_loop
 from looplet.backends import AnthropicBackend, OpenAIBackend
 from looplet.budget import ContextBudget, ThresholdCompactHook
 from looplet.cache import CachePolicy
@@ -111,6 +112,7 @@ __all__ = [
     # ── ESSENTIALS (what you need for your first agent) ──────────
     "__version__",
     "composable_loop",
+    "async_composable_loop",
     "LoopConfig",
     "LoopHook",
     "Step",

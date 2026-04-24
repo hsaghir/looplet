@@ -580,6 +580,33 @@ class LoopConfig:
         # Every tool with ctx= sees ctx.metadata["db_path"]
     """
 
+    generate_kwargs: dict[str, Any] = field(default_factory=dict)
+    """Extra keyword arguments passed through to every LLM call.
+
+    Forwarded to ``llm.generate()`` and ``llm.generate_with_tools()``
+    only when the backend's method signature accepts the key (checked
+    via ``inspect.signature``). Unknown keys are silently skipped, so
+    provider-specific kwargs don't break other backends.
+
+    Use this for provider-specific parameters that looplet's
+    ``generate(prompt, max_tokens, system_prompt, temperature)``
+    protocol doesn't cover:
+
+    * ``chat_template_kwargs`` for llama-server (e.g. ``{"enable_thinking": False}``)
+    * ``response_format`` for OpenAI structured output
+    * ``top_p``, ``top_k``, ``presence_penalty`` for fine-tuning
+    * ``thinking`` for Anthropic extended thinking
+
+    Example::
+
+        config = LoopConfig(
+            generate_kwargs={
+                "chat_template_kwargs": {"enable_thinking": False},
+                "top_p": 0.9,
+            },
+        )
+    """
+
 
 def _default_extract_entities(data: Any) -> list[str]:
     """Fallback: no entity extraction."""
@@ -1570,6 +1597,7 @@ def composable_loop(
                 cancel_token=config.cancel_token,
                 max_continuations=config.max_turn_continuations,
                 cache_breakpoints=_cache_bps,
+                generate_kwargs=config.generate_kwargs or None,
             )
             _llm_dur_ms = (time.perf_counter() - _llm_t0) * 1000.0
             if _llm_span is not None and config.tracer is not None:
@@ -1702,6 +1730,7 @@ def composable_loop(
                     system_prompt=config.system_prompt,
                     temperature=config.recovery_temperature,
                     cancel_token=config.cancel_token,
+                    generate_kwargs=config.generate_kwargs or None,
                 )
                 llm_calls += 1
                 if recovery_result.ok:
@@ -2188,6 +2217,7 @@ def _recovery_chain(
             system_prompt=config.system_prompt,
             temperature=config.temperature,
             cancel_token=config.cancel_token,
+            generate_kwargs=config.generate_kwargs or None,
         )
         extra_llm_calls += 1
 

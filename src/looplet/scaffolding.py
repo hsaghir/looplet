@@ -201,43 +201,41 @@ def llm_call_with_retry(
         try:
             if use_native:
                 call = llm.generate_with_tools
-                extra_kwargs: dict[str, Any] = {}
+                # Build unified kwargs: base params + generate_kwargs overrides
+                call_kwargs: dict[str, Any] = {
+                    "tools": tools,
+                    "max_tokens": max_tokens,
+                    "system_prompt": system_prompt,
+                    "temperature": temperature,
+                }
+                # generate_kwargs can override any of the above
                 if generate_kwargs:
                     for k, v in generate_kwargs.items():
                         if _accepts_kwarg(call, k):
-                            extra_kwargs[k] = v
+                            call_kwargs[k] = v
                 if cancel_token is not None and _backend_accepts_cancel_token(
                     llm, "generate_with_tools"
                 ):
-                    extra_kwargs["cancel_token"] = cancel_token
+                    call_kwargs["cancel_token"] = cancel_token
                 if cache_breakpoints and _accepts_kwarg(call, "cache_breakpoints"):
-                    extra_kwargs["cache_breakpoints"] = cache_breakpoints
-                blocks = call(
-                    prompt,
-                    tools=tools,
-                    max_tokens=max_tokens,
-                    system_prompt=system_prompt,
-                    temperature=temperature,
-                    **extra_kwargs,
-                )
+                    call_kwargs["cache_breakpoints"] = cache_breakpoints
+                blocks = call(prompt, **call_kwargs)
                 return LLMResult(blocks, stop_reason=getattr(llm, "last_stop_reason", None))
             call = llm.generate
-            extra_kwargs = {}
+            call_kwargs = {
+                "max_tokens": max_tokens,
+                "system_prompt": system_prompt,
+                "temperature": temperature,
+            }
             if generate_kwargs:
                 for k, v in generate_kwargs.items():
                     if _accepts_kwarg(call, k):
-                        extra_kwargs[k] = v
+                        call_kwargs[k] = v
             if cancel_token is not None and _backend_accepts_cancel_token(llm, "generate"):
-                extra_kwargs["cancel_token"] = cancel_token
+                call_kwargs["cancel_token"] = cancel_token
             if cache_breakpoints and _accepts_kwarg(call, "cache_breakpoints"):
-                extra_kwargs["cache_breakpoints"] = cache_breakpoints
-            text = call(
-                prompt,
-                max_tokens=max_tokens,
-                system_prompt=system_prompt,
-                temperature=temperature,
-                **extra_kwargs,
-            )
+                call_kwargs["cache_breakpoints"] = cache_breakpoints
+            text = call(prompt, **call_kwargs)
             stop = getattr(llm, "last_stop_reason", None)
             # Budget-aware turn continuation: if the backend reports the
             # generation was cut off at ``max_tokens`` and the caller
@@ -264,12 +262,12 @@ def llm_call_with_retry(
                     + "\n\n[continue from exactly where you left off; "
                     "do not repeat any prior text]"
                 )
+                # Reuse the same call_kwargs for continuations (same
+                # temperature, system_prompt, generate_kwargs overrides)
+                _cont_kwargs = dict(call_kwargs)
                 more = call(
                     _cont_prompt,
-                    max_tokens=max_tokens,
-                    system_prompt=system_prompt,
-                    temperature=temperature,
-                    **extra_kwargs,
+                    **_cont_kwargs,
                 )
                 if not isinstance(more, str):
                     break

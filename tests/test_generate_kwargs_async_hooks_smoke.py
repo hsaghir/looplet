@@ -63,6 +63,51 @@ class TestGenerateKwargs:
         assert received_kwargs[0]["top_p"] == 0.9
         assert received_kwargs[0]["custom_param"] == "hello"
 
+    def test_generate_kwargs_overrides_positional_params(self):
+        """generate_kwargs should be able to override temperature, max_tokens."""
+        received: list[dict] = []
+
+        class CapturingBackend:
+            calls = 0
+
+            def generate(
+                self,
+                prompt,
+                *,
+                max_tokens=2000,
+                system_prompt="",
+                temperature=0.2,
+            ):
+                self.calls += 1
+                received.append({"max_tokens": max_tokens, "temperature": temperature})
+                return '{"tool": "done", "args": {"summary": "ok"}, "reasoning": "r"}'
+
+        tools = BaseToolRegistry()
+        register_done_tool(tools)
+
+        # LoopConfig sets temperature=0.3 and max_tokens=500,
+        # but generate_kwargs overrides both
+        config = LoopConfig(
+            max_steps=3,
+            temperature=0.3,
+            max_tokens=500,
+            generate_kwargs={"temperature": 0.0, "max_tokens": 8000},
+        )
+
+        list(
+            composable_loop(
+                llm=CapturingBackend(),
+                tools=tools,
+                state=DefaultState(max_steps=3),
+                config=config,
+                task={},
+            )
+        )
+
+        assert len(received) >= 1
+        assert received[0]["temperature"] == 0.0  # overridden
+        assert received[0]["max_tokens"] == 8000  # overridden
+
     def test_unknown_kwargs_silently_skipped(self):
         """Keys the backend doesn't accept should be silently dropped."""
         mock = MockLLMBackend(

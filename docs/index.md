@@ -20,7 +20,7 @@ any OpenAI-compatible endpoint or Anthropic directly.
 <p class="hero-badges" markdown>
 [![PyPI](https://img.shields.io/pypi/v/looplet?label=pypi&color=4F46E5)](https://pypi.org/project/looplet/)
 [![Python](https://img.shields.io/pypi/pyversions/looplet?color=4F46E5)](https://pypi.org/project/looplet/)
-[![License](https://img.shields.io/badge/license-MIT-4F46E5)](https://github.com/hsaghir/looplet/blob/master/LICENSE)
+[![License](https://img.shields.io/badge/license-Apache%202.0-4F46E5)](https://github.com/hsaghir/looplet/blob/master/LICENSE)
 [![CI](https://img.shields.io/github/actions/workflow/status/hsaghir/looplet/ci.yml?branch=master&label=CI&color=4F46E5)](https://github.com/hsaghir/looplet/actions)
 [![GitHub stars](https://img.shields.io/github/stars/hsaghir/looplet?color=4F46E5)](https://github.com/hsaghir/looplet)
 </p>
@@ -60,7 +60,7 @@ Hook protocols
 </div>
 
 <div class="stat" markdown>
-**1,062**
+**1,307**
 { .stat-num }
 
 Tests, ~1s

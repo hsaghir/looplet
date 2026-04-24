@@ -26,7 +26,7 @@ python scripts/bench_cold_import.py --runs 9 --markdown
 
 | Framework | Version | Median cold import | vs looplet |
 | --- | --- | ---: | ---: |
-| `looplet` | 0.1.7 | **289 ms** | — |
+| `looplet` | 0.1.8 | **289 ms** | — |
 | `strands-agents` | 1.36.0 | **1 885 ms** | 6.5× |
 | `langgraph` | 1.1.9 | **2 294 ms** | 7.9× |
 | `claude-agent-sdk` | 0.1.65 | **2 409 ms** | 8.3× |

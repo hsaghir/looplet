@@ -582,25 +582,16 @@ def _build_tool_ctx(
     state: Any = None,
     session_log: Any = None,
     llm: Any = None,
-) -> ToolContext | None:
+) -> ToolContext:
     """Build a ToolContext for tool dispatch.
 
-    Returns ``None`` only when nothing would be carried — no cancel
-    token, no approval handler, no LLM, and no hooks subscribing to
-    :attr:`LifecycleEvent.TOOL_PROGRESS`. When hooks are present an
-    ``on_progress`` callback is installed that fires
-    ``TOOL_PROGRESS`` with the current ``tool_call`` payload so
-    observers can stream intermediate output from long-running tools.
+    Always returns a ToolContext — tools that declare ``ctx`` should
+    never receive ``None``.  The context carries the cancel token,
+    approval handler, LLM, progress callback, and metadata from the
+    agent state.
     """
     _hooks = hooks or []
     _has_progress_subscribers = any(hasattr(h, "on_event") for h in _hooks)
-    if (
-        config.cancel_token is None
-        and config.approval_handler is None
-        and not _has_progress_subscribers
-        and llm is None
-    ):
-        return None
 
     _progress_fn: Callable[[str, dict], None] | None = None
     if _has_progress_subscribers:
@@ -624,11 +615,20 @@ def _build_tool_ctx(
     # with scope="tool:<name>" for nested provenance.
     _tool_llm = _scope_llm_for_tool(llm, tool_call) if llm is not None else None
 
+    # Populate metadata from state so tools can read domain-specific
+    # context without coupling to the state class.
+    _metadata: dict[str, Any] = {}
+    if state is not None:
+        _state_meta = getattr(state, "metadata", None)
+        if isinstance(_state_meta, dict):
+            _metadata = dict(_state_meta)
+
     return ToolContext(
         cancel_token=config.cancel_token,
         request_approval=config.approval_handler,
         on_progress=_progress_fn,
         llm=_tool_llm,
+        metadata=_metadata,
     )
 
 
@@ -1750,14 +1750,12 @@ def composable_loop(
 
                 if config.concurrent_dispatch:
                     _tool_ctx = _ctx_for(calls_to_dispatch[0])
-                    _dispatch_kw = {"ctx": _tool_ctx} if _tool_ctx is not None else {}
-                    dispatch_results = tools.dispatch_batch(calls_to_dispatch, **_dispatch_kw)
+                    dispatch_results = tools.dispatch_batch(calls_to_dispatch, ctx=_tool_ctx)
                 else:
                     dispatch_results = []
                     for _c in calls_to_dispatch:
                         _tool_ctx = _ctx_for(_c)
-                        _kw = {"ctx": _tool_ctx} if _tool_ctx is not None else {}
-                        dispatch_results.append(tools.dispatch(_c, **_kw))
+                        dispatch_results.append(tools.dispatch(_c, ctx=_tool_ctx))
             else:
                 dispatch_results = []
 
@@ -1930,11 +1928,7 @@ def composable_loop(
                     session_log=session_log,
                     llm=effective_llm,
                 )
-                tool_result = (
-                    tools.dispatch(tool_call, ctx=_ctx)
-                    if _ctx is not None
-                    else tools.dispatch(tool_call)
-                )
+                tool_result = tools.dispatch(tool_call, ctx=_ctx)
                 # Run post_dispatch hooks for done() too — otherwise
                 # MetricsHook / TracingHook / AuditHook silently miss
                 # the final step of every run. Lifecycle events

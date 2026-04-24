@@ -11,7 +11,7 @@ Usage:
     python examples/dep_doctor/agent.py /path/to/project   # any project
 
     # With local LLM:
-    OPENAI_BASE_URL=http://localhost:8080/v1 python examples/dep_doctor/agent.py
+    OPENAI_BASE_URL=http://localhost:11434/v1 python examples/dep_doctor/agent.py
 """
 
 from __future__ import annotations
@@ -376,9 +376,9 @@ def main():
     project_dir = os.path.abspath(project_dir)
     project_name = Path(project_dir).name
 
-    base_url = os.environ.get("OPENAI_BASE_URL", "http://127.0.0.1:19823/v1")
+    base_url = os.environ.get("OPENAI_BASE_URL", "http://localhost:11434/v1")
     api_key = os.environ.get("OPENAI_API_KEY", "x")
-    model = os.environ.get("OPENAI_MODEL", "claude-sonnet-4.5")
+    model = os.environ.get("OPENAI_MODEL", "llama3.1")
 
     llm = ResilientBackend(
         OpenAIBackend(base_url=base_url, api_key=api_key, model=model),

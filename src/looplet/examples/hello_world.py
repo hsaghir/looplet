@@ -45,7 +45,7 @@ def eval_completed(ctx: EvalContext) -> bool:
 def main() -> None:
     from looplet.backends import OpenAIBackend
 
-    url = os.environ.get("OPENAI_BASE_URL", "http://127.0.0.1:19823/v1")
+    url = os.environ.get("OPENAI_BASE_URL", "http://localhost:11434/v1")
     model = os.environ.get("OPENAI_MODEL", "gpt-4.1")
     api_key = os.environ.get("OPENAI_API_KEY", "x")
     llm = OpenAIBackend(base_url=url, api_key=api_key, model=model)

@@ -8,7 +8,7 @@ Runs 100% local with any OpenAI-compatible endpoint (Ollama, llama-server, vLLM)
 No data leaves your machine.
 
 Usage:
-    # With llama-server running Qwen3.6-27B on port 8080:
+    # With llama-server running a local model via Ollama:
     python examples/threat_intel/agent.py
 
     # With Ollama:
@@ -271,9 +271,9 @@ def assess_risk(*, title: str, severity: str, affected_products: str, ctx: ToolC
 def build_agent():
     """Build the threat intel briefing agent."""
     # LLM
-    base_url = os.environ.get("OPENAI_BASE_URL", "http://localhost:8080/v1")
+    base_url = os.environ.get("OPENAI_BASE_URL", "http://localhost:11434/v1")
     api_key = os.environ.get("OPENAI_API_KEY", "local")
-    model = os.environ.get("OPENAI_MODEL", "Qwen3.6-27B")
+    model = os.environ.get("OPENAI_MODEL", "llama3.1")
 
     base_llm = OpenAIBackend(
         base_url=base_url,

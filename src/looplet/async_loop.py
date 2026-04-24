@@ -68,6 +68,54 @@ MAX_LLM_RETRIES = 2
 RETRY_BACKOFF_BASE = 1.0
 
 
+class _SyncBridgeLLM:
+    """Wraps an async LLM backend so sync tools can call generate().
+
+    When tools receive ``ctx.llm`` in the async loop, the underlying
+    backend has ``async def generate()``. Tools are sync, so they
+    can't ``await``. This bridge runs the coroutine on the current
+    event loop via ``asyncio.get_event_loop().run_until_complete()``
+    when called from a non-async context, or falls through if the
+    backend is already sync.
+
+    This is intentionally simple — it covers the common case of
+    single-call tool-internal LLM use (summarize, classify). For
+    complex async tool workflows, users should write async tools
+    and await directly (future feature).
+    """
+
+    def __init__(self, backend: Any) -> None:
+        self._backend = backend
+
+    def generate(
+        self,
+        prompt: str,
+        *,
+        max_tokens: int = 2000,
+        system_prompt: str = "",
+        temperature: float = 0.2,
+    ) -> str:
+        result = self._backend.generate(
+            prompt,
+            max_tokens=max_tokens,
+            system_prompt=system_prompt,
+            temperature=temperature,
+        )
+        if inspect.isawaitable(result):
+            # We're inside an event loop (async context). Use a thread
+            # to run the coroutine without blocking the loop.
+            import concurrent.futures  # noqa: PLC0415
+
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                    future = pool.submit(asyncio.run, result)  # pyright: ignore[reportArgumentType]
+                    return future.result(timeout=120)
+            else:
+                return loop.run_until_complete(result)
+        return result
+
+
 # ── Async LLM call with retry ───────────────────────────────────
 
 
@@ -247,6 +295,10 @@ async def async_composable_loop(
     consecutive_parse_failures = 0
     post_dispatch_parts: list[str] = []
     _step_offset = 0
+    # Wrap async LLM in a sync bridge so tools can use ctx.llm.generate()
+    # without needing to await. The bridge handles the async→sync
+    # translation via a thread pool when running inside an event loop.
+    _sync_llm = _SyncBridgeLLM(llm)
 
     while state.budget_remaining > 0 and not done:
         step_num = state.step_count + 1 + _step_offset
@@ -418,7 +470,7 @@ async def async_composable_loop(
                         step_num=step_num,
                         state=state,
                         session_log=session_log,
-                        llm=llm,
+                        llm=_sync_llm,
                     )
                     dispatch_results.append(tools.dispatch(_c, ctx=_tool_ctx))
             else:
@@ -507,7 +559,7 @@ async def async_composable_loop(
                     step_num=step_num,
                     state=state,
                     session_log=session_log,
-                    llm=llm,
+                    llm=_sync_llm,
                 )
                 tool_result = tools.dispatch(tool_call, ctx=_ctx)
 

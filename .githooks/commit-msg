@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# commit-msg hook — enforces conventional commit format.
+#
+# Accepts: feat|fix|docs|refactor|test|chore|ci|style|perf|build|examples|friction
+# followed by optional (scope): and a description.
+#
+# Examples:
+#   feat: add ctx.llm to ToolContext
+#   fix(tools): validation error shows provided args
+#   docs: update quickstart with convenience API
+#   friction(round12): backend convenience kwargs
+#
+# To install:  cp .githooks/commit-msg .git/hooks/commit-msg && chmod +x .git/hooks/commit-msg
+# Or:          make install-hooks
+#
+# To bypass:   git commit --no-verify
+
+set -euo pipefail
+
+MSG_FILE="$1"
+FIRST_LINE=$(head -1 "$MSG_FILE")
+
+# Allow merge commits
+if echo "$FIRST_LINE" | grep -qE "^Merge "; then
+    exit 0
+fi
+
+# Allow fixup/squash commits
+if echo "$FIRST_LINE" | grep -qE "^(fixup|squash)! "; then
+    exit 0
+fi
+
+# Conventional commit pattern
+PATTERN="^(feat|fix|docs|refactor|test|chore|ci|style|perf|build|examples|friction)(\([a-zA-Z0-9_-]+\))?(!)?: .+"
+
+if ! echo "$FIRST_LINE" | grep -qE "$PATTERN"; then
+    echo "✗ commit-msg: first line must follow conventional commits format:"
+    echo ""
+    echo "  <type>[(scope)]: <description>"
+    echo ""
+    echo "  Types: feat|fix|docs|refactor|test|chore|ci|style|perf|build|examples|friction"
+    echo ""
+    echo "  Examples:"
+    echo "    feat: add ctx.llm to ToolContext"
+    echo "    fix(tools): validation error shows provided args"
+    echo "    docs: update quickstart"
+    echo ""
+    echo "  Got: $FIRST_LINE"
+    echo ""
+    echo "  To bypass: git commit --no-verify"
+    exit 1
+fi

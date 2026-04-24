@@ -222,3 +222,86 @@ def test_value_error_still_routes_to_validation_for_back_compat() -> None:
     r = reg.dispatch(ToolCall(tool="bad", args={"x": "hi"}))
     assert r.error_kind == ErrorKind.VALIDATION
     assert "ValueError" in r.error  # still type-prefixed since not opt-in
+
+
+# ── Empty / None values for required parameters ─────────────────
+
+
+class TestEmptyRequiredArgRejected:
+    """LLMs sometimes send {"command": ""} or {"command": null} which
+    passes the "key exists" check but produces silent failures (bash
+    runs empty command → exit 0, no output). The dispatch layer now
+    rejects empty/None values for required string parameters."""
+
+    @pytest.fixture()
+    def registry(self) -> BaseToolRegistry:
+        reg = BaseToolRegistry()
+        reg.register(
+            ToolSpec(
+                name="bash",
+                description="Run a command",
+                parameters={
+                    "type": "object",
+                    "properties": {"command": {"type": "string"}},
+                    "required": ["command"],
+                },
+                execute=lambda *, command: {"exit_code": 0},
+            )
+        )
+        return reg
+
+    def test_empty_string_rejected(self, registry: BaseToolRegistry) -> None:
+        r = registry.dispatch(ToolCall(tool="bash", args={"command": ""}))
+        assert r.error is not None
+        assert r.error_kind == ErrorKind.VALIDATION
+        assert "empty" in r.error.lower()
+        assert "command" in r.error
+
+    def test_whitespace_only_rejected(self, registry: BaseToolRegistry) -> None:
+        r = registry.dispatch(ToolCall(tool="bash", args={"command": "   "}))
+        assert r.error is not None
+        assert r.error_kind == ErrorKind.VALIDATION
+
+    def test_none_value_rejected(self, registry: BaseToolRegistry) -> None:
+        r = registry.dispatch(ToolCall(tool="bash", args={"command": None}))
+        assert r.error is not None
+        assert r.error_kind == ErrorKind.VALIDATION
+
+    def test_valid_command_accepted(self, registry: BaseToolRegistry) -> None:
+        r = registry.dispatch(ToolCall(tool="bash", args={"command": "echo hello"}))
+        assert r.error is None
+        assert r.data == {"exit_code": 0}
+
+    def test_optional_param_empty_still_allowed(self) -> None:
+        """Only required params are validated for emptiness."""
+        reg = BaseToolRegistry()
+        reg.register(
+            ToolSpec(
+                name="read",
+                description="Read file",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "encoding": {"type": "string"},
+                    },
+                    "required": ["path"],
+                },
+                execute=lambda *, path, encoding="": {"path": path},
+            )
+        )
+        # Empty optional param should NOT be rejected
+        r = reg.dispatch(ToolCall(tool="read", args={"path": "x.py", "encoding": ""}))
+        assert r.error is None
+        assert r.data == {"path": "x.py"}
+
+    def test_missing_arg_still_uses_missing_error(self, registry: BaseToolRegistry) -> None:
+        """Missing args should show 'missing required' not 'empty value'."""
+        r = registry.dispatch(ToolCall(tool="bash", args={}))
+        assert r.error is not None
+        assert "missing required" in r.error.lower()
+
+    def test_error_is_retriable(self, registry: BaseToolRegistry) -> None:
+        r = registry.dispatch(ToolCall(tool="bash", args={"command": ""}))
+        assert r.error_detail is not None
+        assert r.error_detail.retriable

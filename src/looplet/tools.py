@@ -486,6 +486,35 @@ class BaseToolRegistry:
                 sanitized[target_param] = raw
                 sanitized.pop("_raw_arg", None)
 
+        # Reject empty/None values for required string parameters.
+        # LLMs frequently send {"command": ""} or {"command": null}
+        # which passes the "key exists" check but produces silent
+        # failures (bash runs empty command → exit 0, no output).
+        # Only check params that ARE present — missing ones are caught below.
+        for p in required:
+            if p not in sanitized:
+                continue  # caught by the missing-args check below
+            val = sanitized[p]
+            if val is None or (isinstance(val, str) and not val):
+                schema_hint = _format_param_hint(spec)
+                _te = ToolError(
+                    kind=ErrorKind.VALIDATION,
+                    message=(
+                        f"Tool '{spec.name}' received empty value for required "
+                        f"argument '{p}'. Provide a non-empty value. "
+                        f"Expected: {schema_hint}"
+                    ),
+                    retriable=True,
+                )
+                return ToolResult(
+                    tool=call.tool,
+                    args_summary=self._summarize_args(call),
+                    data=None,
+                    error=_te.message,
+                    error_detail=_te,
+                    call_id=call.call_id,
+                )
+
         missing = [p for p in required if p not in sanitized]
         # Unknown / mistyped extra args — the common case is the LLM
         # sending ``file_pth`` instead of ``file_path``. Without this

@@ -422,9 +422,9 @@ def main():
     repo_name = Path(repo_path).name
 
     # LLM
-    base_url = os.environ.get("OPENAI_BASE_URL", "http://localhost:8080/v1")
+    base_url = os.environ.get("OPENAI_BASE_URL", "http://localhost:11434/v1")
     api_key = os.environ.get("OPENAI_API_KEY", "local")
-    model = os.environ.get("OPENAI_MODEL", "Qwen3.6-27B")
+    model = os.environ.get("OPENAI_MODEL", "llama3.1")
 
     base_llm = OpenAIBackend(
         base_url=base_url, api_key=api_key, model=model, tool_choice="required"

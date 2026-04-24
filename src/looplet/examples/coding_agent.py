@@ -747,7 +747,7 @@ def _get_llm(
     """Create an OpenAI-compatible backend.
 
     Reads from arguments, then env vars, then defaults:
-      - OPENAI_BASE_URL / base_url  (default: http://127.0.0.1:19823)
+      - OPENAI_BASE_URL / base_url  (default: http://localhost:11434/v1)
       - OPENAI_MODEL / model        (default: gpt-4.1)
       - OPENAI_API_KEY / api_key    (default: "x")
 
@@ -763,7 +763,7 @@ def _get_llm(
             "This example requires the openai package. Install it with: pip install openai"
         ) from e
 
-    _url = base_url or os.environ.get("OPENAI_BASE_URL", "http://127.0.0.1:19823/v1")
+    _url = base_url or os.environ.get("OPENAI_BASE_URL", "http://localhost:11434/v1")
     _model = model or os.environ.get("OPENAI_MODEL", "gpt-4.1")
     _key = api_key or os.environ.get("OPENAI_API_KEY", "x")
 
@@ -780,7 +780,7 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Requires an OpenAI-compatible API. Set env vars or use flags:\n"
-            "  OPENAI_BASE_URL  (default: http://127.0.0.1:19823)\n"
+            "  OPENAI_BASE_URL  (default: http://localhost:11434/v1)\n"
             "  OPENAI_MODEL     (default: gpt-4.1)\n"
             "  OPENAI_API_KEY   (default: x)\n"
         ),

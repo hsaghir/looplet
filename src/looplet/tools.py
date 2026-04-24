@@ -530,6 +530,26 @@ class BaseToolRegistry:
 
         try:
             result_data = spec.execute(**exec_kwargs)
+            # If the tool returned a coroutine (async def tool), run it
+            # synchronously so async tools work in the sync loop without
+            # requiring the caller to manage the bridge.
+            if inspect.isawaitable(result_data):
+                import asyncio  # noqa: PLC0415
+
+                try:
+                    loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    loop = None
+                if loop is not None and loop.is_running():
+                    # Inside an async context — run in a thread to avoid
+                    # blocking the event loop.
+                    import concurrent.futures  # noqa: PLC0415
+
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                        future = pool.submit(asyncio.run, result_data)  # pyright: ignore[reportArgumentType]
+                        result_data = future.result(timeout=120)
+                else:
+                    result_data = asyncio.run(result_data)  # pyright: ignore[reportArgumentType]
         except Exception as e:
             _te = _classify_exception(e)
             # Even on failure, surface any warnings the tool had

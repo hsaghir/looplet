@@ -557,6 +557,29 @@ class LoopConfig:
     reordering, role swaps) before send. Prefer :attr:`build_prompt`
     when you only want to change the section layout."""
 
+    tool_metadata: dict[str, Any] = field(default_factory=dict)
+    """Static key-value pairs merged into every ``ToolContext.metadata``.
+
+    Use this to pass application-level configuration to tools without
+    threading it through ``state.metadata`` (which is agent-level) or
+    closures (which are invisible to provenance).
+
+    ``tool_metadata`` is merged *under* ``state.metadata`` — state
+    values win on key conflicts. This makes ``tool_metadata`` the
+    right place for defaults (``db_path``, ``workspace``, ``api_base``)
+    while ``state.metadata`` carries per-run overrides.
+
+    Example::
+
+        config = LoopConfig(
+            tool_metadata={
+                "db_path": "/data/prod.db",
+                "read_only": True,
+            },
+        )
+        # Every tool with ctx= sees ctx.metadata["db_path"]
+    """
+
 
 def _default_extract_entities(data: Any) -> list[str]:
     """Fallback: no entity extraction."""
@@ -615,13 +638,13 @@ def _build_tool_ctx(
     # with scope="tool:<name>" for nested provenance.
     _tool_llm = _scope_llm_for_tool(llm, tool_call) if llm is not None else None
 
-    # Populate metadata from state so tools can read domain-specific
-    # context without coupling to the state class.
-    _metadata: dict[str, Any] = {}
+    # Populate metadata: config.tool_metadata (defaults) + state.metadata
+    # (per-run overrides). State wins on key conflicts.
+    _metadata: dict[str, Any] = dict(config.tool_metadata) if config.tool_metadata else {}
     if state is not None:
         _state_meta = getattr(state, "metadata", None)
         if isinstance(_state_meta, dict):
-            _metadata = dict(_state_meta)
+            _metadata.update(_state_meta)
 
     return ToolContext(
         cancel_token=config.cancel_token,

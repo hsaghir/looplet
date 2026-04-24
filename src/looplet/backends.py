@@ -435,6 +435,7 @@ class AsyncOpenAIBackend:
         default_max_tokens: int = 2000,
         base_url: str | None = None,
         api_key: str | None = None,
+        tool_choice: str = "auto",
     ) -> None:
         if client is None:
             if base_url is None:
@@ -448,6 +449,7 @@ class AsyncOpenAIBackend:
         self._client = client
         self._model = model
         self._default_max_tokens = default_max_tokens
+        self._tool_choice = tool_choice
 
     async def generate(
         self,
@@ -491,7 +493,7 @@ class AsyncOpenAIBackend:
             max_tokens=max_tokens or self._default_max_tokens,
             temperature=temperature,
             tools=_to_openai_tools(tools),
-            tool_choice="auto",
+            tool_choice=self._tool_choice,
         )
         return _openai_message_to_blocks(response.choices[0].message)
 

@@ -179,9 +179,17 @@ def make_tools(repo_path: str) -> BaseToolRegistry:
             "hotspots": hotspots,
         }
 
-    def coupled_files(*, min_coupling: str = "5") -> dict:
+    def coupled_files(*, min_coupling: str = "3") -> dict:
         """Find files that always change together (co-change coupling)."""
-        threshold = int(min_coupling) if min_coupling.isdigit() else 5
+        threshold = int(min_coupling) if min_coupling.isdigit() else 3
+        # Adaptive: for small repos (<100 commits), lower threshold to 2
+        commit_count = _git(repo_path, "rev-list", "--count", "HEAD")
+        total = (
+            int(commit_count["output"].strip()) if commit_count["output"].strip().isdigit() else 100
+        )
+        if total < 100 and threshold > 2:
+            threshold = 2
+
         result = _git(repo_path, "log", "--format=COMMIT_SEP", "--name-only", max_lines=3000)
         commits = result["output"].split("COMMIT_SEP")
         pair_counts: Counter = Counter()

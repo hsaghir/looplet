@@ -163,6 +163,7 @@ def llm_call_with_retry(
     cancel_token: Any | None = None,
     max_continuations: int = 0,
     cache_breakpoints: list[Any] | None = None,
+    generate_kwargs: dict[str, Any] | None = None,
 ) -> LLMResult:
     """Call LLM with exponential backoff retry on failure.
 
@@ -201,6 +202,10 @@ def llm_call_with_retry(
             if use_native:
                 call = llm.generate_with_tools
                 extra_kwargs: dict[str, Any] = {}
+                if generate_kwargs:
+                    for k, v in generate_kwargs.items():
+                        if _accepts_kwarg(call, k):
+                            extra_kwargs[k] = v
                 if cancel_token is not None and _backend_accepts_cancel_token(
                     llm, "generate_with_tools"
                 ):
@@ -218,6 +223,10 @@ def llm_call_with_retry(
                 return LLMResult(blocks, stop_reason=getattr(llm, "last_stop_reason", None))
             call = llm.generate
             extra_kwargs = {}
+            if generate_kwargs:
+                for k, v in generate_kwargs.items():
+                    if _accepts_kwarg(call, k):
+                        extra_kwargs[k] = v
             if cancel_token is not None and _backend_accepts_cancel_token(llm, "generate"):
                 extra_kwargs["cancel_token"] = cancel_token
             if cache_breakpoints and _accepts_kwarg(call, "cache_breakpoints"):

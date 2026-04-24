@@ -129,6 +129,7 @@ async def async_llm_call(
     max_retries: int = MAX_LLM_RETRIES,
     tools: list[dict[str, Any]] | None = None,
     cancel_token: Any | None = None,
+    generate_kwargs: dict[str, Any] | None = None,
 ) -> LLMResult:
     """Async version of :func:`looplet.scaffolding.llm_call_with_retry`.
 
@@ -140,6 +141,23 @@ async def async_llm_call(
         return LLMResult(None, RuntimeError("cancelled before LLM call"))
 
     use_native = tools is not None and hasattr(llm, "generate_with_tools")
+    _gk = generate_kwargs or {}
+
+    # Filter generate_kwargs to only keys the backend accepts
+    def _filtered_kwargs(method_name: str) -> dict[str, Any]:
+        fn = getattr(llm, method_name, None)
+        if fn is None or not _gk:
+            return {}
+        out: dict[str, Any] = {}
+        for k, v in _gk.items():
+            try:
+                sig = inspect.signature(fn)
+                if k in sig.parameters:
+                    out[k] = v
+            except (TypeError, ValueError):
+                pass
+        return out
+
     last_error: Exception | None = None
 
     for attempt in range(max_retries + 1):
@@ -153,6 +171,7 @@ async def async_llm_call(
                     max_tokens=max_tokens,
                     system_prompt=system_prompt,
                     temperature=temperature,
+                    **_filtered_kwargs("generate_with_tools"),
                 )
                 if inspect.isawaitable(result):
                     result = await result
@@ -163,6 +182,7 @@ async def async_llm_call(
                 max_tokens=max_tokens,
                 system_prompt=system_prompt,
                 temperature=temperature,
+                **_filtered_kwargs("generate"),
             )
             if inspect.isawaitable(result):
                 result = await result
@@ -273,7 +293,9 @@ async def async_composable_loop(
 
     for hook in hooks:
         if hasattr(hook, "pre_loop"):
-            hook.pre_loop(state, session_log, context)
+            result = hook.pre_loop(state, session_log, context)
+            if inspect.isawaitable(result):
+                await result
 
     emit_event(hooks, _LE.SESSION_START, state=state, session_log=session_log, context=context)
 
@@ -368,6 +390,7 @@ async def async_composable_loop(
             temperature=config.temperature,
             tools=_tool_schemas,
             cancel_token=config.cancel_token,
+            generate_kwargs=config.generate_kwargs or None,
         )
         _llm_dur_ms = (time.perf_counter() - _llm_t0) * 1000.0
         llm_calls += 1
@@ -413,6 +436,7 @@ async def async_composable_loop(
                 temperature=max(0.0, config.temperature - 0.1),
                 tools=_tool_schemas,
                 cancel_token=config.cancel_token,
+                generate_kwargs=config.generate_kwargs or None,
             )
             llm_calls += 1
             if recovery_result.ok:
@@ -602,7 +626,9 @@ async def async_composable_loop(
     # ── on_loop_end ─────────────────────────────────────────────
     for hook in hooks:
         if hasattr(hook, "on_loop_end"):
-            hook.on_loop_end(state, session_log, context, llm)
+            result = hook.on_loop_end(state, session_log, context, llm)
+            if inspect.isawaitable(result):
+                await result
 
     emit_event(
         hooks,

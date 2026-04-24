@@ -57,6 +57,26 @@ from typing import Any, AsyncGenerator, Generator
 logger = logging.getLogger(__name__)
 
 
+# ── max_tokens helper ────────────────────────────────────────────
+
+
+def _resolve_max_tokens(
+    per_call: int | None,
+    default: int | None,
+) -> int | None:
+    """Resolve effective max_tokens for an API call.
+
+    Priority: per-call value > backend default > None (let API decide).
+    The loop passes max_tokens from LoopConfig; if a user never set it,
+    it arrives as the LoopConfig default (2000). To preserve "let API
+    decide" semantics, backends that set default_max_tokens=None will
+    only send max_tokens when explicitly provided.
+    """
+    if per_call is not None and per_call > 0:
+        return per_call
+    return default
+
+
 # ── Tool-schema translation helpers ──────────────────────────────
 
 
@@ -141,7 +161,9 @@ class OpenAIBackend:
         client: An ``openai.OpenAI`` client instance. Optional if
             ``base_url`` and ``api_key`` are provided instead.
         model: Model name (e.g. ``"gpt-4o"``, ``"gpt-4o-mini"``).
-        default_max_tokens: Default max_tokens when not overridden per call.
+        default_max_tokens: Default max_tokens sent to the API.
+            ``None`` (default) means "don't send max_tokens, let the
+            provider decide." Set to an int to cap every call.
         base_url: Convenience shorthand — when provided without ``client``,
             an ``openai.OpenAI(base_url=..., api_key=...)`` client is
             created automatically. Most users hit this friction point
@@ -165,7 +187,7 @@ class OpenAIBackend:
         client: Any = None,
         *,
         model: str = "gpt-4o",
-        default_max_tokens: int = 2000,
+        default_max_tokens: int | None = None,
         base_url: str | None = None,
         api_key: str | None = None,
         tool_choice: str = "auto",
@@ -200,12 +222,16 @@ class OpenAIBackend:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
 
-        response = self._client.chat.completions.create(
-            model=self._model,
-            messages=messages,
-            max_tokens=max_tokens or self._default_max_tokens,
-            temperature=temperature,
-        )
+        kwargs: dict[str, Any] = {
+            "model": self._model,
+            "messages": messages,
+            "temperature": temperature,
+        }
+        _mt = _resolve_max_tokens(max_tokens, self._default_max_tokens)
+        if _mt is not None:
+            kwargs["max_tokens"] = _mt
+
+        response = self._client.chat.completions.create(**kwargs)
         return response.choices[0].message.content or ""
 
     def generate_with_tools(
@@ -227,14 +253,18 @@ class OpenAIBackend:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
 
-        response = self._client.chat.completions.create(
-            model=self._model,
-            messages=messages,
-            max_tokens=max_tokens or self._default_max_tokens,
-            temperature=temperature,
-            tools=_to_openai_tools(tools),
-            tool_choice=self._tool_choice,
-        )
+        kwargs: dict[str, Any] = {
+            "model": self._model,
+            "messages": messages,
+            "temperature": temperature,
+            "tools": _to_openai_tools(tools),
+            "tool_choice": self._tool_choice,
+        }
+        _mt = _resolve_max_tokens(max_tokens, self._default_max_tokens)
+        if _mt is not None:
+            kwargs["max_tokens"] = _mt
+
+        response = self._client.chat.completions.create(**kwargs)
         return _openai_message_to_blocks(response.choices[0].message)
 
 
@@ -271,13 +301,17 @@ class OpenAIStreamingBackend(OpenAIBackend):
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
 
-        response = self._client.chat.completions.create(
-            model=self._model,
-            messages=messages,
-            max_tokens=max_tokens or self._default_max_tokens,
-            temperature=temperature,
-            stream=True,
-        )
+        kwargs: dict[str, Any] = {
+            "model": self._model,
+            "messages": messages,
+            "temperature": temperature,
+            "stream": True,
+        }
+        _mt = _resolve_max_tokens(max_tokens, self._default_max_tokens)
+        if _mt is not None:
+            kwargs["max_tokens"] = _mt
+
+        response = self._client.chat.completions.create(**kwargs)
         for chunk in response:
             delta = chunk.choices[0].delta if chunk.choices else None
             if delta and delta.content:
@@ -313,7 +347,7 @@ class AnthropicBackend:
         client: Any = None,
         *,
         model: str = "claude-sonnet-4-20250514",
-        default_max_tokens: int = 2000,
+        default_max_tokens: int | None = None,
         api_key: str | None = None,
     ) -> None:
         if client is None:
@@ -342,7 +376,7 @@ class AnthropicBackend:
         kwargs: dict[str, Any] = {
             "model": self._model,
             "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": max_tokens or self._default_max_tokens,
+            "max_tokens": _resolve_max_tokens(max_tokens, self._default_max_tokens) or 4096,
             "temperature": temperature,
         }
         if system_prompt:
@@ -369,7 +403,7 @@ class AnthropicBackend:
         kwargs: dict[str, Any] = {
             "model": self._model,
             "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": max_tokens or self._default_max_tokens,
+            "max_tokens": _resolve_max_tokens(max_tokens, self._default_max_tokens) or 4096,
             "temperature": temperature,
             "tools": tools,
         }
@@ -402,7 +436,7 @@ class AnthropicStreamingBackend(AnthropicBackend):
         kwargs: dict[str, Any] = {
             "model": self._model,
             "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": max_tokens or self._default_max_tokens,
+            "max_tokens": _resolve_max_tokens(max_tokens, self._default_max_tokens) or 4096,
             "temperature": temperature,
         }
         if system_prompt:
@@ -432,7 +466,7 @@ class AsyncOpenAIBackend:
         client: Any = None,
         *,
         model: str = "gpt-4o",
-        default_max_tokens: int = 2000,
+        default_max_tokens: int | None = None,
         base_url: str | None = None,
         api_key: str | None = None,
         tool_choice: str = "auto",
@@ -464,12 +498,16 @@ class AsyncOpenAIBackend:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
 
-        response = await self._client.chat.completions.create(
-            model=self._model,
-            messages=messages,
-            max_tokens=max_tokens or self._default_max_tokens,
-            temperature=temperature,
-        )
+        kwargs: dict[str, Any] = {
+            "model": self._model,
+            "messages": messages,
+            "temperature": temperature,
+        }
+        _mt = _resolve_max_tokens(max_tokens, self._default_max_tokens)
+        if _mt is not None:
+            kwargs["max_tokens"] = _mt
+
+        response = await self._client.chat.completions.create(**kwargs)
         return response.choices[0].message.content or ""
 
     async def generate_with_tools(
@@ -487,14 +525,18 @@ class AsyncOpenAIBackend:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
 
-        response = await self._client.chat.completions.create(
-            model=self._model,
-            messages=messages,
-            max_tokens=max_tokens or self._default_max_tokens,
-            temperature=temperature,
-            tools=_to_openai_tools(tools),
-            tool_choice=self._tool_choice,
-        )
+        kwargs: dict[str, Any] = {
+            "model": self._model,
+            "messages": messages,
+            "temperature": temperature,
+            "tools": _to_openai_tools(tools),
+            "tool_choice": self._tool_choice,
+        }
+        _mt = _resolve_max_tokens(max_tokens, self._default_max_tokens)
+        if _mt is not None:
+            kwargs["max_tokens"] = _mt
+
+        response = await self._client.chat.completions.create(**kwargs)
         return _openai_message_to_blocks(response.choices[0].message)
 
     async def stream(
@@ -511,13 +553,17 @@ class AsyncOpenAIBackend:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
 
-        response = await self._client.chat.completions.create(
-            model=self._model,
-            messages=messages,
-            max_tokens=max_tokens or self._default_max_tokens,
-            temperature=temperature,
-            stream=True,
-        )
+        kwargs: dict[str, Any] = {
+            "model": self._model,
+            "messages": messages,
+            "temperature": temperature,
+            "stream": True,
+        }
+        _mt = _resolve_max_tokens(max_tokens, self._default_max_tokens)
+        if _mt is not None:
+            kwargs["max_tokens"] = _mt
+
+        response = await self._client.chat.completions.create(**kwargs)
         async for chunk in response:
             delta = chunk.choices[0].delta if chunk.choices else None
             if delta and delta.content:
@@ -540,7 +586,7 @@ class AsyncAnthropicBackend:
         client: Any,
         *,
         model: str = "claude-sonnet-4-20250514",
-        default_max_tokens: int = 2000,
+        default_max_tokens: int | None = None,
     ) -> None:
         self._client = client
         self._model = model
@@ -557,7 +603,7 @@ class AsyncAnthropicBackend:
         kwargs: dict[str, Any] = {
             "model": self._model,
             "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": max_tokens or self._default_max_tokens,
+            "max_tokens": _resolve_max_tokens(max_tokens, self._default_max_tokens) or 4096,
             "temperature": temperature,
         }
         if system_prompt:
@@ -583,7 +629,7 @@ class AsyncAnthropicBackend:
         kwargs: dict[str, Any] = {
             "model": self._model,
             "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": max_tokens or self._default_max_tokens,
+            "max_tokens": _resolve_max_tokens(max_tokens, self._default_max_tokens) or 4096,
             "temperature": temperature,
             "tools": tools,
         }
@@ -605,7 +651,7 @@ class AsyncAnthropicBackend:
         kwargs: dict[str, Any] = {
             "model": self._model,
             "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": max_tokens or self._default_max_tokens,
+            "max_tokens": _resolve_max_tokens(max_tokens, self._default_max_tokens) or 4096,
             "temperature": temperature,
         }
         if system_prompt:

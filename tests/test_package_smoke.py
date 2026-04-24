@@ -14,7 +14,7 @@ def test_version_is_string() -> None:
 def test_version_value() -> None:
     import looplet
 
-    assert looplet.__version__ == "0.1.7"
+    assert looplet.__version__ == "0.1.8"
 
 
 def test_package_docstring() -> None:

@@ -4,19 +4,47 @@ All notable changes to `looplet` are documented here. The format is
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.1.8] - 2026-04-24
 
 ### Added
-- `ctx.llm`: tools that accept a `ctx` parameter now receive the loop's
-  LLM backend via `ctx.llm`. Internal calls are tracked by
-  `RecordingLLMBackend` with `scope="tool:<name>"` for nested provenance.
-  See [hooks.md](hooks.md#tool-internal-llm-access-ctxllm).
-- `LLMCall.scope`: provenance field distinguishing loop-level calls
-  (`None`) from tool-internal calls (`"tool:<name>"`).
+- `ctx.llm`: tools receive the loop's LLM backend for internal calls.
+  Tracked by `RecordingLLMBackend` with `scope="tool:<name>"` for nested provenance.
+- `LLMCall.scope`: provenance field for loop vs tool-internal calls.
 - `state.step_context`: per-step ephemeral dict for hook-to-hook communication.
-  The loop clears it at step start; hooks write/read within the step.
-  See [hooks.md](hooks.md#hook-to-hook-communication-step_context).
-- `docs/faq.md`: "Why not LangGraph?" honest comparison (thanks @mvanhorn, #17)
+- `LoopConfig.tool_metadata`: static dict merged into every `ToolContext.metadata`.
+- `LoopConfig.generate_kwargs`: extra kwargs passed through to every LLM call.
+  Can override `temperature`, `max_tokens`, `system_prompt`. Supports
+  provider-specific params (`chat_template_kwargs`, `response_format`, `top_p`).
+- `async_composable_loop`: async generator for async LLM backends.
+- `_SyncBridgeLLM`: sync tools can use `ctx.llm.generate()` even with async backends.
+- `OpenAIBackend.tool_choice`: configurable `tool_choice` parameter.
+- `PerToolLimitHook.default_limit`: blanket cap for all tools.
+- `CompactOutcome.compacted`: property indicating if compaction reduced context.
+- `register_done_tool()`: convenience for registering the done tool.
+- `EvalResult.passed`: property for pass/fail determination.
+- Async tool dispatch in sync loop: `dispatch()` detects coroutine returns.
+- 3 example agents: threat intel briefing, git history detective, dependency doctor.
+
+### Changed
+- `ToolContext` is now always created (never `None`), with `metadata`
+  populated from `state.metadata` (copy, not reference).
+- `default_max_tokens` defaults to `None` across all backends — lets
+  the provider API decide instead of forcing 2000.
+- All docs and examples updated to use convenience `OpenAIBackend(base_url=...)`
+  and `register_done_tool()`.
+
+### Fixed
+- `Step.to_dict()` key names: `call` → `tool_call`, `result` → `tool_result`.
+- Tool validation error now shows what args were provided.
+- `Step.summary()` shows dict preview instead of `?`.
+- `Trajectory.task` field preserved in trajectory.json for eval round-trip.
+- `TrajectoryRecorder(output_dir=...)` auto-saves on loop end.
+- `RecoveryRegistry.register` warns on overwrite.
+- `clone_tools_excluding` warns on missing names (typo detection).
+- Permission audit strips `__…` scaffolding keys.
+- Conversation `compact()` marks summary as compaction boundary.
+
+## [Unreleased]
 
 ## [0.1.7] - 2026-04-21
 

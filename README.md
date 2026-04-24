@@ -265,7 +265,7 @@ Not a usage reference.
 may introduce breaking changes as the design stabilises — pin conservatively:
 
 ```toml
-looplet>=0.1.7,<0.2
+looplet>=0.1.8,<0.2
 ```
 
 See [ROADMAP.md § v1.0 API contract](ROADMAP.md#v10-api-contract) for the

@@ -114,6 +114,31 @@ class TestToolTimeout:
         assert r.error_kind == ErrorKind.VALIDATION  # ValueError -> VALIDATION
         assert "bad input" in r.error
 
+    def test_async_tool_respects_timeout(self) -> None:
+        """Async tools must also be subject to timeout_s."""
+        import asyncio
+
+        async def slow_async(x: str = "") -> dict:
+            await asyncio.sleep(10)
+            return {"ok": True}
+
+        reg = BaseToolRegistry()
+        reg.register(
+            ToolSpec(
+                name="async_slow",
+                description="x",
+                parameters={"x": "str"},
+                execute=slow_async,
+                timeout_s=0.1,
+            )
+        )
+        t0 = time.time()
+        r = reg.dispatch(ToolCall(tool="async_slow", args={"x": "hi"}))
+        elapsed = time.time() - t0
+        assert r.error is not None
+        assert r.error_kind == ErrorKind.TIMEOUT
+        assert elapsed < 2.0  # must return promptly, not wait 10s
+
 
 # ── Persist large outputs to file ────────────────────────────────
 

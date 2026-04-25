@@ -594,9 +594,17 @@ class BaseToolRegistry:
                 result_data = spec.execute(**exec_kwargs)
             # If the tool returned a coroutine (async def tool), run it
             # synchronously so async tools work in the sync loop without
-            # requiring the caller to manage the bridge.
+            # requiring the caller to manage the bridge.  The timeout
+            # (if set) is threaded through to the asyncio runner.
             if inspect.isawaitable(result_data):
                 import asyncio  # noqa: PLC0415
+
+                _async_timeout = spec.timeout_s
+
+                async def _run_with_timeout(coro: Any, timeout: float | None) -> Any:
+                    if timeout is not None and timeout > 0:
+                        return await asyncio.wait_for(coro, timeout=timeout)
+                    return await coro
 
                 try:
                     loop = asyncio.get_running_loop()
@@ -607,11 +615,14 @@ class BaseToolRegistry:
                     # blocking the event loop.
                     import concurrent.futures  # noqa: PLC0415
 
+                    _effective_timeout = _async_timeout or 120
                     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                        future = pool.submit(asyncio.run, result_data)  # pyright: ignore[reportArgumentType]
-                        result_data = future.result(timeout=120)
+                        future = pool.submit(
+                            asyncio.run, _run_with_timeout(result_data, _async_timeout)
+                        )  # pyright: ignore[reportArgumentType]
+                        result_data = future.result(timeout=_effective_timeout)
                 else:
-                    result_data = asyncio.run(result_data)  # pyright: ignore[reportArgumentType]
+                    result_data = asyncio.run(_run_with_timeout(result_data, _async_timeout))  # pyright: ignore[reportArgumentType]
         except Exception as e:
             _te = _classify_exception(e)
             # Even on failure, surface any warnings the tool had

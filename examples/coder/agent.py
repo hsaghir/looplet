@@ -222,6 +222,15 @@ class FileCache:
         except OSError:
             return False
 
+    def invalidate(self, path: str) -> None:
+        """Mark a file as modified so is_unchanged() returns False.
+
+        Call this from write_file/edit_file instead of record(). The
+        model hasn't *seen* the new content via read_file, so the
+        file_unchanged optimization must not fire on the next read.
+        """
+        self._hashes.pop(path, None)
+
     def render(self) -> str:
         if not self._recent:
             return ""
@@ -235,6 +244,19 @@ class FileCache:
 # ═══════════════════════════════════════════════════════════════════
 # TOOLS
 # ═══════════════════════════════════════════════════════════════════
+
+
+def _resolve_safe_path(workspace: str, file_path: str) -> Path | None:
+    """Resolve file_path relative to workspace, rejecting traversal.
+
+    Returns the resolved Path if it is inside the workspace, or None
+    if the path escapes (via ``..`` or absolute path).
+    """
+    ws = Path(workspace).resolve()
+    target = (ws / file_path).resolve()
+    if not str(target).startswith(str(ws) + "/") and target != ws:
+        return None
+    return target
 
 
 def make_tools(workspace: str, file_cache: FileCache) -> BaseToolRegistry:
@@ -337,10 +359,14 @@ def make_tools(workspace: str, file_cache: FileCache) -> BaseToolRegistry:
 
     # ── read_file ───────────────────────────────────────────────
     def read_file(*, file_path: str, start_line: int = 0, end_line: int = 0) -> dict:
-        p = Path(workspace) / file_path
+        p = _resolve_safe_path(workspace, file_path)
+        if p is None:
+            return {"error": f"Path '{file_path}' is outside the project directory."}
         if not p.exists():
             return {"error": f"File not found: {file_path}"}
-        # file_unchanged optimization: skip full content if unchanged since last read
+        # file_unchanged optimization: skip full content if unchanged
+        # since last *read* (not edit — edits update the hash but the
+        # model hasn't seen the new content via read_file yet).
         if start_line == 0 and end_line == 0 and file_cache.is_unchanged(file_path):
             return {
                 "path": file_path,
@@ -389,10 +415,12 @@ def make_tools(workspace: str, file_cache: FileCache) -> BaseToolRegistry:
 
     # ── write_file ──────────────────────────────────────────────
     def write_file(*, file_path: str, content: str) -> dict:
-        p = Path(workspace) / file_path
+        p = _resolve_safe_path(workspace, file_path)
+        if p is None:
+            return {"error": f"Path '{file_path}' is outside the project directory."}
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content)
-        file_cache.record(file_path)
+        file_cache.invalidate(file_path)
         return {"written": file_path, "lines": content.count("\n") + 1}
 
     tools.register(
@@ -410,7 +438,9 @@ def make_tools(workspace: str, file_cache: FileCache) -> BaseToolRegistry:
 
     # ── edit_file (search-and-replace with fuzzy fallback) ──────
     def edit_file(*, file_path: str, old_string: str, new_string: str) -> dict:
-        p = Path(workspace) / file_path
+        p = _resolve_safe_path(workspace, file_path)
+        if p is None:
+            return {"error": f"Path '{file_path}' is outside the project directory."}
         if not p.exists():
             return {"error": f"File not found: {file_path}"}
         # Guard: no-op edit wastes a step
@@ -421,7 +451,7 @@ def make_tools(workspace: str, file_cache: FileCache) -> BaseToolRegistry:
         if count == 1:
             new_text = text.replace(old_string, new_string, 1)
             p.write_text(new_text)
-            file_cache.record(file_path)
+            file_cache.invalidate(file_path)
             # Structured diff for model verification
             diff = difflib.unified_diff(
                 text.splitlines(keepends=True),

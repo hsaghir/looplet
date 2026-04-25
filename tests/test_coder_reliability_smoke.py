@@ -157,6 +157,99 @@ class TestReadFileUnchanged:
             )
             assert "content" in r2.data
 
+    def test_file_unchanged_false_after_edit(self) -> None:
+        """After edit_file, read_file must return full content, not file_unchanged."""
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "test.py"
+            p.write_text("hello\nworld\n")
+            cache = FileCache(tmp)
+            tools = make_tools(tmp, cache)
+
+            tools.dispatch(ToolCall(tool="read_file", args={"file_path": "test.py"}))
+            tools.dispatch(
+                ToolCall(
+                    tool="edit_file",
+                    args={"file_path": "test.py", "old_string": "hello", "new_string": "goodbye"},
+                )
+            )
+            r = tools.dispatch(ToolCall(tool="read_file", args={"file_path": "test.py"}))
+            assert r.data.get("file_unchanged") is not True
+            assert "content" in r.data
+            assert "goodbye" in r.data["content"]
+
+    def test_file_unchanged_false_after_write(self) -> None:
+        """After write_file, read_file must return full content."""
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "test.py"
+            p.write_text("hello\n")
+            cache = FileCache(tmp)
+            tools = make_tools(tmp, cache)
+
+            tools.dispatch(ToolCall(tool="read_file", args={"file_path": "test.py"}))
+            tools.dispatch(
+                ToolCall(
+                    tool="write_file",
+                    args={"file_path": "test.py", "content": "overwritten\n"},
+                )
+            )
+            r = tools.dispatch(ToolCall(tool="read_file", args={"file_path": "test.py"}))
+            assert "content" in r.data
+            assert "overwritten" in r.data["content"]
+
+
+class TestPathTraversal:
+    """File tools must reject paths outside the workspace."""
+
+    def test_read_file_rejects_dotdot(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = FileCache(tmp)
+            tools = make_tools(tmp, cache)
+            r = tools.dispatch(ToolCall(tool="read_file", args={"file_path": "../../etc/passwd"}))
+            assert "error" in r.data
+            assert "outside" in r.data["error"]
+
+    def test_read_file_rejects_absolute(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = FileCache(tmp)
+            tools = make_tools(tmp, cache)
+            r = tools.dispatch(ToolCall(tool="read_file", args={"file_path": "/etc/hostname"}))
+            assert "error" in r.data
+            assert "outside" in r.data["error"]
+
+    def test_write_file_rejects_traversal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = FileCache(tmp)
+            tools = make_tools(tmp, cache)
+            r = tools.dispatch(
+                ToolCall(tool="write_file", args={"file_path": "../escape.txt", "content": "x"})
+            )
+            assert "error" in r.data
+            assert "outside" in r.data["error"]
+            # File must NOT exist outside workspace
+            assert not (Path(tmp).parent / "escape.txt").exists()
+
+    def test_edit_file_rejects_absolute(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = FileCache(tmp)
+            tools = make_tools(tmp, cache)
+            r = tools.dispatch(
+                ToolCall(
+                    tool="edit_file",
+                    args={"file_path": "/etc/hostname", "old_string": "x", "new_string": "y"},
+                )
+            )
+            assert "error" in r.data
+            assert "outside" in r.data["error"]
+
+    def test_relative_path_inside_workspace_works(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "sub").mkdir()
+            (Path(tmp) / "sub" / "test.txt").write_text("hello\n")
+            cache = FileCache(tmp)
+            tools = make_tools(tmp, cache)
+            r = tools.dispatch(ToolCall(tool="read_file", args={"file_path": "sub/test.txt"}))
+            assert "content" in r.data
+
 
 class TestEditFileGuards:
     def test_old_equals_new_rejected(self) -> None:

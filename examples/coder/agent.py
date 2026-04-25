@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import hashlib
 import os
 import subprocess
 import tempfile
@@ -49,6 +50,36 @@ from looplet.stagnation import StagnationHook, tool_call_fingerprint
 from looplet.streaming import CallbackEmitter
 from looplet.tools import register_think_tool
 from looplet.types import ToolContext  # noqa: F401
+
+# ═══════════════════════════════════════════════════════════════════
+# EXIT CODE INTERPRETATION
+# ═══════════════════════════════════════════════════════════════════
+
+# Maps (command_prefix, exit_code) → human explanation so the model
+# doesn't misinterpret non-error exit codes as failures.
+_EXIT_CODE_MAP: dict[str, dict[int, str]] = {
+    "diff": {1: "files differ (not an error)"},
+    "grep": {1: "no match found (not an error)"},
+    "test": {1: "expression evaluated to false"},
+    "cmp": {1: "files differ (not an error)"},
+    "ruff check": {1: "lint issues found"},
+    "mypy": {1: "type errors found"},
+    "pylint": {1: "lint issues found (fatal=1)", 2: "error (2)", 4: "warning (4)"},
+}
+
+
+def _interpret_exit_code(cmd: str, exit_code: int) -> str | None:
+    """Return a human-readable interpretation of a non-zero exit code, or None."""
+    if exit_code == 0:
+        return None
+    for prefix, codes in _EXIT_CODE_MAP.items():
+        # Match command prefix (e.g. 'diff' matches 'diff -u a b')
+        cmd_stripped = cmd.lstrip()
+        if cmd_stripped == prefix or cmd_stripped.startswith(prefix + " "):
+            if exit_code in codes:
+                return codes[exit_code]
+    return None
+
 
 # ═══════════════════════════════════════════════════════════════════
 # UTILITIES
@@ -97,7 +128,12 @@ def _run(cmd: str, cwd: str, timeout: int = 120) -> dict:
             stderr = (
                 stderr[:2000] + f"\n... [{len(stderr) - 4000} chars truncated] ..." + stderr[-2000:]
             )
-        return {"stdout": stdout, "stderr": stderr, "exit_code": r.returncode}
+        result: dict = {"stdout": stdout, "stderr": stderr, "exit_code": r.returncode}
+        # Add semantic exit code interpretation
+        interpretation = _interpret_exit_code(cmd, r.returncode)
+        if interpretation:
+            result["exit_code_note"] = interpretation
+        return result
     except subprocess.TimeoutExpired:
         return {"stdout": "", "stderr": f"Command timed out after {timeout}s", "exit_code": -1}
     except Exception as e:
@@ -125,7 +161,12 @@ def _fuzzy_find(text: str, target: str, threshold: float = 0.6) -> list[tuple[in
 
 
 class FileCache:
-    """Tracks recently read/written files for re-injection after compaction."""
+    """Tracks recently read/written files for re-injection after compaction.
+
+    Also tracks file mtimes for stale-file detection: when a bash
+    command modifies files that were previously read, the cache can
+    report which files have stale content so the model re-reads them.
+    """
 
     def __init__(self, workspace: str, max_files: int = 5, max_chars: int = 8000):
         self._workspace = workspace
@@ -133,6 +174,8 @@ class FileCache:
         self._max_chars = max_chars
         self._recent: dict[str, str] = {}
         self._order: list[str] = []
+        self._mtimes: dict[str, float] = {}  # path -> mtime when last read
+        self._hashes: dict[str, str] = {}  # path -> content hash when last read
 
     def record(self, path: str) -> None:
         p = Path(self._workspace) / path
@@ -140,6 +183,8 @@ class FileCache:
             return
         try:
             content = p.read_text()
+            self._hashes[path] = hashlib.sha256(content.encode()).hexdigest()[:16]
+            self._mtimes[path] = p.stat().st_mtime
             if len(content) > self._max_chars:
                 content = content[: self._max_chars] + "\n... [truncated]"
             self._recent[path] = content
@@ -151,6 +196,31 @@ class FileCache:
                 self._recent.pop(old, None)
         except Exception:
             pass
+
+    def stale_files(self) -> list[str]:
+        """Return paths of files whose mtime changed since last read."""
+        stale = []
+        for path, cached_mtime in self._mtimes.items():
+            p = Path(self._workspace) / path
+            try:
+                current_mtime = p.stat().st_mtime
+                if current_mtime != cached_mtime:
+                    stale.append(path)
+            except OSError:
+                pass
+        return stale
+
+    def is_unchanged(self, path: str) -> bool:
+        """True if the file content hasn't changed since last read."""
+        if path not in self._hashes:
+            return False
+        p = Path(self._workspace) / path
+        try:
+            content = p.read_text()
+            current_hash = hashlib.sha256(content.encode()).hexdigest()[:16]
+            return current_hash == self._hashes[path]
+        except OSError:
+            return False
 
     def render(self) -> str:
         if not self._recent:
@@ -171,6 +241,28 @@ def make_tools(workspace: str, file_cache: FileCache) -> BaseToolRegistry:
     tools = BaseToolRegistry()
 
     # ── bash ────────────────────────────────────────────────────
+    def bash_execute(*, command: str) -> dict:
+        # CWD safety: detect cd outside workspace
+        result = _run(command, workspace)
+        # Check if command tried to cd outside workspace
+        parts = command.split("&&")
+        for part in parts:
+            part = part.strip()
+            if part.startswith("cd "):
+                target = part[3:].strip().strip("'\"")
+                resolved = Path(workspace) / target
+                try:
+                    resolved = resolved.resolve()
+                    ws_resolved = Path(workspace).resolve()
+                    if not str(resolved).startswith(str(ws_resolved)):
+                        result["cwd_warning"] = (
+                            f"Warning: 'cd {target}' points outside the project directory. "
+                            f"All commands run in the project root. Use relative paths."
+                        )
+                except Exception:
+                    pass
+        return result
+
     tools.register(
         ToolSpec(
             name="bash",
@@ -180,7 +272,8 @@ def make_tools(workspace: str, file_cache: FileCache) -> BaseToolRegistry:
                 "properties": {"command": {"type": "string", "description": "The bash command"}},
                 "required": ["command"],
             },
-            execute=lambda *, command: _run(command, workspace),
+            execute=bash_execute,
+            timeout_s=600,  # 10 minute cap
         )
     )
 
@@ -245,6 +338,13 @@ def make_tools(workspace: str, file_cache: FileCache) -> BaseToolRegistry:
         p = Path(workspace) / file_path
         if not p.exists():
             return {"error": f"File not found: {file_path}"}
+        # file_unchanged optimization: skip full content if unchanged since last read
+        if start_line == 0 and end_line == 0 and file_cache.is_unchanged(file_path):
+            return {
+                "path": file_path,
+                "file_unchanged": True,
+                "note": "File has not changed since your last read. No need to re-read.",
+            }
         try:
             lines = p.read_text().splitlines()
             if start_line > 0 and end_line > 0:
@@ -311,12 +411,27 @@ def make_tools(workspace: str, file_cache: FileCache) -> BaseToolRegistry:
         p = Path(workspace) / file_path
         if not p.exists():
             return {"error": f"File not found: {file_path}"}
+        # Guard: no-op edit wastes a step
+        if old_string == new_string:
+            return {"error": "old_string and new_string are identical. No change needed."}
         text = p.read_text()
         count = text.count(old_string)
         if count == 1:
-            p.write_text(text.replace(old_string, new_string, 1))
+            new_text = text.replace(old_string, new_string, 1)
+            p.write_text(new_text)
             file_cache.record(file_path)
-            return {"edited": file_path, "replacements": 1}
+            # Structured diff for model verification
+            diff = difflib.unified_diff(
+                text.splitlines(keepends=True),
+                new_text.splitlines(keepends=True),
+                fromfile=f"a/{file_path}",
+                tofile=f"b/{file_path}",
+                n=3,
+            )
+            diff_text = "".join(diff)
+            if len(diff_text) > 2000:
+                diff_text = diff_text[:2000] + "\n... [diff truncated]"
+            return {"edited": file_path, "replacements": 1, "diff": diff_text}
         if count > 1:
             return {
                 "error": f"Matches {count} locations. Include more surrounding context for a unique match.",
@@ -485,6 +600,85 @@ class TestGuardHook:
         return False
 
 
+class StaleFileHook:
+    """Detects when bash commands modify files the model previously read.
+
+    Mirrors Claude Code's staleReadFileStateHint: after each bash step,
+    checks cached file mtimes and warns the model to re-read before editing.
+    """
+
+    def __init__(self, cache: FileCache):
+        self._cache = cache
+
+    def post_dispatch(self, state, session_log, tool_call, tool_result, step_num):
+        if tool_call.tool != "bash":
+            return None
+        data = tool_result.data or {}
+        if data.get("exit_code", 1) != 0:
+            return None
+        stale = self._cache.stale_files()
+        if stale:
+            return InjectContext(
+                f"⚠ Stale files: {', '.join(stale)} were modified by this command. "
+                f"Re-read them with read_file before editing."
+            )
+        return None
+
+    def should_stop(self, state, step_num, new_entities):
+        return False
+
+
+class LinterHook:
+    """Runs ruff check after Python file edits, injects diagnostics.
+
+    Mirrors Claude Code's automatic LSP error reporting after file edits.
+    Only runs when ruff is available in the workspace.
+    """
+
+    def __init__(self, workspace: str):
+        self._workspace = workspace
+        self._ruff_available: bool | None = None
+
+    def _check_ruff(self) -> bool:
+        if self._ruff_available is None:
+            try:
+                r = subprocess.run(["ruff", "--version"], capture_output=True, timeout=5)
+                self._ruff_available = r.returncode == 0
+            except Exception:
+                self._ruff_available = False
+        return self._ruff_available
+
+    def post_dispatch(self, state, session_log, tool_call, tool_result, step_num):
+        if tool_call.tool not in ("edit_file", "write_file"):
+            return None
+        file_path = tool_call.args.get("file_path", "")
+        if not file_path.endswith(".py"):
+            return None
+        if tool_result.error:
+            return None
+        if not self._check_ruff():
+            return None
+        try:
+            r = subprocess.run(
+                ["ruff", "check", "--no-fix", file_path],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                cwd=self._workspace,
+            )
+            if r.returncode != 0 and r.stdout.strip():
+                lines = r.stdout.strip().splitlines()
+                if len(lines) > 10:
+                    lines = lines[:10] + [f"... and {len(lines) - 10} more issues"]
+                return InjectContext(f"⚠ Lint issues in {file_path}:\n" + "\n".join(lines))
+        except Exception:
+            pass
+        return None
+
+    def should_stop(self, state, step_num, new_entities):
+        return False
+
+
 class FileCacheHook:
     def __init__(self, cache: FileCache):
         self._cache = cache
@@ -561,6 +755,8 @@ def main():
     if not args.no_tests:
         hooks.append(TestGuardHook())
     hooks.append(FileCacheHook(file_cache))
+    hooks.append(StaleFileHook(file_cache))
+    hooks.append(LinterHook(workspace))
     hooks.append(
         StagnationHook(
             fingerprint=tool_call_fingerprint,

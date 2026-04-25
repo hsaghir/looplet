@@ -245,7 +245,9 @@ def make_tools(workspace: str, file_cache: FileCache) -> BaseToolRegistry:
         # CWD safety: detect cd outside workspace
         result = _run(command, workspace)
         # Check if command tried to cd outside workspace
-        parts = command.split("&&")
+        import re  # noqa: PLC0415
+
+        parts = re.split(r"&&|\|\||;|\n", command)
         for part in parts:
             part = part.strip()
             if part.startswith("cd "):
@@ -613,9 +615,8 @@ class StaleFileHook:
     def post_dispatch(self, state, session_log, tool_call, tool_result, step_num):
         if tool_call.tool != "bash":
             return None
-        data = tool_result.data or {}
-        if data.get("exit_code", 1) != 0:
-            return None
+        # Check for stale files even on failed commands — a partial
+        # build or interrupted write can still modify files.
         stale = self._cache.stale_files()
         if stale:
             return InjectContext(

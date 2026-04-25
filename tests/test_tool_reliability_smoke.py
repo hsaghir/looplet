@@ -12,8 +12,6 @@ import os
 import tempfile
 import time
 
-import pytest
-
 from looplet import BaseToolRegistry, ErrorKind, ToolCall, ToolSpec
 from looplet.scaffolding import truncate_tool_result
 

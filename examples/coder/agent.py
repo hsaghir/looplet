@@ -818,6 +818,7 @@ def main():
             PruneToolResults(keep_recent=10), TruncateCompact(keep_recent=5)
         ),
         memory_sources=memory_sources,
+        use_native_tools=True,
     )
     state = DefaultState(max_steps=args.max_steps)
     session_log = SessionLog()

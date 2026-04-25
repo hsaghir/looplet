@@ -199,3 +199,69 @@ class TestNativeToolUse:
         blocks = [{"type": "tool_use", "id": "1", "name": "z", "input": {}}]
         calls = parse_native_tool_use(blocks)
         assert all(isinstance(c, ToolCall) for c in calls)
+
+
+# ── Robust edit_file parsing ────────────────────────────────────
+
+
+class TestRobustEditParsing:
+    """Parser handles common LLM quirks when calling edit_file."""
+
+    def test_literal_newlines_in_json_strings(self) -> None:
+        """LLM puts actual newlines inside old_string/new_string."""
+        raw = '{"tool": "edit_file", "args": {"file_path": "t.py", "old_string": "line1\nline2", "new_string": "new1\nnew2"}}'
+        calls = parse_multi_tool_calls(raw)
+        assert len(calls) == 1
+        assert calls[0].args["file_path"] == "t.py"
+        assert "\n" in calls[0].args["old_string"]
+
+    def test_flat_args_without_wrapper(self) -> None:
+        """LLM puts args as siblings of 'tool' instead of nested under 'args'."""
+        raw = '{"tool": "edit_file", "file_path": "t.py", "old_string": "a", "new_string": "b"}'
+        calls = parse_multi_tool_calls(raw)
+        assert len(calls) == 1
+        assert calls[0].args["file_path"] == "t.py"
+        assert calls[0].args["old_string"] == "a"
+
+    def test_input_key_instead_of_args(self) -> None:
+        """LLM uses 'input' (Anthropic style) instead of 'args'."""
+        raw = '{"tool": "edit_file", "input": {"file_path": "t.py", "old_string": "a", "new_string": "b"}}'
+        calls = parse_multi_tool_calls(raw)
+        assert len(calls) == 1
+        assert calls[0].args["file_path"] == "t.py"
+
+    def test_parameters_key_instead_of_args(self) -> None:
+        """LLM uses 'parameters' (OpenAPI style) instead of 'args'."""
+        raw = '{"tool": "edit_file", "parameters": {"file_path": "t.py", "old_string": "a", "new_string": "b"}}'
+        calls = parse_multi_tool_calls(raw)
+        assert len(calls) == 1
+        assert calls[0].args["file_path"] == "t.py"
+
+    def test_name_key_instead_of_tool(self) -> None:
+        """LLM uses 'name' instead of 'tool'."""
+        raw = '{"name": "bash", "args": {"command": "ls"}}'
+        calls = parse_multi_tool_calls(raw)
+        assert len(calls) == 1
+        assert calls[0].tool == "bash"
+
+    def test_thinking_key_preserved(self) -> None:
+        """LLM uses 'thinking' key for reasoning."""
+        raw = '{"tool": "bash", "thinking": "I need to list files", "args": {"command": "ls"}}'
+        calls = parse_multi_tool_calls(raw)
+        assert len(calls) == 1
+        assert calls[0].reasoning == "I need to list files"
+
+    def test_multiline_code_block_in_edit(self) -> None:
+        """LLM sends actual multi-line Python code in old/new strings."""
+        raw = '{"tool": "edit_file", "args": {"file_path": "app.py", "old_string": "class Foo:\n    def bar(self):\n        return 1", "new_string": "class Foo:\n    def bar(self):\n        return 2\n\n    def baz(self):\n        return 3"}}'
+        calls = parse_multi_tool_calls(raw)
+        assert len(calls) == 1
+        assert "class Foo:" in calls[0].args["old_string"]
+        assert "def baz" in calls[0].args["new_string"]
+
+    def test_tabs_in_code(self) -> None:
+        """LLM sends code with literal tabs."""
+        raw = '{"tool": "edit_file", "args": {"file_path": "t.py", "old_string": "def f():\n\treturn 1", "new_string": "def f():\n\treturn 2"}}'
+        calls = parse_multi_tool_calls(raw)
+        assert len(calls) == 1
+        assert "\t" in calls[0].args["old_string"]

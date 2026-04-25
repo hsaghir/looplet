@@ -121,14 +121,67 @@ def _try_parse_json(text: str) -> dict | None:
             return obj
     except (json.JSONDecodeError, ValueError):
         pass
+    # Retry with literal newlines/tabs escaped — LLMs frequently put
+    # raw newlines inside JSON string values (especially in edit_file
+    # old_string/new_string with multi-line code).
+    try:
+        fixed = _escape_literal_newlines(text)
+        if fixed != text:
+            obj = json.loads(fixed)
+            if isinstance(obj, dict):
+                return obj
+    except (json.JSONDecodeError, ValueError):
+        pass
     return None
 
 
+def _escape_literal_newlines(text: str) -> str:
+    """Escape literal newlines/tabs inside JSON string values.
+
+    Walks the text character-by-character, tracking whether we're
+    inside a JSON string (between unescaped quotes). When a literal
+    newline or tab appears inside a string, replaces it with the
+    proper JSON escape sequence.
+    """
+    result: list[str] = []
+    in_string = False
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if ch == "\\" and in_string:
+            # Escaped character — copy both backslash and next char
+            result.append(ch)
+            if i + 1 < len(text):
+                i += 1
+                result.append(text[i])
+            i += 1
+            continue
+        if ch == '"':
+            in_string = not in_string
+            result.append(ch)
+            i += 1
+            continue
+        if in_string:
+            if ch == "\n":
+                result.append("\\n")
+            elif ch == "\r":
+                result.append("\\r")
+            elif ch == "\t":
+                result.append("\\t")
+            else:
+                result.append(ch)
+        else:
+            result.append(ch)
+        i += 1
+    return "".join(result)
+
+
 def _dict_to_tool_call(d: dict) -> ToolCall | None:
-    tool = d.get("tool")
+    tool = d.get("tool") or d.get("name")
     if not tool:
         return None
-    args = d.get("args", {})
+    # Try multiple common arg-key names the model might use.
+    args = d.get("args") or d.get("input") or d.get("parameters") or {}
     if isinstance(args, str):
         # LLM sent a bare string instead of a dict — stash it under
         # "_raw_arg" so dispatch can still see it (and the validation
@@ -137,13 +190,31 @@ def _dict_to_tool_call(d: dict) -> ToolCall | None:
         args = {"_raw_arg": args}
     elif not isinstance(args, dict):
         args = {}
+    # Flat args: model put parameters as siblings of "tool" instead of
+    # nesting them under "args".  Detect by checking if the dict has
+    # keys beyond the known meta-keys.
+    if not args:
+        _meta_keys = {
+            "tool",
+            "name",
+            "args",
+            "input",
+            "parameters",
+            "reasoning",
+            "theory",
+            "thought",
+            "thinking",
+        }
+        flat = {k: v for k, v in d.items() if k not in _meta_keys}
+        if flat:
+            args = flat
     theory = d.get("theory", "")
     if theory:
         args["__theory__"] = theory
     return ToolCall(
         tool=str(tool),
         args=args,
-        reasoning=str(d.get("reasoning", "")),
+        reasoning=str(d.get("reasoning", d.get("thinking", d.get("thought", "")))),
     )
 
 

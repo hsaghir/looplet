@@ -662,14 +662,26 @@ class BaseToolRegistry:
         Raises :class:`TimeoutError` (caught by dispatch's exception
         handler and classified as ``ErrorKind.TIMEOUT``) if the
         callable does not complete within ``timeout_s`` seconds.
+
+        Uses ``shutdown(wait=False)`` so the caller returns immediately
+        on timeout — the orphaned thread finishes on its own.  Avoids
+        the ``with ThreadPoolExecutor`` pattern which calls
+        ``shutdown(wait=True)`` on exit and blocks until the thread
+        completes, defeating the entire purpose of the timeout.
         """
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(spec.execute, **kwargs)
-            try:
-                return future.result(timeout=timeout_s)
-            except Exception:
-                future.cancel()
-                raise
+        pool = ThreadPoolExecutor(max_workers=1)
+        future = pool.submit(spec.execute, **kwargs)
+        try:
+            return future.result(timeout=timeout_s)
+        except Exception:
+            future.cancel()
+            pool.shutdown(wait=False, cancel_futures=True)
+            raise
+        finally:
+            # On success the thread is already done — clean shutdown
+            # is instantaneous.  On timeout the thread may still be
+            # running; wait=False lets us return immediately.
+            pool.shutdown(wait=False)
 
     def dispatch_batch(
         self, calls: list[ToolCall], *, ctx: ToolContext | None = None

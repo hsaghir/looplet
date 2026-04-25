@@ -247,6 +247,16 @@ class ToolSpec:
     free: bool = False
     """True if the tool does not consume agent budget (e.g. think, reflect)."""
 
+    timeout_s: float | None = None
+    """Maximum wall-clock seconds for tool execution.
+
+    When set, :meth:`BaseToolRegistry.dispatch` wraps the ``execute``
+    call in a thread with a deadline. If the tool exceeds the timeout,
+    dispatch returns a ``ToolResult`` with ``error_kind == TIMEOUT``
+    and ``retriable == True``. ``None`` means no framework-level
+    timeout (the tool itself is responsible for timing out).
+    """
+
     _accepts_ctx: bool | None = field(default=None, repr=False, compare=False)
     """Cached result of ``inspect.signature(execute)`` for ``ctx`` detection."""
 
@@ -577,7 +587,11 @@ class BaseToolRegistry:
         warn_start = len(ctx.warnings) if ctx is not None else 0
 
         try:
-            result_data = spec.execute(**exec_kwargs)
+            # Enforce framework-level timeout when ToolSpec.timeout_s is set.
+            if spec.timeout_s is not None and spec.timeout_s > 0:
+                result_data = self._execute_with_timeout(spec, exec_kwargs, spec.timeout_s)
+            else:
+                result_data = spec.execute(**exec_kwargs)
             # If the tool returned a coroutine (async def tool), run it
             # synchronously so async tools work in the sync loop without
             # requiring the caller to manage the bridge.
@@ -640,6 +654,22 @@ class BaseToolRegistry:
     def _store_result(self, call: ToolCall, result_data: Any) -> str | None:
         """Override in subclasses to enable result storage/recall."""
         return None
+
+    @staticmethod
+    def _execute_with_timeout(spec: ToolSpec, kwargs: dict[str, Any], timeout_s: float) -> Any:
+        """Run ``spec.execute(**kwargs)`` in a thread with a deadline.
+
+        Raises :class:`TimeoutError` (caught by dispatch's exception
+        handler and classified as ``ErrorKind.TIMEOUT``) if the
+        callable does not complete within ``timeout_s`` seconds.
+        """
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(spec.execute, **kwargs)
+            try:
+                return future.result(timeout=timeout_s)
+            except Exception:
+                future.cancel()
+                raise
 
     def dispatch_batch(
         self, calls: list[ToolCall], *, ctx: ToolContext | None = None

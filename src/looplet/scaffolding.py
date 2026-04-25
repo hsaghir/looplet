@@ -524,18 +524,64 @@ class StepProgressTracker:
 # ── Tool Result Truncation ───────────────────────────────────────
 
 
+def _serialize_for_persist(data: Any) -> str:
+    """Convert tool result data to a string for persistence sizing."""
+    if isinstance(data, str):
+        return data
+    import json  # noqa: PLC0415
+
+    try:
+        return json.dumps(data, indent=2, default=str)
+    except (TypeError, ValueError):
+        return str(data)
+
+
 def truncate_tool_result(
     data: Any,
     max_chars: int = TOOL_RESULT_MAX_CHARS,
     max_rows: int = TOOL_RESULT_MAX_ROWS,
+    *,
+    persist_dir: str | None = None,
+    persist_threshold: int = 0,
 ) -> Any:
     """Truncate tool result data to prevent context blow-up.
 
     When truncating, adds metadata so the LLM knows data was cut:
     total count, shown count, and guidance on how to get more.
+
+    When ``persist_dir`` is set and the raw data exceeds
+    ``persist_threshold`` characters, the full output is written to a
+    file in ``persist_dir`` and the result includes the file path and
+    byte count so the model can read it later if needed (mirrors
+    Claude Code's large-output persistence pattern).
     """
     if data is None:
         return data
+
+    # Persist very large outputs to disk before truncating inline.
+    if persist_dir and persist_threshold > 0:
+        raw = _serialize_for_persist(data)
+        if len(raw) > persist_threshold:
+            import hashlib  # noqa: PLC0415
+            from pathlib import Path  # noqa: PLC0415
+
+            persist_path = Path(persist_dir)
+            persist_path.mkdir(parents=True, exist_ok=True)
+            digest = hashlib.sha256(raw.encode()).hexdigest()[:12]
+            out_file = persist_path / f"tool-output-{digest}.txt"
+            out_file.write_text(raw)
+            # Return a truncated version with a pointer to the full file.
+            truncated = raw[:max_chars] + f"\n... [{len(raw)} chars total]"
+            return {
+                "truncated_output": truncated,
+                "persisted_output_path": str(out_file),
+                "persisted_output_size": len(raw),
+                "note": (
+                    f"Output too large for inline ({len(raw)} chars). "
+                    f"Full output saved to {out_file}. "
+                    f"Use read_file or bash to inspect it."
+                ),
+            }
 
     if isinstance(data, list):
         if len(data) > max_rows:

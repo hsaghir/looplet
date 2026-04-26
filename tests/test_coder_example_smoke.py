@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from examples.coder import agent as coder
+from looplet import NativeToolProbeResult
 
 pytestmark = pytest.mark.smoke
 
@@ -58,3 +59,29 @@ class TestCoderExample:
         assert "Probe: backend has no generate_with_tools method" in out
         assert "bash: python -m pytest -q" in out
         assert "Done: Created math_utils.add with tests." in out
+
+    def test_main_probes_recording_backend(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        probed: list[object] = []
+
+        def fake_probe(llm) -> NativeToolProbeResult:
+            probed.append(llm)
+            return NativeToolProbeResult(False, "fake probe")
+
+        monkeypatch.setattr(coder, "probe_native_tool_support", fake_probe)
+
+        rc = coder.main(
+            [
+                "Create a tiny add function with tests",
+                "--workspace",
+                str(tmp_path),
+                "--scripted",
+                "--max-steps",
+                "8",
+            ]
+        )
+
+        assert rc == 0
+        assert isinstance(probed[0], coder.RecordingLLMBackend)
+        assert "Probe: fake probe" in capsys.readouterr().out

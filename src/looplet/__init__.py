@@ -82,7 +82,15 @@ from looplet.prompts import preview_prompt
 from looplet.provenance import ProvenanceSink, TrajectoryRecorder, replay_loop
 from looplet.resilient import ResilientBackend, RetryExhausted
 from looplet.session import SessionLog
-from looplet.skills import Skill, install_skills
+from looplet.skills import (
+    FileSkillStore,
+    Skill,
+    SkillActivationHook,
+    SkillCard,
+    SkillManager,
+    install_skills,
+    make_skill_tools,
+)
 from looplet.stagnation import (
     StagnationHook,
     result_size_fingerprint,
@@ -129,7 +137,12 @@ __all__ = [
     "BaseToolRegistry",
     "register_done_tool",
     "Skill",
+    "SkillCard",
+    "FileSkillStore",
+    "SkillManager",
+    "SkillActivationHook",
     "install_skills",
+    "make_skill_tools",
     "DefaultState",
     "LLMBackend",
     "HookDecision",

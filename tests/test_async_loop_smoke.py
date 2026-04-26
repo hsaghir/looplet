@@ -12,6 +12,7 @@ from looplet import (
     register_done_tool,
 )
 from looplet.async_loop import async_composable_loop, async_llm_call
+from looplet.cache import CacheControl, CachePolicy
 from looplet.testing import AsyncMockLLMBackend
 from looplet.types import ToolContext
 
@@ -178,3 +179,259 @@ class TestAsyncComposableLoop:
         # Both steps should start with empty step_context
         assert ctx_values[0] == {}
         assert ctx_values[1] == {}
+
+    async def test_initial_checkpoint_restores_step_offset_and_session_log(self):
+        from looplet.checkpoint import Checkpoint
+        from looplet.session import SessionLog
+
+        checkpoint = Checkpoint(
+            step_number=3,
+            session_log_data={"entries": [], "current_theory": "resumed theory"},
+            conversation_data=None,
+            config_snapshot={},
+            tool_results_store={},
+            metadata={},
+        )
+        mock = AsyncMockLLMBackend(
+            responses=['{"tool": "done", "args": {"summary": "resumed"}, "reasoning": "r"}']
+        )
+        tools = BaseToolRegistry()
+        register_done_tool(tools)
+        session_log = SessionLog()
+
+        steps = []
+        async for step in async_composable_loop(
+            llm=mock,
+            tools=tools,
+            state=DefaultState(max_steps=5),
+            session_log=session_log,
+            config=LoopConfig(max_steps=5, initial_checkpoint=checkpoint),
+            task={},
+        ):
+            steps.append(step)
+
+        assert steps[0].number == 4
+        assert session_log.current_theory == "resumed theory"
+
+    async def test_done_checkpoint_includes_recorded_session_log_entry(self, tmp_path):
+        from looplet.checkpoint import FileCheckpointStore
+
+        mock = AsyncMockLLMBackend(
+            responses=['{"tool": "done", "args": {"summary": "finished"}, "reasoning": "r"}']
+        )
+        tools = BaseToolRegistry()
+        register_done_tool(tools)
+
+        async for _ in async_composable_loop(
+            llm=mock,
+            tools=tools,
+            state=DefaultState(max_steps=3),
+            config=LoopConfig(max_steps=3, checkpoint_dir=tmp_path),
+            task={},
+        ):
+            pass
+
+        checkpoint = FileCheckpointStore(tmp_path).load("step_1_done")
+
+        assert checkpoint is not None
+        assert checkpoint.metadata["status"] == "done"
+        assert len(checkpoint.session_log_data["entries"]) == 1
+
+    async def test_regular_checkpoint_includes_recorded_session_log_entry(self, tmp_path):
+        from looplet.checkpoint import FileCheckpointStore
+
+        mock = AsyncMockLLMBackend(
+            responses=[
+                '{"tool": "ping", "args": {}, "reasoning": "r"}',
+                '{"tool": "done", "args": {"summary": "finished"}, "reasoning": "r"}',
+            ]
+        )
+        tools = BaseToolRegistry()
+        register_done_tool(tools)
+        tools.register(
+            ToolSpec(name="ping", description="ping", parameters={}, execute=lambda: {"pong": True})
+        )
+
+        async for _ in async_composable_loop(
+            llm=mock,
+            tools=tools,
+            state=DefaultState(max_steps=3),
+            config=LoopConfig(max_steps=3, checkpoint_dir=tmp_path),
+            task={},
+        ):
+            pass
+
+        checkpoint = FileCheckpointStore(tmp_path).load("step_1")
+
+        assert checkpoint is not None
+        assert len(checkpoint.session_log_data["entries"]) == 1
+
+    async def test_async_stop_event_precedes_loop_end_with_stop_reason(self):
+        from looplet import LifecycleEvent
+
+        observations = []
+
+        class StopOrderHook:
+            def on_event(self, payload):
+                if payload.event == LifecycleEvent.STOP:
+                    observations.append(
+                        (
+                            "stop",
+                            payload.termination_reason,
+                            getattr(payload.state, "_stop_reason", None),
+                        )
+                    )
+
+            async def on_loop_end(self, state, session_log, context, llm):
+                observations.append(("end", getattr(state, "_stop_reason", None)))
+                return 0
+
+        mock = AsyncMockLLMBackend(
+            responses=['{"tool": "done", "args": {"summary": "finished"}, "reasoning": "r"}']
+        )
+        tools = BaseToolRegistry()
+        register_done_tool(tools)
+
+        async for _ in async_composable_loop(
+            llm=mock,
+            tools=tools,
+            state=DefaultState(max_steps=3),
+            config=LoopConfig(max_steps=3),
+            hooks=[StopOrderHook()],
+            task={},
+        ):
+            pass
+
+        assert observations == [("stop", "done", "done"), ("end", "done")]
+
+    async def test_cache_policy_threads_breakpoints_into_async_backend(self):
+        class CacheAwareAsyncBackend:
+            def __init__(self) -> None:
+                self.received = []
+
+            async def generate(
+                self,
+                prompt,
+                *,
+                max_tokens=2000,
+                system_prompt="",
+                temperature=0.2,
+                cache_breakpoints=None,
+            ):
+                self.received.append(cache_breakpoints)
+                return '{"tool": "done", "args": {"summary": "ok"}, "reasoning": "r"}'
+
+        backend = CacheAwareAsyncBackend()
+        tools = BaseToolRegistry()
+        register_done_tool(tools)
+
+        async for _ in async_composable_loop(
+            llm=backend,
+            tools=tools,
+            state=DefaultState(max_steps=3),
+            config=LoopConfig(
+                max_steps=3,
+                system_prompt="SYS",
+                cache_policy=CachePolicy(system_prompt=CacheControl()),
+            ),
+            task={},
+        ):
+            pass
+
+        assert backend.received[0] is not None
+        assert backend.received[0][0].label == "system_prompt"
+
+    async def test_recovery_registry_consulted_on_parse_error(self):
+        from looplet.recovery import (
+            FailureScenario,
+            RecoveryAction,
+            RecoveryRecipe,
+            RecoveryRegistry,
+        )
+
+        recovery_called = []
+
+        def handler(ctx):
+            recovery_called.append(ctx)
+            return RecoveryAction(action_type="log_and_continue", message="retry as JSON")
+
+        registry = RecoveryRegistry()
+        registry.register(
+            RecoveryRecipe(
+                scenario=FailureScenario.PARSE_ERROR,
+                handler=handler,
+                max_attempts=3,
+            )
+        )
+        mock = AsyncMockLLMBackend(
+            responses=[
+                "not json",
+                '{"tool": "done", "args": {"summary": "recovered"}, "reasoning": "r"}',
+            ]
+        )
+        tools = BaseToolRegistry()
+        register_done_tool(tools)
+
+        steps = []
+        async for step in async_composable_loop(
+            llm=mock,
+            tools=tools,
+            state=DefaultState(max_steps=5),
+            config=LoopConfig(max_steps=5, recovery_registry=registry),
+            task={},
+        ):
+            steps.append(step)
+
+        assert recovery_called
+        assert steps[-1].tool_call.tool == "done"
+
+    async def test_concurrent_dispatch_uses_batch_path(self):
+        class SpyRegistry(BaseToolRegistry):
+            def __init__(self) -> None:
+                super().__init__()
+                self.batch_calls = 0
+
+            def dispatch_batch(self, calls, *, ctx=None):
+                self.batch_calls += 1
+                return super().dispatch_batch(calls, ctx=ctx)
+
+        tools = SpyRegistry()
+        register_done_tool(tools)
+        tools.register(
+            ToolSpec(
+                name="a",
+                description="a",
+                parameters={},
+                execute=lambda: {"a": True},
+                concurrent_safe=True,
+            )
+        )
+        tools.register(
+            ToolSpec(
+                name="b",
+                description="b",
+                parameters={},
+                execute=lambda: {"b": True},
+                concurrent_safe=True,
+            )
+        )
+        mock = AsyncMockLLMBackend(
+            responses=[
+                '{"tools": ['
+                '{"tool": "a", "args": {}, "reasoning": "r"},'
+                '{"tool": "b", "args": {}, "reasoning": "r"},'
+                '{"tool": "done", "args": {"summary": "ok"}, "reasoning": "r"}'
+                "]}"
+            ]
+        )
+
+        async for _ in async_composable_loop(
+            llm=mock,
+            tools=tools,
+            state=DefaultState(max_steps=5),
+            config=LoopConfig(max_steps=5, concurrent_dispatch=True),
+            task={},
+        ):
+            pass
+
+        assert tools.batch_calls == 1

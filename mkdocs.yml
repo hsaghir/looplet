@@ -103,6 +103,7 @@ nav:
       - Recipes: recipes.md
   - Build:
       - Hooks: hooks.md
+      - Skills: skills.md
       - Evals: evals.md
       - Provenance: provenance.md
       - Pitfalls: pitfalls.md

@@ -26,6 +26,7 @@ import difflib
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -258,9 +259,17 @@ def _resolve_safe_path(workspace: str, file_path: str) -> Path | None:
     """
     ws = Path(workspace).resolve()
     target = (ws / file_path).resolve()
-    if not str(target).startswith(str(ws) + "/") and target != ws:
+    if not _is_path_inside(target, ws):
         return None
     return target
+
+
+def _is_path_inside(target: Path, root: Path) -> bool:
+    try:
+        target.relative_to(root)
+        return True
+    except ValueError:
+        return False
 
 
 def make_tools(workspace: str, file_cache: FileCache):
@@ -280,7 +289,7 @@ def make_tools(workspace: str, file_cache: FileCache):
                 try:
                     resolved = resolved.resolve()
                     ws_resolved = Path(workspace).resolve()
-                    if not str(resolved).startswith(str(ws_resolved)):
+                    if not _is_path_inside(resolved, ws_resolved):
                         result["cwd_warning"] = (
                             f"Warning: 'cd {target}' points outside the project directory. "
                             f"All commands run in the project root. Use relative paths."
@@ -443,14 +452,33 @@ def make_tools(workspace: str, file_cache: FileCache):
         concurrent_safe=True,
     )
     def grep(*, pattern: str, path: str = ".", include: str = "") -> dict:
-        include_arg = f"--include='{include}' " if include else ""
-        result = _run(
-            f"grep -rn {include_arg}'{pattern}' '{path}' 2>/dev/null | head -50",
-            workspace,
-            timeout=10,
-        )
-        lines = result["stdout"].splitlines() if result["stdout"] else []
-        return {"pattern": pattern, "matches": lines[:50], "count": len(lines)}
+        target = _resolve_safe_path(workspace, path)
+        if target is None:
+            return {"error": f"Path '{path}' is outside the project directory."}
+        cmd = ["grep", "-rn"]
+        if include:
+            cmd.append(f"--include={include}")
+        cmd.extend(["--", pattern, str(target)])
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                cwd=workspace,
+            )
+        except subprocess.TimeoutExpired:
+            return {"error": "Search timed out", "pattern": pattern, "matches": [], "count": 0}
+        lines = result.stdout.splitlines() if result.stdout else []
+        workspace_prefix = str(Path(workspace).resolve()) + os.sep
+        relative_lines = [
+            line.removeprefix(workspace_prefix) if line.startswith(workspace_prefix) else line
+            for line in lines
+        ]
+        data = {"pattern": pattern, "matches": relative_lines[:50], "count": len(relative_lines)}
+        if result.returncode not in (0, 1):
+            data["error"] = result.stderr.strip() or f"grep exited {result.returncode}"
+        return data
 
     return tools_from(
         [bash, list_dir, read_file, write_file, edit_file, glob, grep],
@@ -574,11 +602,34 @@ class LinterHook:
     def __init__(self, workspace: str):
         self._workspace = workspace
         self._ruff_available: bool | None = None
+        self._ruff_cmd: list[str] | None = None
+
+    def _find_ruff(self) -> list[str] | None:
+        workspace_path = Path(self._workspace)
+        for candidate in (
+            workspace_path / ".venv" / "bin" / "ruff",
+            workspace_path / "venv" / "bin" / "ruff",
+        ):
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return [str(candidate)]
+        path_ruff = shutil.which("ruff")
+        if path_ruff:
+            return [path_ruff]
+        uv = shutil.which("uv")
+        if uv and (
+            (workspace_path / "pyproject.toml").exists() or (workspace_path / "uv.lock").exists()
+        ):
+            return [uv, "run", "ruff"]
+        return None
 
     def _check_ruff(self) -> bool:
         if self._ruff_available is None:
+            self._ruff_cmd = self._find_ruff()
+            if self._ruff_cmd is None:
+                self._ruff_available = False
+                return False
             try:
-                r = subprocess.run(["ruff", "--version"], capture_output=True, timeout=5)
+                r = subprocess.run(self._ruff_cmd + ["--version"], capture_output=True, timeout=5)
                 self._ruff_available = r.returncode == 0
             except Exception:
                 self._ruff_available = False
@@ -596,7 +647,7 @@ class LinterHook:
             return None
         try:
             r = subprocess.run(
-                ["ruff", "check", "--no-fix", file_path],
+                (self._ruff_cmd or ["ruff"]) + ["check", "--no-fix", file_path],
                 capture_output=True,
                 text=True,
                 timeout=10,
@@ -727,8 +778,8 @@ def main(argv: list[str] | None = None) -> int:
             timeout_s=120,
         )
         model_label = model
-    protocol_probe = probe_native_tool_support(llm)
     recording = RecordingLLMBackend(llm)
+    protocol_probe = probe_native_tool_support(recording)
     file_cache = FileCache(workspace)
     tools = make_tools(workspace, file_cache)
 

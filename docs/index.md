@@ -61,7 +61,7 @@ Hook protocols
 </div>
 
 <div class="stat" markdown>
-**1,408**
+**1,423**
 { .stat-num }
 
 Tests, ~1s

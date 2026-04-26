@@ -10,6 +10,7 @@ from __future__ import annotations
 import inspect
 import time
 import types
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import (
@@ -888,33 +889,70 @@ class BaseToolRegistry:
             pool.shutdown(wait=False)
 
     def dispatch_batch(
-        self, calls: list[ToolCall], *, ctx: ToolContext | None = None
+        self,
+        calls: list[ToolCall],
+        *,
+        ctx: ToolContext | Sequence[ToolContext | None] | None = None,
     ) -> list[ToolResult]:
         """Dispatch multiple tool calls, preserving original order.
 
         Partitions consecutive concurrent-safe calls into parallel batches;
-        serial (non-concurrent-safe) tools run one at a time. ``ctx`` is
-        forwarded to each underlying dispatch call.
+        serial (non-concurrent-safe) tools run one at a time. ``ctx`` may be
+        a single context forwarded to every call, or a per-call sequence of
+        contexts aligned with ``calls``.
         """
         if not calls:
             return []
 
+        ctxs: list[ToolContext | None] | None = list(ctx) if isinstance(ctx, Sequence) else None
+        shared_ctx: ToolContext | None = None if ctxs is not None else cast(ToolContext | None, ctx)
+        if ctxs is not None and len(ctxs) != len(calls):
+            raise ValueError("ctx sequence length must match calls length")
+
         results: list[ToolResult] = []
+        offset = 0
         for batch in self._partition_calls(calls):
+            batch_calls = batch["calls"]
+            batch_ctxs = ctxs[offset : offset + len(batch_calls)] if ctxs is not None else None
             if batch["concurrent"] and len(batch["calls"]) > 1:
-                results.extend(self._dispatch_concurrent_batch(batch["calls"], ctx=ctx))
+                results.extend(
+                    self._dispatch_concurrent_batch(
+                        batch_calls,
+                        ctx=batch_ctxs if batch_ctxs is not None else shared_ctx,
+                    )
+                )
             else:
-                results.extend(self.dispatch(c, ctx=ctx) for c in batch["calls"])
+                if batch_ctxs is not None:
+                    results.extend(
+                        self.dispatch(c, ctx=call_ctx)
+                        for c, call_ctx in zip(batch_calls, batch_ctxs)
+                    )
+                else:
+                    results.extend(self.dispatch(c, ctx=shared_ctx) for c in batch_calls)
+            offset += len(batch_calls)
         return results
 
     def _dispatch_concurrent_batch(
-        self, calls: list[ToolCall], *, ctx: ToolContext | None = None
+        self,
+        calls: list[ToolCall],
+        *,
+        ctx: ToolContext | Sequence[ToolContext | None] | None = None,
     ) -> list[ToolResult]:
         """Dispatch a batch of concurrent-safe tools in parallel via ThreadPoolExecutor."""
+        ctxs: list[ToolContext | None] | None = list(ctx) if isinstance(ctx, Sequence) else None
+        shared_ctx: ToolContext | None = None if ctxs is not None else cast(ToolContext | None, ctx)
+        if ctxs is not None and len(ctxs) != len(calls):
+            raise ValueError("ctx sequence length must match calls length")
         if len(calls) <= 1:
-            return [self.dispatch(c, ctx=ctx) for c in calls]
+            call_ctx = ctxs[0] if ctxs else shared_ctx
+            return [self.dispatch(c, ctx=call_ctx) for c in calls]
         with ThreadPoolExecutor(max_workers=min(10, len(calls))) as pool:
-            futures = [pool.submit(self.dispatch, c, ctx=ctx) for c in calls]
+            if ctxs is not None:
+                futures = [
+                    pool.submit(self.dispatch, c, ctx=call_ctx) for c, call_ctx in zip(calls, ctxs)
+                ]
+            else:
+                futures = [pool.submit(self.dispatch, c, ctx=shared_ctx) for c in calls]
             return [f.result() for f in futures]
 
     def _partition_calls(self, calls: list[ToolCall]) -> list[dict[str, Any]]:

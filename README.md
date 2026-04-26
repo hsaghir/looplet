@@ -290,6 +290,7 @@ Not a usage reference.
 | --- | --- |
 | [docs/tutorial.md](docs/tutorial.md) | Build your first agent in 5 steps |
 | [docs/hooks.md](docs/hooks.md) | Writing and composing hooks |
+| [docs/skills.md](docs/skills.md) | Lazy Claude-style skill bundles |
 | [docs/evals.md](docs/evals.md) | pytest-style agent evaluation |
 | [docs/provenance.md](docs/provenance.md) | Capturing prompts + trajectories |
 | [docs/recipes.md](docs/recipes.md) | Ollama, OTel, MCP, cost accounting, checkpoints |

@@ -37,8 +37,12 @@ import asyncio
 import inspect
 import logging
 import time
+from dataclasses import replace as _dc_replace
 from typing import Any, AsyncGenerator
 
+from looplet.checkpoint import Checkpoint as _Checkpoint
+from looplet.checkpoint import FileCheckpointStore as _FileCheckpointStore
+from looplet.checkpoint import resume_loop_state as _resume_loop_state
 from looplet.loop import (
     LoopConfig,
     _build_tool_ctx,
@@ -48,8 +52,10 @@ from looplet.loop import (
 )
 from looplet.parse import parse_multi_tool_calls, parse_native_tool_use, to_text
 from looplet.scaffolding import (
+    PARSE_RECOVERY_MAX,
     LLMResult,
     _is_prompt_too_long,
+    build_parse_recovery_prompt,
     truncate_tool_result,
 )
 from looplet.session import SessionLog
@@ -129,6 +135,7 @@ async def async_llm_call(
     max_retries: int = MAX_LLM_RETRIES,
     tools: list[dict[str, Any]] | None = None,
     cancel_token: Any | None = None,
+    cache_breakpoints: list[Any] | None = None,
     generate_kwargs: dict[str, Any] | None = None,
 ) -> LLMResult:
     """Async version of :func:`looplet.scaffolding.llm_call_with_retry`.
@@ -142,6 +149,15 @@ async def async_llm_call(
 
     use_native = tools is not None and hasattr(llm, "generate_with_tools")
     _gk = generate_kwargs or {}
+
+    def _method_accepts(method_name: str, name: str) -> bool:
+        fn = getattr(llm, method_name, None)
+        if fn is None:
+            return False
+        try:
+            return name in inspect.signature(fn).parameters
+        except (TypeError, ValueError):
+            return False
 
     # Filter generate_kwargs to only keys the backend accepts
     def _filtered_kwargs(method_name: str) -> dict[str, Any]:
@@ -165,25 +181,31 @@ async def async_llm_call(
             return LLMResult(None, RuntimeError("cancelled during retry"))
         try:
             if use_native:
-                result = llm.generate_with_tools(
-                    prompt,
-                    tools=tools,
-                    max_tokens=max_tokens,
-                    system_prompt=system_prompt,
-                    temperature=temperature,
+                call_kwargs: dict[str, Any] = {
+                    "tools": tools,
+                    "max_tokens": max_tokens,
+                    "system_prompt": system_prompt,
+                    "temperature": temperature,
                     **_filtered_kwargs("generate_with_tools"),
-                )
+                }
+                if cache_breakpoints and _method_accepts(
+                    "generate_with_tools", "cache_breakpoints"
+                ):
+                    call_kwargs["cache_breakpoints"] = cache_breakpoints
+                result = llm.generate_with_tools(prompt, **call_kwargs)
                 if inspect.isawaitable(result):
                     result = await result
                 return LLMResult(result, stop_reason=getattr(llm, "last_stop_reason", None))
 
-            result = llm.generate(
-                prompt,
-                max_tokens=max_tokens,
-                system_prompt=system_prompt,
-                temperature=temperature,
+            call_kwargs = {
+                "max_tokens": max_tokens,
+                "system_prompt": system_prompt,
+                "temperature": temperature,
                 **_filtered_kwargs("generate"),
-            )
+            }
+            if cache_breakpoints and _method_accepts("generate", "cache_breakpoints"):
+                call_kwargs["cache_breakpoints"] = cache_breakpoints
+            result = llm.generate(prompt, **call_kwargs)
             if inspect.isawaitable(result):
                 result = await result
             return LLMResult(result, stop_reason=getattr(llm, "last_stop_reason", None))
@@ -260,6 +282,34 @@ async def async_composable_loop(
 
     _conv = conversation if conversation is not None else Conversation()
 
+    _ckpt_store = None
+    if config.checkpoint_dir is not None:
+        _ckpt_store = _FileCheckpointStore(config.checkpoint_dir)
+        if config.initial_checkpoint is None:
+            _latest = _ckpt_store.load_latest()
+            if _latest is not None:
+                config = _dc_replace(config, initial_checkpoint=_latest)
+                logger.info(
+                    "Auto-resuming async loop from checkpoint at step %d", _latest.step_number
+                )
+
+    _step_offset = 0
+    if config.initial_checkpoint is not None:
+        resumed = _resume_loop_state(config.initial_checkpoint)
+        _step_offset = resumed.get("step_offset", 0)
+        restored_log = resumed.get("session_log")
+        if restored_log is not None:
+            session_log.entries = restored_log.entries[:]
+            session_log.current_theory = restored_log.current_theory
+        restored_conv = resumed.get("conversation")
+        if restored_conv is not None and conversation is None:
+            _conv = restored_conv
+        for key, value in (resumed.get("state_counters") or {}).items():
+            try:
+                setattr(state, key, value)
+            except AttributeError:
+                pass
+
     # Stash task + conversation on state (same as sync loop)
     try:
         setattr(state, "task", task)  # noqa: B010
@@ -316,11 +366,35 @@ async def async_composable_loop(
     llm_calls = 0
     consecutive_parse_failures = 0
     post_dispatch_parts: list[str] = []
-    _step_offset = 0
     # Wrap async LLM in a sync bridge so tools can use ctx.llm.generate()
     # without needing to await. The bridge handles the async→sync
     # translation via a thread pool when running inside an event loop.
     _sync_llm = _SyncBridgeLLM(llm)
+
+    def _save_checkpoint(step_number: int, *, status: str | None = None) -> None:
+        if _ckpt_store is None:
+            return
+        metadata = {"task": str(task)}
+        if status is not None:
+            metadata["status"] = status
+        _ckpt_store.save(
+            _Checkpoint(
+                step_number=step_number,
+                session_log_data={
+                    "entries": session_log.to_list(),
+                    "current_theory": session_log.current_theory,
+                },
+                conversation_data=_conv.serialize(),
+                config_snapshot={
+                    "max_steps": config.max_steps,
+                    "queries_used": getattr(state, "queries_used", 0),
+                    "budget_remaining": getattr(state, "budget_remaining", 0),
+                },
+                tool_results_store={},
+                metadata=metadata,
+            ),
+            key=f"step_{step_number}" if status is None else f"step_{step_number}_{status}",
+        )
 
     while state.budget_remaining > 0 and not done:
         step_num = state.step_count + 1 + _step_offset
@@ -380,6 +454,28 @@ async def async_composable_loop(
         _native_on = config.use_native_tools and hasattr(llm, "generate_with_tools")
         _tool_schemas = tools.tool_schemas() if _native_on else None
 
+        _cache_bps: list[Any] | None = None
+        if config.cache_policy is not None:
+            from looplet.cache import CacheBreakDetector as _CBD  # noqa: PLC0415
+            from looplet.cache import compute_breakpoints as _compute_bps  # noqa: PLC0415
+
+            _schemas_text = tools.tool_catalog_text()
+            _detector = next((h for h in hooks if isinstance(h, _CBD)), None)
+            if _detector is not None:
+                _cache_bps = _detector.record(
+                    step_num,
+                    system_prompt=config.system_prompt,
+                    tool_schemas_text=_schemas_text,
+                    memory_text=_rendered_memory,
+                )
+            else:
+                _cache_bps = _compute_bps(
+                    config.cache_policy,
+                    system_prompt=config.system_prompt,
+                    tool_schemas_text=_schemas_text,
+                    memory_text=_rendered_memory,
+                )
+
         # ── AWAIT: LLM call ─────────────────────────────────────
         _llm_t0 = time.perf_counter()
         llm_result = await async_llm_call(
@@ -390,6 +486,7 @@ async def async_composable_loop(
             temperature=config.temperature,
             tools=_tool_schemas,
             cancel_token=config.cancel_token,
+            cache_breakpoints=_cache_bps,
             generate_kwargs=config.generate_kwargs or None,
         )
         _llm_dur_ms = (time.perf_counter() - _llm_t0) * 1000.0
@@ -424,25 +521,46 @@ async def async_composable_loop(
 
         if not tool_calls:
             consecutive_parse_failures += 1
-            if consecutive_parse_failures >= 3:
-                break
-            # Try recovery with a simpler prompt
-            recovery_result = await async_llm_call(
-                llm,
-                f"Your previous response could not be parsed. "
-                f"Respond with ONLY a JSON tool call.\n\n{prompt}",
-                max_tokens=config.max_tokens,
-                system_prompt=config.system_prompt,
-                temperature=max(0.0, config.temperature - 0.1),
-                tools=_tool_schemas,
-                cancel_token=config.cancel_token,
-                generate_kwargs=config.generate_kwargs or None,
-            )
-            llm_calls += 1
-            if recovery_result.ok:
-                if config.use_native_tools and isinstance(recovery_result.text, list):
-                    tool_calls = parse_native_tool_use(recovery_result.text)
-                else:
+            if config.recovery_registry is not None:
+                from looplet.recovery import FailureScenario as _FailureScenario  # noqa: PLC0415
+
+                recovery_action = config.recovery_registry.attempt_recovery(
+                    _FailureScenario.PARSE_ERROR,
+                    {"step": step_num, "raw_response": raw_response},
+                )
+                if recovery_action is not None and recovery_action.action_type == "abort":
+                    tc = ToolCall(
+                        tool="__parse_error__", reasoning=(to_text(raw_response) or "")[:200]
+                    )
+                    tr = ToolResult(
+                        tool="__parse_error__",
+                        args_summary="",
+                        data=None,
+                        error=f"Parse error — recovery aborted: {recovery_action.message}",
+                    )
+                    step = Step(number=step_num, tool_call=tc, tool_result=tr)
+                    state.steps.append(step)
+                    yield step
+                    _history.record_step(
+                        step, theory="", entities=[], findings=[], highlights=[], recall_key=""
+                    )
+                    _save_checkpoint(step_num)
+                    continue
+                if recovery_action is not None and recovery_action.message:
+                    post_dispatch_parts.append(recovery_action.message)
+            if consecutive_parse_failures <= PARSE_RECOVERY_MAX:
+                recovery_prompt = build_parse_recovery_prompt(prompt, to_text(raw_response) or "")
+                recovery_result = await async_llm_call(
+                    llm,
+                    recovery_prompt,
+                    max_tokens=config.max_tokens,
+                    system_prompt=config.system_prompt,
+                    temperature=config.recovery_temperature,
+                    cancel_token=config.cancel_token,
+                    generate_kwargs=config.generate_kwargs or None,
+                )
+                llm_calls += 1
+                if recovery_result.ok:
                     tool_calls = parse_multi_tool_calls(recovery_result.text)
             if not tool_calls:
                 tc = ToolCall(tool="__parse_error__", reasoning=(to_text(raw_response) or "")[:200])
@@ -455,6 +573,10 @@ async def async_composable_loop(
                 step = Step(number=step_num, tool_call=tc, tool_result=tr)
                 state.steps.append(step)
                 yield step
+                _history.record_step(
+                    step, theory="", entities=[], findings=[], highlights=[], recall_key=""
+                )
+                _save_checkpoint(step_num)
                 continue
         else:
             consecutive_parse_failures = 0
@@ -480,23 +602,32 @@ async def async_composable_loop(
             intercepted_results = _intercept.intercepted
             post_dispatch_parts.extend(_intercept.extra_context)
 
-            calls_to_dispatch = [
-                tc for i, tc in enumerate(regular_calls) if i not in intercepted_results
+            dispatch_items = [
+                (i, tc) for i, tc in enumerate(regular_calls) if i not in intercepted_results
             ]
+            calls_to_dispatch = [tc for _, tc in dispatch_items]
 
             if calls_to_dispatch:
-                dispatch_results = []
-                for _c in calls_to_dispatch:
-                    _tool_ctx = _build_tool_ctx(
+
+                def _ctx_for(_c: ToolCall, _cur_step: int):
+                    return _build_tool_ctx(
                         config,
                         hooks=hooks,
                         tool_call=_c,
-                        step_num=step_num,
+                        step_num=_cur_step,
                         state=state,
                         session_log=session_log,
                         llm=_sync_llm,
                     )
-                    dispatch_results.append(tools.dispatch(_c, ctx=_tool_ctx))
+
+                if config.concurrent_dispatch:
+                    _tool_ctxs = [_ctx_for(_c, step_num + _idx) for _idx, _c in dispatch_items]
+                    dispatch_results = tools.dispatch_batch(calls_to_dispatch, ctx=_tool_ctxs)
+                else:
+                    dispatch_results = []
+                    for _idx, _c in dispatch_items:
+                        _tool_ctx = _ctx_for(_c, step_num + _idx)
+                        dispatch_results.append(tools.dispatch(_c, ctx=_tool_ctx))
             else:
                 dispatch_results = []
 
@@ -546,6 +677,7 @@ async def async_composable_loop(
                     highlights=[],
                     recall_key="",
                 )
+                _save_checkpoint(cur_step)
 
         # Handle done()
         if done_idx is not None:
@@ -575,12 +707,13 @@ async def async_composable_loop(
                 _history.record_step(
                     step, theory="", entities=[], findings=[], highlights=[], recall_key=""
                 )
+                _save_checkpoint(cur_step)
             else:
                 _ctx = _build_tool_ctx(
                     config,
                     hooks=hooks,
                     tool_call=tool_call,
-                    step_num=step_num,
+                    step_num=cur_step,
                     state=state,
                     session_log=session_log,
                     llm=_sync_llm,
@@ -605,6 +738,7 @@ async def async_composable_loop(
                 _history.record_step(
                     step, theory="", entities=[], findings=[], highlights=[], recall_key=""
                 )
+                _save_checkpoint(cur_step, status="done")
                 done = True
                 stop_reason = "done"
 
@@ -623,12 +757,8 @@ async def async_composable_loop(
                     done = True
                     break
 
-    # ── on_loop_end ─────────────────────────────────────────────
-    for hook in hooks:
-        if hasattr(hook, "on_loop_end"):
-            result = hook.on_loop_end(state, session_log, context, llm)
-            if inspect.isawaitable(result):
-                await result
+    if state is not None:
+        state._stop_reason = stop_reason  # pyright: ignore[reportAttributeAccessIssue]
 
     emit_event(
         hooks,
@@ -638,3 +768,10 @@ async def async_composable_loop(
         context=context,
         termination_reason=stop_reason,
     )
+
+    # ── on_loop_end ─────────────────────────────────────────────
+    for hook in hooks:
+        if hasattr(hook, "on_loop_end"):
+            result = hook.on_loop_end(state, session_log, context, llm)
+            if inspect.isawaitable(result):
+                await result

@@ -14,6 +14,7 @@ Tests for the coder-example-level reliability improvements:
 from __future__ import annotations
 
 import os
+import subprocess
 import tempfile
 import time
 from pathlib import Path
@@ -251,6 +252,49 @@ class TestPathTraversal:
             assert "content" in r.data
 
 
+class TestGrepSafety:
+    def test_grep_handles_single_quote_patterns(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "notes.py"
+            path.write_text('message = "don\'t panic"\n')
+            cache = FileCache(tmp)
+            tools = make_tools(tmp, cache)
+
+            r = tools.dispatch(ToolCall(tool="grep", args={"pattern": "don't", "path": "."}))
+            data = r.data or {}
+            assert data["count"] == 1
+            assert "notes.py" in data["matches"][0]
+
+    def test_grep_handles_patterns_that_start_with_dash(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "flags.txt"
+            path.write_text("literal --version value\nplain value\n")
+            cache = FileCache(tmp)
+            tools = make_tools(tmp, cache)
+
+            r = tools.dispatch(ToolCall(tool="grep", args={"pattern": "--version", "path": "."}))
+            data = r.data or {}
+
+            assert "error" not in data
+            assert data["count"] == 1
+            assert "flags.txt" in data["matches"][0]
+
+    def test_grep_does_not_execute_shell_from_pattern(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "notes.py").write_text("hello\n")
+            cache = FileCache(tmp)
+            tools = make_tools(tmp, cache)
+
+            tools.dispatch(
+                ToolCall(
+                    tool="grep",
+                    args={"pattern": "'; touch injected.txt; echo '", "path": "."},
+                )
+            )
+
+            assert not (Path(tmp) / "injected.txt").exists()
+
+
 class TestEditFileGuards:
     def test_old_equals_new_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -345,6 +389,19 @@ class TestBashCwdSafety:
             data = r.data or {}
             assert "cwd_warning" not in data
 
+    def test_cd_to_sibling_prefix_path_warns(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repo"
+            sibling = Path(tmp) / "repo-other"
+            root.mkdir()
+            sibling.mkdir()
+            cache = FileCache(str(root))
+            tools = make_tools(str(root), cache)
+
+            r = tools.dispatch(ToolCall(tool="bash", args={"command": f"cd {sibling} && pwd"}))
+            data = r.data or {}
+            assert "cwd_warning" in data
+
 
 # ── Hooks ────────────────────────────────────────────────────────
 
@@ -422,6 +479,41 @@ class TestLinterHook:
             tr = TR(tool="bash", args_summary="", data={"exit_code": 0})
             result = hook.post_dispatch(None, None, tc, tr, 1)
             assert result is None
+
+    def test_uses_workspace_venv_ruff_before_path(self, monkeypatch) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ruff_bin = Path(tmp) / ".venv" / "bin" / "ruff"
+            ruff_bin.parent.mkdir(parents=True)
+            ruff_bin.write_text("#!/bin/sh\n")
+            ruff_bin.chmod(0o755)
+
+            calls: list[list[str]] = []
+
+            def fake_run(cmd, **kwargs):
+                calls.append(list(cmd))
+                if cmd[0] == str(ruff_bin) and "--version" in cmd:
+                    return subprocess.CompletedProcess(cmd, 0, stdout="ruff 0.1\n", stderr="")
+                if cmd[0] == str(ruff_bin) and "check" in cmd:
+                    return subprocess.CompletedProcess(
+                        cmd,
+                        1,
+                        stdout="test.py:1:1: F401 unused import\n",
+                        stderr="",
+                    )
+                return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="missing")
+
+            monkeypatch.setattr("examples.coder.agent.subprocess.run", fake_run)
+            hook = LinterHook(tmp)
+            from looplet.types import ToolCall as TC
+            from looplet.types import ToolResult as TR
+
+            tc = TC(tool="edit_file", args={"file_path": "test.py"})
+            tr = TR(tool="edit_file", args_summary="", data={"edited": "test.py"})
+            result = hook.post_dispatch(None, None, tc, tr, 1)
+
+            assert result is not None
+            assert calls[0][0] == str(ruff_bin)
+            assert calls[1][0] == str(ruff_bin)
 
 
 class TestBashTimeout:

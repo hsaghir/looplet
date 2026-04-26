@@ -144,9 +144,12 @@ class TestResearchPreset:
 
         preset = research_agent_preset(workspace=str(tmp_path))
         names = preset.tools.tool_names
+        assert "bash" in names
         assert "read" in names
         assert "grep" in names
         assert "glob" in names
+        assert "write" not in names
+        assert "edit" not in names
 
 
 # ── Minimal preset ───────────────────────────────────────────────

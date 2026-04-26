@@ -1783,30 +1783,31 @@ def composable_loop(
             post_dispatch_parts.extend(_intercept.extra_context)
 
             # ── Dispatch permitted calls ────────────────────────
-            calls_to_dispatch = [
-                tc for i, tc in enumerate(regular_calls) if i not in intercepted_results
+            dispatch_items = [
+                (i, tc) for i, tc in enumerate(regular_calls) if i not in intercepted_results
             ]
+            calls_to_dispatch = [tc for _, tc in dispatch_items]
 
             if calls_to_dispatch:
 
-                def _ctx_for(_c: ToolCall) -> ToolContext | None:
+                def _ctx_for(_c: ToolCall, _cur_step: int) -> ToolContext | None:
                     return _build_tool_ctx(
                         config,
                         hooks=hooks,
                         tool_call=_c,
-                        step_num=step_num,
+                        step_num=_cur_step,
                         state=state,
                         session_log=session_log,
                         llm=effective_llm,
                     )
 
                 if config.concurrent_dispatch:
-                    _tool_ctx = _ctx_for(calls_to_dispatch[0])
-                    dispatch_results = tools.dispatch_batch(calls_to_dispatch, ctx=_tool_ctx)
+                    _tool_ctxs = [_ctx_for(_c, step_num + _idx) for _idx, _c in dispatch_items]
+                    dispatch_results = tools.dispatch_batch(calls_to_dispatch, ctx=_tool_ctxs)
                 else:
                     dispatch_results = []
-                    for _c in calls_to_dispatch:
-                        _tool_ctx = _ctx_for(_c)
+                    for _idx, _c in dispatch_items:
+                        _tool_ctx = _ctx_for(_c, step_num + _idx)
                         dispatch_results.append(tools.dispatch(_c, ctx=_tool_ctx))
             else:
                 dispatch_results = []
@@ -1878,7 +1879,24 @@ def composable_loop(
                         )
                     )
 
-                # Save checkpoint after each step
+                step_findings, step_highlights = extract_step_metadata(state, cur_step_count)
+                step_entities = extract_entities(tool_result.data)
+                all_step_entities.extend(step_entities)
+                recall_key = tool_result.result_key or ""
+                theory = tool_call.args.get("__theory__", "")
+
+                # Unified write: state.steps was already appended above, so the
+                # recorder dedups there and fills in the session log + conversation.
+                _history.record_step(
+                    step,
+                    theory=theory,
+                    entities=step_entities,
+                    findings=step_findings,
+                    highlights=step_highlights,
+                    recall_key=recall_key,
+                )
+
+                # Save checkpoint after the session log and conversation include this step.
                 if _ckpt_store is not None:
                     _ckpt_store.save(
                         _Checkpoint(
@@ -1898,23 +1916,6 @@ def composable_loop(
                         ),
                         key=f"step_{cur_step}",
                     )
-
-                step_findings, step_highlights = extract_step_metadata(state, cur_step_count)
-                step_entities = extract_entities(tool_result.data)
-                all_step_entities.extend(step_entities)
-                recall_key = tool_result.result_key or ""
-                theory = tool_call.args.get("__theory__", "")
-
-                # Unified write: state.steps was already appended above, so the
-                # recorder dedups there and fills in the session log + conversation.
-                _history.record_step(
-                    step,
-                    theory=theory,
-                    entities=step_entities,
-                    findings=step_findings,
-                    highlights=step_highlights,
-                    recall_key=recall_key,
-                )
 
         # Handle done() if present
         if done_idx is not None:
@@ -1975,7 +1976,7 @@ def composable_loop(
                     config,
                     hooks=hooks,
                     tool_call=tool_call,
-                    step_num=step_num,
+                    step_num=cur_step,
                     state=state,
                     session_log=session_log,
                     llm=effective_llm,

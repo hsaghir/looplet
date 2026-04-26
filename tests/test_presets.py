@@ -57,6 +57,19 @@ class TestAgentPreset:
         assert "think" in names
         assert "done" in names
 
+    def test_coding_preset_tool_schema_preserves_defaults(self, tmp_path):
+        from looplet.presets import coding_agent_preset
+
+        preset = coding_agent_preset(workspace=str(tmp_path))
+        info = {tool["name"]: tool for tool in preset.tools.introspect()["tools"]}
+
+        assert info["bash"]["parameters"]["required"] == ["command"]
+        assert info["read"]["parameters"]["required"] == ["file_path"]
+        assert info["write"]["parameters"]["required"] == ["file_path", "content"]
+        assert info["grep"]["parameters"]["properties"]["path"]["default"] == "."
+        assert info["think"]["free"] is True
+        assert "summary" in info["done"]["parameters"]["properties"]
+
     def test_coding_preset_has_hooks(self, tmp_path):
         from looplet.presets import coding_agent_preset
 

@@ -144,3 +144,40 @@ class TestShowCLISmoke:
         assert rc == 0
         out = capsys.readouterr().out
         assert "LLM:" in out
+
+
+class TestDoctorCLISmoke:
+    def test_doctor_no_backend_renders_local_checks(self, capsys, monkeypatch):
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+        monkeypatch.delenv("OPENAI_MODEL", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        rc = cli_main(["doctor", "--no-backend"])
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "looplet doctor" in out
+        assert "python" in out
+        assert "backend_probe" in out
+
+    def test_doctor_json_output(self, capsys, monkeypatch):
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+        monkeypatch.delenv("OPENAI_MODEL", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        rc = cli_main(["doctor", "--no-backend", "--json"])
+
+        assert rc == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert "checks" in payload
+        assert any(check["name"] == "looplet" for check in payload["checks"])
+
+    def test_doctor_strict_fails_on_missing_env_warnings(self, capsys, monkeypatch):
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+        monkeypatch.delenv("OPENAI_MODEL", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        rc = cli_main(["doctor", "--no-backend", "--strict"])
+
+        assert rc == 1
+        assert "OPENAI_BASE_URL" in capsys.readouterr().out

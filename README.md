@@ -9,9 +9,15 @@
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Status: Beta](https://img.shields.io/badge/status-beta-orange.svg)](ROADMAP.md)
 
-**A small, framework-agnostic Python library for building LLM agents that call tools in a loop.**
-It hands you a `for step in loop(...):` iterator so you can observe, filter, or interrupt
-*any* step — no graph DSL, no subclassing, no vendor lock-in. **Zero runtime dependencies.**
+**looplet exposes the agent loop as an iterator, makes every step observable, and lets you compose behavior with hooks.**
+Build LLM agents that call tools in a loop while you keep ordinary
+Python control over every step — no graph DSL, no subclassing, no
+vendor lock-in. **Zero runtime dependencies.**
+
+> Elevator pitch: looplet is the tiny agent loop you can actually own.
+> Yield every tool call, inspect every result, intercept any decision,
+> and grow from a 30-line prototype to a production agent without
+> switching frameworks.
 
 ```python
 from looplet import composable_loop
@@ -37,12 +43,12 @@ agent does something wrong at step 7, you can't step in between step 6 and
 step 8. You end up forking the library or writing a second agent to babysit
 the first.
 
-`looplet` does the opposite: **the loop is the whole product, and hooks are
-the whole API.** Every tool call is a `Step` object you can print, save, or
-diff. Every decision the loop makes — what goes in the next prompt, whether
-to compact context, whether to dispatch a dangerous tool, whether to stop —
-is a `Protocol` method you implement in 3 lines. Hooks compose without
-inheritance. Nothing is hidden.
+`looplet` does the opposite: **the loop is the product, and hooks are the
+extension API.** Every tool call is a `Step` object you can print, save,
+or diff. Every decision the loop makes — what goes in the next prompt,
+whether to compact context, whether to dispatch a dangerous tool, whether
+to stop — is a `Protocol` method you implement in a few lines. Hooks
+compose without inheritance. Nothing is hidden.
 
 That one design choice is where the library's three practical superpowers
 come from:
@@ -60,8 +66,8 @@ come from:
   `eval_*` functions turn that trace into a regression suite. Your debug
   output *is* your eval harness.
 
-It's what you'd build if you wrote an agent once, got tired of fighting
-the framework, and decided the framework was the problem.
+That is the differentiation: looplet is not trying to be a complete
+agent product. It is the control plane for people building one.
 
 ---
 
@@ -156,8 +162,8 @@ all, or none — and [drop in your own](docs/hooks.md) in 10 lines.
 
 ```python
 from looplet import (
-    BaseToolRegistry, DefaultState, LoopConfig, OpenAIBackend,
-    ToolSpec, composable_loop, register_done_tool,
+    DefaultState, LoopConfig, OpenAIBackend,
+    composable_loop, tool, tools_from,
 )
 import os
 
@@ -167,13 +173,12 @@ llm = OpenAIBackend(
     model=os.environ.get("OPENAI_MODEL", "gpt-4o-mini"),
 )
 
-tools = BaseToolRegistry()
-tools.register(ToolSpec(
-    name="greet", description="Greet someone.",
-    parameters={"name": "str"},
-    execute=lambda *, name: {"greeting": f"Hello, {name}!"},
-))
-register_done_tool(tools)
+@tool(description="Greet someone by name.")
+def greet(name: str) -> dict:
+    return {"greeting": f"Hello, {name}!"}
+
+
+tools = tools_from([greet], include_done=True)
 
 for step in composable_loop(
     llm=llm, tools=tools,
@@ -224,16 +229,53 @@ features won't be worth the extra control `looplet` gives you.
 
 ## Examples
 
-All three real-LLM examples read `OPENAI_BASE_URL`, `OPENAI_API_KEY`, and
+Real-LLM examples read `OPENAI_BASE_URL`, `OPENAI_API_KEY`, and
 `OPENAI_MODEL` from the environment. Point them at Ollama or any
-OpenAI-compatible endpoint.
+OpenAI-compatible endpoint, or use `--scripted` where available for a
+deterministic no-model run.
 
 ```bash
 python -m looplet.examples.hello_world                            # 30-line starter
+python -m looplet.examples.hello_world --scripted                 # no model required
 python -m looplet.examples.coding_agent "implement fizzbuzz"      # bash/read/write/edit/grep
 python -m looplet.examples.coding_agent --trace ./traces/         # save full trajectory
+python -m looplet.examples.coding_agent "implement add" --scripted --workspace /tmp/demo
 python -m looplet.examples.data_agent --clean                     # approval + compact + checkpoints
 python -m looplet.examples.data_agent --resume                    # resume from last checkpoint
+python -m looplet.examples.data_agent --scripted --auto-approve   # no model required
+```
+
+For a memorable custom agent, start with **Dependency Doctor**: point it
+at a repo and it audits dependency files for security, license, and
+maintenance risk, then produces a report card. It is concrete enough to
+be useful, broad enough that most developers understand the pain, and it
+shows looplet's core value: the user can watch every evidence-gathering
+step and add guardrails without rewriting the agent.
+
+```bash
+OPENAI_BASE_URL=http://127.0.0.1:11434/v1 \
+OPENAI_API_KEY=ollama OPENAI_MODEL=llama3.1 \
+python examples/dep_doctor/agent.py /path/to/project
+
+# No model required: deterministic local dogfood run
+python examples/dep_doctor/agent.py examples/dep_doctor/demo_project --scripted
+```
+
+Other example directions that show off the same infrastructure:
+`examples/git_detective/` for repo-health analysis,
+`examples/threat_intel/` for local-first security briefings, and
+`examples/coder/` for a coding agent with bash/read/write/edit/test
+tools.
+
+```bash
+# More no-model dogfood runs
+python -m looplet.examples.hello_world --scripted
+python -m looplet.examples.ollama_hello --scripted
+python examples/git_detective/agent.py . --scripted
+python examples/threat_intel/agent.py --scripted
+python examples/coder/agent.py "Create a tiny add function with tests" --scripted
+python -m looplet.examples.coding_agent "Implement add" --scripted --workspace /tmp/demo
+python -m looplet.examples.data_agent --scripted --auto-approve --clean
 ```
 
 Plus [`scripted_demo.py`](src/looplet/examples/scripted_demo.py) —

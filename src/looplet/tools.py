@@ -9,9 +9,20 @@ from __future__ import annotations
 
 import inspect
 import time
+import types
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import (
+    Any,
+    Callable,
+    Literal,
+    Union,
+    cast,
+    get_args,
+    get_origin,
+    get_type_hints,
+    overload,
+)
 
 from looplet.types import (
     ErrorKind,
@@ -27,6 +38,8 @@ __all__ = [
     "BaseToolRegistry",
     "register_think_tool",
     "register_done_tool",
+    "tool",
+    "tools_from",
     "suggest_similar",
     "excerpt_around_match",
 ]
@@ -191,6 +204,88 @@ def _accepts_ctx(fn: Callable[..., Any]) -> bool:
     return "ctx" in sig.parameters
 
 
+def _json_type_for_annotation(annotation: Any) -> dict[str, Any]:
+    """Return a small JSON Schema fragment for a Python type annotation."""
+    if annotation is inspect.Signature.empty or annotation is Any:
+        return {"type": "string"}
+
+    origin = get_origin(annotation)
+    args = get_args(annotation)
+
+    if origin in (types.UnionType, Union):
+        non_none = [arg for arg in args if arg is not type(None)]
+        has_none = len(non_none) != len(args)
+        if len(non_none) == 1:
+            schema = _json_type_for_annotation(non_none[0])
+            if has_none and "type" in schema:
+                typ = schema["type"]
+                schema = dict(schema)
+                schema["type"] = [typ, "null"] if isinstance(typ, str) else [*typ, "null"]
+            return schema
+        return {"type": "string"}
+
+    if origin is Literal:
+        literal_values = list(args)
+        schema: dict[str, Any] = {"enum": literal_values}
+        if literal_values:
+            schema.update(_json_type_for_annotation(type(literal_values[0])))
+        return schema
+
+    if origin in (list, tuple, set, frozenset):
+        schema = {"type": "array"}
+        if args:
+            schema["items"] = _json_type_for_annotation(args[0])
+        return schema
+    if origin is dict:
+        return {"type": "object"}
+
+    type_map = {
+        str: "string",
+        int: "integer",
+        float: "number",
+        bool: "boolean",
+        list: "array",
+        tuple: "array",
+        set: "array",
+        frozenset: "array",
+        dict: "object",
+    }
+    if annotation in type_map:
+        return {"type": type_map[annotation]}
+    return {"type": "string"}
+
+
+def _schema_from_callable(fn: Callable[..., Any]) -> dict[str, Any]:
+    """Infer a JSON Schema parameter object from a callable signature."""
+    sig = inspect.signature(fn)
+    try:
+        type_hints = get_type_hints(fn, include_extras=True)
+    except Exception:
+        type_hints = {}
+    properties: dict[str, Any] = {}
+    required: list[str] = []
+    for name, param in sig.parameters.items():
+        if name == "ctx":
+            continue
+        if param.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
+            continue
+        schema = _json_type_for_annotation(type_hints.get(name, param.annotation))
+        if param.default is not inspect.Signature.empty:
+            schema = dict(schema)
+            schema["default"] = param.default
+        else:
+            required.append(name)
+        properties[name] = schema
+    return {"type": "object", "properties": properties, "required": required}
+
+
+def _description_from_callable(fn: Callable[..., Any]) -> str:
+    doc = inspect.getdoc(fn) or ""
+    if not doc:
+        return f"Call {fn.__name__.replace('_', ' ')}."
+    return doc.splitlines()[0]
+
+
 @dataclass
 class ToolSpec:
     """Specification of a tool available to the agent.
@@ -353,6 +448,104 @@ class ToolSpec:
             "properties": properties,
             "required": list(self.parameters.keys()),
         }
+
+
+@overload
+def tool(
+    fn: Callable[..., Any],
+    *,
+    name: str | None = None,
+    description: str | None = None,
+    concurrent_safe: bool = False,
+    free: bool = False,
+    timeout_s: float | None = None,
+) -> ToolSpec: ...
+
+
+@overload
+def tool(
+    fn: None = None,
+    *,
+    name: str | None = None,
+    description: str | None = None,
+    concurrent_safe: bool = False,
+    free: bool = False,
+    timeout_s: float | None = None,
+) -> Callable[[Callable[..., Any]], ToolSpec]: ...
+
+
+def tool(
+    fn: Callable[..., Any] | None = None,
+    *,
+    name: str | None = None,
+    description: str | None = None,
+    concurrent_safe: bool = False,
+    free: bool = False,
+    timeout_s: float | None = None,
+) -> ToolSpec | Callable[[Callable[..., Any]], ToolSpec]:
+    """Create a :class:`ToolSpec` from a Python function.
+
+    The decorator is the beginner-friendly path for tool construction:
+    parameter names and required/optional status come from the function
+    signature, JSON Schema types come from type hints, and the first
+    docstring line becomes the description when one is not provided.
+
+    Examples::
+
+        @tool(description="Search the docs.")
+        def search(query: str, limit: int = 5) -> dict:
+            ...
+
+        tools = tools_from([search])
+
+    ``@tool`` without parentheses is also supported. The decorated name
+    is a plain ``ToolSpec`` so advanced users can inspect or mutate it.
+    """
+
+    def _build(inner: Callable[..., Any]) -> ToolSpec:
+        return ToolSpec(
+            name=name or inner.__name__,
+            description=description or _description_from_callable(inner),
+            parameters=_schema_from_callable(inner),
+            execute=inner,
+            concurrent_safe=concurrent_safe,
+            free=free,
+            timeout_s=timeout_s,
+        )
+
+    if fn is None:
+        return _build
+    return _build(fn)
+
+
+def tools_from(
+    specs_or_callables: list[ToolSpec | Callable[..., Any]]
+    | tuple[ToolSpec | Callable[..., Any], ...],
+    *,
+    include_think: bool = False,
+    include_done: bool = False,
+    done_name: str = "done",
+    done_parameters: dict[str, Any] | None = None,
+) -> BaseToolRegistry:
+    """Build a ``BaseToolRegistry`` from ``ToolSpec`` objects or callables.
+
+    Items produced by ``@tool`` are registered directly. Plain callables
+    are converted with ``tool(callable)`` first, which makes quick
+    prototypes terse without hiding the underlying ``ToolSpec`` model.
+
+    ``include_think`` and ``include_done`` add looplet's standard helper
+    tools after user tools; ``done_parameters`` customizes the completion
+    payload while preserving the decorator-first construction path.
+    """
+    registry = BaseToolRegistry()
+    for item in specs_or_callables:
+        spec = item if isinstance(item, ToolSpec) else cast(ToolSpec, tool(item))
+        registry.register(spec)
+    if include_think:
+        register_think_tool(registry)
+    if include_done:
+        register_done_tool(registry, name=done_name, parameters=done_parameters)
+    return registry
 
 
 class BaseToolRegistry:

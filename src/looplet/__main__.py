@@ -2,15 +2,20 @@
 
 Subcommands:
     show <trace-dir>    One-page summary of a captured trace directory.
+    doctor              Check local looplet/backend configuration.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
+import platform
 import sys
 from pathlib import Path
 from typing import Any
+
+from looplet import __version__
 
 
 def _fmt_ms(ms: float | int | None) -> str:
@@ -120,6 +125,116 @@ def _render_show(trace_dir: Path) -> int:
     return 0
 
 
+def _status_line(status: str, name: str, detail: str) -> str:
+    marks = {"ok": "OK", "warn": "WARN", "error": "ERROR"}
+    return f"{marks.get(status, '?')} {name}: {detail}"
+
+
+def _doctor_checks(*, probe_backend: bool) -> list[dict[str, str]]:
+    checks: list[dict[str, str]] = []
+
+    py_ok = sys.version_info >= (3, 11)
+    checks.append(
+        {
+            "name": "python",
+            "status": "ok" if py_ok else "error",
+            "detail": platform.python_version() + (" (>=3.11)" if py_ok else " (<3.11)"),
+        }
+    )
+    checks.append({"name": "looplet", "status": "ok", "detail": f"version {__version__}"})
+
+    base_url = os.environ.get("OPENAI_BASE_URL", "")
+    model = os.environ.get("OPENAI_MODEL", "")
+    api_key = os.environ.get("OPENAI_API_KEY", "")
+    if not base_url:
+        checks.append(
+            {
+                "name": "OPENAI_BASE_URL",
+                "status": "warn",
+                "detail": "not set; set it to probe an OpenAI-compatible backend",
+            }
+        )
+    else:
+        checks.append({"name": "OPENAI_BASE_URL", "status": "ok", "detail": base_url})
+    checks.append(
+        {
+            "name": "OPENAI_MODEL",
+            "status": "ok" if model else "warn",
+            "detail": model or "not set",
+        }
+    )
+    checks.append(
+        {
+            "name": "OPENAI_API_KEY",
+            "status": "ok" if api_key else "warn",
+            "detail": "set" if api_key else "not set (local endpoints often accept 'x')",
+        }
+    )
+
+    if not probe_backend:
+        checks.append(
+            {"name": "backend_probe", "status": "ok", "detail": "skipped by --no-backend"}
+        )
+        return checks
+    if not base_url or not model:
+        checks.append(
+            {
+                "name": "backend_probe",
+                "status": "warn",
+                "detail": "skipped; OPENAI_BASE_URL and OPENAI_MODEL are required",
+            }
+        )
+        return checks
+
+    try:
+        from looplet.backends import OpenAIBackend  # noqa: PLC0415
+        from looplet.native_tools import probe_native_tool_support  # noqa: PLC0415
+
+        llm = OpenAIBackend(base_url=base_url, api_key=api_key or "x", model=model)
+        probe = probe_native_tool_support(llm)
+        checks.append(
+            {
+                "name": "native_tools",
+                "status": "ok" if probe.supported else "warn",
+                "detail": probe.reason,
+            }
+        )
+        if not probe.supported:
+            checks.append(
+                {
+                    "name": "tool_protocol",
+                    "status": "ok",
+                    "detail": "use LoopConfig(use_native_tools=False) or probe before enabling native tools",
+                }
+            )
+    except Exception as exc:  # noqa: BLE001
+        checks.append(
+            {
+                "name": "backend_probe",
+                "status": "warn",
+                "detail": f"could not probe backend: {type(exc).__name__}: {exc}",
+            }
+        )
+    return checks
+
+
+def _render_doctor(*, probe_backend: bool, json_output: bool, strict: bool) -> int:
+    checks = _doctor_checks(probe_backend=probe_backend)
+    if json_output:
+        print(json.dumps({"checks": checks}, indent=2))
+    else:
+        print("looplet doctor")
+        print()
+        for check in checks:
+            print(_status_line(check["status"], check["name"], check["detail"]))
+    bad = [
+        check
+        for check in checks
+        if check["status"] == "error" or (strict and check["status"] == "warn")
+    ]
+    return 1 if bad else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m looplet",
@@ -133,10 +248,32 @@ def main(argv: list[str] | None = None) -> int:
     )
     show.add_argument("trace_dir", type=Path, help="Path to a trace directory")
 
+    doctor = sub.add_parser(
+        "doctor",
+        help="Check local looplet configuration and optional backend tool protocol",
+    )
+    doctor.add_argument(
+        "--no-backend",
+        action="store_true",
+        help="Skip network/backend probing and only check local configuration",
+    )
+    doctor.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    doctor.add_argument(
+        "--strict",
+        action="store_true",
+        help="Return non-zero for warnings as well as errors",
+    )
+
     args = parser.parse_args(argv)
 
     if args.command == "show":
         return _render_show(args.trace_dir)
+    if args.command == "doctor":
+        return _render_doctor(
+            probe_backend=not args.no_backend,
+            json_output=args.json,
+            strict=args.strict,
+        )
     # Unreachable — argparse rejects unknown commands.
     return 2
 

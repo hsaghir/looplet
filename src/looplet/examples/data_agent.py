@@ -26,7 +26,7 @@ Run::
 
     # Scripted MockLLMBackend (for CI / offline testing) — the LLM is
     # fixed so the tool sequence is identical every run.
-    python -m looplet.examples.data_agent --mock --auto-approve
+    python -m looplet.examples.data_agent --scripted --auto-approve
 
 Keep the example self-contained: the CSV is generated in a temp dir
 so you don't need any data files.
@@ -45,18 +45,20 @@ from pathlib import Path
 
 from looplet import (
     ApprovalHook,
-    BaseToolRegistry,
     ContextBudget,
     DefaultState,
     LoopConfig,
+    MockLLMBackend,
     PruneToolResults,
     ThresholdCompactHook,
     TruncateCompact,
     compact_chain,
     composable_loop,
+    probe_native_tool_support,
+    tool,
+    tools_from,
 )
-from looplet.testing import MockLLMBackend
-from looplet.tools import ToolSpec
+from looplet.types import ToolContext
 
 CHECKPOINT_DIR = Path("./checkpoints/data_agent")
 
@@ -81,6 +83,7 @@ def _make_sample_csv() -> Path:
     return path
 
 
+@tool(description="Return row count and columns for a CSV path.", concurrent_safe=True)
 def describe_csv(*, path: str) -> dict:
     """Return row and column counts — cheap and safe."""
     with open(path, newline="") as f:
@@ -91,6 +94,7 @@ def describe_csv(*, path: str) -> dict:
     }
 
 
+@tool(description="Return the first N rows of a CSV.", concurrent_safe=True)
 def head_csv(*, path: str, n: int = 3) -> dict:
     """Return the first N rows — cheap and safe."""
     with open(path, newline="") as f:
@@ -98,6 +102,7 @@ def head_csv(*, path: str, n: int = 3) -> dict:
     return {"head": rows[:n]}
 
 
+@tool(description="Count rows grouped by a column.", concurrent_safe=True)
 def groupby_count(*, path: str, column: str) -> dict:
     """Count rows grouped by the given column — cheap and safe."""
     counts: dict[str, int] = {}
@@ -108,7 +113,8 @@ def groupby_count(*, path: str, column: str) -> dict:
     return {"counts": counts}
 
 
-def delete_rows(*, path: str, where_status: str, ctx=None) -> dict:
+@tool(description="Delete rows matching a status. Requires approval.")
+def delete_rows(*, path: str, where_status: str, ctx: ToolContext | None = None) -> dict:
     """Delete rows matching a status — **requires approval**.
 
     Two paths:
@@ -147,75 +153,40 @@ def delete_rows(*, path: str, where_status: str, ctx=None) -> dict:
     return {"deleted": len(rows) - len(keep), "remaining": len(keep)}
 
 
-def done(*, summary: str) -> dict:
-    return {"summary": summary}
-
-
-def build_tools() -> BaseToolRegistry:
-    tools = BaseToolRegistry()
-    tools.register(
-        ToolSpec(
-            name="describe_csv",
-            description="Return row count and columns for a CSV path.",
-            parameters={"path": "str"},
-            execute=describe_csv,
-        )
+def build_tools():
+    return tools_from(
+        [describe_csv, head_csv, groupby_count, delete_rows],
+        include_think=True,
+        include_done=True,
     )
-    tools.register(
-        ToolSpec(
-            name="head_csv",
-            description="Return the first N rows of a CSV.",
-            parameters={"path": "str", "n": "int"},
-            execute=head_csv,
-        )
-    )
-    tools.register(
-        ToolSpec(
-            name="groupby_count",
-            description="Count rows grouped by a column.",
-            parameters={"path": "str", "column": "str"},
-            execute=groupby_count,
-        )
-    )
-    tools.register(
-        ToolSpec(
-            name="delete_rows",
-            description="Delete rows matching a status. REQUIRES APPROVAL.",
-            parameters={"path": "str", "where_status": "str"},
-            execute=delete_rows,  # auto-receives ctx via signature inspection
-        )
-    )
-    tools.register(
-        ToolSpec(
-            name="done",
-            description="Finish with a summary.",
-            parameters={"summary": "str"},
-            execute=done,
-        )
-    )
-    return tools
 
 
 # ── 2. Scripted LLM script — drives the same sequence every run ──
 
 
+def _tool_call(tool_name: str, args: dict, reasoning: str) -> str:
+    return json.dumps({"tool": tool_name, "args": args, "reasoning": reasoning})
+
+
 def scripted_llm(csv_path: str) -> MockLLMBackend:
     return MockLLMBackend(
         responses=[
-            json.dumps({"tool": "describe_csv", "args": {"path": csv_path}}),
-            json.dumps({"tool": "head_csv", "args": {"path": csv_path, "n": 3}}),
-            json.dumps({"tool": "groupby_count", "args": {"path": csv_path, "column": "status"}}),
-            json.dumps(
-                {
-                    "tool": "delete_rows",
-                    "args": {"path": csv_path, "where_status": "cancelled"},
-                }
+            _tool_call("describe_csv", {"path": csv_path}, "inspect columns and row count"),
+            _tool_call("head_csv", {"path": csv_path, "n": 3}, "sample the data"),
+            _tool_call(
+                "groupby_count",
+                {"path": csv_path, "column": "status"},
+                "find status distribution",
             ),
-            json.dumps(
-                {
-                    "tool": "done",
-                    "args": {"summary": "inspected orders.csv and removed cancellations"},
-                }
+            _tool_call(
+                "delete_rows",
+                {"path": csv_path, "where_status": "cancelled"},
+                "clean cancelled orders after approval",
+            ),
+            _tool_call(
+                "done",
+                {"summary": "inspected orders.csv and removed cancellations"},
+                "finish after cleanup",
             ),
         ]
     )
@@ -241,6 +212,11 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=summary)
     ap.add_argument(
         "--mock",
+        action="store_true",
+        help="legacy alias for --scripted",
+    )
+    ap.add_argument(
+        "--scripted",
         action="store_true",
         help="use scripted MockLLMBackend (no API key needed; CI / offline)",
     )
@@ -289,18 +265,18 @@ def main(argv: list[str] | None = None) -> int:
     approval = (lambda _prompt, _opts: "yes") if args.auto_approve else cli_approval_handler
 
     # ── LLM.
-    if args.mock:
+    use_scripted = args.scripted or args.mock
+    if use_scripted:
         llm = scripted_llm(str(csv_path))
+        model_label = "scripted MockLLMBackend"
     else:
         try:
-            from openai import OpenAI  # type: ignore[import-not-found]
+            from looplet.backends import OpenAIBackend
         except ImportError:  # pragma: no cover
             raise SystemExit(
                 "openai not installed — run `pip install 'looplet[openai]'`, "
-                "or re-run with --mock for a scripted demo."
+                "or re-run with --scripted for a scripted demo."
             ) from None
-
-        from looplet.backends import OpenAIBackend
 
         base_url = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
         api_key = os.environ.get("OPENAI_API_KEY")
@@ -308,11 +284,16 @@ def main(argv: list[str] | None = None) -> int:
             raise SystemExit(
                 "OPENAI_API_KEY is not set. Set it (or use Ollama with "
                 "OPENAI_BASE_URL=http://127.0.0.1:11434/v1 OPENAI_API_KEY=ollama), "
-                "or re-run with --mock for a scripted demo."
+                "or re-run with --scripted for a scripted demo."
             )
         model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
         print(f"# llm: {model} via {base_url}")
-        llm = OpenAIBackend(OpenAI(base_url=base_url, api_key=api_key), model=model)
+        llm = OpenAIBackend(base_url=base_url, api_key=api_key, model=model)
+        model_label = model
+    protocol_probe = probe_native_tool_support(llm)
+    print(f"# model: {model_label}")
+    print(f"# tool protocol: {'native' if protocol_probe.supported else 'json-text'}")
+    print(f"# probe: {protocol_probe.reason}")
 
     config = LoopConfig(
         max_steps=10,
@@ -328,6 +309,7 @@ def main(argv: list[str] | None = None) -> int:
         checkpoint_dir=str(CHECKPOINT_DIR),
         approval_handler=approval,
         context_window=4_000,
+        use_native_tools=protocol_probe.supported,
     )
     hooks = [
         ApprovalHook(),

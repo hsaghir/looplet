@@ -14,12 +14,16 @@ Usage:
     # Analyze a specific repo:
     python examples/git_detective/agent.py /path/to/repo
 
+    # No model required: deterministic local dogfood run
+    python examples/git_detective/agent.py . --scripted
+
     # With Ollama:
     OPENAI_BASE_URL=http://localhost:11434/v1 python examples/git_detective/agent.py
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import subprocess
@@ -29,16 +33,17 @@ from collections import Counter
 from pathlib import Path
 
 from looplet import (
-    BaseToolRegistry,
     DefaultState,
     LoopConfig,
+    MockLLMBackend,
     OpenAIBackend,
     StaticMemorySource,
     StreamingHook,
-    ToolSpec,
     TrajectoryRecorder,
     composable_loop,
-    register_done_tool,
+    probe_native_tool_support,
+    tool,
+    tools_from,
 )
 from looplet.compact import PruneToolResults, TruncateCompact, compact_chain
 from looplet.limits import PerToolLimitHook
@@ -47,7 +52,6 @@ from looplet.resilient import ResilientBackend
 from looplet.session import SessionLog
 from looplet.stagnation import StagnationHook, tool_call_fingerprint
 from looplet.streaming import CallbackEmitter
-from looplet.tools import register_think_tool
 from looplet.types import ToolContext
 
 
@@ -77,9 +81,13 @@ def _git(repo: str, *args: str, max_lines: int = 200) -> dict:
 # ═══════════════════════════════════════════════════════════════════
 
 
-def make_tools(repo_path: str) -> BaseToolRegistry:
+def make_tools(repo_path: str):
     """Build tool registry with git analysis tools bound to repo_path."""
 
+    @tool(
+        description="Get basic repo info: name, branch, total commits, age, and remotes.",
+        concurrent_safe=True,
+    )
     def repo_overview() -> dict:
         """Get basic repo info: name, branch, total commits, age."""
         name = _git(repo_path, "rev-parse", "--show-toplevel")
@@ -100,6 +108,10 @@ def make_tools(repo_path: str) -> BaseToolRegistry:
             "remotes": remotes["output"][:200],
         }
 
+    @tool(
+        description="Get contributor stats and bus factor.",
+        concurrent_safe=True,
+    )
     def contributor_stats() -> dict:
         """Get contributor stats: who committed how much."""
         result = _git(repo_path, "shortlog", "-sne", "HEAD", max_lines=50)
@@ -134,6 +146,7 @@ def make_tools(repo_path: str) -> BaseToolRegistry:
             "bus_factor_names": [c["name"] for c in contributors[:bus_factor]],
         }
 
+    @tool(description="Get commit activity for the last N days.", concurrent_safe=True)
     def recent_activity(*, days: str = "30") -> dict:
         """Get commit activity for the last N days."""
         d = int(days) if days.isdigit() else 30
@@ -165,6 +178,7 @@ def make_tools(repo_path: str) -> BaseToolRegistry:
             "recent_commits": commits[:15],
         }
 
+    @tool(description="Find most frequently changed files.", concurrent_safe=True)
     def file_hotspots(*, top_n: str = "15") -> dict:
         """Find most frequently changed files (churn hotspots)."""
         n = int(top_n) if top_n.isdigit() else 15
@@ -179,6 +193,7 @@ def make_tools(repo_path: str) -> BaseToolRegistry:
             "hotspots": hotspots,
         }
 
+    @tool(description="Find files that often change together.", concurrent_safe=True)
     def coupled_files(*, min_coupling: str = "3") -> dict:
         """Find files that always change together (co-change coupling)."""
         threshold = int(min_coupling) if min_coupling.isdigit() else 3
@@ -212,6 +227,7 @@ def make_tools(repo_path: str) -> BaseToolRegistry:
             "total_pairs_found": len(coupled),
         }
 
+    @tool(description="Analyze commit message patterns, conventions, and quality.")
     def commit_patterns(*, ctx: ToolContext) -> dict:
         """Analyze commit message patterns and conventions."""
         result = _git(repo_path, "log", "--format=%s", "-200", max_lines=200)
@@ -265,6 +281,9 @@ def make_tools(repo_path: str) -> BaseToolRegistry:
 
         return stats
 
+    @tool(
+        description="Get the top-level directory structure with file counts.", concurrent_safe=True
+    )
     def directory_structure() -> dict:
         """Get the top-level directory structure with file counts."""
         result = _git(repo_path, "ls-tree", "--name-only", "HEAD", max_lines=100)
@@ -291,6 +310,7 @@ def make_tools(repo_path: str) -> BaseToolRegistry:
             "total_root_files": len(files),
         }
 
+    @tool(description="Find oldest unchanged files and newest additions.", concurrent_safe=True)
     def file_age_analysis() -> dict:
         """Find oldest unchanged files and newest additions."""
         # Oldest files (by last modification)
@@ -328,78 +348,23 @@ def make_tools(repo_path: str) -> BaseToolRegistry:
             "freshest_files": [{"file": f, "last_modified": d} for f, d in reversed(fresh)],
         }
 
-    # ── Register all tools ──────────────────────────────────────
-
-    tools = BaseToolRegistry()
-    register_done_tool(
-        tools,
-        parameters={
+    return tools_from(
+        [
+            repo_overview,
+            contributor_stats,
+            recent_activity,
+            file_hotspots,
+            coupled_files,
+            commit_patterns,
+            directory_structure,
+            file_age_analysis,
+        ],
+        include_think=True,
+        include_done=True,
+        done_parameters={
             "report": "The complete codebase health report in structured markdown",
         },
     )
-    register_think_tool(tools)
-
-    for name, desc, params, fn in [
-        (
-            "repo_overview",
-            "Get basic repo info: name, branch, total commits, age, remotes",
-            {},
-            repo_overview,
-        ),
-        (
-            "contributor_stats",
-            "Get contributor stats and bus factor (how many people account for 80% of commits)",
-            {},
-            contributor_stats,
-        ),
-        (
-            "recent_activity",
-            "Get commit activity for the last N days",
-            {"days": "Number of days to look back (default: 30)"},
-            recent_activity,
-        ),
-        (
-            "file_hotspots",
-            "Find most frequently changed files (churn hotspots)",
-            {"top_n": "How many hotspots to return (default: 15)"},
-            file_hotspots,
-        ),
-        (
-            "coupled_files",
-            "Find files that always change together (co-change coupling)",
-            {"min_coupling": "Minimum co-changes to report (default: 5)"},
-            coupled_files,
-        ),
-        (
-            "commit_patterns",
-            "Analyze commit message patterns, conventions, and quality",
-            {},
-            commit_patterns,
-        ),
-        (
-            "directory_structure",
-            "Get the top-level directory structure with file counts",
-            {},
-            directory_structure,
-        ),
-        (
-            "file_age_analysis",
-            "Find oldest unchanged files (stale) and newest additions (fresh)",
-            {},
-            file_age_analysis,
-        ),
-    ]:
-        tools.register(
-            ToolSpec(
-                name=name,
-                description=desc,
-                parameters=params,
-                execute=fn,
-                concurrent_safe=True,
-            )
-        )
-
-    return tools
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -407,17 +372,65 @@ def make_tools(repo_path: str) -> BaseToolRegistry:
 # ═══════════════════════════════════════════════════════════════════
 
 
-def main():
-    # Resolve repo path
-    if len(sys.argv) > 1:
-        repo_path = os.path.abspath(sys.argv[1])
-    else:
-        repo_path = os.getcwd()
+def _tool_call(tool_name: str, args: dict, reasoning: str) -> str:
+    return json.dumps({"tool": tool_name, "args": args, "reasoning": reasoning})
+
+
+def scripted_responses() -> list[str]:
+    report = """# Git History Detective Report
+
+Health Score: B
+
+Key Metrics:
+- Bus factor and contributor concentration were inspected.
+- Hotspots and coupled files were reviewed for maintenance risk.
+- Commit discipline was assessed with an internal LLM call.
+
+Findings:
+- The project has enough observable history for trend analysis.
+- Coupled files and hotspots should be watched during refactors.
+
+Recommendations:
+- Keep high-churn files covered by focused tests.
+- Review coupled file pairs before large architectural changes.
+"""
+    return [
+        _tool_call("repo_overview", {}, "get repository basics"),
+        _tool_call("contributor_stats", {}, "inspect bus factor"),
+        _tool_call("recent_activity", {"days": "90"}, "inspect recent activity"),
+        _tool_call("file_hotspots", {"top_n": "5"}, "find churn hotspots"),
+        _tool_call("coupled_files", {"min_coupling": "2"}, "find coupled files"),
+        _tool_call("commit_patterns", {}, "score commit discipline"),
+        "SCORE: 7/10. Messages are readable, but consistency varies across history.",
+        _tool_call("directory_structure", {}, "inspect repository shape"),
+        _tool_call("file_age_analysis", {}, "inspect stale and fresh files"),
+        _tool_call(
+            "think", {"analysis": "Summarize history, hotspots, and coupling."}, "synthesize"
+        ),
+        _tool_call("done", {"report": report}, "final report"),
+    ]
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Analyze git history with looplet.")
+    parser.add_argument("repo_path", nargs="?", default=os.getcwd())
+    parser.add_argument(
+        "--scripted",
+        action="store_true",
+        help="Run a deterministic local demo with MockLLMBackend instead of a real model.",
+    )
+    parser.add_argument("--max-steps", type=int, default=12)
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    repo_path = os.path.abspath(args.repo_path)
 
     # Verify it's a git repo
     if not os.path.isdir(os.path.join(repo_path, ".git")):
         print(f"Error: {repo_path} is not a git repository", file=sys.stderr)
-        sys.exit(1)
+        return 1
 
     repo_name = Path(repo_path).name
 
@@ -426,10 +439,16 @@ def main():
     api_key = os.environ.get("OPENAI_API_KEY", "local")
     model = os.environ.get("OPENAI_MODEL", "llama3.1")
 
-    base_llm = OpenAIBackend(
-        base_url=base_url, api_key=api_key, model=model, tool_choice="required"
-    )
-    llm = ResilientBackend(base_llm, retries=2, timeout_s=120)
+    if args.scripted:
+        llm = MockLLMBackend(responses=scripted_responses())
+        model_label = "scripted MockLLMBackend"
+    else:
+        base_llm = OpenAIBackend(
+            base_url=base_url, api_key=api_key, model=model, tool_choice="required"
+        )
+        llm = ResilientBackend(base_llm, retries=2, timeout_s=120)
+        model_label = model
+    protocol_probe = probe_native_tool_support(llm)
     recording = RecordingLLMBackend(llm)
 
     # Tools
@@ -442,10 +461,10 @@ def main():
     stream_hook = StreamingHook(CallbackEmitter(events.append))
 
     config = LoopConfig(
-        max_steps=12,
+        max_steps=args.max_steps,
         max_tokens=1200,
         temperature=0.3,
-        use_native_tools=True,
+        use_native_tools=protocol_probe.supported,
         system_prompt=(
             f"You are a senior software engineer analyzing the git history of '{repo_name}'.\n\n"
             f"Your task: produce a comprehensive codebase health report.\n\n"
@@ -479,7 +498,7 @@ def main():
         ],
     )
 
-    state = DefaultState(max_steps=12)
+    state = DefaultState(max_steps=args.max_steps)
     session_log = SessionLog()
 
     # ── Run ──────────────────────────────────────────────────────
@@ -489,7 +508,9 @@ def main():
     print("║            Powered by looplet • 100% local                  ║")
     print("╚══════════════════════════════════════════════════════════════╝")
     print(f"\n  Analyzing: {repo_path}")
-    print(f"  Model: {model}")
+    print(f"  Model: {model_label}")
+    print(f"  Tool protocol: {'native' if protocol_probe.supported else 'json-text'}")
+    print(f"  Probe: {protocol_probe.reason}")
     print()
 
     with tempfile.TemporaryDirectory() as traj_dir:
@@ -584,7 +605,8 @@ def main():
         if traj_path.exists():
             print("  Trajectory: saved")
         print()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

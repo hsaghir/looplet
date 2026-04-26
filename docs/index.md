@@ -6,15 +6,16 @@ hide:
 
 <div class="hero" markdown>
 
-<p class="hero-eyebrow">Zero deps · Four hooks · One iterator</p>
+<p class="hero-eyebrow">One iterator · Observable steps · Composable hooks</p>
 
-# The loop is the product.
+# The agent loop you can actually own.
 
 <p class="hero-sub" markdown>
-**looplet** is a `for`-loop you own for LLM tool-calling agents. Yield
-every step, intercept every tool call, redact every prompt, eval every
-trajectory. No graph DSL, no agent runtime, no hidden state. Works with
-any OpenAI-compatible endpoint or Anthropic directly.
+**looplet** exposes the agent loop as an iterator, makes every step
+observable, and lets you compose behavior with hooks. Yield every tool
+call, intercept risky actions, redact prompts, compact context, and turn
+debug traces into evals. No graph DSL, no agent runtime, no hidden state.
+Works with any OpenAI-compatible endpoint or Anthropic directly.
 </p>
 
 <p class="hero-badges" markdown>
@@ -60,7 +61,7 @@ Hook protocols
 </div>
 
 <div class="stat" markdown>
-**1,307**
+**1,408**
 { .stat-num }
 
 Tests, ~1s
@@ -119,6 +120,16 @@ Four hook methods on any Python object. Implement only the ones you
 need. The loop uses `hasattr` — no base class, no registration.
 
 ---
+
+## The promise
+
+1. **Own the loop.** Your code iterates over `Step` objects and can stop,
+   log, approve, score, or redirect at any point.
+2. **Compose behavior.** Hooks are plain Python objects. Add redaction,
+   permission checks, compaction, metrics, or quality gates without
+   subclassing a framework.
+3. **Keep the trace.** The same step stream powers live debugging,
+   provenance, replay, and pytest-style evals.
 
 ## Why looplet?
 
@@ -218,6 +229,40 @@ need. The loop uses `hasattr` — no base class, no registration.
         node needed.
     2.  One `Step` object is the trace, the eval context, and the
         checkpoint unit.
+
+---
+
+## Custom agent example
+
+Start with **Dependency Doctor** if you want a demo people remember:
+point it at a repo and it audits dependency files for security, license,
+and maintenance risk. The agent is useful, concrete, and shows the
+looplet difference: every lookup, warning, and final claim is visible as
+a step you can log, gate, replay, or evaluate.
+
+```bash
+OPENAI_BASE_URL=http://127.0.0.1:11434/v1 \
+OPENAI_API_KEY=ollama OPENAI_MODEL=llama3.1 \
+python examples/dep_doctor/agent.py /path/to/project
+
+# No model required: deterministic local dogfood run
+python examples/dep_doctor/agent.py examples/dep_doctor/demo_project --scripted
+```
+
+Then explore `examples/git_detective/` for codebase-health reports,
+`examples/threat_intel/` for local-first security briefings, and
+`examples/coder/` for a coding-agent reference implementation.
+
+```bash
+# More no-model dogfood runs
+python -m looplet.examples.hello_world --scripted
+python -m looplet.examples.ollama_hello --scripted
+python examples/git_detective/agent.py . --scripted
+python examples/threat_intel/agent.py --scripted
+python examples/coder/agent.py "Create a tiny add function with tests" --scripted
+python -m looplet.examples.coding_agent "Implement add" --scripted --workspace /tmp/demo
+python -m looplet.examples.data_agent --scripted --auto-approve --clean
+```
 
 ---
 

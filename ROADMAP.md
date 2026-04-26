@@ -30,9 +30,77 @@ contract](#v10-api-contract).
 - Provenance capture (LLM prompts + trajectories)
 - pytest-style eval framework with CLI runner
 - MCP tool adapter + skills bundles
+- Decorator-first tool construction via `@tool` and `tools_from()`
+- Native-tool protocol probing for OpenAI-compatible proxy mismatches
+- `looplet doctor` diagnostics for local setup and backend checks
+
+## A+ polish track
+
+The next product goal is to make looplet feel obvious from the first
+GitHub page through the first custom agent. The short pitch should stay
+consistent everywhere:
+
+> looplet exposes the agent loop as an iterator, makes every step
+> observable, and lets users compose behavior with hooks.
+
+### Custom-agent example to lead with
+
+Lead with **Dependency Doctor**: an agent that audits a repository's
+dependency files for security, license, and maintenance risk, then
+produces a report card. It is more memorable than hello-world, useful to
+most developers, and it demonstrates looplet's differentiation: every
+lookup, warning, and conclusion is visible as a `Step` that users can
+log, gate, replay, or evaluate.
+
+Keep the other examples as second-line demos:
+
+- **Git Detective** for repository-health analysis from commit history.
+- **Threat Intel Briefing** for local-first security analysis.
+- **Coder** as a reference implementation for tool-heavy agents, not as
+  a claim to be a complete coding product.
+
+### API consolidation
+
+Keep the low-level modules, but make the common path feel smaller:
+
+- Promote one front-door import story: `looplet` for essentials,
+  submodules for advanced internals.
+- Make presets match the best examples. `coding_agent_preset()` should
+  eventually reuse the hardened file tools, stale-file hints, protocol
+  probing, and test guardrails from `examples/coder/agent.py` instead of
+  maintaining a simpler parallel version.
+- Group production features into opinionated bundles: `debugging`,
+  `safety`, `coding`, and `research` presets should assemble hooks,
+  memory, compaction, provenance, and permissions with sane defaults.
+- Add a `looplet doctor` command that verifies backend connectivity,
+  native-tool behavior, model JSON compliance, and common config errors.
+
+### Tool construction
+
+Manual `ToolSpec(...)` construction should remain supported, but the
+happy path should be decorator-first:
+
+```python
+from looplet import tool, tools_from
+
+@tool(description="Search the docs by keyword.", concurrent_safe=True)
+def search_docs(query: str, limit: int = 5) -> dict:
+    return {"results": search(query, limit)}
+
+tools = tools_from([search_docs])
+```
+
+The decorator should infer JSON Schema from type hints, mark parameters
+with defaults as optional, use docstrings as descriptions when no
+description is provided, preserve `ctx` injection, and still return a
+plain `ToolSpec` so advanced users can inspect or mutate it.
 
 ## Near-term (`0.2` — ~1 month out)
 
+- **Preset consolidation** — make `coding_agent_preset()` reuse the
+  hardened file-tool and guardrail patterns from `examples/coder/`.
+- **Production bundles** — opinionated `debugging`, `safety`, `coding`,
+  and `research` preset bundles that assemble hooks and memory defaults.
 - **Gemini + Bedrock backends** (community contributions welcome — see
   [good-first-issues](good-first-issues.md))
 - **First-class Ollama recipe** with `examples/ollama_hello.py` and

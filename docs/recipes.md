@@ -31,6 +31,34 @@ llm = OpenAIBackend(
 )
 ```
 
+## Diagnose your local setup
+
+```bash
+looplet doctor                 # checks env vars and probes backend if configured
+looplet doctor --no-backend    # local-only checks, safe for CI
+looplet doctor --json          # machine-readable diagnostics
+```
+
+`doctor` catches the common first-run issues: missing backend env vars,
+unavailable OpenAI extras, and OpenAI-compatible proxies that claim tool
+support but return plain text instead of native `tool_use` blocks.
+
+## Decorator-first tool construction
+
+```python
+from looplet import tool, tools_from
+
+@tool(description="Search the docs by keyword.", concurrent_safe=True)
+def search_docs(query: str, limit: int = 5) -> dict:
+    return {"results": search(query, limit)}
+
+tools = tools_from([search_docs], include_done=True)
+```
+
+The decorator infers JSON Schema from type hints, treats parameters with
+defaults as optional, uses the docstring when no description is provided,
+and still produces a plain `ToolSpec` you can inspect or mutate.
+
 ## Anthropic
 
 ```python
@@ -118,7 +146,7 @@ print(eval_run([eval_matches_golden], ctx))
 ## Crash-resume with conversation preserved
 
 ```python
-from looplet import LoopConfig, resume_loop_state
+from looplet import LoopConfig
 
 config = LoopConfig(checkpoint_dir="./checkpoints", max_steps=100)
 
@@ -126,25 +154,30 @@ config = LoopConfig(checkpoint_dir="./checkpoints", max_steps=100)
 for step in composable_loop(llm=llm, tools=tools, config=config, task=task):
     ...                                  # Ctrl-C or crash
 
-# Later, same arguments — resumes from last checkpoint:
-state, offset = resume_loop_state("./checkpoints") or (None, 0)
-for step in composable_loop(
-    llm=llm, tools=tools, config=config,
-    task=task, state=state, resume_step=offset,
-):
+# Later, run the same loop with the same checkpoint_dir. looplet loads
+# the latest checkpoint automatically when config.initial_checkpoint is unset.
+for step in composable_loop(llm=llm, tools=tools, config=config, task=task):
     ...
 ```
 
 ## Deny-by-default shell tool
 
 ```python
-from looplet import PermissionEngine, PermissionRule
+from looplet import PermissionDecision, PermissionEngine, PermissionHook
 
-engine = PermissionEngine(default="DENY")
-engine.add(PermissionRule(tool="bash", args={"command": r"^(ls|pwd|cat)( |$)"}, decision="ALLOW"))
-engine.add(PermissionRule(tool="bash", args={"command": r"rm "}, decision="ASK"))
+engine = PermissionEngine(default=PermissionDecision.DENY)
+engine.allow(
+    "bash",
+    arg_matcher=lambda args: args.get("command", "").startswith(("ls", "pwd", "cat")),
+    reason="read-only shell commands are safe by default",
+)
+engine.ask(
+    "bash",
+    arg_matcher=lambda args: "rm " in args.get("command", ""),
+    reason="destructive shell commands need approval",
+)
 
-config = LoopConfig(permissions=engine, approval_handler=my_ask_handler)
+hooks = [PermissionHook(engine)]
 ```
 
 ## Run a sub-loop with its own tools

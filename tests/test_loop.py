@@ -346,6 +346,99 @@ class TestComposableLoopBasic:
         assert "search" in tools_called
         assert "done" in tools_called
 
+    def test_concurrent_dispatch_uses_per_tool_progress_context(self):
+        from looplet.events import LifecycleEvent
+        from looplet.loop import LoopConfig, composable_loop
+        from looplet.tools import ToolSpec
+        from looplet.types import ToolContext
+
+        progress_tools = []
+
+        class ProgressHook:
+            def on_event(self, payload):
+                if payload.event == LifecycleEvent.TOOL_PROGRESS:
+                    progress_tools.append(payload.tool_call.tool)
+
+        def first(*, ctx: ToolContext):
+            ctx.report_progress("working", {})
+            return {"tool": "first"}
+
+        def second(*, ctx: ToolContext):
+            ctx.report_progress("working", {})
+            return {"tool": "second"}
+
+        llm = _make_done_llm(
+            [
+                '{"tools": ['
+                '{"tool": "first", "args": {}, "reasoning": "r"},'
+                '{"tool": "second", "args": {}, "reasoning": "r"}'
+                "]}"
+            ]
+        )
+        reg = _make_registry_with_done(
+            ToolSpec(
+                name="first",
+                description="first",
+                parameters={},
+                execute=first,
+                concurrent_safe=True,
+            ),
+            ToolSpec(
+                name="second",
+                description="second",
+                parameters={},
+                execute=second,
+                concurrent_safe=True,
+            ),
+        )
+
+        list(
+            composable_loop(
+                llm,
+                state=SimpleState(max_steps=5),
+                tools=reg,
+                config=LoopConfig(max_steps=5, concurrent_dispatch=True),
+                hooks=[ProgressHook()],
+            )
+        )
+
+        assert sorted(progress_tools) == ["first", "second"]
+
+    def test_regular_checkpoint_includes_recorded_session_log_entry(self, tmp_path):
+        from looplet.checkpoint import FileCheckpointStore
+        from looplet.loop import LoopConfig, composable_loop
+        from looplet.tools import ToolSpec
+        from tests.conftest import MockLLMBackend
+
+        reg = _make_registry_with_done(
+            ToolSpec(
+                name="ping",
+                description="ping",
+                parameters={},
+                execute=lambda: {"pong": True},
+            )
+        )
+        llm = MockLLMBackend(
+            [
+                '{"tool": "ping", "args": {}, "reasoning": "r"}',
+                '{"tool": "done", "args": {"summary": "done"}, "reasoning": "r"}',
+            ]
+        )
+
+        list(
+            composable_loop(
+                llm=llm,
+                tools=reg,
+                state=SimpleState(max_steps=3),
+                config=LoopConfig(max_steps=3, checkpoint_dir=str(tmp_path)),
+            )
+        )
+
+        checkpoint = FileCheckpointStore(tmp_path).load("step_1")
+
+        assert checkpoint is not None
+        assert len(checkpoint.session_log_data["entries"]) == 1
+
     def test_max_steps_enforced(self):
         from looplet.loop import LoopConfig, composable_loop
 

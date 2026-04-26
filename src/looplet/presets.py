@@ -266,6 +266,36 @@ def _build_coding_tools(workspace: str) -> BaseToolRegistry:
     )
 
 
+def _build_research_tools(workspace: str) -> BaseToolRegistry:
+    """Build a research agent tool registry (bash, read, glob, grep, think, done)."""
+
+    @tool(description="Execute a bash command for inspection or analysis.")
+    def bash(*, command: str) -> dict:
+        return _bash(command=command, workspace=workspace)
+
+    @tool(description="Read a file with line numbers. Use relative paths.", concurrent_safe=True)
+    def read(*, file_path: str) -> dict:
+        return _read(file_path=file_path, workspace=workspace)
+
+    @tool(description="Find files by glob pattern.", concurrent_safe=True)
+    def glob(*, pattern: str) -> dict:
+        return _glob(pattern=pattern, workspace=workspace)
+
+    @tool(
+        description="Search file contents with regex. Returns matching lines with file:line.",
+        concurrent_safe=True,
+    )
+    def grep(*, pattern: str, path: str = ".") -> dict:
+        return _grep(pattern=pattern, path=path, workspace=workspace)
+
+    return tools_from(
+        [bash, read, glob, grep],
+        include_think=True,
+        include_done=True,
+        done_parameters={"summary": "Research summary and findings"},
+    )
+
+
 # ── Coding agent hook ────────────────────────────────────────────
 
 
@@ -432,7 +462,7 @@ def research_agent_preset(
         ):
             print(step.pretty())
     """
-    tools = _build_coding_tools(workspace)
+    tools = _build_research_tools(workspace)
 
     hooks: list[Any] = [
         ThresholdCompactHook(

@@ -43,7 +43,7 @@ from looplet.compact import (
 )
 from looplet.loop import LoopConfig
 from looplet.memory import StaticMemorySource
-from looplet.tools import BaseToolRegistry, ToolSpec, register_think_tool
+from looplet.tools import BaseToolRegistry, ToolSpec, register_done_tool, tool, tools_from
 from looplet.types import DefaultState
 
 __all__ = [
@@ -216,84 +216,54 @@ def _grep(*, pattern: str, path: str = ".", workspace: str = "") -> dict:
 
 def _build_coding_tools(workspace: str) -> BaseToolRegistry:
     """Build a coding agent tool registry (bash, read, write, edit, glob, grep, think, done)."""
-    reg = BaseToolRegistry()
 
-    reg.register(
-        ToolSpec(
-            name="bash",
-            description=(
-                "Execute a bash command. Use for running tests (pytest), installing packages, "
-                "searching, compiling, and any shell operation."
-            ),
-            parameters={"command": "str"},
-            execute=lambda *, command: _bash(command=command, workspace=workspace),
+    @tool(
+        description=(
+            "Execute a bash command. Use for running tests, installing packages, "
+            "searching, compiling, and shell operations."
         )
     )
-    reg.register(
-        ToolSpec(
-            name="read",
-            description="Read a file with line numbers. Use relative paths.",
-            parameters={"file_path": "str"},
-            execute=lambda *, file_path: _read(file_path=file_path, workspace=workspace),
-            concurrent_safe=True,
+    def bash(*, command: str) -> dict:
+        return _bash(command=command, workspace=workspace)
+
+    @tool(description="Read a file with line numbers. Use relative paths.", concurrent_safe=True)
+    def read(*, file_path: str) -> dict:
+        return _read(file_path=file_path, workspace=workspace)
+
+    @tool(description="Create or overwrite a file. Use relative paths.")
+    def write(*, file_path: str, content: str) -> dict:
+        return _write(file_path=file_path, content=content, workspace=workspace)
+
+    @tool(
+        description=(
+            "Edit a file by replacing an exact string. Use read first to see current content."
         )
     )
-    reg.register(
-        ToolSpec(
-            name="write",
-            description="Create or overwrite a file. Use relative paths.",
-            parameters={"file_path": "str", "content": "str"},
-            execute=lambda *, file_path, content: _write(
-                file_path=file_path, content=content, workspace=workspace
-            ),
+    def edit(*, file_path: str, old_string: str, new_string: str) -> dict:
+        return _edit(
+            file_path=file_path,
+            old_string=old_string,
+            new_string=new_string,
+            workspace=workspace,
         )
+
+    @tool(description="Find files by glob pattern.", concurrent_safe=True)
+    def glob(*, pattern: str) -> dict:
+        return _glob(pattern=pattern, workspace=workspace)
+
+    @tool(
+        description="Search file contents with regex. Returns matching lines with file:line.",
+        concurrent_safe=True,
     )
-    reg.register(
-        ToolSpec(
-            name="edit",
-            description=(
-                "Edit a file by replacing an exact string. Provide the exact text to find "
-                "and the replacement. Use read first to see current content."
-            ),
-            parameters={"file_path": "str", "old_string": "str", "new_string": "str"},
-            execute=lambda *, file_path, old_string, new_string: _edit(
-                file_path=file_path,
-                old_string=old_string,
-                new_string=new_string,
-                workspace=workspace,
-            ),
-        )
+    def grep(*, pattern: str, path: str = ".") -> dict:
+        return _grep(pattern=pattern, path=path, workspace=workspace)
+
+    return tools_from(
+        [bash, read, write, edit, glob, grep],
+        include_think=True,
+        include_done=True,
+        done_parameters={"summary": "Completion summary after tests pass"},
     )
-    reg.register(
-        ToolSpec(
-            name="glob",
-            description="Find files by glob pattern (e.g. '**/*.py', 'test_*.py').",
-            parameters={"pattern": "str"},
-            execute=lambda *, pattern: _glob(pattern=pattern, workspace=workspace),
-            concurrent_safe=True,
-        )
-    )
-    reg.register(
-        ToolSpec(
-            name="grep",
-            description="Search file contents with regex. Returns matching lines with file:line.",
-            parameters={"pattern": "str", "path": "str"},
-            execute=lambda *, pattern, path=".": _grep(
-                pattern=pattern, path=path, workspace=workspace
-            ),
-            concurrent_safe=True,
-        )
-    )
-    register_think_tool(reg)
-    reg.register(
-        ToolSpec(
-            name="done",
-            description="Signal task completion. Only call when ALL tests pass.",
-            parameters={"summary": "str"},
-            execute=lambda *, summary: {"summary": summary},
-        )
-    )
-    return reg
 
 
 # ── Coding agent hook ────────────────────────────────────────────
@@ -523,20 +493,10 @@ def minimal_preset(
                      parameters={"q": "str"}, execute=my_search),
         ])
     """
-    reg = BaseToolRegistry()
-    if tools:
-        for spec in tools:
-            reg.register(spec)
+    reg = tools_from(tuple(tools or []))
     # Always include done
     if "done" not in reg.tool_names:
-        reg.register(
-            ToolSpec(
-                name="done",
-                description="Signal task completion.",
-                parameters={"summary": "str"},
-                execute=lambda *, summary: {"summary": summary},
-            )
-        )
+        register_done_tool(reg)
 
     config = LoopConfig(
         max_steps=max_steps,

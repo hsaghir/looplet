@@ -44,6 +44,9 @@ Repository = "https://github.com/hsaghir/looplet"
 Issues = "https://github.com/hsaghir/looplet/issues"
 Changelog = "https://github.com/hsaghir/looplet/blob/main/CHANGELOG.md"
 
+[project.scripts]
+looplet = "looplet.__main__:main"
+
 [dependency-groups]
 dev = [
     "pytest>=7.0",

@@ -9,6 +9,7 @@ and produces a structured health report card.
 Usage:
     python examples/dep_doctor/agent.py                    # current dir
     python examples/dep_doctor/agent.py /path/to/project   # any project
+    python examples/dep_doctor/agent.py examples/dep_doctor/demo_project --scripted
 
     # With local LLM:
     OPENAI_BASE_URL=http://localhost:11434/v1 python examples/dep_doctor/agent.py
@@ -16,6 +17,7 @@ Usage:
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import re
@@ -25,16 +27,17 @@ from datetime import datetime
 from pathlib import Path
 
 from looplet import (
-    BaseToolRegistry,
     DefaultState,
     LoopConfig,
+    MockLLMBackend,
     OpenAIBackend,
     StaticMemorySource,
     StreamingHook,
-    ToolSpec,
     TrajectoryRecorder,
     composable_loop,
-    register_done_tool,
+    probe_native_tool_support,
+    tool,
+    tools_from,
 )
 from looplet.compact import PruneToolResults, TruncateCompact, compact_chain
 from looplet.limits import PerToolLimitHook
@@ -43,7 +46,6 @@ from looplet.resilient import ResilientBackend
 from looplet.session import SessionLog
 from looplet.stagnation import StagnationHook, tool_call_fingerprint
 from looplet.streaming import CallbackEmitter
-from looplet.tools import register_think_tool
 from looplet.types import ToolContext
 
 # ═══════════════════════════════════════════════════════════════════
@@ -212,6 +214,11 @@ LICENSE_COMPATIBILITY = {
 # ═══════════════════════════════════════════════════════════════════
 
 
+@tool(
+    name="detect_files",
+    description="Scan a project directory for dependency files.",
+    concurrent_safe=True,
+)
 def detect_dep_files(*, project_dir: str) -> dict:
     """Scan project directory for dependency files."""
     p = Path(project_dir)
@@ -235,6 +242,10 @@ def detect_dep_files(*, project_dir: str) -> dict:
     return {"project": p.name, "dep_files": found, "count": len(found)}
 
 
+@tool(
+    description="Parse a dependency file and extract package names plus version constraints.",
+    concurrent_safe=True,
+)
 def parse_deps(*, file_path: str) -> dict:
     """Parse a dependency file and extract package names + versions."""
     p = Path(file_path)
@@ -303,6 +314,13 @@ def parse_deps(*, file_path: str) -> dict:
     return {"file": name, "dependencies": deps, "count": len(deps)}
 
 
+@tool(
+    description=(
+        "Check a package's health: latest version, release date, CVEs, license, "
+        "maintainer count, and download stats."
+    ),
+    concurrent_safe=True,
+)
 def check_package(*, package_name: str) -> dict:
     """Check a package's health: version, last release, CVEs, license, maintainers."""
     name = package_name.lower().strip()
@@ -325,6 +343,11 @@ def check_package(*, package_name: str) -> dict:
     }
 
 
+@tool(
+    name="check_license",
+    description="Check if a dependency license is compatible with the project license.",
+    concurrent_safe=True,
+)
 def check_license_compat(*, project_license: str, dep_license: str) -> dict:
     """Check if a dependency's license is compatible with the project license."""
     proj = project_license.strip()
@@ -342,6 +365,7 @@ def check_license_compat(*, project_license: str, dep_license: str) -> dict:
     }
 
 
+@tool(description="Suggest alternative packages for a risky dependency using the active LLM.")
 def find_alternatives(*, package_name: str, ctx: ToolContext) -> dict:
     """Suggest alternative packages for a risky dependency using LLM."""
     if ctx.llm is not None:
@@ -371,72 +395,115 @@ def find_alternatives(*, package_name: str, ctx: ToolContext) -> dict:
 # ═══════════════════════════════════════════════════════════════════
 
 
-def main():
-    project_dir = sys.argv[1] if len(sys.argv) > 1 else os.getcwd()
-    project_dir = os.path.abspath(project_dir)
+def build_tools():
+    return tools_from(
+        [
+            detect_dep_files,
+            parse_deps,
+            check_package,
+            check_license_compat,
+            find_alternatives,
+        ],
+        include_think=True,
+        include_done=True,
+        done_parameters={
+            "report": "Complete dependency health report in structured markdown",
+        },
+    )
+
+
+def _tool_call(tool_name: str, args: dict, reasoning: str) -> str:
+    return json.dumps({"tool": tool_name, "args": args, "reasoning": reasoning})
+
+
+def scripted_responses(project_dir: str) -> list[str]:
+    requirements = str(Path(project_dir) / "requirements.txt")
+    report = """# Dependency Doctor Report
+
+Overall Grade: D
+
+Summary: 3 Python dependencies inspected. `requests` is healthy, `pyyaml` has a
+single-maintainer/staleness warning, and `abandoned-lib` is a critical security
+and license risk for an MIT project.
+
+Critical Findings:
+- abandoned-lib has an unpatched CRITICAL CVE and GPL-3.0 license risk.
+- pyyaml should be monitored because it has a single maintainer.
+
+Recommendations:
+- Remove abandoned-lib immediately or replace it with maintained-lib.
+- Keep requests current and pin pyyaml to a supported release.
+"""
+    return [
+        _tool_call("detect_files", {"project_dir": project_dir}, "find dependency files"),
+        _tool_call("parse_deps", {"file_path": requirements}, "parse requirements"),
+        _tool_call("check_package", {"package_name": "requests"}, "check requests"),
+        _tool_call("check_package", {"package_name": "pyyaml"}, "check pyyaml"),
+        _tool_call(
+            "check_package",
+            {"package_name": "abandoned-lib"},
+            "check high-risk dependency",
+        ),
+        _tool_call(
+            "check_license",
+            {"project_license": "MIT", "dep_license": "GPL-3.0"},
+            "verify license compatibility",
+        ),
+        _tool_call(
+            "find_alternatives",
+            {"package_name": "abandoned-lib"},
+            "find safer alternatives",
+        ),
+        json.dumps(
+            [
+                {"name": "maintained-lib", "reason": "Actively maintained and MIT licensed."},
+                {"name": "safe-lib", "reason": "No known CVEs in the simulated registry."},
+            ]
+        ),
+        _tool_call(
+            "think",
+            {"analysis": "Risk is concentrated in abandoned-lib; summarize with urgency."},
+            "synthesize findings",
+        ),
+        _tool_call("done", {"report": report}, "final report"),
+    ]
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Audit dependency health with looplet.")
+    parser.add_argument("project_dir", nargs="?", default=os.getcwd())
+    parser.add_argument(
+        "--scripted",
+        action="store_true",
+        help="Run a deterministic local demo with MockLLMBackend instead of a real model.",
+    )
+    parser.add_argument("--max-steps", type=int, default=20)
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    project_dir = os.path.abspath(args.project_dir)
     project_name = Path(project_dir).name
 
     base_url = os.environ.get("OPENAI_BASE_URL", "http://localhost:11434/v1")
     api_key = os.environ.get("OPENAI_API_KEY", "x")
     model = os.environ.get("OPENAI_MODEL", "llama3.1")
 
-    llm = ResilientBackend(
-        OpenAIBackend(base_url=base_url, api_key=api_key, model=model),
-        retries=2,
-        timeout_s=90,
-    )
+    if args.scripted:
+        llm = MockLLMBackend(responses=scripted_responses(project_dir))
+        model_label = "scripted MockLLMBackend"
+    else:
+        llm = ResilientBackend(
+            OpenAIBackend(base_url=base_url, api_key=api_key, model=model),
+            retries=2,
+            timeout_s=90,
+        )
+        model_label = model
+    protocol_probe = probe_native_tool_support(llm)
     recording = RecordingLLMBackend(llm)
 
-    # Tools
-    tools = BaseToolRegistry()
-    register_done_tool(
-        tools,
-        parameters={
-            "report": "Complete dependency health report in structured markdown",
-        },
-    )
-    register_think_tool(tools)
-
-    tools.register(
-        ToolSpec(
-            name="detect_files",
-            description="Scan a project directory for dependency files (pyproject.toml, package.json, etc.)",
-            parameters={"project_dir": "str"},
-            execute=detect_dep_files,
-        )
-    )
-    tools.register(
-        ToolSpec(
-            name="parse_deps",
-            description="Parse a dependency file and extract package names + version constraints",
-            parameters={"file_path": "str"},
-            execute=parse_deps,
-        )
-    )
-    tools.register(
-        ToolSpec(
-            name="check_package",
-            description="Check a package's health: latest version, last release date, CVEs, license, maintainer count, download stats",
-            parameters={"package_name": "str"},
-            execute=check_package,
-        )
-    )
-    tools.register(
-        ToolSpec(
-            name="check_license",
-            description="Check if a dependency license is compatible with the project license",
-            parameters={"project_license": "str", "dep_license": "str"},
-            execute=check_license_compat,
-        )
-    )
-    tools.register(
-        ToolSpec(
-            name="find_alternatives",
-            description="Suggest alternative packages for a risky dependency (uses LLM)",
-            parameters={"package_name": "str"},
-            execute=find_alternatives,
-        )
-    )
+    tools = build_tools()
 
     # Hooks
     stag = StagnationHook(
@@ -449,7 +516,7 @@ def main():
     stream = StreamingHook(CallbackEmitter(events.append))
 
     config = LoopConfig(
-        max_steps=20,
+        max_steps=args.max_steps,
         temperature=0.2,
         system_prompt=(
             f"You are a dependency security auditor analyzing '{project_name}'.\n\n"
@@ -482,9 +549,10 @@ def main():
                 "- Compromised packages: flag as CRITICAL\n"
             )
         ],
+        use_native_tools=protocol_probe.supported,
     )
 
-    state = DefaultState(max_steps=20)
+    state = DefaultState(max_steps=args.max_steps)
     session_log = SessionLog()
 
     # ── Run ──────────────────────────────────────────────────────
@@ -494,7 +562,9 @@ def main():
     print("║           Supply chain health audit • Powered by looplet    ║")
     print("╚══════════════════════════════════════════════════════════════╝")
     print(f"\n  Project: {project_dir}")
-    print(f"  Model: {model}")
+    print(f"  Model: {model_label}")
+    print(f"  Tool protocol: {'native' if protocol_probe.supported else 'json-text'}")
+    print(f"  Probe: {protocol_probe.reason}")
     print()
 
     with tempfile.TemporaryDirectory() as traj_dir:
@@ -578,7 +648,8 @@ def main():
         if traj_path.exists():
             print("  Trajectory: saved")
         print()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

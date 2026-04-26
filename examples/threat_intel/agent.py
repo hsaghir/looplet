@@ -11,6 +11,9 @@ Usage:
     # With llama-server running a local model via Ollama:
     python examples/threat_intel/agent.py
 
+    # No model required: deterministic local dogfood run
+    python examples/threat_intel/agent.py --scripted
+
     # With Ollama:
     OPENAI_BASE_URL=http://localhost:11434/v1 python examples/threat_intel/agent.py
 
@@ -20,25 +23,28 @@ Usage:
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import re
+import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
 from looplet import (
-    BaseToolRegistry,
     Conversation,
     DefaultState,
     LoopConfig,
+    MockLLMBackend,
     OpenAIBackend,
     StaticMemorySource,
     StreamingHook,
-    ToolSpec,
     TrajectoryRecorder,
     composable_loop,
-    register_done_tool,
+    probe_native_tool_support,
+    tool,
+    tools_from,
 )
 from looplet.compact import PruneToolResults, TruncateCompact, compact_chain
 from looplet.limits import PerToolLimitHook
@@ -47,7 +53,6 @@ from looplet.resilient import ResilientBackend
 from looplet.session import SessionLog
 from looplet.stagnation import StagnationHook, tool_call_fingerprint
 from looplet.streaming import CallbackEmitter
-from looplet.tools import register_think_tool
 from looplet.types import ToolContext
 
 # ═══════════════════════════════════════════════════════════════════
@@ -155,6 +160,10 @@ THREAT_FEEDS = {
 # ═══════════════════════════════════════════════════════════════════
 
 
+@tool(
+    description="Fetch a threat intelligence feed. Available feeds: cisa_alerts, nvd_recent, osint_reports.",
+    concurrent_safe=True,
+)
 def fetch_feed(*, feed_name: str) -> dict:
     """Fetch a threat intelligence feed by name."""
     available = list(THREAT_FEEDS.keys())
@@ -164,6 +173,7 @@ def fetch_feed(*, feed_name: str) -> dict:
     return {"feed": feed_name, "item_count": len(items), "items": items}
 
 
+@tool(description="Look up details for a specific CVE ID.", concurrent_safe=True)
 def search_cve(*, cve_id: str) -> dict:
     """Look up details for a specific CVE."""
     for item in THREAT_FEEDS.get("nvd_recent", []):
@@ -172,6 +182,7 @@ def search_cve(*, cve_id: str) -> dict:
     return {"cve_id": cve_id, "error": "CVE not found in recent data"}
 
 
+@tool(description="Extract IOCs from text and classify severity with the loop LLM.")
 def extract_iocs(*, text: str, ctx: ToolContext) -> dict:
     """Extract Indicators of Compromise from text using pattern matching + LLM."""
     # Pattern-based extraction
@@ -215,6 +226,7 @@ def extract_iocs(*, text: str, ctx: ToolContext) -> dict:
     return result
 
 
+@tool(description="Map comma-separated MITRE ATT&CK technique IDs to names and tactics.")
 def map_mitre(*, technique_ids: str) -> dict:
     """Map MITRE ATT&CK technique IDs to descriptions."""
     mitre_db = {
@@ -234,6 +246,7 @@ def map_mitre(*, technique_ids: str) -> dict:
     return {"techniques": results, "count": len(results)}
 
 
+@tool(description="Assess organizational risk for a specific threat using LLM reasoning.")
 def assess_risk(*, title: str, severity: str, affected_products: str, ctx: ToolContext) -> dict:
     """Assess organizational risk for a specific threat using LLM reasoning."""
     if ctx.llm is not None:
@@ -268,72 +281,102 @@ def assess_risk(*, title: str, severity: str, affected_products: str, ctx: ToolC
 # ═══════════════════════════════════════════════════════════════════
 
 
-def build_agent():
+def build_tools():
+    return tools_from(
+        [fetch_feed, search_cve, extract_iocs, map_mitre, assess_risk],
+        include_think=True,
+        include_done=True,
+        done_parameters={
+            "briefing": "The complete threat intelligence briefing in structured text",
+        },
+    )
+
+
+def _tool_call(tool_name: str, args: dict, reasoning: str) -> str:
+    return json.dumps({"tool": tool_name, "args": args, "reasoning": reasoning})
+
+
+def scripted_responses() -> list[str]:
+    cisa_summary = THREAT_FEEDS["cisa_alerts"][0]["summary"]
+    osint_summary = THREAT_FEEDS["osint_reports"][0]["summary"]
+    briefing = """# Daily Threat Intelligence Briefing
+
+Executive Summary:
+Critical supply-chain risk remains the top priority today, led by the Bitwarden CLI npm compromise. A telecom surveillance campaign also warrants monitoring because it targets carrier infrastructure and lawful intercept systems. API exposure remains a persistent data-loss pattern.
+
+Critical Findings:
+- CVE-2026-3891 affects Bitwarden CLI and carries CVSS 9.8.
+- IOCs include collect.checkmarx-analytics[.]com and malicious npm package bitwarden-cli@2026.4.1.
+- Telecom activity maps to T1557, T1040, and T1132.
+
+Recommended Actions:
+- Verify Bitwarden CLI package integrity and remove version 2026.4.1 immediately.
+- Hunt for listed domains and SHA256 indicators in proxy, DNS, and endpoint telemetry.
+- Audit public APIs for unauthenticated citizen or customer data exposure.
+"""
+    return [
+        _tool_call("fetch_feed", {"feed_name": "cisa_alerts"}, "review CISA alerts"),
+        _tool_call("fetch_feed", {"feed_name": "nvd_recent"}, "review recent CVEs"),
+        _tool_call("fetch_feed", {"feed_name": "osint_reports"}, "review OSINT reports"),
+        _tool_call("extract_iocs", {"text": cisa_summary}, "extract Bitwarden IOCs"),
+        "CRITICAL",
+        _tool_call("search_cve", {"cve_id": "CVE-2026-3891"}, "enrich the top CVE"),
+        _tool_call(
+            "assess_risk",
+            {
+                "title": "Critical Vulnerability in Bitwarden CLI Supply Chain",
+                "severity": "CRITICAL",
+                "affected_products": "Bitwarden CLI npm package",
+            },
+            "assess supply chain risk",
+        ),
+        "PRIORITY: IMMEDIATE. Credential exfiltration from a password-manager CLI has high blast radius and active exposure potential.",
+        _tool_call("map_mitre", {"technique_ids": "T1557,T1040,T1132"}, "map telecom TTPs"),
+        _tool_call("extract_iocs", {"text": osint_summary}, "extract telecom IOCs"),
+        "HIGH",
+        _tool_call(
+            "assess_risk",
+            {
+                "title": "Telecom Surveillance Campaign Targeting European Carriers",
+                "severity": "HIGH",
+                "affected_products": "telecom signaling and carrier management infrastructure",
+            },
+            "assess telecom risk",
+        ),
+        "PRIORITY: HIGH. The activity is targeted but can expose carrier infrastructure and sensitive metadata.",
+        _tool_call(
+            "think",
+            {"analysis": "Prioritize supply chain, telecom surveillance, and API exposure."},
+            "synthesize",
+        ),
+        _tool_call("done", {"briefing": briefing}, "final briefing"),
+    ]
+
+
+def build_agent(*, scripted: bool = False, max_steps: int = 15):
     """Build the threat intel briefing agent."""
     # LLM
     base_url = os.environ.get("OPENAI_BASE_URL", "http://localhost:11434/v1")
     api_key = os.environ.get("OPENAI_API_KEY", "local")
     model = os.environ.get("OPENAI_MODEL", "llama3.1")
 
-    base_llm = OpenAIBackend(
-        base_url=base_url,
-        api_key=api_key,
-        model=model,
-        tool_choice="required",
-    )
-    llm = ResilientBackend(base_llm, retries=2, timeout_s=120)
+    if scripted:
+        llm = MockLLMBackend(responses=scripted_responses())
+        model_label = "scripted MockLLMBackend"
+    else:
+        base_llm = OpenAIBackend(
+            base_url=base_url,
+            api_key=api_key,
+            model=model,
+            tool_choice="required",
+        )
+        llm = ResilientBackend(base_llm, retries=2, timeout_s=120)
+        model_label = model
+    protocol_probe = probe_native_tool_support(llm)
     recording = RecordingLLMBackend(llm)
 
     # Tools
-    tools = BaseToolRegistry()
-    register_done_tool(
-        tools,
-        parameters={
-            "briefing": "The complete threat intelligence briefing in structured text",
-        },
-    )
-    register_think_tool(tools)
-
-    tools.register(
-        ToolSpec(
-            name="fetch_feed",
-            description="Fetch a threat intelligence feed. Available feeds: cisa_alerts, nvd_recent, osint_reports",
-            parameters={"feed_name": "str"},
-            execute=fetch_feed,
-        )
-    )
-    tools.register(
-        ToolSpec(
-            name="search_cve",
-            description="Look up details for a specific CVE ID (e.g., CVE-2026-3891)",
-            parameters={"cve_id": "str"},
-            execute=search_cve,
-        )
-    )
-    tools.register(
-        ToolSpec(
-            name="extract_iocs",
-            description="Extract IOCs (IPs, domains, CVEs, hashes) from text and classify severity",
-            parameters={"text": "str"},
-            execute=extract_iocs,
-        )
-    )
-    tools.register(
-        ToolSpec(
-            name="map_mitre",
-            description="Map MITRE ATT&CK technique IDs to names and tactics. Pass comma-separated IDs.",
-            parameters={"technique_ids": "str"},
-            execute=map_mitre,
-        )
-    )
-    tools.register(
-        ToolSpec(
-            name="assess_risk",
-            description="Assess organizational risk for a specific threat",
-            parameters={"title": "str", "severity": "str", "affected_products": "str"},
-            execute=assess_risk,
-        )
-    )
+    tools = build_tools()
 
     # Hooks
     stag_hook = StagnationHook(
@@ -352,10 +395,10 @@ def build_agent():
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     config = LoopConfig(
-        max_steps=15,
+        max_steps=max_steps,
         max_tokens=1000,
         temperature=0.3,
-        use_native_tools=True,
+        use_native_tools=protocol_probe.supported,
         system_prompt=(
             f"You are a senior threat intelligence analyst producing a daily briefing "
             f"for {today}. Your task:\n\n"
@@ -383,7 +426,7 @@ def build_agent():
         ],
     )
 
-    state = DefaultState(max_steps=15)
+    state = DefaultState(max_steps=max_steps)
     session_log = SessionLog()
     conv = Conversation()
 
@@ -397,6 +440,8 @@ def build_agent():
         "hooks": [stag_hook, limit_hook, stream_hook],
         "events": events,
         "recording": recording,
+        "model_label": model_label,
+        "protocol_probe": protocol_probe,
     }
 
 
@@ -405,13 +450,28 @@ def build_agent():
 # ═══════════════════════════════════════════════════════════════════
 
 
-def main():
-    agent = build_agent()
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Produce a local threat-intelligence briefing.")
+    parser.add_argument(
+        "--scripted",
+        action="store_true",
+        help="Run a deterministic local demo with MockLLMBackend instead of a real model.",
+    )
+    parser.add_argument("--max-steps", type=int, default=15)
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    agent = build_agent(scripted=args.scripted, max_steps=args.max_steps)
 
     print("╔══════════════════════════════════════════════════════════════╗")
     print("║        THREAT INTELLIGENCE BRIEFING AGENT                   ║")
     print("║        Powered by looplet • 100% local                      ║")
     print("╚══════════════════════════════════════════════════════════════╝")
+    print(f"\n  Model: {agent['model_label']}")
+    print(f"  Tool protocol: {'native' if agent['protocol_probe'].supported else 'json-text'}")
+    print(f"  Probe: {agent['protocol_probe'].reason}")
     print()
 
     with tempfile.TemporaryDirectory() as traj_dir:
@@ -507,7 +567,8 @@ def main():
             traj = json.loads(traj_path.read_text())
             print(f"  Trajectory: saved ({len(traj.get('steps', []))} steps)")
         print()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

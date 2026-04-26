@@ -32,7 +32,7 @@ composable_loop(llm, tools, state, config, hooks)
 |--------|---------|-------------|
 | `loop` | Core loop engine | `composable_loop`, `LoopConfig`, `LoopHook`, `DomainAdapter` |
 | `types` | Data types & protocols | `Step`, `ToolCall`, `ToolResult`, `LLMBackend`, `DefaultState`, `ToolContext`, `CancelToken` |
-| `tools` | Tool registry & dispatch | `BaseToolRegistry`, `ToolSpec`, `register_think_tool` |
+| `tools` | Tool schema inference, registry & dispatch | `@tool`, `tools_from`, `BaseToolRegistry`, `ToolSpec` |
 | `backends` | LLM adapters | `OpenAIBackend`, `AnthropicBackend`, `AsyncOpenAIBackend` |
 | `permissions` | Declarative permission engine | `PermissionEngine`, `PermissionHook`, `PermissionRule` |
 | `compact` | Context management | `compact_chain`, `PruneToolResults`, `SummarizeCompact`, `TruncateCompact` |
@@ -54,15 +54,14 @@ composable_loop(llm, tools, state, config, hooks)
 ## Recipe 1 — Minimal agent (5 lines)
 
 ```python
-from looplet import composable_loop, LoopConfig, DefaultState, BaseToolRegistry, ToolSpec
+from looplet import composable_loop, LoopConfig, DefaultState, tool, tools_from
 
-tools = BaseToolRegistry()
-tools.register(ToolSpec(name="greet", description="Greet someone",
-                        parameters={"name": "str"},
-                        execute=lambda *, name: {"greeting": f"Hello, {name}!"}))
-tools.register(ToolSpec(name="done", description="Finish",
-                        parameters={"answer": "str"},
-                        execute=lambda *, answer: {"answer": answer}))
+@tool
+def greet(*, name: str) -> dict:
+    """Greet someone."""
+    return {"greeting": f"Hello, {name}!"}
+
+tools = tools_from([greet], include_done=True, done_parameters={"answer": "Final answer"})
 
 for step in composable_loop(
     llm=my_llm, tools=tools, state=DefaultState(max_steps=5),
@@ -93,26 +92,30 @@ for step in composable_loop(
 
 ```python
 from looplet import (
-    composable_loop, LoopConfig, DefaultState, BaseToolRegistry, ToolSpec,
+    composable_loop, LoopConfig, DefaultState, tool, tools_from,
     HookDecision, InjectContext, StaticMemorySource,
     compact_chain, PruneToolResults, SummarizeCompact, TruncateCompact,
     ContextBudget, ThresholdCompactHook, EvalHook,
 )
 
-# 1. Register tools
-tools = BaseToolRegistry()
-tools.register(ToolSpec(name="bash", description="Run shell command",
-                        parameters={"command": "str"},
-                        execute=my_bash_fn))
-tools.register(ToolSpec(name="read", description="Read file",
-                        parameters={"file_path": "str"},
-                        execute=my_read_fn))
-tools.register(ToolSpec(name="write", description="Write file",
-                        parameters={"file_path": "str", "content": "str"},
-                        execute=my_write_fn))
-tools.register(ToolSpec(name="done", description="Signal completion",
-                        parameters={"summary": "str"},
-                        execute=lambda *, summary: {"summary": summary}))
+# 1. Define tools
+@tool(description="Run a shell command.")
+def bash(*, command: str) -> dict:
+    return my_bash_fn(command=command)
+
+@tool(description="Read a file.")
+def read(*, file_path: str) -> dict:
+    return my_read_fn(file_path=file_path)
+
+@tool(description="Write a file.")
+def write(*, file_path: str, content: str) -> dict:
+    return my_write_fn(file_path=file_path, content=content)
+
+tools = tools_from(
+    [bash, read, write],
+    include_done=True,
+    done_parameters={"summary": "Completion summary"},
+)
 
 # 2. Write a hook (implement only the methods you need)
 class MyHook:
@@ -151,21 +154,15 @@ for step in composable_loop(
 ## Recipe 4 — Add a tool
 
 ```python
-from looplet import BaseToolRegistry, ToolSpec
+from looplet import tool, tools_from
 
+@tool(description="Search for items by query. Returns results list.", concurrent_safe=True)
 def my_tool(*, query: str, limit: int = 10) -> dict:
     """Search for items. Returns {"results": [...], "total": int}."""
     results = do_search(query, limit)
     return {"results": results, "total": len(results)}
 
-tools = BaseToolRegistry()
-tools.register(ToolSpec(
-    name="search",
-    description="Search for items by query. Returns results list.",
-    parameters={"query": "str", "limit": "int (default 10)"},
-    execute=my_tool,
-    concurrent_safe=True,  # safe to run in parallel with other tools
-))
+tools = tools_from([my_tool])
 ```
 
 ## Recipe 5 — Write a hook
@@ -200,21 +197,19 @@ class SecurityGuard:
 ## Recipe 6 — Test without a real LLM
 
 ```python
-from looplet import composable_loop, LoopConfig, DefaultState, BaseToolRegistry, ToolSpec
-from looplet.testing import MockLLMBackend
+from looplet import composable_loop, LoopConfig, DefaultState, MockLLMBackend, tool, tools_from
 
 def test_my_agent():
     llm = MockLLMBackend(responses=[
         '{"tool": "bash", "args": {"command": "echo hello"}, "reasoning": "test"}',
         '{"tool": "done", "args": {"summary": "done"}, "reasoning": "finished"}',
     ])
-    tools = BaseToolRegistry()
-    tools.register(ToolSpec(name="bash", description="Run command",
-                            parameters={"command": "str"},
-                            execute=lambda *, command: {"stdout": "hello", "exit_code": 0}))
-    tools.register(ToolSpec(name="done", description="Finish",
-                            parameters={"summary": "str"},
-                            execute=lambda *, summary: {"summary": summary}))
+
+    @tool(description="Run command")
+    def bash(*, command: str) -> dict:
+        return {"stdout": "hello", "exit_code": 0}
+
+    tools = tools_from([bash], include_done=True, done_parameters={"summary": "Summary"})
 
     steps = list(composable_loop(
         llm=llm, tools=tools, state=DefaultState(max_steps=5),
@@ -262,9 +257,10 @@ print(result["findings"])  # list of issues found
 Any agent can be exposed to another agent as a normal tool:
 
 ```python
-from looplet import BaseToolRegistry, ToolSpec
+from looplet import tool, tools_from
 from looplet.subagent import run_sub_loop
 
+@tool(description="Run a deep-research sub-agent and return a cited summary.")
 def deep_research(question: str) -> str:
     """Multi-step research. Returns a cited summary."""
     result = run_sub_loop(
@@ -275,13 +271,7 @@ def deep_research(question: str) -> str:
     )
     return result["summary"]
 
-tools = BaseToolRegistry()
-tools.register(ToolSpec(
-    name="deep_research",
-    description="Run a deep-research sub-agent and return a cited summary.",
-    parameters={"question": "str"},
-    execute=lambda *, question: {"summary": deep_research(question)},
-))
+tools = tools_from([deep_research])
 # Parent loop now sees `deep_research` as a regular tool.
 ```
 

@@ -20,7 +20,7 @@ For a real usage example, see instead:
 * ``hello_world.py`` — the 20-line "first agent" (real LLM).
 * ``coding_agent.py`` — a realistic tool-using agent (real LLM).
 * ``data_agent.py`` — approval + compact + checkpoints wired together
-  (real LLM by default; pass ``--mock`` for CI).
+    (real LLM by default; pass ``--scripted`` for CI).
 
 Run::
 
@@ -33,18 +33,19 @@ this file, re-record the GIF (see ``docs/demo-script.md``).
 from __future__ import annotations
 
 import json
+import sys
 import time
 from typing import Any
 
 from looplet import (
     ApprovalHook,
-    BaseToolRegistry,
     DefaultState,
     LoopConfig,
     composable_loop,
+    tool,
+    tools_from,
 )
 from looplet.testing import MockLLMBackend
-from looplet.tools import ToolSpec
 
 
 def _slow_print(s: str, delay: float = 0.35) -> None:
@@ -70,35 +71,18 @@ class DebugHook:
         _slow_print(f"  ↳ result:   {preview}", delay=0.25)
 
 
-def main() -> None:
-    # ── 1. Tools — cheap real ones + one "dangerous" one ──────────
-    rows = [
-        {"id": 1, "user": "alice", "status": "paid"},
-        {"id": 2, "user": "bob", "status": "paid"},
-        {"id": 3, "user": "alice", "status": "cancelled"},
-        {"id": 4, "user": "carol", "status": "cancelled"},
-    ]
+def build_tools(rows: list[dict[str, Any]]):
+    """Build the deterministic demo tools bound to an in-memory row list."""
 
-    tools = BaseToolRegistry()
-    tools.register(
-        ToolSpec(
-            name="head",
-            description="Preview rows.",
-            parameters={"n": "int"},
-            execute=lambda *, n: {"rows": rows[:n]},
-        )
-    )
-    tools.register(
-        ToolSpec(
-            name="count_by_status",
-            description="Count rows grouped by status.",
-            parameters={},
-            execute=lambda: {
-                "counts": {"paid": 2, "cancelled": 2},
-            },
-        )
-    )
+    @tool(description="Preview rows.")
+    def head(*, n: int) -> dict:
+        return {"rows": rows[:n]}
 
+    @tool(description="Count rows grouped by status.")
+    def count_by_status() -> dict:
+        return {"counts": {"paid": 2, "cancelled": 2}}
+
+    @tool(description="Destructive row deletion that requires approval.")
     def delete_rows(*, where_status: str, ctx: Any = None) -> dict:
         # Approval-gated tool. With a handler installed, it blocks
         # until the operator says "yes"; without one, it sets
@@ -118,25 +102,30 @@ def main() -> None:
             }
         if reply != "yes":
             return {"deleted": 0, "reason": f"denied: {reply!r}"}
-        survivors = [r for r in rows if r["status"] != where_status]
+        survivors = [row for row in rows if row["status"] != where_status]
         return {"deleted": len(rows) - len(survivors), "remaining": len(survivors)}
 
-    tools.register(
-        ToolSpec(
-            name="delete_rows",
-            description="⚠ destructive — requires approval.",
-            parameters={"where_status": "str"},
-            execute=delete_rows,
-        )
-    )
-    tools.register(
-        ToolSpec(
-            name="done",
-            description="Finish with a summary.",
-            parameters={"summary": "str"},
-            execute=lambda *, summary: {"summary": summary},
-        )
-    )
+    @tool(description="Finish with a summary.")
+    def done(*, summary: str) -> dict:
+        return {"summary": summary}
+
+    return tools_from([head, count_by_status, delete_rows, done])
+
+
+def main(argv: list[str] | None = None) -> int:
+    if argv is None:
+        argv = sys.argv[1:]
+    if argv:
+        raise SystemExit("scripted_demo accepts no arguments")
+
+    # ── 1. Tools — cheap real ones + one "dangerous" one ──────────
+    rows = [
+        {"id": 1, "user": "alice", "status": "paid"},
+        {"id": 2, "user": "bob", "status": "paid"},
+        {"id": 3, "user": "alice", "status": "cancelled"},
+        {"id": 4, "user": "carol", "status": "cancelled"},
+    ]
+    tools = build_tools(rows)
 
     # ── 2. Scripted LLM — one JSON per turn ──────────────────────
     llm = MockLLMBackend(
@@ -196,7 +185,8 @@ def main() -> None:
         f"✓ done — {len(approval_calls)} approval prompt, 4 tools, deterministic replay.",
         delay=0.0,
     )
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

@@ -29,18 +29,20 @@ Run::
     python -m looplet.examples.coding_agent
     python -m looplet.examples.coding_agent "implement a linked list" --model claude-sonnet-4
     python -m looplet.examples.coding_agent --base-url https://api.openai.com/v1 --model gpt-4o
+    python -m looplet.examples.coding_agent "implement add" --scripted --workspace /tmp/demo
 """
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
+import sys
 import tempfile
 from dataclasses import dataclass, field
 from typing import Any
 
 from looplet import (
-    BaseToolRegistry,
     ContextBudget,
     DefaultState,
     DomainAdapter,
@@ -49,6 +51,7 @@ from looplet import (
     HookDecision,
     InjectContext,
     LoopConfig,
+    MockLLMBackend,
     PruneToolResults,
     StaticMemorySource,
     SummarizeCompact,
@@ -56,9 +59,11 @@ from looplet import (
     TruncateCompact,
     compact_chain,
     composable_loop,
+    probe_native_tool_support,
+    tool,
+    tools_from,
 )
 from looplet.session import SessionLog
-from looplet.tools import ToolSpec
 from looplet.types import ToolCall, ToolResult
 
 # ═══════════════════════════════════════════════════════════════════
@@ -208,91 +213,59 @@ def _grep(*, pattern: str, path: str = ".", workspace: str = "") -> dict:
         return {"error": "Search timed out", "remediation": "Narrow your pattern or path."}
 
 
-def build_tools(workspace: str) -> BaseToolRegistry:
+def build_tools(workspace: str):
     """Build the tool registry with Claude Code-equivalent tools.
 
     Core set: bash, read, write, edit, glob, grep, think, done.
     """
-    reg = BaseToolRegistry()
 
-    # Bind workspace into each tool
-    reg.register(
-        ToolSpec(
-            name="bash",
-            description=(
-                "Execute a bash command. The most powerful tool — use it for "
-                "running tests (python -m pytest), installing packages, "
-                "searching, compiling, and any shell operation."
-            ),
-            parameters={"command": "str"},
-            execute=lambda *, command: _bash(command=command, workspace=workspace),
+    @tool(
+        description=(
+            "Execute a bash command. Use it for running tests, installing packages, "
+            "searching, compiling, and shell operations."
         )
     )
-    reg.register(
-        ToolSpec(
-            name="read",
-            description="Read a file with line numbers. Use relative paths.",
-            parameters={"file_path": "str"},
-            execute=lambda *, file_path: _read(file_path=file_path, workspace=workspace),
-        )
-    )
-    reg.register(
-        ToolSpec(
-            name="write",
-            description="Create or overwrite a file. Use relative paths.",
-            parameters={"file_path": "str", "content": "str"},
-            execute=lambda *, file_path, content: _write(
-                file_path=file_path, content=content, workspace=workspace
-            ),
-        )
-    )
-    reg.register(
-        ToolSpec(
-            name="edit",
-            description=(
-                "Edit a file by replacing an exact string. For targeted fixes — "
-                "provide the exact text to find and the replacement. Use read "
-                "first to see the current content."
-            ),
-            parameters={"file_path": "str", "old_string": "str", "new_string": "str"},
-            execute=lambda *, file_path, old_string, new_string: _edit(
-                file_path=file_path,
-                old_string=old_string,
-                new_string=new_string,
-                workspace=workspace,
-            ),
-        )
-    )
-    reg.register(
-        ToolSpec(
-            name="glob",
-            description="Find files by glob pattern (e.g. '**/*.py', 'test_*.py').",
-            parameters={"pattern": "str"},
-            execute=lambda *, pattern: _glob(pattern=pattern, workspace=workspace),
-        )
-    )
-    reg.register(
-        ToolSpec(
-            name="grep",
-            description="Search file contents with regex (like ripgrep). Returns matching lines with file:line.",
-            parameters={"pattern": "str", "path": "str"},
-            execute=lambda *, pattern, path=".": _grep(
-                pattern=pattern, path=path, workspace=workspace
-            ),
-        )
-    )
-    from looplet.tools import register_think_tool
+    def bash(*, command: str) -> dict:
+        return _bash(command=command, workspace=workspace)
 
-    register_think_tool(reg)
-    reg.register(
-        ToolSpec(
-            name="done",
-            description="Signal task completion. Only call when ALL tests pass.",
-            parameters={"summary": "str"},
-            execute=lambda *, summary: {"summary": summary},
+    @tool(description="Read a file with line numbers. Use relative paths.", concurrent_safe=True)
+    def read(*, file_path: str) -> dict:
+        return _read(file_path=file_path, workspace=workspace)
+
+    @tool(description="Create or overwrite a file. Use relative paths.")
+    def write(*, file_path: str, content: str) -> dict:
+        return _write(file_path=file_path, content=content, workspace=workspace)
+
+    @tool(
+        description=(
+            "Edit a file by replacing an exact string. Use read first to see current content."
         )
     )
-    return reg
+    def edit(*, file_path: str, old_string: str, new_string: str) -> dict:
+        return _edit(
+            file_path=file_path,
+            old_string=old_string,
+            new_string=new_string,
+            workspace=workspace,
+        )
+
+    @tool(description="Find files by glob pattern.", concurrent_safe=True)
+    def glob(*, pattern: str) -> dict:
+        return _glob(pattern=pattern, workspace=workspace)
+
+    @tool(
+        description="Search file contents with regex. Returns matching lines with file:line.",
+        concurrent_safe=True,
+    )
+    def grep(*, pattern: str, path: str = ".") -> dict:
+        return _grep(pattern=pattern, path=path, workspace=workspace)
+
+    return tools_from(
+        [bash, read, write, edit, glob, grep],
+        include_think=True,
+        include_done=True,
+        done_parameters={"summary": "Completion summary after tests pass"},
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -472,7 +445,7 @@ def _build_prompt(*, use_native: bool = False, **kwargs: Any) -> str | None:
         action_prompt=(
             "Respond with EXACTLY one JSON object, nothing else:\n"
             '{"tool": "<tool_name>", "args": {<arguments>}, "reasoning": "<why>"}\n'
-            'Example: {"tool": "write_file", "args": {"path": "main.py", '
+            'Example: {"tool": "write", "args": {"file_path": "main.py", '
             '"content": "print(1)"}, "reasoning": "create main"}'
         ),
     )
@@ -592,35 +565,10 @@ def run_coding_agent(
     """
     ws = workspace or tempfile.mkdtemp(prefix="looplet_example_")
 
-    # Detect native tool support — use it when available for
-    # reliability; fall back to JSON-text with format instructions.
-    _native = hasattr(llm, "generate_with_tools")
-    if _native:
-        # Probe: some proxies expose generate_with_tools but silently
-        # ignore the tools parameter. Send a trivial tool call and
-        # check if the response actually contains a tool_use block.
-        try:
-            _test = llm.generate_with_tools(
-                "Call the test_probe tool now.",
-                tools=[
-                    {
-                        "name": "test_probe",
-                        "description": "Probe tool",
-                        "input_schema": {"type": "object", "properties": {}},
-                    }
-                ],
-                max_tokens=50,
-                system_prompt="",
-                temperature=0,
-            )
-            # Native backends return blocks with at least one tool_use
-            _has_tool_use = isinstance(_test, list) and any(
-                isinstance(b, dict) and b.get("type") == "tool_use" for b in _test
-            )
-            if not _has_tool_use:
-                _native = False
-        except Exception:  # noqa: BLE001
-            _native = False
+    # Detect native tool support behaviorally, then fall back to JSON-text
+    # with explicit format instructions when native tool calls are unavailable.
+    protocol_probe = probe_native_tool_support(llm)
+    _native = protocol_probe.supported
 
     # When native tools aren't available, add a JSON format instruction
     # via build_prompt so the model knows the expected response shape.
@@ -635,6 +583,7 @@ def run_coding_agent(
     )
 
     print(f"[harness] Tool protocol: {'native' if _native else 'json-text'}")
+    print(f"[harness] Probe: {protocol_probe.reason}")
 
     config = LoopConfig(
         max_steps=max_steps,
@@ -738,6 +687,45 @@ def run_coding_agent(
 # ═══════════════════════════════════════════════════════════════════
 
 
+def _tool_call(tool_name: str, args: dict, reasoning: str) -> str:
+    return json.dumps({"tool": tool_name, "args": args, "reasoning": reasoning})
+
+
+def scripted_responses() -> list[str]:
+    return [
+        _tool_call(
+            "write",
+            {
+                "file_path": "test_math_utils.py",
+                "content": (
+                    "from math_utils import add\n\n\n"
+                    "def test_add() -> None:\n"
+                    "    assert add(2, 3) == 5\n"
+                ),
+            },
+            "write the regression test first",
+        ),
+        _tool_call(
+            "write",
+            {
+                "file_path": "math_utils.py",
+                "content": (
+                    "def add(left: int, right: int) -> int:\n"
+                    '    """Return the sum of two integers."""\n'
+                    "    return left + right\n"
+                ),
+            },
+            "implement the function with type hints and a docstring",
+        ),
+        _tool_call("bash", {"command": "python -m pytest -q"}, "run the tests"),
+        _tool_call(
+            "done",
+            {"summary": "Created math_utils.add with tests."},
+            "finish after tests pass",
+        ),
+    ]
+
+
 def _get_llm(
     *,
     base_url: str | None = None,
@@ -771,7 +759,7 @@ def _get_llm(
     return OpenAIBackend(client, model=_model)
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> int:
     """Run the coding agent with a real LLM backend."""
     import argparse
 
@@ -797,19 +785,40 @@ def main() -> None:
     parser.add_argument(
         "--trace", default=None, metavar="DIR", help="Save trajectory to DIR for replay/debugging"
     )
-    args = parser.parse_args()
+    parser.add_argument(
+        "--workspace",
+        default=None,
+        help="Project directory to operate in. Defaults to a temporary directory.",
+    )
+    parser.add_argument(
+        "--scripted",
+        action="store_true",
+        help="Run a deterministic local demo with MockLLMBackend instead of a real model.",
+    )
+    args = parser.parse_args(argv)
 
     print("=" * 60)
     print("looplet — Coding Agent Example")
     print("=" * 60)
     print()
 
-    llm = _get_llm(base_url=args.base_url, model=args.model)
-    print(f"[backend] {llm._model} @ {llm._client.base_url}")
+    if args.scripted:
+        llm = MockLLMBackend(responses=scripted_responses())
+        print("[backend] scripted MockLLMBackend")
+    else:
+        llm = _get_llm(base_url=args.base_url, model=args.model)
+        print(f"[backend] {llm._model} @ {llm._client.base_url}")
     print()
 
-    run_coding_agent(llm, task=args.task, max_steps=args.max_steps, trace_dir=args.trace)
+    run_coding_agent(
+        llm,
+        task=args.task,
+        max_steps=args.max_steps,
+        workspace=args.workspace,
+        trace_dir=args.trace,
+    )
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

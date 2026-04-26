@@ -12,6 +12,9 @@ Usage:
     # In a specific directory:
     python examples/coder/agent.py --workspace /path/to/project "Build feature X"
 
+    # No model required: deterministic local dogfood run
+    python examples/coder/agent.py "Create a tiny add function with tests" --scripted
+
     # With a local LLM:
     OPENAI_BASE_URL=http://localhost:11434/v1 python examples/coder/agent.py "..."
 """
@@ -21,24 +24,27 @@ from __future__ import annotations
 import argparse
 import difflib
 import hashlib
+import json
 import os
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
 from looplet import (
-    BaseToolRegistry,
     CallableMemorySource,
     Conversation,
     DefaultState,
     LoopConfig,
+    MockLLMBackend,
     OpenAIBackend,
     StaticMemorySource,
     StreamingHook,
-    ToolSpec,
     TrajectoryRecorder,
     composable_loop,
-    register_done_tool,
+    probe_native_tool_support,
+    tool,
+    tools_from,
 )
 from looplet.compact import PruneToolResults, TruncateCompact, compact_chain
 from looplet.hook_decision import HookDecision, InjectContext
@@ -48,8 +54,6 @@ from looplet.resilient import ResilientBackend
 from looplet.session import SessionLog
 from looplet.stagnation import StagnationHook, tool_call_fingerprint
 from looplet.streaming import CallbackEmitter
-from looplet.tools import register_think_tool
-from looplet.types import ToolContext  # noqa: F401
 
 # ═══════════════════════════════════════════════════════════════════
 # EXIT CODE INTERPRETATION
@@ -259,11 +263,9 @@ def _resolve_safe_path(workspace: str, file_path: str) -> Path | None:
     return target
 
 
-def make_tools(workspace: str, file_cache: FileCache) -> BaseToolRegistry:
-    tools = BaseToolRegistry()
-
-    # ── bash ────────────────────────────────────────────────────
-    def bash_execute(*, command: str) -> dict:
+def make_tools(workspace: str, file_cache: FileCache):
+    @tool(description="Execute a bash command in the project directory.", timeout_s=600)
+    def bash(*, command: str) -> dict:
         # CWD safety: detect cd outside workspace
         result = _run(command, workspace)
         # Check if command tried to cd outside workspace
@@ -287,21 +289,10 @@ def make_tools(workspace: str, file_cache: FileCache) -> BaseToolRegistry:
                     pass
         return result
 
-    tools.register(
-        ToolSpec(
-            name="bash",
-            description="Execute a bash command in the project directory.",
-            parameters={
-                "type": "object",
-                "properties": {"command": {"type": "string", "description": "The bash command"}},
-                "required": ["command"],
-            },
-            execute=bash_execute,
-            timeout_s=600,  # 10 minute cap
-        )
+    @tool(
+        description="List directory contents as a tree. Use at the start to understand project structure.",
+        concurrent_safe=True,
     )
-
-    # ── list_dir ────────────────────────────────────────────────
     def list_dir(*, path: str = ".", depth: int = 2) -> dict:
         target = Path(workspace) / path
         if not target.exists():
@@ -340,24 +331,10 @@ def make_tools(workspace: str, file_cache: FileCache) -> BaseToolRegistry:
         _walk(target, "", 0)
         return {"path": path, "entries": entries, "count": len(entries)}
 
-    tools.register(
-        ToolSpec(
-            name="list_dir",
-            description="List directory contents as a tree. Use at the start to understand project structure.",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "default": "."},
-                    "depth": {"type": "integer", "default": 2},
-                },
-                "required": [],
-            },
-            execute=list_dir,
-            concurrent_safe=True,
-        )
+    @tool(
+        description="Read a file with line numbers. Optionally specify start_line and/or end_line.",
+        concurrent_safe=True,
     )
-
-    # ── read_file ───────────────────────────────────────────────
     def read_file(*, file_path: str, start_line: int = 0, end_line: int = 0) -> dict:
         p = _resolve_safe_path(workspace, file_path)
         if p is None:
@@ -395,25 +372,7 @@ def make_tools(workspace: str, file_cache: FileCache) -> BaseToolRegistry:
         except Exception as e:
             return {"error": str(e)}
 
-    tools.register(
-        ToolSpec(
-            name="read_file",
-            description="Read a file with line numbers. Optionally specify start_line and/or end_line (1-indexed).",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "file_path": {"type": "string"},
-                    "start_line": {"type": "integer", "default": 0},
-                    "end_line": {"type": "integer", "default": 0},
-                },
-                "required": ["file_path"],
-            },
-            execute=read_file,
-            concurrent_safe=True,
-        )
-    )
-
-    # ── write_file ──────────────────────────────────────────────
+    @tool(description="Create or overwrite a file. Use for new files only.")
     def write_file(*, file_path: str, content: str) -> dict:
         p = _resolve_safe_path(workspace, file_path)
         if p is None:
@@ -423,20 +382,7 @@ def make_tools(workspace: str, file_cache: FileCache) -> BaseToolRegistry:
         file_cache.invalidate(file_path)
         return {"written": file_path, "lines": content.count("\n") + 1}
 
-    tools.register(
-        ToolSpec(
-            name="write_file",
-            description="Create or overwrite a file. Use for NEW files only. Use edit_file for existing files.",
-            parameters={
-                "type": "object",
-                "properties": {"file_path": {"type": "string"}, "content": {"type": "string"}},
-                "required": ["file_path", "content"],
-            },
-            execute=write_file,
-        )
-    )
-
-    # ── edit_file (search-and-replace with fuzzy fallback) ──────
+    @tool(description="Edit a file by replacing an exact string. Always read_file first.")
     def edit_file(*, file_path: str, old_string: str, new_string: str) -> dict:
         p = _resolve_safe_path(workspace, file_path)
         if p is None:
@@ -481,77 +427,36 @@ def make_tools(workspace: str, file_cache: FileCache) -> BaseToolRegistry:
             }
         return {"error": f"Not found in {file_path}. Use read_file to see exact content."}
 
-    tools.register(
-        ToolSpec(
-            name="edit_file",
-            description="Edit a file by replacing an exact string. ALWAYS read_file first. Include 3+ context lines for unique match. If it fails, read the error hints and retry.",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "file_path": {"type": "string"},
-                    "old_string": {"type": "string"},
-                    "new_string": {"type": "string"},
-                },
-                "required": ["file_path", "old_string", "new_string"],
-            },
-            execute=edit_file,
-        )
-    )
+    @tool(description="Find files by glob pattern.", concurrent_safe=True)
+    def glob(*, pattern: str) -> dict:
+        return {
+            "pattern": pattern,
+            "matches": sorted(
+                str(path.relative_to(workspace))
+                for path in Path(workspace).glob(pattern)
+                if path.is_file()
+            )[:100],
+        }
 
-    # ── glob + grep ─────────────────────────────────────────────
-    tools.register(
-        ToolSpec(
-            name="glob",
-            description="Find files by glob pattern (e.g. '**/*.py').",
-            parameters={
-                "type": "object",
-                "properties": {"pattern": {"type": "string"}},
-                "required": ["pattern"],
-            },
-            execute=lambda *, pattern: {
-                "pattern": pattern,
-                "matches": sorted(
-                    str(p.relative_to(workspace))
-                    for p in Path(workspace).glob(pattern)
-                    if p.is_file()
-                )[:100],
-            },
-            concurrent_safe=True,
-        )
+    @tool(
+        description="Search file contents with regex. Returns file:line:content.",
+        concurrent_safe=True,
     )
-    tools.register(
-        ToolSpec(
-            name="grep",
-            description="Search file contents with regex. Returns file:line:content.",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "pattern": {"type": "string"},
-                    "path": {"type": "string", "default": "."},
-                    "include": {"type": "string", "default": ""},
-                },
-                "required": ["pattern"],
-            },
-            execute=lambda *, pattern, path=".", include="": (
-                lambda r: {
-                    "pattern": pattern,
-                    "matches": r["stdout"].splitlines()[:50] if r["stdout"] else [],
-                    "count": len(r["stdout"].splitlines()) if r["stdout"] else 0,
-                }
-            )(
-                _run(
-                    f"grep -rn {f'--include={chr(39)}{include}{chr(39)} ' if include else ''}{chr(39)}{pattern}{chr(39)} {chr(39)}{path}{chr(39)} 2>/dev/null | head -50",
-                    workspace,
-                    timeout=10,
-                )
-            ),
-            concurrent_safe=True,
+    def grep(*, pattern: str, path: str = ".", include: str = "") -> dict:
+        include_arg = f"--include='{include}' " if include else ""
+        result = _run(
+            f"grep -rn {include_arg}'{pattern}' '{path}' 2>/dev/null | head -50",
+            workspace,
+            timeout=10,
         )
-    )
+        lines = result["stdout"].splitlines() if result["stdout"] else []
+        return {"pattern": pattern, "matches": lines[:50], "count": len(lines)}
 
-    register_done_tool(tools)
-    register_think_tool(tools)
-    return tools
+    return tools_from(
+        [bash, list_dir, read_file, write_file, edit_file, glob, grep],
+        include_think=True,
+        include_done=True,
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -762,22 +667,67 @@ with tests. You never guess — you read first, then act.
 # ═══════════════════════════════════════════════════════════════════
 
 
-def main():
+def _tool_call(tool_name: str, args: dict, reasoning: str) -> str:
+    return json.dumps({"tool": tool_name, "args": args, "reasoning": reasoning})
+
+
+def scripted_responses() -> list[str]:
+    return [
+        _tool_call("list_dir", {"path": ".", "depth": 1}, "inspect the workspace"),
+        _tool_call(
+            "write_file",
+            {
+                "file_path": "math_utils.py",
+                "content": "def add(left: int, right: int) -> int:\n    return left + right\n",
+            },
+            "create the implementation",
+        ),
+        _tool_call(
+            "write_file",
+            {
+                "file_path": "test_math_utils.py",
+                "content": "from math_utils import add\n\n\ndef test_add() -> None:\n    assert add(2, 3) == 5\n",
+            },
+            "create a regression test",
+        ),
+        _tool_call("bash", {"command": "python -m pytest -q"}, "run the tests"),
+        _tool_call(
+            "done",
+            {"summary": "Created math_utils.add with tests."},
+            "finish after tests pass",
+        ),
+    ]
+
+
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="looplet coder — AI coding agent")
     parser.add_argument("task", help="What to build or fix")
     parser.add_argument("--workspace", "-w", default=os.getcwd(), help="Project directory")
     parser.add_argument("--max-steps", type=int, default=30, help="Max tool calls")
     parser.add_argument("--no-tests", action="store_true", help="Skip test guard")
-    args = parser.parse_args()
+    parser.add_argument(
+        "--scripted",
+        action="store_true",
+        help="Run a deterministic local demo with MockLLMBackend instead of a real model.",
+    )
+    args = parser.parse_args(argv)
     workspace = os.path.abspath(args.workspace)
 
     base_url = os.environ.get("OPENAI_BASE_URL", "http://localhost:11434/v1")
     api_key = os.environ.get("OPENAI_API_KEY", "x")
     model = os.environ.get("OPENAI_MODEL", "llama3.1")
 
-    llm = ResilientBackend(
-        OpenAIBackend(base_url=base_url, api_key=api_key, model=model), retries=2, timeout_s=120
-    )
+    if args.scripted:
+        llm = MockLLMBackend(responses=scripted_responses())
+        model_label = "scripted MockLLMBackend"
+    else:
+        llm = ResilientBackend(
+            OpenAIBackend(base_url=base_url, api_key=api_key, model=model),
+            retries=2,
+            timeout_s=120,
+        )
+        model_label = model
+    protocol_probe = probe_native_tool_support(llm)
     recording = RecordingLLMBackend(llm)
     file_cache = FileCache(workspace)
     tools = make_tools(workspace, file_cache)
@@ -818,7 +768,7 @@ def main():
             PruneToolResults(keep_recent=10), TruncateCompact(keep_recent=5)
         ),
         memory_sources=memory_sources,
-        use_native_tools=True,
+        use_native_tools=protocol_probe.supported,
     )
     state = DefaultState(max_steps=args.max_steps)
     session_log = SessionLog()
@@ -832,7 +782,9 @@ def main():
     print(f"  Context: {project_ctx}")
     if instructions:
         print(f"  Instructions: {len(instructions)} chars")
-    print(f"  Model: {model} | Budget: {args.max_steps} steps\n")
+    print(f"  Model: {model_label} | Budget: {args.max_steps} steps")
+    print(f"  Tool protocol: {'native' if protocol_probe.supported else 'json-text'}")
+    print(f"  Probe: {protocol_probe.reason}\n")
 
     with tempfile.TemporaryDirectory() as traj_dir:
         recorder = TrajectoryRecorder(recording_llm=recording, output_dir=traj_dir)
@@ -884,7 +836,8 @@ def main():
         print(
             f"\n  Steps: {len(state.steps)} | LLM calls: {len(recording.calls)} ({len(scoped)} tool-internal)\n"
         )
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

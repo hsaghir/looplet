@@ -188,29 +188,32 @@ class CodeReviewGuidance:
 
 ## Using Built-In Hooks
 
-Cadence ships with several ready-to-use hooks:
+looplet ships with several ready-to-use hooks and hook-compatible helpers:
 
 ```python
-from cadence import (
-    ContextManagerHook,  # Progressive context management
-    StreamingHook,       # Event emission for observability
-    CheckpointHook,      # Auto-save checkpoints
-    TracingHook,         # Span-based tracing
-    MetricsHook,         # Metrics collection
+from looplet import (
+    ContextBudget,
+    EvalHook,
+    MetricsHook,
+    PermissionHook,
+    ProvenanceSink,
+    ThresholdCompactHook,
+    TracingHook,
 )
+from looplet.streaming import CallbackEmitter, StreamingHook
 ```
 
-### ContextManagerHook
+### ThresholdCompactHook
 
-Prevents context window overflow with three tiers:
+Warns or compacts as context pressure rises:
 
 ```python
-hook = ContextManagerHook(
-    llm,                          # for LLM-based compaction
-    context_window=128_000,       # your model's window size
-    result_max_age_full=3,        # steps before result aging
-    per_result_chars=50_000,      # max chars per result
-    aggregate_chars=500_000,      # max total chars
+hook = ThresholdCompactHook(
+    ContextBudget(
+        context_window=128_000,
+        warning_at=80_000,
+        error_at=110_000,
+    )
 )
 ```
 
@@ -219,12 +222,25 @@ hook = ContextManagerHook(
 Emits typed events for real-time observability:
 
 ```python
-from cadence import StreamingHook, CallbackEmitter
+from looplet.streaming import CallbackEmitter, StreamingHook
 
 def on_event(event):
     print(f"[{event.event_type}] {event}")
 
 hook = StreamingHook(CallbackEmitter(on_event))
+```
+
+### ProvenanceSink
+
+Captures prompts, responses, and trajectory files for later replay and
+evaluation:
+
+```python
+from looplet import ProvenanceSink
+
+sink = ProvenanceSink(dir="traces/run_1", redact=lambda s: s.replace("secret", "[REDACTED]"))
+llm = sink.wrap_llm(llm)
+hooks = [sink.trajectory_hook()]
 ```
 
 ## Async Hooks

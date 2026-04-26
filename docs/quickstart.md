@@ -37,24 +37,17 @@ followed by a final `#N ✓ done(...)`. If that works, you are ready.
 ```python title="my_agent.py"
 from looplet import (
     composable_loop, LoopConfig, DefaultState,
-    BaseToolRegistry, ToolSpec, OpenAIBackend, register_done_tool,
+    OpenAIBackend, tool, tools_from,
 )
 
 llm = OpenAIBackend(base_url="https://api.openai.com/v1",
                     api_key="sk-...", model="gpt-4o-mini")
 
-# Register your domain tool + done().
+@tool(description="Search the docs.")
 def search(query: str) -> dict:
     return {"results": [f"result for {query}"]}
 
-tools = BaseToolRegistry()
-tools.register(ToolSpec(
-    name="search",
-    description="Search the docs.",
-    parameters={"query": "str"},
-    execute=lambda *, query: search(query),
-))
-register_done_tool(tools)
+tools = tools_from([search], include_done=True)
 
 # Run.  You own the iteration.
 for step in composable_loop(

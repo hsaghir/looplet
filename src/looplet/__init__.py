@@ -61,6 +61,11 @@ from looplet.limits import BudgetWarningHook, PerToolLimitHook
 from looplet.loop import DomainAdapter, LoopConfig, LoopHook, composable_loop, emit_event
 from looplet.mcp import MCPToolAdapter
 from looplet.memory import CallableMemorySource, StaticMemorySource
+from looplet.native_tools import (
+    NativeToolProbeResult,
+    probe_native_tool_support,
+    supports_native_tools,
+)
 from looplet.permissions import (
     PermissionDecision,
     PermissionEngine,
@@ -93,6 +98,8 @@ from looplet.tools import (
     excerpt_around_match,
     register_done_tool,
     suggest_similar,
+    tool,
+    tools_from,
 )
 from looplet.types import (
     CancelToken,
@@ -142,6 +149,9 @@ __all__ = [
     "AnthropicBackend",
     "NativeToolBackend",
     "MCPToolAdapter",
+    "NativeToolProbeResult",
+    "probe_native_tool_support",
+    "supports_native_tools",
     # ── CONTEXT MANAGEMENT ──────────────────────────────────────
     "CompactService",
     "CompactOutcome",
@@ -204,6 +214,8 @@ __all__ = [
     "ToolValidationError",
     "suggest_similar",
     "excerpt_around_match",
+    "tool",
+    "tools_from",
     "SessionLog",
     "Conversation",
     "Message",

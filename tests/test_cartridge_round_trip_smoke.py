@@ -371,6 +371,32 @@ description: Failed copies should not leave targets.
     assert not list(tmp_path.glob(".target.tmp-*"))
 
 
+def test_wrap_claude_skill_cleans_temp_output_when_render_fails(tmp_path):
+    claude_skill = tmp_path / "claude-skill"
+    claude_skill.mkdir()
+    (claude_skill / "SKILL.md").write_text(
+        """---
+name: render-fail
+description: Failed rendering should not leave targets.
+---
+
+# Render Fail
+""",
+        encoding="utf-8",
+    )
+    target = tmp_path / "target"
+
+    with patch(
+        "looplet.blueprints._render_skill_markdown",
+        side_effect=RuntimeError("render failed"),
+    ):
+        with pytest.raises(RuntimeError, match="render failed"):
+            wrap_claude_skill_as_bundle(claude_skill, target)
+
+    assert not target.exists()
+    assert not list(tmp_path.glob(".target.tmp-*"))
+
+
 def test_wrap_claude_skill_rejects_file_parent_for_output(tmp_path):
     claude_skill = tmp_path / "claude-skill"
     claude_skill.mkdir()

@@ -371,6 +371,26 @@ description: Failed copies should not leave targets.
     assert not list(tmp_path.glob(".target.tmp-*"))
 
 
+def test_wrap_claude_skill_rejects_file_parent_for_output(tmp_path):
+    claude_skill = tmp_path / "claude-skill"
+    claude_skill.mkdir()
+    (claude_skill / "SKILL.md").write_text(
+        """---
+name: file-parent
+description: File parents should be rejected clearly.
+---
+
+# File Parent
+""",
+        encoding="utf-8",
+    )
+    parent_file = tmp_path / "not-a-directory"
+    parent_file.write_text("file", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="out_dir parent must be a directory"):
+        wrap_claude_skill_as_bundle(claude_skill, parent_file / "target")
+
+
 def test_wrap_looplet_cartridge_preserves_existing_entrypoint(tmp_path):
     source = tmp_path / "source-cartridge"
     source.mkdir()
@@ -425,3 +445,37 @@ def test_distributions_include_coder_cartridge_and_dependency(tmp_path):
     assert any(name.endswith("examples/coder/skill/looplet.py") for name in sdist_names)
     assert "examples/coder/agent.py" in wheel_names
     assert "examples/coder/skill/looplet.py" in wheel_names
+
+    venv_dir = tmp_path / "venv"
+    subprocess.run(
+        ["uv", "venv", str(venv_dir)],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    python = venv_dir / "bin" / "python"
+    subprocess.run(
+        ["uv", "pip", "install", "--python", str(python), str(wheel)],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    installed = subprocess.run(
+        [
+            str(python),
+            "-c",
+            "from pathlib import Path; import sys; import looplet; "
+            "site=next(Path(p).resolve() for p in sys.path if p.endswith('site-packages')); "
+            "bundle=looplet.load_skill_bundle(site / 'examples' / 'coder' / 'skill'); "
+            "preset=bundle.build_preset(looplet.SkillRuntime(max_steps=2)); "
+            "print(bundle.skill.name); print(preset.config.max_steps); "
+            "print(any(tool in preset.tools.tool_names for tool in ('bash', 'read_file')))",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert installed.stdout.splitlines() == ["coder", "2", "True"]

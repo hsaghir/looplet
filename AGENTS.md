@@ -9,6 +9,30 @@ A composable tool-calling loop for LLM agents. You own the loop as a
 Python iterator (`for step in composable_loop(...)`) and inject behavior
 via hook protocols. Zero runtime dependencies. Provider-agnostic.
 
+## Design principles
+
+Keep looplet minimal, simple, powerful, and familiar to Python users.
+
+- **Minimal core:** `composable_loop(...)` stays small and domain-neutral.
+    New capabilities should compile into tools, hooks, config, state,
+    presets, skills, bundles, CLI helpers, or docs unless the loop itself
+    truly needs to know.
+- **Simple story:** the LLM proposes a tool call; the registry validates
+    and dispatches it; hooks observe or steer; state records the step; the
+    loop yields a `Step` to the caller. Use this as the teaching model and
+    the design test for new features.
+- **Powerful composition:** grow power by combining ordinary looplet
+    primitives, not by hiding orchestration inside a closed monolith.
+- **Familiar Python:** prefer functions, classes, dataclasses, protocols,
+    iterators, and importable factories. Avoid DSLs, magic globals,
+    mandatory inheritance, and dependency-heavy plugin systems.
+- **Layered cartridges:** skills and cartridges are packaging and
+    distribution layers over looplet primitives, not a second runtime.
+    Preserve the rule that everything compiles into the core loop story.
+- **Honest conversion:** exact wrappers and blueprint comparisons are
+    reliable; expanded source generation should depend on explicit recorded
+    recipes, not decompiling arbitrary Python.
+
 ## Architecture (30-second version)
 
 ```

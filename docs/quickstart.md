@@ -2,6 +2,16 @@
 
 Five minutes from zero to a running agent you understand every line of.
 
+The whole looplet mental model fits in one turn:
+
+1. The LLM proposes a tool call.
+2. The registry validates and dispatches it.
+3. Hooks observe or steer the turn.
+4. State records the step.
+5. The loop yields a `Step` back to your code.
+
+Everything below is ordinary Python around that mechanism.
+
 ## 1. Install
 
 ```bash
@@ -61,6 +71,13 @@ for step in composable_loop(
 ```
 
 That's it. The whole agent is 30 lines.
+
+The objects map directly to the mental model:
+
+- `tools_from(...)` builds the registry that validates and dispatches tool calls.
+- `hooks=[...]` lets plain Python objects observe or steer the loop.
+- `DefaultState` records the steps and remaining budget.
+- `composable_loop(...)` yields each `Step` so your code can print, test, stop, or route it.
 
 ## 4. Add a hook
 
@@ -129,12 +146,41 @@ Run against any saved trajectory:
 looplet eval traces/ --evals eval_my_agent.py --threshold 0.7 -v
 ```
 
+## 7. Run or share a cartridge
+
+A cartridge is a portable skill folder that builds normal looplet
+primitives. It is the beginner-friendly way to run or share a complete
+capability without hiding the underlying loop.
+
+```bash
+python -m looplet run ./skills/coder "Fix the tests" --workspace .
+python -m looplet blueprint ./skills/coder --workspace .
+python -m looplet export-code ./skills/coder coder_agent.py
+```
+
+Advanced users can package an importable looplet factory as a cartridge:
+
+```bash
+python -m looplet package my_agent:build ./skills/my-agent \
+    --name my-agent \
+    --description "Run my custom looplet agent."
+```
+
+Claude/Agent Skills-style folders can be wrapped when they are
+instruction-only, and looplet reports adapter gaps when scripts or
+resources need explicit tools:
+
+```bash
+python -m looplet wrap-claude-skill ./claude-skills/pdf ./skills/pdf
+```
+
 ---
 
 ## Next steps
 
 - [Tutorial](tutorial.md) — hooks, compaction, crash-resume, approval, in five steps.
 - [Recipes](recipes.md) — Ollama, MCP, cost accounting, multi-model routing.
+- [Skills](skills.md) — lazy skills, runnable cartridges, blueprints, and Claude Skill wrapping.
 - [Pitfalls](pitfalls.md) — ten sharp edges worth knowing.
 - [Hooks reference](hooks.md) — every extension point, every signature.
 

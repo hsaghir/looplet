@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import importlib.util
 import os
+import sys
 import uuid
-from importlib import import_module
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 from looplet import (
@@ -32,7 +34,38 @@ from looplet.streaming import CallbackEmitter
 
 
 def _coder() -> Any:
-    return import_module("examples.coder.agent")
+    agent_path = Path(__file__).resolve().parent.parent / "agent.py"
+    module_name = "examples.coder.agent"
+    module = _loaded_agent_module(module_name, agent_path)
+    if module is not None:
+        return module
+
+    spec = importlib.util.spec_from_file_location(module_name, agent_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Could not load coder agent from {agent_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+    except Exception:
+        sys.modules.pop(module_name, None)
+        raise
+    return module
+
+
+def _loaded_agent_module(module_name: str, agent_path: Path) -> ModuleType | None:
+    module = sys.modules.get(module_name)
+    if module is None:
+        return None
+    module_file = getattr(module, "__file__", None)
+    if module_file is None:
+        return None
+    try:
+        if Path(module_file).resolve() == agent_path:
+            return module
+    except OSError:
+        return None
+    return None
 
 
 def scripted_responses() -> list[str]:

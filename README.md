@@ -280,7 +280,7 @@ Runnable cartridges package the same primitives behind a portable folder:
 
 ```bash
 python -m looplet run examples/coder/skill "Create a tiny add function with tests" --scripted --workspace /tmp/demo
-python -m looplet export-code examples/coder/skill /tmp/coder_agent.py
+python -m looplet export-code examples/coder/skill /tmp/coder_agent.py  # exact local wrapper
 python -m looplet package my_agent:build ./skills/my-agent --name my-agent --description "Run my agent."
 python -m looplet wrap-claude-skill ./claude-skills/pdf ./skills/pdf
 ```

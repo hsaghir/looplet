@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import keyword
 import shutil
+import uuid
 from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass, field
 from hashlib import sha256
@@ -227,7 +228,12 @@ def export_bundle_to_library_code(
     target.parent.mkdir(parents=True, exist_ok=True)
     blueprint_json = json.dumps(blueprint.to_dict(), indent=2, sort_keys=True)
     target.write_text(
-        f'''"""Generated looplet library wrapper for the {bundle.skill.name} cartridge."""
+        f'''"""Generated local looplet library wrapper for the {bundle.skill.name} cartridge.
+
+This preserves exact behavior by loading the original cartridge from the
+absolute path recorded below. Keep that cartridge available, or re-export
+after moving it.
+"""
 
 from __future__ import annotations
 
@@ -362,8 +368,8 @@ def wrap_claude_skill_as_bundle(skill_root: str | Path, out_dir: str | Path) -> 
             "out_dir must be outside the source skill directory and must not contain it"
         )
     if target.exists():
-        shutil.rmtree(target)
-    shutil.copytree(source_root, target)
+        raise ValueError("out_dir already exists; choose a new directory")
+    _copytree_new_directory(source_root, target)
     report = claude_skill_compatibility(source_root)
     if report.level == "looplet-cartridge":
         return target
@@ -562,6 +568,18 @@ def _entrypoint_path(root: Path, entrypoint: str) -> Path:
     if not target.is_relative_to(root.resolve()):
         raise ValueError("entrypoint must stay inside bundle directory")
     return target
+
+
+def _copytree_new_directory(source: Path, target: Path) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temp_target = target.parent / f".{target.name}.tmp-{uuid.uuid4().hex}"
+    try:
+        shutil.copytree(source, temp_target)
+        temp_target.rename(target)
+    except Exception:
+        if temp_target.exists():
+            shutil.rmtree(temp_target)
+        raise
 
 
 def _looks_like_script(path: Path, root: Path) -> bool:

@@ -12,6 +12,7 @@ import pytest
 
 from looplet import SkillRuntime, load_skill_bundle, run_skill_bundle, validate_skill_bundle
 from looplet.__main__ import main as cli_main
+from looplet.bundles import _entrypoint_import_roots
 from looplet.presets import AgentPreset
 from looplet.testing import MockLLMBackend
 
@@ -203,7 +204,7 @@ class TestSkillBundles:
 
         assert restored_coder is coder
 
-    def test_standalone_bundle_import_roots_do_not_include_filesystem_root(self, tmp_path):
+    def test_standalone_bundle_import_roots_only_include_bundle_root(self, tmp_path):
         first_bundle = tmp_path / "first"
         first_bundle.mkdir()
         (first_bundle / "SKILL.md").write_text(
@@ -249,9 +250,52 @@ class TestSkillBundles:
         first = load_skill_bundle(first_bundle)
         second = load_skill_bundle(second_bundle)
 
-        assert Path("/").resolve() not in first.import_roots
+        assert first.import_roots == (first_bundle.resolve(),)
+        assert second.import_roots == (second_bundle.resolve(), marked_project.resolve())
         assert second.skill.name == "second"
         assert os.path is not None
+
+    def test_deep_bundle_import_roots_reach_project_marker(self, tmp_path):
+        project = tmp_path / "project"
+        bundle_root = project / "a" / "b" / "c" / "d" / "e" / "skill"
+        bundle_root.mkdir(parents=True)
+        (project / "pyproject.toml").write_text("[project]\nname = 'deep'\n", encoding="utf-8")
+        (project / "helper.py").write_text(
+            "from looplet import DefaultState, LoopConfig, tools_from\n"
+            "from looplet.presets import AgentPreset\n"
+            "def build_preset(runtime):\n"
+            "    return AgentPreset(\n"
+            "        tools=tools_from([], include_done=True),\n"
+            "        hooks=[],\n"
+            "        config=LoopConfig(max_steps=runtime.max_steps),\n"
+            "        state=DefaultState(max_steps=runtime.max_steps),\n"
+            "    )\n",
+            encoding="utf-8",
+        )
+        (bundle_root / "SKILL.md").write_text(
+            "---\nname: deep\ndescription: Deep bundle.\nentrypoint: looplet.py\n---\n# Deep\n",
+            encoding="utf-8",
+        )
+        (bundle_root / "looplet.py").write_text(
+            "from helper import build_preset\ndef build(runtime):\n    return build_preset(runtime)\n",
+            encoding="utf-8",
+        )
+
+        bundle = load_skill_bundle(bundle_root)
+        result = validate_skill_bundle(bundle, SkillRuntime(max_steps=3))
+
+        assert result.ok, result.errors
+        assert bundle.import_roots[0] == bundle_root.resolve()
+        assert bundle.import_roots[-1] == project.resolve()
+        assert tmp_path.resolve() not in bundle.import_roots
+
+    def test_entrypoint_import_roots_do_not_include_temp_parent_without_marker(self, tmp_path):
+        bundle_root = tmp_path / "standalone" / "skill"
+        bundle_root.mkdir(parents=True)
+        entrypoint = bundle_root / "looplet.py"
+        entrypoint.write_text("", encoding="utf-8")
+
+        assert _entrypoint_import_roots(entrypoint) == [bundle_root.resolve()]
 
     def test_bundle_local_stdlib_name_does_not_replace_loaded_stdlib(self, tmp_path):
         bundle_root = tmp_path / "stdlib_shadow_bundle"

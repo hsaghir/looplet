@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
+import tarfile
+import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -68,6 +72,16 @@ def test_export_bundle_to_library_code_builds_equivalent_preset(tmp_path):
         blueprint_from_preset(exported_preset, name="coder"),
     )
     assert comparison.ok, comparison.differences
+
+
+def test_export_bundle_to_library_code_documents_local_wrapper(tmp_path):
+    exported = tmp_path / "coder_export.py"
+
+    export_bundle_to_library_code(CODER_BUNDLE, exported, function_name="build_agent")
+    text = exported.read_text(encoding="utf-8")
+
+    assert "Generated local looplet library wrapper" in text
+    assert "absolute path" in text
 
 
 def test_package_agent_factory_as_bundle_builds_equivalent_preset(tmp_path):
@@ -310,6 +324,53 @@ owner: original
     assert "owner: original" in (claude_skill / "SKILL.md").read_text(encoding="utf-8")
 
 
+def test_wrap_claude_skill_rejects_existing_output_without_deleting(tmp_path):
+    claude_skill = tmp_path / "claude-skill"
+    claude_skill.mkdir()
+    (claude_skill / "SKILL.md").write_text(
+        """---
+name: existing-target
+description: Existing output should be preserved.
+---
+
+# Existing Target
+""",
+        encoding="utf-8",
+    )
+    target = tmp_path / "target"
+    target.mkdir()
+    marker = target / "keep.txt"
+    marker.write_text("important", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="out_dir already exists"):
+        wrap_claude_skill_as_bundle(claude_skill, target)
+
+    assert marker.read_text(encoding="utf-8") == "important"
+
+
+def test_wrap_claude_skill_cleans_temp_output_when_copy_fails(tmp_path):
+    claude_skill = tmp_path / "claude-skill"
+    claude_skill.mkdir()
+    (claude_skill / "SKILL.md").write_text(
+        """---
+name: copy-fail
+description: Failed copies should not leave targets.
+---
+
+# Copy Fail
+""",
+        encoding="utf-8",
+    )
+    target = tmp_path / "target"
+
+    with patch("looplet.blueprints.shutil.copytree", side_effect=RuntimeError("copy failed")):
+        with pytest.raises(RuntimeError, match="copy failed"):
+            wrap_claude_skill_as_bundle(claude_skill, target)
+
+    assert not target.exists()
+    assert not list(tmp_path.glob(".target.tmp-*"))
+
+
 def test_wrap_looplet_cartridge_preserves_existing_entrypoint(tmp_path):
     source = tmp_path / "source-cartridge"
     source.mkdir()
@@ -341,3 +402,26 @@ def build(runtime):
     assert bundle.skill.metadata["entrypoint"] == "custom.py"
     assert preset.config.system_prompt == "custom cartridge"
     assert not (wrapped / "looplet.py").exists()
+
+
+def test_distributions_include_coder_cartridge_and_dependency(tmp_path):
+    dist_dir = tmp_path / "dist"
+    subprocess.run(
+        ["uv", "build", "--sdist", "--wheel", "--out-dir", str(dist_dir)],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    sdist = next(dist_dir.glob("*.tar.gz"))
+    wheel = next(dist_dir.glob("*.whl"))
+    with tarfile.open(sdist) as archive:
+        sdist_names = set(archive.getnames())
+    with zipfile.ZipFile(wheel) as archive:
+        wheel_names = set(archive.namelist())
+
+    assert any(name.endswith("examples/coder/agent.py") for name in sdist_names)
+    assert any(name.endswith("examples/coder/skill/looplet.py") for name in sdist_names)
+    assert "examples/coder/agent.py" in wheel_names
+    assert "examples/coder/skill/looplet.py" in wheel_names

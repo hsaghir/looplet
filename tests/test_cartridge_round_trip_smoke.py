@@ -488,11 +488,16 @@ def test_distributions_include_coder_cartridge_and_dependency(tmp_path):
         capture_output=True,
         text=True,
     )
+    shadow_examples = tmp_path / "shadow" / "examples"
+    shadow_examples.mkdir(parents=True)
+    (shadow_examples / "__init__.py").write_text("# shadow package\n", encoding="utf-8")
     installed = subprocess.run(
         [
             str(python),
             "-c",
-            "from pathlib import Path; import sys; import looplet; "
+            "from pathlib import Path; import sys; "
+            f"sys.path.insert(0, {str(shadow_examples.parent)!r}); "
+            "import looplet; "
             "site=next(Path(p).resolve() for p in sys.path if p.endswith('site-packages')); "
             "bundle=looplet.load_skill_bundle(site / 'examples' / 'coder' / 'skill'); "
             "preset=bundle.build_preset(looplet.SkillRuntime(max_steps=2)); "

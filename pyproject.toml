@@ -73,6 +73,8 @@ include = [
     "LICENSE",
     "CHANGELOG.md",
     "docs/hooks.md",
+    "docs/skills.md",
+    "examples/coder/skill",
     "pyproject.toml",
 ]
 

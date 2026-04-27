@@ -1,8 +1,13 @@
 """``python -m looplet`` — CLI entry point.
 
 Subcommands:
-    show <trace-dir>    One-page summary of a captured trace directory.
-    doctor              Check local looplet/backend configuration.
+    show <trace-dir>              One-page summary of a captured trace directory.
+    doctor                        Check local looplet/backend configuration.
+    run <bundle> <task>           Run a runnable skill bundle.
+    blueprint <bundle>            Print a cartridge blueprint as JSON.
+    export-code <bundle> <file>   Export a cartridge as Python wrapper code.
+    package <factory> <dir>       Package an importable factory as a cartridge.
+    wrap-claude-skill <src> <dir> Wrap a Claude Skill as a looplet cartridge.
 """
 
 from __future__ import annotations
@@ -12,8 +17,10 @@ import json
 import os
 import platform
 import sys
+import uuid
+from collections.abc import Callable, Iterable
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from looplet import __version__
 
@@ -235,10 +242,368 @@ def _render_doctor(*, probe_backend: bool, json_output: bool, strict: bool) -> i
     return 1 if bad else 0
 
 
+def _render_run(
+    *,
+    bundle_path: Path,
+    task: str,
+    workspace: Path,
+    max_steps: int,
+    scripted: bool,
+    scripted_responses: list[str],
+    require_tests: bool,
+    trace_dir: Path | None,
+    no_trace: bool,
+) -> int:
+    from looplet.backends import OpenAIBackend  # noqa: PLC0415
+    from looplet.bundles import (  # noqa: PLC0415
+        BundleValidation,
+        SkillRuntime,
+        load_skill_bundle,
+        run_skill_bundle,
+        validate_skill_bundle,
+    )
+    from looplet.native_tools import probe_native_tool_support  # noqa: PLC0415
+    from looplet.resilient import ResilientBackend  # noqa: PLC0415
+    from looplet.testing import MockLLMBackend  # noqa: PLC0415
+
+    try:
+        bundle = load_skill_bundle(bundle_path)
+    except Exception as exc:  # noqa: BLE001
+        print(f"error: invalid bundle {bundle_path}", file=sys.stderr)
+        print(f"  - load failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+
+    effective_trace_dir = None
+    if not no_trace:
+        effective_trace_dir = trace_dir or (
+            workspace.resolve()
+            / ".looplet"
+            / "traces"
+            / f"{bundle.skill.name}-{uuid.uuid4().hex[:12]}"
+        )
+
+    def _validation_runtime(output_dir: Path | None) -> SkillRuntime:
+        return SkillRuntime(
+            workspace=workspace,
+            max_steps=max_steps,
+            options={"require_tests": require_tests, "use_native_tools": False},
+            output_dir=output_dir,
+        )
+
+    def _report_invalid_bundle(validation: BundleValidation) -> None:
+        print(f"error: invalid bundle {bundle_path}", file=sys.stderr)
+        for error in validation.errors:
+            print(f"  - {error}", file=sys.stderr)
+
+    bundle_run = getattr(bundle.module, "run", None)
+    scripted_mode = scripted or bool(scripted_responses)
+    for index, response in enumerate(scripted_responses, start=1):
+        if not response.strip():
+            print(
+                f"error: --scripted-response {index} must not be empty",
+                file=sys.stderr,
+            )
+            return 1
+    provider_validation: BundleValidation | None = None
+    if scripted and not scripted_responses:
+        provider = getattr(bundle.module, "scripted_responses", None)
+        if callable(provider):
+            provider_validation = validate_skill_bundle(
+                bundle,
+                _validation_runtime(
+                    (None if no_trace else trace_dir)
+                    if callable(bundle_run)
+                    else effective_trace_dir,
+                ),
+            )
+            if not provider_validation.ok:
+                _report_invalid_bundle(provider_validation)
+                return 1
+            provider = cast(Callable[[], Iterable[str]], provider)
+            provider_returned_string = False
+            try:
+                with bundle.import_context():
+                    provided_responses = provider()
+                    if isinstance(provided_responses, str):
+                        provider_returned_string = True
+                    else:
+                        scripted_responses = list(provided_responses)
+            except Exception as exc:  # noqa: BLE001
+                print(
+                    f"error: bundle {bundle.skill.name!r} failed while loading scripted responses",
+                    file=sys.stderr,
+                )
+                print(f"  - {type(exc).__name__}: {exc}", file=sys.stderr)
+                return 1
+            if provider_returned_string:
+                print(
+                    f"error: bundle {bundle.skill.name!r} scripted_responses() must return "
+                    "an iterable of response strings, got str",
+                    file=sys.stderr,
+                )
+                return 1
+            if not scripted_responses:
+                print(
+                    f"error: bundle {bundle.skill.name!r} scripted_responses() returned no responses",
+                    file=sys.stderr,
+                )
+                return 1
+            for index, response in enumerate(scripted_responses, start=1):
+                if not isinstance(response, str):
+                    print(
+                        f"error: bundle {bundle.skill.name!r} scripted_responses() item "
+                        f"{index} must be str, got {type(response).__name__}",
+                        file=sys.stderr,
+                    )
+                    return 1
+                if not response.strip():
+                    print(
+                        f"error: bundle {bundle.skill.name!r} scripted_responses() item "
+                        f"{index} must not be empty",
+                        file=sys.stderr,
+                    )
+                    return 1
+        elif not callable(bundle_run):
+            print(
+                f"error: bundle {bundle.skill.name!r} does not provide scripted_responses()",
+                file=sys.stderr,
+            )
+            return 1
+
+    if callable(bundle_run):
+        validation = provider_validation or validate_skill_bundle(
+            bundle,
+            _validation_runtime(None if no_trace else trace_dir),
+        )
+        if not validation.ok:
+            _report_invalid_bundle(validation)
+            return 1
+        for warning in validation.warnings:
+            print(f"warning: {warning}", file=sys.stderr)
+        bundle_run = cast(Callable[..., int], bundle_run)
+        try:
+            with bundle.import_context():
+                result = bundle_run(
+                    task=task,
+                    workspace=workspace,
+                    max_steps=max_steps,
+                    scripted=scripted_mode,
+                    scripted_responses=scripted_responses,
+                    require_tests=require_tests,
+                    trace_dir=trace_dir,
+                    provenance=not no_trace,
+                )
+        except Exception as exc:  # noqa: BLE001
+            print(f"error: bundle {bundle.skill.name!r} failed while running", file=sys.stderr)
+            print(f"  - {type(exc).__name__}: {exc}", file=sys.stderr)
+            return 1
+        if isinstance(result, bool) or not isinstance(result, int):
+            print(f"error: bundle {bundle.skill.name!r} returned invalid status", file=sys.stderr)
+            print(f"  - expected int exit code, got {type(result).__name__}", file=sys.stderr)
+            return 1
+        return result
+
+    class _NativeToolFlag:
+        enabled: bool
+        used_as_bool: bool
+
+        def __init__(self, enabled: bool = False) -> None:
+            self.enabled = enabled
+            self.used_as_bool = False
+
+        def __bool__(self) -> bool:
+            self.used_as_bool = True
+            return self.enabled
+
+    class _TrackingRuntime(SkillRuntime):
+        accessed_options: set[str]
+        native_tool_flag: _NativeToolFlag
+
+        def __init__(
+            self,
+            *,
+            workspace: Path,
+            max_steps: int,
+            options: dict[str, Any],
+            output_dir: Path | None,
+        ) -> None:
+            super().__init__(
+                workspace=workspace,
+                max_steps=max_steps,
+                options=options,
+                output_dir=output_dir,
+            )
+            object.__setattr__(self, "accessed_options", set())
+            object.__setattr__(self, "native_tool_flag", _NativeToolFlag(False))
+
+        def option(self, name: str, default: Any = None) -> Any:
+            self.accessed_options.add(name)
+            if name == "use_native_tools":
+                return self.native_tool_flag
+            return super().option(name, default)
+
+    runtime = _TrackingRuntime(
+        workspace=workspace,
+        max_steps=max_steps,
+        options={"require_tests": require_tests, "use_native_tools": False},
+        output_dir=effective_trace_dir,
+    )
+    validation = provider_validation or validate_skill_bundle(bundle, runtime)
+    if not validation.ok:
+        _report_invalid_bundle(validation)
+        return 1
+
+    if scripted_mode:
+        llm = MockLLMBackend(responses=scripted_responses)
+        model_label = "scripted MockLLMBackend"
+    else:
+        base_url = os.environ.get("OPENAI_BASE_URL", "http://localhost:11434/v1")
+        api_key = os.environ.get("OPENAI_API_KEY", "x")
+        model = os.environ.get("OPENAI_MODEL", "llama3.1")
+        llm = ResilientBackend(
+            OpenAIBackend(base_url=base_url, api_key=api_key, model=model),
+            retries=2,
+            timeout_s=120,
+        )
+        model_label = model
+
+    protocol_probe = probe_native_tool_support(llm)
+    if protocol_probe.supported and "use_native_tools" in runtime.accessed_options:
+        runtime.native_tool_flag.enabled = True
+        if validation.preset is not None:
+            if validation.preset.config.use_native_tools is False:
+                if runtime.native_tool_flag.used_as_bool:
+                    validation.preset.config.use_native_tools = True
+    for warning in validation.warnings:
+        print(f"warning: {warning}", file=sys.stderr)
+
+    uses_native_protocol = bool(
+        protocol_probe.supported
+        and validation.preset is not None
+        and validation.preset.config.use_native_tools
+    )
+
+    print(f"looplet run {bundle.skill.name}")
+    print(f"  Task: {task}")
+    print(f"  Workspace: {workspace}")
+    print(f"  Model: {model_label} | Budget: {max_steps} steps")
+    print(f"  Tool protocol: {'native' if uses_native_protocol else 'json-text'}")
+    print(f"  Probe: {protocol_probe.reason}")
+    print()
+
+    render_step = getattr(bundle.module, "render_step", None)
+    try:
+        for step in run_skill_bundle(
+            bundle,
+            llm=llm,
+            task=task,
+            runtime=runtime,
+            provenance=not no_trace,
+            trace_dir=effective_trace_dir,
+            preset=validation.preset,
+        ):
+            if callable(render_step):
+                with bundle.import_context():
+                    rendered = render_step(step)
+                if rendered:
+                    print(rendered)
+            else:
+                status = "ERROR" if step.tool_result.error else "ok"
+                print(f"#{step.number} {step.tool_call.tool} {status}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"error: bundle {bundle.skill.name!r} failed while running", file=sys.stderr)
+        print(f"  - {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+    if effective_trace_dir is not None:
+        print(f"\n  Trace: {effective_trace_dir}")
+    return 0
+
+
+def _render_blueprint(*, bundle_path: Path, workspace: Path, max_steps: int) -> int:
+    from looplet.blueprints import blueprint_from_bundle  # noqa: PLC0415
+    from looplet.bundles import SkillRuntime  # noqa: PLC0415
+
+    try:
+        blueprint = blueprint_from_bundle(
+            bundle_path,
+            SkillRuntime(workspace=workspace, max_steps=max_steps),
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"error: could not inspect bundle {bundle_path}", file=sys.stderr)
+        print(f"  - {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+    print(json.dumps(blueprint.to_dict(), indent=2, sort_keys=True))
+    return 0
+
+
+def _render_export_code(*, bundle_path: Path, out_file: Path, function_name: str) -> int:
+    from looplet.blueprints import export_bundle_to_library_code  # noqa: PLC0415
+
+    try:
+        written = export_bundle_to_library_code(
+            bundle_path,
+            out_file,
+            function_name=function_name,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"error: could not export bundle {bundle_path}", file=sys.stderr)
+        print(f"  - {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+    print(f"exported {bundle_path} -> {written}")
+    return 0
+
+
+def _render_package(
+    *,
+    factory_ref: str,
+    out_dir: Path,
+    name: str,
+    description: str,
+    tags: list[str],
+) -> int:
+    from looplet.blueprints import package_agent_factory_as_bundle  # noqa: PLC0415
+
+    try:
+        written = package_agent_factory_as_bundle(
+            factory_ref,
+            out_dir,
+            name=name,
+            description=description,
+            tags=tags,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"error: could not package factory {factory_ref!r}", file=sys.stderr)
+        print(f"  - {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+    print(f"packaged {factory_ref} -> {written}")
+    return 0
+
+
+def _render_wrap_claude_skill(*, skill_path: Path, out_dir: Path) -> int:
+    from looplet.blueprints import (  # noqa: PLC0415
+        claude_skill_compatibility,
+        wrap_claude_skill_as_bundle,
+    )
+
+    try:
+        report = claude_skill_compatibility(skill_path)
+        written = wrap_claude_skill_as_bundle(skill_path, out_dir)
+    except Exception as exc:  # noqa: BLE001
+        print(f"error: could not wrap Claude Skill {skill_path}", file=sys.stderr)
+        print(f"  - {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+    print(f"wrapped {skill_path} -> {written}")
+    print(f"compatibility: {report.level}")
+    if report.warnings:
+        for warning in report.warnings:
+            print(f"warning: {warning}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m looplet",
-        description="looplet — inspect captured trace directories",
+        description="looplet — run, inspect, and package observable agent loops",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -264,6 +629,77 @@ def main(argv: list[str] | None = None) -> int:
         help="Return non-zero for warnings as well as errors",
     )
 
+    run = sub.add_parser(
+        "run",
+        help="Run a runnable skill bundle",
+    )
+    run.add_argument("bundle", type=Path, help="Path to a runnable skill bundle")
+    run.add_argument("task", help="Task description to pass to the bundle")
+    run.add_argument("--workspace", "-w", type=Path, default=Path.cwd(), help="Workspace path")
+    run.add_argument("--max-steps", type=int, default=20, help="Maximum tool calls")
+    run.add_argument(
+        "--scripted",
+        action="store_true",
+        help="Use bundle-provided deterministic scripted responses",
+    )
+    run.add_argument(
+        "--scripted-response",
+        action="append",
+        default=[],
+        help="Mock LLM response; pass multiple times for deterministic runs",
+    )
+    run.add_argument(
+        "--no-tests",
+        action="store_true",
+        help="Pass require_tests=False to bundles that support it",
+    )
+    run.add_argument("--trace-dir", type=Path, help="Write provenance trace output here")
+    run.add_argument("--no-trace", action="store_true", help="Disable default provenance capture")
+
+    blueprint = sub.add_parser(
+        "blueprint",
+        help="Print a runnable skill bundle blueprint as JSON",
+    )
+    blueprint.add_argument("bundle", type=Path, help="Path to a runnable skill bundle")
+    blueprint.add_argument(
+        "--workspace", "-w", type=Path, default=Path.cwd(), help="Workspace path"
+    )
+    blueprint.add_argument("--max-steps", type=int, default=20, help="Maximum tool calls")
+
+    export_code = sub.add_parser(
+        "export-code",
+        help="Export a cartridge as exact Python library wrapper code",
+    )
+    export_code.add_argument("bundle", type=Path, help="Path to a runnable skill bundle")
+    export_code.add_argument("out_file", type=Path, help="Python file to write")
+    export_code.add_argument(
+        "--function-name",
+        default="build",
+        help="Generated factory function name",
+    )
+
+    package = sub.add_parser(
+        "package",
+        help="Package an importable AgentPreset factory as a runnable skill bundle",
+    )
+    package.add_argument("factory_ref", help="Factory reference, e.g. my_agent:build")
+    package.add_argument("out_dir", type=Path, help="Bundle directory to write")
+    package.add_argument("--name", required=True, help="Skill name")
+    package.add_argument("--description", required=True, help="Skill description")
+    package.add_argument(
+        "--tag",
+        action="append",
+        default=[],
+        help="Skill tag; pass multiple times for multiple tags",
+    )
+
+    wrap_claude = sub.add_parser(
+        "wrap-claude-skill",
+        help="Wrap a Claude/Agent Skills folder as a runnable looplet bundle",
+    )
+    wrap_claude.add_argument("skill", type=Path, help="Claude Skill directory or SKILL.md")
+    wrap_claude.add_argument("out_dir", type=Path, help="Bundle directory to write")
+
     args = parser.parse_args(argv)
 
     if args.command == "show":
@@ -274,6 +710,40 @@ def main(argv: list[str] | None = None) -> int:
             json_output=args.json,
             strict=args.strict,
         )
+    if args.command == "run":
+        return _render_run(
+            bundle_path=args.bundle,
+            task=args.task,
+            workspace=args.workspace,
+            max_steps=args.max_steps,
+            scripted=args.scripted,
+            scripted_responses=args.scripted_response,
+            require_tests=not args.no_tests,
+            trace_dir=args.trace_dir,
+            no_trace=args.no_trace,
+        )
+    if args.command == "blueprint":
+        return _render_blueprint(
+            bundle_path=args.bundle,
+            workspace=args.workspace,
+            max_steps=args.max_steps,
+        )
+    if args.command == "export-code":
+        return _render_export_code(
+            bundle_path=args.bundle,
+            out_file=args.out_file,
+            function_name=args.function_name,
+        )
+    if args.command == "package":
+        return _render_package(
+            factory_ref=args.factory_ref,
+            out_dir=args.out_dir,
+            name=args.name,
+            description=args.description,
+            tags=args.tag,
+        )
+    if args.command == "wrap-claude-skill":
+        return _render_wrap_claude_skill(skill_path=args.skill, out_dir=args.out_dir)
     # Unreachable — argparse rejects unknown commands.
     return 2
 

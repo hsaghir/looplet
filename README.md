@@ -36,6 +36,36 @@ pip install "looplet[anthropic]"  # or Anthropic directly
 
 ---
 
+## The simple story
+
+Every looplet agent turn is the same small mechanism:
+
+1. The LLM proposes a tool call.
+2. The registry validates and dispatches it.
+3. Hooks observe or steer the turn.
+4. State records the step.
+5. The loop yields a `Step` back to your `for` loop.
+
+That is the whole mental model. Presets, skills, cartridges, provenance,
+native tool calling, and evals are useful layers around this mechanism;
+they do not replace it.
+
+```python
+for step in composable_loop(llm=llm, tools=tools, state=state, config=config, hooks=hooks):
+  print(step.pretty())
+```
+
+Start with ordinary Python code when you want full control. Start with a
+cartridge when you want to run or share a packaged capability:
+
+```bash
+python -m looplet run ./skills/coder "Fix the tests" --workspace .
+python -m looplet blueprint ./skills/coder --workspace .
+python -m looplet export-code ./skills/coder coder_agent.py
+```
+
+---
+
 ## Why it exists
 
 Most agent frameworks give you `agent.run(task)` and a black box. When the
@@ -73,9 +103,10 @@ agent product. It is the control plane for people building one.
 
 ## The mental model — one picture
 
-`looplet` is a `for`-loop you own, three loop phases, and four
-`Protocol` methods you can implement to change any part of the loop.
-That's the whole thing:
+`looplet` is a `for` loop you own. The LLM proposes a tool call, the
+registry dispatches it, hooks observe or steer, state records the result,
+and the loop yields a `Step`. The diagram below expands that simple story
+into the hook points you can customize:
 
 ```mermaid
 %%{init: {"theme":"base","themeVariables":{
@@ -245,6 +276,15 @@ python -m looplet.examples.data_agent --resume                    # resume from 
 python -m looplet.examples.data_agent --scripted --auto-approve   # no model required
 ```
 
+Runnable cartridges package the same primitives behind a portable folder:
+
+```bash
+python -m looplet run examples/coder/skill "Create a tiny add function with tests" --scripted --workspace /tmp/demo
+python -m looplet export-code examples/coder/skill /tmp/coder_agent.py
+python -m looplet package my_agent:build ./skills/my-agent --name my-agent --description "Run my agent."
+python -m looplet wrap-claude-skill ./claude-skills/pdf ./skills/pdf
+```
+
 For a memorable custom agent, start with **Dependency Doctor**: point it
 at a repo and it audits dependency files for security, license, and
 maintenance risk, then produces a report card. It is concrete enough to
@@ -290,7 +330,7 @@ Not a usage reference.
 | --- | --- |
 | [docs/tutorial.md](docs/tutorial.md) | Build your first agent in 5 steps |
 | [docs/hooks.md](docs/hooks.md) | Writing and composing hooks |
-| [docs/skills.md](docs/skills.md) | Lazy Claude-style skill bundles |
+| [docs/skills.md](docs/skills.md) | Lazy skills, runnable cartridges, blueprints, and Claude Skill wrapping |
 | [docs/evals.md](docs/evals.md) | pytest-style agent evaluation |
 | [docs/provenance.md](docs/provenance.md) | Capturing prompts + trajectories |
 | [docs/recipes.md](docs/recipes.md) | Ollama, OTel, MCP, cost accounting, checkpoints |

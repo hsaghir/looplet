@@ -12,10 +12,11 @@ hide:
 
 <p class="hero-sub" markdown>
 **looplet** exposes the agent loop as an iterator, makes every step
-observable, and lets you compose behavior with hooks. Yield every tool
-call, intercept risky actions, redact prompts, compact context, and turn
-debug traces into evals. No graph DSL, no agent runtime, no hidden state.
-Works with any OpenAI-compatible endpoint or Anthropic directly.
+observable, and lets you compose behavior with hooks. The LLM proposes a
+tool call, the registry dispatches it, hooks observe or steer, state
+records the step, and the loop yields control back to you. No graph DSL,
+no agent runtime, no hidden state. Works with any OpenAI-compatible
+endpoint or Anthropic directly.
 </p>
 
 <p class="hero-badges" markdown>
@@ -61,7 +62,7 @@ Hook protocols
 </div>
 
 <div class="stat" markdown>
-**1,423**
+**1,492**
 { .stat-num }
 
 Tests, ~1s
@@ -97,6 +98,17 @@ Tests, ~1s
 
 ## How it works
 
+Every turn follows the same five-step story:
+
+1. The LLM proposes a tool call.
+2. The registry validates and dispatches it.
+3. Hooks observe or steer the turn.
+4. State records the step.
+5. The loop yields a `Step` to your code.
+
+Cartridges, presets, provenance, and evals all compile into this same
+mechanism.
+
 ```mermaid
 flowchart LR
     subgraph Loop["composable_loop()"]
@@ -130,6 +142,8 @@ need. The loop uses `hasattr` — no base class, no registration.
    subclassing a framework.
 3. **Keep the trace.** The same step stream powers live debugging,
    provenance, replay, and pytest-style evals.
+4. **Package capabilities.** Skills and cartridges let you share a runnable
+    agent folder while keeping the core loop inspectable Python.
 
 ## Why looplet?
 

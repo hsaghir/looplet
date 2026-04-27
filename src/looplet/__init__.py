@@ -18,7 +18,30 @@ __version__ = "0.1.8"
 from looplet.approval import ApprovalHook
 from looplet.async_loop import async_composable_loop
 from looplet.backends import AnthropicBackend, OpenAIBackend
+from looplet.blueprints import (
+    AgentBlueprint,
+    BlueprintComparison,
+    ClaudeSkillCompatibility,
+    ComponentBlueprint,
+    SourceBlueprint,
+    ToolBlueprint,
+    blueprint_from_bundle,
+    blueprint_from_preset,
+    claude_skill_compatibility,
+    compare_blueprints,
+    export_bundle_to_library_code,
+    package_agent_factory_as_bundle,
+    wrap_claude_skill_as_bundle,
+)
 from looplet.budget import ContextBudget, ThresholdCompactHook
+from looplet.bundles import (
+    BundleValidation,
+    SkillBundle,
+    SkillRuntime,
+    load_skill_bundle,
+    run_skill_bundle,
+    validate_skill_bundle,
+)
 from looplet.cache import CachePolicy
 from looplet.checkpoint import FileCheckpointStore
 from looplet.compact import (
@@ -138,11 +161,30 @@ __all__ = [
     "register_done_tool",
     "Skill",
     "SkillCard",
+    "SkillBundle",
+    "SkillRuntime",
+    "BundleValidation",
+    "AgentBlueprint",
+    "SourceBlueprint",
+    "ToolBlueprint",
+    "ComponentBlueprint",
+    "BlueprintComparison",
+    "ClaudeSkillCompatibility",
     "FileSkillStore",
     "SkillManager",
     "SkillActivationHook",
     "install_skills",
     "make_skill_tools",
+    "load_skill_bundle",
+    "validate_skill_bundle",
+    "run_skill_bundle",
+    "blueprint_from_bundle",
+    "blueprint_from_preset",
+    "compare_blueprints",
+    "export_bundle_to_library_code",
+    "package_agent_factory_as_bundle",
+    "claude_skill_compatibility",
+    "wrap_claude_skill_as_bundle",
     "DefaultState",
     "LLMBackend",
     "HookDecision",

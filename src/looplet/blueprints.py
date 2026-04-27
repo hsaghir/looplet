@@ -369,31 +369,39 @@ def wrap_claude_skill_as_bundle(skill_root: str | Path, out_dir: str | Path) -> 
         )
     if target.exists():
         raise ValueError("out_dir already exists; choose a new directory")
-    _copytree_new_directory(source_root, target)
     report = claude_skill_compatibility(source_root)
     if report.level == "looplet-cartridge":
+        temp_target = _copytree_temp_directory(source_root, target)
+        try:
+            temp_target.rename(target)
+        except Exception:
+            if temp_target.exists():
+                shutil.rmtree(temp_target)
+            raise
         return target
     skill = Skill.from_markdown(
         skill_file.read_text(encoding="utf-8"),
         source_path=skill_file,
         default_name=source_root.name,
     )
-    (target / "SKILL.md").write_text(
-        _render_skill_markdown(
-            name=skill.name,
-            description=skill.description,
-            tags=skill.tags,
-            entrypoint="looplet.py",
-            metadata={
-                "source_format": "claude-skill",
-                "compatibility": report.level,
-            },
-            instructions=skill.instructions,
-        ),
-        encoding="utf-8",
-    )
-    (target / "looplet.py").write_text(
-        '''"""Generated looplet wrapper for an instruction-style Claude Skill."""
+    temp_target = _copytree_temp_directory(source_root, target)
+    try:
+        (temp_target / "SKILL.md").write_text(
+            _render_skill_markdown(
+                name=skill.name,
+                description=skill.description,
+                tags=skill.tags,
+                entrypoint="looplet.py",
+                metadata={
+                    "source_format": "claude-skill",
+                    "compatibility": report.level,
+                },
+                instructions=skill.instructions,
+            ),
+            encoding="utf-8",
+        )
+        (temp_target / "looplet.py").write_text(
+            '''"""Generated looplet wrapper for an instruction-style Claude Skill."""
 
 from __future__ import annotations
 
@@ -422,8 +430,13 @@ def build(runtime: Any):
     )
     return minimal_preset(max_steps=runtime.max_steps, system_prompt=prompt)
 ''',
-        encoding="utf-8",
-    )
+            encoding="utf-8",
+        )
+        temp_target.rename(target)
+    except Exception:
+        if temp_target.exists():
+            shutil.rmtree(temp_target)
+        raise
     return target
 
 
@@ -570,18 +583,18 @@ def _entrypoint_path(root: Path, entrypoint: str) -> Path:
     return target
 
 
-def _copytree_new_directory(source: Path, target: Path) -> None:
+def _copytree_temp_directory(source: Path, target: Path) -> Path:
     if target.parent.exists() and not target.parent.is_dir():
         raise ValueError("out_dir parent must be a directory")
     target.parent.mkdir(parents=True, exist_ok=True)
     temp_target = target.parent / f".{target.name}.tmp-{uuid.uuid4().hex}"
     try:
         shutil.copytree(source, temp_target)
-        temp_target.rename(target)
     except Exception:
         if temp_target.exists():
             shutil.rmtree(temp_target)
         raise
+    return temp_target
 
 
 def _looks_like_script(path: Path, root: Path) -> bool:

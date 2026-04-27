@@ -571,6 +571,8 @@ def _entrypoint_path(root: Path, entrypoint: str) -> Path:
 
 
 def _copytree_new_directory(source: Path, target: Path) -> None:
+    if target.parent.exists() and not target.parent.is_dir():
+        raise ValueError("out_dir parent must be a directory")
     target.parent.mkdir(parents=True, exist_ok=True)
     temp_target = target.parent / f".{target.name}.tmp-{uuid.uuid4().hex}"
     try:

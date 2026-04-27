@@ -64,6 +64,11 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/looplet"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"examples/coder/agent.py" = "examples/coder/agent.py"
+"examples/coder/skill/SKILL.md" = "examples/coder/skill/SKILL.md"
+"examples/coder/skill/looplet.py" = "examples/coder/skill/looplet.py"
+
 [tool.hatch.build.targets.sdist]
 include = [
     "src/looplet",
@@ -74,7 +79,9 @@ include = [
     "CHANGELOG.md",
     "docs/hooks.md",
     "docs/skills.md",
-    "examples/coder/skill",
+    "examples/coder/agent.py",
+    "examples/coder/skill/SKILL.md",
+    "examples/coder/skill/looplet.py",
     "pyproject.toml",
 ]
 

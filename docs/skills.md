@@ -179,8 +179,10 @@ print(blueprint.fingerprint())
 ```
 
 Use `export_bundle_to_library_code()` when a beginner wants to move from a
-cartridge to normal Python code. The generated module is an exact wrapper
-around the cartridge and includes the captured blueprint for inspection:
+cartridge command to normal Python call sites. The generated module is an
+exact local wrapper around the cartridge and includes the captured blueprint
+for inspection. Because it preserves behavior by loading the original
+cartridge path, keep that cartridge available or re-export after moving it:
 
 ```python
 from looplet import export_bundle_to_library_code

@@ -280,15 +280,25 @@ def _ensure_inside(path: Path, root: Path) -> None:
 
 
 def _entrypoint_import_roots(path: Path) -> list[Path]:
-    roots: list[Path] = []
     current = path.parent.resolve()
+
+    project_root: Path | None = None
+    for root in (current, *current.parents):
+        if root == root.parent:
+            break
+        if (root / "pyproject.toml").exists() or (root / ".git").exists():
+            project_root = root
+            break
+
+    if project_root is None:
+        return [current]
+
+    roots: list[Path] = []
     for root in (current, *current.parents):
         if root == root.parent:
             break
         roots.append(root)
-        if (root / "pyproject.toml").exists() or (root / ".git").exists():
-            break
-        if len(roots) >= 4:
+        if root == project_root:
             break
     return roots
 

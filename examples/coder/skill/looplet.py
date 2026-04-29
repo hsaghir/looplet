@@ -1,4 +1,19 @@
-"""Runnable skill bundle for the looplet coder example."""
+"""Runnable skill bundle for the looplet coder example.
+
+The cartridge is intentionally thin: it loads the same composition
+helpers as ``examples/coder/agent.py`` and delegates to them. That
+means the cartridge and the library entrypoint are *literally* the
+same agent, configured identically. To change behavior, edit
+``examples/coder/wiring.py`` once.
+
+Loading note: bundles ship as plain files inside an installed
+package (``site-packages/examples/coder/skill/``). A downstream user
+may already have their own ``examples`` namespace package on
+``sys.path`` that shadows ours, so we resolve the three sibling
+modules (``tools.py``, ``hooks.py``, ``wiring.py``) by absolute file
+path rather than relying on ``import examples.coder.*``. See
+``test_distributions_include_coder_cartridge_and_dependency``.
+"""
 
 from __future__ import annotations
 
@@ -11,38 +26,57 @@ from types import ModuleType
 from typing import Any
 
 from looplet import (
-    CallableMemorySource,
     Conversation,
     DefaultState,
     LoopConfig,
     MockLLMBackend,
     OpenAIBackend,
-    StaticMemorySource,
-    StreamingHook,
     TrajectoryRecorder,
     composable_loop,
     probe_native_tool_support,
 )
 from looplet.compact import PruneToolResults, TruncateCompact, compact_chain
-from looplet.limits import PerToolLimitHook
 from looplet.presets import AgentPreset
 from looplet.provenance import RecordingLLMBackend
 from looplet.resilient import ResilientBackend
 from looplet.session import SessionLog
-from looplet.stagnation import StagnationHook, tool_call_fingerprint
-from looplet.streaming import CallbackEmitter
 
 
-def _coder() -> Any:
-    agent_path = Path(__file__).resolve().parent.parent / "agent.py"
-    module_name = "examples.coder.agent"
-    module = _loaded_agent_module(module_name, agent_path)
-    if module is not None:
-        return module
+def _ensure_parent_package() -> None:
+    """Make ``examples.coder`` importable even when ``examples`` is shadowed.
 
-    spec = importlib.util.spec_from_file_location(module_name, agent_path)
+    A downstream user may already have an ``examples`` package on
+    sys.path that doesn't contain ``coder``. Synthesize the parent so
+    ``from examples.coder.tools import FileCache`` works inside our
+    sibling modules below.
+    """
+    parent = Path(__file__).resolve().parent.parent  # examples/coder/
+    pkg_name = "examples.coder"
+    if pkg_name in sys.modules:
+        return
+    init_file = parent / "__init__.py"
+    spec = importlib.util.spec_from_file_location(
+        pkg_name,
+        init_file,
+        submodule_search_locations=[str(parent)],
+    )
     if spec is None or spec.loader is None:
-        raise ImportError(f"Could not load coder agent from {agent_path}")
+        return
+    pkg = importlib.util.module_from_spec(spec)
+    sys.modules[pkg_name] = pkg
+    spec.loader.exec_module(pkg)
+
+
+def _load_sibling(name: str) -> ModuleType:
+    """Load ``examples/coder/<name>.py`` by file path, regardless of sys.path."""
+    module_name = f"examples.coder.{name}"
+    existing = sys.modules.get(module_name)
+    if existing is not None:
+        return existing
+    sibling = Path(__file__).resolve().parent.parent / f"{name}.py"
+    spec = importlib.util.spec_from_file_location(module_name, sibling)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Could not load coder bundle module {sibling}")
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
     try:
@@ -53,25 +87,25 @@ def _coder() -> Any:
     return module
 
 
-def _loaded_agent_module(module_name: str, agent_path: Path) -> ModuleType | None:
-    module = sys.modules.get(module_name)
-    if module is None:
-        return None
-    module_file = getattr(module, "__file__", None)
-    if module_file is None:
-        return None
-    try:
-        if Path(module_file).resolve() == agent_path:
-            return module
-    except OSError:
-        return None
-    return None
+_ensure_parent_package()
+_tools = _load_sibling("tools")
+_hooks = _load_sibling("hooks")  # noqa: F841 — preloaded so wiring import works
+_wiring = _load_sibling("wiring")
+
+FileCache = _tools.FileCache
+make_tools = _tools.make_tools
+SYSTEM_PROMPT = _wiring.SYSTEM_PROMPT
+build_default_hooks = _wiring.build_default_hooks
+build_default_memory_sources = _wiring.build_default_memory_sources
+build_eval_hook = _wiring.build_eval_hook
+_discover_instructions = _wiring._discover_instructions
+_project_context = _wiring._project_context
+_scripted = _wiring.scripted_responses
 
 
 def scripted_responses() -> list[str]:
     """Return the deterministic coder demo responses."""
-    coder = _coder()
-    return coder.scripted_responses()
+    return _scripted()
 
 
 def render_step(step: Any) -> str:
@@ -120,14 +154,13 @@ def run(
     provenance: bool,
 ) -> int:
     """Run the coder cartridge with byte-for-byte-compatible terminal output."""
-    coder = _coder()
     workspace_str = os.path.abspath(os.fspath(workspace))
     base_url = os.environ.get("OPENAI_BASE_URL", "http://localhost:11434/v1")
     api_key = os.environ.get("OPENAI_API_KEY", "x")
     model = os.environ.get("OPENAI_MODEL", "llama3.1")
 
     if scripted or scripted_responses:
-        llm = MockLLMBackend(responses=scripted_responses or coder.scripted_responses())
+        llm = MockLLMBackend(responses=scripted_responses or _scripted())
         model_label = "scripted MockLLMBackend"
     else:
         llm = ResilientBackend(
@@ -139,41 +172,25 @@ def run(
 
     recording = RecordingLLMBackend(llm)
     protocol_probe = probe_native_tool_support(recording)
-    file_cache = coder.FileCache(workspace_str)
-    tools = coder.make_tools(workspace_str, file_cache)
+    file_cache = FileCache(workspace_str)
+    tools = make_tools(workspace_str, file_cache)
 
-    hooks: list[Any] = []
-    if require_tests:
-        hooks.append(coder.TestGuardHook())
-    hooks.append(coder.FileCacheHook(file_cache))
-    hooks.append(coder.StaleFileHook(file_cache))
-    hooks.append(coder.LinterHook(workspace_str))
-    hooks.append(
-        StagnationHook(
-            fingerprint=tool_call_fingerprint,
-            threshold=4,
-            nudge="[stagnation] Re-read the file, try a different approach, or think().",
-        )
+    hooks: list[Any] = build_default_hooks(
+        workspace_str,
+        file_cache,
+        require_tests=require_tests,
     )
-    hooks.append(coder.PerToolLimitHook(default_limit=25, limits={"bash": 20, "read_file": 20}))
-    events: list[Any] = []
-    hooks.append(StreamingHook(CallbackEmitter(events.append)))
+    eval_hook = build_eval_hook(workspace_str)
+    hooks.append(eval_hook)
 
-    instructions = coder._discover_instructions(workspace_str)
-    project_ctx = coder._project_context(workspace_str)
-    memory_sources: list[Any] = []
-    if instructions:
-        memory_sources.append(StaticMemorySource(instructions))
-    memory_sources.append(
-        CallableMemorySource(
-            lambda state: f"[{project_ctx}] step {getattr(state, 'step_count', 0)}/{max_steps}"
-        )
-    )
+    instructions = _discover_instructions(workspace_str)
+    project_ctx = _project_context(workspace_str)
+    memory_sources: list[Any] = build_default_memory_sources(workspace_str, max_steps)
 
     config = LoopConfig(
         max_steps=max_steps,
         temperature=0.2,
-        system_prompt=coder.SYSTEM_PROMPT,
+        system_prompt=SYSTEM_PROMPT,
         compact_service=compact_chain(
             PruneToolResults(keep_recent=10), TruncateCompact(keep_recent=5)
         ),
@@ -219,9 +236,12 @@ def run(
     else:
         call_count = len(calls)
         scoped_count = len([call for call in calls if getattr(call, "scope", None)])
-    print(
-        f"\n  Steps: {len(state.steps)} | LLM calls: {call_count} ({scoped_count} tool-internal)\n"
-    )
+    print(f"\n  Steps: {len(state.steps)} | LLM calls: {call_count} ({scoped_count} tool-internal)")
+    if eval_hook.results:
+        print("  Evals:")
+        for r in eval_hook.results:
+            print(f"    {r.pretty()}")
+    print()
     return 0
 
 
@@ -290,46 +310,30 @@ def _render_original_step(step: Any) -> str:
 
 def build(runtime: Any) -> AgentPreset:
     """Build the coder agent as normal looplet primitives."""
-    coder = _coder()
     workspace = str(Path(runtime.workspace).resolve())
     max_steps = runtime.max_steps
-    file_cache = coder.FileCache(workspace)
-    tools = coder.make_tools(workspace, file_cache)
-
-    hooks: list[Any] = []
-    if bool(runtime.option("require_tests", True)):
-        hooks.append(coder.TestGuardHook())
-    hooks.append(coder.FileCacheHook(file_cache))
-    hooks.append(coder.StaleFileHook(file_cache))
-    hooks.append(coder.LinterHook(workspace))
-    hooks.append(
-        StagnationHook(
-            fingerprint=tool_call_fingerprint,
-            threshold=int(runtime.option("stagnation_threshold", 4)),
-            nudge="[stagnation] Re-read the file, try a different approach, or think().",
-        )
-    )
-    hooks.append(PerToolLimitHook(default_limit=25, limits={"bash": 20, "read_file": 20}))
+    file_cache = FileCache(workspace)
+    tools = make_tools(workspace, file_cache)
 
     events = runtime.option("events", [])
-    if isinstance(events, list):
-        hooks.append(StreamingHook(CallbackEmitter(events.append)))
-
-    instructions = coder._discover_instructions(workspace)
-    project_ctx = coder._project_context(workspace)
-    memory_sources: list[Any] = []
-    if instructions:
-        memory_sources.append(StaticMemorySource(instructions))
-    memory_sources.append(
-        CallableMemorySource(
-            lambda state: f"[{project_ctx}] step {getattr(state, 'step_count', 0)}/{max_steps}"
-        )
+    hooks: list[Any] = build_default_hooks(
+        workspace,
+        file_cache,
+        require_tests=bool(runtime.option("require_tests", True)),
+        test_strict=bool(runtime.option("test_strict", False)),
+        stagnation_threshold=int(runtime.option("stagnation_threshold", 6)),
+        per_tool_limit=int(runtime.option("per_tool_limit", 100)),
+        events=events if isinstance(events, list) else None,
     )
+    if bool(runtime.option("eval_hook", True)):
+        hooks.append(build_eval_hook(workspace))
+
+    memory_sources = build_default_memory_sources(workspace, max_steps)
 
     config = LoopConfig(
         max_steps=max_steps,
         temperature=0.2,
-        system_prompt=coder.SYSTEM_PROMPT,
+        system_prompt=SYSTEM_PROMPT,
         compact_service=compact_chain(
             PruneToolResults(keep_recent=10),
             TruncateCompact(keep_recent=5),

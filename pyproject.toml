@@ -65,7 +65,11 @@ build-backend = "hatchling.build"
 packages = ["src/looplet"]
 
 [tool.hatch.build.targets.wheel.force-include]
+"examples/coder/__init__.py" = "examples/coder/__init__.py"
 "examples/coder/agent.py" = "examples/coder/agent.py"
+"examples/coder/tools.py" = "examples/coder/tools.py"
+"examples/coder/hooks.py" = "examples/coder/hooks.py"
+"examples/coder/wiring.py" = "examples/coder/wiring.py"
 "examples/coder/skill/SKILL.md" = "examples/coder/skill/SKILL.md"
 "examples/coder/skill/looplet.py" = "examples/coder/skill/looplet.py"
 
@@ -79,7 +83,11 @@ include = [
     "CHANGELOG.md",
     "docs/hooks.md",
     "docs/skills.md",
+    "examples/coder/__init__.py",
     "examples/coder/agent.py",
+    "examples/coder/tools.py",
+    "examples/coder/hooks.py",
+    "examples/coder/wiring.py",
     "examples/coder/skill/SKILL.md",
     "examples/coder/skill/looplet.py",
     "pyproject.toml",

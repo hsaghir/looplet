@@ -407,3 +407,126 @@ class TestEvalRunBatch:
     def test_empty_batch(self):
         table = eval_run_batch([], [_ctx()])
         assert table == []
+
+
+# ── Outcome-grading: EvalContext.artifacts ──────────────────────
+
+
+class TestEvalContextArtifacts:
+    def test_default_artifacts_is_empty_dict(self):
+        ctx = EvalContext(steps=[])
+        assert ctx.artifacts == {}
+
+    def test_evaluator_can_read_artifacts(self):
+        def eval_tests_passing(ctx):
+            return ctx.artifacts.get("tests_passing", False)
+
+        ctx = EvalContext(steps=[], artifacts={"tests_passing": True})
+        results = eval_run([eval_tests_passing], ctx)
+        assert results[0].score == 1.0
+
+    def test_from_trajectory_dir_loads_artifacts_json(self):
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "trajectory.json").write_text(
+                json.dumps({"steps": [], "task": {}, "termination_reason": "done"})
+            )
+            (Path(d) / "artifacts.json").write_text(
+                json.dumps({"tests_passing": True, "files_changed": ["a.py"]})
+            )
+            ctx = EvalContext.from_trajectory_dir(d)
+            assert ctx.artifacts["tests_passing"] is True
+            assert ctx.artifacts["files_changed"] == ["a.py"]
+
+    def test_from_trajectory_dir_without_artifacts_json(self):
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "trajectory.json").write_text(json.dumps({"steps": [], "task": {}}))
+            ctx = EvalContext.from_trajectory_dir(d)
+            assert ctx.artifacts == {}
+
+
+# ── EvalHook collectors ─────────────────────────────────────────
+
+
+class TestEvalHookCollectors:
+    def _run_hook(self, hook: EvalHook) -> None:
+        reg = BaseToolRegistry()
+        reg.register(
+            ToolSpec(
+                name="done",
+                description="d",
+                parameters={"answer": "str"},
+                execute=lambda *, answer: {"answer": answer},
+            )
+        )
+        list(
+            composable_loop(
+                llm=MockLLMBackend(
+                    responses=['{"tool":"done","args":{"answer":"ok"},"reasoning":"r"}']
+                ),
+                tools=reg,
+                state=DefaultState(max_steps=3),
+                hooks=[hook],
+                config=LoopConfig(max_steps=3),
+            )
+        )
+
+    def test_collector_populates_artifacts(self):
+        captured: dict = {}
+
+        def collect_outcome(state):
+            return {"tests_passing": True, "files_changed": 2}
+
+        def eval_outcome(ctx):
+            captured["artifacts"] = dict(ctx.artifacts)
+            return ctx.artifacts.get("tests_passing", False)
+
+        hook = EvalHook(evaluators=[eval_outcome], collectors=[collect_outcome])
+        self._run_hook(hook)
+
+        assert captured["artifacts"]["tests_passing"] is True
+        assert captured["artifacts"]["files_changed"] == 2
+        assert hook.results[0].score == 1.0
+
+    def test_multiple_collectors_merge(self):
+        def collect_a(state):
+            return {"a": 1}
+
+        def collect_b(state):
+            return {"b": 2}
+
+        seen: dict = {}
+
+        def eval_seen(ctx):
+            seen.update(ctx.artifacts)
+            return 1.0
+
+        hook = EvalHook(evaluators=[eval_seen], collectors=[collect_a, collect_b])
+        self._run_hook(hook)
+        assert seen == {"a": 1, "b": 2}
+
+    def test_collector_exception_does_not_break_eval(self):
+        def collect_broken(state):
+            raise RuntimeError("boom")
+
+        def collect_ok(state):
+            return {"ok": True}
+
+        def eval_ok(ctx):
+            return ctx.artifacts.get("ok", False)
+
+        hook = EvalHook(evaluators=[eval_ok], collectors=[collect_broken, collect_ok])
+        self._run_hook(hook)
+        # Broken collector skipped; good collector still applied.
+        assert hook.results[0].score == 1.0
+
+    def test_collector_must_return_dict(self):
+        def collect_bad(state):
+            return "not a dict"
+
+        def eval_noop(ctx):
+            return 1.0
+
+        hook = EvalHook(evaluators=[eval_noop], collectors=[collect_bad])
+        # Non-dict return is ignored, not raised.
+        self._run_hook(hook)
+        assert hook.results[0].score == 1.0

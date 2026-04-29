@@ -26,15 +26,44 @@ from looplet.skills import Skill, SkillCard
 from looplet.types import LLMBackend, Step
 
 __all__ = [
+    "BundleCard",
     "BundleValidation",
     "SkillBundle",
     "SkillRuntime",
+    "discover_skill_bundles",
     "load_skill_bundle",
     "run_skill_bundle",
     "validate_skill_bundle",
 ]
 
 BuildSkillBundle = Callable[["SkillRuntime"], AgentPreset]
+
+
+@dataclass(frozen=True)
+class BundleCard:
+    """Lightweight runnable cartridge discovery record."""
+
+    name: str
+    description: str
+    path: str
+    entrypoint: str
+    tags: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    ok: bool = True
+    errors: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialise for CLI output and product UIs."""
+        return {
+            "name": self.name,
+            "description": self.description,
+            "path": self.path,
+            "entrypoint": self.entrypoint,
+            "tags": list(self.tags),
+            "metadata": dict(self.metadata),
+            "ok": self.ok,
+            "errors": list(self.errors),
+        }
 
 
 @dataclass(frozen=True)
@@ -85,6 +114,42 @@ class BundleValidation:
     warnings: list[str] = field(default_factory=list)
     skill_name: str | None = None
     preset: AgentPreset | None = None
+
+
+def discover_skill_bundles(
+    *roots: str | Path | Iterable[str | Path],
+    include_invalid: bool = False,
+) -> list[BundleCard]:
+    """Discover runnable skill bundles without importing entrypoint code.
+
+    Roots may be bundle directories, ``SKILL.md`` files, or directories
+    containing many skill folders. Instruction-only skills are skipped by
+    default because they are not runnable cartridges until wrapped.
+    """
+    root_paths = _coerce_discovery_roots(roots)
+    cards: dict[str, BundleCard] = {}
+    for skill_file in _iter_skill_files(root_paths):
+        try:
+            card = _bundle_card_for_skill_file(skill_file)
+        except Exception as exc:  # noqa: BLE001
+            if not include_invalid:
+                continue
+            name = skill_file.parent.name
+            card = BundleCard(
+                name=name,
+                description="",
+                path=str(skill_file.parent.resolve()),
+                entrypoint="looplet.py",
+                ok=False,
+                errors=[f"metadata failed: {type(exc).__name__}: {exc}"],
+            )
+        if not card.ok and not include_invalid:
+            continue
+        if card.name in cards:
+            first = cards[card.name]
+            raise ValueError(f"Duplicate bundle name {card.name!r}: {first.path} and {card.path}")
+        cards[card.name] = card
+    return [cards[name] for name in sorted(cards)]
 
 
 def load_skill_bundle(root: str | Path) -> SkillBundle:
@@ -270,6 +335,61 @@ def _skill_file_for(root: str | Path) -> Path:
     if not skill_file.is_file():
         raise FileNotFoundError(f"Skill bundle root has no SKILL.md: {path}")
     return skill_file.resolve()
+
+
+def _coerce_discovery_roots(
+    roots: tuple[str | Path | Iterable[str | Path], ...],
+) -> list[Path]:
+    if len(roots) == 1 and not isinstance(roots[0], (str, Path)):
+        root_iter = list(cast(Iterable[str | Path], roots[0]))
+    else:
+        root_iter = [cast(str | Path, root) for root in roots]
+    if not root_iter:
+        raise ValueError("discover_skill_bundles requires at least one root path")
+    return [Path(root) for root in root_iter]
+
+
+def _iter_skill_files(roots: Iterable[Path]) -> list[Path]:
+    files: set[Path] = set()
+    for root in roots:
+        if root.is_file() and root.name == "SKILL.md":
+            files.add(root.resolve())
+            continue
+        direct = root / "SKILL.md"
+        if direct.is_file():
+            files.add(direct.resolve())
+        if root.is_dir():
+            files.update(path.resolve() for path in root.rglob("SKILL.md"))
+    return sorted(files, key=lambda path: str(path))
+
+
+def _bundle_card_for_skill_file(skill_file: Path) -> BundleCard:
+    root = skill_file.parent.resolve()
+    skill = Skill.from_markdown(
+        skill_file.read_text(encoding="utf-8"),
+        source_path=skill_file,
+        default_name=root.name,
+    )
+    entrypoint = str(skill.metadata.get("entrypoint") or "looplet.py")
+    errors: list[str] = []
+    try:
+        entrypoint_path = (root / entrypoint).resolve()
+        _ensure_inside(entrypoint_path, root)
+    except ValueError as exc:
+        entrypoint_path = root / entrypoint
+        errors.append(str(exc))
+    if not entrypoint_path.is_file():
+        errors.append(f"entrypoint not found: {entrypoint}")
+    return BundleCard(
+        name=skill.name,
+        description=skill.description,
+        path=str(root),
+        entrypoint=entrypoint,
+        tags=list(skill.tags),
+        metadata=dict(skill.metadata),
+        ok=not errors,
+        errors=errors,
+    )
 
 
 def _ensure_inside(path: Path, root: Path) -> None:

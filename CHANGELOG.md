@@ -4,6 +4,62 @@ All notable changes to `looplet` are documented here. The format is
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **Cartridge discovery without import.** `discover_skill_bundles(roots)`
+  walks one or more roots and returns `BundleCard` records (name,
+  description, entrypoint, tags, metadata, ok/errors) without
+  importing the entrypoint. Powers the new
+  `python -m looplet list-bundles <roots…>` CLI for product UIs and
+  agent menus, with `--json` and `--include-invalid` modes.
+- **Eval cases as data.** `EvalCase`, `load_cases`, `save_case`,
+  `pytest_param_cases`, and the `parametrize_cases(path)` decorator
+  let users write hand-edited JSON/JSONL cases that round-trip into
+  pytest with their `marks` carried through. `assert_evals_pass(ctx,
+  evals)` collapses the run/filter/pretty-print failure idiom into one
+  call (with cached discovery for parametrized tests).
+- **`looplet eval cases ls|show`** CLI subcommands for browsing case
+  corpora directly from the terminal.
+- **Outcome-grounded evals.** `EvalContext.artifacts` and
+  `EvalHook(collectors=…)` let you grade *what changed in the world*
+  (test results, repo diff) instead of grepping the trajectory.
+  Trajectory directories may now ship an `artifacts.json` next to
+  `trajectory.json`; `EvalContext.from_trajectory_dir` loads it
+  automatically. Collectors that raise or return non-dicts are skipped
+  silently — observers must never break a run.
+- **`AgentPreset.run(llm, …)`** convenience method drives
+  `composable_loop` with the preset's wiring in one call.
+- **`composable_loop(…, max_steps=N, system_prompt=…)`** keyword
+  shorthands for inline agents that don't construct a `LoopConfig`.
+- **`OpenAIBackend.from_env()` / `AnthropicBackend.from_env()` /
+  `AsyncOpenAIBackend.from_env()`** classmethods that read
+  `OPENAI_*` / `ANTHROPIC_*` env vars in one line.
+- **`OpenAIBackend(api_key=…)` no longer requires `base_url`** — the
+  cloud path now works with just an API key (or env vars).
+- **`BaseToolRegistry.tool` decorator** registers a `ToolSpec` in one
+  step, mirroring the module-level `@tool` decorator.
+
+### Changed
+- **Coder example split into modules.** `examples/coder/agent.py` now
+  delegates to `examples/coder/{tools,hooks,wiring}.py` so the library
+  entrypoint and the runnable cartridge in `examples/coder/skill/`
+  share *exactly* the same composition. Modify behavior in
+  `wiring.py` once and both surfaces pick it up. Public symbols
+  re-exported for back-compat.
+- **`looplet eval` subcommand** now routes to `looplet.evals.eval_cli`
+  with full `-h`/`--help` support; the top-level CLI no longer eats
+  option-like tokens before they reach the eval parser.
+- **Coder hooks default to "steer, don't restrict".** `TestGuardHook`
+  ships in observe-only mode (failures inject a briefing nudge but
+  `done()` is never blocked); `StagnationHook` uses
+  `result_size_fingerprint` with a lenient threshold so legitimate
+  retries don't trip a stall warning. Pass `test_strict=True` to
+  recover the legacy hard-block behavior.
+- **Coder example ships an outcome-grounded `EvalHook`** that re-runs
+  the project's pytest suite after the loop and surfaces
+  `tests_passing` via `ctx.artifacts`.
+
 ## [0.1.8] - 2026-04-24
 
 ### Added
@@ -43,8 +99,6 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - `clone_tools_excluding` warns on missing names (typo detection).
 - Permission audit strips `__…` scaffolding keys.
 - Conversation `compact()` marks summary as compaction boundary.
-
-## [Unreleased]
 
 ## [0.1.7] - 2026-04-21
 

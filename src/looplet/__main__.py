@@ -8,6 +8,8 @@ Subcommands:
     export-code <bundle> <file>   Export a cartridge as Python wrapper code.
     package <factory> <dir>       Package an importable factory as a cartridge.
     wrap-claude-skill <src> <dir> Wrap a Claude Skill as a looplet cartridge.
+    list-bundles <roots...>       List runnable cartridges under one or more roots.
+    eval <args...>                Run evals or browse cases (see `looplet eval -h`).
 """
 
 from __future__ import annotations
@@ -600,7 +602,42 @@ def _render_wrap_claude_skill(*, skill_path: Path, out_dir: Path) -> int:
     return 0
 
 
+def _render_list_bundles(
+    *,
+    roots: list[Path],
+    json_output: bool,
+    include_invalid: bool,
+) -> int:
+    from looplet.bundles import discover_skill_bundles  # noqa: PLC0415
+
+    try:
+        cards = discover_skill_bundles(roots, include_invalid=include_invalid)
+    except Exception as exc:  # noqa: BLE001
+        print("error: could not list bundles", file=sys.stderr)
+        print(f"  - {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+    if json_output:
+        print(json.dumps([card.to_dict() for card in cards], indent=2, sort_keys=True))
+        return 0
+    for card in cards:
+        status = "ok" if card.ok else "invalid"
+        print(f"{card.name}\t{status}\t{card.path}\t{card.description}")
+        for error in card.errors:
+            print(f"  - {error}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
+    # Short-circuit "eval" to its own CLI so flags like --help/-h reach
+    # the eval parser instead of being captured by the top-level parser.
+    # argparse.REMAINDER on a subparser does not protect option-like
+    # tokens from the parent parser, so we route eval before parsing.
+    raw = list(argv) if argv is not None else sys.argv[1:]
+    if raw and raw[0] == "eval":
+        from looplet.evals import eval_cli  # noqa: PLC0415
+
+        return eval_cli(raw[1:])
+
     parser = argparse.ArgumentParser(
         prog="python -m looplet",
         description="looplet — run, inspect, and package observable agent loops",
@@ -700,6 +737,31 @@ def main(argv: list[str] | None = None) -> int:
     wrap_claude.add_argument("skill", type=Path, help="Claude Skill directory or SKILL.md")
     wrap_claude.add_argument("out_dir", type=Path, help="Bundle directory to write")
 
+    list_bundles = sub.add_parser(
+        "list-bundles",
+        help="List runnable skill bundles under one or more roots",
+    )
+    list_bundles.add_argument("roots", nargs="+", type=Path, help="Bundle roots to scan")
+    list_bundles.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    list_bundles.add_argument(
+        "--include-invalid",
+        action="store_true",
+        help="Include bundle-like folders with missing or invalid entrypoints",
+    )
+
+    eval_cmd = sub.add_parser(
+        "eval",
+        help="Run evals or browse cases (see `looplet eval -h`).",
+        add_help=False,
+    )
+    # Pre-routed in main() so --help/-h reach eval_cli; this argument is
+    # only declared so help output mentions a positional payload.
+    eval_cmd.add_argument(
+        "eval_args",
+        nargs=argparse.REMAINDER,
+        help="Arguments forwarded to looplet.evals.eval_cli",
+    )
+
     args = parser.parse_args(argv)
 
     if args.command == "show":
@@ -744,6 +806,17 @@ def main(argv: list[str] | None = None) -> int:
         )
     if args.command == "wrap-claude-skill":
         return _render_wrap_claude_skill(skill_path=args.skill, out_dir=args.out_dir)
+    if args.command == "list-bundles":
+        return _render_list_bundles(
+            roots=args.roots,
+            json_output=args.json,
+            include_invalid=args.include_invalid,
+        )
+    if args.command == "eval":
+        # Pre-routed in main(); kept here only as a defensive fallback.
+        from looplet.evals import eval_cli  # noqa: PLC0415
+
+        return eval_cli(args.eval_args)
     # Unreachable — argparse rejects unknown commands.
     return 2
 

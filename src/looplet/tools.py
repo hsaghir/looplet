@@ -589,6 +589,40 @@ class BaseToolRegistry:
     # Backward-compat alias
     _register = register
 
+    def tool(
+        self,
+        fn: Callable[..., Any] | None = None,
+        **tool_kwargs: Any,
+    ) -> Any:
+        """Decorator: build a :class:`ToolSpec` from ``fn`` and register it.
+
+        One-step alternative to ``@tool`` + ``registry.register(...)`` /
+        ``tools_from([...])`` for inline agents::
+
+            registry = BaseToolRegistry()
+
+            @registry.tool
+            def read_file(path: str) -> dict:
+                ...
+
+            @registry.tool(concurrent_safe=True)
+            def http_get(url: str) -> dict:
+                ...
+
+        Accepts the same keyword arguments as the module-level
+        :func:`tool` decorator. Returns the underlying :class:`ToolSpec`
+        so it can still be inspected, mutated, or re-registered.
+        """
+
+        def _wrap(inner: Callable[..., Any]) -> ToolSpec:
+            spec = tool(inner, **tool_kwargs) if tool_kwargs else cast(ToolSpec, tool(inner))
+            self.register(spec)
+            return spec
+
+        if fn is None:
+            return _wrap
+        return _wrap(fn)
+
     @property
     def tool_names(self) -> list[str]:
         """Names of all registered tools."""

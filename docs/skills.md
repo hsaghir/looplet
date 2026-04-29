@@ -138,6 +138,30 @@ python -m looplet run ./skills/coder "Fix the tests" --workspace . --trace-dir .
 python -m looplet run ./skills/coder "Fix the tests" --workspace . --no-trace
 ```
 
+Cartridges can also be discovered without importing their Python
+entrypoints. This is the lightweight index path for product UIs and agent
+menus: it reads `SKILL.md`, checks whether the declared entrypoint exists,
+and returns `BundleCard` records.
+
+```python
+from looplet import discover_skill_bundles
+
+for card in discover_skill_bundles("./skills"):
+  print(card.name, card.description, card.path)
+```
+
+The same discovery path is available from the CLI:
+
+```bash
+python -m looplet list-bundles ./skills
+python -m looplet list-bundles ./skills --json
+python -m looplet list-bundles ./skills --include-invalid
+```
+
+By default, instruction-only Claude Skills are skipped because they do not
+have a runnable entrypoint yet. Pass `--include-invalid` when you want to
+surface folders that look like cartridges but need repair or wrapping.
+
 Bundles may optionally expose `scripted_responses()` for deterministic
 dogfood runs and `render_step(step)` for domain-specific terminal output.
 For product cartridges that need exact terminal behavior, a bundle can also

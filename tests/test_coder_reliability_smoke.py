@@ -502,7 +502,7 @@ class TestLinterHook:
                     )
                 return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="missing")
 
-            monkeypatch.setattr("examples.coder.agent.subprocess.run", fake_run)
+            monkeypatch.setattr("examples.coder.hooks.subprocess.run", fake_run)
             hook = LinterHook(tmp)
             from looplet.types import ToolCall as TC
             from looplet.types import ToolResult as TR

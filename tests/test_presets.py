@@ -253,3 +253,18 @@ class TestPresetIntegration:
         )
         assert len(steps) == 1
         assert steps[0].tool_call.tool == "done"
+
+    def test_preset_run_drives_loop(self):
+        """``AgentPreset.run`` collapses the 6-arg composable_loop call."""
+        from looplet.presets import minimal_preset
+        from looplet.testing import MockLLMBackend
+
+        llm = MockLLMBackend(
+            responses=[
+                '{"tool": "done", "args": {"summary": "ok"}, "reasoning": "done"}',
+            ]
+        )
+        preset = minimal_preset()
+        steps = list(preset.run(llm, task={"goal": "finish"}))
+        assert len(steps) == 1
+        assert steps[0].tool_call.tool == "done"

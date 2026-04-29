@@ -50,9 +50,9 @@ def test_coder_bundle_exports_structural_blueprint(tmp_path):
         "write_file",
     }
     assert [hook.kind for hook in blueprint.hooks][:3] == [
-        "examples.coder.agent:TestGuardHook",
-        "examples.coder.agent:FileCacheHook",
-        "examples.coder.agent:StaleFileHook",
+        "examples.coder.hooks:TestGuardHook",
+        "examples.coder.hooks:FileCacheHook",
+        "examples.coder.hooks:StaleFileHook",
     ]
     assert blueprint.fingerprint() == blueprint_from_bundle(CODER_BUNDLE, runtime).fingerprint()
 

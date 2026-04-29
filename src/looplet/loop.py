@@ -1116,6 +1116,9 @@ def composable_loop(
     session_log: SessionLog | None = None,
     stream: Any | None = None,
     conversation: Any | None = None,
+    *,
+    max_steps: int | None = None,
+    system_prompt: str | None = None,
 ) -> Generator[Step, None, Any]:
     """Domain-agnostic agent loop with composable hooks.
 
@@ -1140,6 +1143,12 @@ def composable_loop(
         conversation: Optional Conversation — when set, the loop auto-records
             each LLM prompt/response and tool call/result as Messages in the
             conversation thread. Works alongside session_log (both are populated).
+        max_steps: Convenience shorthand. When set, configures both
+            ``LoopConfig.max_steps`` and ``DefaultState.max_steps`` so
+            simple agents don't need to construct either explicitly. If
+            ``config`` is also passed, this overrides ``config.max_steps``.
+        system_prompt: Convenience shorthand for ``LoopConfig.system_prompt``;
+            same override semantics as ``max_steps``.
     """
     if task is None:
         task = {}
@@ -1147,6 +1156,10 @@ def composable_loop(
         raise ValueError("tools is required")
     if config is None:
         config = LoopConfig()
+    if max_steps is not None:
+        config.max_steps = max_steps
+    if system_prompt is not None:
+        config.system_prompt = system_prompt
     if hooks is None:
         hooks = []
 

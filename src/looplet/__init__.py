@@ -35,9 +35,11 @@ from looplet.blueprints import (
 )
 from looplet.budget import ContextBudget, ThresholdCompactHook
 from looplet.bundles import (
+    BundleCard,
     BundleValidation,
     SkillBundle,
     SkillRuntime,
+    discover_skill_bundles,
     load_skill_bundle,
     run_skill_bundle,
     validate_skill_bundle,
@@ -61,14 +63,20 @@ from looplet.done_steps import (
     last_rejected_done,
 )
 from looplet.evals import (
+    EvalCase,
     EvalContext,
     EvalHook,
     EvalResult,
+    assert_evals_pass,
     eval_cli,
     eval_discover,
     eval_mark,
     eval_run,
     eval_run_batch,
+    load_cases,
+    parametrize_cases,
+    pytest_param_cases,
+    save_case,
 )
 from looplet.events import EventPayload, LifecycleEvent
 from looplet.hook_decision import (
@@ -163,6 +171,7 @@ __all__ = [
     "SkillCard",
     "SkillBundle",
     "SkillRuntime",
+    "BundleCard",
     "BundleValidation",
     "AgentBlueprint",
     "SourceBlueprint",
@@ -175,6 +184,7 @@ __all__ = [
     "SkillActivationHook",
     "install_skills",
     "make_skill_tools",
+    "discover_skill_bundles",
     "load_skill_bundle",
     "validate_skill_bundle",
     "run_skill_bundle",
@@ -241,11 +251,17 @@ __all__ = [
     "EvalHook",
     "EvalContext",
     "EvalResult",
+    "EvalCase",
+    "assert_evals_pass",
     "eval_discover",
     "eval_run",
     "eval_run_batch",
     "eval_mark",
     "eval_cli",
+    "load_cases",
+    "parametrize_cases",
+    "save_case",
+    "pytest_param_cases",
     # ── TESTING ─────────────────────────────────────────────────
     "MockLLMBackend",
     "AsyncMockLLMBackend",

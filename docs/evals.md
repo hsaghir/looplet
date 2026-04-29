@@ -9,15 +9,22 @@ quality is a spectrum.
 # eval_my_agent.py — discovered automatically by eval_discover()
 
 def eval_tests_passed(ctx):
-    """Did the agent get tests to pass?"""
-    for s in reversed(ctx.steps):
-        if s.tool_call.tool == "bash" and "pytest" in s.tool_call.args.get("command", ""):
-            return s.tool_result.data.get("exit_code") == 0
-    return False
+    """Did the agent get tests to pass?
 
-def eval_efficiency(ctx):
-    """Score 0-1: fewer steps = better."""
-    return min(5 / max(ctx.step_count, 1), 1.0)
+    Outcome-grounded: read from `ctx.artifacts`, populated by a
+    collector that re-runs the test suite (see "Trajectory-blind evals"
+    below). Don't grep `ctx.steps` for "pytest" — a smarter model
+    might use a different runner and pass tests anyway.
+    """
+    return ctx.artifacts.get("tests_passing", False)
+
+def eval_step_cost(ctx):
+    """Surface step count as a cost *metric*, not a quality score.
+
+    `EvalResult.metrics` lets you plot cost-vs-quality without a
+    fast-but-wrong run beating a slow-but-correct one.
+    """
+    return {"steps": float(ctx.step_count)}
 
 def eval_ioc_quality(ctx):
     """Return multiple metrics at once."""
@@ -33,6 +40,90 @@ def eval_reasoning_gaps(ctx, llm):
 The framework normalises. If your function takes an `llm` parameter,
 the framework passes the judge LLM automatically.
 
+## Trajectory-blind evals: grade outcomes, not process
+
+The single biggest pitfall when writing evals is grading the *trajectory*
+the model took instead of the *outcome* it produced. A real anecdote
+from agent labs: a code-summarisation eval scored the model on whether
+it read a specific list of files. The model was inferring those classes
+from their usage elsewhere — a *better* strategy — and the eval marked
+it down. The "restriction" preserved a 2024 trajectory as a permanent
+ceiling.
+
+**Rule of thumb:** if your eval indexes `ctx.tool_sequence` or greps
+`ctx.steps` looking for tool calls by name, you are probably grading
+process, not outcome. Two patterns to use instead.
+
+### 1. Read `ctx.final_output` for the answer
+
+```python
+def eval_answer_correct(ctx):
+    return ctx.final_output.get("answer") == ctx.task.get("expected")
+```
+
+The agent's `done()` arguments are the agent's own claim about the
+result. Trust them at face value, then **check them against the world**
+via artifacts.
+
+### 2. Use collectors + `ctx.artifacts` for world-state
+
+A *collector* is a callable `(state) -> dict[str, Any]` that runs once
+at end-of-loop. Its return value is merged into `ctx.artifacts`,
+where any evaluator can read it.
+
+```python
+from looplet import EvalHook
+
+def collect_test_results(state):
+    """Re-run the suite ourselves; don't ask the agent if it ran tests."""
+    proc = subprocess.run(["pytest", "-q"], capture_output=True)
+    return {"tests_passing": proc.returncode == 0}
+
+def collect_repo_diff(state):
+    """Snapshot what actually changed on disk."""
+    diff = subprocess.run(["git", "diff", "--stat"], capture_output=True, text=True)
+    return {"files_changed": diff.stdout.count("|"), "diff_text": diff.stdout}
+
+def eval_tests_passed(ctx):
+    return ctx.artifacts["tests_passing"]
+
+def eval_changed_something(ctx):
+    return ctx.artifacts["files_changed"] > 0
+
+hook = EvalHook(
+    evaluators=[eval_tests_passed, eval_changed_something],
+    collectors=[collect_test_results, collect_repo_diff],
+)
+```
+
+A collector that raises or returns a non-dict is silently skipped —
+collectors observe, they must never break a run. Multiple collectors
+merge their dicts in order; later keys win.
+
+For saved trajectories, drop an `artifacts.json` next to
+`trajectory.json`. `EvalContext.from_trajectory_dir` loads it
+automatically:
+
+```
+traces/run_1/
+├── trajectory.json
+├── metrics.json
+└── artifacts.json   ← {"tests_passing": true, "files_changed": 3}
+```
+
+### When trajectory inspection *is* OK
+
+Reading `ctx.tool_sequence` or `ctx.steps` is appropriate for:
+
+- **Harness regression tests** — verifying that *your hooks fired*, not
+  that the model picked a particular tool.
+- **Debugging** — finding why a specific run went sideways.
+- **Auditing** — recording what the agent did, not grading it.
+
+If you find yourself writing `"pytest" in str(ctx.steps)` as a quality
+signal, replace it with a collector that runs `pytest` and surfaces a
+boolean artifact.
+
 ## Attach to your loop
 
 For live scoring during development:
@@ -41,12 +132,13 @@ For live scoring during development:
 from looplet import EvalHook
 
 hook = EvalHook(
-    evaluators=[eval_tests_passed, eval_efficiency],
-    verbose=True,   # prints scores after each run
+    evaluators=[eval_tests_passed, eval_step_cost],
+    collectors=[collect_test_results],   # populates ctx.artifacts
+    verbose=True,                         # prints scores after each run
 )
 for step in composable_loop(..., hooks=[hook]):
     ...
-print(hook.summary())          # "2 scored (avg 0.90)"
+print(hook.summary())          # "1 scored (avg 1.00), 1 labeled"
 hook.save("evals/run_1.json")
 ```
 
@@ -134,6 +226,97 @@ contexts = [EvalContext.from_trajectory_dir(d) for d in trace_dirs]
 table = eval_run_batch(evals, contexts)
 for row in table:
     print(f"{row['name']:30s} avg={row['avg_score']:.2f}")
+```
+
+## Cases as data: write them by hand, run them with pytest
+
+An **eval case** is just `task` + `expected` + tags. Cases live as
+JSON so you can hand-write the first few, grow the corpus from
+real runs, and review them without a Python file.
+
+```json
+// evals/cases/add_basic.json
+{
+  "id": "add_basic",
+  "task": {"description": "Create math_utils.add() with a regression test"},
+  "expected": {"tests_passing": true},
+  "marks": ["smoke"],
+  "notes": "Seed case; the simplest end-to-end coder run."
+}
+```
+
+Browse the corpus from the CLI:
+
+```bash
+looplet eval cases ls evals/cases/
+#   add_basic     [smoke      ] Create math_utils.add() with a regression test
+#   multiply_fix  [regression ] Fix the multiply bug in calc.py
+#
+#   2 case(s)
+
+looplet eval cases show evals/cases/ multiply_fix   # full JSON dump
+```
+
+Run them with stock pytest. The shortest path is two helpers — no
+`pytest` import needed in your test file:
+
+```python
+# tests/test_evals.py
+from looplet import assert_evals_pass, parametrize_cases
+
+
+@parametrize_cases("evals/cases")
+def test_coder(case, my_agent):           # `my_agent` = your own fixture
+    ctx = my_agent.run(case)               # build a context however you like
+    assert_evals_pass(ctx, "evals/")       # discovers eval_*.py and asserts
+```
+
+`parametrize_cases` carries each case's `marks` through, so `-k <id>`,
+`-m <mark>`, `--lf`, IDE integration, and JUnit XML all work without a
+custom plugin. `assert_evals_pass` runs the evaluators, collects any
+failures, and raises `AssertionError` with each failed result's
+`pretty()` block on its own line. Discovery is cached, so calling it
+once per parametrized case is free.
+
+If you want more control — pick which evaluators run, pass a judge
+LLM, branch on individual results — drop down to the primitives:
+
+```python
+import pytest
+from looplet import (
+    EvalContext, eval_discover, eval_run, load_cases, pytest_param_cases,
+)
+
+CASES = load_cases("evals/cases")
+EVALS = eval_discover("evals/")
+
+
+@pytest.mark.parametrize("case", pytest_param_cases(CASES))
+def test_coder(case, my_agent):
+    ctx: EvalContext = my_agent.run(case)
+    results = eval_run(EVALS, ctx, judge_llm=my_agent.llm)
+    failed = [r for r in results if not r.passed]
+    assert not failed, "\n".join(r.pretty() for r in failed)
+```
+
+The same `EVALS` list also drives `EvalHook` for live grading and
+`eval_cli` for CI batch runs — write the eval once, use it three ways.
+
+To save a case after a successful manual run:
+
+```python
+from looplet import EvalCase, save_case
+
+save_case(
+    EvalCase(
+        id="multiply_fix",
+        task={"description": "Fix the multiply bug in calc.py"},
+        expected={"tests_passing": True},
+        marks=["regression"],
+        notes="Seen as a real failure on 2026-04-15.",
+    ),
+    "evals/cases/",
+)
 ```
 
 ## CLI runner for CI

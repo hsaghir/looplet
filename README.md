@@ -192,30 +192,27 @@ all, or none — and [drop in your own](docs/hooks.md) in 10 lines.
 ## Your first agent (60 seconds)
 
 ```python
-from looplet import (
-    DefaultState, LoopConfig, OpenAIBackend,
-    composable_loop, tool, tools_from,
-)
-import os
+from looplet import BaseToolRegistry, OpenAIBackend, composable_loop
+from looplet.tools import register_done_tool
 
-llm = OpenAIBackend(
-    base_url=os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
-    api_key=os.environ.get("OPENAI_API_KEY", ""),
-    model=os.environ.get("OPENAI_MODEL", "gpt-4o-mini"),
-)
+llm = OpenAIBackend.from_env(model="gpt-4o-mini")  # reads OPENAI_API_KEY etc
 
-@tool(description="Greet someone by name.")
+tools = BaseToolRegistry()
+
+
+@tools.tool
 def greet(name: str) -> dict:
+    """Greet someone by name."""
     return {"greeting": f"Hello, {name}!"}
 
 
-tools = tools_from([greet], include_done=True)
+register_done_tool(tools)
 
 for step in composable_loop(
-    llm=llm, tools=tools,
-    state=DefaultState(max_steps=5),
-    config=LoopConfig(max_steps=5),
+    llm=llm,
+    tools=tools,
     task={"goal": "Greet Alice and Bob, then finish."},
+    max_steps=5,
 ):
     print(step.pretty())
 ```
@@ -279,6 +276,7 @@ python -m looplet.examples.data_agent --scripted --auto-approve   # no model req
 Runnable cartridges package the same primitives behind a portable folder:
 
 ```bash
+python -m looplet list-bundles examples/coder --json
 python -m looplet run examples/coder/skill "Create a tiny add function with tests" --scripted --workspace /tmp/demo
 python -m looplet export-code examples/coder/skill /tmp/coder_agent.py  # exact local wrapper
 python -m looplet package my_agent:build ./skills/my-agent --name my-agent --description "Run my agent."

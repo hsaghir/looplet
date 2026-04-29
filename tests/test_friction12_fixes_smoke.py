@@ -43,11 +43,15 @@ class TestRegisterDoneTool:
 
 
 class TestBackendConvenienceKwargs:
-    def test_openai_backend_requires_client_or_base_url(self):
+    def test_openai_backend_no_args_delegates_to_openai_client(self):
+        """Previously raised; now defers to ``openai.OpenAI()`` which reads env vars."""
+        from unittest.mock import patch
+
         from looplet.backends import OpenAIBackend
 
-        with pytest.raises(TypeError, match="base_url"):
+        with patch("openai.OpenAI") as fake:
             OpenAIBackend()
+            fake.assert_called_once_with()
 
     def test_openai_backend_base_url_creates_client(self):
         from looplet.backends import OpenAIBackend
@@ -67,11 +71,14 @@ class TestBackendConvenienceKwargs:
         assert llm._client is mock_client
         assert llm._model == "gpt-4o-mini"
 
-    def test_async_openai_backend_requires_client_or_base_url(self):
+    def test_async_openai_backend_no_args_delegates_to_async_client(self):
+        from unittest.mock import patch
+
         from looplet.backends import AsyncOpenAIBackend
 
-        with pytest.raises(TypeError, match="base_url"):
+        with patch("openai.AsyncOpenAI") as fake:
             AsyncOpenAIBackend()
+            fake.assert_called_once_with()
 
 
 # ── EvalResult.passed ────────────────────────────────────────────

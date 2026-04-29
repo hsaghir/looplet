@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import Any, AsyncGenerator, Generator
 
 logger = logging.getLogger(__name__)
@@ -193,21 +194,47 @@ class OpenAIBackend:
         tool_choice: str = "auto",
     ) -> None:
         if client is None:
-            if base_url is None:
-                raise TypeError(
-                    "OpenAIBackend requires either a client instance as the "
-                    "first argument or base_url=... (and optionally api_key=...) "
-                    "to auto-create one. Example:\n"
-                    '  OpenAIBackend(base_url="http://localhost:8080/v1", api_key="x")\n'
-                    '  OpenAIBackend(OpenAI(), model="gpt-4o")'
-                )
             from openai import OpenAI  # noqa: PLC0415
 
-            client = OpenAI(base_url=base_url, api_key=api_key or "")
+            kwargs: dict[str, Any] = {}
+            if base_url is not None:
+                kwargs["base_url"] = base_url
+            if api_key is not None:
+                kwargs["api_key"] = api_key
+            # ``OpenAI()`` itself reads ``OPENAI_API_KEY``/``OPENAI_BASE_URL``
+            # from the environment when neither is supplied, so passing
+            # only ``model=...`` is enough for the canonical cloud path.
+            client = OpenAI(**kwargs)
         self._client = client
         self._model = model
         self._default_max_tokens = default_max_tokens
         self._tool_choice = tool_choice
+
+    @classmethod
+    def from_env(
+        cls,
+        *,
+        model: str | None = None,
+        default_max_tokens: int | None = None,
+        tool_choice: str = "auto",
+    ) -> "OpenAIBackend":
+        """Build an :class:`OpenAIBackend` from environment variables.
+
+        Reads ``OPENAI_API_KEY``, ``OPENAI_BASE_URL`` (optional, e.g.
+        for a local proxy), and ``OPENAI_MODEL`` (optional, falls back
+        to ``"gpt-4o"`` or the explicit ``model=`` arg).  Equivalent to
+        the manual two-step::
+
+            from openai import OpenAI
+            llm = OpenAIBackend(OpenAI(), model=os.environ["OPENAI_MODEL"])
+        """
+        return cls(
+            base_url=os.environ.get("OPENAI_BASE_URL"),
+            api_key=os.environ.get("OPENAI_API_KEY"),
+            model=model or os.environ.get("OPENAI_MODEL", "gpt-4o"),
+            default_max_tokens=default_max_tokens,
+            tool_choice=tool_choice,
+        )
 
     def generate(
         self,
@@ -365,6 +392,25 @@ class AnthropicBackend:
         self._model = model
         self._default_max_tokens = default_max_tokens
 
+    @classmethod
+    def from_env(
+        cls,
+        *,
+        model: str | None = None,
+        default_max_tokens: int | None = None,
+    ) -> "AnthropicBackend":
+        """Build an :class:`AnthropicBackend` from environment variables.
+
+        Reads ``ANTHROPIC_API_KEY`` (required) and ``ANTHROPIC_MODEL``
+        (optional, falls back to the default model or the explicit
+        ``model=`` arg).
+        """
+        return cls(
+            api_key=os.environ.get("ANTHROPIC_API_KEY"),
+            model=model or os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-20250514"),
+            default_max_tokens=default_max_tokens,
+        )
+
     def generate(
         self,
         prompt: str,
@@ -472,18 +518,35 @@ class AsyncOpenAIBackend:
         tool_choice: str = "auto",
     ) -> None:
         if client is None:
-            if base_url is None:
-                raise TypeError(
-                    "AsyncOpenAIBackend requires either a client instance or "
-                    "base_url=... to auto-create one."
-                )
             from openai import AsyncOpenAI  # noqa: PLC0415
 
-            client = AsyncOpenAI(base_url=base_url, api_key=api_key or "")
+            kwargs: dict[str, Any] = {}
+            if base_url is not None:
+                kwargs["base_url"] = base_url
+            if api_key is not None:
+                kwargs["api_key"] = api_key
+            client = AsyncOpenAI(**kwargs)
         self._client = client
         self._model = model
         self._default_max_tokens = default_max_tokens
         self._tool_choice = tool_choice
+
+    @classmethod
+    def from_env(
+        cls,
+        *,
+        model: str | None = None,
+        default_max_tokens: int | None = None,
+        tool_choice: str = "auto",
+    ) -> "AsyncOpenAIBackend":
+        """Async sibling of :meth:`OpenAIBackend.from_env`."""
+        return cls(
+            base_url=os.environ.get("OPENAI_BASE_URL"),
+            api_key=os.environ.get("OPENAI_API_KEY"),
+            model=model or os.environ.get("OPENAI_MODEL", "gpt-4o"),
+            default_max_tokens=default_max_tokens,
+            tool_choice=tool_choice,
+        )
 
     async def generate(
         self,

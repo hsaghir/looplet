@@ -11,9 +11,15 @@ Quick start::
     def eval_task_completed(ctx):
         return "correct" if ctx.final_output.get("answer") == ctx.task.get("expected") else "wrong"
 
-    def eval_step_efficiency(ctx):
-        budget = ctx.task.get("max_steps", 10)
-        return max(0.0, 1.0 - len(ctx.steps) / budget)
+    def eval_tests_passed(ctx):
+        # Outcome-grounded: read from artifacts the collector populated,
+        # not from the trajectory.
+        return ctx.artifacts.get("tests_passing", False)
+
+    def eval_step_cost(ctx):
+        # Cost metric, NOT a quality score. Surface it as data so you
+        # can plot cost-vs-quality without conflating them.
+        return {"steps": float(ctx.step_count)}
 
     def eval_reasoning_quality(ctx, llm):
         resp = llm.generate(f"Score 0-1: is {ctx.final_output} a well-supported answer given {ctx.session_log_text}?")
@@ -29,18 +35,31 @@ Run evals::
     for r in results:
         print(r.pretty())
 
-Or attach to the loop for live scoring::
+Or attach to the loop for live scoring with outcome collectors::
 
     from looplet.evals import EvalHook
 
-    hook = EvalHook(evaluators=[eval_task_completed, eval_step_efficiency])
+    def collect_test_results(state):
+        # Re-run the test suite or read its last exit code from disk.
+        return {"tests_passing": _tests_pass()}
+
+    hook = EvalHook(
+        evaluators=[eval_task_completed, eval_tests_passed],
+        collectors=[collect_test_results],
+    )
     for step in composable_loop(..., hooks=[hook]):
         ...
     print(hook.summary())
+
+Prefer evaluating ``ctx.final_output`` and ``ctx.artifacts`` over
+indexing ``ctx.tool_sequence`` or grepping ``ctx.steps`` — the
+former survives the model changing its workflow, the latter
+encodes today's expected trajectory as a permanent grade.
 """
 
 from __future__ import annotations
 
+import functools
 import importlib.util
 import inspect
 import json
@@ -56,14 +75,20 @@ if TYPE_CHECKING:
     from looplet.types import AgentState, LLMBackend
 
 __all__ = [
+    "EvalCase",
     "EvalContext",
     "EvalResult",
     "EvalHook",
+    "assert_evals_pass",
     "eval_discover",
     "eval_run",
     "eval_run_batch",
     "eval_mark",
     "eval_cli",
+    "load_cases",
+    "parametrize_cases",
+    "save_case",
+    "pytest_param_cases",
 ]
 
 logger = logging.getLogger(__name__)
@@ -93,6 +118,17 @@ class EvalContext:
 
     metadata: dict[str, Any] = field(default_factory=dict)
     """Extra context: run_id, model, timestamp, etc."""
+
+    artifacts: dict[str, Any] = field(default_factory=dict)
+    """Outcome data collected from outside the trajectory.
+
+    Populated by :class:`EvalHook` collectors at the end of a run, or
+    loaded from ``artifacts.json`` via :meth:`from_trajectory_dir`.
+    Use this slot to grade *what changed in the world* — tests
+    passing, files modified, repo state — instead of grepping
+    :attr:`steps` for tool calls. See ``docs/evals.md`` for the
+    "trajectory-blind eval" recipe.
+    """
 
     stop_reason: str | None = None
     """Why the loop terminated: ``\"done\"`` if the agent called ``done()``,
@@ -185,12 +221,26 @@ class EvalContext:
             except Exception:  # noqa: BLE001
                 pass
 
+        # Load artifacts.json if present — outcome data collected
+        # outside the trajectory (test results, file diffs, repo
+        # state, etc.). See EvalHook(collectors=...).
+        artifacts: dict[str, Any] = {}
+        artifacts_path = root / "artifacts.json"
+        if artifacts_path.exists():
+            try:
+                loaded = json.loads(artifacts_path.read_text())
+                if isinstance(loaded, dict):
+                    artifacts = loaded
+            except Exception:  # noqa: BLE001
+                logger.warning("Failed to load artifacts.json from %s", root, exc_info=True)
+
         return cls(
             steps=[_DictStep(s) for s in steps],
             task=task if isinstance(task, dict) else {"description": str(task)},
             final_output=final_output,
             session_log_text="",  # not saved in trajectory by default
             metadata=metadata,
+            artifacts=artifacts,
             stop_reason=data.get("termination_reason") or metadata.get("termination_reason"),
         )
 
@@ -346,7 +396,226 @@ class EvalResult:
         return d
 
 
+# ── Cases ────────────────────────────────────────────────────────
+
+
+@dataclass
+class EvalCase:
+    """A single eval case — task + expected outcomes + tags.
+
+    Cases live as data: they round-trip to JSON via :meth:`to_dict`
+    and :func:`load_cases`, so users can write them by hand and grow
+    the corpus without touching Python.
+
+    Field guidance:
+
+    * ``id``: stable, human-readable (used as the file name and the
+      pytest test id).
+    * ``task``: passed verbatim to ``composable_loop(task=…)``.
+    * ``expected``: free-form. Evaluators read what they need
+      (``ctx.task["expected"]`` is populated by the runner). Keep
+      keys outcome-oriented (``tests_passing``, ``files_created``)
+      rather than trajectory-oriented (``read_file_count``).
+    * ``marks``: same vocabulary as :func:`eval_mark`. Carried into
+      pytest as native marks via :func:`pytest_param_cases`.
+    * ``notes``: free-text — why this case was added, what regression
+      it captures.
+    """
+
+    id: str
+    task: dict[str, Any] = field(default_factory=dict)
+    expected: dict[str, Any] = field(default_factory=dict)
+    marks: list[str] = field(default_factory=list)
+    notes: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {"id": self.id, "task": self.task}
+        for key in ("expected", "marks", "notes"):
+            if value := getattr(self, key):
+                d[key] = value
+        return d
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "EvalCase":
+        if "id" not in data:
+            raise ValueError("EvalCase requires 'id'")
+        known = {k: v for k, v in data.items() if k in cls.__dataclass_fields__}
+        return cls(**known)
+
+
+def load_cases(path: str | Path) -> list["EvalCase"]:
+    """Load eval cases from a file or directory.
+
+    Accepts:
+
+    * a single ``.json`` file containing one case dict, or a list of
+      case dicts;
+    * a single ``.jsonl`` file with one case dict per line;
+    * a directory containing any mix of ``*.json`` / ``*.jsonl`` files
+      (sorted by file name, then by their internal order).
+
+    Cases are returned in deterministic order so pytest IDs are stable.
+    Raises :class:`FileNotFoundError` if ``path`` doesn't exist and
+    :class:`ValueError` for malformed entries (so a bad case is loud).
+    """
+    root = Path(path)
+    if not root.exists():
+        raise FileNotFoundError(f"No such case path: {root}")
+
+    if root.is_file():
+        files = [root]
+    else:
+        files = sorted(
+            (p for p in root.iterdir() if p.suffix in (".json", ".jsonl")),
+            key=lambda p: p.name,
+        )
+
+    cases: list[EvalCase] = []
+    seen: dict[str, Path] = {}
+    for fpath in files:
+        for raw in _iter_case_dicts(fpath):
+            case = EvalCase.from_dict(raw)
+            if case.id in seen:
+                raise ValueError(f"Duplicate case id {case.id!r} (in {fpath})")
+            seen[case.id] = fpath
+            cases.append(case)
+    return cases
+
+
+def _iter_case_dicts(fpath: Path):
+    text = fpath.read_text()
+    if fpath.suffix == ".jsonl":
+        for ln, line in enumerate(text.splitlines(), 1):
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            try:
+                yield json.loads(line)
+            except json.JSONDecodeError as e:
+                raise ValueError(f"{fpath}:{ln}: invalid JSON ({e})") from e
+        return
+    try:
+        loaded = json.loads(text)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"{fpath}: invalid JSON ({e})") from e
+    if isinstance(loaded, list):
+        yield from loaded
+    elif isinstance(loaded, dict):
+        yield loaded
+    else:
+        raise ValueError(f"{fpath}: expected dict or list, got {type(loaded).__name__}")
+
+
+def save_case(case: "EvalCase", path: str | Path) -> Path:
+    """Write one case to ``path`` as pretty-printed JSON.
+
+    If ``path`` is a directory, writes to ``<path>/<case.id>.json``.
+    Returns the written path. Parent directories are created.
+    """
+    target = Path(path)
+    if target.exists() and target.is_dir():
+        target = target / f"{case.id}.json"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(case.to_dict(), indent=2, sort_keys=True))
+    return target
+
+
+def pytest_param_cases(cases: list["EvalCase"]) -> list[Any]:
+    """Wrap cases for ``@pytest.mark.parametrize``.
+
+    Each case becomes a ``pytest.param(case, id=case.id, marks=[…])``
+    so pytest's ``-k <id>``, ``-m <mark>``, and report grouping all
+    work out of the box. Falls back to plain cases (with no marks) if
+    pytest is not importable.
+
+    Example::
+
+        import pytest
+        from looplet.evals import load_cases, pytest_param_cases, eval_run
+
+        CASES = load_cases("evals/cases")
+
+        @pytest.mark.parametrize("case", pytest_param_cases(CASES))
+        def test_coder(case, my_agent):
+            ctx = my_agent.run(case)
+            results = eval_run([eval_tests_passed], ctx)
+            assert all(r.passed for r in results), "\\n".join(r.pretty() for r in results)
+    """
+    try:
+        import pytest  # type: ignore
+    except ImportError:
+        return list(cases)
+    return [
+        pytest.param(c, id=c.id, marks=[getattr(pytest.mark, m) for m in c.marks]) for c in cases
+    ]
+
+
+def parametrize_cases(
+    path: str | Path,
+    *,
+    argname: str = "case",
+) -> Callable:
+    """Pytest decorator: load cases from ``path`` and parametrize over them.
+
+    Equivalent to::
+
+        @pytest.mark.parametrize(
+            argname, pytest_param_cases(load_cases(path))
+        )
+
+    but as a single import. Marks declared on each case (``smoke``,
+    ``regression``, …) carry through, so ``-k <id>`` and ``-m <mark>``
+    work as usual.
+
+    Example::
+
+        from looplet import parametrize_cases
+
+        @parametrize_cases("evals/cases")
+        def test_coder(case, my_agent):
+            ctx = my_agent.run(case)
+            assert_evals_pass(ctx, "evals/")
+    """
+    import pytest  # type: ignore
+
+    return pytest.mark.parametrize(argname, pytest_param_cases(load_cases(path)))
+
+
 # ── Discovery ────────────────────────────────────────────────────
+
+
+@functools.cache
+def _discover_cached(path: str) -> tuple[Callable, ...]:
+    return tuple(eval_discover(path))
+
+
+def assert_evals_pass(
+    ctx: "EvalContext",
+    evals: "str | Path | list[Callable]",
+    *,
+    judge_llm: "LLMBackend | None" = None,
+    include: list[str] | None = None,
+    exclude: list[str] | None = None,
+) -> None:
+    """Run ``evals`` against ``ctx`` and assert nothing failed.
+
+    Convenience wrapper that collapses the standard
+    ``run → filter failed → assert with pretty failures`` idiom into
+    one call. ``evals`` may be a list of evaluators or a path that's
+    forwarded to :func:`eval_discover` (the discovery is cached, so
+    calling this in a parametrized test does not re-import on every
+    case).
+
+    Raises :class:`AssertionError` listing each failed eval's
+    :meth:`EvalResult.pretty` block on its own line.
+    """
+    if isinstance(evals, (str, Path)):
+        evaluators: list[Callable] = list(_discover_cached(str(Path(evals))))
+    else:
+        evaluators = list(evals)
+    results = eval_run(evaluators, ctx, judge_llm=judge_llm, include=include, exclude=exclude)
+    failed = [r for r in results if not r.passed]
+    assert not failed, "\n".join(r.pretty() for r in failed)
 
 
 def eval_discover(
@@ -491,12 +760,21 @@ class EvalHook:
         hook = EvalHook(
             evaluators=[my_eval_fn, my_other_eval],
             judge_llm=my_judge_model,  # optional
+            collectors=[gather_test_results, gather_diff],  # outcome data
             verbose=True,              # print scores live
         )
         for step in composable_loop(..., hooks=[hook]):
             ...
         print(hook.summary())
         hook.save("evals/run_1.json")
+
+    Collectors are callables ``(state) -> dict[str, Any]`` that run
+    once at end-of-loop and merge their return values into
+    :attr:`EvalContext.artifacts`. Use them to grade outcomes (tests
+    passing, files modified, repo state) instead of grepping the
+    trajectory. A collector that raises or returns a non-dict is
+    silently skipped — collectors are observers and must never break
+    a run.
     """
 
     def __init__(
@@ -504,18 +782,26 @@ class EvalHook:
         evaluators: list[Callable],
         *,
         judge_llm: LLMBackend | None = None,
+        collectors: list[Callable[[Any], dict[str, Any]]] | None = None,
         verbose: bool = False,
     ) -> None:
         self.evaluators = evaluators
         self.judge_llm = judge_llm
+        self.collectors = list(collectors) if collectors else []
         self.verbose = verbose
         self._results: list[EvalResult] = []
         self._task: dict[str, Any] = {}
+        self._artifacts: dict[str, Any] = {}
 
     @property
     def results(self) -> list[EvalResult]:
         """Eval results from the most recent run."""
         return list(self._results)
+
+    @property
+    def artifacts(self) -> dict[str, Any]:
+        """Outcome data gathered by collectors during the most recent run."""
+        return dict(self._artifacts)
 
     def summary(self) -> str:
         """One-line summary of eval results."""
@@ -533,11 +819,13 @@ class EvalHook:
         """Save eval results to a JSON file."""
         p = Path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
-        data = {
+        data: dict[str, Any] = {
             "task": self._task,
             "results": [r.to_dict() for r in self._results],
             "summary": _format_summary(self._results),
         }
+        if self._artifacts:
+            data["artifacts"] = self._artifacts
         p.write_text(json.dumps(data, indent=2, default=str))
 
     # ── LoopHook interface ─────────────────────────────────────
@@ -576,11 +864,36 @@ class EvalHook:
             except Exception:  # noqa: BLE001
                 pass
 
+        # Run collectors to populate outcome artifacts. A collector
+        # that raises or returns a non-dict is skipped — collectors
+        # observe, they must never break a run.
+        artifacts: dict[str, Any] = {}
+        for collector in self.collectors:
+            try:
+                produced = collector(state)
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "Eval collector %s raised; skipping",
+                    getattr(collector, "__name__", repr(collector)),
+                    exc_info=True,
+                )
+                continue
+            if isinstance(produced, dict):
+                artifacts.update(produced)
+            else:
+                logger.warning(
+                    "Eval collector %s returned %s; expected dict — ignored",
+                    getattr(collector, "__name__", repr(collector)),
+                    type(produced).__name__,
+                )
+        self._artifacts = artifacts
+
         ctx = EvalContext(
             steps=list(steps),
             task=self._task,
             final_output=final_output,
             session_log_text=log_text,
+            artifacts=artifacts,
             stop_reason=getattr(state, "_stop_reason", None),
         )
 
@@ -740,12 +1053,21 @@ def eval_cli(args: list[str] | None = None) -> int:
         looplet eval traces/                          # score all runs
         looplet eval traces/ --evals eval_agent.py    # specific eval file
         looplet eval traces/ --threshold 0.7          # fail if avg < 0.7
-        looplet eval traces/ --include accuracy      # only accuracy evals
-        looplet eval traces/ --exclude slow            # skip slow evals
+        looplet eval traces/ --include accuracy       # only accuracy evals
+        looplet eval traces/ --exclude slow           # skip slow evals
+
+        looplet eval cases ls evals/cases/            # list cases
+        looplet eval cases show evals/cases/foo.json  # full case dump
 
     Returns 0 if all evals pass threshold, 1 otherwise.
     """
     import argparse
+
+    # Lightweight subcommand dispatch — keep the existing flat surface
+    # working when the first arg isn't a recognized subcommand.
+    raw = list(args) if args is not None else sys.argv[1:]
+    if raw and raw[0] == "cases":
+        return _cases_cli(raw[1:])
 
     parser = argparse.ArgumentParser(
         prog="looplet eval",
@@ -842,3 +1164,69 @@ def eval_cli(args: list[str] | None = None) -> int:
             print(f"  threshold: {parsed.threshold:.2f}  → {status}")
 
     return 1 if below_threshold else 0
+
+
+def _cases_cli(args: list[str]) -> int:
+    """``looplet eval cases ls|show <path>`` — read-only case browser."""
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="looplet eval cases",
+        description="List or show eval cases.",
+    )
+    sub = parser.add_subparsers(dest="action", required=True)
+    p_ls = sub.add_parser("ls", help="List cases (one line per case).")
+    p_ls.add_argument("path", help="Case file or directory.")
+    p_show = sub.add_parser("show", help="Show a case in full.")
+    p_show.add_argument("path", help="Case file or directory.")
+    p_show.add_argument(
+        "case_id",
+        nargs="?",
+        default=None,
+        help="Case id to show (required when path is a directory of multiple cases).",
+    )
+
+    parsed = parser.parse_args(args)
+
+    try:
+        cases = load_cases(parsed.path)
+    except FileNotFoundError as e:
+        print(str(e))
+        return 1
+    except ValueError as e:
+        print(f"  error: {e}")
+        return 1
+
+    if not cases:
+        print(f"No cases found in {parsed.path}")
+        return 1
+
+    if parsed.action == "ls":
+        import textwrap
+
+        for c in cases:
+            marks = ",".join(c.marks) or "-"
+            desc = textwrap.shorten(
+                (c.task.get("description") or c.notes or "").replace("\n", " "),
+                width=60,
+                placeholder="...",
+            )
+            print(f"  {c.id:30s} [{marks:20s}] {desc}")
+        print(f"\n  {len(cases)} case(s)")
+        return 0
+
+    # show
+    by_id = {c.id: c for c in cases}
+    if parsed.case_id is not None:
+        selected = by_id.get(parsed.case_id)
+        if selected is None:
+            print(f"  no case with id {parsed.case_id!r} (have: {', '.join(by_id)})")
+            return 1
+    elif len(cases) == 1:
+        selected = cases[0]
+    else:
+        print(f"  multiple cases found ({len(cases)}); pass a case_id")
+        return 1
+
+    print(json.dumps(selected.to_dict(), indent=2, sort_keys=True))
+    return 0

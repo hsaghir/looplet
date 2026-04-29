@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import sys
@@ -10,7 +11,13 @@ from unittest.mock import patch
 
 import pytest
 
-from looplet import SkillRuntime, load_skill_bundle, run_skill_bundle, validate_skill_bundle
+from looplet import (
+    SkillRuntime,
+    discover_skill_bundles,
+    load_skill_bundle,
+    run_skill_bundle,
+    validate_skill_bundle,
+)
 from looplet.__main__ import main as cli_main
 from looplet.bundles import _entrypoint_import_roots
 from looplet.presets import AgentPreset
@@ -23,7 +30,7 @@ CODER_BUNDLE = Path(__file__).resolve().parents[1] / "examples" / "coder" / "ski
 
 class TestSkillBundles:
     def test_imports_from_top_level(self):
-        from looplet import BundleValidation, SkillBundle  # noqa: F401
+        from looplet import BundleCard, BundleValidation, SkillBundle  # noqa: F401
 
     def test_loads_coder_bundle_card(self):
         bundle = load_skill_bundle(CODER_BUNDLE)
@@ -31,6 +38,91 @@ class TestSkillBundles:
         assert bundle.skill.name == "coder"
         assert bundle.card.name == "coder"
         assert "coding" in bundle.card.tags
+
+    def test_discovers_runnable_bundle_cards_without_importing_entrypoints(self, tmp_path):
+        root = tmp_path / "skills"
+        runnable = root / "runnable"
+        runnable.mkdir(parents=True)
+        (runnable / "SKILL.md").write_text(
+            "---\n"
+            "name: runnable\n"
+            "description: Runnable bundle.\n"
+            "tags: [demo]\n"
+            "entrypoint: looplet.py\n"
+            "---\n"
+            "# Runnable\n",
+            encoding="utf-8",
+        )
+        (runnable / "looplet.py").write_text(
+            "raise RuntimeError('discovery must not import this file')\n",
+            encoding="utf-8",
+        )
+        instruction_only = root / "instruction-only"
+        instruction_only.mkdir()
+        (instruction_only / "SKILL.md").write_text(
+            "---\nname: docs\ndescription: Instruction-only skill.\n---\n# Docs\n",
+            encoding="utf-8",
+        )
+
+        cards = discover_skill_bundles(root)
+
+        assert [card.name for card in cards] == ["runnable"]
+        assert cards[0].path == str(runnable.resolve())
+        assert cards[0].entrypoint == "looplet.py"
+        assert cards[0].tags == ["demo"]
+        assert cards[0].ok
+        assert cards[0].errors == []
+
+    def test_discovery_can_report_invalid_bundle_cards(self, tmp_path):
+        root = tmp_path / "skills"
+        broken = root / "broken"
+        broken.mkdir(parents=True)
+        (broken / "SKILL.md").write_text(
+            "---\n"
+            "name: broken\n"
+            "description: Broken bundle.\n"
+            "entrypoint: missing.py\n"
+            "---\n"
+            "# Broken\n",
+            encoding="utf-8",
+        )
+
+        assert discover_skill_bundles(root) == []
+        cards = discover_skill_bundles(root, include_invalid=True)
+
+        assert [card.name for card in cards] == ["broken"]
+        assert not cards[0].ok
+        assert "entrypoint not found: missing.py" in cards[0].errors
+
+    def test_cli_lists_discovered_bundles_as_json(self, tmp_path, capsys):
+        bundle_root = tmp_path / "skills" / "demo"
+        bundle_root.mkdir(parents=True)
+        (bundle_root / "SKILL.md").write_text(
+            "---\nname: demo\ndescription: Demo bundle.\nentrypoint: looplet.py\n---\n# Demo\n",
+            encoding="utf-8",
+        )
+        (bundle_root / "looplet.py").write_text("# entrypoint\n", encoding="utf-8")
+
+        rc = cli_main(["list-bundles", str(tmp_path / "skills"), "--json"])
+
+        assert rc == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload == [
+            {
+                "name": "demo",
+                "description": "Demo bundle.",
+                "path": str(bundle_root.resolve()),
+                "entrypoint": "looplet.py",
+                "tags": [],
+                "metadata": {
+                    "name": "demo",
+                    "description": "Demo bundle.",
+                    "entrypoint": "looplet.py",
+                },
+                "ok": True,
+                "errors": [],
+            }
+        ]
 
     def test_bundle_entrypoint_can_import_project_local_helpers_from_external_cwd(
         self,

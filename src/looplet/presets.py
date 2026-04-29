@@ -10,14 +10,7 @@ Usage::
     from looplet.presets import coding_agent_preset
 
     preset = coding_agent_preset(workspace="/tmp/my-project")
-    for step in composable_loop(
-        llm=my_llm,
-        tools=preset.tools,
-        state=preset.state,
-        config=preset.config,
-        hooks=preset.hooks,
-        task={"description": "Implement fizzbuzz with tests"},
-    ):
+    for step in preset.run(my_llm, task={"description": "Implement fizzbuzz with tests"}):
         print(step.pretty())
 
 Presets are opinionated defaults.  Override any field after creation::
@@ -62,6 +55,12 @@ class AgentPreset:
 
     Contains everything needed for ``composable_loop``.  All fields are
     mutable — override any after construction for customization.
+
+    For the common case, call :meth:`run` to drive the loop directly::
+
+        preset = coding_agent_preset(workspace="/tmp")
+        for step in preset.run(my_llm, task={"description": "..."}):
+            print(step.pretty())
     """
 
     config: LoopConfig
@@ -75,6 +74,42 @@ class AgentPreset:
 
     state: DefaultState
     """Agent state with budget tracking."""
+
+    def run(
+        self,
+        llm: Any,
+        *,
+        task: Any = None,
+        context: Any = None,
+        session_log: Any = None,
+        conversation: Any = None,
+        stream: Any = None,
+    ) -> Any:
+        """Drive ``composable_loop`` with this preset's wiring.
+
+        Equivalent to::
+
+            composable_loop(
+                llm=llm, tools=self.tools, state=self.state,
+                config=self.config, hooks=self.hooks, task=task,
+            )
+
+        Returns the loop generator — iterate to drive the agent.
+        """
+        from looplet.loop import composable_loop  # noqa: PLC0415
+
+        return composable_loop(
+            llm=llm,
+            tools=self.tools,
+            state=self.state,
+            config=self.config,
+            hooks=self.hooks,
+            task=task,
+            context=context,
+            session_log=session_log,
+            conversation=conversation,
+            stream=stream,
+        )
 
 
 # ── Tool implementations ─────────────────────────────────────────

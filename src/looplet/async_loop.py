@@ -242,6 +242,9 @@ async def async_composable_loop(
     session_log: SessionLog | None = None,
     stream: Any | None = None,
     conversation: Any | None = None,
+    *,
+    max_steps: int | None = None,
+    system_prompt: str | None = None,
 ) -> AsyncGenerator[Step, None]:
     """Async version of :func:`looplet.loop.composable_loop`.
 
@@ -252,6 +255,12 @@ async def async_composable_loop(
 
         async for step in async_composable_loop(llm=llm, tools=tools, ...):
             print(step.pretty())
+
+    The ``max_steps`` and ``system_prompt`` keyword shorthands mirror
+    :func:`looplet.loop.composable_loop` — when set they override the
+    matching fields on ``config`` (a fresh ``LoopConfig`` is created
+    if none is passed) so simple async agents don't need to construct
+    a config explicitly.
     """
     # ── Defaults ────────────────────────────────────────────────
     if task is None:
@@ -260,6 +269,10 @@ async def async_composable_loop(
         raise ValueError("tools is required")
     if config is None:
         config = LoopConfig()
+    if max_steps is not None:
+        config.max_steps = max_steps
+    if system_prompt is not None:
+        config.system_prompt = system_prompt
     if hooks is None:
         hooks = []
 

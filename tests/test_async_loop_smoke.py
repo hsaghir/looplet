@@ -80,6 +80,32 @@ class TestAsyncComposableLoop:
         assert steps[1].tool_call.tool == "done"
         assert mock.calls == 2
 
+    async def test_max_steps_and_system_prompt_shorthand(self):
+        """Regression: ``async_composable_loop`` accepts the same
+        ``max_steps`` / ``system_prompt`` keyword shorthands as
+        ``composable_loop`` so callers don't need to construct a
+        ``LoopConfig`` for one-liner agents."""
+        mock = AsyncMockLLMBackend(
+            responses=[
+                '{"tool": "done", "args": {"summary": "ok"}, "reasoning": "r"}',
+            ]
+        )
+        tools = BaseToolRegistry()
+        register_done_tool(tools)
+
+        steps = []
+        async for step in async_composable_loop(
+            llm=mock,
+            tools=tools,
+            task={"goal": "x"},
+            max_steps=3,
+            system_prompt="be brief",
+        ):
+            steps.append(step)
+
+        assert len(steps) == 1
+        assert steps[0].tool_call.tool == "done"
+
     async def test_ctx_available_in_async_loop(self):
         """Tools should receive ctx with llm in async loop."""
         received_ctx = []

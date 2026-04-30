@@ -148,6 +148,11 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   'tool_call'`. The cache now keys on `id(method.__func__)` (the
   stable underlying function) with a fallback to `id(method)` for
   callables that lack `__func__`.
+- **`async_composable_loop` now accepts `max_steps=` and
+  `system_prompt=` shorthands.** The sync `composable_loop` got
+  these convenience kwargs but the async version was missed —
+  callers had to construct a `LoopConfig` even for one-liner async
+  agents. The signatures now match.
 
 ## [0.1.8] - 2026-04-24
 

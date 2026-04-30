@@ -665,6 +665,27 @@ class TrajectoryRecorder:
         if self._tracer is not None and self._loop_span is not None:
             self._tracer.end_span(self._loop_span)
             self.trajectory.spans = list(self._tracer.root_spans)
+        # Refresh tool_call/tool_result ``metadata`` on already-captured
+        # StepRecords from the live ``state.steps`` objects. Hooks that
+        # run *after* TrajectoryRecorder in the post_dispatch chain can
+        # mutate ``tool_call.metadata`` / ``tool_result.metadata`` (which
+        # the docstrings advertise as the documented annotation point);
+        # without this sweep, those mutations are silently lost when the
+        # recorder snapshotted via ``to_dict()`` before the tagger ran.
+        if state is not None and hasattr(state, "steps"):
+            live_by_num = {getattr(s, "number", None): s for s in state.steps}
+            for sr in self.trajectory.steps:
+                live = live_by_num.get(sr.step_num)
+                if live is None:
+                    continue
+                live_tc = getattr(live, "tool_call", None)
+                live_tr = getattr(live, "tool_result", None)
+                live_tc_meta = getattr(live_tc, "metadata", None) if live_tc is not None else None
+                live_tr_meta = getattr(live_tr, "metadata", None) if live_tr is not None else None
+                if live_tc_meta:
+                    sr.tool_call["metadata"] = dict(live_tc_meta)
+                if live_tr_meta:
+                    sr.tool_result["metadata"] = dict(live_tr_meta)
         # Sweep ``state.steps`` for any Step that was yielded but not
         # routed through ``post_dispatch`` — notably the ``done`` step,
         # which the loop handles on its own termination path.

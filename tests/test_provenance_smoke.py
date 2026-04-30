@@ -193,6 +193,34 @@ class TestTrajectoryRecorderSmoke:
         assert doc["step_count"] == 1
         assert doc["termination_reason"] == "done"
 
+    def test_metadata_set_after_post_dispatch_lands_in_trajectory(self):
+        """Regression: hooks downstream of TrajectoryRecorder may mutate
+        ``tool_call.metadata`` / ``tool_result.metadata`` in their own
+        ``post_dispatch``. The recorder must reflect those final values
+        even when it ran first in the chain."""
+        hook = TrajectoryRecorder()
+
+        class DummyState:
+            def __init__(self):
+                self.steps: list[Step] = []
+
+        state = DummyState()
+        hook.pre_loop(state, None, None)
+        hook.pre_prompt(state, None, None, step_num=1)
+        step = self._make_step(1, tool="search", data=[1])
+        state.steps.append(step)
+        # Recorder snapshots first (metadata empty at this point)
+        hook.post_dispatch(state, None, step.tool_call, step.tool_result, step_num=1)
+        # Downstream hook tags the same Step's metadata after recorder
+        step.tool_call.metadata["audit_tag"] = "ok"
+        step.tool_result.metadata["scrubbed"] = True
+        # Loop ends — recorder should refresh metadata from live state.steps
+        hook.on_loop_end(state, None, None, None)
+
+        sr = hook.trajectory.steps[0]
+        assert sr.tool_call.get("metadata") == {"audit_tag": "ok"}
+        assert sr.tool_result.get("metadata") == {"scrubbed": True}
+
 
 class TestProvenanceSinkSmoke:
     def test_wrap_llm_and_flush(self, tmp_path: Path):

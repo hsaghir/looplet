@@ -454,3 +454,71 @@ def test_hello_workspace_loads_and_runs_end_to_end() -> None:
     # Shared log captured both greetings — proves @ref + setup.py wired
     # the SAME GreetingLog instance into the tool and the hook.
     assert hook.log.names() == ["Alice", "Bob"]
+
+
+# ── examples/coder.workspace end-to-end (real-world v2 cartridge) ──
+
+
+def test_coder_workspace_loads_with_shared_filecache() -> None:
+    """examples/coder.workspace migrates the v1 coder cartridge to the
+    v2 layout. Validates that:
+      * 5 built-in + custom hooks load with strict=True
+      * 9 tools (bash/list_dir/read/write/edit/glob/grep/think/done) load
+      * FileCacheHook and StaleFileHook share the SAME FileCache instance
+        via @file_cache (proves the shared-resource registry under load)
+      * setup.py wires WORKSPACE_CONFIG + FILE_CACHE module globals into
+        every tool that needs them
+    """
+    import json as _json
+    from pathlib import Path as _P
+
+    from looplet import composable_loop
+    from looplet.testing import MockLLMBackend
+
+    workspace_dir = _P(__file__).resolve().parents[1] / "examples" / "coder.workspace"
+    preset = workspace_to_preset(workspace_dir, strict=True)
+
+    hook_names = [type(h).__name__ for h in preset.hooks]
+    assert hook_names == [
+        "TestGuardHook",
+        "FileCacheHook",
+        "StaleFileHook",
+        "StagnationHook",
+        "ThresholdCompactHook",
+    ]
+    assert sorted(preset.tools._tools.keys()) == [
+        "bash",
+        "done",
+        "edit_file",
+        "glob",
+        "grep",
+        "list_dir",
+        "read_file",
+        "think",
+        "write_file",
+    ]
+
+    # The shared-state proof: FileCacheHook and StaleFileHook reference
+    # the SAME cache object via @file_cache, NOT two independent copies.
+    fc_hook = next(h for h in preset.hooks if type(h).__name__ == "FileCacheHook")
+    sf_hook = next(h for h in preset.hooks if type(h).__name__ == "StaleFileHook")
+    assert fc_hook._cache is sf_hook._cache
+
+    # End-to-end smoke: think → done with the real loop.
+    llm = MockLLMBackend(
+        responses=[
+            _json.dumps({"thought": "plan", "tool": "think", "args": {"thought": "smoke"}}),
+            _json.dumps({"thought": "finish", "tool": "done", "args": {"summary": "ok"}}),
+        ]
+    )
+    steps = list(
+        composable_loop(
+            llm=llm,
+            tools=preset.tools,
+            state=preset.state,
+            config=preset.config,
+            hooks=preset.hooks,
+            task={"q": "smoke"},
+        )
+    )
+    assert [s.tool_call.tool for s in steps] == ["think", "done"]

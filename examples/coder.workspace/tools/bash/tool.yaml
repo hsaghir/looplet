@@ -1,0 +1,7 @@
+name: bash
+description: Execute a bash command in the project directory.
+parameters:
+  command:
+    type: string
+    description: Shell command to execute (e.g. "pytest -xvs", "ls -la", "git status").
+timeout_s: 600

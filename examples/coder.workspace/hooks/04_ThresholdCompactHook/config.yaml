@@ -1,0 +1,8 @@
+class_name: ThresholdCompactHook
+kwargs:
+  budget:
+    context_window: 128000
+    warning_at: 80000
+    error_at: 100000
+    compact_buffer: 13000
+  fire_tier: warning

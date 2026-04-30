@@ -83,6 +83,16 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   the project's pytest suite after the loop and surfaces
   `tests_passing` via `ctx.artifacts`.
 
+### Fixed
+- **`EvalContext.from_trajectory_dir` now preserves `trajectory.metadata`.**
+  Previously only four well-known top-level fields (`run_id`,
+  `started_at`, `ended_at`, `termination_reason`) were copied into
+  `EvalContext.metadata`, silently dropping `harness_snapshot`
+  (added by PR #22's `TrajectoryRecorder(harness_snapshot=…)` kwarg)
+  and any user-attached metadata. The full `trajectory.metadata`
+  dict is now overlaid first, with the four top-level fields
+  applied on top.
+
 ## [0.1.8] - 2026-04-24
 
 ### Added

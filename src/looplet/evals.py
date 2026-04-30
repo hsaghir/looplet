@@ -183,12 +183,22 @@ class EvalContext:
         task = data.get("task", {})
         if not isinstance(task, dict):
             task = {"description": str(task)} if task else {}
-        metadata = {
-            "run_id": data.get("run_id"),
-            "started_at": data.get("started_at"),
-            "ended_at": data.get("ended_at"),
-            "termination_reason": data.get("termination_reason"),
-        }
+        # Pull through the trajectory's own metadata dict (which may
+        # contain harness_snapshot from TrajectoryRecorder, plus any
+        # user-attached fields) and overlay the well-known top-level
+        # fields so they are always available at the documented keys.
+        traj_metadata = data.get("metadata") or {}
+        if not isinstance(traj_metadata, dict):
+            traj_metadata = {}
+        metadata: dict[str, Any] = dict(traj_metadata)
+        metadata.update(
+            {
+                "run_id": data.get("run_id"),
+                "started_at": data.get("started_at"),
+                "ended_at": data.get("ended_at"),
+                "termination_reason": data.get("termination_reason"),
+            }
+        )
 
         # Extract final_output from the last done() step
         final_output: dict[str, Any] = {}

@@ -230,6 +230,10 @@ def on_event(event):
 hook = StreamingHook(CallbackEmitter(on_event))
 ```
 
+Event-style hooks can also observe `LifecycleEvent.DONE_ACCEPTED` to
+record the accepted `done()` payload after `check_done` has passed, e.g.
+`if payload.event == LifecycleEvent.DONE_ACCEPTED: audit(payload.tool_call, payload.tool_result)`.
+
 ### ProvenanceSink
 
 Captures prompts, responses, and trajectory files for later replay and

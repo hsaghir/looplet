@@ -1072,6 +1072,14 @@ def eval_cli(args: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="looplet eval",
         description="Run evals against saved agent trajectories.",
+        epilog=(
+            "subcommands:\n"
+            "  cases ls <path>          list eval cases (one line per case)\n"
+            "  cases show <path>        show a single case in full\n"
+            "\n"
+            "Run `looplet eval cases -h` for case-browser flags."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("traces", help="Directory containing trajectory dirs")
     parser.add_argument(

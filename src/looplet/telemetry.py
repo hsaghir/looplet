@@ -333,9 +333,11 @@ class MetricsCollector:
 class MetricsHook:
     """LoopHook that updates a MetricsCollector after each step.
 
-    Only ``post_dispatch`` is active — all other methods are no-ops.
-    The classification defaults to 'productive' (callers can subclass
-    or wrap to apply richer classification logic).
+    ``post_dispatch`` records per-tool-call metrics; ``on_event``
+    increments ``total_llm_calls`` on every ``POST_LLM_RESPONSE``
+    event so the collector's LLM-call counter is populated by
+    default. The classification defaults to 'productive' (callers
+    can subclass or wrap to apply richer classification logic).
     """
 
     def __init__(
@@ -420,3 +422,17 @@ class MetricsHook:
         llm: Any,
     ) -> int:
         return 0
+
+    def on_event(self, payload: Any) -> None:
+        """Increment ``total_llm_calls`` on every ``POST_LLM_RESPONSE``.
+
+        Lifecycle events route here regardless of whether the per-method
+        hooks are implemented, so this is the right place to count LLM
+        calls without depending on a backend wrapper.
+        """
+        from looplet.events import LifecycleEvent  # noqa: PLC0415
+
+        event = getattr(payload, "event", None)
+        if event is LifecycleEvent.POST_LLM_RESPONSE:
+            self._collector.total_llm_calls += 1
+        return None

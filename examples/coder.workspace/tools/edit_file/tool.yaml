@@ -1,0 +1,12 @@
+name: edit_file
+description: Edit a file by replacing an exact string. Always read_file first.
+parameters:
+  file_path:
+    type: string
+    description: Path to edit (relative to project root).
+  old_string:
+    type: string
+    description: Exact text to replace (must match uniquely).
+  new_string:
+    type: string
+    description: Replacement text.

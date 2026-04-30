@@ -1,0 +1,6 @@
+name: done
+description: Signal that the coding task is complete. Provide a brief summary.
+parameters:
+  summary:
+    type: string
+    description: One-line summary of what was accomplished.

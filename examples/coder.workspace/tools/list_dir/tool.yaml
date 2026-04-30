@@ -1,0 +1,12 @@
+name: list_dir
+description: List directory contents as a tree. Use at the start to understand project structure.
+parameters:
+  path:
+    type: string
+    description: Path relative to the project root.
+    default: "."
+  depth:
+    type: integer
+    description: Tree depth.
+    default: 2
+concurrent_safe: true

@@ -85,24 +85,32 @@ Hooks are plain classes. Implement only the methods you want — the loop
 checks with `hasattr` before calling.
 
 ```python
-class BudgetCap:
-    def __init__(self, tokens: int) -> None:
-        self.cap, self.total = tokens, 0
+from looplet import HookDecision
+
+class StepBudget:
+    """Cap the loop at N productive steps; block ``done()`` until
+    we've gathered enough evidence."""
+
+    def __init__(self, max_productive: int) -> None:
+        self.cap = max_productive
+        self.productive = 0
 
     def post_dispatch(self, state, session_log, tool_call, tool_result, step_num):
-        usage = getattr(state.steps[-1], "usage", None)
-        if usage is not None:
-            self.total = getattr(usage, "total_tokens", self.total)
+        if not tool_result.error and tool_call.tool != "done":
+            self.productive += 1
 
     def should_stop(self, state, step_num, new_entities):
-        if self.total >= self.cap:
-            from looplet import HookDecision
-            return HookDecision(stop="budget_exceeded")
+        if self.productive >= self.cap:
+            return HookDecision(stop="step_budget_exceeded")
         return False
 
 # ... then in composable_loop(...):
-hooks=[BudgetCap(tokens=10_000)]
+hooks=[StepBudget(max_productive=8)]
 ```
+
+For real token-cost tracking, wire a [`BackendRouter`](recipes.md)
+(it owns the token counters) and read `router.total_input_tokens`
+/ `router.total_output_tokens` between steps.
 
 See [Hooks](hooks.md) for the full protocol and a dozen recipes.
 

@@ -24,6 +24,12 @@ from looplet.blueprints import (
 ROOT = Path(__file__).resolve().parents[1]
 CODER_BUNDLE = ROOT / "examples" / "coder" / "skill"
 
+# Cartridge tests load real bundles, exec spec-loaded modules, and run
+# full blueprint comparisons. Under coverage instrumentation in CI the
+# combined import + exec + compare pass repeatedly busts the default
+# 30s timeout. Bump the per-test budget for the whole module.
+pytestmark = pytest.mark.timeout(120)
+
 
 def _import_python_file(path: Path):
     spec = importlib.util.spec_from_file_location(path.stem, path)

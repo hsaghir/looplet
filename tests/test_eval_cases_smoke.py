@@ -105,6 +105,25 @@ class TestLoadCases:
         loaded = load_cases(out)
         assert loaded[0] == c
 
+    def test_save_case_trailing_slash_treated_as_dir(self, tmp_path: Path) -> None:
+        """Regression: when ``path`` is a string ending in a path
+        separator (the obvious "I want a directory" convention shown
+        in docs/evals.md), ``save_case`` must create the directory
+        and write ``<dir>/<id>.json`` — even if the directory does
+        not yet exist. Previously the trailing-slash path was treated
+        as a file because ``Path.exists()`` was False, so the case
+        landed at e.g. ``evals/cases`` (a file named "cases" with
+        no extension)."""
+        c = EvalCase(id="foo_bar", task={})
+        target = tmp_path / "evals" / "cases" / ""  # ends with separator
+        # Use the raw string form so the trailing slash survives.
+        out = save_case(c, str(tmp_path / "evals" / "cases") + "/")
+        assert out.is_file()
+        assert out.name == "foo_bar.json"
+        assert out.parent.is_dir()
+        loaded = load_cases(out)
+        assert loaded[0] == c
+
 
 class TestPytestParamCases:
     @pytest.mark.filterwarnings("ignore::pytest.PytestUnknownMarkWarning")

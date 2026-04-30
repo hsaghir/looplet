@@ -161,6 +161,14 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   The helper now also returns True when the function declares a
   `VAR_KEYWORD` parameter, so `top_p`, `response_format`,
   `chat_template_kwargs`, etc. propagate as documented.
+- **`save_case(case, "evals/cases/")` no longer creates a file
+  literally named `cases`.** The "treat as directory" branch only
+  fired when the path already existed, so a non-existent
+  trailing-slash path (the obvious "I want a directory" convention
+  shown in `docs/evals.md`) wrote the case content into a single
+  file at the path. The helper now also treats trailing path
+  separators as directory intent and creates the parent directories
+  before writing `<dir>/<case.id>.json`.
 
 ## [0.1.8] - 2026-04-24
 

@@ -16,6 +16,7 @@ from looplet.evals import (
     parametrize_cases,
     pytest_param_cases,
     save_case,
+    save_cases,
 )
 
 
@@ -123,6 +124,23 @@ class TestLoadCases:
         assert out.parent.is_dir()
         loaded = load_cases(out)
         assert loaded[0] == c
+
+    def test_save_cases_round_trips_via_load_cases(self, tmp_path: Path) -> None:
+        cases = [
+            EvalCase(id="alpha", task={"q": "1"}, marks=["smoke"]),
+            EvalCase(id="beta", task={"q": "2"}, marks=["smoke", "slow"]),
+            EvalCase(id="gamma", task={"q": "3"}),
+        ]
+        target = tmp_path / "evals" / "cases"
+        paths = save_cases(cases, target)
+        assert [p.name for p in paths] == ["alpha.json", "beta.json", "gamma.json"]
+        loaded = load_cases(target)
+        assert sorted(c.id for c in loaded) == ["alpha", "beta", "gamma"]
+
+    def test_save_cases_rejects_duplicate_ids(self, tmp_path: Path) -> None:
+        cases = [EvalCase(id="dup"), EvalCase(id="dup")]
+        with pytest.raises(ValueError, match="duplicate case ids"):
+            save_cases(cases, tmp_path / "evals")
 
 
 class TestPytestParamCases:

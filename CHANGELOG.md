@@ -153,6 +153,14 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   these convenience kwargs but the async version was missed —
   callers had to construct a `LoopConfig` even for one-liner async
   agents. The signatures now match.
+- **`generate_kwargs` now reach backends declared as `**kwargs`.**
+  `_accepts_kwarg` only matched explicitly-named parameters in the
+  backend's `generate(...)` signature, so any backend written as
+  `def generate(self, prompt, **kw)` (a common permissive pattern)
+  silently dropped every entry of `LoopConfig.generate_kwargs`.
+  The helper now also returns True when the function declares a
+  `VAR_KEYWORD` parameter, so `top_p`, `response_format`,
+  `chat_template_kwargs`, etc. propagate as documented.
 
 ## [0.1.8] - 2026-04-24
 

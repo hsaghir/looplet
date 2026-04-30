@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from dataclasses import replace as _dc_replace
 from typing import TYPE_CHECKING, Any, Callable, Generator, Protocol, runtime_checkable
 
@@ -820,8 +820,56 @@ def emit_event(
             logger.exception("on_event hook raised; continuing")
             continue
         if isinstance(result, HookDecision):
+            from looplet.events import LifecycleEvent as _LE  # noqa: PLC0415
+
+            if event != _LE.HOOK_DECISION and not result.is_noop():
+                _emit_hook_decision_event(
+                    hooks,
+                    decision=result,
+                    hook_slot="on_event",
+                    hook_name=type(hook).__name__,
+                    step_num=payload.step_num,
+                    state=payload.state,
+                    session_log=payload.session_log,
+                    context=payload.context,
+                    extra={"originating_event": getattr(event, "value", str(event))},
+                )
             decisions.append(result)
     return decisions
+
+
+def _emit_hook_decision_event(
+    hooks: list[Any],
+    *,
+    decision: Any,
+    hook_slot: str,
+    hook_name: str,
+    step_num: int = 0,
+    state: Any = None,
+    session_log: Any = None,
+    context: Any = None,
+    extra: dict[str, Any] | None = None,
+) -> None:
+    """Emit a structured event for a non-noop HookDecision."""
+    if decision is None or decision.is_noop():
+        return
+
+    from looplet.events import LifecycleEvent as _LE  # noqa: PLC0415
+
+    event_extra = {"decision": asdict(decision)}
+    if extra:
+        event_extra.update(extra)
+    emit_event(
+        hooks,
+        _LE.HOOK_DECISION,
+        step_num=step_num,
+        state=state,
+        session_log=session_log,
+        context=context,
+        hook_slot=hook_slot,
+        hook_name=hook_name,
+        extra=event_extra,
+    )
 
 
 # ── Event → per-method deduplication map ────────────────────────
@@ -1019,6 +1067,16 @@ def _intercept_tool_calls(
                     result.intercepted[tc_idx] = cached
                     break
                 continue
+            _emit_hook_decision_event(
+                hooks,
+                decision=_decision,
+                hook_slot="pre_dispatch",
+                hook_name=type(hook).__name__,
+                step_num=cur_step,
+                state=state,
+                session_log=session_log,
+                context=context,
+            )
             if _decision.updated_args is not None:
                 tc.args = _decision.updated_args
             if _decision.permission == "deny":
@@ -1050,6 +1108,17 @@ def _intercept_tool_calls(
                 continue
             _raw = hook.check_permission(tc, state)
             _decision = normalize_hook_return(_raw, slot="check_permission")
+            if _decision is not None:
+                _emit_hook_decision_event(
+                    hooks,
+                    decision=_decision,
+                    hook_slot="check_permission",
+                    hook_name=type(hook).__name__,
+                    step_num=cur_step,
+                    state=state,
+                    session_log=session_log,
+                    context=context,
+                )
             allowed = _decision is None or _decision.permission != "deny"
             if not allowed:
                 _msg = (
@@ -1121,6 +1190,16 @@ def _run_post_dispatch_hooks(
         text = hook.post_dispatch(state, session_log, tool_call, tool_result, step_num)
         _decision = normalize_hook_return(text, slot="post_dispatch")
         if _decision is not None:
+            _emit_hook_decision_event(
+                hooks,
+                decision=_decision,
+                hook_slot="post_dispatch",
+                hook_name=type(hook).__name__,
+                step_num=step_num,
+                state=state,
+                session_log=session_log,
+                context=context,
+            )
             if _decision.updated_result is not None:
                 outcome.tool_result = _decision.updated_result
                 tool_result = outcome.tool_result
@@ -1487,6 +1566,17 @@ def composable_loop(
                 text = hook.pre_prompt(state, session_log, context, step_num)
                 # HookDecision-aware: accept both legacy str and decisions.
                 _decision = normalize_hook_return(text, slot="pre_prompt")
+                if _decision is not None:
+                    _emit_hook_decision_event(
+                        hooks,
+                        decision=_decision,
+                        hook_slot="pre_prompt",
+                        hook_name=type(hook).__name__,
+                        step_num=step_num,
+                        state=state,
+                        session_log=session_log,
+                        context=context,
+                    )
                 text = _decision.additional_context if _decision else None
                 if text:
                     if _briefing_budget:
@@ -1993,6 +2083,17 @@ def composable_loop(
                 if hasattr(hook, "check_done"):
                     w = _call_check_done(hook, state, session_log, context, step_num, tool_call)
                     _decision = normalize_hook_return(w, slot="check_done")
+                    if _decision is not None:
+                        _emit_hook_decision_event(
+                            hooks,
+                            decision=_decision,
+                            hook_slot="check_done",
+                            hook_name=type(hook).__name__,
+                            step_num=cur_step,
+                            state=state,
+                            session_log=session_log,
+                            context=context,
+                        )
                     if _decision is not None and _decision.is_block():
                         gate_warning = _decision.block or "blocked by hook"
                         break
@@ -2140,6 +2241,17 @@ def composable_loop(
             if hasattr(hook, "should_stop"):
                 _raw = hook.should_stop(state, step_num, len(all_step_entities))
                 _decision = normalize_hook_return(_raw, slot="should_stop")
+                if _decision is not None:
+                    _emit_hook_decision_event(
+                        hooks,
+                        decision=_decision,
+                        hook_slot="should_stop",
+                        hook_name=type(hook).__name__,
+                        step_num=step_num,
+                        state=state,
+                        session_log=session_log,
+                        context=context,
+                    )
                 _stopped = _decision.is_stop() if _decision else False
                 if _stopped:
                     logger.info("Hook %s requested stop at step %d", type(hook).__name__, step_num)

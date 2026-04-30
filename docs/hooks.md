@@ -246,6 +246,24 @@ def on_event(event):
 hook = StreamingHook(CallbackEmitter(on_event))
 ```
 
+### Hook decision events
+
+`LifecycleEvent.HOOK_DECISION` fires whenever a hook returns a non-noop
+`HookDecision`, including decisions returned from `on_event`. The payload
+sets `hook_slot` and `hook_name`, and stores the serialized decision at
+`payload.extra["decision"]`; `on_event` decisions also include the
+originating lifecycle event name.
+
+```python
+from looplet import LifecycleEvent
+
+
+class DecisionAudit:
+    def on_event(self, payload):
+        if payload.event == LifecycleEvent.HOOK_DECISION:
+            print(payload.hook_slot, payload.hook_name, payload.extra["decision"])
+```
+
 Event-style hooks can also observe `LifecycleEvent.DONE_ACCEPTED` to
 record the accepted `done()` payload after `check_done` has passed, e.g.
 `if payload.event == LifecycleEvent.DONE_ACCEPTED: audit(payload.tool_call, payload.tool_result)`.

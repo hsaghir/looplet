@@ -47,6 +47,9 @@ class LifecycleEvent(str, Enum):
     * :attr:`PRE_COMPACT` — before any conversation compaction runs.
     * :attr:`POST_COMPACT` — after compaction, with a count of
       messages removed / summary length.
+    * :attr:`HOOK_DECISION` — fires whenever a hook returns a
+      ``HookDecision`` that is not a no-op; payload carries slot,
+      hook_name, and the decision dict.
     * :attr:`DONE_ACCEPTED` — fires after ``check_done`` has accepted a
       ``done()`` call and the final payload is committed; payload
       includes ``tool_call`` (the done call) and ``tool_result`` (the
@@ -67,6 +70,7 @@ class LifecycleEvent(str, Enum):
     POST_TOOL_FAILURE = "post_tool_failure"
     PRE_COMPACT = "pre_compact"
     POST_COMPACT = "post_compact"
+    HOOK_DECISION = "hook_decision"
     DONE_ACCEPTED = "done_accepted"
     STOP = "stop"
     SUBAGENT_START = "subagent_start"
@@ -102,4 +106,6 @@ class EventPayload:
     messages_before: int | None = None
     messages_after: int | None = None
     subagent_id: str | None = None
+    hook_slot: str | None = None
+    hook_name: str | None = None
     extra: dict[str, Any] = field(default_factory=dict)

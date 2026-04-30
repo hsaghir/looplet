@@ -412,6 +412,7 @@ class TestLifecycleEventEnum:
             "post_tool_failure",
             "pre_compact",
             "post_compact",
+            "hook_decision",
             "done_accepted",
             "stop",
             "subagent_start",

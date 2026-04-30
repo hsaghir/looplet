@@ -1,0 +1,7 @@
+name: fetch_feed
+description: Fetch a specific threat feed by name (cisa_alerts, nvd_recent, osint_reports).
+parameters:
+  feed_name:
+    type: string
+    description: One of cisa_alerts, nvd_recent, osint_reports.
+concurrent_safe: true

@@ -1,0 +1,6 @@
+name: extract_iocs
+description: Extract IOCs from text and classify severity with the loop LLM.
+parameters:
+  text:
+    type: string
+    description: Raw text to scan for IOCs.

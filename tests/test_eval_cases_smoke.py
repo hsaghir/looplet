@@ -234,3 +234,14 @@ class TestAssertEvalsPass:
         eval_file.write_text("def eval_always_pass(ctx):\n    return True\n")
         # Should not raise — discovers and runs the single passing eval.
         assert_evals_pass(self._ctx(), tmp_path)
+
+
+class TestEvalCliHelp:
+    """Regression: `looplet eval --help` must mention the `cases` subcommand."""
+
+    def test_help_mentions_cases_subcommand(self, capsys: pytest.CaptureFixture[str]) -> None:
+        with pytest.raises(SystemExit):
+            eval_cli(["--help"])
+        out = capsys.readouterr().out
+        assert "cases ls" in out
+        assert "cases show" in out

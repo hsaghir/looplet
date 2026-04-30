@@ -39,6 +39,28 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   cloud path now works with just an API key (or env vars).
 - **`BaseToolRegistry.tool` decorator** registers a `ToolSpec` in one
   step, mirroring the module-level `@tool` decorator.
+- **`metadata` dict on `ToolCall` and `ToolResult`** (PR #24) for
+  carrying out-of-band tags through the loop without subclassing.
+  Round-trips through `to_dict()`.
+- **`metadata` dict on `StepRecord` and `LLMCall`** (PR #19) for
+  per-step / per-call annotations on saved trajectories.
+- **`LifecycleEvent.HOOK_DECISION`** (PR #20) fires whenever a hook
+  returns a non-noop `HookDecision`. Payload carries the slot,
+  hook name, and serialized decision — single observation point for
+  every gate, redaction, or short-circuit in the run.
+- **`LifecycleEvent.DONE_ACCEPTED`** (PR #21) fires after
+  `check_done` accepts the `done()` call and the final payload is
+  committed. Payload includes the `tool_call` and `tool_result` of
+  the accepted termination — observer-only, fired right before STOP.
+- **`serialize_harness(...)` + `TrajectoryRecorder(harness_snapshot=…)`**
+  (PR #22) record a stable JSON-friendly snapshot of the agent
+  config, tool list, hooks, and LLM backend on every saved
+  trajectory. Lands in `trajectory.metadata["harness_snapshot"]`.
+- **`tool_call` kwarg on `LoopHook.check_done`** (PR #23) so quality
+  gates can inspect the agent's pending answer before it terminates.
+  Backward-compatible: existing `check_done(self, state, log, ctx,
+  step_num)` signatures continue to work via `inspect.signature`
+  detection.
 
 ### Changed
 - **Coder example split into modules.** `examples/coder/agent.py` now
@@ -49,7 +71,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   re-exported for back-compat.
 - **`looplet eval` subcommand** now routes to `looplet.evals.eval_cli`
   with full `-h`/`--help` support; the top-level CLI no longer eats
-  option-like tokens before they reach the eval parser.
+  option-like tokens before they reach the eval parser. The eval
+  help text now also documents the `cases ls|show` subcommands.
 - **Coder hooks default to "steer, don't restrict".** `TestGuardHook`
   ships in observe-only mode (failures inject a briefing nudge but
   `done()` is never blocked); `StagnationHook` uses

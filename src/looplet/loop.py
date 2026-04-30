@@ -194,11 +194,19 @@ class LoopHook(Protocol):
         session_log: SessionLog,
         context: Any,
         step_num: int,
+        tool_call: "ToolCall | None" = None,
     ) -> str | None:
         """Called when the agent calls done().
 
         Returns a rejection message (string) to block premature stopping,
         or None to allow termination.
+
+        ``tool_call`` carries the candidate ``done()`` invocation (with
+        its proposed final-answer arguments) so quality gates can
+        inspect the agent's pending answer. The loop dispatches with or
+        without this kwarg based on the hook's signature, so existing
+        ``check_done(self, state, session_log, context, step_num)``
+        implementations continue to work unchanged.
         """
         ...
 
@@ -832,6 +840,51 @@ def _init_event_method_equiv() -> None:
 
 
 _init_event_method_equiv()
+
+
+# ── check_done dispatch (backward-compatible tool_call kwarg) ───
+
+_CHECK_DONE_ACCEPTS_TOOL_CALL: dict[int, bool] = {}
+"""Per-method cache mapping ``id(check_done)`` to whether the bound
+method accepts a ``tool_call`` keyword argument. Populated lazily.
+Cached by id so we never re-inspect the same method object twice."""
+
+
+def _accepts_tool_call_kwarg(method: Any) -> bool:
+    key = id(method)
+    cached = _CHECK_DONE_ACCEPTS_TOOL_CALL.get(key)
+    if cached is not None:
+        return cached
+    import inspect  # noqa: PLC0415
+
+    try:
+        sig = inspect.signature(method)
+    except (TypeError, ValueError):
+        accepts = False
+    else:
+        params = sig.parameters
+        accepts = "tool_call" in params or any(
+            p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+        )
+    _CHECK_DONE_ACCEPTS_TOOL_CALL[key] = accepts
+    return accepts
+
+
+def _call_check_done(
+    hook: Any,
+    state: Any,
+    session_log: Any,
+    context: Any,
+    step_num: int,
+    tool_call: Any,
+) -> Any:
+    """Invoke a hook's ``check_done`` with or without the ``tool_call``
+    kwarg depending on its signature. Lets new gates inspect the agent's
+    pending ``done()`` answer without breaking legacy hooks."""
+    method = hook.check_done
+    if _accepts_tool_call_kwarg(method):
+        return method(state, session_log, context, step_num, tool_call=tool_call)
+    return method(state, session_log, context, step_num)
 
 
 # ── Hook method names (for typo detection) ──────────────────────
@@ -1938,7 +1991,7 @@ def composable_loop(
             gate_warning: str | None = None
             for hook in hooks:
                 if hasattr(hook, "check_done"):
-                    w = hook.check_done(state, session_log, context, step_num)
+                    w = _call_check_done(hook, state, session_log, context, step_num, tool_call)
                     _decision = normalize_hook_return(w, slot="check_done")
                     if _decision is not None and _decision.is_block():
                         gate_warning = _decision.block or "blocked by hook"

@@ -42,7 +42,7 @@ all = ["anthropic>=0.34", "openai>=1.30"]
 Homepage = "https://github.com/hsaghir/looplet"
 Repository = "https://github.com/hsaghir/looplet"
 Issues = "https://github.com/hsaghir/looplet/issues"
-Changelog = "https://github.com/hsaghir/looplet/blob/main/CHANGELOG.md"
+Changelog = "https://github.com/hsaghir/looplet/blob/master/CHANGELOG.md"
 
 [project.scripts]
 looplet = "looplet.__main__:main"

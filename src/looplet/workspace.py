@@ -991,7 +991,7 @@ def workspace_to_preset(
         if "hook_modules" in sig_params:
             kwargs["hook_modules"] = hook_modules
         result = setup_fn(preset, resources, **kwargs)
-        if result is not None:
+        if isinstance(result, AgentPreset):
             preset = result
 
     return preset

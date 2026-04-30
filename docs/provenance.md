@@ -184,6 +184,24 @@ for step in composable_loop(llm=llm, tools=tools, state=state, hooks=[hook]):
 hook.save("traces/run_1/")     # writes trajectory.json + steps/*.json
 ```
 
+### Recording the harness snapshot
+
+Use `serialize_harness()` to record the harness genome that produced a
+trajectory without changing the trajectory schema:
+
+```python
+from looplet import serialize_harness
+from looplet.provenance import TrajectoryRecorder
+
+snapshot = serialize_harness(config=config, tools=tools, hooks=hooks, llm=llm)
+hook = TrajectoryRecorder(harness_snapshot=snapshot)
+
+for step in composable_loop(llm=llm, tools=tools, state=state, hooks=[hook]):
+    ...
+
+assert hook.trajectory.metadata["harness_snapshot"]["schema_version"] == 1
+```
+
 ### Linking steps to LLM calls
 
 Pair `TrajectoryRecorder` with `RecordingLLMBackend` and every

@@ -559,6 +559,7 @@ class TrajectoryRecorder:
         capture_context: bool = True,
         tracer: Tracer | None = None,
         output_dir: str | Path | None = None,
+        harness_snapshot: dict[str, Any] | None = None,
     ) -> None:
         self.trajectory = Trajectory(
             run_id=uuid4().hex[:12],
@@ -572,6 +573,7 @@ class TrajectoryRecorder:
         self._pending_llm_start: int = 0
         self._step_start_time: float = 0.0
         self._output_dir: Path | None = Path(output_dir) if output_dir is not None else None
+        self._harness_snapshot = dict(harness_snapshot) if harness_snapshot is not None else None
 
     # ── hook methods ────────────────────────────────────────────
 
@@ -656,6 +658,8 @@ class TrajectoryRecorder:
 
     def on_loop_end(self, state: Any, session_log: Any, context: Any, llm: Any) -> int:
         self.trajectory.ended_at = time.time()
+        if self._harness_snapshot is not None:
+            self.trajectory.metadata["harness_snapshot"] = dict(self._harness_snapshot)
         if self._recording_llm is not None:
             self.trajectory.llm_calls = list(self._recording_llm.calls)
         if self._tracer is not None and self._loop_span is not None:

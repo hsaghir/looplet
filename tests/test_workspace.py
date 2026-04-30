@@ -260,3 +260,50 @@ def test_layout_constants_match_written_paths(tmp_path: Path) -> None:
     }
     for relative in expected:
         assert (workspace.path / relative).exists(), f"missing {relative}"
+
+
+# ── coder-preset round-trip (real-world dogfood) ───────────────
+
+
+def test_coder_preset_round_trips_with_strict_load(tmp_path: Path) -> None:
+    """Regression: a real preset with built-in hooks (ThresholdCompactHook)
+    that need constructor args must round-trip under strict=True after
+    to_config() was added to the relevant hooks. Previously the loader
+    silently dropped any hook whose config.yaml lacked kwargs the
+    constructor needed."""
+    from looplet import coding_agent_preset
+
+    preset = coding_agent_preset(workspace=str(tmp_path / "ws"), max_steps=5)
+    out = tmp_path / "coder.workspace"
+    preset_to_workspace(preset, out, name="coder")
+
+    # strict=True must succeed end-to-end — every hook must reload.
+    reloaded = workspace_to_preset(out, strict=True)
+    original_hook_names = [type(h).__name__ for h in preset.hooks]
+    reloaded_hook_names = [type(h).__name__ for h in reloaded.hooks]
+    assert reloaded_hook_names == original_hook_names, (
+        f"hook list changed on round-trip: {original_hook_names} -> {reloaded_hook_names}"
+    )
+
+
+def test_strict_load_raises_on_unconstructable_hook(tmp_path: Path) -> None:
+    """Regression: hooks whose config.yaml lacks required constructor
+    kwargs must raise WorkspaceSerializationError under strict=True
+    instead of silently dropping. Loose mode still drops + warns."""
+    out = tmp_path / "broken.workspace"
+    out.mkdir()
+    (out / "workspace.json").write_text(json.dumps({"name": "x", "schema_version": 1}))
+    hook_dir = out / "hooks" / "00_NeedsArgs"
+    hook_dir.mkdir(parents=True)
+    (hook_dir / "hook.py").write_text(
+        "class NeedsArgs:\n    def __init__(self, *, required_arg):\n        self.x = required_arg\n"
+    )
+    (hook_dir / "config.yaml").write_text("class_name: NeedsArgs\nkwargs: {}\n")
+
+    # Loose mode: hook silently dropped (logged warning).
+    loose = workspace_to_preset(out)
+    assert loose.hooks == []
+
+    # Strict mode: raises with actionable message naming to_config().
+    with pytest.raises(WorkspaceSerializationError, match="to_config"):
+        workspace_to_preset(out, strict=True)

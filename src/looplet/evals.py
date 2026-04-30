@@ -88,6 +88,7 @@ __all__ = [
     "load_cases",
     "parametrize_cases",
     "save_case",
+    "save_cases",
     "pytest_param_cases",
 ]
 
@@ -534,6 +535,29 @@ def save_case(case: "EvalCase", path: str | Path) -> Path:
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(case.to_dict(), indent=2, sort_keys=True))
     return target
+
+
+def save_cases(cases: list["EvalCase"], directory: str | Path) -> list[Path]:
+    """Write a list of cases into ``directory`` as ``<id>.json`` files.
+
+    Symmetric counterpart to :func:`load_cases` for the directory-based
+    corpus pattern. Creates ``directory`` if it doesn't exist. Returns
+    the list of written paths in input order.
+
+    Raises ``ValueError`` when two cases share the same ``id`` (which
+    would silently overwrite each other on disk).
+    """
+    seen: set[str] = set()
+    duplicates: set[str] = set()
+    for c in cases:
+        if c.id in seen:
+            duplicates.add(c.id)
+        seen.add(c.id)
+    if duplicates:
+        raise ValueError(f"duplicate case ids would overwrite each other: {sorted(duplicates)}")
+    target_dir = Path(directory)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    return [save_case(c, target_dir) for c in cases]
 
 
 def pytest_param_cases(cases: list["EvalCase"]) -> list[Any]:

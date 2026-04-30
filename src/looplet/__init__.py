@@ -77,6 +77,7 @@ from looplet.evals import (
     parametrize_cases,
     pytest_param_cases,
     save_case,
+    save_cases,
 )
 from looplet.events import EventPayload, LifecycleEvent
 from looplet.harness_snapshot import serialize_harness
@@ -263,6 +264,7 @@ __all__ = [
     "load_cases",
     "parametrize_cases",
     "save_case",
+    "save_cases",
     "pytest_param_cases",
     # ── TESTING ─────────────────────────────────────────────────
     "MockLLMBackend",

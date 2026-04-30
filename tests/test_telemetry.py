@@ -409,6 +409,22 @@ class TestMetricsHook:
         result = hook.pre_prompt(MagicMock(), MagicMock(), MagicMock(), 1)
         assert result is None
 
+    def test_on_event_increments_total_llm_calls(self) -> None:
+        """Regression: ``MetricsHook.on_event`` must count
+        ``POST_LLM_RESPONSE`` events into ``collector.total_llm_calls``.
+        Previously the field was advertised but no built-in hook
+        wrote to it, so the documented counter sat at 0 in the
+        default wiring."""
+        from looplet.events import EventPayload, LifecycleEvent
+
+        collector = MetricsCollector()
+        hook = MetricsHook(collector=collector)
+        for _ in range(3):
+            hook.on_event(EventPayload(event=LifecycleEvent.POST_LLM_RESPONSE))
+        # Other events must not bump the counter.
+        hook.on_event(EventPayload(event=LifecycleEvent.PRE_TOOL_USE))
+        assert collector.total_llm_calls == 3
+
     def test_on_loop_end_noop(self) -> None:
         hook = MetricsHook(collector=MetricsCollector())
         result = hook.on_loop_end(MagicMock(), MagicMock(), MagicMock(), MagicMock())

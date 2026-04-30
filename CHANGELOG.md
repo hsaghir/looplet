@@ -39,6 +39,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   cloud path now works with just an API key (or env vars).
 - **`BaseToolRegistry.tool` decorator** registers a `ToolSpec` in one
   step, mirroring the module-level `@tool` decorator.
+- **`save_cases(cases, directory)`** plural form symmetric with
+  :func:`load_cases`. Refuses to write when two cases share an `id`
+  (which would silently overwrite each other on disk).
 - **`metadata` dict on `ToolCall` and `ToolResult`** (PR #24) for
   carrying out-of-band tags through the loop without subclassing.
   Round-trips through `to_dict()`.
@@ -169,6 +172,11 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   file at the path. The helper now also treats trailing path
   separators as directory intent and creates the parent directories
   before writing `<dir>/<case.id>.json`.
+- **`MetricsCollector.total_llm_calls` is now populated by
+  default.** The field was advertised in the report but no built-in
+  hook updated it, so it sat at 0 unless callers wired their own
+  counter. `MetricsHook.on_event` now increments it on every
+  `POST_LLM_RESPONSE` lifecycle event.
 
 ## [0.1.8] - 2026-04-24
 

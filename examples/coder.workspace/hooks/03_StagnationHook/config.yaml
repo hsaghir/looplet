@@ -1,0 +1,5 @@
+class_name: StagnationHook
+kwargs:
+  threshold: 3
+  reset_after_nudge: true
+  ignore_tools: ["think", "done"]

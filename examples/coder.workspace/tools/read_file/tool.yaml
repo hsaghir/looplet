@@ -1,0 +1,15 @@
+name: read_file
+description: Read a file with line numbers. Optionally specify start_line and/or end_line.
+parameters:
+  file_path:
+    type: string
+    description: Path to file (relative to project root).
+  start_line:
+    type: integer
+    description: Optional starting line (1-indexed).
+    default: 0
+  end_line:
+    type: integer
+    description: Optional ending line (1-indexed, inclusive).
+    default: 0
+concurrent_safe: true

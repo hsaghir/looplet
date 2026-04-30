@@ -1,0 +1,9 @@
+name: write_file
+description: Create or overwrite a file. Use for new files only.
+parameters:
+  file_path:
+    type: string
+    description: Path to write (relative to project root).
+  content:
+    type: string
+    description: Full file contents.

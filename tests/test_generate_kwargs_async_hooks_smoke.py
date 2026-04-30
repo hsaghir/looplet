@@ -152,6 +152,43 @@ class TestGenerateKwargs:
         )
         assert len(steps) == 1
 
+    def test_kwargs_forwarded_to_backend_with_var_keyword(self):
+        """Regression: backends written as ``def generate(self, prompt,
+        **kw)`` should receive forwarded ``generate_kwargs``. Previously
+        ``_accepts_kwarg`` only checked named parameters and silently
+        dropped every kwarg on permissive backend signatures, so
+        ``LoopConfig.generate_kwargs`` no-opped on a common pattern.
+        """
+
+        class CapturingLLM:
+            def __init__(self, response):
+                self.response = response
+                self.captured: list[dict] = []
+
+            def generate(self, prompt, **kw):
+                self.captured.append(dict(kw))
+                return self.response
+
+        llm = CapturingLLM('{"tool": "done", "args": {"summary": "ok"}, "reasoning": "r"}')
+        tools = BaseToolRegistry()
+        register_done_tool(tools)
+        config = LoopConfig(
+            max_steps=2,
+            generate_kwargs={"top_p": 0.9, "response_format": {"type": "json"}},
+        )
+
+        list(
+            composable_loop(
+                llm=llm,
+                tools=tools,
+                state=DefaultState(max_steps=2),
+                config=config,
+                task={},
+            )
+        )
+        assert llm.captured[0]["top_p"] == 0.9
+        assert llm.captured[0]["response_format"] == {"type": "json"}
+
 
 @pytest.mark.asyncio
 class TestAsyncHooks:

@@ -123,12 +123,22 @@ def estimate_prompt_tokens(text: str) -> int:
 
 
 def _accepts_kwarg(fn: Any, name: str) -> bool:
-    """Return True iff ``fn`` declares ``name`` as a parameter."""
+    """Return True iff ``fn`` declares ``name`` as a parameter, or
+    accepts arbitrary keyword arguments via ``**kwargs``.
+
+    Backends written as ``def generate(self, prompt, **kw)`` should
+    obviously receive forwarded ``generate_kwargs`` — otherwise
+    ``LoopConfig.generate_kwargs`` silently no-ops on common
+    permissive backend patterns.
+    """
     try:
         sig = inspect.signature(fn)
     except (TypeError, ValueError):
         return False
-    return name in sig.parameters
+    params = sig.parameters
+    if name in params:
+        return True
+    return any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
 
 
 _ACCEPTS_CT_CACHE: dict[tuple[type, str], bool] = {}

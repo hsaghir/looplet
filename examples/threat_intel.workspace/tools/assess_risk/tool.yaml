@@ -1,0 +1,12 @@
+name: assess_risk
+description: Assess organizational risk for a specific threat using LLM reasoning.
+parameters:
+  title:
+    type: string
+    description: Threat title.
+  severity:
+    type: string
+    description: critical | high | medium | low.
+  affected_products:
+    type: string
+    description: Comma-separated product list.

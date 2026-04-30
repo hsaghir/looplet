@@ -522,3 +522,26 @@ def test_coder_workspace_loads_with_shared_filecache() -> None:
         )
     )
     assert [s.tool_call.tool for s in steps] == ["think", "done"]
+
+
+def test_threat_intel_workspace_loads() -> None:
+    """examples/threat_intel.workspace migrates the threat-intel
+    cartridge. Loads with strict=True; tools re-import from the
+    original module so their typing/closure environment stays intact."""
+    from pathlib import Path as _P
+
+    workspace_dir = _P(__file__).resolve().parents[1] / "examples" / "threat_intel.workspace"
+    preset = workspace_to_preset(workspace_dir, strict=True)
+    assert sorted(preset.tools._tools.keys()) == [
+        "assess_risk",
+        "done",
+        "extract_iocs",
+        "fetch_feed",
+        "map_mitre",
+        "search_cve",
+        "think",
+    ]
+    assert [type(h).__name__ for h in preset.hooks] == [
+        "StagnationHook",
+        "PerToolLimitHook",
+    ]

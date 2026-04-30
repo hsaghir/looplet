@@ -1,0 +1,7 @@
+name: search_cve
+description: Look up details for a specific CVE ID.
+parameters:
+  cve_id:
+    type: string
+    description: CVE identifier (e.g. CVE-2025-12345).
+concurrent_safe: true

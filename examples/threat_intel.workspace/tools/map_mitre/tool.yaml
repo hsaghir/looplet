@@ -1,0 +1,6 @@
+name: map_mitre
+description: Map comma-separated MITRE ATT&CK technique IDs to names and tactics.
+parameters:
+  technique_ids:
+    type: string
+    description: Comma-separated technique IDs (e.g. T1059,T1071).

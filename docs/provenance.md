@@ -121,6 +121,7 @@ Each entry in `llm.calls` exposes:
 | `max_tokens` | `int` | As passed |
 | `step_num` | `int \| None` | Set by `TrajectoryRecorder` to link calls to loop steps |
 | `error` | `str \| None` | `f"{type(e).__name__}: {e}"` if the wrapped backend raised |
+| `metadata` | `dict[str, Any]` | Free-form annotations for external hooks; defaults to `{}` |
 
 ### Safety knobs
 
@@ -214,6 +215,7 @@ for i in indices:
 | `tool_result` | `ToolResult.to_dict()` (truncated safely) |
 | `context_before` | The briefing shown to the LLM before this step's prompt |
 | `llm_call_indices` | Into `trajectory.llm_calls` (empty if no recording backend) |
+| `metadata` | Free-form annotations for external hooks; defaults to `{}` |
 
 ### Termination inference
 

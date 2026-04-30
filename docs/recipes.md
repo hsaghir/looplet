@@ -189,7 +189,8 @@ result = run_sub_loop(
     llm=llm,
     tools=specialist_tools,              # scoped toolset
     task={"goal": "summarise the repo"},
-    parent_tracer=tracer,                # shares telemetry
+    max_steps=10,                        # sub-loop budget
+    system_prompt="You are a research specialist.",
 )
 ```
 

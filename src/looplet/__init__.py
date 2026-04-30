@@ -155,6 +155,13 @@ from looplet.types import (
     ToolResult,
     ToolValidationError,
 )
+from looplet.workspace import (
+    Workspace,
+    WorkspaceLayout,
+    WorkspaceSerializationError,
+    preset_to_workspace,
+    workspace_to_preset,
+)
 
 __all__ = [
     # ── ESSENTIALS (what you need for your first agent) ──────────
@@ -245,6 +252,11 @@ __all__ = [
     "ProvenanceSink",
     "replay_loop",
     "serialize_harness",
+    "Workspace",
+    "WorkspaceLayout",
+    "WorkspaceSerializationError",
+    "preset_to_workspace",
+    "workspace_to_preset",
     "StreamingHook",
     "Tracer",
     "TracingHook",

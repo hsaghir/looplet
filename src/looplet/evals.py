@@ -519,11 +519,17 @@ def _iter_case_dicts(fpath: Path):
 def save_case(case: "EvalCase", path: str | Path) -> Path:
     """Write one case to ``path`` as pretty-printed JSON.
 
-    If ``path`` is a directory, writes to ``<path>/<case.id>.json``.
-    Returns the written path. Parent directories are created.
+    Treated as a directory when ``path`` already exists as a directory,
+    or when the string ends with a path separator (``"cases/"``).
+    In that case writes to ``<path>/<case.id>.json``. Otherwise ``path``
+    is the full target file path. Parent directories are created.
+
+    Returns the written path.
     """
+    raw = str(path)
     target = Path(path)
-    if target.exists() and target.is_dir():
+    treat_as_dir = (target.exists() and target.is_dir()) or raw.endswith(("/", "\\"))
+    if treat_as_dir:
         target = target / f"{case.id}.json"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(case.to_dict(), indent=2, sort_keys=True))

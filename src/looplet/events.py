@@ -50,6 +50,10 @@ class LifecycleEvent(str, Enum):
     * :attr:`HOOK_DECISION` — fires whenever a hook returns a
       ``HookDecision`` that is not a no-op; payload carries slot,
       hook_name, and the decision dict.
+    * :attr:`DONE_ACCEPTED` — fires after ``check_done`` has accepted a
+      ``done()`` call and the final payload is committed; payload
+      includes ``tool_call`` (the done call) and ``tool_result`` (the
+      dispatched done result).
     * :attr:`STOP` — when the loop is about to exit, for any reason.
       The payload includes ``termination_reason``.
     * :attr:`SUBAGENT_START` / :attr:`SUBAGENT_STOP` — when a forked
@@ -67,6 +71,7 @@ class LifecycleEvent(str, Enum):
     PRE_COMPACT = "pre_compact"
     POST_COMPACT = "post_compact"
     HOOK_DECISION = "hook_decision"
+    DONE_ACCEPTED = "done_accepted"
     STOP = "stop"
     SUBAGENT_START = "subagent_start"
     SUBAGENT_STOP = "subagent_stop"

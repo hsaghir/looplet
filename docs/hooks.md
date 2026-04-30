@@ -117,6 +117,22 @@ class MinimumEvidenceGate:
         return None  # allow done()
 ```
 
+`check_done` accepts an optional `tool_call` kwarg carrying the
+candidate `done()` invocation (and its proposed final answer). Hooks
+that opt in can reject `done()` based on the answer itself, not just
+the surrounding state:
+
+```python
+class GroundedAnswerGate:
+    def check_done(self, state, session_log, context, step_num, tool_call):
+        if "fabricated" in str(tool_call.args.get("answer", "")):
+            return "answer mentions a value the agent never observed"
+        return None
+```
+
+The loop dispatches with or without `tool_call` based on the hook's
+signature, so legacy 4-arg implementations keep working unchanged.
+
 ### 3. Deduplication Warning
 
 Warn when the agent repeats the same tool call:
@@ -247,6 +263,10 @@ class DecisionAudit:
         if payload.event == LifecycleEvent.HOOK_DECISION:
             print(payload.hook_slot, payload.hook_name, payload.extra["decision"])
 ```
+
+Event-style hooks can also observe `LifecycleEvent.DONE_ACCEPTED` to
+record the accepted `done()` payload after `check_done` has passed, e.g.
+`if payload.event == LifecycleEvent.DONE_ACCEPTED: audit(payload.tool_call, payload.tool_result)`.
 
 ### ProvenanceSink
 

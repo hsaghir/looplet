@@ -79,6 +79,7 @@ from looplet.evals import (
     save_case,
 )
 from looplet.events import EventPayload, LifecycleEvent
+from looplet.harness_snapshot import serialize_harness
 from looplet.hook_decision import (
     Allow,
     Block,
@@ -242,6 +243,7 @@ __all__ = [
     "TrajectoryRecorder",
     "ProvenanceSink",
     "replay_loop",
+    "serialize_harness",
     "StreamingHook",
     "Tracer",
     "TracingHook",

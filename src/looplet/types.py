@@ -489,6 +489,15 @@ class ToolCall:
     call_id: str = field(default_factory=lambda: uuid4().hex[:12])
     """Unique identifier linking this call to its result. Auto-generated if not provided."""
 
+    metadata: dict[str, Any] = field(default_factory=dict)
+    """Free-form annotations for external hooks.
+
+    Hooks can attach arbitrary tags here (e.g. ``ledger_node_id``,
+    ``provenance_source``, ``policy_version``) before or after
+    dispatch; ``TrajectoryRecorder`` copies the dict into the
+    matching ``StepRecord.metadata['tool_call']`` so the annotation
+    survives in saved trajectories."""
+
     def to_dict(self) -> dict[str, Any]:
         """Serialise to a plain dict for logging or context assembly."""
         return {
@@ -496,6 +505,7 @@ class ToolCall:
             "args": self.args,
             "reasoning": self.reasoning,
             "call_id": self.call_id,
+            "metadata": dict(self.metadata),
         }
 
 
@@ -548,6 +558,15 @@ class ToolResult:
     ``data`` but adds a warning when the pick was a low-confidence
     substring match."""
 
+    metadata: dict[str, Any] = field(default_factory=dict)
+    """Free-form annotations for external hooks.
+
+    Hooks can attach arbitrary tags to a tool result (e.g.
+    ``ledger_node_id``, ``credit_score``, ``confidence``) inside
+    ``post_dispatch``. ``TrajectoryRecorder`` copies the dict into the
+    matching ``StepRecord.metadata['tool_result']`` so the annotation
+    survives in saved trajectories."""
+
     @property
     def error_message(self) -> str | None:
         """Human-readable message — same as ``error``."""
@@ -593,6 +612,8 @@ class ToolResult:
             d["data"] = str(self.data)[:2000]
         if self.warnings:
             d["warnings"] = list(self.warnings)
+        if self.metadata:
+            d["metadata"] = dict(self.metadata)
         return d
 
 

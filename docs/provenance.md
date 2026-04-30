@@ -121,6 +121,7 @@ Each entry in `llm.calls` exposes:
 | `max_tokens` | `int` | As passed |
 | `step_num` | `int \| None` | Set by `TrajectoryRecorder` to link calls to loop steps |
 | `error` | `str \| None` | `f"{type(e).__name__}: {e}"` if the wrapped backend raised |
+| `metadata` | `dict[str, Any]` | Free-form annotations for external hooks; defaults to `{}` |
 
 ### Safety knobs
 
@@ -183,6 +184,24 @@ for step in composable_loop(llm=llm, tools=tools, state=state, hooks=[hook]):
 hook.save("traces/run_1/")     # writes trajectory.json + steps/*.json
 ```
 
+### Recording the harness snapshot
+
+Use `serialize_harness()` to record the harness genome that produced a
+trajectory without changing the trajectory schema:
+
+```python
+from looplet import serialize_harness
+from looplet.provenance import TrajectoryRecorder
+
+snapshot = serialize_harness(config=config, tools=tools, hooks=hooks, llm=llm)
+hook = TrajectoryRecorder(harness_snapshot=snapshot)
+
+for step in composable_loop(llm=llm, tools=tools, state=state, hooks=[hook]):
+    ...
+
+assert hook.trajectory.metadata["harness_snapshot"]["schema_version"] == 1
+```
+
 ### Linking steps to LLM calls
 
 Pair `TrajectoryRecorder` with `RecordingLLMBackend` and every
@@ -214,6 +233,7 @@ for i in indices:
 | `tool_result` | `ToolResult.to_dict()` (truncated safely) |
 | `context_before` | The briefing shown to the LLM before this step's prompt |
 | `llm_call_indices` | Into `trajectory.llm_calls` (empty if no recording backend) |
+| `metadata` | Free-form annotations for external hooks; defaults to `{}` |
 
 ### Termination inference
 

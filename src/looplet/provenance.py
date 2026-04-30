@@ -101,6 +101,7 @@ class LLMCall:
     ``"tool:<name>"`` means the call was made inside a tool via
     ``ctx.llm.generate()``.  Used by provenance consumers to group
     and filter calls by origin."""
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -117,6 +118,7 @@ class LLMCall:
             "step_num": self.step_num,
             "error": self.error,
             "scope": self.scope,
+            "metadata": dict(self.metadata),
         }
         return d
 
@@ -489,6 +491,7 @@ class StepRecord:
     tool_result: dict[str, Any]
     context_before: str = ""
     llm_call_indices: list[int] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -500,6 +503,7 @@ class StepRecord:
             "tool_result": self.tool_result,
             "context_before": self.context_before,
             "llm_call_indices": list(self.llm_call_indices),
+            "metadata": dict(self.metadata),
         }
 
 
@@ -555,6 +559,7 @@ class TrajectoryRecorder:
         capture_context: bool = True,
         tracer: Tracer | None = None,
         output_dir: str | Path | None = None,
+        harness_snapshot: dict[str, Any] | None = None,
     ) -> None:
         self.trajectory = Trajectory(
             run_id=uuid4().hex[:12],
@@ -568,6 +573,7 @@ class TrajectoryRecorder:
         self._pending_llm_start: int = 0
         self._step_start_time: float = 0.0
         self._output_dir: Path | None = Path(output_dir) if output_dir is not None else None
+        self._harness_snapshot = dict(harness_snapshot) if harness_snapshot is not None else None
 
     # ── hook methods ────────────────────────────────────────────
 
@@ -652,6 +658,8 @@ class TrajectoryRecorder:
 
     def on_loop_end(self, state: Any, session_log: Any, context: Any, llm: Any) -> int:
         self.trajectory.ended_at = time.time()
+        if self._harness_snapshot is not None:
+            self.trajectory.metadata["harness_snapshot"] = dict(self._harness_snapshot)
         if self._recording_llm is not None:
             self.trajectory.llm_calls = list(self._recording_llm.calls)
         if self._tracer is not None and self._loop_span is not None:

@@ -400,7 +400,7 @@ class TestHookDecisionWiringShouldStop:
 
 
 class TestLifecycleEventEnum:
-    def test_canonical_ten_events_present(self):
+    def test_canonical_events_present(self):
         # The curated events that we ship.
         want = {
             "session_start",
@@ -413,6 +413,7 @@ class TestLifecycleEventEnum:
             "pre_compact",
             "post_compact",
             "hook_decision",
+            "done_accepted",
             "stop",
             "subagent_start",
             "subagent_stop",

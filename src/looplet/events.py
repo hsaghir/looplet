@@ -26,7 +26,7 @@ __all__ = [
 
 
 class LifecycleEvent(str, Enum):
-    """The ten lifecycle events the loop emits.
+    """The lifecycle events the loop emits.
 
     Ordered roughly by when they fire in a single step:
 
@@ -47,6 +47,10 @@ class LifecycleEvent(str, Enum):
     * :attr:`PRE_COMPACT` — before any conversation compaction runs.
     * :attr:`POST_COMPACT` — after compaction, with a count of
       messages removed / summary length.
+    * :attr:`DONE_ACCEPTED` — fires after ``check_done`` has accepted a
+      ``done()`` call and the final payload is committed; payload
+      includes ``tool_call`` (the done call) and ``tool_result`` (the
+      dispatched done result).
     * :attr:`STOP` — when the loop is about to exit, for any reason.
       The payload includes ``termination_reason``.
     * :attr:`SUBAGENT_START` / :attr:`SUBAGENT_STOP` — when a forked
@@ -63,6 +67,7 @@ class LifecycleEvent(str, Enum):
     POST_TOOL_FAILURE = "post_tool_failure"
     PRE_COMPACT = "pre_compact"
     POST_COMPACT = "post_compact"
+    DONE_ACCEPTED = "done_accepted"
     STOP = "stop"
     SUBAGENT_START = "subagent_start"
     SUBAGENT_STOP = "subagent_stop"

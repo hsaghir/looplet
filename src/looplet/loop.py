@@ -2063,6 +2063,17 @@ def composable_loop(
                     )
                 done = True
                 stop_reason = "done"
+                # DONE_ACCEPTED is observer-only; the loop is already terminating.
+                emit_event(
+                    hooks,
+                    _LE.DONE_ACCEPTED,
+                    step_num=cur_step,
+                    state=state,
+                    session_log=session_log,
+                    context=context,
+                    tool_call=tool_call,
+                    tool_result=tool_result,
+                )
 
         if done:
             continue

@@ -80,6 +80,14 @@ class Message:
     metadata: dict[str, Any] = field(default_factory=dict)
     timestamp: float = field(default_factory=time.time)
 
+    def __post_init__(self) -> None:
+        # ``MessageRole`` is a ``str, Enum`` so callers naturally pass
+        # plain strings ("system", "user", "tool", "assistant"). Coerce
+        # here so downstream code that does ``msg.role.value`` (e.g.
+        # serializers) doesn't trip on a plain str.
+        if not isinstance(self.role, MessageRole):
+            self.role = MessageRole(self.role)
+
     @property
     def text(self) -> str:
         """Flatten content to a single string (multi-block → newlines)."""
@@ -418,6 +426,7 @@ def _serialize_message(msg: Message) -> dict[str, Any]:
             "args": tc.args,
             "reasoning": tc.reasoning,
             "call_id": tc.call_id,
+            "metadata": dict(tc.metadata) if tc.metadata else {},
         }
     if msg.tool_result:
         tr = msg.tool_result
@@ -432,6 +441,7 @@ def _serialize_message(msg: Message) -> dict[str, Any]:
             "duration_ms": tr.duration_ms,
             "result_key": tr.result_key,
             "call_id": tr.call_id,
+            "metadata": dict(tr.metadata) if tr.metadata else {},
         }
     return d
 
@@ -457,6 +467,7 @@ def _deserialize_message(d: dict[str, Any]) -> Message:
             args=tc_data.get("args", {}),
             reasoning=tc_data.get("reasoning", ""),
             call_id=tc_data.get("call_id", ""),
+            metadata=dict(tc_data.get("metadata") or {}),
         )
 
     tool_result: ToolResult | None = None
@@ -482,6 +493,7 @@ def _deserialize_message(d: dict[str, Any]) -> Message:
             duration_ms=tr_data.get("duration_ms", 0.0),
             result_key=tr_data.get("result_key"),
             call_id=tr_data.get("call_id"),
+            metadata=dict(tr_data.get("metadata") or {}),
         )
 
     return Message(

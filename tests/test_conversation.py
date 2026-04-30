@@ -407,6 +407,53 @@ class TestConversationSerialize:
         c2 = Conversation.deserialize(data)
         assert c2.messages[0].metadata.get("key") == "value"
 
+    def test_message_role_accepts_plain_string(self):
+        """Regression: ``MessageRole`` is a ``str, Enum`` so callers
+        naturally pass plain strings; ``Message.__post_init__`` must
+        coerce so downstream code that does ``msg.role.value`` works."""
+        from looplet.conversation import Conversation, Message, MessageRole
+
+        c = Conversation()
+        c.append(Message(role="system", content="hi"))
+        c.append(Message(role="user", content="hello"))
+        # Round-trip — would have raised AttributeError before the fix.
+        c2 = Conversation.deserialize(c.serialize())
+        assert c2.messages[0].role is MessageRole.SYSTEM
+        assert c2.messages[1].role is MessageRole.USER
+
+    def test_serialize_round_trips_tool_call_and_result_metadata(self):
+        """Regression: ``ToolCall.metadata`` and ``ToolResult.metadata``
+        (added by PR #24) must round-trip through Conversation
+        serialize/deserialize. Previously the serializer dropped them
+        silently and the deserializer never restored them."""
+        from looplet.conversation import Conversation, Message, MessageRole
+        from looplet.types import ToolCall, ToolResult
+
+        c = Conversation()
+        c.append(
+            Message(
+                role=MessageRole.ASSISTANT,
+                content="",
+                tool_call=ToolCall(tool="search", args={"q": "x"}, metadata={"audit": "ok"}),
+            )
+        )
+        c.append(
+            Message(
+                role=MessageRole.TOOL,
+                content="result",
+                tool_result=ToolResult(
+                    tool="search",
+                    args_summary="q=x",
+                    data={"hits": [1]},
+                    metadata={"scrubbed": True},
+                ),
+            )
+        )
+
+        c2 = Conversation.deserialize(c.serialize())
+        assert c2.messages[0].tool_call.metadata == {"audit": "ok"}
+        assert c2.messages[1].tool_result.metadata == {"scrubbed": True}
+
 
 class TestConversationProperties:
     def test_token_estimate_zero_for_empty(self):

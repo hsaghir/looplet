@@ -126,6 +126,17 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   (silent), or `"warn"` (logs each collision to
   `looplet.bundles`). The CLI passes `"warn"` so users see what
   was dropped but still get a list of valid bundles.
+- **`Conversation` serialization now round-trips `ToolCall` /
+  `ToolResult` `metadata`.** PR #24 added the field but the
+  Conversation serializer dropped it silently; `Conversation.deserialize`
+  also never restored it. Both sides now plumb the field, so saved
+  conversations preserve any out-of-band tags hooks attached.
+- **`Message(role="system", …)` no longer breaks serialization.**
+  `MessageRole` is a `str, Enum`, so callers naturally pass plain
+  strings — but `_serialize_message` did `msg.role.value`, which
+  raised `AttributeError` when `role` was a plain `str`.
+  `Message.__post_init__` now coerces to `MessageRole` so both call
+  styles work identically.
 
 ## [0.1.8] - 2026-04-24
 

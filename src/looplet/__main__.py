@@ -611,7 +611,11 @@ def _render_list_bundles(
     from looplet.bundles import discover_skill_bundles  # noqa: PLC0415
 
     try:
-        cards = discover_skill_bundles(roots, include_invalid=include_invalid)
+        cards = discover_skill_bundles(
+            roots,
+            include_invalid=include_invalid,
+            on_duplicate="warn",
+        )
     except Exception as exc:  # noqa: BLE001
         print("error: could not list bundles", file=sys.stderr)
         print(f"  - {type(exc).__name__}: {exc}", file=sys.stderr)

@@ -94,6 +94,59 @@ class TestSkillBundles:
         assert not cards[0].ok
         assert "entrypoint not found: missing.py" in cards[0].errors
 
+    def test_discover_duplicate_names_raises_by_default(self, tmp_path):
+        """Back-compat: ``on_duplicate='raise'`` is the default."""
+        for sub in ("a", "b"):
+            d = tmp_path / sub / "demo"
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(
+                "---\nname: demo\ndescription: Demo.\nentrypoint: looplet.py\n---\n# Demo\n",
+                encoding="utf-8",
+            )
+            (d / "looplet.py").write_text("# entrypoint\n", encoding="utf-8")
+
+        with pytest.raises(ValueError, match="Duplicate bundle name 'demo'"):
+            discover_skill_bundles(tmp_path)
+
+    def test_discover_on_duplicate_first_wins_drops_collisions(self, tmp_path):
+        """``on_duplicate='first_wins'`` keeps the first card and silently
+        drops subsequent duplicates instead of raising."""
+        for sub in ("a", "b", "c"):
+            d = tmp_path / sub / "demo"
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(
+                "---\nname: demo\ndescription: Demo.\nentrypoint: looplet.py\n---\n# Demo\n",
+                encoding="utf-8",
+            )
+            (d / "looplet.py").write_text("# entrypoint\n", encoding="utf-8")
+
+        cards = discover_skill_bundles(tmp_path, on_duplicate="first_wins")
+        assert [c.name for c in cards] == ["demo"]
+
+    def test_discover_on_duplicate_warn_emits_log(self, tmp_path, caplog):
+        """``on_duplicate='warn'`` logs each collision but still returns
+        the first card so the CLI can keep listing the rest."""
+        import logging
+
+        for sub in ("a", "b"):
+            d = tmp_path / sub / "demo"
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(
+                "---\nname: demo\ndescription: Demo.\nentrypoint: looplet.py\n---\n# Demo\n",
+                encoding="utf-8",
+            )
+            (d / "looplet.py").write_text("# entrypoint\n", encoding="utf-8")
+
+        with caplog.at_level(logging.WARNING, logger="looplet.bundles"):
+            cards = discover_skill_bundles(tmp_path, on_duplicate="warn")
+
+        assert [c.name for c in cards] == ["demo"]
+        assert any("duplicate bundle name" in r.message for r in caplog.records)
+
+    def test_discover_on_duplicate_invalid_value_rejected(self, tmp_path):
+        with pytest.raises(ValueError, match="on_duplicate must be"):
+            discover_skill_bundles(tmp_path, on_duplicate="bogus")
+
     def test_cli_lists_discovered_bundles_as_json(self, tmp_path, capsys):
         bundle_root = tmp_path / "skills" / "demo"
         bundle_root.mkdir(parents=True)

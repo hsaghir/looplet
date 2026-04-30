@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import importlib
 import importlib.util
+import logging
 import re
 import sys
 import uuid
@@ -24,6 +25,8 @@ from looplet.loop import composable_loop
 from looplet.presets import AgentPreset
 from looplet.skills import Skill, SkillCard
 from looplet.types import LLMBackend, Step
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "BundleCard",
@@ -119,13 +122,30 @@ class BundleValidation:
 def discover_skill_bundles(
     *roots: str | Path | Iterable[str | Path],
     include_invalid: bool = False,
+    on_duplicate: str = "raise",
 ) -> list[BundleCard]:
     """Discover runnable skill bundles without importing entrypoint code.
 
     Roots may be bundle directories, ``SKILL.md`` files, or directories
     containing many skill folders. Instruction-only skills are skipped by
     default because they are not runnable cartridges until wrapped.
+
+    Args:
+        roots: Paths to scan for bundles.
+        include_invalid: Include bundle-like folders with missing or
+            invalid metadata. Their ``BundleCard`` will have ``ok=False``
+            and a populated ``errors`` list.
+        on_duplicate: How to handle two bundles claiming the same
+            ``name``. ``"raise"`` (default, back-compat) raises
+            ``ValueError`` listing both paths. ``"first_wins"`` keeps
+            the first card discovered and silently drops subsequent
+            duplicates. ``"warn"`` logs each collision via the standard
+            logger and keeps the first card.
     """
+    if on_duplicate not in {"raise", "first_wins", "warn"}:
+        raise ValueError(
+            f"on_duplicate must be 'raise', 'first_wins', or 'warn', got {on_duplicate!r}"
+        )
     root_paths = _coerce_discovery_roots(roots)
     cards: dict[str, BundleCard] = {}
     for skill_file in _iter_skill_files(root_paths):
@@ -147,7 +167,19 @@ def discover_skill_bundles(
             continue
         if card.name in cards:
             first = cards[card.name]
-            raise ValueError(f"Duplicate bundle name {card.name!r}: {first.path} and {card.path}")
+            if on_duplicate == "raise":
+                raise ValueError(
+                    f"Duplicate bundle name {card.name!r}: {first.path} and {card.path}"
+                )
+            if on_duplicate == "warn":
+                logger.warning(
+                    "duplicate bundle name %r — keeping %s, dropping %s",
+                    card.name,
+                    first.path,
+                    card.path,
+                )
+            # 'first_wins' (and 'warn') both keep the first card.
+            continue
         cards[card.name] = card
     return [cards[name] for name in sorted(cards)]
 

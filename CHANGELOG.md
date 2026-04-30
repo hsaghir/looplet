@@ -116,6 +116,16 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   detected in workspace; collector cannot re-run tests" instead of
   the misleading "no test runner detected", since the collector
   needs a project file to re-run pytest against.
+- **`discover_skill_bundles` accepts `on_duplicate=` and `looplet
+  list-bundles` no longer crashes on collisions.** Previously, two
+  bundles claiming the same `name` field always raised
+  `ValueError`, so a single dirty discovery root (e.g. left-over
+  pytest fixtures under `/tmp`) made the entire `looplet
+  list-bundles` CLI unusable. The function now accepts
+  `on_duplicate="raise"` (default, back-compat), `"first_wins"`
+  (silent), or `"warn"` (logs each collision to
+  `looplet.bundles`). The CLI passes `"warn"` so users see what
+  was dropped but still get a list of valid bundles.
 
 ## [0.1.8] - 2026-04-24
 

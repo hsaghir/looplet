@@ -893,13 +893,27 @@ _init_event_method_equiv()
 # ── check_done dispatch (backward-compatible tool_call kwarg) ───
 
 _CHECK_DONE_ACCEPTS_TOOL_CALL: dict[int, bool] = {}
-"""Per-method cache mapping ``id(check_done)`` to whether the bound
-method accepts a ``tool_call`` keyword argument. Populated lazily.
-Cached by id so we never re-inspect the same method object twice."""
+"""Cache mapping ``id(method.__func__)`` (i.e. the unbound function on the
+class) to whether ``check_done`` accepts a ``tool_call`` keyword argument.
+
+Bound methods are ephemeral in CPython — ``obj.check_done`` creates a
+fresh bound-method object on each access, so caching by
+``id(bound_method)`` is unsound: bound methods get garbage-collected
+and their ids get reused for unrelated methods on other classes,
+poisoning the cache. ``method.__func__`` (the underlying class
+attribute) has stable identity and is safe to key on. For plain
+callables that lack ``__func__`` (rare — e.g. lambdas attached as
+attributes), we fall back to ``id`` of the callable itself.
+"""
+
+
+def _cache_key(method: Any) -> int:
+    """Stable cache key for a (possibly bound) callable."""
+    return id(getattr(method, "__func__", method))
 
 
 def _accepts_tool_call_kwarg(method: Any) -> bool:
-    key = id(method)
+    key = _cache_key(method)
     cached = _CHECK_DONE_ACCEPTS_TOOL_CALL.get(key)
     if cached is not None:
         return cached

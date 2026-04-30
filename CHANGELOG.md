@@ -137,6 +137,17 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   raised `AttributeError` when `role` was a plain `str`.
   `Message.__post_init__` now coerces to `MessageRole` so both call
   styles work identically.
+- **`check_done` signature cache no longer poisoned by id reuse.**
+  PR #23's backward-compat dispatch cached `_accepts_tool_call_kwarg`
+  results keyed on `id(bound_method)`. Bound methods are ephemeral
+  in CPython (`obj.method` creates a fresh object each access), so
+  they get garbage-collected and their ids get reused for unrelated
+  methods on other classes — leaving the cache claiming a
+  legacy-signature hook accepts `tool_call`, then raising
+  `TypeError: ...check_done() got an unexpected keyword argument
+  'tool_call'`. The cache now keys on `id(method.__func__)` (the
+  stable underlying function) with a fallback to `id(method)` for
+  callables that lack `__func__`.
 
 ## [0.1.8] - 2026-04-24
 

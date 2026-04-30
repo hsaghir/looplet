@@ -157,3 +157,36 @@ def test_check_done_with_var_kwargs_signature() -> None:
     assert len(captured) == 1
     assert captured[0] is not None
     assert captured[0].tool == "done"
+
+
+def test_signature_cache_keys_on_func_not_bound_method_id() -> None:
+    """Regression: the ``_accepts_tool_call_kwarg`` cache must key on the
+    underlying function, not the bound-method object's ``id()``. Bound
+    methods are ephemeral in CPython and their ids get reused for
+    unrelated methods, which used to poison the cache and call hooks
+    that don't accept ``tool_call`` with the kwarg anyway.
+    """
+    from looplet.loop import _CHECK_DONE_ACCEPTS_TOOL_CALL, _accepts_tool_call_kwarg
+
+    class WithKwarg:
+        def check_done(self, state, session_log, context, step_num, tool_call=None):
+            return None
+
+    class WithoutKwarg:
+        def check_done(self, state, session_log, context, step_num):
+            return None
+
+    a = WithKwarg()
+    b = WithoutKwarg()
+
+    # Each class's check_done caches independently and produces the
+    # correct answer regardless of how many bound-method objects come
+    # and go in between.
+    for _ in range(50):
+        assert _accepts_tool_call_kwarg(a.check_done) is True
+        assert _accepts_tool_call_kwarg(b.check_done) is False
+
+    # Two distinct cache entries (one per class), not one per
+    # short-lived bound-method object.
+    func_keys = {id(WithKwarg.check_done), id(WithoutKwarg.check_done)}
+    assert func_keys.issubset(_CHECK_DONE_ACCEPTS_TOOL_CALL.keys())

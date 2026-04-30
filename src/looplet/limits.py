@@ -99,6 +99,14 @@ class PerToolLimitHook:
         """Clear all counters — useful between runs."""
         self._counts.clear()
 
+    def to_config(self) -> dict[str, Any]:
+        """Round-trip kwargs for ``preset_to_workspace`` / CHW."""
+        return {
+            "limits": dict(self._limits),
+            "default_limit": self._default_limit,
+            "message": self._message,
+        }
+
     # ── LoopHook slot ─────────────────────────────────────────
 
     def pre_dispatch(

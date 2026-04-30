@@ -174,6 +174,27 @@ class StagnationHook:
         self._streak = 0
         self._last_progress = None
 
+    def to_config(self) -> dict[str, Any]:
+        """Round-trip kwargs for ``preset_to_workspace`` / CHW.
+
+        Only round-trips the JSON-able fields (``threshold``, string
+        ``nudge``, ``reset_after_nudge``, ``ignore_tools``). Callable
+        ``fingerprint`` / ``progress`` / callable ``nudge`` are not
+        portable across processes; reload uses the default fingerprint
+        and a recovered string nudge when the original was a callable.
+        """
+        return {
+            "threshold": self._threshold,
+            "nudge": self._nudge
+            if isinstance(self._nudge, str)
+            else (
+                "[stagnation detected] You have repeated the same action "
+                "without new progress. Try a different approach."
+            ),
+            "reset_after_nudge": self._reset_after_nudge,
+            "ignore_tools": sorted(self._ignore_tools),
+        }
+
     # ── LoopHook slots ────────────────────────────────────────
 
     def post_dispatch(

@@ -124,6 +124,8 @@ class WorkspaceLayout:
     TOOLS_DIR = "tools"
     HOOKS_DIR = "hooks"
     MEMORY_DIR = "memory"
+    RESOURCES_DIR = "resources"
+    SETUP_PY = "setup.py"
 
     # ``LoopConfig`` field names that round-trip via ``config.yaml``.
     SERIALIZABLE_CONFIG_FIELDS: tuple[str, ...] = (
@@ -405,6 +407,56 @@ def _import_module_from_path(path: Path, module_name: str) -> Any:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)  # type: ignore[union-attr]
     return module
+
+
+def _load_resources(root: Path) -> dict[str, Any]:
+    """Build the shared-resource registry from ``resources/<name>.py`` files.
+
+    Each resource module must define ``def build() -> Any`` (or
+    ``def build(runtime) -> Any`` — runtime is the ``state_factory``
+    arg, currently unused inside resource builders). The returned
+    object is shared by every ``"@<name>"`` reference in hook /
+    tool kwargs.
+    """
+    resources_dir = root / WorkspaceLayout.RESOURCES_DIR
+    if not resources_dir.is_dir():
+        return {}
+    resources: dict[str, Any] = {}
+    for resource_file in sorted(resources_dir.glob("*.py")):
+        name = resource_file.stem
+        module = _import_module_from_path(resource_file, f"_chw_resource_{name}")
+        builder = getattr(module, "build", None)
+        if not callable(builder):
+            raise WorkspaceSerializationError(
+                f"resource {name!r} ({resource_file}) must define `def build() -> Any`"
+            )
+        resources[name] = builder()
+    return resources
+
+
+_REF_PREFIX = "@"
+
+
+def _resolve_refs(value: Any, resources: dict[str, Any]) -> Any:
+    """Replace any ``"@<name>"`` strings in ``value`` with their
+    resolved resource. Recurses into dicts and lists. Other types pass
+    through unchanged.
+
+    Raises :class:`WorkspaceSerializationError` when a reference points
+    at a missing resource so loading fails loud.
+    """
+    if isinstance(value, str) and value.startswith(_REF_PREFIX):
+        name = value[len(_REF_PREFIX) :]
+        if name not in resources:
+            raise WorkspaceSerializationError(
+                f"unresolved resource reference {value!r}; known resources: {sorted(resources)}"
+            )
+        return resources[name]
+    if isinstance(value, dict):
+        return {k: _resolve_refs(v, resources) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_resolve_refs(item, resources) for item in value]
+    return value
 
 
 def _safe_filename(name: str) -> str:
@@ -772,6 +824,12 @@ def workspace_to_preset(
             f"is this a Composable Harness Workspace?"
         )
 
+    # Shared-resource registry — built once, referenced by ``@<name>``
+    # strings throughout hook / tool kwargs. Lets two hooks share the
+    # same live object (e.g. a FileCache) on reload, instead of
+    # silently splitting into two independent instances.
+    resources = _load_resources(root)
+
     # Config
     cfg_kwargs: dict[str, Any] = {}
     cfg_path = root / WorkspaceLayout.CONFIG_YAML
@@ -793,6 +851,11 @@ def workspace_to_preset(
 
     config = LoopConfig(**cfg_kwargs)
 
+    # Track tool + hook modules so setup.py can wire shared resources
+    # into them after the declarative load (see ``setup.py`` block below).
+    tool_modules: dict[str, Any] = {}
+    hook_modules: dict[str, Any] = {}
+
     # Tools
     registry = BaseToolRegistry()
     tools_dir = root / WorkspaceLayout.TOOLS_DIR
@@ -808,6 +871,7 @@ def workspace_to_preset(
                 continue
             yaml_payload = _load_yaml(spec_path.read_text(encoding="utf-8")) or {}
             module = _import_module_from_path(execute_path, f"_chw_tool_{tool_dir.name}")
+            tool_modules[tool_dir.name] = module
             execute_fn = getattr(module, "execute", None)
             if execute_fn is None:
                 # Fall back to the function whose name matches the YAML name.
@@ -846,6 +910,7 @@ def workspace_to_preset(
                 logger.warning("skipping %s", msg)
                 continue
             module = _import_module_from_path(hook_py, f"_chw_hook_{hook_dir.name}")
+            hook_modules[hook_dir.name] = module
             hook_cfg = (
                 _load_yaml(cfg_yaml.read_text(encoding="utf-8")) if cfg_yaml.is_file() else {}
             ) or {}
@@ -876,6 +941,9 @@ def workspace_to_preset(
                     logger.warning("%s; skipping", msg)
                     continue
             kwargs = dict(hook_cfg.get("kwargs", {}) or {})
+            # Resolve ``"@<name>"`` references against the shared-resource
+            # registry so hooks can share live objects on reload.
+            kwargs = _resolve_refs(kwargs, resources)
             try:
                 hooks.append(cls(**kwargs))
             except TypeError as exc:
@@ -895,4 +963,35 @@ def workspace_to_preset(
         state_factory(max_steps) if state_factory is not None else DefaultState(max_steps=max_steps)
     )
 
-    return AgentPreset(config=config, hooks=hooks, tools=registry, state=state)
+    preset = AgentPreset(config=config, hooks=hooks, tools=registry, state=state)
+
+    # ``setup.py`` escape hatch — runs after the declarative load to
+    # let the cartridge attach callable / opaque fields that don't
+    # round-trip via JSON (e.g. ``LoopConfig.tracer``,
+    # ``LoopConfig.compact_service``, custom domain adapters), or
+    # inject shared resources into top-level tool/hook modules.
+    setup_path = root / WorkspaceLayout.SETUP_PY
+    if setup_path.is_file():
+        module = _import_module_from_path(setup_path, "_chw_setup")
+        setup_fn = getattr(module, "setup", None)
+        if not callable(setup_fn):
+            raise WorkspaceSerializationError(
+                f"workspace setup.py at {setup_path} must define "
+                f"`def setup(preset, resources, tool_modules, hook_modules)`"
+            )
+        # Modern signature accepts (preset, resources, tool_modules,
+        # hook_modules); the older 2-arg signature still works for
+        # forward compatibility — inspect.signature picks the right one.
+        import inspect as _i  # noqa: PLC0415
+
+        sig_params = _i.signature(setup_fn).parameters
+        kwargs: dict[str, Any] = {}
+        if "tool_modules" in sig_params:
+            kwargs["tool_modules"] = tool_modules
+        if "hook_modules" in sig_params:
+            kwargs["hook_modules"] = hook_modules
+        result = setup_fn(preset, resources, **kwargs)
+        if result is not None:
+            preset = result
+
+    return preset

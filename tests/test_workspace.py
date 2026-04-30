@@ -307,3 +307,150 @@ def test_strict_load_raises_on_unconstructable_hook(tmp_path: Path) -> None:
     # Strict mode: raises with actionable message naming to_config().
     with pytest.raises(WorkspaceSerializationError, match="to_config"):
         workspace_to_preset(out, strict=True)
+
+
+# ── Shared resources + @ref + setup.py ─────────────────────────
+
+
+def test_resources_dir_builds_shared_objects(tmp_path: Path) -> None:
+    """resources/<name>.py with `def build()` populates the resource
+    registry that ``@<name>`` references resolve against."""
+    out = tmp_path / "ws"
+    out.mkdir()
+    (out / "workspace.json").write_text(json.dumps({"name": "x", "schema_version": 1}))
+    (out / "resources").mkdir()
+    (out / "resources" / "shared_cache.py").write_text(
+        "def build():\n    return {'cache_id': 'singleton', 'items': []}\n"
+    )
+
+    # Hook that takes a `cache` kwarg via @ref.
+    hook_dir = out / "hooks" / "00_TwoConsumers"
+    hook_dir.mkdir(parents=True)
+    (hook_dir / "hook.py").write_text(
+        "class TwoConsumers:\n    def __init__(self, *, cache):\n        self.cache = cache\n"
+    )
+    (hook_dir / "config.yaml").write_text(
+        'class_name: TwoConsumers\nkwargs:\n  cache: "@shared_cache"\n'
+    )
+
+    preset = workspace_to_preset(out, strict=True)
+    assert len(preset.hooks) == 1
+    assert preset.hooks[0].cache == {"cache_id": "singleton", "items": []}
+
+
+def test_two_hooks_share_same_resource_object(tmp_path: Path) -> None:
+    """Two hooks referencing the same @<name> get the SAME Python object,
+    not two independent copies. This is the FileCacheHook + StaleFileHook
+    pattern: shared mutable state must survive workspace round-trip."""
+    out = tmp_path / "ws"
+    out.mkdir()
+    (out / "workspace.json").write_text(json.dumps({"name": "x", "schema_version": 1}))
+    (out / "resources").mkdir()
+    (out / "resources" / "cache.py").write_text("def build():\n    return {'shared': True}\n")
+
+    for idx, name in enumerate(("Reader", "Writer")):
+        d = out / "hooks" / f"{idx:02d}_{name}"
+        d.mkdir(parents=True)
+        (d / "hook.py").write_text(
+            f"class {name}:\n    def __init__(self, *, cache):\n        self.cache = cache\n"
+        )
+        (d / "config.yaml").write_text(f'class_name: {name}\nkwargs:\n  cache: "@cache"\n')
+
+    preset = workspace_to_preset(out, strict=True)
+    assert preset.hooks[0].cache is preset.hooks[1].cache, (
+        "Both hooks must reference the SAME object (shared state), not separate copies"
+    )
+
+
+def test_unresolved_ref_raises_in_strict(tmp_path: Path) -> None:
+    """``"@missing"`` with no matching resource raises so the user
+    sees the typo immediately."""
+    out = tmp_path / "ws"
+    out.mkdir()
+    (out / "workspace.json").write_text(json.dumps({"name": "x", "schema_version": 1}))
+    hook_dir = out / "hooks" / "00_NeedsRef"
+    hook_dir.mkdir(parents=True)
+    (hook_dir / "hook.py").write_text(
+        "class NeedsRef:\n    def __init__(self, *, dep):\n        self.dep = dep\n"
+    )
+    (hook_dir / "config.yaml").write_text('class_name: NeedsRef\nkwargs:\n  dep: "@nonexistent"\n')
+
+    with pytest.raises(WorkspaceSerializationError, match="unresolved resource reference"):
+        workspace_to_preset(out, strict=True)
+
+
+def test_setup_py_escape_hatch_runs_after_load(tmp_path: Path) -> None:
+    """setup.py's `setup(preset, resources)` runs after the declarative
+    load and can attach callable / opaque LoopConfig fields. Used for
+    the rare case where a workspace genuinely needs load-time Python."""
+    out = tmp_path / "ws"
+    out.mkdir()
+    (out / "workspace.json").write_text(json.dumps({"name": "x", "schema_version": 1}))
+    (out / "config.yaml").write_text("max_steps: 7\n")
+    (out / "setup.py").write_text(
+        "def setup(preset, resources):\n    preset.config.max_steps = 99\n    return preset\n"
+    )
+
+    preset = workspace_to_preset(out, strict=True)
+    assert preset.config.max_steps == 99, "setup.py mutation lost"
+
+
+def test_setup_py_invalid_signature_raises(tmp_path: Path) -> None:
+    out = tmp_path / "ws"
+    out.mkdir()
+    (out / "workspace.json").write_text(json.dumps({"name": "x", "schema_version": 1}))
+    (out / "setup.py").write_text("# no setup function defined\n")
+
+    with pytest.raises(WorkspaceSerializationError, match="must define"):
+        workspace_to_preset(out, strict=True)
+
+
+# ── examples/hello.workspace end-to-end (proof-of-concept v2 cartridge) ───
+
+
+def test_hello_workspace_loads_and_runs_end_to_end() -> None:
+    """examples/hello.workspace is the proof-of-concept v2 cartridge:
+    fully declarative layout with shared resources + setup.py wiring.
+    Loads, runs scripted, and the shared GreetingLog round-trips
+    state between the greet tool and the PolitenessGate hook."""
+    import json as _json
+    from pathlib import Path as _P
+
+    from looplet import composable_loop
+    from looplet.testing import MockLLMBackend
+
+    workspace_dir = _P(__file__).resolve().parents[1] / "examples" / "hello.workspace"
+    preset = workspace_to_preset(workspace_dir, strict=True)
+
+    assert preset.config.max_steps == 5
+    assert "polite assistant" in preset.config.system_prompt.lower()
+    assert {type(h).__name__ for h in preset.hooks} == {"PolitenessGate"}
+    assert sorted(preset.tools._tools.keys()) == ["done", "greet"]
+
+    hook = preset.hooks[0]
+    assert hasattr(hook, "log") and hasattr(hook.log, "entries")
+    assert hook.log.entries == []
+
+    llm = MockLLMBackend(
+        responses=[
+            _json.dumps({"thought": "polite", "tool": "greet", "args": {"name": "Alice"}}),
+            _json.dumps({"thought": "polite", "tool": "greet", "args": {"name": "Bob"}}),
+            _json.dumps({"thought": "finish", "tool": "done", "args": {"answer": "Greeted both."}}),
+        ]
+    )
+    steps = list(
+        composable_loop(
+            llm=llm,
+            tools=preset.tools,
+            state=preset.state,
+            config=preset.config,
+            hooks=preset.hooks,
+            task={"q": "greet alice and bob"},
+        )
+    )
+
+    assert len(steps) == 3
+    assert [s.tool_call.tool for s in steps] == ["greet", "greet", "done"]
+    # Shared log captured both greetings — proves @ref + setup.py wired
+    # the SAME GreetingLog instance into the tool and the hook.
+    assert hook.log.names() == ["Alice", "Bob"]

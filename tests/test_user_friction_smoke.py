@@ -129,8 +129,12 @@ class TestOpenAIBackendFromEnv:
         assert llm._model == "llama3"
 
     def test_from_env_explicit_model_wins(self) -> None:
+        env = {
+            "OPENAI_API_KEY": "sk-test",
+            "OPENAI_MODEL": "from-env",
+        }
         with (
-            mock.patch.dict(os.environ, {"OPENAI_MODEL": "from-env"}, clear=False),
+            mock.patch.dict(os.environ, env, clear=False),
             mock.patch("openai.OpenAI", _FakeOpenAIClient),
         ):
             llm = OpenAIBackend.from_env(model="explicit-wins")
@@ -152,9 +156,11 @@ class TestAnthropicBackendFromEnv:
         assert llm._model == "claude-test-2"
 
     def test_from_env_missing_key_raises(self) -> None:
-        # ``AnthropicBackend`` still requires api_key when no client is given.
+        # ``from_env`` raises a clean RuntimeError upfront when
+        # ``ANTHROPIC_API_KEY`` is missing, instead of letting the SDK
+        # surface a less actionable error later.
         with mock.patch.dict(os.environ, {}, clear=True):
-            with pytest.raises(TypeError, match="api_key"):
+            with pytest.raises(RuntimeError, match="ANTHROPIC_API_KEY"):
                 AnthropicBackend.from_env()
 
 

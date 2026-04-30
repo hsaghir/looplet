@@ -92,6 +92,15 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   and any user-attached metadata. The full `trajectory.metadata`
   dict is now overlaid first, with the four top-level fields
   applied on top.
+- **`TrajectoryRecorder` now reflects late `metadata` mutations.**
+  When a downstream hook ran `post_dispatch` *after*
+  `TrajectoryRecorder` and tagged `tool_call.metadata` /
+  `tool_result.metadata` (the documented annotation point added by
+  PR #24), the mutations were silently lost because the recorder
+  had already snapshotted via `to_dict()`. The recorder now sweeps
+  `state.steps` in `on_loop_end` and refreshes the metadata fields
+  on every captured `StepRecord` so hook ordering no longer
+  affects the saved trajectory.
 
 ## [0.1.8] - 2026-04-24
 

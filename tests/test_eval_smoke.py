@@ -443,6 +443,40 @@ class TestEvalContextArtifacts:
             ctx = EvalContext.from_trajectory_dir(d)
             assert ctx.artifacts == {}
 
+    def test_from_trajectory_dir_preserves_trajectory_metadata(self):
+        """Regression: ``trajectory.metadata`` (incl. harness_snapshot from
+        TrajectoryRecorder) must survive the round-trip into
+        ``EvalContext.metadata``. Previously only the four well-known
+        top-level keys were copied, dropping harness_snapshot silently.
+        """
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "trajectory.json").write_text(
+                json.dumps(
+                    {
+                        "steps": [],
+                        "task": {},
+                        "run_id": "abc123",
+                        "termination_reason": "done",
+                        "metadata": {
+                            "harness_snapshot": {
+                                "schema_version": 1,
+                                "extra": {"trial": "x"},
+                            },
+                            "user_field": "hello",
+                        },
+                    }
+                )
+            )
+            ctx = EvalContext.from_trajectory_dir(d)
+            # harness_snapshot must round-trip
+            assert ctx.metadata["harness_snapshot"]["schema_version"] == 1
+            assert ctx.metadata["harness_snapshot"]["extra"] == {"trial": "x"}
+            # User-attached fields must round-trip
+            assert ctx.metadata["user_field"] == "hello"
+            # Top-level fields still take precedence
+            assert ctx.metadata["run_id"] == "abc123"
+            assert ctx.metadata["termination_reason"] == "done"
+
 
 # ── EvalHook collectors ─────────────────────────────────────────
 

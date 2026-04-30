@@ -1,0 +1,4 @@
+max_steps: 5
+max_tokens: 500
+temperature: 0.2
+done_tool: done

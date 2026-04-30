@@ -99,6 +99,14 @@ class PerToolLimitHook:
         """Clear all counters — useful between runs."""
         self._counts.clear()
 
+    def to_config(self) -> dict[str, Any]:
+        """Round-trip kwargs for ``preset_to_workspace`` / CHW."""
+        return {
+            "limits": dict(self._limits),
+            "default_limit": self._default_limit,
+            "message": self._message,
+        }
+
     # ── LoopHook slot ─────────────────────────────────────────
 
     def pre_dispatch(
@@ -197,6 +205,24 @@ class BudgetWarningHook:
         """Clear fired-threshold memory — useful between runs."""
         self._fired.clear()
         self._total = None
+
+    def to_config(self) -> dict[str, Any]:
+        """Round-trip kwargs for ``preset_to_workspace`` / CHW.
+
+        Round-trips when ``message`` is a string (the common case);
+        when it's a callable, returns the default-message form so the
+        reloaded hook is at least functional. Callable messages are
+        not portable across processes by design.
+        """
+        return {
+            "thresholds": list(self._thresholds),
+            "message": self._message
+            if isinstance(self._message, str)
+            else (
+                "[low budget] {remaining_pct:.0%} of step budget remaining "
+                "({remaining_steps} steps). Start consolidating."
+            ),
+        }
 
     # ── LoopHook slot ─────────────────────────────────────────
 

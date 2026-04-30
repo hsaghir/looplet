@@ -1,0 +1,6 @@
+name: greet
+description: Greet a single person by name. Returns the greeting text. Records the greeting in the shared greeting log.
+parameters:
+  name:
+    type: string
+    description: The person's name to greet.

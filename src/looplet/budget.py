@@ -171,6 +171,11 @@ class ThresholdCompactHook:
         *,
         fire_tier: Literal["warning", "error"] = "error",
     ) -> None:
+        # Accept a dict form for CHW workspace round-trip — workspace
+        # config.yaml stores constructor kwargs as primitives, so the
+        # ``budget`` field arrives as a plain dict from to_config().
+        if isinstance(budget, dict):
+            budget = ContextBudget(**budget)
         self.budget = budget
         self.fire_tier = fire_tier
         self._fired_at: list[int] = []
@@ -180,6 +185,20 @@ class ThresholdCompactHook:
         """Step numbers where this hook requested compaction. Useful
         for tests and production telemetry."""
         return list(self._fired_at)
+
+    def to_config(self) -> dict[str, Any]:
+        """Round-trip kwargs for ``preset_to_workspace`` / CHW.
+
+        Returns the constructor kwargs needed to rebuild this hook —
+        the budget is unpacked into its scalar fields so the workspace
+        can serialise it as plain JSON.
+        """
+        from dataclasses import asdict  # noqa: PLC0415
+
+        return {
+            "budget": asdict(self.budget),
+            "fire_tier": self.fire_tier,
+        }
 
     def should_compact(
         self,

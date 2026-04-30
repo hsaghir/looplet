@@ -101,6 +101,21 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   `state.steps` in `on_loop_end` and refreshes the metadata fields
   on every captured `StepRecord` so hook ordering no longer
   affects the saved trajectory.
+- **`OpenAIBackend.from_env` / `AnthropicBackend.from_env` /
+  `AsyncOpenAIBackend.from_env` raise clean errors upfront.**
+  Previously, the OpenAI variants leaked an SDK-level `OpenAIError`
+  when neither `OPENAI_API_KEY` nor `OPENAI_BASE_URL` was set, and
+  `AnthropicBackend.from_env` raised a `TypeError` from looplet's
+  own constructor. Both now raise a single `RuntimeError` with an
+  actionable message naming the env var to set. The OpenAI
+  variants also now default `api_key` to a sentinel when only
+  `OPENAI_BASE_URL` is set, so local-server flows (Ollama / vLLM /
+  llama.cpp) work without setting `OPENAI_API_KEY=ollama`.
+- **Coder example: clarified the `eval_tests_passed` skip reason.**
+  The label now says "no Python project (pyproject.toml/setup.py)
+  detected in workspace; collector cannot re-run tests" instead of
+  the misleading "no test runner detected", since the collector
+  needs a project file to re-run pytest against.
 
 ## [0.1.8] - 2026-04-24
 

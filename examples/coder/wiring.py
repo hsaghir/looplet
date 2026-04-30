@@ -271,7 +271,10 @@ def build_eval_hook(workspace: str) -> EvalHook:
             return EvalResult(
                 name="eval_tests_passed",
                 label="skipped",
-                explanation="no test runner detected in workspace",
+                explanation=(
+                    "no Python project (pyproject.toml/setup.py) detected "
+                    "in workspace; collector cannot re-run tests"
+                ),
             )
         return bool(ctx.artifacts["tests_passing"])
 

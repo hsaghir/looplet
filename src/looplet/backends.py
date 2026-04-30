@@ -227,10 +227,27 @@ class OpenAIBackend:
 
             from openai import OpenAI
             llm = OpenAIBackend(OpenAI(), model=os.environ["OPENAI_MODEL"])
+
+        Raises ``RuntimeError`` upfront when neither ``OPENAI_API_KEY``
+        nor ``OPENAI_BASE_URL`` is set, instead of letting the OpenAI
+        SDK fail later with a less actionable error.
         """
+        api_key = os.environ.get("OPENAI_API_KEY")
+        base_url = os.environ.get("OPENAI_BASE_URL")
+        if not api_key and not base_url:
+            raise RuntimeError(
+                "OpenAIBackend.from_env(): set OPENAI_API_KEY (cloud) "
+                "or OPENAI_BASE_URL (local proxy / Ollama / vLLM). "
+                "Both are missing in the environment."
+            )
+        # Local-server convention (Ollama / vLLM / llama.cpp): when
+        # BASE_URL is set without a key, the SDK still requires a
+        # non-empty string so default to a sentinel.
+        if not api_key and base_url:
+            api_key = "x"
         return cls(
-            base_url=os.environ.get("OPENAI_BASE_URL"),
-            api_key=os.environ.get("OPENAI_API_KEY"),
+            base_url=base_url,
+            api_key=api_key,
             model=model or os.environ.get("OPENAI_MODEL", "gpt-4o"),
             default_max_tokens=default_max_tokens,
             tool_choice=tool_choice,
@@ -404,9 +421,18 @@ class AnthropicBackend:
         Reads ``ANTHROPIC_API_KEY`` (required) and ``ANTHROPIC_MODEL``
         (optional, falls back to the default model or the explicit
         ``model=`` arg).
+
+        Raises ``RuntimeError`` upfront when ``ANTHROPIC_API_KEY`` is
+        missing, instead of failing later inside the constructor with
+        a ``TypeError``.
         """
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            raise RuntimeError(
+                "AnthropicBackend.from_env(): ANTHROPIC_API_KEY is not set in the environment."
+            )
         return cls(
-            api_key=os.environ.get("ANTHROPIC_API_KEY"),
+            api_key=api_key,
             model=model or os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-20250514"),
             default_max_tokens=default_max_tokens,
         )
@@ -539,10 +565,24 @@ class AsyncOpenAIBackend:
         default_max_tokens: int | None = None,
         tool_choice: str = "auto",
     ) -> "AsyncOpenAIBackend":
-        """Async sibling of :meth:`OpenAIBackend.from_env`."""
+        """Async sibling of :meth:`OpenAIBackend.from_env`.
+
+        Raises ``RuntimeError`` upfront when neither ``OPENAI_API_KEY``
+        nor ``OPENAI_BASE_URL`` is set.
+        """
+        api_key = os.environ.get("OPENAI_API_KEY")
+        base_url = os.environ.get("OPENAI_BASE_URL")
+        if not api_key and not base_url:
+            raise RuntimeError(
+                "AsyncOpenAIBackend.from_env(): set OPENAI_API_KEY "
+                "(cloud) or OPENAI_BASE_URL (local proxy / Ollama / "
+                "vLLM). Both are missing in the environment."
+            )
+        if not api_key and base_url:
+            api_key = "x"
         return cls(
-            base_url=os.environ.get("OPENAI_BASE_URL"),
-            api_key=os.environ.get("OPENAI_API_KEY"),
+            base_url=base_url,
+            api_key=api_key,
             model=model or os.environ.get("OPENAI_MODEL", "gpt-4o"),
             default_max_tokens=default_max_tokens,
             tool_choice=tool_choice,

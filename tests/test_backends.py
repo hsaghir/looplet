@@ -204,3 +204,47 @@ class TestExports:
 
         assert OpenAIBackend is not None
         assert LLMChunkEvent is not None
+
+
+class TestFromEnvErrors:
+    """Regression: from_env() must raise a clean RuntimeError upfront
+    when the required env vars are missing, not let the SDK fail later
+    with an unrelated exception type."""
+
+    def _clear_env(self, monkeypatch, prefixes):
+        import os
+
+        for k in list(os.environ):
+            if any(k.startswith(p) for p in prefixes):
+                monkeypatch.delenv(k, raising=False)
+
+    def test_openai_from_env_raises_when_no_key_or_base_url(self, monkeypatch):
+        from looplet import OpenAIBackend
+
+        self._clear_env(monkeypatch, ("OPENAI_",))
+        with pytest.raises(RuntimeError, match="OPENAI_API_KEY"):
+            OpenAIBackend.from_env()
+
+    def test_async_openai_from_env_raises_when_no_key_or_base_url(self, monkeypatch):
+        from looplet.backends import AsyncOpenAIBackend
+
+        self._clear_env(monkeypatch, ("OPENAI_",))
+        with pytest.raises(RuntimeError, match="OPENAI_API_KEY"):
+            AsyncOpenAIBackend.from_env()
+
+    def test_anthropic_from_env_raises_when_no_key(self, monkeypatch):
+        from looplet import AnthropicBackend
+
+        self._clear_env(monkeypatch, ("ANTHROPIC_",))
+        with pytest.raises(RuntimeError, match="ANTHROPIC_API_KEY"):
+            AnthropicBackend.from_env()
+
+    def test_openai_from_env_local_server_with_base_url_only(self, monkeypatch):
+        """OPENAI_BASE_URL set without a key (local Ollama / vLLM
+        convention) should succeed by defaulting api_key to a sentinel."""
+        from looplet import OpenAIBackend
+
+        self._clear_env(monkeypatch, ("OPENAI_",))
+        monkeypatch.setenv("OPENAI_BASE_URL", "http://127.0.0.1:11434/v1")
+        backend = OpenAIBackend.from_env()
+        assert backend is not None

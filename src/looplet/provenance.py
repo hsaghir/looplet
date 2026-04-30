@@ -101,6 +101,7 @@ class LLMCall:
     ``"tool:<name>"`` means the call was made inside a tool via
     ``ctx.llm.generate()``.  Used by provenance consumers to group
     and filter calls by origin."""
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -117,6 +118,7 @@ class LLMCall:
             "step_num": self.step_num,
             "error": self.error,
             "scope": self.scope,
+            "metadata": dict(self.metadata),
         }
         return d
 
@@ -489,6 +491,7 @@ class StepRecord:
     tool_result: dict[str, Any]
     context_before: str = ""
     llm_call_indices: list[int] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -500,6 +503,7 @@ class StepRecord:
             "tool_result": self.tool_result,
             "context_before": self.context_before,
             "llm_call_indices": list(self.llm_call_indices),
+            "metadata": dict(self.metadata),
         }
 
 

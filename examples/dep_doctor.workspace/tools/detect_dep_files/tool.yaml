@@ -1,4 +1,4 @@
-name: detect_files
+name: detect_dep_files
 description: Scan a project directory for dependency files.
 parameters:
   project_dir:

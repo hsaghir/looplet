@@ -591,12 +591,12 @@ def test_dep_doctor_workspace_loads() -> None:
 
     workspace_dir = _P(__file__).resolve().parents[1] / "examples" / "dep_doctor.workspace"
     preset = workspace_to_preset(workspace_dir, strict=True)
-    # detect_dep_files / check_license_compat dirs map via tool.yaml `name`
-    # to detect_files / check_license respectively (the original @tool name).
+    # tool.yaml ``name`` matches the dir name so the registered tool
+    # name is the same as the workspace directory.
     assert sorted(preset.tools._tools.keys()) == [
-        "check_license",
+        "check_license_compat",
         "check_package",
-        "detect_files",
+        "detect_dep_files",
         "done",
         "find_alternatives",
         "parse_deps",
@@ -1442,3 +1442,114 @@ def test_dataclass_auto_emit_reproduces_field_state(tmp_path: Path) -> None:
         PermissionDecision.DENY,
         PermissionDecision.ALLOW,
     ]
+
+
+# ── v2 tool.yaml optional-default + _chw_* dynamic-module round-trip ──
+
+
+def test_v2_tool_yaml_default_marks_param_optional(tmp_path: Path) -> None:
+    """``tool.yaml`` parameters declared as
+    ``{name: {type, description, default}}`` (the format every shipped
+    workspace uses) must treat ``default``-bearing entries as optional.
+    Previously the loader fell into the simple-format branch which
+    only recognised the ``"(optional) ..."`` description prefix, so
+    every dict-shaped param was reported missing on dispatch."""
+    from looplet import ToolSpec
+
+    spec = ToolSpec(
+        name="lst",
+        description="d",
+        parameters={
+            "path": {"type": "string", "description": "p"},
+            "depth": {"type": "integer", "description": "d", "default": 2},
+        },
+        execute=lambda **k: k,
+    )
+    assert spec.required_parameters() == ["path"]
+
+
+def test_chw_resource_round_trip_copies_original_source(tmp_path: Path) -> None:
+    """When a hook holds a live instance whose class came from the
+    workspace's own ``_chw_resource_<name>`` dynamic module, the
+    snapshot writer must copy the original ``resources/<name>.py`` file
+    verbatim instead of dropping a None-stub. Catches the case where
+    a workspace defines a custom resource class inline (e.g.
+    ``GreetingLog`` in the hello example)."""
+    src = tmp_path / "src_ws"
+    src.mkdir()
+    (src / "workspace.json").write_text('{"name": "src_ws"}')
+    (src / "config.yaml").write_text("max_steps: 3\ndone_tool: done\n")
+    (src / "tools" / "done").mkdir(parents=True)
+    (src / "tools/done/tool.yaml").write_text(
+        "name: done\nparameters:\n  s: {type: string, description: s}\n"
+    )
+    (src / "tools/done/execute.py").write_text(
+        "def execute(*, s='ok'): return {'status': 'completed', 's': s}\n"
+    )
+    (src / "resources").mkdir()
+    custom_src = (
+        '"""Custom inline resource — exists only inside this workspace."""\n'
+        "class CustomLog:\n"
+        "    def __init__(self):\n"
+        "        self.entries = []\n"
+        "def build():\n"
+        "    return CustomLog()\n"
+    )
+    (src / "resources/custom_log.py").write_text(custom_src)
+    (src / "hooks" / "00_LogHook").mkdir(parents=True)
+    (src / "hooks/00_LogHook/hook.py").write_text(
+        "class LogHook:\n"
+        "    def __init__(self, *, log): self.log = log\n"
+        "    def to_config(self): return {'log': '@custom_log'}\n"
+    )
+    (src / "hooks/00_LogHook/config.yaml").write_text(
+        'class_name: LogHook\nkwargs:\n  log: "@custom_log"\n'
+    )
+
+    preset = workspace_to_preset(src, strict=True)
+    snap = tmp_path / "snap"
+    ws = preset_to_workspace(preset, snap, name="snap", strict=False)
+    # Resource source must come back verbatim — no None-stub warnings.
+    assert not any("custom_log" in w for w in ws.serialization_warnings), (
+        f"unexpected warnings: {ws.serialization_warnings}"
+    )
+    snap_resource = (snap / "resources" / "custom_log.py").read_text()
+    assert snap_resource == custom_src
+
+    # Reload the snapshot — the LogHook's log attribute must be a fresh
+    # CustomLog instance (not None).
+    reloaded = workspace_to_preset(snap, strict=True)
+    assert type(reloaded.hooks[0].log).__name__ == "CustomLog"
+
+
+def test_chw_hook_inline_class_round_trips(tmp_path: Path) -> None:
+    """When a hook's class is defined inline in the workspace's own
+    ``hooks/<name>/hook.py`` (not subclassing an installed class), the
+    re-snapshot writer must copy the on-disk source instead of falling
+    back to ``class X: pass``."""
+    src = tmp_path / "src_ws"
+    src.mkdir()
+    (src / "workspace.json").write_text('{"name": "src_ws"}')
+    (src / "config.yaml").write_text("max_steps: 3\ndone_tool: done\n")
+    (src / "tools" / "done").mkdir(parents=True)
+    (src / "tools/done/tool.yaml").write_text(
+        "name: done\nparameters:\n  s: {type: string, description: s}\n"
+    )
+    (src / "tools/done/execute.py").write_text(
+        "def execute(*, s='ok'): return {'status': 'completed', 's': s}\n"
+    )
+    (src / "hooks" / "00_GateHook").mkdir(parents=True)
+    hook_src = (
+        '"""Inline gate hook with a meaningful body."""\n'
+        "class GateHook:\n"
+        "    SENTINEL = 'inline-marker-XYZ'\n"
+        "    def to_config(self): return {}\n"
+    )
+    (src / "hooks/00_GateHook/hook.py").write_text(hook_src)
+
+    preset = workspace_to_preset(src, strict=True)
+    snap = tmp_path / "snap"
+    preset_to_workspace(preset, snap, name="snap", strict=True)
+    snap_hook = (snap / "hooks" / "00_GateHook" / "hook.py").read_text()
+    # Must contain the inline marker — proves source was preserved.
+    assert "inline-marker-XYZ" in snap_hook

@@ -1,0 +1,8 @@
+name: file_hotspots
+description: Find most frequently changed files (churn hotspots).
+parameters:
+  top_n:
+    type: string
+    description: How many top files (e.g. "15").
+    default: "15"
+concurrent_safe: true

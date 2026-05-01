@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "name": "git-detective",
+  "description": "Workspace-native git history analyst. Inspects contributors, hotspots, coupling patterns, commit quality.",
+  "metadata": {"tags": ["git", "analysis", "workspace-native"]}
+}

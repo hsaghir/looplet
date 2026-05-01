@@ -1,3 +1,5 @@
 name: commit_patterns
 description: Analyze commit message patterns, conventions, and quality (uses LLM).
 parameters: {}
+requires:
+  - repo_config

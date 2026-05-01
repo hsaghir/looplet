@@ -4,3 +4,5 @@ parameters:
   name:
     type: string
     description: The person's name to greet.
+requires:
+  - greeting_log

@@ -2,3 +2,5 @@ name: repo_overview
 description: Get basic repo info — name, branch, total commits, age.
 parameters: {}
 concurrent_safe: true
+requires:
+  - repo_config

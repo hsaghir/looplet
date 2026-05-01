@@ -6,3 +6,5 @@ parameters:
     description: Number of days back (e.g. "30").
     default: "30"
 concurrent_safe: true
+requires:
+  - repo_config

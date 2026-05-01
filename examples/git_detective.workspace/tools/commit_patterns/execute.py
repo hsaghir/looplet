@@ -1,14 +1,25 @@
-"""commit_patterns — bridges to the closure-built tool from co-located lib.make_tools(REPO_CONFIG.path)."""
+"""commit_patterns — bridges to the closure-built tool from
+co-located ``git_detective_lib.make_tools(repo_config.path)``.
+
+Receives the shared ``repo_config`` resource through
+``ctx.resources``; ``tool.yaml`` declares
+``requires: [repo_config]``. The closure-built registry is cached
+per (module, repo_path) tuple so 8 tools share one registry per
+repo without rebuilding on every call.
+"""
 
 from git_detective_lib import make_tools
 
-REPO_CONFIG = None
-_REGISTRY = None
+from looplet.types import ToolContext
+
+_REGISTRY_CACHE: dict = {}
 
 
-def execute(**kwargs):
-    global _REGISTRY
-    if _REGISTRY is None:
-        repo_path = REPO_CONFIG.path if REPO_CONFIG is not None else "."
-        _REGISTRY = make_tools(repo_path)
-    return _REGISTRY._tools["commit_patterns"].execute(**kwargs)
+def execute(ctx: ToolContext, **kwargs):
+    cfg = ctx.resources.get("repo_config")
+    repo_path = cfg.path if cfg is not None else "."
+    registry = _REGISTRY_CACHE.get(repo_path)
+    if registry is None:
+        registry = make_tools(repo_path)
+        _REGISTRY_CACHE[repo_path] = registry
+    return registry._tools["commit_patterns"].execute(**kwargs)

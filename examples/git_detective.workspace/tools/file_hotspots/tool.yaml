@@ -6,3 +6,5 @@ parameters:
     description: How many top files (e.g. "15").
     default: "15"
 concurrent_safe: true
+requires:
+  - repo_config

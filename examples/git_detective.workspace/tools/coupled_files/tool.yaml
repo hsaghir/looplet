@@ -6,3 +6,5 @@ parameters:
     description: Minimum coupling count (e.g. "3").
     default: "3"
 concurrent_safe: true
+requires:
+  - repo_config

@@ -83,10 +83,17 @@ mechanism hook kwargs use. Example::
         return compact_chain(PruneToolResults(), TruncateCompact())
 
 This eliminates the ``setup.py`` detour for the common case of
-attaching callable LoopConfig services. ``setup.py`` is still
-required for: (a) injecting shared resources into top-level tool
-function module globals, and (b) live-state callables that close
-over ``state`` per turn.
+attaching callable LoopConfig services. Tool dependency injection
+also goes through the same resource registry: ``tool.yaml`` declares
+``requires: [<name>, ...]`` and the dispatcher hands the resolved
+instances to the tool's ``execute(ctx, ...)`` via
+``ctx.resources[name]`` — replacing the legacy
+``WORKSPACE_CONFIG = None`` / ``setup.py``-overwrites-globals
+pattern. Memory sources accept ``@ref`` entries the same way
+(``memory_sources: ['@project_memory']`` in ``config.yaml``).
+``setup.py`` remains as an opt-in escape hatch for users with
+truly imperative load-time wiring needs, but no shipped example
+needs one — every published workspace is fully declarative.
 
 Why this is in Looplet (not in a research extension)
 ----------------------------------------------------

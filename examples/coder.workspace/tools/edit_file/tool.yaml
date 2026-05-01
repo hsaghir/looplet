@@ -10,3 +10,6 @@ parameters:
   new_string:
     type: string
     description: Replacement text.
+requires:
+  - workspace_config
+  - file_cache

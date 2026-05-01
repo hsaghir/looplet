@@ -5,3 +5,5 @@ parameters:
     type: string
     description: Shell command to execute (e.g. "pytest -xvs", "ls -la", "git status").
 timeout_s: 600
+requires:
+  - workspace_config

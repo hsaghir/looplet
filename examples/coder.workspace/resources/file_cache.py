@@ -8,12 +8,14 @@ All three (read_file/write_file/edit_file tools, FileCacheHook,
 StaleFileHook) reference this via ``"@file_cache"`` so they share
 one instance. Without the @ref shared registry each would silently
 get its own empty cache and the staleness detection would break.
+
+Reads ``runtime["workspace"]`` so the FileCache is bound to the same
+path the host CLI gave the workspace.
 """
 
 from examples.coder.tools import FileCache
 
 
-def build():
-    # Workspace path defaults to "." — setup.py can replace this with
-    # a runtime-aware FileCache when the host CLI knows the real path.
-    return FileCache(workspace=".")
+def build(runtime=None):
+    runtime = runtime or {}
+    return FileCache(workspace=str(runtime.get("workspace", ".")))

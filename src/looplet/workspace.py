@@ -409,18 +409,22 @@ def _import_module_from_path(path: Path, module_name: str) -> Any:
     return module
 
 
-def _load_resources(root: Path) -> dict[str, Any]:
+def _load_resources(root: Path, runtime: dict[str, Any] | None = None) -> dict[str, Any]:
     """Build the shared-resource registry from ``resources/<name>.py`` files.
 
-    Each resource module must define ``def build() -> Any`` (or
-    ``def build(runtime) -> Any`` — runtime is the ``state_factory``
-    arg, currently unused inside resource builders). The returned
-    object is shared by every ``"@<name>"`` reference in hook /
-    tool kwargs.
+    Each resource module must define a builder named ``build``. The
+    loader inspects the signature: ``build()`` (zero-arg) keeps the
+    legacy contract; ``build(runtime)`` lets the resource read the
+    host-supplied ``runtime`` dict (e.g. ``runtime['workspace']`` for
+    the coder cartridge). Resources are shared by every ``"@<name>"``
+    reference in hook / tool kwargs.
     """
+    import inspect as _inspect  # noqa: PLC0415
+
     resources_dir = root / WorkspaceLayout.RESOURCES_DIR
     if not resources_dir.is_dir():
         return {}
+    runtime_dict = dict(runtime or {})
     resources: dict[str, Any] = {}
     for resource_file in sorted(resources_dir.glob("*.py")):
         name = resource_file.stem
@@ -430,7 +434,16 @@ def _load_resources(root: Path) -> dict[str, Any]:
             raise WorkspaceSerializationError(
                 f"resource {name!r} ({resource_file}) must define `def build() -> Any`"
             )
-        resources[name] = builder()
+        # Pass runtime only when the builder accepts it, so legacy
+        # zero-arg builders keep working unchanged.
+        try:
+            sig = _inspect.signature(builder)
+            accepts_runtime = "runtime" in sig.parameters or any(
+                p.kind == _inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+            )
+        except (TypeError, ValueError):
+            accepts_runtime = False
+        resources[name] = builder(runtime=runtime_dict) if accepts_runtime else builder()
     return resources
 
 
@@ -462,6 +475,33 @@ def _resolve_refs(value: Any, resources: dict[str, Any]) -> Any:
 def _safe_filename(name: str) -> str:
     """Sanitise an arbitrary string into a directory-safe filename."""
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", name) or "unnamed"
+
+
+_RUNTIME_PLACEHOLDER = re.compile(r"\$\{runtime\.([A-Za-z_][A-Za-z0-9_]*)\}")
+
+
+def _apply_runtime_substitutions(text: str, runtime: dict[str, Any]) -> str:
+    """Replace ``${runtime.<key>}`` placeholders in ``text`` with the
+    string form of ``runtime[<key>]``.
+
+    Used on ``config.yaml`` (and any other plain-text workspace file the
+    loader passes through this) so workspace authors can parameterise
+    paths and other host-supplied values without writing a setup.py.
+
+    Unknown keys raise :class:`WorkspaceSerializationError` so a typo
+    fails loudly at load time rather than silently leaving the
+    placeholder string in the running config.
+    """
+
+    def _sub(match: "re.Match[str]") -> str:
+        key = match.group(1)
+        if key not in runtime:
+            raise WorkspaceSerializationError(
+                f"unresolved ${{runtime.{key}}} placeholder; known runtime keys: {sorted(runtime)}"
+            )
+        return str(runtime[key])
+
+    return _RUNTIME_PLACEHOLDER.sub(_sub, text)
 
 
 def _hook_class(hook: Any) -> type:
@@ -797,6 +837,7 @@ def workspace_to_preset(
     *,
     state_factory: Callable[[int], Any] | None = None,
     strict: bool = False,
+    runtime: dict[str, Any] | None = None,
 ) -> "AgentPreset":
     """Read a CHW directory and materialise an :class:`AgentPreset`.
 
@@ -810,6 +851,15 @@ def workspace_to_preset(
             When ``False`` (default), drop the offender, log a warning,
             and continue. Use ``strict=True`` for round-trip
             verification and CI lint.
+        runtime: Optional dict of host-supplied runtime values
+            (e.g. ``{"workspace": "/tmp/myrepo"}`` for the coder
+            cartridge). Three integration points read it:
+              * ``${runtime.<key>}`` placeholders in ``config.yaml``
+                are substituted before constructing ``LoopConfig``.
+              * ``resources/<name>.py`` builders that declare
+                ``def build(runtime)`` (or ``**kwargs``) receive it.
+              * ``setup.py``'s ``setup(...)`` receives it via the
+                ``runtime`` kwarg when its signature accepts it.
     """
     from looplet.loop import LoopConfig  # noqa: PLC0415
     from looplet.presets import AgentPreset  # noqa: PLC0415
@@ -828,13 +878,19 @@ def workspace_to_preset(
     # strings throughout hook / tool kwargs. Lets two hooks share the
     # same live object (e.g. a FileCache) on reload, instead of
     # silently splitting into two independent instances.
-    resources = _load_resources(root)
+    runtime_dict = dict(runtime or {})
+    resources = _load_resources(root, runtime_dict)
 
     # Config
     cfg_kwargs: dict[str, Any] = {}
     cfg_path = root / WorkspaceLayout.CONFIG_YAML
     if cfg_path.is_file():
-        cfg_kwargs.update(_load_yaml(cfg_path.read_text(encoding="utf-8")) or {})
+        raw_cfg_text = cfg_path.read_text(encoding="utf-8")
+        # Apply ``${runtime.<key>}`` substitution before YAML parsing so
+        # workspace authors can parameterise config.yaml without needing
+        # a setup.py for the common cases.
+        raw_cfg_text = _apply_runtime_substitutions(raw_cfg_text, runtime_dict)
+        cfg_kwargs.update(_load_yaml(raw_cfg_text) or {})
 
     sys_prompt_path = root / WorkspaceLayout.SYSTEM_PROMPT_MD
     if sys_prompt_path.is_file():
@@ -990,6 +1046,8 @@ def workspace_to_preset(
             kwargs["tool_modules"] = tool_modules
         if "hook_modules" in sig_params:
             kwargs["hook_modules"] = hook_modules
+        if "runtime" in sig_params:
+            kwargs["runtime"] = runtime_dict
         result = setup_fn(preset, resources, **kwargs)
         if isinstance(result, AgentPreset):
             preset = result

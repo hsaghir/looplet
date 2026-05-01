@@ -833,6 +833,20 @@ class EvalHook:
         self._task: dict[str, Any] = {}
         self._artifacts: dict[str, Any] = {}
 
+    def to_config(self) -> dict:
+        """Workspace round-trip: emit ``evaluators`` (and ``collectors``
+        when present) as ``@ref`` strings so the v2 workspace writer
+        auto-generates ``resources/<name>.py`` builders. Lambda
+        evaluators land in placeholder builders the user must replace;
+        top-level callables ride straight through.
+        """
+        cfg: dict[str, Any] = {"evaluators": "@evaluators"}
+        if self.collectors:
+            cfg["collectors"] = "@collectors"
+        if self.verbose:
+            cfg["verbose"] = True
+        return cfg
+
     @property
     def results(self) -> list[EvalResult]:
         """Eval results from the most recent run."""

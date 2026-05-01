@@ -261,6 +261,14 @@ class PermissionHook:
     def __init__(self, engine: "PermissionEngine") -> None:
         self.engine = engine
 
+    def to_config(self) -> dict:
+        """Workspace round-trip: emit ``engine`` as an ``@ref`` so the
+        v2 workspace writer auto-generates ``resources/engine.py``. The
+        rule list does not survive auto-emit — users edit the generated
+        builder to declare their rules in code.
+        """
+        return {"engine": "@engine"}
+
     def on_event(self, payload: Any) -> Any:
         """Fire on ``PRE_TOOL_USE`` and convert engine outcomes to decisions."""
         # Lazy import — avoids a hard cycle with looplet.events.

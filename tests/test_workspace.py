@@ -64,6 +64,18 @@ class DemoCounter:
         return None
 
 
+def _done_execute(*, s: str = "") -> dict:
+    """Top-level done-tool callable so workspace round-trip can re-import it."""
+    return {"status": "completed", "summary": s}
+
+
+def _trivial_evaluator(ctx) -> "EvalResult":  # noqa: F821 - imported in test
+    """Top-level evaluator so EvalHook auto-emit produces an importable resource."""
+    from looplet import EvalResult  # noqa: PLC0415
+
+    return EvalResult(name="trivial", passed=True)
+
+
 def _build_demo_preset() -> AgentPreset:
     config = LoopConfig(
         max_steps=8,
@@ -221,10 +233,15 @@ def test_round_tripped_preset_runs_end_to_end(tmp_path: Path) -> None:
 
 def test_non_serializable_config_field_warns_in_loose_mode(tmp_path: Path) -> None:
     preset = _build_demo_preset()
-    # Set a callable on a known non-serializable field.
+    # Set a callable on a known non-serializable field. The writer now
+    # auto-emits a ``@build_briefing`` ref + ``resources/build_briefing.py``
+    # stub; for closure / lambda values the stub is the None-fallback
+    # and a warning is recorded so the user knows manual editing is
+    # required for cross-process round-trip.
     preset.config.build_briefing = lambda **_: "x"
     workspace = preset_to_workspace(preset, tmp_path / "ws")
     assert any("build_briefing" in w for w in workspace.serialization_warnings)
+    assert (tmp_path / "ws" / "resources" / "build_briefing.py").is_file()
 
 
 def test_non_serializable_config_field_raises_in_strict_mode(tmp_path: Path) -> None:
@@ -995,3 +1012,420 @@ def test_workspace_extends_other_workspace(tmp_path) -> None:
     )
     preset = workspace_to_preset(ext, strict=True)
     assert "done" in preset.tools._tools
+
+
+# ── @ref resolution in config.yaml (declarative LoopConfig services) ──
+
+
+def test_compact_service_via_at_ref_in_config(tmp_path) -> None:
+    """A workspace can wire ``LoopConfig.compact_service`` declaratively
+    via ``compact_service: "@compact_service"`` in config.yaml plus a
+    ``resources/compact_service.py`` builder — no setup.py needed."""
+    import json as _json
+
+    ws = tmp_path
+    (ws / "workspace.json").write_text(_json.dumps({"name": "x", "schema_version": 1}))
+    (ws / "config.yaml").write_text('max_steps: 3\ncompact_service: "@compact_service"\n')
+    (ws / "resources").mkdir()
+    (ws / "resources/compact_service.py").write_text(
+        "from looplet.compact import PruneToolResults, TruncateCompact, compact_chain\n"
+        "def build(runtime=None):\n"
+        "    return compact_chain(PruneToolResults(keep_recent=4), TruncateCompact(keep_recent=2))\n"
+    )
+
+    preset = workspace_to_preset(ws, strict=True)
+    assert preset.config.compact_service is not None
+    # _CompactChain from looplet.compact wires through.
+    assert type(preset.config.compact_service).__module__ == "looplet.compact"
+
+
+def test_tracer_via_at_ref_in_config(tmp_path) -> None:
+    """``tracer`` callable wired declaratively via @ref."""
+    import json as _json
+
+    ws = tmp_path
+    (ws / "workspace.json").write_text(_json.dumps({"name": "x", "schema_version": 1}))
+    (ws / "config.yaml").write_text('max_steps: 3\ntracer: "@tracer"\n')
+    (ws / "resources").mkdir()
+    (ws / "resources/tracer.py").write_text(
+        "EVENTS = []\n"
+        "def _trace(event, payload=None):\n"
+        "    EVENTS.append((event, payload))\n"
+        "def build(runtime=None):\n"
+        "    return _trace\n"
+    )
+
+    preset = workspace_to_preset(ws, strict=True)
+    assert preset.config.tracer is not None
+    assert callable(preset.config.tracer)
+
+
+def test_unresolved_at_ref_in_config_raises_in_strict(tmp_path) -> None:
+    """A typo'd @ref in config.yaml fails loud at load time, same as
+    hook kwargs — no silent string-into-LoopConfig leakage."""
+    import json as _json
+
+    import pytest
+
+    ws = tmp_path
+    (ws / "workspace.json").write_text(_json.dumps({"name": "x", "schema_version": 1}))
+    (ws / "config.yaml").write_text('max_steps: 3\ntracer: "@nonexistent_resource"\n')
+
+    with pytest.raises(WorkspaceSerializationError, match="unresolved resource reference"):
+        workspace_to_preset(ws, strict=True)
+
+
+def test_callable_loop_config_field_auto_emits_resource(tmp_path: Path) -> None:
+    """Setting a callable LoopConfig field (compact_service) auto-emits
+    ``compact_service: "@compact_service"`` into config.yaml and a
+    matching ``resources/compact_service.py`` builder so the snapshot
+    round-trips without a setup.py detour."""
+    from looplet.compact import PruneToolResults, TruncateCompact, compact_chain
+
+    preset = _build_demo_preset()
+    preset.config.compact_service = compact_chain(
+        PruneToolResults(keep_recent=4), TruncateCompact(keep_recent=2)
+    )
+    ws = preset_to_workspace(preset, tmp_path / "ws")
+
+    cfg_text = (tmp_path / "ws" / "config.yaml").read_text()
+    assert '"@compact_service"' in cfg_text or "@compact_service" in cfg_text
+    assert (tmp_path / "ws" / "resources" / "compact_service.py").is_file()
+
+    # Reload — compact_service should come back via the @ref machinery.
+    reloaded = workspace_to_preset(tmp_path / "ws", strict=True)
+    assert reloaded.config.compact_service is not None
+    # Loose preset round-trip records no warnings for this field.
+    assert not any("compact_service" in w for w in ws.serialization_warnings)
+
+
+def test_builtin_hooks_round_trip_without_subclassing(tmp_path: Path) -> None:
+    """MetricsHook, PermissionHook, StreamingHook, and EvalHook now ship
+    with default ``to_config()`` so they round-trip without forcing
+    users to subclass + override. Previously these silently dropped on
+    reload because the loader couldn't supply the required ctor args.
+    """
+    from looplet import (
+        EvalHook,
+        EvalResult,
+        MetricsCollector,
+        MetricsHook,
+        PermissionDecision,
+        PermissionEngine,
+        PermissionHook,
+        PermissionRule,
+        StreamingHook,
+        ToolSpec,
+    )
+    from looplet.streaming import CallbackEmitter
+    from looplet.tools import BaseToolRegistry
+    from looplet.types import DefaultState
+
+    tools = BaseToolRegistry()
+    tools.register(
+        ToolSpec(
+            name="done",
+            description="done",
+            parameters={"s": "summary"},
+            execute=_done_execute,
+        )
+    )
+    events: list = []
+    hooks = [
+        MetricsHook(collector=MetricsCollector()),
+        PermissionHook(
+            engine=PermissionEngine(
+                rules=[PermissionRule(tool="*", decision=PermissionDecision.ALLOW)]
+            )
+        ),
+        StreamingHook(emitter=CallbackEmitter(events.append)),
+        EvalHook(evaluators=[_trivial_evaluator]),
+    ]
+    cfg = LoopConfig(max_steps=3, done_tool="done")
+    preset = AgentPreset(config=cfg, hooks=hooks, tools=tools, state=DefaultState(max_steps=3))
+
+    ws = preset_to_workspace(preset, tmp_path / "ws")
+    # Resource stubs were emitted for the four hook ctor args.
+    resources = sorted(p.name for p in (tmp_path / "ws" / "resources").iterdir())
+    assert "collector.py" in resources
+    assert "engine.py" in resources
+    assert "emitter.py" in resources
+    assert "evaluators.py" in resources
+
+    reloaded = workspace_to_preset(tmp_path / "ws")
+    # All four hooks survive — no silent drops.
+    cls_names = sorted(type(h).__name__ for h in reloaded.hooks)
+    assert cls_names == ["EvalHook", "MetricsHook", "PermissionHook", "StreamingHook"]
+
+
+# ── Auto-emit improvements: list-of-callables + live-instance kwarg derivation ──
+
+
+def _scripted_done(*, summary: str = "") -> dict:
+    return {"status": "completed", "summary": summary}
+
+
+def _eval_passed(ctx) -> "EvalResult":  # noqa: F821
+    from looplet import EvalResult  # noqa: PLC0415
+
+    return EvalResult(name="passed", passed=True)
+
+
+def _eval_smoke(ctx) -> "EvalResult":  # noqa: F821
+    from looplet import EvalResult  # noqa: PLC0415
+
+    return EvalResult(name="smoke", passed=True)
+
+
+def _emit_callback(event) -> None:
+    pass
+
+
+def test_list_of_top_level_callables_auto_emits_real_imports(tmp_path: Path) -> None:
+    """When a hook kwarg holds a list of importable callables (e.g.
+    ``EvalHook(evaluators=[a, b])``), the auto-emit machinery should
+    write a builder that re-imports each callable by name — not fall
+    back to a None-stub for ``builtins.list``."""
+    from looplet import (
+        AgentPreset,
+        EvalHook,
+        LoopConfig,
+        ToolSpec,
+    )
+    from looplet.tools import BaseToolRegistry
+    from looplet.types import DefaultState
+
+    tools = BaseToolRegistry()
+    tools.register(
+        ToolSpec(name="done", description="d", parameters={"summary": "s"}, execute=_scripted_done)
+    )
+    hooks = [EvalHook(evaluators=[_eval_passed, _eval_smoke])]
+    cfg = LoopConfig(max_steps=3, done_tool="done")
+    preset = AgentPreset(config=cfg, hooks=hooks, tools=tools, state=DefaultState(max_steps=3))
+
+    preset_to_workspace(preset, tmp_path / "ws", strict=True)
+    builder = (tmp_path / "ws" / "resources" / "evaluators.py").read_text()
+    # Real ``from M import F`` lines for each evaluator, not a None-stub.
+    assert "from tests.test_workspace import _eval_passed" in builder
+    assert "from tests.test_workspace import _eval_smoke" in builder
+    assert "return [_eval_passed, _eval_smoke]" in builder
+
+    # Reload + check the evaluators came back identical.
+    reloaded = workspace_to_preset(tmp_path / "ws", strict=True)
+    eh = reloaded.hooks[0]
+    assert [fn.__name__ for fn in eh.evaluators] == ["_eval_passed", "_eval_smoke"]
+
+
+def test_live_instance_kwarg_derivation_for_emitter(tmp_path: Path) -> None:
+    """When a hook holds an instance whose required ctor kwarg is a
+    top-level callable (e.g. ``StreamingHook(emitter=CallbackEmitter(fn))``
+    with a module-level ``fn``), the auto-emit builder must re-import
+    the callable rather than falling through to ``runtime.get(...)``
+    (which would yield None and crash the loop at run time)."""
+    from looplet import (
+        AgentPreset,
+        LoopConfig,
+        StreamingHook,
+        ToolSpec,
+    )
+    from looplet.streaming import CallbackEmitter
+    from looplet.tools import BaseToolRegistry
+    from looplet.types import DefaultState
+
+    tools = BaseToolRegistry()
+    tools.register(
+        ToolSpec(name="done", description="d", parameters={"summary": "s"}, execute=_scripted_done)
+    )
+    hooks = [StreamingHook(emitter=CallbackEmitter(_emit_callback))]
+    cfg = LoopConfig(max_steps=3, done_tool="done")
+    preset = AgentPreset(config=cfg, hooks=hooks, tools=tools, state=DefaultState(max_steps=3))
+
+    preset_to_workspace(preset, tmp_path / "ws", strict=True)
+    builder = (tmp_path / "ws" / "resources" / "emitter.py").read_text()
+    assert "from looplet.streaming import CallbackEmitter" in builder
+    assert "from tests.test_workspace import _emit_callback" in builder
+    assert "callback=_emit_callback" in builder
+    # Specifically must NOT regress to the old ``runtime.get('callback')``
+    # template, which silently produced a None callback and crashed at
+    # ``self._callback(event)``.
+    assert "runtime.get('callback')" not in builder
+
+    # Reload — the callback should be the same module-level function.
+    reloaded = workspace_to_preset(tmp_path / "ws", strict=True)
+    emitter = reloaded.hooks[0]._emitter
+    cb = getattr(emitter, "_callback", None) or getattr(emitter, "callback", None)
+    assert cb is _emit_callback
+
+
+def test_triple_round_trip_is_byte_idempotent(tmp_path: Path) -> None:
+    """preset -> ws1 -> preset' -> ws2: every file in ws1 and ws2 must
+    be byte-identical. Catches non-deterministic ordering and
+    auto-emit drift."""
+    from looplet import (
+        AgentPreset,
+        EvalHook,
+        LoopConfig,
+        StreamingHook,
+        ToolSpec,
+    )
+    from looplet.streaming import CallbackEmitter
+    from looplet.tools import BaseToolRegistry
+    from looplet.types import DefaultState
+
+    tools = BaseToolRegistry()
+    tools.register(
+        ToolSpec(name="done", description="d", parameters={"summary": "s"}, execute=_scripted_done)
+    )
+    hooks = [
+        EvalHook(evaluators=[_eval_passed, _eval_smoke]),
+        StreamingHook(emitter=CallbackEmitter(_emit_callback)),
+    ]
+    cfg = LoopConfig(max_steps=3, done_tool="done")
+    preset = AgentPreset(config=cfg, hooks=hooks, tools=tools, state=DefaultState(max_steps=3))
+
+    ws1 = tmp_path / "ws1"
+    preset_to_workspace(preset, ws1, name="rt", strict=True)
+    preset2 = workspace_to_preset(ws1, strict=True)
+    ws2 = tmp_path / "ws2"
+    preset_to_workspace(preset2, ws2, name="rt", strict=True)
+
+    files1 = sorted(
+        p.relative_to(ws1) for p in ws1.rglob("*") if p.is_file() and "__pycache__" not in p.parts
+    )
+    files2 = sorted(
+        p.relative_to(ws2) for p in ws2.rglob("*") if p.is_file() and "__pycache__" not in p.parts
+    )
+    assert files1 == files2, f"file-set drift: {set(files1) ^ set(files2)}"
+
+    drifts = []
+    for rel in files1:
+        a = (ws1 / rel).read_text(encoding="utf-8")
+        b = (ws2 / rel).read_text(encoding="utf-8")
+        if a != b:
+            drifts.append(str(rel))
+    assert not drifts, f"byte drift in: {drifts}"
+
+
+# ── CallableMemorySource round-trip + dataclass auto-emit ─────────────
+
+
+def _live_state_load(state) -> str:
+    """Top-level memory loader so workspace round-trip can re-import it."""
+    step = getattr(state, "step_count", 0) or len(getattr(state, "steps", []) or [])
+    return f"[live] step={step}"
+
+
+def test_callable_memory_source_round_trips(tmp_path: Path) -> None:
+    """``CallableMemorySource(fn=top_level_fn)`` round-trips losslessly:
+    writer emits ``memory/<idx>_callable.py`` with a re-import; loader
+    wraps the exported ``load`` symbol back into a CallableMemorySource."""
+    from looplet import (
+        AgentPreset,
+        CallableMemorySource,
+        LoopConfig,
+        StaticMemorySource,
+        ToolSpec,
+    )
+    from looplet.tools import BaseToolRegistry
+    from looplet.types import DefaultState
+
+    tools = BaseToolRegistry()
+    tools.register(
+        ToolSpec(name="done", description="d", parameters={"summary": "s"}, execute=_scripted_done)
+    )
+    cfg = LoopConfig(
+        max_steps=3,
+        done_tool="done",
+        memory_sources=[
+            StaticMemorySource(text="A"),
+            CallableMemorySource(fn=_live_state_load),
+            StaticMemorySource(text="B"),
+        ],
+    )
+    preset = AgentPreset(config=cfg, hooks=[], tools=tools, state=DefaultState(max_steps=3))
+    ws = preset_to_workspace(preset, tmp_path / "ws", strict=True)
+    assert ws.serialization_warnings == []
+    assert (tmp_path / "ws" / "memory" / "01_callable.py").is_file()
+
+    reloaded = workspace_to_preset(tmp_path / "ws", strict=True)
+    types = [type(s).__name__ for s in (reloaded.config.memory_sources or [])]
+    assert types == ["StaticMemorySource", "CallableMemorySource", "StaticMemorySource"]
+
+    # The reloaded callable behaves identically.
+    cm = reloaded.config.memory_sources[1]
+    assert cm.fn(DefaultState(max_steps=3)) == "[live] step=0"
+
+
+def test_callable_memory_source_lambda_warns_in_loose_mode(tmp_path: Path) -> None:
+    """Lambdas / closures cannot be re-imported; writer falls back to a
+    warning instead of dropping silently or crashing."""
+    from looplet import (
+        AgentPreset,
+        CallableMemorySource,
+        LoopConfig,
+        ToolSpec,
+    )
+    from looplet.tools import BaseToolRegistry
+    from looplet.types import DefaultState
+
+    tools = BaseToolRegistry()
+    tools.register(
+        ToolSpec(name="done", description="d", parameters={"summary": "s"}, execute=_scripted_done)
+    )
+    cfg = LoopConfig(
+        max_steps=3,
+        done_tool="done",
+        memory_sources=[CallableMemorySource(fn=lambda state: "x")],
+    )
+    preset = AgentPreset(config=cfg, hooks=[], tools=tools, state=DefaultState(max_steps=3))
+    ws = preset_to_workspace(preset, tmp_path / "ws", strict=False)
+    assert any("CallableMemorySource" in w for w in ws.serialization_warnings)
+
+
+def test_dataclass_auto_emit_reproduces_field_state(tmp_path: Path) -> None:
+    """When a hook holds a dataclass instance with non-default field
+    values (e.g. ``PermissionEngine(rules=[PermissionRule(...), ...])``),
+    the auto-emit builder must reproduce every field — not just the
+    required ctor args. Previously ``PermissionEngine`` round-tripped
+    with empty rules because ``rules`` has a default_factory and the
+    generic builder skipped non-required kwargs."""
+    from looplet import (
+        AgentPreset,
+        LoopConfig,
+        PermissionDecision,
+        PermissionEngine,
+        PermissionHook,
+        PermissionRule,
+        ToolSpec,
+    )
+    from looplet.tools import BaseToolRegistry
+    from looplet.types import DefaultState
+
+    tools = BaseToolRegistry()
+    tools.register(
+        ToolSpec(name="done", description="d", parameters={"summary": "s"}, execute=_scripted_done)
+    )
+    engine = PermissionEngine(
+        rules=[
+            PermissionRule(tool="dangerous", decision=PermissionDecision.DENY, reason="audit-only"),
+            PermissionRule(tool="*", decision=PermissionDecision.ALLOW),
+        ]
+    )
+    hooks = [PermissionHook(engine=engine)]
+    cfg = LoopConfig(max_steps=3, done_tool="done")
+    preset = AgentPreset(config=cfg, hooks=hooks, tools=tools, state=DefaultState(max_steps=3))
+
+    preset_to_workspace(preset, tmp_path / "ws", strict=True)
+    builder = (tmp_path / "ws" / "resources" / "engine.py").read_text()
+    # Real reproduction — not an empty-rules shell.
+    assert "PermissionEngine(rules=[" in builder
+    assert "tool='dangerous'" in builder
+    assert "PermissionDecision.DENY" in builder
+
+    reloaded = workspace_to_preset(tmp_path / "ws", strict=True)
+    eng = reloaded.hooks[0].engine
+    assert [r.tool for r in eng.rules] == ["dangerous", "*"]
+    assert [r.decision for r in eng.rules] == [
+        PermissionDecision.DENY,
+        PermissionDecision.ALLOW,
+    ]

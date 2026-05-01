@@ -304,6 +304,21 @@ class StreamingHook:
         self._total_llm_calls: int = 0
         self._step_llm_calls: int = 0
 
+    def to_config(self) -> dict:
+        """Workspace round-trip: emit ``emitter`` as an ``@ref`` so the
+        v2 workspace writer auto-generates ``resources/emitter.py``.
+        Closure-based emitters (e.g. ``CallbackEmitter(list.append)``)
+        will fall through to a None-stub the user must replace; classes
+        with a clean ``__init__`` round-trip automatically.
+        """
+        return {"emitter": "@emitter"}
+
+    @property
+    def emitter(self) -> EventEmitter:
+        """Public accessor used by the workspace writer to pull the
+        live instance for resource auto-emit."""
+        return self._emitter
+
     def pre_loop(
         self,
         state: AgentState,

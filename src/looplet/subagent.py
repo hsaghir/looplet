@@ -36,6 +36,7 @@ def run_sub_loop(
     max_steps: int = 5,
     system_prompt: str = "",
     hooks: list[Any] | None = None,
+    parent_hooks: list[Any] | None = None,
     context: Any = None,
     state: Any = None,
     sub_tools: Any = None,
@@ -53,7 +54,20 @@ def run_sub_loop(
         tools: Parent tool registry. Cloned (minus state-mutating tools) for sub-agent.
         max_steps: Maximum number of steps for the sub-agent.
         system_prompt: System prompt for the sub-agent LLM calls.
-        hooks: Optional list of LoopHook instances.
+        hooks: Optional list of LoopHook instances **for the sub-loop**.
+        parent_hooks: Optional list of LoopHook instances from the
+            parent loop. When supplied, the sub-loop also fires its
+            lifecycle events (PRE_TOOL_USE, POST_TOOL_USE, etc.) on
+            the parent's hooks so observability stacks on the parent
+            (MetricsHook, StreamingHook, TrajectoryRecorder, …) see
+            the sub-loop's per-step activity. The parent hooks are
+            **not** invoked through their full ``LoopHook`` interface
+            (no ``pre_loop`` / ``check_done`` from the sub-loop —
+            those would conflate parent + sub state); only their
+            event-driven ``on_event`` method is forwarded. Opt-in:
+            callers building tool-as-subagent patterns pass
+            ``parent_hooks=ctx.hooks`` (or pull from a parent context).
+            Defaults to ``None`` — no forwarding, fully isolated.
         context: Domain-specific backend passed through to the loop.
         state: Optional custom state. If None, uses _MinimalState.
         sub_tools: Optional custom tool registry. If None, clones parent
@@ -104,13 +118,22 @@ def run_sub_loop(
 
         subagent_id = uuid.uuid4().hex[:12]
 
+    # Wrap each parent hook so its ``on_event`` receives every event
+    # the sub-loop emits, tagged with this subagent_id so consumers
+    # can route / nest. We do NOT forward the full LoopHook interface
+    # (pre_loop, check_done, etc.) — those would conflate parent + sub
+    # state. Only event-stream observers see the activity.
+    sub_hooks: list[Any] = list(hooks or [])
+    if parent_hooks:
+        sub_hooks.append(_ParentHookForwarder(parent_hooks, subagent_id))
+
     # Fire SUBAGENT_START on the parent's hooks so observers see the
     # spawn. Import lazily to avoid a circular import with loop.py.
     from looplet.events import LifecycleEvent as _LE  # noqa: PLC0415
     from looplet.loop import emit_event  # noqa: PLC0415
 
     emit_event(
-        hooks or [],
+        list(parent_hooks or []) + (hooks or []),
         _LE.SUBAGENT_START,
         state=state,
         context=context,
@@ -133,7 +156,7 @@ def run_sub_loop(
         task=task,
         tools=sub_tools,
         context=context,
-        hooks=hooks or [],
+        hooks=sub_hooks,
         config=sub_config,
         state=state,
         session_log=session_log,
@@ -181,7 +204,7 @@ def run_sub_loop(
     # the llm-call cost via EventPayload.extra. Swallowing exceptions
     # is already handled by emit_event.
     emit_event(
-        hooks or [],
+        list(parent_hooks or []) + (hooks or []),
         _LE.SUBAGENT_STOP,
         state=state,
         context=context,
@@ -194,6 +217,53 @@ def run_sub_loop(
     )
     result["subagent_id"] = subagent_id
     return result
+
+
+class _ParentHookForwarder:
+    """Forwards a sub-loop's lifecycle events to the parent's hooks.
+
+    Implements only ``on_event`` (not the full ``LoopHook`` interface):
+    the sub-loop's per-step events are surfaced to parent observability
+    (MetricsHook, StreamingHook, TrajectoryRecorder, …) without letting
+    the parent's flow-control methods (``check_done``, ``pre_prompt``,
+    etc.) re-enter on sub state.
+
+    The forwarded :class:`EventPayload` is augmented with
+    ``subagent_id`` in its ``extra`` dict so consumers can distinguish
+    nested activity from the parent's own.
+    """
+
+    __slots__ = ("_parent_hooks", "_subagent_id")
+
+    def __init__(self, parent_hooks: list[Any], subagent_id: str) -> None:
+        self._parent_hooks = list(parent_hooks)
+        self._subagent_id = subagent_id
+
+    def on_event(self, payload: Any) -> None:
+        # Tag the payload's extra dict so parent observers can filter /
+        # nest sub-activity. Mutating the live payload is acceptable
+        # here — it's about to be discarded by every other observer at
+        # the end of this dispatch.
+        try:
+            extra = getattr(payload, "extra", None)
+            if isinstance(extra, dict):
+                extra.setdefault("subagent_id", self._subagent_id)
+        except Exception:  # noqa: BLE001
+            pass
+        for hook in self._parent_hooks:
+            handler = getattr(hook, "on_event", None)
+            if handler is None:
+                continue
+            try:
+                handler(payload)
+            except Exception:  # noqa: BLE001
+                # Parent hook misbehaviour must never break the sub-loop.
+                logger.warning(
+                    "parent hook %r raised during sub-loop event forward "
+                    "(subagent_id=%s); swallowing",
+                    type(hook).__name__,
+                    self._subagent_id,
+                )
 
 
 class _MinimalState:

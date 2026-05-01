@@ -84,6 +84,28 @@ class ToolError:
     """Optional structured metadata — e.g. ``{"attempts": 3,
     "next_retry_in": 2.0}`` — attached by the producer for observability."""
 
+    recovery_hint: dict[str, Any] | str | None = None
+    """Optional structured suggestion for how the caller could recover.
+
+    Carries information that the LLM can act on directly. Two common
+    shapes:
+
+    * **Schema/shape hint** (``dict``): name the expected argument
+      shape so the model can correct a malformed call without
+      re-discovering the tool spec. The dispatcher's built-in
+      ``"got unexpected argument"`` and ``"missing required argument"``
+      errors set this to ``{"expected": <param_schema>}``.
+    * **Suggestion** (``str``): a "did you mean?" hint surfaced from
+      the tool. The dispatcher's ``"unknown tool"`` error sets this
+      to ``"Did you mean '<closest>'?"`` when one is found.
+
+    Tool authors should populate this on any error the model could
+    fix by changing its next call — leaving it ``None`` means "no
+    actionable recovery information" (a hard failure, e.g. a
+    permission deny). The recovery hint is included in the rendered
+    error text the loop hands back to the model on the next turn.
+    """
+
     def __bool__(self) -> bool:  # truthy like a string error
         return True
 

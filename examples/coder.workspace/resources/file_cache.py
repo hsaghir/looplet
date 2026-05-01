@@ -13,7 +13,7 @@ Reads ``runtime["workspace"]`` so the FileCache is bound to the same
 path the host CLI gave the workspace.
 """
 
-from examples.coder.tools import FileCache
+from coder_lib_tools import FileCache
 
 
 def build(runtime=None):

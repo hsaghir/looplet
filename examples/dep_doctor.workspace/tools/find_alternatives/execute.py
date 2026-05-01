@@ -1,5 +1,5 @@
-"""find_alternatives — re-import from examples.dep_doctor.agent."""
+"""find_alternatives — re-import from co-located ``dep_doctor_lib.py``."""
 
-from examples.dep_doctor.agent import find_alternatives as _spec
+from dep_doctor_lib import find_alternatives as execute
 
-execute = _spec.execute
+__all__ = ["execute"]

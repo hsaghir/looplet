@@ -1,6 +1,5 @@
-"""fetch_feed — re-import the original top-level function so its
-typing imports + helper closures stay intact."""
+"""fetch_feed — re-import from co-located ``threat_intel_lib.py``."""
 
-from examples.threat_intel.agent import fetch_feed as _spec
+from threat_intel_lib import fetch_feed as execute
 
-execute = _spec.execute
+__all__ = ["execute"]

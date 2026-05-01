@@ -1,5 +1,5 @@
-"""detect_dep_files — re-import from examples.dep_doctor.agent."""
+"""detect_dep_files — re-import from co-located ``dep_doctor_lib.py``."""
 
-from examples.dep_doctor.agent import detect_dep_files as _spec
+from dep_doctor_lib import detect_dep_files as execute
 
-execute = _spec.execute
+__all__ = ["execute"]

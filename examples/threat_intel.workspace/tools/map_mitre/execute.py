@@ -1,3 +1,5 @@
-from examples.threat_intel.agent import map_mitre as _spec
+"""map_mitre — re-import from co-located ``threat_intel_lib.py``."""
 
-execute = _spec.execute
+from threat_intel_lib import map_mitre as execute
+
+__all__ = ["execute"]

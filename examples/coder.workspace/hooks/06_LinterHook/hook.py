@@ -5,7 +5,7 @@ by the host via the runtime kwarg, threaded into the hook's config.yaml
 through ``${runtime.workspace}`` template substitution.
 """
 
-from examples.coder.hooks import LinterHook as _LinterHook
+from coder_lib_hooks import LinterHook as _LinterHook
 
 
 class LinterHook(_LinterHook):

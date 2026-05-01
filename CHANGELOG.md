@@ -6,6 +6,39 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Removed (BREAKING)
+- **v1 example modules deleted.** The legacy `examples/coder/`,
+  `examples/dep_doctor/`, `examples/git_detective/`, and
+  `examples/threat_intel/` agent-CLI directories have been removed.
+  Their tool functions, hook classes, and helpers now live inside the
+  matching `examples/<name>.workspace/` Composable Harness Workspaces
+  as co-located helper modules (`<wsname>_lib.py` for the simple
+  examples, `coder_lib_{tools,hooks,wiring}.py` for the coder one).
+  The v2 workspaces are now the only published agent surface.
+- The `examples/coder/skill/` SkillBundle was relocated to
+  `tests/fixtures/coder_skill_bundle/` (with vendored sibling modules
+  so it loads without any `examples.coder.*` import). All
+  `looplet.bundles` / `looplet.blueprints` test coverage continues to
+  exercise it via the new fixture path.
+- Removed tests that targeted the deleted v1 modules:
+  `tests/test_coder_example_smoke.py`,
+  `tests/test_coder_reliability_smoke.py`,
+  `tests/test_dep_doctor_example_smoke.py`,
+  `tests/test_git_detective_example_smoke.py`,
+  `tests/test_threat_intel_example_smoke.py`, and
+  `test_distributions_include_coder_cartridge_and_dependency` from
+  `tests/test_cartridge_round_trip_smoke.py`.
+
+### Changed
+- **Workspace loader pushes the workspace root onto `sys.path`** for
+  the duration of `workspace_to_preset`, so a workspace's tools /
+  hooks / resources / setup.py can `from <wsname>_lib import X`
+  without a dedicated import shim. The path is removed on exit.
+  Workspaces should pick a unique top-level lib filename
+  (`<wsname>_lib.py`, not bare `lib.py`) to avoid sys.modules cache
+  collisions when two workspaces are loaded back-to-back in the same
+  process.
+
 ### Added
 - **Cartridge discovery without import.** `discover_skill_bundles(roots)`
   walks one or more roots and returns `BundleCard` records (name,

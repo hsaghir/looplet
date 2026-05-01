@@ -5,7 +5,7 @@ workspace surfaces the same outcome-grounded artifacts. Reads
 ``runtime['workspace']`` for the project root.
 """
 
-from examples.coder.wiring import make_test_collector
+from coder_lib_wiring import make_test_collector
 
 
 def build(runtime=None):

@@ -748,7 +748,10 @@ def test_coder_workspace_bidirectional_round_trip(tmp_path) -> None:
     # runtime['workspace']; pass it on reload.
     reloaded = workspace_to_preset(snap_dir, runtime={"workspace": str(target)})
 
-    # All 7 declarative hooks survive the round-trip.
+    # All 8 declarative hooks survive the round-trip — including
+    # EvalHook now that its evaluators + collectors live in
+    # resources/eval_evaluators.py and resources/eval_collectors.py
+    # (referenced via @ref instead of injected via setup.py).
     reloaded_names = [type(h).__name__ for h in reloaded.hooks]
     assert reloaded_names == [
         "TestGuardHook",
@@ -758,6 +761,7 @@ def test_coder_workspace_bidirectional_round_trip(tmp_path) -> None:
         "ThresholdCompactHook",
         "PerToolLimitHook",
         "LinterHook",
+        "EvalHook",
     ]
     assert sorted(reloaded.tools._tools.keys()) == [
         "bash",
@@ -823,3 +827,171 @@ def test_runtime_substitution_in_hook_config(tmp_path) -> None:
 
     preset = workspace_to_preset(out, strict=True, runtime={"workspace": "/tmp/some-path"})
     assert preset.hooks[0].path == "/tmp/some-path"
+
+
+# ── Harness-shape stress tests (PR #31) ───────────────────────
+
+
+def test_permission_engine_via_at_ref(tmp_path) -> None:
+    """PermissionEngine + PermissionHook compose via @ref. Lets users
+    declare permission policy in resources/perm_engine.py and reference
+    it from hooks/00_PermissionHook/config.yaml."""
+    import json as _json
+    from pathlib import Path as _P
+
+    ws = tmp_path
+    (ws / "workspace.json").write_text(_json.dumps({"name": "x", "schema_version": 1}))
+    (ws / "config.yaml").write_text("max_steps: 5\n")
+    (ws / "tools/echo").mkdir(parents=True)
+    (ws / "tools/echo/tool.yaml").write_text("name: echo\nparameters:\n  msg:\n    type: string\n")
+    (ws / "tools/echo/execute.py").write_text("def execute(*, msg): return {'echoed': msg}\n")
+    (ws / "tools/done").mkdir(parents=True)
+    (ws / "tools/done/tool.yaml").write_text("name: done\nparameters:\n  s:\n    type: string\n")
+    (ws / "tools/done/execute.py").write_text(
+        "def execute(*, s): return {'status': 'completed', 's': s}\n"
+    )
+    (ws / "resources").mkdir()
+    (ws / "resources/perm_engine.py").write_text(
+        "from looplet import PermissionEngine, PermissionDecision\n"
+        "def build(runtime=None):\n"
+        "    eng = PermissionEngine(default=PermissionDecision.ALLOW)\n"
+        "    eng.deny('echo', arg_matcher=lambda a: a.get('msg', '').startswith('SECRET'))\n"
+        "    return eng\n"
+    )
+    (ws / "hooks/00_PermissionHook").mkdir(parents=True)
+    (ws / "hooks/00_PermissionHook/hook.py").write_text(
+        "from looplet import PermissionHook as _PH\n"
+        "class PermissionHook(_PH):\n"
+        "    def to_config(self): return {'engine': '@perm_engine'}\n"
+    )
+    (ws / "hooks/00_PermissionHook/config.yaml").write_text(
+        'class_name: PermissionHook\nkwargs:\n  engine: "@perm_engine"\n'
+    )
+
+    from looplet import composable_loop
+    from looplet.testing import MockLLMBackend
+
+    preset = workspace_to_preset(ws, strict=True)
+    llm = MockLLMBackend(
+        responses=[
+            _json.dumps({"thought": "ok", "tool": "echo", "args": {"msg": "hello"}}),
+            _json.dumps({"thought": "block", "tool": "echo", "args": {"msg": "SECRET-leak"}}),
+            _json.dumps({"thought": "f", "tool": "done", "args": {"s": "ok"}}),
+        ]
+    )
+    steps = list(
+        composable_loop(
+            llm=llm,
+            tools=preset.tools,
+            state=preset.state,
+            config=preset.config,
+            hooks=preset.hooks,
+            task={"q": "x"},
+        )
+    )
+    assert steps[0].tool_result.error is None
+    assert steps[1].tool_result.error and "permission" in steps[1].tool_result.error.lower()
+
+
+def test_eval_hook_declarative_via_at_ref(tmp_path) -> None:
+    """EvalHook with declarative evaluators + collectors via @ref.
+    Confirms callable-graph hooks are NOT a permanent setup.py
+    requirement — when callables are exposed as resource builders
+    that return them, the @ref registry resolves them just like any
+    other shared resource."""
+    import json as _json
+
+    ws = tmp_path
+    (ws / "workspace.json").write_text(_json.dumps({"name": "x", "schema_version": 1}))
+    (ws / "config.yaml").write_text("max_steps: 3\n")
+    (ws / "tools/done").mkdir(parents=True)
+    (ws / "tools/done/tool.yaml").write_text("name: done\nparameters:\n  s:\n    type: string\n")
+    (ws / "tools/done/execute.py").write_text(
+        "def execute(*, s): return {'status': 'completed', 's': s}\n"
+    )
+    (ws / "resources").mkdir()
+    (ws / "resources/evaluators.py").write_text(
+        "def eval_completed(ctx): return ctx.completed\n"
+        "def build(runtime=None): return [eval_completed]\n"
+    )
+    (ws / "hooks/00_EvalHook").mkdir(parents=True)
+    (ws / "hooks/00_EvalHook/hook.py").write_text(
+        "from looplet import EvalHook as _EH\n"
+        "class EvalHook(_EH):\n"
+        "    def to_config(self): return {'evaluators': '@evaluators'}\n"
+    )
+    (ws / "hooks/00_EvalHook/config.yaml").write_text(
+        'class_name: EvalHook\nkwargs:\n  evaluators: "@evaluators"\n'
+    )
+
+    preset = workspace_to_preset(ws, strict=True)
+    eh = preset.hooks[0]
+    evals = getattr(eh, "evaluators", None) or getattr(eh, "_evaluators", None)
+    assert evals and len(evals) == 1
+
+
+def test_streaming_hook_declarative_via_at_ref(tmp_path) -> None:
+    """StreamingHook with declarative emitter via @ref."""
+    import json as _json
+
+    ws = tmp_path
+    (ws / "workspace.json").write_text(_json.dumps({"name": "x", "schema_version": 1}))
+    (ws / "config.yaml").write_text("max_steps: 3\n")
+    (ws / "tools/done").mkdir(parents=True)
+    (ws / "tools/done/tool.yaml").write_text("name: done\nparameters:\n  s:\n    type: string\n")
+    (ws / "tools/done/execute.py").write_text(
+        "def execute(*, s): return {'status': 'completed', 's': s}\n"
+    )
+    (ws / "resources").mkdir()
+    (ws / "resources/emitter.py").write_text(
+        "from looplet.streaming import CallbackEmitter\n"
+        "EVENTS = []\n"
+        "def build(runtime=None): return CallbackEmitter(EVENTS.append)\n"
+    )
+    (ws / "hooks/00_StreamingHook").mkdir(parents=True)
+    (ws / "hooks/00_StreamingHook/hook.py").write_text(
+        "from looplet import StreamingHook as _SH\n"
+        "class StreamingHook(_SH):\n"
+        "    def to_config(self): return {'emitter': '@emitter'}\n"
+    )
+    (ws / "hooks/00_StreamingHook/config.yaml").write_text(
+        'class_name: StreamingHook\nkwargs:\n  emitter: "@emitter"\n'
+    )
+
+    preset = workspace_to_preset(ws, strict=True)
+    hook = preset.hooks[0]
+    emitter = getattr(hook, "emitter", None) or getattr(hook, "_emitter", None)
+    assert emitter is not None
+
+
+def test_workspace_extends_other_workspace(tmp_path) -> None:
+    """A workspace's setup.py can load another workspace and merge
+    its tools/hooks. Demonstrates inheritance/composition between
+    cartridges without forking the loop."""
+    import json as _json
+
+    base = tmp_path / "base"
+    ext = tmp_path / "ext"
+    (base / "tools/done").mkdir(parents=True)
+    (base / "workspace.json").write_text(_json.dumps({"name": "base", "schema_version": 1}))
+    (base / "config.yaml").write_text("max_steps: 5\n")
+    (base / "tools/done/tool.yaml").write_text("name: done\nparameters:\n  s:\n    type: string\n")
+    (base / "tools/done/execute.py").write_text(
+        "def execute(*, s): return {'status': 'completed', 's': s}\n"
+    )
+
+    (ext / "tools").mkdir(parents=True)
+    (ext / "workspace.json").write_text(_json.dumps({"name": "ext", "schema_version": 1}))
+    (ext / "config.yaml").write_text("max_steps: 10\n")
+    (ext / "setup.py").write_text(
+        "from looplet import workspace_to_preset\n"
+        f"BASE = {str(base)!r}\n"
+        "def setup(preset, resources, runtime=None):\n"
+        "    base = workspace_to_preset(BASE)\n"
+        "    for name, spec in base.tools._tools.items():\n"
+        "        if name not in preset.tools._tools:\n"
+        "            preset.tools.register(spec)\n"
+        "    return preset\n"
+    )
+    preset = workspace_to_preset(ext, strict=True)
+    assert "done" in preset.tools._tools

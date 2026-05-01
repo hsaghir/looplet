@@ -1,6 +1,7 @@
-"""Wire shared resources + callable-graph hooks for the coder workspace.
+"""Wire shared resources + non-declarative bits for the coder workspace.
 
-Three jobs run here, all driven by the host-supplied ``runtime`` dict:
+After PR #30 + the harness-search dogfooding the deferred work shrunk
+to two jobs that genuinely need real Python at load time:
 
 1. **Inject shared resources into tool module globals** — tools
    accept their kwargs from the LLM, so the @ref registry alone
@@ -8,19 +9,18 @@ Three jobs run here, all driven by the host-supplied ``runtime`` dict:
    walks ``tool_modules`` and writes ``WORKSPACE_CONFIG`` /
    ``FILE_CACHE`` into each tool that declares those globals.
 
-2. **Append callable-graph hooks** — LinterHook (needs runtime
-   workspace), EvalHook (needs evaluator + collector callables),
-   and an optional StreamingHook (needs an emitter callable) all
-   carry callables that don't round-trip through YAML. They get
-   appended to ``preset.hooks`` here so the resulting preset
-   matches the v1 cartridge feature-for-feature.
+2. **Attach the compaction service** — ``compact_service`` is a
+   non-JSON-able callable, so it can't go in config.yaml. Same
+   chain the v1 cartridge uses.
 
-3. **Attach the compaction service** — the v1 cartridge wires
-   ``compact_service=compact_chain(PruneToolResults(keep_recent=10),
-   TruncateCompact(keep_recent=5))``. We re-use the same chain.
+3. **Append the live-state CallableMemorySource** — the v1
+   cartridge's project-context briefing uses a callable that reads
+   ``state.step_count`` per step. CallableMemorySource isn't
+   round-trippable through YAML.
 
-Plus a callable memory source for the live project-context briefing
-that gets appended to ``config.memory_sources``.
+Every other piece (LinterHook, EvalHook, evaluators, collectors,
+PerToolLimitHook, StagnationHook, ThresholdCompactHook, the @ref
+shared FileCache) is now declarative under hooks/ and resources/.
 """
 
 from __future__ import annotations
@@ -39,16 +39,7 @@ def setup(preset, resources, tool_modules, hook_modules, runtime=None):
         if file_cache is not None and hasattr(module, "FILE_CACHE"):
             module.FILE_CACHE = file_cache
 
-    # 2. Append callable-graph hooks. EvalHook needs collector +
-    # evaluator callables that don't round-trip through YAML — those
-    # stay in setup.py. LinterHook is loaded declaratively from
-    # hooks/06_LinterHook/config.yaml using ``${runtime.workspace}``
-    # template substitution (no setup.py wiring needed).
-    from examples.coder.wiring import build_eval_hook  # noqa: PLC0415
-
-    preset.hooks.append(build_eval_hook(workspace_path))
-
-    # 3. Attach the compaction service.
+    # 2. Attach the compaction service.
     from looplet.compact import (  # noqa: PLC0415
         PruneToolResults,
         TruncateCompact,
@@ -60,7 +51,7 @@ def setup(preset, resources, tool_modules, hook_modules, runtime=None):
         TruncateCompact(keep_recent=5),
     )
 
-    # 4. Append the live-state callable memory source the v1 cartridge
+    # 3. Append the live-state CallableMemorySource the v1 cartridge
     #    uses for project-context briefing.
     from examples.coder.wiring import build_default_memory_sources  # noqa: PLC0415
 

@@ -1156,3 +1156,151 @@ def test_builtin_hooks_round_trip_without_subclassing(tmp_path: Path) -> None:
     # All four hooks survive — no silent drops.
     cls_names = sorted(type(h).__name__ for h in reloaded.hooks)
     assert cls_names == ["EvalHook", "MetricsHook", "PermissionHook", "StreamingHook"]
+
+
+# ── Auto-emit improvements: list-of-callables + live-instance kwarg derivation ──
+
+
+def _scripted_done(*, summary: str = "") -> dict:
+    return {"status": "completed", "summary": summary}
+
+
+def _eval_passed(ctx) -> "EvalResult":  # noqa: F821
+    from looplet import EvalResult  # noqa: PLC0415
+
+    return EvalResult(name="passed", passed=True)
+
+
+def _eval_smoke(ctx) -> "EvalResult":  # noqa: F821
+    from looplet import EvalResult  # noqa: PLC0415
+
+    return EvalResult(name="smoke", passed=True)
+
+
+def _emit_callback(event) -> None:
+    pass
+
+
+def test_list_of_top_level_callables_auto_emits_real_imports(tmp_path: Path) -> None:
+    """When a hook kwarg holds a list of importable callables (e.g.
+    ``EvalHook(evaluators=[a, b])``), the auto-emit machinery should
+    write a builder that re-imports each callable by name — not fall
+    back to a None-stub for ``builtins.list``."""
+    from looplet import (
+        AgentPreset,
+        EvalHook,
+        LoopConfig,
+        ToolSpec,
+    )
+    from looplet.tools import BaseToolRegistry
+    from looplet.types import DefaultState
+
+    tools = BaseToolRegistry()
+    tools.register(
+        ToolSpec(name="done", description="d", parameters={"summary": "s"}, execute=_scripted_done)
+    )
+    hooks = [EvalHook(evaluators=[_eval_passed, _eval_smoke])]
+    cfg = LoopConfig(max_steps=3, done_tool="done")
+    preset = AgentPreset(config=cfg, hooks=hooks, tools=tools, state=DefaultState(max_steps=3))
+
+    preset_to_workspace(preset, tmp_path / "ws", strict=True)
+    builder = (tmp_path / "ws" / "resources" / "evaluators.py").read_text()
+    # Real ``from M import F`` lines for each evaluator, not a None-stub.
+    assert "from tests.test_workspace import _eval_passed" in builder
+    assert "from tests.test_workspace import _eval_smoke" in builder
+    assert "return [_eval_passed, _eval_smoke]" in builder
+
+    # Reload + check the evaluators came back identical.
+    reloaded = workspace_to_preset(tmp_path / "ws", strict=True)
+    eh = reloaded.hooks[0]
+    assert [fn.__name__ for fn in eh.evaluators] == ["_eval_passed", "_eval_smoke"]
+
+
+def test_live_instance_kwarg_derivation_for_emitter(tmp_path: Path) -> None:
+    """When a hook holds an instance whose required ctor kwarg is a
+    top-level callable (e.g. ``StreamingHook(emitter=CallbackEmitter(fn))``
+    with a module-level ``fn``), the auto-emit builder must re-import
+    the callable rather than falling through to ``runtime.get(...)``
+    (which would yield None and crash the loop at run time)."""
+    from looplet import (
+        AgentPreset,
+        LoopConfig,
+        StreamingHook,
+        ToolSpec,
+    )
+    from looplet.streaming import CallbackEmitter
+    from looplet.tools import BaseToolRegistry
+    from looplet.types import DefaultState
+
+    tools = BaseToolRegistry()
+    tools.register(
+        ToolSpec(name="done", description="d", parameters={"summary": "s"}, execute=_scripted_done)
+    )
+    hooks = [StreamingHook(emitter=CallbackEmitter(_emit_callback))]
+    cfg = LoopConfig(max_steps=3, done_tool="done")
+    preset = AgentPreset(config=cfg, hooks=hooks, tools=tools, state=DefaultState(max_steps=3))
+
+    preset_to_workspace(preset, tmp_path / "ws", strict=True)
+    builder = (tmp_path / "ws" / "resources" / "emitter.py").read_text()
+    assert "from looplet.streaming import CallbackEmitter" in builder
+    assert "from tests.test_workspace import _emit_callback" in builder
+    assert "callback=_emit_callback" in builder
+    # Specifically must NOT regress to the old ``runtime.get('callback')``
+    # template, which silently produced a None callback and crashed at
+    # ``self._callback(event)``.
+    assert "runtime.get('callback')" not in builder
+
+    # Reload — the callback should be the same module-level function.
+    reloaded = workspace_to_preset(tmp_path / "ws", strict=True)
+    emitter = reloaded.hooks[0]._emitter
+    cb = getattr(emitter, "_callback", None) or getattr(emitter, "callback", None)
+    assert cb is _emit_callback
+
+
+def test_triple_round_trip_is_byte_idempotent(tmp_path: Path) -> None:
+    """preset -> ws1 -> preset' -> ws2: every file in ws1 and ws2 must
+    be byte-identical. Catches non-deterministic ordering and
+    auto-emit drift."""
+    from looplet import (
+        AgentPreset,
+        EvalHook,
+        LoopConfig,
+        StreamingHook,
+        ToolSpec,
+    )
+    from looplet.streaming import CallbackEmitter
+    from looplet.tools import BaseToolRegistry
+    from looplet.types import DefaultState
+
+    tools = BaseToolRegistry()
+    tools.register(
+        ToolSpec(name="done", description="d", parameters={"summary": "s"}, execute=_scripted_done)
+    )
+    hooks = [
+        EvalHook(evaluators=[_eval_passed, _eval_smoke]),
+        StreamingHook(emitter=CallbackEmitter(_emit_callback)),
+    ]
+    cfg = LoopConfig(max_steps=3, done_tool="done")
+    preset = AgentPreset(config=cfg, hooks=hooks, tools=tools, state=DefaultState(max_steps=3))
+
+    ws1 = tmp_path / "ws1"
+    preset_to_workspace(preset, ws1, name="rt", strict=True)
+    preset2 = workspace_to_preset(ws1, strict=True)
+    ws2 = tmp_path / "ws2"
+    preset_to_workspace(preset2, ws2, name="rt", strict=True)
+
+    files1 = sorted(
+        p.relative_to(ws1) for p in ws1.rglob("*") if p.is_file() and "__pycache__" not in p.parts
+    )
+    files2 = sorted(
+        p.relative_to(ws2) for p in ws2.rglob("*") if p.is_file() and "__pycache__" not in p.parts
+    )
+    assert files1 == files2, f"file-set drift: {set(files1) ^ set(files2)}"
+
+    drifts = []
+    for rel in files1:
+        a = (ws1 / rel).read_text(encoding="utf-8")
+        b = (ws2 / rel).read_text(encoding="utf-8")
+        if a != b:
+            drifts.append(str(rel))
+    assert not drifts, f"byte drift in: {drifts}"

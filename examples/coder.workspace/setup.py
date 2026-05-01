@@ -1,7 +1,7 @@
-"""Wire shared resources + non-declarative bits for the coder workspace.
+"""Wire shared resources + the one non-declarative bit for coder.workspace.
 
-After PR #30 + the harness-search dogfooding the deferred work shrunk
-to two jobs that genuinely need real Python at load time:
+After the @ref-driven memory_sources support landed, the only jobs
+left for setup.py are:
 
 1. **Inject shared resources into tool module globals** — tools
    accept their kwargs from the LLM, so the @ref registry alone
@@ -10,17 +10,14 @@ to two jobs that genuinely need real Python at load time:
    ``FILE_CACHE`` into each tool that declares those globals.
 
 2. **Attach the compaction service** — ``compact_service`` is a
-   non-JSON-able callable, so it can't go in config.yaml. Same
-   chain the v1 cartridge uses.
+   non-JSON-able callable; the same @ref machinery as above could
+   route it but the v1 cartridge keeps the chain hard-coded so we
+   match that.
 
-3. **Append the live-state CallableMemorySource** — the v1
-   cartridge's project-context briefing uses a callable that reads
-   ``state.step_count`` per step. CallableMemorySource isn't
-   round-trippable through YAML.
-
-Every other piece (LinterHook, EvalHook, evaluators, collectors,
-PerToolLimitHook, StagnationHook, ThresholdCompactHook, the @ref
-shared FileCache) is now declarative under hooks/ and resources/.
+Project-context memory and the test-runner collector now live in
+``resources/project_memory.py`` and ``resources/eval_collectors.py``;
+both are wired declaratively through ``config.yaml`` and the
+``EvalHook`` config respectively.
 """
 
 from __future__ import annotations
@@ -28,7 +25,6 @@ from __future__ import annotations
 
 def setup(preset, resources, tool_modules, hook_modules, runtime=None):
     runtime = runtime or {}
-    workspace_path = str(runtime.get("workspace", "."))
     file_cache = resources.get("file_cache")
     workspace_config = resources.get("workspace_config")
 
@@ -50,13 +46,5 @@ def setup(preset, resources, tool_modules, hook_modules, runtime=None):
         PruneToolResults(keep_recent=10),
         TruncateCompact(keep_recent=5),
     )
-
-    # 3. Append the live-state CallableMemorySource the v1 cartridge
-    #    uses for project-context briefing.
-    from coder_lib_wiring import build_default_memory_sources  # noqa: PLC0415
-
-    extra_sources = build_default_memory_sources(workspace_path, preset.config.max_steps)
-    existing = list(preset.config.memory_sources or [])
-    preset.config.memory_sources = existing + extra_sources
 
     return preset

@@ -773,11 +773,50 @@ def preset_to_workspace(
     for idx, hook in enumerate(preset.hooks):
         _write_hook(hook, hooks_root, idx, warnings, strict)
 
-    # 5. memory sources — StaticMemorySource → markdown file
+    # 5. memory sources — three emission paths:
+    #    StaticMemorySource              → memory/<idx>_static.md
+    #    CallableMemorySource(top-level) → memory/<idx>_callable.py
+    #    CallableMemorySource(_chw_resource_X.<lambda>)
+    #                                    → config.yaml ``memory_sources:
+    #                                      ["@X"]`` + resources/<X>.py
+    #                                      (auto-emitted via the
+    #                                      regular resource pipeline)
+    # The third branch lets workspaces wire load-time-parameterised
+    # memory through the same ``runtime=``-aware resource builder
+    # mechanism the rest of the harness uses, instead of forcing a
+    # ``setup.py`` detour for the ``CallableMemorySource(lambda ...)``
+    # closure pattern.
     memory_root = root / WorkspaceLayout.MEMORY_DIR
     memory_root.mkdir(exist_ok=True)
+    memory_ref_entries: list[str] = []
     for idx, source in enumerate(getattr(cfg, "memory_sources", []) or []):
-        _write_memory(source, memory_root, idx, warnings, strict)
+        ref_name = _write_memory(source, memory_root, idx, warnings, strict)
+        if ref_name is not None:
+            ref_string = f"{_REF_PREFIX}{ref_name}"
+            memory_ref_entries.append(ref_string)
+            # Stash a value the resource pipeline's pre-pass can trace
+            # back to ``_chw_resource_<name>``. The wrapper itself
+            # (CallableMemorySource) lives in ``looplet.memory`` so we
+            # stash the wrapped fn whose ``__module__`` is the workspace
+            # resource module — that's what the pre-pass uses to copy
+            # the original ``resources/<name>.py`` file verbatim.
+            from looplet.memory import CallableMemorySource  # noqa: PLC0415
+
+            stash_value = source.fn if isinstance(source, CallableMemorySource) else source
+            config_field_refs.setdefault(ref_name, stash_value)
+
+    # When ``CallableMemorySource`` round-tripped via @ref, append the
+    # ref strings to ``config.yaml``'s ``memory_sources`` list so the
+    # loader's @ref resolution rebuilds them on load. File-based memory
+    # is loaded first by the loader and these @refs append after it.
+    if memory_ref_entries:
+        existing = serialized_cfg.get("memory_sources") or []
+        serialized_cfg["memory_sources"] = list(existing) + memory_ref_entries
+        # Re-write config.yaml to include the new memory_sources entries.
+        (root / WorkspaceLayout.CONFIG_YAML).write_text(
+            _dump_yaml(serialized_cfg) + "\n",
+            encoding="utf-8",
+        )
 
     # 6. resources — for any @<name> ref found in written hook configs,
     # emit a placeholder ``resources/<name>.py`` so the snapshot loads
@@ -795,9 +834,46 @@ def preset_to_workspace(
         extra_refs=config_field_refs,
     )
 
+    # 7. workspace-root helper modules — when the preset was loaded
+    # from another workspace, copy any top-level ``*.py`` helper files
+    # (e.g. ``coder_lib_tools.py``, ``threat_intel_lib.py``) so the
+    # snapshot stays self-contained. Without this, hooks / tools /
+    # resources that import from these helpers crash on cross-process
+    # reload with ``ModuleNotFoundError``.
+    _copy_workspace_helpers(preset, root, warnings)
+
     workspace.serialization_warnings = warnings
     workspace.write_metadata()
     return workspace
+
+
+def _copy_workspace_helpers(preset: Any, dest_root: Path, warnings: list[str]) -> None:
+    """Copy top-level ``*.py`` helper modules from the preset's source
+    workspace (if any) into ``dest_root``.
+
+    The source workspace is read from the private
+    ``preset._origin_workspace_root`` attribute that
+    :func:`workspace_to_preset` stamps on every preset it returns. When
+    the preset was built in-process (no origin attribute), this is a
+    no-op — there's nothing to vendor.
+    """
+    src_root = getattr(preset, "_origin_workspace_root", None)
+    if src_root is None:
+        return
+    src_root = Path(src_root)
+    if not src_root.is_dir() or src_root.resolve() == dest_root.resolve():
+        return
+
+    for helper in sorted(src_root.glob("*.py")):
+        if helper.name in {"__init__.py", WorkspaceLayout.SETUP_PY}:
+            continue
+        dest_file = dest_root / helper.name
+        if dest_file.exists():
+            continue
+        try:
+            dest_file.write_text(helper.read_text(encoding="utf-8"), encoding="utf-8")
+        except OSError as exc:
+            warnings.append(f"workspace-helper copy: could not copy {helper.name}: {exc}")
 
 
 def _write_resources_for_refs(
@@ -1249,12 +1325,22 @@ def _write_hook(hook: Any, hooks_root: Path, index: int, warnings: list[str], st
     # closure / dynamically-defined class), fall back to the full module
     # source — which is heavier but preserves correctness.
     src = _render_hook_source(cls, warnings, strict)
-    (hook_dir / "hook.py").write_text(
-        "# AUTOGENERATED from preset_to_workspace.\n"
-        f"# Original class: {cls.__module__}.{cls_name}\n"
-        f"{src}\n",
-        encoding="utf-8",
-    )
+    # The "Original class:" line was previously ``{cls.__module__}.{cls_name}``
+    # which drifted between passes (a hook loaded from
+    # ``_chw_hook_<dir>`` vs. its re-imported canonical module produced
+    # different bytes for the same logical class). Use the rendered
+    # source's import target as the stable identity instead.
+    #
+    # Only prepend the AUTOGENERATED header when the rendered source
+    # doesn't already carry it — branch 0 of ``_render_hook_source``
+    # copies a previously-snapshot file verbatim and we don't want
+    # the header to stack across repeat round-trips.
+    header = "# AUTOGENERATED from preset_to_workspace.\n"
+    if src.startswith(header):
+        body = src
+    else:
+        body = f"{header}{src}\n"
+    (hook_dir / "hook.py").write_text(body, encoding="utf-8")
 
     # Constructor kwargs: prefer hook.to_config(); else dataclasses.asdict;
     # else empty (caller will supply via workspace edit).
@@ -1278,14 +1364,32 @@ def _render_hook_source(cls: type, warnings: list[str], strict: bool) -> str:
     """Render a self-contained hook.py source for ``cls``.
 
     Preference order:
+      0. Loaded from a workspace ``_chw_hook_*`` dynamic module whose
+         source file is on disk → copy that file verbatim. Preserves
+         workspace-local subclasses (e.g. one that adds ``to_config()``)
+         that the MRO-walk fallback would silently drop by aliasing
+         the importable base class.
       1. Importable module → re-import the class by name.
-      2. Loaded from a workspace ``_chw_hook_*`` dynamic module → walk
-         the MRO to find an importable base class and re-import that.
+      2. Loaded from a workspace ``_chw_hook_*`` dynamic module with no
+         on-disk source → walk the MRO to find an importable base class
+         and re-import that.
       3. Module source available → dump full module (preserves imports).
       4. Class source only → dump source with a typing-import fallback.
     """
     cls_name = cls.__name__
     module_name = cls.__module__ or ""
+
+    # 0. Workspace ``_chw_hook_*`` source on disk → copy verbatim. This
+    #    is essential for byte-identity round-trip and for preserving
+    #    any methods (commonly ``to_config()``) the workspace-local
+    #    subclass adds beyond an installed base class.
+    if module_name.startswith("_chw_hook_"):
+        import sys as _sys  # noqa: PLC0415
+
+        chw_mod = _sys.modules.get(module_name)
+        chw_file = getattr(chw_mod, "__file__", None) if chw_mod is not None else None
+        if chw_file and Path(chw_file).is_file():
+            return Path(chw_file).read_text(encoding="utf-8")
 
     # 1. Try to re-import — works for installed packages, top-level classes
     #    in importable modules, and anything addressable by ``module:name``.
@@ -1297,11 +1401,17 @@ def _render_hook_source(cls: type, warnings: list[str], strict: bool) -> str:
         try:
             mod = importlib.import_module(module_name)
             if getattr(mod, cls_name, None) is cls:
+                # Canonical "as <cls_name>" form so this branch produces
+                # byte-identical output to the MRO-walk branch below —
+                # the snapshot writer needs to be idempotent under repeat
+                # round-trips, and that requires both code paths to emit
+                # the same source for the same hook class.
                 return (
-                    "# Re-imported from the original module so the class's full\n"
-                    "# closure (typing imports, helpers) stays available.\n"
-                    "# To customize, replace this import with a class definition.\n"
-                    f"from {module_name} import {cls_name}\n"
+                    "# Re-imported from the original module so the class's\n"
+                    "# full closure (typing imports, helpers) stays available.\n"
+                    "# Edit this file (or replace the import with a class\n"
+                    "# definition) to customise the hook in this workspace.\n"
+                    f"from {module_name} import {cls_name} as {cls_name}\n"
                 )
         except Exception:  # noqa: BLE001
             pass
@@ -1323,12 +1433,12 @@ def _render_hook_source(cls: type, warnings: list[str], strict: bool) -> str:
         try:
             mod = importlib.import_module(anc_module)
             if getattr(mod, anc_name, None) is ancestor:
-                # Re-export under the original subclass name so config.yaml
-                # ``class_name`` lookups still resolve.
+                # Same canonical form as branch 1 — see comment there.
                 return (
-                    f"# Re-imported via base class {anc_module}.{anc_name}\n"
-                    f"# (subclass {cls_name!r} was loaded from a workspace\n"
-                    f"# _chw_hook_* dynamic module that has no on-disk source).\n"
+                    "# Re-imported from the original module so the class's\n"
+                    "# full closure (typing imports, helpers) stays available.\n"
+                    "# Edit this file (or replace the import with a class\n"
+                    "# definition) to customise the hook in this workspace.\n"
                     f"from {anc_module} import {anc_name} as {cls_name}\n"
                 )
         except Exception:  # noqa: BLE001
@@ -1367,16 +1477,22 @@ def _render_hook_source(cls: type, warnings: list[str], strict: bool) -> str:
 
 def _write_memory(
     source: Any, memory_root: Path, index: int, warnings: list[str], strict: bool
-) -> None:
+) -> str | None:
+    """Emit a memory source to disk.
+
+    Returns ``None`` when the source was written as a file in
+    ``memory/`` (StaticMemorySource → ``*.md``, top-level
+    CallableMemorySource → ``*.py``). Returns a resource ref name
+    (e.g. ``"project_memory"``) when the wrapped fn came from a
+    workspace-loaded ``_chw_resource_<name>`` module — the caller adds
+    the corresponding ``"@<name>"`` entry to ``config.yaml``'s
+    ``memory_sources`` list and the resource auto-emit machinery
+    copies the original on-disk source verbatim.
+    """
     if isinstance(source, StaticMemorySource):
         (memory_root / f"{index:02d}_static.md").write_text(source.text, encoding="utf-8")
-        return
-    # CallableMemorySource: if the wrapped callable is a top-level
-    # importable function, emit a ``<index>_callable.py`` that re-imports
-    # it. The loader recognises ``*.py`` files in memory/ and wraps the
-    # exported ``load`` callable with ``CallableMemorySource``. Closures
-    # / lambdas fall through to the generic warning path because they
-    # cannot be re-imported.
+        return None
+    # CallableMemorySource: three branches in priority order.
     from looplet.memory import CallableMemorySource  # noqa: PLC0415
 
     if isinstance(source, CallableMemorySource):
@@ -1384,6 +1500,18 @@ def _write_memory(
         fn_name = getattr(fn, "__name__", "")
         fn_mod = getattr(fn, "__module__", "") or ""
         fn_qual = getattr(fn, "__qualname__", "<lambda>")
+
+        # Branch A: fn was created inside a workspace-loaded
+        # ``_chw_resource_<name>`` builder. The resource pipeline
+        # already knows how to copy the original ``resources/<name>.py``
+        # file verbatim — route through @ref to reuse that machinery
+        # and to keep the closure (which closes over runtime values
+        # like ``workspace`` / ``max_steps``) intact across reload.
+        if fn_mod.startswith("_chw_resource_"):
+            return fn_mod[len("_chw_resource_") :]
+
+        # Branch B: fn is a top-level importable function. Emit a
+        # ``<idx>_callable.py`` shim that re-imports it.
         if (
             fn_name
             and fn_mod
@@ -1407,21 +1535,29 @@ def _write_memory(
                     f"a ``__main__`` callable {fn_name!r}; cross-process "
                     f"loads will fail until it is moved to a real module"
                 )
-            return
+            return None
+
+        # Branch C: lambda / closure / non-importable. Warn and skip —
+        # the caller should move the closure into a
+        # ``resources/<name>.py`` builder so branch A can route it.
         msg = (
             f"memory source 'CallableMemorySource' wraps a non-importable "
-            f"callable ({fn_qual!r} from {fn_mod!r}); skipping"
+            f"callable ({fn_qual!r} from {fn_mod!r}); skipping. Move the "
+            f"closure into a ``resources/<name>.py`` builder and reference "
+            f"it from ``config.yaml`` via ``memory_sources: ['@<name>']`` "
+            f"to make it round-trip cleanly."
         )
         if strict:
             raise WorkspaceSerializationError(msg)
         warnings.append(msg)
-        return
+        return None
 
     name = type(source).__name__
     msg = f"memory source {name!r} is not a StaticMemorySource; skipping"
     if strict:
         raise WorkspaceSerializationError(msg)
     warnings.append(msg)
+    return None
 
 
 # ── Deserialise: directory → AgentPreset ───────────────────────
@@ -1492,9 +1628,18 @@ def workspace_to_preset(
     if _path_pushed:
         _sys.path.insert(0, root_str)
     try:
-        return _workspace_to_preset_inner(
+        preset = _workspace_to_preset_inner(
             root, runtime_dict, state_factory=state_factory, strict=strict
         )
+        # Stamp the preset with its origin so a subsequent
+        # ``preset_to_workspace`` call can copy any top-level ``*.py``
+        # helper modules from the source workspace into the snapshot.
+        # Private attribute, not part of the public AgentPreset shape.
+        try:
+            preset._origin_workspace_root = root.resolve()  # type: ignore[attr-defined]
+        except (AttributeError, TypeError):
+            pass
+        return preset
     finally:
         if _path_pushed:
             try:
@@ -1537,11 +1682,20 @@ def _workspace_to_preset_inner(
     if sys_prompt_path.is_file():
         cfg_kwargs["system_prompt"] = sys_prompt_path.read_text(encoding="utf-8")
 
-    # Memory sources — ``*.md`` → StaticMemorySource, ``*.py`` →
-    # CallableMemorySource (the module's ``load`` attr is wrapped). Files
-    # are loaded in lexicographic order so the writer's ``00_``, ``01_``
-    # prefix preserves source order.
-    memory_sources: list[PersistentMemorySource] = []
+    # Memory sources — three sources, combined in the following order:
+    #   1. File-based ``memory/*.md`` → StaticMemorySource (sorted)
+    #   2. File-based ``memory/*.py`` → CallableMemorySource around the
+    #      module's ``load`` attr (sorted alongside .md files)
+    #   3. Any ``memory_sources: ["@x", ...]`` list declared in
+    #      ``config.yaml`` — each ``@ref`` is resolved against the
+    #      resource registry and must return a ``PersistentMemorySource``
+    #      (typically a ``CallableMemorySource`` whose builder closes
+    #      over ``runtime`` values like ``workspace`` / ``max_steps``).
+    # The yaml-declared list runs through the existing
+    # ``_resolve_refs(cfg_kwargs, resources)`` pass below; here we just
+    # ensure file-based entries are appended on top of whatever the
+    # yaml declared, preserving any explicit ordering the author chose.
+    file_memory_sources: list[PersistentMemorySource] = []
     memory_dir = root / WorkspaceLayout.MEMORY_DIR
     if memory_dir.is_dir():
         from looplet.memory import CallableMemorySource  # noqa: PLC0415
@@ -1551,7 +1705,7 @@ def _workspace_to_preset_inner(
         )
         for memory_file in memory_files:
             if memory_file.suffix == ".md":
-                memory_sources.append(
+                file_memory_sources.append(
                     StaticMemorySource(text=memory_file.read_text(encoding="utf-8"))
                 )
             else:
@@ -1565,9 +1719,15 @@ def _workspace_to_preset_inner(
                         raise WorkspaceSerializationError(msg)
                     logger.warning("%s; skipping", msg)
                     continue
-                memory_sources.append(CallableMemorySource(fn=load_fn))  # type: ignore[arg-type]
-    if memory_sources:
-        cfg_kwargs["memory_sources"] = memory_sources
+                file_memory_sources.append(CallableMemorySource(fn=load_fn))  # type: ignore[arg-type]
+
+    # Merge file-based memory with any yaml-declared @ref list. The
+    # yaml entries (still ``@ref`` strings at this point) get appended
+    # after the file-based ones; ``_resolve_refs`` below converts each
+    # ``@ref`` string in the list into the live resource instance.
+    yaml_declared_memory = cfg_kwargs.get("memory_sources") or []
+    if yaml_declared_memory or file_memory_sources:
+        cfg_kwargs["memory_sources"] = list(file_memory_sources) + list(yaml_declared_memory)
 
     # Resolve ``"@<name>"`` references in config kwargs against the
     # shared-resource registry so callable / opaque LoopConfig fields

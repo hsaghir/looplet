@@ -1553,3 +1553,153 @@ def test_chw_hook_inline_class_round_trips(tmp_path: Path) -> None:
     snap_hook = (snap / "hooks" / "00_GateHook" / "hook.py").read_text()
     # Must contain the inline marker — proves source was preserved.
     assert "inline-marker-XYZ" in snap_hook
+
+
+# ── Declarative @ref memory + workspace-helper copy + byte-identity ──
+
+
+def _project_memory_loader(state) -> str:
+    """Top-level loader returning a per-step memory line."""
+    return f"step={getattr(state, 'step_count', 0)}"
+
+
+def test_memory_sources_yaml_ref_resolves_via_resource_registry(tmp_path: Path) -> None:
+    """``memory_sources: ['@ref']`` in config.yaml round-trips through
+    the same resource-builder mechanism the hook kwargs use."""
+    src = tmp_path / "ws"
+    src.mkdir()
+    (src / "workspace.json").write_text('{"name": "w"}')
+    (src / "config.yaml").write_text(
+        'max_steps: 3\ndone_tool: done\nmemory_sources:\n  - "@dyn_memory"\n'
+    )
+    (src / "tools" / "done").mkdir(parents=True)
+    (src / "tools/done/tool.yaml").write_text(
+        "name: done\nparameters:\n  s: {type: string, description: s}\n"
+    )
+    (src / "tools/done/execute.py").write_text(
+        "def execute(*, s='ok'): return {'status': 'completed', 's': s}\n"
+    )
+    (src / "resources").mkdir()
+    (src / "resources/dyn_memory.py").write_text(
+        "from looplet import CallableMemorySource\n"
+        "def build(runtime=None):\n"
+        "    return CallableMemorySource(lambda state: 'dyn-memory-content')\n"
+    )
+
+    preset = workspace_to_preset(src, strict=True)
+    sources = preset.config.memory_sources or []
+    assert len(sources) == 1
+    assert type(sources[0]).__name__ == "CallableMemorySource"
+    assert sources[0].load(None) == "dyn-memory-content"
+
+
+def test_callable_memory_via_chw_resource_round_trips_losslessly(tmp_path: Path) -> None:
+    """A ``CallableMemorySource`` whose lambda was built inside a
+    ``resources/<name>.py`` builder must snapshot back to a
+    ``memory_sources: ['@<name>']`` entry + verbatim resource copy,
+    not warn about a non-importable lambda."""
+    src = tmp_path / "ws"
+    src.mkdir()
+    (src / "workspace.json").write_text('{"name": "w"}')
+    (src / "config.yaml").write_text(
+        'max_steps: 3\ndone_tool: done\nmemory_sources:\n  - "@dyn_memory"\n'
+    )
+    (src / "tools" / "done").mkdir(parents=True)
+    (src / "tools/done/tool.yaml").write_text(
+        "name: done\nparameters:\n  s: {type: string, description: s}\n"
+    )
+    (src / "tools/done/execute.py").write_text(
+        "def execute(*, s='ok'): return {'status': 'completed', 's': s}\n"
+    )
+    (src / "resources").mkdir()
+    builder_src = (
+        "from looplet import CallableMemorySource\n"
+        "def build(runtime=None):\n"
+        "    runtime = runtime or {}\n"
+        "    label = str(runtime.get('label', 'X'))\n"
+        "    return CallableMemorySource(lambda state: f'lab={label}')\n"
+    )
+    (src / "resources/dyn_memory.py").write_text(builder_src)
+
+    preset = workspace_to_preset(src, runtime={"label": "Z"}, strict=True)
+    snap = tmp_path / "snap"
+    ws = preset_to_workspace(preset, snap, name="snap")
+    assert ws.serialization_warnings == [], f"unexpected warnings: {ws.serialization_warnings}"
+    # Snapshot config.yaml carries the @ref entry, not a None-stub class:
+    snap_cfg = (snap / "config.yaml").read_text()
+    assert '"@dyn_memory"' in snap_cfg or "@dyn_memory" in snap_cfg
+    # And the resource file was copied verbatim:
+    assert (snap / "resources" / "dyn_memory.py").read_text() == builder_src
+
+
+def test_workspace_helpers_are_copied_into_snapshot(tmp_path: Path) -> None:
+    """Top-level ``*.py`` helper modules at the source workspace root
+    (e.g. ``coder_lib_tools.py``) must be vendored into the snapshot
+    so cross-process reload doesn't crash with ModuleNotFoundError."""
+    src = tmp_path / "ws"
+    src.mkdir()
+    (src / "workspace.json").write_text('{"name": "w"}')
+    (src / "config.yaml").write_text("max_steps: 3\ndone_tool: done\n")
+    (src / "tools" / "done").mkdir(parents=True)
+    (src / "tools/done/tool.yaml").write_text(
+        "name: done\nparameters:\n  s: {type: string, description: s}\n"
+    )
+    (src / "tools/done/execute.py").write_text(
+        "from helper_lib import HELLO\n"
+        "def execute(*, s='ok'): return {'status': 'completed', 'msg': HELLO + s}\n"
+    )
+    helper_src = "HELLO = 'hi-from-helper-'\n"
+    (src / "helper_lib.py").write_text(helper_src)
+
+    preset = workspace_to_preset(src, strict=True)
+    snap = tmp_path / "snap"
+    preset_to_workspace(preset, snap, name="snap")
+    # The helper module was copied into the snapshot.
+    assert (snap / "helper_lib.py").read_text() == helper_src
+
+
+def test_two_pass_round_trip_is_byte_identical(tmp_path: Path) -> None:
+    """preset → ws1 → preset' → ws2: ws1 and ws2 must be byte-identical
+    for a non-trivial preset. Catches header-stacking, MRO-walk drift,
+    and other normalization gaps."""
+    src = tmp_path / "ws"
+    src.mkdir()
+    (src / "workspace.json").write_text('{"name": "w"}')
+    (src / "config.yaml").write_text("max_steps: 3\ndone_tool: done\n")
+    (src / "tools" / "done").mkdir(parents=True)
+    (src / "tools/done/tool.yaml").write_text(
+        "name: done\nparameters:\n  s: {type: string, description: s}\n"
+    )
+    (src / "tools/done/execute.py").write_text(
+        "def execute(*, s='ok'): return {'status': 'completed', 's': s}\n"
+    )
+    (src / "hooks" / "00_StagnationHook").mkdir(parents=True)
+    (src / "hooks/00_StagnationHook/hook.py").write_text(
+        "from looplet.stagnation import StagnationHook as StagnationHook\n"
+    )
+    (src / "hooks/00_StagnationHook/config.yaml").write_text(
+        "class_name: StagnationHook\nkwargs: {}\n"
+    )
+
+    preset_a = workspace_to_preset(src, strict=True)
+    ws1 = tmp_path / "ws1"
+    preset_to_workspace(preset_a, ws1, name="rt")
+    preset_b = workspace_to_preset(ws1, strict=True)
+    ws2 = tmp_path / "ws2"
+    preset_to_workspace(preset_b, ws2, name="rt")
+
+    files1 = sorted(
+        p.relative_to(ws1) for p in ws1.rglob("*") if p.is_file() and "__pycache__" not in p.parts
+    )
+    files2 = sorted(
+        p.relative_to(ws2) for p in ws2.rglob("*") if p.is_file() and "__pycache__" not in p.parts
+    )
+    assert files1 == files2
+
+    diffs = []
+    for rel in files1:
+        a = (ws1 / rel).read_text(encoding="utf-8")
+        b = (ws2 / rel).read_text(encoding="utf-8")
+        if a != b:
+            diffs.append((str(rel), len(a), len(b)))
+    assert not diffs, f"byte drift: {diffs}"

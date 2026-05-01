@@ -64,6 +64,18 @@ class DemoCounter:
         return None
 
 
+def _done_execute(*, s: str = "") -> dict:
+    """Top-level done-tool callable so workspace round-trip can re-import it."""
+    return {"status": "completed", "summary": s}
+
+
+def _trivial_evaluator(ctx) -> "EvalResult":  # noqa: F821 - imported in test
+    """Top-level evaluator so EvalHook auto-emit produces an importable resource."""
+    from looplet import EvalResult  # noqa: PLC0415
+
+    return EvalResult(name="trivial", passed=True)
+
+
 def _build_demo_preset() -> AgentPreset:
     config = LoopConfig(
         max_steps=8,
@@ -221,10 +233,15 @@ def test_round_tripped_preset_runs_end_to_end(tmp_path: Path) -> None:
 
 def test_non_serializable_config_field_warns_in_loose_mode(tmp_path: Path) -> None:
     preset = _build_demo_preset()
-    # Set a callable on a known non-serializable field.
+    # Set a callable on a known non-serializable field. The writer now
+    # auto-emits a ``@build_briefing`` ref + ``resources/build_briefing.py``
+    # stub; for closure / lambda values the stub is the None-fallback
+    # and a warning is recorded so the user knows manual editing is
+    # required for cross-process round-trip.
     preset.config.build_briefing = lambda **_: "x"
     workspace = preset_to_workspace(preset, tmp_path / "ws")
     assert any("build_briefing" in w for w in workspace.serialization_warnings)
+    assert (tmp_path / "ws" / "resources" / "build_briefing.py").is_file()
 
 
 def test_non_serializable_config_field_raises_in_strict_mode(tmp_path: Path) -> None:
@@ -1056,3 +1073,86 @@ def test_unresolved_at_ref_in_config_raises_in_strict(tmp_path) -> None:
 
     with pytest.raises(WorkspaceSerializationError, match="unresolved resource reference"):
         workspace_to_preset(ws, strict=True)
+
+
+def test_callable_loop_config_field_auto_emits_resource(tmp_path: Path) -> None:
+    """Setting a callable LoopConfig field (compact_service) auto-emits
+    ``compact_service: "@compact_service"`` into config.yaml and a
+    matching ``resources/compact_service.py`` builder so the snapshot
+    round-trips without a setup.py detour."""
+    from looplet.compact import PruneToolResults, TruncateCompact, compact_chain
+
+    preset = _build_demo_preset()
+    preset.config.compact_service = compact_chain(
+        PruneToolResults(keep_recent=4), TruncateCompact(keep_recent=2)
+    )
+    ws = preset_to_workspace(preset, tmp_path / "ws")
+
+    cfg_text = (tmp_path / "ws" / "config.yaml").read_text()
+    assert '"@compact_service"' in cfg_text or "@compact_service" in cfg_text
+    assert (tmp_path / "ws" / "resources" / "compact_service.py").is_file()
+
+    # Reload — compact_service should come back via the @ref machinery.
+    reloaded = workspace_to_preset(tmp_path / "ws", strict=True)
+    assert reloaded.config.compact_service is not None
+    # Loose preset round-trip records no warnings for this field.
+    assert not any("compact_service" in w for w in ws.serialization_warnings)
+
+
+def test_builtin_hooks_round_trip_without_subclassing(tmp_path: Path) -> None:
+    """MetricsHook, PermissionHook, StreamingHook, and EvalHook now ship
+    with default ``to_config()`` so they round-trip without forcing
+    users to subclass + override. Previously these silently dropped on
+    reload because the loader couldn't supply the required ctor args.
+    """
+    from looplet import (
+        EvalHook,
+        EvalResult,
+        MetricsCollector,
+        MetricsHook,
+        PermissionDecision,
+        PermissionEngine,
+        PermissionHook,
+        PermissionRule,
+        StreamingHook,
+        ToolSpec,
+    )
+    from looplet.streaming import CallbackEmitter
+    from looplet.tools import BaseToolRegistry
+    from looplet.types import DefaultState
+
+    tools = BaseToolRegistry()
+    tools.register(
+        ToolSpec(
+            name="done",
+            description="done",
+            parameters={"s": "summary"},
+            execute=_done_execute,
+        )
+    )
+    events: list = []
+    hooks = [
+        MetricsHook(collector=MetricsCollector()),
+        PermissionHook(
+            engine=PermissionEngine(
+                rules=[PermissionRule(tool="*", decision=PermissionDecision.ALLOW)]
+            )
+        ),
+        StreamingHook(emitter=CallbackEmitter(events.append)),
+        EvalHook(evaluators=[_trivial_evaluator]),
+    ]
+    cfg = LoopConfig(max_steps=3, done_tool="done")
+    preset = AgentPreset(config=cfg, hooks=hooks, tools=tools, state=DefaultState(max_steps=3))
+
+    ws = preset_to_workspace(preset, tmp_path / "ws")
+    # Resource stubs were emitted for the four hook ctor args.
+    resources = sorted(p.name for p in (tmp_path / "ws" / "resources").iterdir())
+    assert "collector.py" in resources
+    assert "engine.py" in resources
+    assert "emitter.py" in resources
+    assert "evaluators.py" in resources
+
+    reloaded = workspace_to_preset(tmp_path / "ws")
+    # All four hooks survive — no silent drops.
+    cls_names = sorted(type(h).__name__ for h in reloaded.hooks)
+    assert cls_names == ["EvalHook", "MetricsHook", "PermissionHook", "StreamingHook"]

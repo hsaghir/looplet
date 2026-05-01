@@ -349,6 +349,19 @@ class MetricsHook:
         self._collector = collector
         self._classify = classify  # optional Callable[[Step, Any], str]
 
+    def to_config(self) -> dict:
+        """Workspace round-trip: emit ``collector`` as an ``@ref`` so the
+        v2 workspace writer auto-generates ``resources/collector.py`` and
+        the loader rebuilds a fresh ``MetricsCollector`` per load.
+        """
+        return {"collector": "@collector"}
+
+    @property
+    def collector(self) -> MetricsCollector:
+        """Public accessor used by the workspace writer to pull the
+        live instance for resource auto-emit."""
+        return self._collector
+
     # ── LoopHook interface ─────────────────────────────────────────
 
     def pre_prompt(

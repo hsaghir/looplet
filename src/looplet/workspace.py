@@ -671,7 +671,9 @@ def _write_resources_for_refs(
             cfg = hook.to_config()
         except Exception:  # noqa: BLE001
             continue
-        for kwarg_name, kwarg_value in (cfg or {}).items():
+        if not isinstance(cfg, dict):
+            continue
+        for kwarg_name, kwarg_value in cfg.items():
             if not (isinstance(kwarg_value, str) and kwarg_value.startswith(_REF_PREFIX)):
                 continue
             ref_name = kwarg_value[len(_REF_PREFIX) :]

@@ -7,7 +7,29 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Removed (BREAKING)
-- **v1 example modules deleted.** The legacy `examples/coder/`,
+
+- **All `setup.py` files removed from shipped example workspaces.**
+  Every workspace under `examples/*.workspace/` is now fully
+  declarative; the imperative `setup.py` mechanism remains in the
+  loader as the documented escape hatch for callers with truly
+  imperative load-time wiring needs but no shipped example needs
+  one. Migrations:
+  * `coder.workspace`: tools moved from `WORKSPACE_CONFIG` /
+    `FILE_CACHE` module-globals to `requires: [...]` in `tool.yaml`
+    + `ctx.resources[...]` in `execute.py`. `compact_service` moved
+    to `resources/compact_service.py`.
+  * `threat_intel.workspace`, `dep_doctor.workspace`,
+    `git_detective.workspace`: `compact_service` moved to
+    `resources/compact_service.py`. `git_detective` tools moved
+    from `REPO_CONFIG` module-globals to `requires: [repo_config]`
+    + `ctx.resources["repo_config"]`.
+  * `hello.workspace`: `greet` tool moved from `_GREETING_LOG`
+    module-global to `requires: [greeting_log]` +
+    `ctx.resources["greeting_log"]`.
+
+### v1 example modules deleted
+
+- The legacy `examples/coder/`,
   `examples/dep_doctor/`, `examples/git_detective/`, and
   `examples/threat_intel/` agent-CLI directories have been removed.
   Their tool functions, hook classes, and helpers now live inside the

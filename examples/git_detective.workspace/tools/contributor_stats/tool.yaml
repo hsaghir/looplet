@@ -2,3 +2,5 @@ name: contributor_stats
 description: Get contributor stats — who committed how much.
 parameters: {}
 concurrent_safe: true
+requires:
+  - repo_config

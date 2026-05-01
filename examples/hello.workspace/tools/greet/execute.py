@@ -1,20 +1,19 @@
 """Greet tool — top-level function, no closures.
 
-Mutates the shared ``greeting_log`` resource (passed by setup.py)
-so other components can audit greetings later.
+Receives the shared ``greeting_log`` resource through ``ctx.resources``;
+``tool.yaml`` declares ``requires: [greeting_log]`` and the dispatcher
+resolves the ref against the workspace's resource registry.
+
+Mutates the log so other components (e.g. PolitenessGate hook) can
+audit greetings later.
 """
 
+from looplet.types import ToolContext
 
-def execute(*, name: str) -> dict:
+
+def execute(ctx: ToolContext, *, name: str) -> dict:
     text = f"Hello, {name}!"
-    # Resource access happens through the module global ``GREETING_LOG``
-    # which setup.py wires from the shared registry.
-    if GREETING_LOG is not None:
-        GREETING_LOG.record(name, text)
+    log = ctx.resources.get("greeting_log")
+    if log is not None:
+        log.record(name, text)
     return {"greeting": text}
-
-
-# Set by setup.py at workspace load time. Importing this module before
-# load (e.g. in tests) leaves it None — the tool still works, just
-# without recording.
-GREETING_LOG = None

@@ -2,3 +2,5 @@ name: directory_structure
 description: Top-level directory structure with file counts.
 parameters: {}
 concurrent_safe: true
+requires:
+  - repo_config

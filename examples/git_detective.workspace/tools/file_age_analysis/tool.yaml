@@ -2,3 +2,5 @@ name: file_age_analysis
 description: Find oldest unchanged files and newest additions.
 parameters: {}
 concurrent_safe: true
+requires:
+  - repo_config

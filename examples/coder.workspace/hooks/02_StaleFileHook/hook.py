@@ -1,6 +1,6 @@
 """StaleFileHook — detects bash-induced file changes that bypass the cache."""
 
-from examples.coder.hooks import StaleFileHook as _OriginalStaleFileHook
+from coder_lib_hooks import StaleFileHook as _OriginalStaleFileHook
 
 
 class StaleFileHook(_OriginalStaleFileHook):

@@ -1,5 +1,5 @@
-"""search_cve — re-import."""
+"""search_cve — re-import from co-located ``threat_intel_lib.py``."""
 
-from examples.threat_intel.agent import search_cve as _spec
+from threat_intel_lib import search_cve as execute
 
-execute = _spec.execute
+__all__ = ["execute"]

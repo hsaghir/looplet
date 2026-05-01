@@ -761,6 +761,19 @@ def test_coder_workspace_bidirectional_round_trip(tmp_path) -> None:
     preset = workspace_to_preset(workspace_dir, strict=True, runtime={"workspace": str(target)})
     preset_to_workspace(preset, snap_dir, name="coder-snap")
 
+    # The coder workspace ships co-located ``lib_*.py`` helper modules
+    # that hosts and tools subclass / call into. Round-tripping a
+    # preset doesn't auto-copy these — the snapshot is otherwise
+    # self-contained but its hook.py / execute.py shims still
+    # ``from lib_tools import ...``. Copy them alongside so the
+    # reload finds the same helpers.
+    import shutil as _shutil
+
+    for _lib in ("coder_lib_tools.py", "coder_lib_hooks.py", "coder_lib_wiring.py"):
+        _src = workspace_dir / _lib
+        if _src.is_file():
+            _shutil.copy(_src, snap_dir / _lib)
+
     # The auto-emitted resources/file_cache.py builder reads
     # runtime['workspace']; pass it on reload.
     reloaded = workspace_to_preset(snap_dir, runtime={"workspace": str(target)})

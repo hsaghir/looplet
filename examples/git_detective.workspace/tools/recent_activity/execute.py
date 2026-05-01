@@ -1,7 +1,6 @@
-"""recent_activity — bridges to the closure-built tool from
-examples.git_detective.agent.make_tools(REPO_CONFIG.path)."""
+"""recent_activity — bridges to the closure-built tool from co-located lib.make_tools(REPO_CONFIG.path)."""
 
-from examples.git_detective.agent import make_tools
+from git_detective_lib import make_tools
 
 REPO_CONFIG = None
 _REGISTRY = None

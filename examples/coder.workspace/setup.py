@@ -53,7 +53,7 @@ def setup(preset, resources, tool_modules, hook_modules, runtime=None):
 
     # 3. Append the live-state CallableMemorySource the v1 cartridge
     #    uses for project-context briefing.
-    from examples.coder.wiring import build_default_memory_sources  # noqa: PLC0415
+    from coder_lib_wiring import build_default_memory_sources  # noqa: PLC0415
 
     extra_sources = build_default_memory_sources(workspace_path, preset.config.max_steps)
     existing = list(preset.config.memory_sources or [])

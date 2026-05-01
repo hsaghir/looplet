@@ -67,7 +67,7 @@ Keep the low-level modules, but make the common path feel smaller:
   submodules for advanced internals.
 - Make presets match the best examples. `coding_agent_preset()` should
   eventually reuse the hardened file tools, stale-file hints, protocol
-  probing, and test guardrails from `examples/coder/agent.py` instead of
+  probing, and test guardrails from `examples/coder.workspace/` instead of
   maintaining a simpler parallel version.
 - Group production features into opinionated bundles: `debugging`,
   `safety`, `coding`, and `research` presets should assemble hooks,
@@ -98,7 +98,7 @@ plain `ToolSpec` so advanced users can inspect or mutate it.
 ## Near-term (`0.2` — ~1 month out)
 
 - **Preset consolidation** — make `coding_agent_preset()` reuse the
-  hardened file-tool and guardrail patterns from `examples/coder/`.
+  hardened file-tool and guardrail patterns from `examples/coder.workspace/`.
 - **Production bundles** — opinionated `debugging`, `safety`, `coding`,
   and `research` preset bundles that assemble hooks and memory defaults.
 - **Gemini + Bedrock backends** (community contributions welcome — see

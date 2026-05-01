@@ -4,7 +4,7 @@ Re-imports the original class from examples.coder.hooks. Adds to_config()
 so the workspace round-trip captures the @ref to the shared FileCache.
 """
 
-from examples.coder.hooks import FileCacheHook as _OriginalFileCacheHook
+from coder_lib_hooks import FileCacheHook as _OriginalFileCacheHook
 
 
 class FileCacheHook(_OriginalFileCacheHook):

@@ -29,8 +29,9 @@ import json
 import subprocess
 from pathlib import Path
 
-from examples.coder.hooks import FileCacheHook, LinterHook, StaleFileHook, TestGuardHook
-from examples.coder.tools import FileCache
+from coder_lib_hooks import FileCacheHook, LinterHook, StaleFileHook, TestGuardHook
+from coder_lib_tools import FileCache
+
 from looplet import (
     CallableMemorySource,
     EvalContext,

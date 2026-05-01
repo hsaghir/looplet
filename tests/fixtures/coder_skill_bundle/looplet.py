@@ -50,7 +50,7 @@ def _ensure_parent_package() -> None:
     ``from examples.coder.tools import FileCache`` works inside our
     sibling modules below.
     """
-    parent = Path(__file__).resolve().parent.parent  # examples/coder/
+    parent = Path(__file__).resolve().parent  # bundle dir
     pkg_name = "examples.coder"
     if pkg_name in sys.modules:
         return
@@ -73,7 +73,7 @@ def _load_sibling(name: str) -> ModuleType:
     existing = sys.modules.get(module_name)
     if existing is not None:
         return existing
-    sibling = Path(__file__).resolve().parent.parent / f"{name}.py"
+    sibling = Path(__file__).resolve().parent / f"{name}.py"
     spec = importlib.util.spec_from_file_location(module_name, sibling)
     if spec is None or spec.loader is None:
         raise ImportError(f"Could not load coder bundle module {sibling}")

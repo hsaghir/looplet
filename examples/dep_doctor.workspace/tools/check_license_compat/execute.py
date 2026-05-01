@@ -1,5 +1,5 @@
-"""check_license_compat — re-import from examples.dep_doctor.agent."""
+"""check_license_compat — re-import from co-located ``dep_doctor_lib.py``."""
 
-from examples.dep_doctor.agent import check_license_compat as _spec
+from dep_doctor_lib import check_license_compat as execute
 
-execute = _spec.execute
+__all__ = ["execute"]

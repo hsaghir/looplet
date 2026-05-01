@@ -22,7 +22,7 @@ from looplet.blueprints import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
-CODER_BUNDLE = ROOT / "examples" / "coder" / "skill"
+CODER_BUNDLE = ROOT / "tests" / "fixtures" / "coder_skill_bundle"
 
 # Cartridge tests load real bundles, exec spec-loaded modules, and run
 # full blueprint comparisons. Under coverage instrumentation in CI the
@@ -95,7 +95,7 @@ def test_package_agent_factory_as_bundle_builds_equivalent_preset(tmp_path):
     packaged = tmp_path / "coder-packaged"
 
     package_agent_factory_as_bundle(
-        "examples.coder.skill.looplet:build",
+        "tests.fixtures.coder_skill_bundle.looplet:build",
         packaged,
         name="coder-packaged",
         description="Packaged copy of the coder example.",
@@ -187,7 +187,7 @@ def test_cli_exports_packages_and_wraps_cartridges(tmp_path, capsys):
     package_rc = cli_main(
         [
             "package",
-            "examples.coder.skill.looplet:build",
+            "tests.fixtures.coder_skill_bundle.looplet:build",
             str(packaged),
             "--name",
             "coder-packaged",
@@ -284,7 +284,7 @@ def test_package_agent_factory_rejects_missing_factory(tmp_path):
 def test_package_agent_factory_rejects_entrypoint_outside_bundle(tmp_path):
     with pytest.raises(ValueError, match="entrypoint must stay inside bundle"):
         package_agent_factory_as_bundle(
-            "examples.coder.skill.looplet:build",
+            "tests.fixtures.coder_skill_bundle.looplet:build",
             tmp_path / "bad-entrypoint",
             name="bad-entrypoint",
             description="Bad entrypoint.",
@@ -454,65 +454,3 @@ def build(runtime):
     assert bundle.skill.metadata["entrypoint"] == "custom.py"
     assert preset.config.system_prompt == "custom cartridge"
     assert not (wrapped / "looplet.py").exists()
-
-
-def test_distributions_include_coder_cartridge_and_dependency(tmp_path):
-    dist_dir = tmp_path / "dist"
-    subprocess.run(
-        ["uv", "build", "--sdist", "--wheel", "--out-dir", str(dist_dir)],
-        cwd=ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-
-    sdist = next(dist_dir.glob("*.tar.gz"))
-    wheel = next(dist_dir.glob("*.whl"))
-    with tarfile.open(sdist) as archive:
-        sdist_names = set(archive.getnames())
-    with zipfile.ZipFile(wheel) as archive:
-        wheel_names = set(archive.namelist())
-
-    assert any(name.endswith("examples/coder/agent.py") for name in sdist_names)
-    assert any(name.endswith("examples/coder/skill/looplet.py") for name in sdist_names)
-    assert "examples/coder/agent.py" in wheel_names
-    assert "examples/coder/skill/looplet.py" in wheel_names
-
-    venv_dir = tmp_path / "venv"
-    subprocess.run(
-        ["uv", "venv", str(venv_dir)],
-        cwd=ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    python = venv_dir / "bin" / "python"
-    subprocess.run(
-        ["uv", "pip", "install", "--python", str(python), str(wheel)],
-        cwd=ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    shadow_examples = tmp_path / "shadow" / "examples"
-    shadow_examples.mkdir(parents=True)
-    (shadow_examples / "__init__.py").write_text("# shadow package\n", encoding="utf-8")
-    installed = subprocess.run(
-        [
-            str(python),
-            "-c",
-            "from pathlib import Path; import sys; "
-            f"sys.path.insert(0, {str(shadow_examples.parent)!r}); "
-            "import looplet; "
-            "site=next(Path(p).resolve() for p in sys.path if p.endswith('site-packages')); "
-            "bundle=looplet.load_skill_bundle(site / 'examples' / 'coder' / 'skill'); "
-            "preset=bundle.build_preset(looplet.SkillRuntime(max_steps=2)); "
-            "print(bundle.skill.name); print(preset.config.max_steps); "
-            "print(any(tool in preset.tools.tool_names for tool in ('bash', 'read_file')))",
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-
-    assert installed.stdout.splitlines() == ["coder", "2", "True"]

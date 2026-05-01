@@ -1790,3 +1790,99 @@ def test_tool_without_ctx_logs_warning_when_requires_set(tmp_path: Path, caplog)
         result = reg.dispatch(ToolCall(tool="demo", args={"x": 1}))
     assert result.error is None
     assert any("ctx" in rec.message for rec in caplog.records)
+
+
+# ── resource_ref_for + identity-keyed origin tracking ──
+
+
+def test_resource_ref_for_preserves_original_ref_name(tmp_path: Path) -> None:
+    """When a hook holds an instance built by ``resources/<name>.py``,
+    ``to_config()`` round-trips with the *original* ``"@<name>"`` ref
+    even when the instance's class lives in a third-party module.
+    Catches the friction where ``PermissionHook.to_config()`` always
+    returned ``"@engine"`` instead of ``"@sql_permissions"``."""
+    src = tmp_path / "ws"
+    src.mkdir()
+    (src / "workspace.json").write_text('{"name": "w"}')
+    (src / "config.yaml").write_text("max_steps: 3\ndone_tool: done\n")
+    (src / "tools" / "done").mkdir(parents=True)
+    (src / "tools/done/tool.yaml").write_text(
+        "name: done\nparameters:\n  s: {type: string, description: s}\n"
+    )
+    (src / "tools/done/execute.py").write_text(
+        "def execute(*, s='ok'): return {'status': 'completed', 's': s}\n"
+    )
+    (src / "resources").mkdir()
+    (src / "resources/sql_permissions.py").write_text(
+        "from looplet import PermissionDecision, PermissionEngine, PermissionRule\n"
+        "def build(runtime=None):\n"
+        "    return PermissionEngine(rules=[\n"
+        "        PermissionRule(tool='*', decision=PermissionDecision.ALLOW),\n"
+        "    ])\n"
+    )
+    (src / "hooks" / "00_PermissionHook").mkdir(parents=True)
+    (src / "hooks/00_PermissionHook/hook.py").write_text(
+        "from looplet.permissions import PermissionHook as PermissionHook\n"
+    )
+    (src / "hooks/00_PermissionHook/config.yaml").write_text(
+        'class_name: PermissionHook\nkwargs:\n  engine: "@sql_permissions"\n'
+    )
+
+    preset = workspace_to_preset(src, strict=True)
+    snap1 = tmp_path / "snap1"
+    preset_to_workspace(preset, snap1, name="snap")
+
+    # Snapshot config.yaml carries the ORIGINAL ref name, not "@engine":
+    snap_yaml = (snap1 / "hooks" / "00_PermissionHook" / "config.yaml").read_text()
+    assert "@sql_permissions" in snap_yaml, f"got: {snap_yaml}"
+
+    # Snapshot resources/sql_permissions.py is the verbatim source,
+    # not an auto-generated stub:
+    snap_resource = (snap1 / "resources" / "sql_permissions.py").read_text()
+    original = (src / "resources" / "sql_permissions.py").read_text()
+    assert snap_resource == original
+
+    # Two-pass byte-identical round-trip — the rules survive intact.
+    preset2 = workspace_to_preset(snap1, strict=True)
+    snap2 = tmp_path / "snap2"
+    preset_to_workspace(preset2, snap2, name="snap")
+    assert (snap1 / "resources" / "sql_permissions.py").read_text() == (
+        snap2 / "resources" / "sql_permissions.py"
+    ).read_text()
+
+
+def test_workspace_root_resources_dir_is_on_sys_path(tmp_path: Path) -> None:
+    """Tools and other workspace modules must be able to ``from
+    <resource_name> import helper`` — the loader pushes both the
+    workspace root AND its ``resources/`` subdir onto ``sys.path``
+    for the duration of the load."""
+    src = tmp_path / "ws"
+    src.mkdir()
+    (src / "workspace.json").write_text('{"name": "w"}')
+    (src / "config.yaml").write_text("max_steps: 3\ndone_tool: done\n")
+    (src / "tools" / "done").mkdir(parents=True)
+    (src / "tools/done/tool.yaml").write_text(
+        "name: done\nparameters:\n  s: {type: string, description: s}\n"
+    )
+    (src / "tools/done/execute.py").write_text(
+        "def execute(*, s='ok'): return {'status': 'completed', 's': s}\n"
+    )
+    (src / "tools" / "ping").mkdir(parents=True)
+    (src / "tools/ping/tool.yaml").write_text("name: ping\nparameters: {}\n")
+    # Imports from a resources/-defined helper module — this would
+    # fail with ModuleNotFoundError if resources/ wasn't on sys.path.
+    (src / "tools/ping/execute.py").write_text(
+        "from helper_resource import greet\ndef execute(): return {'msg': greet()}\n"
+    )
+    (src / "resources").mkdir()
+    (src / "resources/helper_resource.py").write_text(
+        "def greet():\n    return 'hello-from-resource'\n"
+        "def build(runtime=None):\n    return greet\n"
+    )
+
+    preset = workspace_to_preset(src, strict=True)
+    from looplet.types import ToolCall
+
+    result = preset.tools.dispatch(ToolCall(tool="ping", args={}))
+    assert result.error is None
+    assert result.data == {"msg": "hello-from-resource"}

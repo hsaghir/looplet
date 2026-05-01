@@ -1944,3 +1944,57 @@ def test_tool_requires_unknown_resource_raises_in_strict_mode(tmp_path: Path) ->
 
     with pytest.raises(WorkspaceSerializationError, match="missing_resource"):
         workspace_to_preset(src, strict=True)
+
+
+# ── _resource_origin must not leak across tests ──
+
+
+def test_resource_origin_drops_unhashable_to_prevent_id_reuse_collision(
+    tmp_path: Path,
+) -> None:
+    """Regression test for a CI-only flake on master after PR #39:
+    when ``_load_resources`` registered an ``EvalHook.evaluators``
+    list (built by a workspace ``resources/eval_evaluators.py``) into
+    the identity-keyed ``_resource_origin``, the entry pinned forever
+    because ``weakref.finalize(list, ...)`` raises TypeError. Python's
+    ``id()`` is reused after GC, so a *different* test's brand-new
+    evaluators list could land at the same id and inherit the
+    previous workspace's ref name — making the writer try to copy a
+    no-longer-existent ``resources/<name>.py`` file.
+
+    Fix: instances that don't support weak references are NOT
+    registered in ``_resource_origin``; the ``__module__``-based
+    fallback in ``resource_ref_for`` handles them via the
+    synthetic ``_chw_resource_<name>`` module name on closures
+    defined inside the resource builder.
+    """
+    from looplet import workspace as _ws
+
+    src = tmp_path / "ws"
+    src.mkdir()
+    (src / "workspace.json").write_text('{"name": "w"}')
+    (src / "config.yaml").write_text("max_steps: 3\ndone_tool: done\n")
+    (src / "tools" / "done").mkdir(parents=True)
+    (src / "tools/done/tool.yaml").write_text(
+        "name: done\nparameters:\n  s: {type: string, description: s}\n"
+    )
+    (src / "tools/done/execute.py").write_text(
+        "def execute(*, s='ok'): return {'status': 'completed', 's': s}\n"
+    )
+    (src / "resources").mkdir()
+    (src / "resources/my_list.py").write_text(
+        "def build(runtime=None):\n"
+        "    # A bare list — built-in containers don't support weakref.\n"
+        "    return [lambda x: x]\n"
+    )
+
+    before = len(_ws._resource_origin)
+    workspace_to_preset(src)
+    after = len(_ws._resource_origin)
+    # The list returned by build() must NOT have been registered (would
+    # leak a stale id → name mapping across loads / tests).
+    assert after == before, (
+        "unhashable resource instance was registered in _resource_origin; "
+        "this would leak a stale id reservation that a later same-typed "
+        f"object could collide with (size went from {before} to {after})"
+    )

@@ -530,28 +530,40 @@ def _load_resources(root: Path, runtime: dict[str, Any] | None = None) -> dict[s
 # Identity-keyed map from a resource-built instance's ``id()`` to its
 # ref name. Keyed by ``id`` because the instance may be unhashable (a
 # list, a dict) or its hash semantics may collide with another
-# instance. Entries are dropped on instance GC via ``weakref.finalize``
-# so this map can't leak memory.
+# instance. Entries are dropped on instance GC via ``weakref.finalize``;
+# instances that don't support weak references (built-in containers
+# like ``list`` / ``tuple`` / ``dict``) are NOT registered here at all
+# because their ``id()`` would be reused by a later same-typed object
+# whose source bears no relation to this resource. The
+# ``__module__``-based fallback in :func:`resource_ref_for` covers
+# those cases (closures created inside the resource module's
+# ``build()`` carry the synthetic ``_chw_resource_<name>`` module).
 _resource_origin: dict[int, str] = {}
 
 
 def _register_resource_origin(instance: Any, name: str) -> None:
     """Record that ``instance`` came from ``resources/<name>.py``.
 
-    Tries to attach a weakref finalizer; falls back to a best-effort
-    registration without finalizer for objects that don't support
-    weak references (e.g. tuples). The non-finalized entries are
-    cleaned up opportunistically the next time
-    :func:`_load_resources` runs for the same workspace.
+    Only registers instances that support :mod:`weakref`. Built-in
+    containers (``list``, ``tuple``, ``dict``, ``set``) and other
+    types that reject weak references would otherwise pin a stale
+    entry forever — and Python's ``id()`` can be reused once the
+    original object is garbage-collected, leading to false positives
+    in :func:`resource_ref_for`. Skip them here; their identity is
+    recovered via the ``__module__``-based fallback path.
     """
     import weakref  # noqa: PLC0415
 
     key = id(instance)
-    _resource_origin[key] = name
     try:
         weakref.finalize(instance, _resource_origin.pop, key, None)
     except TypeError:
-        pass  # built-in containers don't support weak refs; OK
+        # Object can't be weak-referenced (list / tuple / dict / set /
+        # bare int / etc.) — skip the identity registration entirely
+        # so a future object at the same ``id()`` can't pick up this
+        # name by accident.
+        return
+    _resource_origin[key] = name
 
 
 _REF_PREFIX = "@"

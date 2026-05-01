@@ -498,6 +498,110 @@ def _safe_filename(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", name) or "unnamed"
 
 
+class _DataclassReprFailed(Exception):
+    """Raised by ``_render_dataclass_kwargs`` when a field cannot be
+    reproduced in source form (closure, lambda, opaque object, …).
+
+    The auto-emit machinery catches this and falls through to the
+    generic class branch which writes the safer ``Cls(...)`` shell.
+    """
+
+
+def _render_value_literal(value: Any, imports: set[str]) -> str:
+    """Render ``value`` as a Python source expression usable in a builder.
+
+    Supports JSON-able scalars/lists/dicts, top-level importable
+    callables (emitted as ``from M import F`` + bare name), and
+    nested dataclasses (recurses). Mutates ``imports`` so the caller
+    can collect every needed import line.
+
+    Raises :class:`_DataclassReprFailed` for closures, lambdas, opaque
+    instances, or anything else that can't be re-emitted in source.
+    """
+    import dataclasses as _dc  # noqa: PLC0415
+    import enum as _enum  # noqa: PLC0415
+
+    # Enum check first — string-backed enums (``class X(str, Enum)``)
+    # would otherwise match the scalar branch and ``repr()`` would
+    # emit invalid ``<EnumClass.MEMBER: 'value'>`` source.
+    if isinstance(value, _enum.Enum):
+        ecls = type(value)
+        emod = ecls.__module__
+        ename = ecls.__name__
+        if emod and emod not in ("builtins",) and not emod.startswith("_chw_"):
+            imports.add(f"from {emod} import {ename}")
+            return f"{ename}.{value.name}"
+        raise _DataclassReprFailed(f"non-importable enum: {ecls!r}")
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return repr(value)
+    if isinstance(value, (list, tuple)):
+        parts = [_render_value_literal(v, imports) for v in value]
+        if isinstance(value, list):
+            return "[" + ", ".join(parts) + "]"
+        # tuple: keep trailing comma for single-element tuples
+        if len(parts) == 1:
+            return "(" + parts[0] + ",)"
+        return "(" + ", ".join(parts) + ")"
+    if isinstance(value, dict):
+        parts = [
+            f"{_render_value_literal(k, imports)}: {_render_value_literal(v, imports)}"
+            for k, v in value.items()
+        ]
+        return "{" + ", ".join(parts) + "}"
+    # Top-level importable callable / class → emit bare name + import.
+    if callable(value):
+        mod = getattr(value, "__module__", "") or ""
+        name = getattr(value, "__name__", "")
+        qual = getattr(value, "__qualname__", "<lambda>")
+        if (
+            mod
+            and mod not in ("builtins",)
+            and not mod.startswith("_chw_")
+            and name
+            and qual != "<lambda>"
+            and "<locals>" not in qual
+        ):
+            imports.add(f"from {mod} import {name}")
+            return name
+        raise _DataclassReprFailed(f"non-importable callable: {qual!r} from {mod!r}")
+    # Nested dataclass instance → recurse.
+    if _dc.is_dataclass(value):
+        v_mod = type(value).__module__
+        v_name = type(value).__name__
+        if v_mod and v_mod not in ("builtins", "__main__") and not v_mod.startswith("_chw_"):
+            imports.add(f"from {v_mod} import {v_name}")
+            inner_kwargs = _render_dataclass_kwargs(value, imports)
+            return f"{v_name}({inner_kwargs})"
+    raise _DataclassReprFailed(f"unrenderable value of type {type(value).__name__!r}")
+
+
+def _render_dataclass_kwargs(instance: Any, imports: set[str]) -> str:
+    """Return ``"k1=v1, k2=v2, ..."`` reproducing ``instance``'s fields.
+
+    Skips fields whose current value equals the dataclass-declared
+    default (or default_factory output) so the rendered builder stays
+    compact and matches the source preset's expressed configuration.
+    """
+    import dataclasses as _dc  # noqa: PLC0415
+
+    parts: list[str] = []
+    for f in _dc.fields(instance):
+        val = getattr(instance, f.name)
+        # Skip fields holding their default — keeps builder readable
+        # and matches dataclass __repr__ semantics.
+        if f.default is not _dc.MISSING and val == f.default:
+            continue
+        if f.default_factory is not _dc.MISSING:  # type: ignore[misc]
+            try:
+                if val == f.default_factory():  # type: ignore[misc]
+                    continue
+            except Exception:  # noqa: BLE001
+                pass
+        rendered = _render_value_literal(val, imports)
+        parts.append(f"{f.name}={rendered}")
+    return ", ".join(parts)
+
+
 _RUNTIME_PLACEHOLDER = re.compile(r"\$\{runtime\.([A-Za-z_][A-Za-z0-9_]*)\}")
 
 
@@ -829,6 +933,45 @@ def _write_resources_for_refs(
             continue
         cls_module = type(instance).__module__ or ""
         cls_name = type(instance).__name__
+
+        # Dataclass auto-emit: when the live instance is a dataclass we
+        # reproduce its full field state in the builder (not just the
+        # required ctor args). Common shape: ``PermissionEngine(rules=[
+        # PermissionRule(...), ...])`` — the rules list is JSON-able-ish
+        # only after we re-emit each PermissionRule's class import.
+        # Falls through to the generic class branch when reproduction
+        # fails (e.g. a field holds a closure).
+        import dataclasses as _dc  # noqa: PLC0415
+
+        if (
+            _dc.is_dataclass(instance)
+            and cls_module
+            and cls_module not in {"__main__", "builtins"}
+            and not cls_module.startswith("_chw_")
+        ):
+            try:
+                imports_set: set[str] = {f"from {cls_module} import {cls_name}"}
+                kwargs_src = _render_dataclass_kwargs(instance, imports_set)
+            except _DataclassReprFailed as exc:
+                kwargs_src = None
+                logger.debug("dataclass auto-emit fell through for %s: %s", ref_name, exc)
+            if kwargs_src is not None:
+                joined_imports = "\n".join(sorted(imports_set))
+                stub = (
+                    f"# AUTOGENERATED resource builder for {ref_name!r}.\n"
+                    f"# Reproduces the live ``{cls_name}`` instance field-by-\n"
+                    f"# field. Replace any value here with a real construction\n"
+                    f"# if you need different behaviour at load time.\n"
+                    f"{joined_imports}\n"
+                    "\n"
+                    "def build(runtime=None):\n"
+                    f"    return {cls_name}({kwargs_src})\n"
+                )
+                (resources_dir / f"{_safe_filename(ref_name)}.py").write_text(
+                    stub, encoding="utf-8"
+                )
+                continue
+
         # Best-effort: for installed classes, emit a builder that
         # imports the class and returns a fresh instance. This loses
         # cross-process state — explain that in the header.
@@ -1158,6 +1301,52 @@ def _write_memory(
     if isinstance(source, StaticMemorySource):
         (memory_root / f"{index:02d}_static.md").write_text(source.text, encoding="utf-8")
         return
+    # CallableMemorySource: if the wrapped callable is a top-level
+    # importable function, emit a ``<index>_callable.py`` that re-imports
+    # it. The loader recognises ``*.py`` files in memory/ and wraps the
+    # exported ``load`` callable with ``CallableMemorySource``. Closures
+    # / lambdas fall through to the generic warning path because they
+    # cannot be re-imported.
+    from looplet.memory import CallableMemorySource  # noqa: PLC0415
+
+    if isinstance(source, CallableMemorySource):
+        fn = source.fn
+        fn_name = getattr(fn, "__name__", "")
+        fn_mod = getattr(fn, "__module__", "") or ""
+        fn_qual = getattr(fn, "__qualname__", "<lambda>")
+        if (
+            fn_name
+            and fn_mod
+            and fn_mod not in ("builtins",)
+            and not fn_mod.startswith("_chw_")
+            and fn_qual != "<lambda>"
+            and "<locals>" not in fn_qual
+        ):
+            (memory_root / f"{index:02d}_callable.py").write_text(
+                "# AUTOGENERATED CallableMemorySource builder.\n"
+                "# The exported ``load`` callable receives the loop's\n"
+                "# ``state`` on every turn and returns the memory text\n"
+                "# (or ``None`` to skip). Re-imported from the source\n"
+                "# module so its closure stays intact.\n"
+                f"from {fn_mod} import {fn_name} as load\n",
+                encoding="utf-8",
+            )
+            if fn_mod == "__main__":
+                warnings.append(
+                    f"memory source {index!r}: CallableMemorySource wraps "
+                    f"a ``__main__`` callable {fn_name!r}; cross-process "
+                    f"loads will fail until it is moved to a real module"
+                )
+            return
+        msg = (
+            f"memory source 'CallableMemorySource' wraps a non-importable "
+            f"callable ({fn_qual!r} from {fn_mod!r}); skipping"
+        )
+        if strict:
+            raise WorkspaceSerializationError(msg)
+        warnings.append(msg)
+        return
+
     name = type(source).__name__
     msg = f"memory source {name!r} is not a StaticMemorySource; skipping"
     if strict:
@@ -1232,12 +1421,35 @@ def workspace_to_preset(
     if sys_prompt_path.is_file():
         cfg_kwargs["system_prompt"] = sys_prompt_path.read_text(encoding="utf-8")
 
-    # Memory sources (StaticMemorySource per file).
+    # Memory sources — ``*.md`` → StaticMemorySource, ``*.py`` →
+    # CallableMemorySource (the module's ``load`` attr is wrapped). Files
+    # are loaded in lexicographic order so the writer's ``00_``, ``01_``
+    # prefix preserves source order.
     memory_sources: list[PersistentMemorySource] = []
     memory_dir = root / WorkspaceLayout.MEMORY_DIR
     if memory_dir.is_dir():
-        for memory_file in sorted(memory_dir.glob("*.md")):
-            memory_sources.append(StaticMemorySource(text=memory_file.read_text(encoding="utf-8")))
+        from looplet.memory import CallableMemorySource  # noqa: PLC0415
+
+        memory_files = sorted(
+            p for p in memory_dir.iterdir() if p.is_file() and p.suffix in (".md", ".py")
+        )
+        for memory_file in memory_files:
+            if memory_file.suffix == ".md":
+                memory_sources.append(
+                    StaticMemorySource(text=memory_file.read_text(encoding="utf-8"))
+                )
+            else:
+                module = _import_module_from_path(memory_file, f"_chw_memory_{memory_file.stem}")
+                load_fn = getattr(module, "load", None)
+                if not callable(load_fn):
+                    msg = (
+                        f"memory module {memory_file.name!r} must export a ``load(state)`` callable"
+                    )
+                    if strict:
+                        raise WorkspaceSerializationError(msg)
+                    logger.warning("%s; skipping", msg)
+                    continue
+                memory_sources.append(CallableMemorySource(fn=load_fn))  # type: ignore[arg-type]
     if memory_sources:
         cfg_kwargs["memory_sources"] = memory_sources
 

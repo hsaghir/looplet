@@ -1304,3 +1304,128 @@ def test_triple_round_trip_is_byte_idempotent(tmp_path: Path) -> None:
         if a != b:
             drifts.append(str(rel))
     assert not drifts, f"byte drift in: {drifts}"
+
+
+# ── CallableMemorySource round-trip + dataclass auto-emit ─────────────
+
+
+def _live_state_load(state) -> str:
+    """Top-level memory loader so workspace round-trip can re-import it."""
+    step = getattr(state, "step_count", 0) or len(getattr(state, "steps", []) or [])
+    return f"[live] step={step}"
+
+
+def test_callable_memory_source_round_trips(tmp_path: Path) -> None:
+    """``CallableMemorySource(fn=top_level_fn)`` round-trips losslessly:
+    writer emits ``memory/<idx>_callable.py`` with a re-import; loader
+    wraps the exported ``load`` symbol back into a CallableMemorySource."""
+    from looplet import (
+        AgentPreset,
+        CallableMemorySource,
+        LoopConfig,
+        StaticMemorySource,
+        ToolSpec,
+    )
+    from looplet.tools import BaseToolRegistry
+    from looplet.types import DefaultState
+
+    tools = BaseToolRegistry()
+    tools.register(
+        ToolSpec(name="done", description="d", parameters={"summary": "s"}, execute=_scripted_done)
+    )
+    cfg = LoopConfig(
+        max_steps=3,
+        done_tool="done",
+        memory_sources=[
+            StaticMemorySource(text="A"),
+            CallableMemorySource(fn=_live_state_load),
+            StaticMemorySource(text="B"),
+        ],
+    )
+    preset = AgentPreset(config=cfg, hooks=[], tools=tools, state=DefaultState(max_steps=3))
+    ws = preset_to_workspace(preset, tmp_path / "ws", strict=True)
+    assert ws.serialization_warnings == []
+    assert (tmp_path / "ws" / "memory" / "01_callable.py").is_file()
+
+    reloaded = workspace_to_preset(tmp_path / "ws", strict=True)
+    types = [type(s).__name__ for s in (reloaded.config.memory_sources or [])]
+    assert types == ["StaticMemorySource", "CallableMemorySource", "StaticMemorySource"]
+
+    # The reloaded callable behaves identically.
+    cm = reloaded.config.memory_sources[1]
+    assert cm.fn(DefaultState(max_steps=3)) == "[live] step=0"
+
+
+def test_callable_memory_source_lambda_warns_in_loose_mode(tmp_path: Path) -> None:
+    """Lambdas / closures cannot be re-imported; writer falls back to a
+    warning instead of dropping silently or crashing."""
+    from looplet import (
+        AgentPreset,
+        CallableMemorySource,
+        LoopConfig,
+        ToolSpec,
+    )
+    from looplet.tools import BaseToolRegistry
+    from looplet.types import DefaultState
+
+    tools = BaseToolRegistry()
+    tools.register(
+        ToolSpec(name="done", description="d", parameters={"summary": "s"}, execute=_scripted_done)
+    )
+    cfg = LoopConfig(
+        max_steps=3,
+        done_tool="done",
+        memory_sources=[CallableMemorySource(fn=lambda state: "x")],
+    )
+    preset = AgentPreset(config=cfg, hooks=[], tools=tools, state=DefaultState(max_steps=3))
+    ws = preset_to_workspace(preset, tmp_path / "ws", strict=False)
+    assert any("CallableMemorySource" in w for w in ws.serialization_warnings)
+
+
+def test_dataclass_auto_emit_reproduces_field_state(tmp_path: Path) -> None:
+    """When a hook holds a dataclass instance with non-default field
+    values (e.g. ``PermissionEngine(rules=[PermissionRule(...), ...])``),
+    the auto-emit builder must reproduce every field — not just the
+    required ctor args. Previously ``PermissionEngine`` round-tripped
+    with empty rules because ``rules`` has a default_factory and the
+    generic builder skipped non-required kwargs."""
+    from looplet import (
+        AgentPreset,
+        LoopConfig,
+        PermissionDecision,
+        PermissionEngine,
+        PermissionHook,
+        PermissionRule,
+        ToolSpec,
+    )
+    from looplet.tools import BaseToolRegistry
+    from looplet.types import DefaultState
+
+    tools = BaseToolRegistry()
+    tools.register(
+        ToolSpec(name="done", description="d", parameters={"summary": "s"}, execute=_scripted_done)
+    )
+    engine = PermissionEngine(
+        rules=[
+            PermissionRule(tool="dangerous", decision=PermissionDecision.DENY, reason="audit-only"),
+            PermissionRule(tool="*", decision=PermissionDecision.ALLOW),
+        ]
+    )
+    hooks = [PermissionHook(engine=engine)]
+    cfg = LoopConfig(max_steps=3, done_tool="done")
+    preset = AgentPreset(config=cfg, hooks=hooks, tools=tools, state=DefaultState(max_steps=3))
+
+    preset_to_workspace(preset, tmp_path / "ws", strict=True)
+    builder = (tmp_path / "ws" / "resources" / "engine.py").read_text()
+    # Real reproduction — not an empty-rules shell.
+    assert "PermissionEngine(rules=[" in builder
+    assert "tool='dangerous'" in builder
+    assert "PermissionDecision.DENY" in builder
+
+    reloaded = workspace_to_preset(tmp_path / "ws", strict=True)
+    eng = reloaded.hooks[0].engine
+    assert [r.tool for r in eng.rules] == ["dangerous", "*"]
+    assert [r.decision for r in eng.rules] == [
+        PermissionDecision.DENY,
+        PermissionDecision.ALLOW,
+    ]

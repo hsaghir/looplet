@@ -545,3 +545,52 @@ def test_threat_intel_workspace_loads() -> None:
         "StagnationHook",
         "PerToolLimitHook",
     ]
+
+
+def test_dep_doctor_workspace_loads() -> None:
+    """examples/dep_doctor.workspace migration."""
+    from pathlib import Path as _P
+
+    workspace_dir = _P(__file__).resolve().parents[1] / "examples" / "dep_doctor.workspace"
+    preset = workspace_to_preset(workspace_dir, strict=True)
+    # detect_dep_files / check_license_compat dirs map via tool.yaml `name`
+    # to detect_files / check_license respectively (the original @tool name).
+    assert sorted(preset.tools._tools.keys()) == [
+        "check_license",
+        "check_package",
+        "detect_files",
+        "done",
+        "find_alternatives",
+        "parse_deps",
+        "think",
+    ]
+    assert [type(h).__name__ for h in preset.hooks] == [
+        "StagnationHook",
+        "PerToolLimitHook",
+    ]
+
+
+def test_git_detective_workspace_loads() -> None:
+    """examples/git_detective.workspace migration. Uses lazy
+    closure-registry via ``make_tools(REPO_CONFIG.path)`` with
+    setup.py injecting the shared repo_config resource."""
+    from pathlib import Path as _P
+
+    workspace_dir = _P(__file__).resolve().parents[1] / "examples" / "git_detective.workspace"
+    preset = workspace_to_preset(workspace_dir, strict=True)
+    assert sorted(preset.tools._tools.keys()) == [
+        "commit_patterns",
+        "contributor_stats",
+        "coupled_files",
+        "directory_structure",
+        "done",
+        "file_age_analysis",
+        "file_hotspots",
+        "recent_activity",
+        "repo_overview",
+        "think",
+    ]
+    assert [type(h).__name__ for h in preset.hooks] == [
+        "StagnationHook",
+        "PerToolLimitHook",
+    ]

@@ -1,0 +1,8 @@
+name: coupled_files
+description: Find files that often change together (co-change coupling).
+parameters:
+  min_coupling:
+    type: string
+    description: Minimum coupling count (e.g. "3").
+    default: "3"
+concurrent_safe: true

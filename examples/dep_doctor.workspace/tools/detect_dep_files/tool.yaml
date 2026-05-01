@@ -1,0 +1,7 @@
+name: detect_files
+description: Scan a project directory for dependency files.
+parameters:
+  project_dir:
+    type: string
+    description: Path to the project root.
+concurrent_safe: true

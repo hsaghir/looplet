@@ -1,0 +1,7 @@
+name: parse_deps
+description: Parse a dependency file and extract package names plus version constraints.
+parameters:
+  file_path:
+    type: string
+    description: Path to a dependency file (requirements.txt, pyproject.toml, package.json, etc.).
+concurrent_safe: true

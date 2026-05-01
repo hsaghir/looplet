@@ -1,0 +1,8 @@
+name: think
+description: Record an analytical step. No side effects.
+parameters:
+  thought:
+    type: string
+    description: Brief reasoning note.
+free: true
+concurrent_safe: true

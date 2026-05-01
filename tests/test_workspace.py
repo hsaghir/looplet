@@ -594,3 +594,112 @@ def test_git_detective_workspace_loads() -> None:
         "StagnationHook",
         "PerToolLimitHook",
     ]
+
+
+# ── runtime= kwarg + ${runtime.x} substitution ────────────────
+
+
+def test_runtime_substitution_in_config_yaml(tmp_path):
+    """${runtime.<key>} placeholders in config.yaml get replaced with
+    the host-supplied runtime value before LoopConfig is constructed."""
+    out = tmp_path / "ws"
+    out.mkdir()
+    (out / "workspace.json").write_text(json.dumps({"name": "x", "schema_version": 1}))
+    (out / "config.yaml").write_text("max_steps: 5\ncheckpoint_dir: ${runtime.cp_dir}\n")
+
+    preset = workspace_to_preset(out, strict=True, runtime={"cp_dir": "/tmp/my-cp"})
+    assert preset.config.max_steps == 5
+    assert preset.config.checkpoint_dir == "/tmp/my-cp"
+
+
+def test_runtime_substitution_unknown_key_raises(tmp_path):
+    """Typos in ${runtime.<key>} fail loudly at load time, not silently."""
+    out = tmp_path / "ws"
+    out.mkdir()
+    (out / "workspace.json").write_text(json.dumps({"name": "x", "schema_version": 1}))
+    (out / "config.yaml").write_text("max_steps: ${runtime.nonexistent}\n")
+
+    with pytest.raises(WorkspaceSerializationError, match="unresolved"):
+        workspace_to_preset(out, strict=True, runtime={"actual_key": 5})
+
+
+def test_resource_builder_receives_runtime(tmp_path):
+    """resources/<name>.py builders that declare def build(runtime)
+    get the host-supplied runtime dict; legacy zero-arg build()
+    keeps working."""
+    out = tmp_path / "ws"
+    out.mkdir()
+    (out / "workspace.json").write_text(json.dumps({"name": "x", "schema_version": 1}))
+    (out / "resources").mkdir()
+    (out / "resources" / "tagged.py").write_text(
+        "def build(runtime=None):\n"
+        "    runtime = runtime or {}\n"
+        "    return {'tag': runtime.get('tag', 'default')}\n"
+    )
+
+    hook_dir = out / "hooks" / "00_TagReader"
+    hook_dir.mkdir(parents=True)
+    (hook_dir / "hook.py").write_text(
+        "class TagReader:\n    def __init__(self, *, source):\n        self.source = source\n"
+    )
+    (hook_dir / "config.yaml").write_text('class_name: TagReader\nkwargs:\n  source: "@tagged"\n')
+
+    preset = workspace_to_preset(out, strict=True, runtime={"tag": "from-runtime"})
+    assert preset.hooks[0].source == {"tag": "from-runtime"}
+
+
+def test_setup_py_receives_runtime_kwarg(tmp_path):
+    """setup.py's setup() gets runtime= when its signature accepts it."""
+    out = tmp_path / "ws"
+    out.mkdir()
+    (out / "workspace.json").write_text(json.dumps({"name": "x", "schema_version": 1}))
+    (out / "setup.py").write_text(
+        "def setup(preset, resources, runtime=None):\n"
+        "    runtime = runtime or {}\n"
+        "    preset.config.system_prompt = runtime.get('prompt', 'default')\n"
+        "    return preset\n"
+    )
+
+    preset = workspace_to_preset(out, strict=True, runtime={"prompt": "from-runtime"})
+    assert preset.config.system_prompt == "from-runtime"
+
+
+def test_coder_workspace_runtime_kwarg_routes_files(tmp_path):
+    """End-to-end regression for the runtime= kwarg in coder.workspace:
+    write_file via composable_loop must land in the runtime-supplied
+    workspace, NOT in the test cwd. The previous code wrote to cwd
+    because there was no way to point a workspace at a runtime path."""
+    import json as _json
+    from pathlib import Path as _P
+
+    from looplet import composable_loop
+    from looplet.testing import MockLLMBackend
+
+    workspace_dir = _P(__file__).resolve().parents[1] / "examples" / "coder.workspace"
+    target = tmp_path / "target-repo"
+    target.mkdir()
+
+    preset = workspace_to_preset(workspace_dir, strict=True, runtime={"workspace": str(target)})
+    llm = MockLLMBackend(
+        responses=[
+            _json.dumps(
+                {
+                    "thought": "write",
+                    "tool": "write_file",
+                    "args": {"file_path": "hello.py", "content": "print('hi')\n"},
+                }
+            ),
+            _json.dumps({"thought": "finish", "tool": "done", "args": {"summary": "ok"}}),
+        ]
+    )
+    list(
+        composable_loop(
+            llm=llm,
+            tools=preset.tools,
+            state=preset.state,
+            config=preset.config,
+            hooks=preset.hooks,
+            task={"q": "write hello.py"},
+        )
+    )
+    assert (target / "hello.py").read_text().strip() == "print('hi')"

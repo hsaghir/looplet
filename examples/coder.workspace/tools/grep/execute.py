@@ -1,4 +1,8 @@
-"""grep tool — recursive grep with workspace-relative output paths."""
+"""grep tool — recursive grep with workspace-relative output paths.
+
+Receives the workspace_config resource through ``ctx.resources``;
+``tool.yaml`` declares ``requires: [workspace_config]``.
+"""
 
 from __future__ import annotations
 
@@ -8,11 +12,12 @@ from pathlib import Path
 
 from coder_lib_tools import _resolve_safe_path
 
-WORKSPACE_CONFIG = None
+from looplet.types import ToolContext
 
 
-def execute(*, pattern: str, path: str = ".", include: str = "") -> dict:
-    workspace = WORKSPACE_CONFIG.path if WORKSPACE_CONFIG is not None else "."
+def execute(ctx: ToolContext, *, pattern: str, path: str = ".", include: str = "") -> dict:
+    cfg = ctx.resources.get("workspace_config")
+    workspace = cfg.path if cfg is not None else "."
     target = _resolve_safe_path(workspace, path)
     if target is None:
         return {"error": f"Path '{path}' is outside the project directory."}

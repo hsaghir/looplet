@@ -254,6 +254,32 @@ class ToolContext:
     or (b) failing hard with :class:`ToolValidationError` when the
     caller could still act on the partial data."""
 
+    resources: dict[str, Any] = field(default_factory=dict)
+    """Shared resource registry keyed by ``@<name>`` ref name.
+
+    Populated by the dispatcher when the tool's ``ToolSpec.requires``
+    list declares dependencies (workspace v2 ``tool.yaml`` ``requires:``
+    field). The dispatcher resolves each requested ref against the
+    workspace's resource registry and hands the live instance to the
+    tool through this dict — eliminating the v1 module-global
+    ``WORKSPACE_CONFIG = None`` / ``setup.py`` overwrite pattern.
+
+    Example::
+
+        # tools/read_file/tool.yaml
+        # name: read_file
+        # parameters: {file_path: {type: string, description: ...}}
+        # requires: [workspace_config, file_cache]
+
+        def execute(*, file_path, ctx):
+            ws = ctx.resources['workspace_config'].path
+            cache = ctx.resources['file_cache']
+            ...
+
+    Tools without a ``requires:`` list (or workspaces using the legacy
+    setup.py-injection pattern) receive an empty dict here.
+    """
+
     def report_progress(self, stage: str, data: dict | None = None) -> None:
         """Invoke the progress callback if one is installed. Silent if not."""
         if self.on_progress is not None:

@@ -13,3 +13,5 @@ parameters:
     description: Optional --include filter (e.g. "*.py").
     default: ""
 concurrent_safe: true
+requires:
+  - workspace_config

@@ -1703,3 +1703,90 @@ def test_two_pass_round_trip_is_byte_identical(tmp_path: Path) -> None:
         if a != b:
             diffs.append((str(rel), len(a), len(b)))
     assert not diffs, f"byte drift: {diffs}"
+
+
+# ── Tool DI via requires + ctx.resources ──
+
+
+def _di_tool_execute(ctx, *, x: int) -> dict:
+    """Top-level tool that reads its dependency from ctx.resources."""
+    cfg = ctx.resources.get("workspace_config")
+    return {"x": x, "label": getattr(cfg, "label", "no-cfg")}
+
+
+def test_tool_requires_round_trips_via_yaml(tmp_path: Path) -> None:
+    """``tool.yaml`` ``requires:`` field round-trips through
+    ``ToolSpec.requires`` and the dispatcher passes the resolved
+    instances via ``ctx.resources[name]``."""
+    src = tmp_path / "ws"
+    src.mkdir()
+    (src / "workspace.json").write_text('{"name": "w"}')
+    (src / "config.yaml").write_text("max_steps: 3\ndone_tool: done\n")
+    (src / "tools" / "done").mkdir(parents=True)
+    (src / "tools/done/tool.yaml").write_text(
+        "name: done\nparameters:\n  s: {type: string, description: s}\n"
+    )
+    (src / "tools/done/execute.py").write_text(
+        "def execute(*, s='ok'): return {'status': 'completed', 's': s}\n"
+    )
+    (src / "tools" / "demo").mkdir(parents=True)
+    (src / "tools/demo/tool.yaml").write_text(
+        "name: demo\n"
+        "parameters:\n  x: {type: integer, description: x}\n"
+        "requires:\n  - workspace_config\n"
+    )
+    (src / "tools/demo/execute.py").write_text(
+        "from tests.test_workspace import _di_tool_execute as execute\n"
+    )
+    (src / "resources").mkdir()
+    (src / "resources/workspace_config.py").write_text(
+        "class _Cfg:\n    label = 'configured'\ndef build(runtime=None):\n    return _Cfg()\n"
+    )
+
+    preset = workspace_to_preset(src, strict=True)
+    spec = preset.tools._tools["demo"]
+    assert spec.requires == ["workspace_config"]
+    # Dispatch through the registry → ctx.resources receives the live cfg.
+    from looplet.types import ToolCall
+
+    result = preset.tools.dispatch(ToolCall(tool="demo", args={"x": 7}))
+    assert result.error is None
+    assert result.data == {"x": 7, "label": "configured"}
+
+    # Snapshot round-trip preserves requires.
+    snap = tmp_path / "snap"
+    preset_to_workspace(preset, snap, name="snap")
+    snap_yaml = (snap / "tools" / "demo" / "tool.yaml").read_text()
+    assert "requires:" in snap_yaml
+    assert "workspace_config" in snap_yaml
+
+
+def test_tool_without_ctx_logs_warning_when_requires_set(tmp_path: Path, caplog) -> None:
+    """A ``requires:`` declaration on a tool that doesn't accept ``ctx``
+    is a configuration mistake — the dispatcher logs a warning so
+    users notice instead of silently dropping the dependency."""
+    import logging
+
+    from looplet import ToolSpec
+    from looplet.tools import BaseToolRegistry
+    from looplet.types import ToolCall
+
+    def _no_ctx_execute(*, x: int) -> dict:
+        return {"x": x}
+
+    reg = BaseToolRegistry()
+    reg.set_resources({"workspace_config": object()})
+    reg.register(
+        ToolSpec(
+            name="demo",
+            description="d",
+            parameters={"x": {"type": "integer", "description": "x"}},
+            execute=_no_ctx_execute,
+            requires=["workspace_config"],
+        )
+    )
+
+    with caplog.at_level(logging.WARNING, logger="looplet.tools"):
+        result = reg.dispatch(ToolCall(tool="demo", args={"x": 1}))
+    assert result.error is None
+    assert any("ctx" in rec.message for rec in caplog.records)

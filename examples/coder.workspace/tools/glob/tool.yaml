@@ -5,3 +5,5 @@ parameters:
     type: string
     description: Glob pattern (e.g. "**/*.py").
 concurrent_safe: true
+requires:
+  - workspace_config

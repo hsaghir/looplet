@@ -353,6 +353,22 @@ class ToolSpec:
     timeout (the tool itself is responsible for timing out).
     """
 
+    requires: list[str] = field(default_factory=list)
+    """Names of shared resources the tool needs at dispatch time.
+
+    Workspace v2 mechanism for tool dependency injection: ``tool.yaml``
+    can declare ``requires: [workspace_config, file_cache]`` and the
+    workspace loader populates this list. The
+    :class:`BaseToolRegistry` dispatcher then resolves each name
+    against the workspace's resource registry and hands the live
+    instances to the tool through ``ctx.resources`` — replacing the
+    legacy ``WORKSPACE_CONFIG = None`` / ``setup.py`` global-injection
+    pattern.
+
+    Empty list (the default) preserves the existing dispatch behaviour
+    for tools that don't need DI.
+    """
+
     _accepts_ctx: bool | None = field(default=None, repr=False, compare=False)
     """Cached result of ``inspect.signature(execute)`` for ``ctx`` detection."""
 
@@ -571,6 +587,18 @@ class BaseToolRegistry:
 
     def __init__(self) -> None:
         self._tools: dict[str, ToolSpec] = {}
+        self._resources: dict[str, Any] = {}
+
+    def set_resources(self, resources: dict[str, Any]) -> None:
+        """Provide the shared-resource registry for tool DI.
+
+        Tools whose ``ToolSpec.requires`` lists a resource name receive
+        the resolved instance through ``ctx.resources[name]`` at
+        dispatch time. Workspace v2's ``workspace_to_preset`` calls
+        this with the loaded ``resources/<name>.py`` builders' output;
+        in-process callers can call it directly to wire a registry.
+        """
+        self._resources = dict(resources or {})
 
     def register(self, spec: ToolSpec) -> None:
         """Register a ToolSpec by name.
@@ -719,6 +747,32 @@ class BaseToolRegistry:
         exec_kwargs: dict[str, Any] = dict(sanitized)
         if spec._accepts_ctx:
             exec_kwargs["ctx"] = ctx
+
+        # Populate ``ctx.resources`` for tools that declared
+        # ``ToolSpec.requires``. This is the workspace v2 dependency-
+        # injection path that replaces the legacy
+        # ``WORKSPACE_CONFIG = None`` / ``setup.py`` global-overwrite
+        # pattern. Auto-creates a ToolContext when the tool accepts
+        # ``ctx`` but the caller didn't supply one.
+        if spec.requires:
+            if not spec._accepts_ctx:
+                import logging  # noqa: PLC0415
+
+                logging.getLogger(__name__).warning(
+                    "Tool %r declares requires=%s but its execute "
+                    "signature has no ``ctx`` parameter — the resources "
+                    "won't reach the tool. Add ``ctx`` to the signature.",
+                    spec.name,
+                    spec.requires,
+                )
+            else:
+                live_ctx = exec_kwargs.get("ctx")
+                if live_ctx is None:
+                    live_ctx = ToolContext()
+                    exec_kwargs["ctx"] = live_ctx
+                for req_name in spec.requires:
+                    if req_name in self._resources:
+                        live_ctx.resources[req_name] = self._resources[req_name]
 
         # Auto-coerce _raw_arg: when the parser received a bare string
         # instead of a dict and there's exactly one required parameter,

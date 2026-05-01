@@ -6,6 +6,7 @@ context_window: 128000
 use_native_tools: false
 concurrent_dispatch: false
 reactive_recovery: true
+compact_service: "@compact_service"
 memory_sources:
   - "@instructions_memory"
   - "@project_memory"

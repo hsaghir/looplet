@@ -132,6 +132,37 @@ logger = logging.getLogger(__name__)
 SCHEMA_VERSION = 1
 
 
+# Maps ``id(preset)`` → source workspace root for presets returned by
+# ``workspace_to_preset``. Read by ``preset_to_workspace`` so it can
+# vendor the source workspace's top-level ``*.py`` helper modules into
+# the snapshot. Uses a WeakValueDictionary-style finalizer to avoid
+# leaking memory for long-lived presets — the entry is dropped when
+# the preset is garbage-collected. Keyed by ``id()`` because
+# ``AgentPreset`` is a public dataclass and we don't want to pollute
+# its surface with a private attribute or change its hashability
+# semantics.
+_preset_origin: dict[int, Path] = {}
+
+
+def _stamp_preset_origin(preset: Any, root: Path) -> None:
+    """Record the source workspace root for ``preset``.
+
+    Registers a finalizer that drops the entry when ``preset`` is
+    garbage-collected so this map can't leak memory.
+    """
+    import weakref  # noqa: PLC0415
+
+    key = id(preset)
+    _preset_origin[key] = root.resolve()
+    weakref.finalize(preset, _preset_origin.pop, key, None)
+
+
+def _preset_origin_root(preset: Any) -> Path | None:
+    """Return the source workspace root for ``preset`` (or ``None``
+    when the preset wasn't built via :func:`workspace_to_preset`)."""
+    return _preset_origin.get(id(preset))
+
+
 # ── Layout constants ────────────────────────────────────────────
 
 
@@ -851,13 +882,12 @@ def _copy_workspace_helpers(preset: Any, dest_root: Path, warnings: list[str]) -
     """Copy top-level ``*.py`` helper modules from the preset's source
     workspace (if any) into ``dest_root``.
 
-    The source workspace is read from the private
-    ``preset._origin_workspace_root`` attribute that
-    :func:`workspace_to_preset` stamps on every preset it returns. When
-    the preset was built in-process (no origin attribute), this is a
-    no-op — there's nothing to vendor.
+    The source workspace is looked up via :func:`_preset_origin_root`,
+    populated by :func:`workspace_to_preset` for every preset it
+    returns. When the preset was built in-process (no recorded
+    origin), this is a no-op — there's nothing to vendor.
     """
-    src_root = getattr(preset, "_origin_workspace_root", None)
+    src_root = _preset_origin_root(preset)
     if src_root is None:
         return
     src_root = Path(src_root)
@@ -1231,6 +1261,10 @@ def _write_tool(spec: Any, tools_root: Path, warnings: list[str], strict: bool) 
             val = getattr(spec, opt)
             if val is not None:
                 yaml_payload[opt] = val
+    # Round-trip the resource-requirements list (workspace v2 tool DI).
+    requires = getattr(spec, "requires", None) or []
+    if requires:
+        yaml_payload["requires"] = list(requires)
     (tool_dir / "tool.yaml").write_text(_dump_yaml(yaml_payload) + "\n", encoding="utf-8")
 
     fn = spec.execute
@@ -1634,11 +1668,10 @@ def workspace_to_preset(
         # Stamp the preset with its origin so a subsequent
         # ``preset_to_workspace`` call can copy any top-level ``*.py``
         # helper modules from the source workspace into the snapshot.
-        # Private attribute, not part of the public AgentPreset shape.
-        try:
-            preset._origin_workspace_root = root.resolve()  # type: ignore[attr-defined]
-        except (AttributeError, TypeError):
-            pass
+        # Tracked in a module-level WeakKey-style dict (keyed by
+        # ``id(preset)`` with a finalizer) so the public AgentPreset
+        # dataclass surface stays clean.
+        _stamp_preset_origin(preset, root)
         return preset
     finally:
         if _path_pushed:
@@ -1789,8 +1822,16 @@ def _workspace_to_preset_inner(
                 concurrent_safe=bool(yaml_payload.get("concurrent_safe", False)),
                 free=bool(yaml_payload.get("free", False)),
                 timeout_s=yaml_payload.get("timeout_s"),
+                requires=list(yaml_payload.get("requires", []) or []),
             )
             registry.register(spec)
+    # Hand the resource registry to the tool registry so any tool whose
+    # ``ToolSpec.requires`` lists a resource name receives the live
+    # instance via ``ctx.resources[name]`` at dispatch time. Workspace
+    # v2 dependency injection — replaces the legacy
+    # ``setup.py``-overwrites-module-globals pattern.
+    if resources:
+        registry.set_resources(resources)
 
     # Hooks (alphabetical-by-dirname → list order).
     hooks: list[Any] = []

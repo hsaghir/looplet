@@ -7,3 +7,6 @@ parameters:
   content:
     type: string
     description: Full file contents.
+requires:
+  - workspace_config
+  - file_cache

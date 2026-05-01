@@ -1,27 +1,28 @@
-"""read_file tool — read with line numbers + cache integration."""
+"""read_file tool — read with line numbers + cache integration.
+
+Receives ``workspace_config`` and ``file_cache`` through
+``ctx.resources``; ``tool.yaml`` declares
+``requires: [workspace_config, file_cache]``.
+"""
 
 from __future__ import annotations
 
 from coder_lib_tools import _resolve_safe_path
 
-WORKSPACE_CONFIG = None
-FILE_CACHE = None
+from looplet.types import ToolContext
 
 
-def execute(*, file_path: str, start_line: int = 0, end_line: int = 0) -> dict:
-    workspace = WORKSPACE_CONFIG.path if WORKSPACE_CONFIG is not None else "."
+def execute(ctx: ToolContext, *, file_path: str, start_line: int = 0, end_line: int = 0) -> dict:
+    cfg = ctx.resources.get("workspace_config")
+    cache = ctx.resources.get("file_cache")
+    workspace = cfg.path if cfg is not None else "."
     p = _resolve_safe_path(workspace, file_path)
     if p is None:
         return {"error": f"Path '{file_path}' is outside the project directory."}
     if not p.exists():
         return {"error": f"File not found: {file_path}"}
     # file_unchanged optimization shared with other coder tools.
-    if (
-        FILE_CACHE is not None
-        and start_line == 0
-        and end_line == 0
-        and FILE_CACHE.is_unchanged(file_path)
-    ):
+    if cache is not None and start_line == 0 and end_line == 0 and cache.is_unchanged(file_path):
         return {
             "path": file_path,
             "file_unchanged": True,
@@ -44,8 +45,8 @@ def execute(*, file_path: str, start_line: int = 0, end_line: int = 0) -> dict:
                 + f"\n... [{len(content) - 20000} chars truncated] ...\n"
                 + content[-10000:]
             )
-        if FILE_CACHE is not None:
-            FILE_CACHE.record(file_path)
+        if cache is not None:
+            cache.record(file_path)
         return {"path": file_path, "content": content, "total_lines": len(lines)}
     except Exception as e:
         return {"error": str(e)}

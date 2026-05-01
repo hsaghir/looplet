@@ -10,3 +10,5 @@ parameters:
     description: Tree depth.
     default: 2
 concurrent_safe: true
+requires:
+  - workspace_config

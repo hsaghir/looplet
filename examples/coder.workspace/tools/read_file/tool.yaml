@@ -13,3 +13,6 @@ parameters:
     description: Optional ending line (1-indexed, inclusive).
     default: 0
 concurrent_safe: true
+requires:
+  - workspace_config
+  - file_cache

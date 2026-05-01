@@ -1,0 +1,8 @@
+name: recent_activity
+description: Get commit activity for the last N days.
+parameters:
+  days:
+    type: string
+    description: Number of days back (e.g. "30").
+    default: "30"
+concurrent_safe: true

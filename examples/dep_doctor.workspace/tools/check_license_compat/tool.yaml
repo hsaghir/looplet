@@ -1,0 +1,9 @@
+name: check_license
+description: Check if a dependency license is compatible with the project license.
+parameters:
+  project_license:
+    type: string
+    description: SPDX-style identifier for the project's license.
+  dep_license:
+    type: string
+    description: SPDX-style identifier for the dependency's license.

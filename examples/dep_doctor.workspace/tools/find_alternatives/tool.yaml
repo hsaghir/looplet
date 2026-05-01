@@ -1,0 +1,6 @@
+name: find_alternatives
+description: Suggest alternative packages for a risky dependency using LLM reasoning.
+parameters:
+  package_name:
+    type: string
+    description: Package to find alternatives for.

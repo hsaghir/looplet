@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "name": "dep-doctor",
+  "description": "Workspace-native dependency security auditor. Detects, parses, and checks project dependencies for security and license issues.",
+  "metadata": {
+    "tags": ["security", "dependencies", "workspace-native"]
+  }
+}

@@ -1,0 +1,8 @@
+name: think
+description: Analytical reasoning step. No side effects.
+parameters:
+  thought:
+    type: string
+    description: Brief note.
+free: true
+concurrent_safe: true

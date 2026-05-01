@@ -1,4 +1,4 @@
-name: check_license
+name: check_license_compat
 description: Check if a dependency license is compatible with the project license.
 parameters:
   project_license:

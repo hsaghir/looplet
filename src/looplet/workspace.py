@@ -426,7 +426,21 @@ def _import_module_from_path(path: Path, module_name: str) -> Any:
     if spec is None or spec.loader is None:
         raise WorkspaceSerializationError(f"cannot import module from {path}")
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)  # type: ignore[union-attr]
+    # Register in ``sys.modules`` so ``inspect.getmodule(cls)`` /
+    # ``inspect.getsource(cls)`` can find the on-disk source for
+    # workspace-defined classes (hooks / resources). Without this,
+    # round-tripping a loaded workspace's own inline ``hook.py``
+    # falls back to the placeholder branch in ``_render_hook_source``
+    # because the dynamically-loaded module has no ``sys.modules``
+    # entry for ``inspect`` to consult.
+    import sys as _sys  # noqa: PLC0415
+
+    _sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)  # type: ignore[union-attr]
+    except Exception:
+        _sys.modules.pop(module_name, None)
+        raise
     return module
 
 
@@ -845,7 +859,46 @@ def _write_resources_for_refs(
 
     resources_dir = root / WorkspaceLayout.RESOURCES_DIR
     resources_dir.mkdir(exist_ok=True)
+    import sys as _sys  # noqa: PLC0415
+
+    def _origin_chw_resource_file(value: Any) -> Path | None:
+        """If ``value`` (or every callable element of a list/tuple)
+        traces back to a single ``_chw_resource_<name>`` module, return
+        the on-disk source file. The original ``resources/<name>.py``
+        is the canonical builder — copying it round-trips builds
+        that compute lists / closures / nested objects without losing
+        the original ``def build()`` signature.
+        """
+        candidates: list[Any] = list(value) if isinstance(value, (list, tuple)) else [value]
+        if not candidates:
+            return None
+        chw_modules: set[str] = set()
+        for item in candidates:
+            mod = getattr(item, "__module__", "") or type(item).__module__ or ""
+            if not mod.startswith("_chw_resource_"):
+                return None
+            chw_modules.add(mod)
+        if len(chw_modules) != 1:
+            return None
+        chw_mod = _sys.modules.get(next(iter(chw_modules)))
+        chw_file = getattr(chw_mod, "__file__", None) if chw_mod is not None else None
+        if chw_file and Path(chw_file).is_file():
+            return Path(chw_file)
+        return None
+
     for ref_name, instance in refs_seen.items():
+        # ── Universal pre-pass: copy original resources/<X>.py when
+        # the live instance came from a workspace's own resource. The
+        # original builder has the exact ``def build(runtime=None)``
+        # the loader expects; reproducing it from the live instance
+        # via dataclass / class auto-emit can lose the runtime= path,
+        # the closure state, or the original list factory.
+        chw_src = _origin_chw_resource_file(instance)
+        if chw_src is not None:
+            (resources_dir / f"{_safe_filename(ref_name)}.py").write_text(
+                chw_src.read_text(encoding="utf-8"), encoding="utf-8"
+            )
+            continue
         if instance is None:
             msg = (
                 f"resource {ref_name!r}: could not locate the live instance on "
@@ -1137,6 +1190,23 @@ def _write_tool(spec: Any, tools_root: Path, warnings: list[str], strict: bool) 
     # back to source-dump only when the function isn't importable.
     fn_name = getattr(fn, "__name__", "")
     module_name = getattr(fn, "__module__", "") or ""
+
+    # Workspace-loaded tools live in dynamic ``_chw_tool_<name>`` modules
+    # registered in ``sys.modules``. Re-importing by that synthetic name
+    # would silently fail at reload (the new process has no entry under
+    # that key). Copy the original on-disk ``execute.py`` verbatim — it
+    # already carries the correct shim or top-level function.
+    if module_name.startswith("_chw_tool_"):
+        import sys as _sys  # noqa: PLC0415
+
+        chw_mod = _sys.modules.get(module_name)
+        chw_file = getattr(chw_mod, "__file__", None) if chw_mod is not None else None
+        if chw_file and Path(chw_file).is_file():
+            (tool_dir / "execute.py").write_text(
+                Path(chw_file).read_text(encoding="utf-8"), encoding="utf-8"
+            )
+            return
+
     if fn_name and module_name and module_name not in {"__main__", "builtins"}:
         try:
             mod = importlib.import_module(module_name)

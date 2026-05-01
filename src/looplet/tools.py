@@ -375,16 +375,27 @@ class ToolSpec:
         """Return required parameter names.
 
         For JSON Schema, reads the ``required`` field.
-        For simple format, parameters whose description starts with
-        ``(optional)`` are excluded; the rest are required.
+        For workspace-style ``{name: {type, description, default?}}``
+        parameter dicts (the format ``tool.yaml`` files use), names
+        whose descriptor either omits ``default`` or lacks one are
+        required.
+        For simple format ``{name: description_string}``, parameters
+        whose description starts with ``(optional)`` are excluded;
+        the rest are required.
         """
         if self.is_json_schema:
             return list(self.parameters.get("required", []))
-        return [
-            name
-            for name, desc in self.parameters.items()
-            if not str(desc).lower().lstrip().startswith("(optional)")
-        ]
+        required: list[str] = []
+        for name, desc in self.parameters.items():
+            # Workspace v2 ``tool.yaml`` form: dict descriptor.
+            if isinstance(desc, dict):
+                if "default" not in desc:
+                    required.append(name)
+                continue
+            # Simple form: bare-string description.
+            if not str(desc).lower().lstrip().startswith("(optional)"):
+                required.append(name)
+        return required
 
     def spec_text(self) -> str:
         """Format for LLM prompt inclusion."""

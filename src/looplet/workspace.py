@@ -490,6 +490,14 @@ def _load_resources(root: Path, runtime: dict[str, Any] | None = None) -> dict[s
     host-supplied ``runtime`` dict (e.g. ``runtime['workspace']`` for
     the coder workspace). Resources are shared by every ``"@<name>"``
     reference in hook / tool kwargs.
+
+    Each built instance is also registered in
+    :data:`_resource_origin` (keyed by ``id``, with a finalizer that
+    drops the entry when the instance is garbage-collected) so that
+    :func:`resource_ref_for` can recover the original ref name on
+    workspace round-trip — even when the instance's class lives in a
+    third-party module (e.g. ``looplet.permissions.PermissionEngine``)
+    rather than the workspace's own resource module.
     """
     import inspect as _inspect  # noqa: PLC0415
 
@@ -515,11 +523,98 @@ def _load_resources(root: Path, runtime: dict[str, Any] | None = None) -> dict[s
             )
         except (TypeError, ValueError):
             accepts_runtime = False
-        resources[name] = builder(runtime=runtime_dict) if accepts_runtime else builder()
+        instance = builder(runtime=runtime_dict) if accepts_runtime else builder()
+        resources[name] = instance
+        _register_resource_origin(instance, name)
     return resources
 
 
+# Identity-keyed map from a resource-built instance's ``id()`` to its
+# ref name. Keyed by ``id`` because the instance may be unhashable (a
+# list, a dict) or its hash semantics may collide with another
+# instance. Entries are dropped on instance GC via ``weakref.finalize``
+# so this map can't leak memory.
+_resource_origin: dict[int, str] = {}
+
+
+def _register_resource_origin(instance: Any, name: str) -> None:
+    """Record that ``instance`` came from ``resources/<name>.py``.
+
+    Tries to attach a weakref finalizer; falls back to a best-effort
+    registration without finalizer for objects that don't support
+    weak references (e.g. tuples). The non-finalized entries are
+    cleaned up opportunistically the next time
+    :func:`_load_resources` runs for the same workspace.
+    """
+    import weakref  # noqa: PLC0415
+
+    key = id(instance)
+    _resource_origin[key] = name
+    try:
+        weakref.finalize(instance, _resource_origin.pop, key, None)
+    except TypeError:
+        pass  # built-in containers don't support weak refs; OK
+
+
 _REF_PREFIX = "@"
+
+
+def resource_ref_for(value: Any) -> str | None:
+    """Return ``"@<name>"`` when ``value`` was produced by a workspace
+    ``resources/<name>.py`` builder; ``None`` otherwise.
+
+    Two detection paths:
+
+    1. **Identity registry.** :func:`_load_resources` stamps every
+       built instance into ``_resource_origin`` keyed by ``id``. This
+       handles the common case where the builder returns a stock
+       third-party object (e.g. ``PermissionEngine``,
+       ``MetricsCollector``) whose own ``__module__`` is *not* in
+       the workspace.
+    2. **Module name fallback.** When the value (or its first list
+       element) was *defined* inside the workspace's resource module
+       (e.g. a closure built by ``def build(): def fn(...): ...``),
+       its ``__module__`` starts with ``_chw_resource_``.
+
+    Used by hook ``to_config()`` implementations to round-trip the
+    *original* resource ref name (e.g. ``"@sql_permissions"``) instead
+    of a hardcoded fallback (e.g. ``"@engine"``).
+
+    Returns ``None`` for in-process objects so callers can fall back
+    to a default ref name.
+    """
+    # Path 1: identity registry — handles instances of stock classes
+    # like ``looplet.permissions.PermissionEngine`` whose own
+    # ``__module__`` is the framework, not the workspace.
+    by_id = _resource_origin.get(id(value))
+    if by_id is not None:
+        return f"{_REF_PREFIX}{by_id}"
+    # Also probe list/tuple elements for identity matches — common
+    # for ``EvalHook(evaluators=[...])`` whose list is rebuilt each
+    # call by the resource builder.
+    if isinstance(value, (list, tuple)) and value:
+        elem_id = _resource_origin.get(id(value[0]))
+        if elem_id is not None:
+            return f"{_REF_PREFIX}{elem_id}"
+
+    # Path 2: module-name fallback — handles closures defined inside
+    # the resource module (CallableMemorySource(fn=lambda ...)) and
+    # custom classes declared in the resource file.
+    candidate_modules: list[str] = []
+    cls_mod = getattr(type(value), "__module__", "") or ""
+    if cls_mod:
+        candidate_modules.append(cls_mod)
+    direct_mod = getattr(value, "__module__", "") or ""
+    if direct_mod and direct_mod != cls_mod:
+        candidate_modules.append(direct_mod)
+    if isinstance(value, (list, tuple)) and value:
+        item_mod = getattr(value[0], "__module__", "") or getattr(type(value[0]), "__module__", "")
+        if item_mod and item_mod not in candidate_modules:
+            candidate_modules.append(item_mod)
+    for mod in candidate_modules:
+        if mod.startswith("_chw_resource_"):
+            return f"{_REF_PREFIX}{mod[len('_chw_resource_') :]}"
+    return None
 
 
 def _resolve_refs(value: Any, resources: dict[str, Any]) -> Any:
@@ -975,15 +1070,37 @@ def _write_resources_for_refs(
 
     def _origin_chw_resource_file(value: Any) -> Path | None:
         """If ``value`` (or every callable element of a list/tuple)
-        traces back to a single ``_chw_resource_<name>`` module, return
-        the on-disk source file. The original ``resources/<name>.py``
-        is the canonical builder — copying it round-trips builds
-        that compute lists / closures / nested objects without losing
-        the original ``def build()`` signature.
+        traces back to a single workspace resource module, return the
+        on-disk source file. Two detection paths:
+
+        1. **Identity registry** (set up by :func:`_load_resources`):
+           covers stock-class instances like ``PermissionEngine``
+           whose own ``__module__`` is the framework, not the
+           workspace.
+        2. **Module name fallback**: covers closures defined inside
+           the resource module (``def build(): def fn(...): ...``)
+           and custom classes declared in the resource file.
+
+        The original ``resources/<name>.py`` is the canonical builder
+        — copying it round-trips builds that compute lists / closures
+        / nested objects without losing the original ``def build()``
+        signature.
         """
+        # Path 1: identity registry → look up by id(), then read the
+        # registered name's source file from sys.modules.
         candidates: list[Any] = list(value) if isinstance(value, (list, tuple)) else [value]
         if not candidates:
             return None
+        registered_name = _resource_origin.get(id(value))
+        if registered_name is None and isinstance(value, (list, tuple)):
+            registered_name = _resource_origin.get(id(candidates[0]))
+        if registered_name is not None:
+            chw_mod = _sys.modules.get(f"_chw_resource_{registered_name}")
+            chw_file = getattr(chw_mod, "__file__", None) if chw_mod is not None else None
+            if chw_file and Path(chw_file).is_file():
+                return Path(chw_file)
+
+        # Path 2: every candidate's __module__ is the same _chw_resource_*
         chw_modules: set[str] = set()
         for item in candidates:
             mod = getattr(item, "__module__", "") or type(item).__module__ or ""
@@ -1658,15 +1775,22 @@ def workspace_to_preset(
     # ``<workspace>/<wsname>_lib.py`` or similar; pick a name unique to
     # this workspace so two workspaces loaded back-to-back don't share
     # a cached ``lib`` module). The loader pushes the workspace root
-    # onto ``sys.path`` for the duration of this load so
-    # ``from <wsname>_lib import X`` resolves without forcing every
-    # workspace to ship a setup.py shim.
+    # AND its ``resources/`` subdirectory onto ``sys.path`` for the
+    # duration of this load so:
+    #   * ``from <wsname>_lib import X`` resolves to the workspace root
+    #   * ``from <resource_name> import helper`` resolves to a
+    #     ``resources/<resource_name>.py`` module (lets tools call back
+    #     into resource modules without forcing a setup.py shim).
     import sys as _sys  # noqa: PLC0415
 
     root_str = str(root)
-    _path_pushed = root_str not in _sys.path
-    if _path_pushed:
-        _sys.path.insert(0, root_str)
+    resources_dir_str = str(root / WorkspaceLayout.RESOURCES_DIR)
+    pushed_paths: list[str] = []
+    for p in (root_str, resources_dir_str):
+        if (root / WorkspaceLayout.RESOURCES_DIR).is_dir() or p == root_str:
+            if p not in _sys.path:
+                _sys.path.insert(0, p)
+                pushed_paths.append(p)
     try:
         preset = _workspace_to_preset_inner(
             root, runtime_dict, state_factory=state_factory, strict=strict
@@ -1680,9 +1804,9 @@ def workspace_to_preset(
         _stamp_preset_origin(preset, root)
         return preset
     finally:
-        if _path_pushed:
+        for p in pushed_paths:
             try:
-                _sys.path.remove(root_str)
+                _sys.path.remove(p)
             except ValueError:
                 pass
 

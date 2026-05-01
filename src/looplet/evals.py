@@ -835,14 +835,21 @@ class EvalHook:
 
     def to_config(self) -> dict:
         """Workspace round-trip: emit ``evaluators`` (and ``collectors``
-        when present) as ``@ref`` strings so the workspace writer
-        auto-generates ``resources/<name>.py`` builders. Lambda
-        evaluators land in placeholder builders the user must replace;
-        top-level callables ride straight through.
+        when present) as ``@ref`` strings.
+
+        Original resource ref names are preserved when the evaluator /
+        collector lists were produced by a workspace resource builder
+        (e.g. ``resources/sql_evaluators.py`` round-trips as
+        ``{"evaluators": "@sql_evaluators"}``). Otherwise the writer
+        emits the generic ``"@evaluators"`` / ``"@collectors"`` names.
         """
-        cfg: dict[str, Any] = {"evaluators": "@evaluators"}
+        from looplet.workspace import resource_ref_for  # noqa: PLC0415
+
+        ev_ref = resource_ref_for(self.evaluators)
+        cfg: dict[str, Any] = {"evaluators": ev_ref or "@evaluators"}
         if self.collectors:
-            cfg["collectors"] = "@collectors"
+            co_ref = resource_ref_for(self.collectors)
+            cfg["collectors"] = co_ref or "@collectors"
         if self.verbose:
             cfg["verbose"] = True
         return cfg

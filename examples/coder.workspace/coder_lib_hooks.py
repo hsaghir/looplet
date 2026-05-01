@@ -12,7 +12,7 @@ Design intent — *steer, don't restrict*:
   Failures emit a briefing nudge; ``done()`` is never blocked.
   Outcome verification happens after the run via the eval hook
   built in :func:`examples.coder.wiring.build_eval_hook`. Pass
-  ``strict=True`` to opt into the legacy hard-block.
+  ``strict=True`` to opt into a hard block on done() until tests pass.
 * :class:`StaleFileHook` injects a re-read nudge when bash modifies
   a previously-read file (it does not block edits).
 * :class:`LinterHook` runs ``ruff check`` after Python file edits
@@ -102,7 +102,7 @@ class TestGuardHook:
                     "An eval will re-check the suite after the run."
                 )
             return None
-        # Strict mode: hard block (legacy / opt-in).
+        # Strict mode: hard block on done() until tests pass.
         if not self._tests_passed and self._files_written:
             return HookDecision(block="Run tests first. If no tests exist, create them.")
         return None

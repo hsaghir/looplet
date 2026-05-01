@@ -361,9 +361,7 @@ class ToolSpec:
     workspace loader populates this list. The
     :class:`BaseToolRegistry` dispatcher then resolves each name
     against the workspace's resource registry and hands the live
-    instances to the tool through ``ctx.resources`` — replacing the
-    legacy ``WORKSPACE_CONFIG = None`` / ``setup.py`` global-injection
-    pattern.
+    instances to the tool through ``ctx.resources``.
 
     Empty list (the default) preserves the existing dispatch behaviour
     for tools that don't need DI.
@@ -752,11 +750,8 @@ class BaseToolRegistry:
             exec_kwargs["ctx"] = ctx
 
         # Populate ``ctx.resources`` for tools that declared
-        # ``ToolSpec.requires``. This is the workspace dependency-
-        # injection path that replaces the legacy
-        # ``WORKSPACE_CONFIG = None`` / ``setup.py`` global-overwrite
-        # pattern. Auto-creates a ToolContext when the tool accepts
-        # ``ctx`` but the caller didn't supply one.
+        # ``ToolSpec.requires``. Auto-creates a ToolContext when the
+        # tool accepts ``ctx`` but the caller didn't supply one.
         if spec.requires:
             if not spec._accepts_ctx:
                 import logging  # noqa: PLC0415

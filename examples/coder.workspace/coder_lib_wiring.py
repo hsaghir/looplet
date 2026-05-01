@@ -187,8 +187,8 @@ def build_default_hooks(
     * ``PerToolLimitHook`` exposes a single high cap (``100``) as a
       runaway safety-net rather than per-tool process budgets.
 
-    Set ``test_strict=True`` to recover the legacy hard-block on
-    ``done()``; lower limits or change the fingerprint to harden
+    Set ``test_strict=True`` to opt into a hard block on ``done()``;
+    lower limits or change the fingerprint to harden
     further only when you have a specific reason to.
     """
     hooks: list = []

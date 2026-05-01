@@ -335,73 +335,6 @@ def build_parse_recovery_prompt(original_prompt: str, raw_response: str) -> str:
 # ── Diminishing Returns Detection ────────────────────────────────
 
 
-class StallDetector:
-    """Track agent productivity to detect spinning.
-
-    Records new-item counts per step.  When the rolling window shows
-    no improvement, ``is_diminishing`` is True and the loop should
-    consider stopping or changing strategy.
-    """
-
-    def __init__(self, window: int = DIMINISHING_RETURNS_WINDOW) -> None:
-        self.window = window
-        self._history: list[int] = []
-        self.consecutive_empty = 0
-
-    def record_step(
-        self,
-        new_findings: int = 0,
-        new_highlights: int = 0,
-        new_entities: int = 0,
-        *,
-        new_items: int | None = None,
-    ) -> None:
-        """Record a completed step.
-
-        Pass ``new_items`` directly, or use the named keyword args
-        (new_findings, new_highlights, new_entities) which are summed.
-        """
-        total_new = (
-            new_items if new_items is not None else (new_findings + new_highlights + new_entities)
-        )
-        self._history.append(total_new)
-        if total_new == 0:
-            self.consecutive_empty += 1
-        else:
-            self.consecutive_empty = 0
-
-    @property
-    def is_diminishing(self) -> bool:
-        """True when the last ``window`` steps all produced zero new items."""
-        if len(self._history) < self.window:
-            return False
-        return sum(self._history[-self.window :]) <= DIMINISHING_RETURNS_THRESHOLD
-
-    @property
-    def total_steps(self) -> int:
-        """Total steps recorded."""
-        return len(self._history)
-
-    def guidance_text(self) -> str:
-        """Return a guidance string for the LLM when stagnating, else empty str."""
-        if self.consecutive_empty >= 5:
-            return (
-                "\n⚠ CRITICAL STAGNATION: %d consecutive steps with zero new information. "
-                "You MUST either:\n"
-                "  1. Call done() with your current results\n"
-                "  2. Try a COMPLETELY different approach\n"
-                "Repeating the same pattern will not help." % self.consecutive_empty
-            )
-        if self.consecutive_empty >= 3:
-            return (
-                "\n⚠ DIMINISHING RETURNS: Last %d steps found nothing new. "
-                "Consider: (1) trying a different approach, "
-                "(2) using a different tool, "
-                "(3) calling done if you have enough results." % self.consecutive_empty
-            )
-        return ""
-
-
 # ── Step Progress Tracking ───────────────────────────────────────
 
 
@@ -487,48 +420,6 @@ class StepProgressTracker:
     def total_steps(self) -> int:
         """Total steps classified."""
         return len(self._classifications)
-
-    # ── Backward-compat bridge for StallDetector API ──
-
-    @property
-    def consecutive_empty(self) -> int:
-        """Backward-compat: consecutive steps with no new info."""
-        return self._consecutive_unproductive
-
-    @property
-    def is_diminishing(self) -> bool:
-        """Backward-compat: alias for is_stagnating."""
-        return self.is_stagnating
-
-    def record_step(
-        self,
-        new_findings: int = 0,
-        new_highlights: int = 0,
-        new_entities: int = 0,
-        *,
-        new_items: int | None = None,
-    ) -> None:
-        """Backward-compat: record a step like StallDetector."""
-        total = (
-            new_items if new_items is not None else (new_findings + new_highlights + new_entities)
-        )
-        self.classify_turn(total, self.total_steps + 1)
-
-    def guidance_text(self) -> str:
-        """Backward-compat: same interface as StallDetector."""
-        if self._consecutive_unproductive >= 5:
-            return (
-                "\n⚠ CRITICAL STAGNATION: %d consecutive steps with no new information. "
-                "You MUST change your approach completely or call done()."
-                % self._consecutive_unproductive
-            )
-        if self._consecutive_unproductive >= 3:
-            return (
-                "\n⚠ DIMINISHING RETURNS: Last %d steps found nothing new. "
-                "Consider changing your approach or calling done()."
-                % self._consecutive_unproductive
-            )
-        return ""
 
 
 # ── Tool Result Truncation ───────────────────────────────────────

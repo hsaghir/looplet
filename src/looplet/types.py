@@ -283,8 +283,7 @@ class ToolContext:
     list declares dependencies (workspace ``tool.yaml`` ``requires:``
     field). The dispatcher resolves each requested ref against the
     workspace's resource registry and hands the live instance to the
-    tool through this dict — eliminating the v1 module-global
-    ``WORKSPACE_CONFIG = None`` / ``setup.py`` overwrite pattern.
+    tool through this dict.
 
     Example::
 
@@ -298,8 +297,7 @@ class ToolContext:
             cache = ctx.resources['file_cache']
             ...
 
-    Tools without a ``requires:`` list (or workspaces using the legacy
-    setup.py-injection pattern) receive an empty dict here.
+    Tools without a ``requires:`` list receive an empty dict here.
     """
 
     def report_progress(self, stage: str, data: dict | None = None) -> None:

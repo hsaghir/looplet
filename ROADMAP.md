@@ -45,35 +45,28 @@ consistent everywhere:
 
 ### Custom-agent example to lead with
 
-Lead with **Dependency Doctor**: an agent that audits a repository's
+Leads with **Dependency Doctor**: an agent that audits a repository's
 dependency files for security, license, and maintenance risk, then
-produces a report card. It is more memorable than hello-world, useful to
-most developers, and it demonstrates looplet's differentiation: every
+produces a report card. It is more memorable than hello-world, useful
+to most developers, and demonstrates looplet's differentiation: every
 lookup, warning, and conclusion is visible as a `Step` that users can
 log, gate, replay, or evaluate.
 
-Keep the other examples as second-line demos:
+Second-line demos:
 
 - **Git Detective** for repository-health analysis from commit history.
 - **Threat Intel Briefing** for local-first security analysis.
-- **Coder** as a reference implementation for tool-heavy agents, not as
-  a claim to be a complete coding product.
+- **Coder** as a reference implementation for tool-heavy agents.
 
 ### API consolidation
 
 Keep the low-level modules, but make the common path feel smaller:
 
-- Promote one front-door import story: `looplet` for essentials,
-  submodules for advanced internals.
-- Make presets match the best examples. `coding_agent_preset()` should
-  eventually reuse the hardened file tools, stale-file hints, protocol
-  probing, and test guardrails from `examples/coder.workspace/` instead of
-  maintaining a simpler parallel version.
+- One front-door import story: `looplet` for essentials, submodules
+  for advanced internals.
 - Group production features into opinionated bundles: `debugging`,
-  `safety`, `coding`, and `research` presets should assemble hooks,
+  `safety`, `coding`, and `research` presets that assemble hooks,
   memory, compaction, provenance, and permissions with sane defaults.
-- Add a `looplet doctor` command that verifies backend connectivity,
-  native-tool behavior, model JSON compliance, and common config errors.
 
 ### Tool construction
 
@@ -97,14 +90,10 @@ plain `ToolSpec` so advanced users can inspect or mutate it.
 
 ## Near-term (`0.2` — ~1 month out)
 
-- **Preset consolidation** — make `coding_agent_preset()` reuse the
-  hardened file-tool and guardrail patterns from `examples/coder.workspace/`.
 - **Production bundles** — opinionated `debugging`, `safety`, `coding`,
   and `research` preset bundles that assemble hooks and memory defaults.
 - **Gemini + Bedrock backends** (community contributions welcome — see
   [good-first-issues](good-first-issues.md))
-- **First-class Ollama recipe** with `examples/ollama_hello.py` and
-  docs page
 - **Structured-output helper** — optional `response_schema` support
   that threads through to providers that have it natively
 - **Cost accounting hook** built on top of the provenance sink

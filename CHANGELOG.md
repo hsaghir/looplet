@@ -6,6 +6,27 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Removed (BREAKING)
+
+- **`looplet.flags` module deleted.** All feature flags migrated to
+  `LoopConfig` fields in 0.1.6 and the module had been deprecated
+  since. The `FLAGS` singleton, `_Flags` class, and `LOOPLET_*`
+  environment variables are gone. Use the equivalent `LoopConfig`
+  fields directly: `LoopConfig(concurrent_dispatch=True)`,
+  `LoopConfig(reactive_recovery=True)`, etc.
+- **`looplet.scaffolding.StallDetector` class deleted.** Superseded
+  by `StagnationHook` in `looplet.stagnation`. The
+  back-compat bridge methods on `StepProgressTracker`
+  (`consecutive_empty`, `is_diminishing`, `record_step`,
+  `guidance_text`) are also removed — use the native
+  `consecutive_unproductive` / `is_stagnating` properties.
+
+### Changed
+- **Documentation cleanup.** Stale "v1 / v2 / legacy / cartridge"
+  framing trimmed from public docstrings and comments now that the
+  migration to the workspace format is complete. No behavioural
+  change. ROADMAP entries that have shipped are dropped.
+
 ### Added
 - **`ToolError.recovery_hint`** — structured suggestion (dict or str)
   for how the caller could recover. The dispatcher now populates it

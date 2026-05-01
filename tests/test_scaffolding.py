@@ -11,7 +11,6 @@ import pytest
 from looplet.scaffolding import (
     PARSE_RECOVERY_MAX,
     LLMResult,
-    StallDetector,
     StepProgressTracker,
     age_session_entries,
     build_parse_recovery_prompt,
@@ -372,103 +371,6 @@ class TestCompressSessionLog:
         assert result is None or isinstance(result, str)
 
 
-# ── StallDetector ───────────────────────────────────────
-
-
-class TestStallDetector:
-    def test_not_diminishing_initially(self) -> None:
-        t = StallDetector(window=5)
-        assert t.is_diminishing is False
-
-    def test_initial_state_full(self) -> None:
-        t = StallDetector(window=5)
-        assert t.is_diminishing is False
-        assert t.consecutive_empty == 0
-        assert t.total_steps == 0
-
-    def test_productive_steps_not_diminishing(self) -> None:
-        t = StallDetector(window=3)
-        t.record_step(new_items=5)
-        t.record_step(new_items=3)
-        t.record_step(new_items=2)
-        assert t.is_diminishing is False
-
-    def test_not_diminishing_below_window(self) -> None:
-        t = StallDetector(window=5)
-        for _ in range(4):
-            t.record_step(new_items=0)
-        assert t.is_diminishing is False
-
-    def test_empty_steps_trigger_diminishing(self) -> None:
-        t = StallDetector(window=3)
-        for _ in range(5):
-            t.record_step(new_items=0)
-        assert t.is_diminishing is True
-
-    def test_total_steps_tracked(self) -> None:
-        t = StallDetector()
-        t.record_step(new_items=1)
-        t.record_step(new_items=2)
-        assert t.total_steps == 2
-
-    def test_consecutive_empty_increments(self) -> None:
-        t = StallDetector()
-        t.record_step(new_items=0)
-        t.record_step(new_items=0)
-        assert t.consecutive_empty == 2
-
-    def test_consecutive_empty_resets_on_productive(self) -> None:
-        t = StallDetector()
-        t.record_step(new_items=0)
-        t.record_step(new_items=0)
-        t.record_step(new_items=5)
-        assert t.consecutive_empty == 0
-
-    def test_consecutive_empty_tracking_three(self) -> None:
-        t = StallDetector()
-        t.record_step(new_items=0)
-        t.record_step(new_items=0)
-        t.record_step(new_items=0)
-        assert t.consecutive_empty == 3
-
-    def test_guidance_text_for_stagnation(self) -> None:
-        t = StallDetector()
-        for _ in range(5):
-            t.record_step(new_items=0)
-        text = t.guidance_text()
-        assert len(text) > 0
-        assert "STAGNATION" in text or "DIMINISHING" in text or "done" in text.lower()
-
-    def test_guidance_text_for_diminishing(self) -> None:
-        t = StallDetector()
-        for _ in range(3):
-            t.record_step(new_items=0)
-        text = t.guidance_text()
-        assert "DIMINISHING" in text or "STAGNATION" in text or text
-
-    def test_no_guidance_when_productive(self) -> None:
-        t = StallDetector()
-        t.record_step(new_items=5)
-        assert t.guidance_text() == ""
-
-    def test_guidance_text_empty_initially(self) -> None:
-        t = StallDetector()
-        assert t.guidance_text() == ""
-
-    def test_new_items_kwarg(self) -> None:
-        t = StallDetector()
-        t.record_step(new_items=3)
-        assert t.total_steps == 1
-
-    def test_legacy_positional_args(self) -> None:
-        t = StallDetector()
-        t.record_step(new_findings=1, new_highlights=2, new_entities=3)
-        assert t.total_steps == 1
-
-
-# ── StepProgressTracker ─────────────────────────────────────────────
-
-
 class TestStepProgressTracker:
     def test_initial_state(self) -> None:
         t = StepProgressTracker()
@@ -556,29 +458,6 @@ class TestStepProgressTracker:
         t.classify_turn(new_items=0, step_num=2)
         t.classify_turn(new_items=0, step_num=3)
         assert t.consecutive_unproductive == 2
-
-    def test_guidance_text_method_exists(self) -> None:
-        t = StepProgressTracker()
-        assert callable(t.guidance_text)
-        assert isinstance(t.guidance_text(), str)
-
-    def test_backward_compat_record_step(self) -> None:
-        t = StepProgressTracker()
-        t.record_step(new_items=3)
-        assert t.total_steps == 1
-
-    def test_backward_compat_is_diminishing(self) -> None:
-        t = StepProgressTracker(window=3)
-        for i in range(5):
-            t.record_step(new_items=0)
-        assert t.is_diminishing is True
-
-    def test_backward_compat_with_diminishing_returns(self) -> None:
-        t = StepProgressTracker()
-        assert hasattr(t, "is_diminishing")
-        assert hasattr(t, "consecutive_empty")
-        assert hasattr(t, "record_step")
-        assert hasattr(t, "guidance_text")
 
 
 # ── estimate_tokens ──────────────────────────────────────────────────

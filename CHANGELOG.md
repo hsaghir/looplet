@@ -6,6 +6,40 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **`ToolError.recovery_hint`** — structured suggestion (dict or str)
+  for how the caller could recover. The dispatcher now populates it
+  on the four self-correctable errors: unknown-tool ("did you mean?"),
+  unexpected-argument (`{unexpected, did_you_mean, expected}`),
+  missing-argument (`{missing, provided, expected}`), and empty
+  required-string-argument (`{empty_param, expected}`). Information-
+  additive: smarter models exploit the structured hint to self-correct
+  without re-discovering the catalog from prose; existing models still
+  see the same human-readable error message.
+- **`looplet.LLMResponsesExhausted`** + **`MockLLMBackend(cycle=False)`**
+  — opt-in test ergonomics. The default still cycles for backward
+  compatibility; passing `cycle=False` makes the mock raise instead of
+  silently re-using `responses[0]` past the last scripted answer
+  (which previously made over-running loops look "stuck on step 1").
+  Same flag on `AsyncMockLLMBackend`.
+- **`run_sub_loop(parent_hooks=...)`** — opt-in event forwarding from
+  a sub-loop to the parent's observability stack. When supplied, the
+  parent's hooks (e.g. `MetricsHook`, `StreamingHook`,
+  `TrajectoryRecorder`) receive every lifecycle event the sub-loop
+  emits via their `on_event` method, tagged with `subagent_id` in the
+  payload's `extra` dict so consumers can route / nest. Defaults to
+  `None` — no forwarding, sub-loop fully isolated.
+
+### Changed
+- **`tool.yaml requires:` validated at workspace-load time.** A typo
+  in `requires: [my_resoruce]` (missing or mistyped resource name)
+  used to silently set `ctx.resources["my_resoruce"] = None` at
+  dispatch and crash deep inside the tool body with `AttributeError`.
+  The loader now warns in loose mode (default) and raises
+  `WorkspaceSerializationError` in strict mode, naming the
+  unresolvable resource and listing the available ones — surfaces
+  the bug at its source.
+
 ### Changed
 - **Naming consolidation.** Dropped the legacy "cartridge" /
   "Composable Harness Workspace (CHW)" / "workspace v2" terminology

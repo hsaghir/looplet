@@ -132,7 +132,7 @@ from looplet.stagnation import (
 from looplet.streaming import StreamingHook
 from looplet.subagent import run_sub_loop
 from looplet.telemetry import MetricsCollector, MetricsHook, Tracer, TracingHook
-from looplet.testing import AsyncMockLLMBackend, MockLLMBackend
+from looplet.testing import AsyncMockLLMBackend, LLMResponsesExhausted, MockLLMBackend
 from looplet.tools import (
     BaseToolRegistry,
     ToolSpec,
@@ -283,6 +283,7 @@ __all__ = [
     # ── TESTING ─────────────────────────────────────────────────
     "MockLLMBackend",
     "AsyncMockLLMBackend",
+    "LLMResponsesExhausted",
     # ── RESILIENCE & CONTROL ────────────────────────────────────
     "ResilientBackend",
     "RetryExhausted",

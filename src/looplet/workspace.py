@@ -1954,6 +1954,27 @@ def _workspace_to_preset_inner(
                 timeout_s=yaml_payload.get("timeout_s"),
                 requires=list(yaml_payload.get("requires", []) or []),
             )
+            # Surface ``requires:`` typos at load time. Without this,
+            # a tool that declares ``requires: [my_resoruce]`` (typo)
+            # silently receives ``ctx.resources["my_resoruce"] = None``
+            # at dispatch time and crashes deep inside its body with
+            # ``AttributeError`` — forcing the user to read a stack
+            # trace inside their own tool to find the typo. Validating
+            # here points at the ``tool.yaml`` line directly.
+            if spec.requires:
+                missing = [r for r in spec.requires if r not in resources]
+                if missing:
+                    available = sorted(resources)
+                    msg = (
+                        f"tool {spec.name!r} (in {tool_dir.name!r}) declares "
+                        f"requires: {missing} but no such resource is defined. "
+                        f"Available resources: {available}. "
+                        f"Add a ``resources/<name>.py`` builder or fix the "
+                        f"``requires:`` list in ``tool.yaml``."
+                    )
+                    if strict:
+                        raise WorkspaceSerializationError(msg)
+                    logger.warning("%s; tool will receive None for missing resources", msg)
             registry.register(spec)
     # Hand the resource registry to the tool registry so any tool whose
     # ``ToolSpec.requires`` lists a resource name receives the live

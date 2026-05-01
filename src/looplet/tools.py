@@ -700,6 +700,9 @@ class BaseToolRegistry:
                     f"Unknown tool: {call.tool!r}.{did_you_mean} Available: {self.tool_names}"
                 ),
                 retriable=False,
+                recovery_hint=(
+                    f"Did you mean '{hint}'?" if hint else f"Available tools: {self.tool_names}"
+                ),
             )
             return ToolResult(
                 tool=call.tool,
@@ -808,6 +811,10 @@ class BaseToolRegistry:
                         f"Expected: {schema_hint}"
                     ),
                     retriable=True,
+                    recovery_hint={
+                        "empty_param": p,
+                        "expected": dict(spec.parameters or {}),
+                    },
                 )
                 return ToolResult(
                     tool=call.tool,
@@ -840,6 +847,11 @@ class BaseToolRegistry:
                     f"{did_you_mean} Expected: {schema_hint}"
                 ),
                 retriable=False,
+                recovery_hint={
+                    "unexpected": unknown,
+                    "did_you_mean": hint,
+                    "expected": dict(spec.parameters or {}),
+                },
             )
             return ToolResult(
                 tool=call.tool,
@@ -861,6 +873,11 @@ class BaseToolRegistry:
                     f"Expected: {schema_hint}"
                 ),
                 retriable=False,
+                recovery_hint={
+                    "missing": missing,
+                    "provided": provided,
+                    "expected": dict(spec.parameters or {}),
+                },
             )
             return ToolResult(
                 tool=call.tool,

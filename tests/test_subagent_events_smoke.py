@@ -111,3 +111,100 @@ class TestSubagentLifecycleEvents:
         )
         assert result["subagent_id"]  # non-empty
         assert len(result["subagent_id"]) == 12
+
+
+# ── parent_hooks=... forwards sub-loop events to parent observers ──
+
+
+def test_parent_hooks_receive_sub_loop_events() -> None:
+    """``run_sub_loop(parent_hooks=...)`` forwards every lifecycle
+    event the sub-loop emits onto the parent's hooks via their
+    ``on_event`` method, tagged with ``subagent_id`` in
+    ``payload.extra``. Lets parent observability stacks (MetricsHook,
+    StreamingHook, TrajectoryRecorder) see sub-activity without the
+    user manually plumbing it."""
+    import json
+
+    from looplet import register_done_tool
+    from looplet.subagent import run_sub_loop
+    from looplet.testing import MockLLMBackend
+    from looplet.tools import BaseToolRegistry
+
+    received: list[tuple[str, dict | None]] = []
+
+    class _Spy:
+        def on_event(self, payload) -> None:
+            received.append((str(payload.event), dict(payload.extra or {})))
+
+    parent_hook = _Spy()
+
+    tools = BaseToolRegistry()
+    register_done_tool(tools)
+
+    sub_llm = MockLLMBackend(
+        responses=[
+            json.dumps({"tool": "done", "args": {"summary": "sub-done"}, "reasoning": "r"}),
+        ]
+    )
+
+    result = run_sub_loop(
+        llm=sub_llm,
+        task={"goal": "do nothing"},
+        tools=tools,
+        max_steps=2,
+        parent_hooks=[parent_hook],
+    )
+    assert result["subagent_id"]
+    # The parent's spy received SUBAGENT_START + SUBAGENT_STOP at minimum,
+    # both tagged with the same subagent_id.
+    event_names = [name for name, _ in received]
+    assert any("SUBAGENT_START" in n for n in event_names), event_names
+    assert any("SUBAGENT_STOP" in n for n in event_names), event_names
+    # And every event payload carries the subagent_id.
+    sub_ids = {extra.get("subagent_id") for _, extra in received if extra}
+    sub_ids.discard(None)
+    assert sub_ids == {result["subagent_id"]}, sub_ids
+
+
+def test_no_parent_hooks_means_no_forwarding() -> None:
+    """Without ``parent_hooks``, the sub-loop's events stay isolated
+    (default opt-in behaviour)."""
+    import json
+
+    from looplet import register_done_tool
+    from looplet.subagent import run_sub_loop
+    from looplet.testing import MockLLMBackend
+    from looplet.tools import BaseToolRegistry
+
+    received: list[str] = []
+
+    class _Spy:
+        def on_event(self, payload) -> None:
+            received.append(str(payload.event))
+
+    parent_hook = _Spy()
+
+    tools = BaseToolRegistry()
+    register_done_tool(tools)
+    sub_llm = MockLLMBackend(
+        responses=[
+            json.dumps({"tool": "done", "args": {"summary": "x"}, "reasoning": "r"}),
+        ]
+    )
+
+    # parent_hooks omitted → spy must see nothing.
+    run_sub_loop(
+        llm=sub_llm,
+        task={"goal": "x"},
+        tools=tools,
+        max_steps=2,
+        # hooks= is the SUB-loop's hooks — does not implicitly include
+        # the parent observer.
+    )
+    assert received == []
+    # And: even if you pass [parent_hook] as hooks=, it gets the
+    # sub-loop's full LoopHook interface (which it doesn't implement),
+    # not just on_event forwarding. The on_event method is still
+    # called for events, so we'd see them — that's the OLD behaviour.
+    # The new behaviour is that you can have parent observers see
+    # events WITHOUT sharing the sub-loop's full hook interface.

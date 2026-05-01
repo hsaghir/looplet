@@ -1886,3 +1886,61 @@ def test_workspace_root_resources_dir_is_on_sys_path(tmp_path: Path) -> None:
     result = preset.tools.dispatch(ToolCall(tool="ping", args={}))
     assert result.error is None
     assert result.data == {"msg": "hello-from-resource"}
+
+
+# ── tool requires: validation at load time ──
+
+
+def test_tool_requires_unknown_resource_warns_in_loose_mode(tmp_path: Path, caplog) -> None:
+    """A typo in tool.yaml ``requires:`` must be surfaced at load time
+    (loose mode → warning) rather than silently set to None and crashing
+    deep inside the tool body at dispatch time."""
+    import logging
+
+    src = tmp_path / "ws"
+    src.mkdir()
+    (src / "workspace.json").write_text('{"name": "w"}')
+    (src / "config.yaml").write_text("max_steps: 3\ndone_tool: done\n")
+    (src / "tools" / "done").mkdir(parents=True)
+    (src / "tools/done/tool.yaml").write_text(
+        "name: done\nparameters:\n  s: {type: string, description: s}\n"
+    )
+    (src / "tools/done/execute.py").write_text(
+        "def execute(*, s='ok'): return {'status': 'completed', 's': s}\n"
+    )
+    (src / "tools" / "demo").mkdir(parents=True)
+    # Typo — workspace_confgi instead of workspace_config.
+    (src / "tools/demo/tool.yaml").write_text(
+        "name: demo\nparameters: {}\nrequires:\n  - workspace_confgi\n"
+    )
+    (src / "tools/demo/execute.py").write_text("def execute(ctx): return {}\n")
+
+    with caplog.at_level(logging.WARNING, logger="looplet.workspace"):
+        workspace_to_preset(src)
+    assert any("workspace_confgi" in rec.message for rec in caplog.records), (
+        f"expected warning about missing resource; got: {[r.message for r in caplog.records]}"
+    )
+
+
+def test_tool_requires_unknown_resource_raises_in_strict_mode(tmp_path: Path) -> None:
+    """Same typo, strict=True → WorkspaceSerializationError before the
+    loop ever runs."""
+    src = tmp_path / "ws"
+    src.mkdir()
+    (src / "workspace.json").write_text('{"name": "w"}')
+    (src / "config.yaml").write_text("max_steps: 3\ndone_tool: done\n")
+    (src / "tools" / "done").mkdir(parents=True)
+    (src / "tools/done/tool.yaml").write_text(
+        "name: done\nparameters:\n  s: {type: string, description: s}\n"
+    )
+    (src / "tools/done/execute.py").write_text(
+        "def execute(*, s='ok'): return {'status': 'completed', 's': s}\n"
+    )
+    (src / "tools" / "demo").mkdir(parents=True)
+    (src / "tools/demo/tool.yaml").write_text(
+        "name: demo\nparameters: {}\nrequires:\n  - missing_resource\n"
+    )
+    (src / "tools/demo/execute.py").write_text("def execute(ctx): return {}\n")
+
+    with pytest.raises(WorkspaceSerializationError, match="missing_resource"):
+        workspace_to_preset(src, strict=True)

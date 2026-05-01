@@ -119,3 +119,76 @@ class TestDispatchMapsExceptions:
         res = reg.dispatch(ToolCall(tool="nope", args={}))
         assert res.error_detail is not None
         assert res.error_detail.kind == ErrorKind.VALIDATION
+
+
+# ── recovery_hint surfaces actionable structure on dispatcher errors ──
+
+
+def test_unknown_tool_error_carries_recovery_hint() -> None:
+    """``ToolError.recovery_hint`` carries a 'did you mean?' suggestion
+    for typos. Information-additive: smarter models can self-correct
+    from the structured hint without needing to re-discover the
+    catalog from prose."""
+    from looplet import ToolSpec
+    from looplet.tools import BaseToolRegistry
+    from looplet.types import ToolCall
+
+    reg = BaseToolRegistry()
+    reg.register(
+        ToolSpec(
+            name="search", description="d", parameters={"q": "query"}, execute=lambda *, q: {"q": q}
+        )
+    )
+    result = reg.dispatch(ToolCall(tool="serach", args={"q": "x"}))
+    assert result.error_detail is not None
+    hint = result.error_detail.recovery_hint
+    assert hint is not None
+    assert "search" in str(hint)
+
+
+def test_missing_arg_error_carries_recovery_hint() -> None:
+    """Missing required arg → ``recovery_hint`` carries the structured
+    ``{missing, provided, expected}`` so the model knows exactly what
+    to add on the next call."""
+    from looplet import ToolSpec
+    from looplet.tools import BaseToolRegistry
+    from looplet.types import ToolCall
+
+    reg = BaseToolRegistry()
+    reg.register(
+        ToolSpec(
+            name="rank",
+            description="d",
+            parameters={"column": "col", "choices": "list"},
+            execute=lambda *, column, choices: {},
+        )
+    )
+    result = reg.dispatch(ToolCall(tool="rank", args={"column": "x"}))
+    assert result.error_detail is not None
+    hint = result.error_detail.recovery_hint
+    assert isinstance(hint, dict)
+    assert "missing" in hint and "choices" in hint["missing"]
+    assert "provided" in hint and "column" in hint["provided"]
+    assert "expected" in hint and "choices" in hint["expected"]
+
+
+def test_unexpected_arg_error_carries_recovery_hint() -> None:
+    """Unexpected arg → ``recovery_hint`` carries did_you_mean +
+    expected so the model can fix the typo or drop the bogus arg."""
+    from looplet import ToolSpec
+    from looplet.tools import BaseToolRegistry
+    from looplet.types import ToolCall
+
+    reg = BaseToolRegistry()
+    reg.register(
+        ToolSpec(
+            name="rank", description="d", parameters={"column": "col"}, execute=lambda *, column: {}
+        )
+    )
+    result = reg.dispatch(ToolCall(tool="rank", args={"colmun": "x"}))
+    assert result.error_detail is not None
+    hint = result.error_detail.recovery_hint
+    assert isinstance(hint, dict)
+    assert hint["did_you_mean"] == "column"
+    assert "colmun" in hint["unexpected"]
+    assert "expected" in hint

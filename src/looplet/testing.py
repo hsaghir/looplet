@@ -25,20 +25,37 @@ from __future__ import annotations
 from typing import Any
 
 __all__ = [
-    "MockLLMBackend",
     "AsyncMockLLMBackend",
+    "LLMResponsesExhausted",
+    "MockLLMBackend",
 ]
+
+
+class LLMResponsesExhausted(RuntimeError):
+    """Raised by ``MockLLMBackend(cycle=False)`` (and the async variant)
+    when ``generate`` is called more times than there are scripted
+    responses. Surfaces "the loop made N+1 calls but only N were
+    scripted" as a clear test failure instead of silently returning
+    the first response again.
+    """
 
 
 class MockLLMBackend:
     """Scripted synchronous LLM backend for tests.
 
     Accepts a list of responses at construction; each call to ``generate``
-    returns the next response, cycling once the list is exhausted.
+    returns the next response.
 
     Args:
         responses: List of strings to return in order. If ``None`` or empty,
             returns ``"mock response"`` on every call.
+        cycle: When ``True`` (the default, for backward compatibility),
+            wraps around to ``responses[0]`` once exhausted. When ``False``,
+            raises :class:`LLMResponsesExhausted` past the last response
+            so test authors notice the loop made more LLM calls than they
+            scripted (the silent-cycle behaviour produces confusing test
+            failures: every "extra" call returns the first response
+            again, making the loop look like it's stuck on step 1).
 
     Attributes:
         calls: Number of times ``generate`` has been called. Useful for
@@ -52,11 +69,23 @@ class MockLLMBackend:
         llm = MockLLMBackend(responses=["step 1", "step 2"])
         assert llm.generate("hi") == "step 1"
         assert llm.calls == 1
+
+        # In tests, prefer cycle=False so an over-run loop fails loudly:
+        strict = MockLLMBackend(responses=["only one"], cycle=False)
+        strict.generate("x")
+        with pytest.raises(LLMResponsesExhausted):
+            strict.generate("x")
     """
 
-    def __init__(self, responses: list[str] | None = None) -> None:
+    def __init__(
+        self,
+        responses: list[str] | None = None,
+        *,
+        cycle: bool = True,
+    ) -> None:
         self._responses: list[str] = list(responses) if responses else ["mock response"]
         self._index: int = 0
+        self._cycle: bool = cycle
         self.calls: int = 0
         self.last_prompt: str = ""
         self.last_system_prompt: str = ""
@@ -72,6 +101,14 @@ class MockLLMBackend:
         self.calls += 1
         self.last_prompt = prompt
         self.last_system_prompt = system_prompt
+        if not self._cycle and self._index >= len(self._responses):
+            raise LLMResponsesExhausted(
+                f"MockLLMBackend(cycle=False): generate() called "
+                f"{self.calls} times but only {len(self._responses)} "
+                f"responses were scripted. The loop made more LLM calls "
+                f"than your test expected — either script more responses "
+                f"or arrange for the loop to terminate sooner."
+            )
         response = self._responses[self._index % len(self._responses)]
         self._index += 1
         return response
@@ -91,9 +128,15 @@ class AsyncMockLLMBackend:
     protocol — ``generate`` is a coroutine.
     """
 
-    def __init__(self, responses: list[str] | None = None) -> None:
+    def __init__(
+        self,
+        responses: list[str] | None = None,
+        *,
+        cycle: bool = True,
+    ) -> None:
         self._responses: list[str] = list(responses) if responses else ["mock response"]
         self._index: int = 0
+        self._cycle: bool = cycle
         self.calls: int = 0
         self.last_prompt: str = ""
         self.last_system_prompt: str = ""
@@ -109,6 +152,14 @@ class AsyncMockLLMBackend:
         self.calls += 1
         self.last_prompt = prompt
         self.last_system_prompt = system_prompt
+        if not self._cycle and self._index >= len(self._responses):
+            raise LLMResponsesExhausted(
+                f"AsyncMockLLMBackend(cycle=False): generate() called "
+                f"{self.calls} times but only {len(self._responses)} "
+                f"responses were scripted. The loop made more LLM calls "
+                f"than your test expected — either script more responses "
+                f"or arrange for the loop to terminate sooner."
+            )
         response = self._responses[self._index % len(self._responses)]
         self._index += 1
         return response

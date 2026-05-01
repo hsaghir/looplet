@@ -350,11 +350,16 @@ class MetricsHook:
         self._classify = classify  # optional Callable[[Step, Any], str]
 
     def to_config(self) -> dict:
-        """Workspace round-trip: emit ``collector`` as an ``@ref`` so the
-        workspace writer auto-generates ``resources/collector.py`` and
-        the loader rebuilds a fresh ``MetricsCollector`` per load.
+        """Workspace round-trip: emit ``collector`` as an ``@ref``.
+
+        When ``self._collector`` was produced by a workspace resource
+        builder, the original ref name is preserved. Otherwise the
+        writer emits the generic ``"@collector"`` name.
         """
-        return {"collector": "@collector"}
+        from looplet.workspace import resource_ref_for  # noqa: PLC0415
+
+        ref = resource_ref_for(self._collector)
+        return {"collector": ref or "@collector"}
 
     @property
     def collector(self) -> MetricsCollector:

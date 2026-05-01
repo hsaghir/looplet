@@ -305,13 +305,20 @@ class StreamingHook:
         self._step_llm_calls: int = 0
 
     def to_config(self) -> dict:
-        """Workspace round-trip: emit ``emitter`` as an ``@ref`` so the
-        workspace writer auto-generates ``resources/emitter.py``.
-        Closure-based emitters (e.g. ``CallbackEmitter(list.append)``)
-        will fall through to a None-stub the user must replace; classes
-        with a clean ``__init__`` round-trip automatically.
+        """Workspace round-trip: emit ``emitter`` as an ``@ref``.
+
+        When ``self._emitter`` was produced by a workspace resource
+        builder, the original ref name is preserved (e.g.
+        ``resources/event_collector.py`` round-trips as
+        ``{"emitter": "@event_collector"}``). Otherwise the writer
+        emits the generic ``"@emitter"`` name. Closure-based emitters
+        whose origin can't be traced fall through to a None-stub the
+        user must replace.
         """
-        return {"emitter": "@emitter"}
+        from looplet.workspace import resource_ref_for  # noqa: PLC0415
+
+        ref = resource_ref_for(self._emitter)
+        return {"emitter": ref or "@emitter"}
 
     @property
     def emitter(self) -> EventEmitter:

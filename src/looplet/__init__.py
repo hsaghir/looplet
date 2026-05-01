@@ -160,6 +160,7 @@ from looplet.workspace import (
     WorkspaceLayout,
     WorkspaceSerializationError,
     preset_to_workspace,
+    resource_ref_for,
     workspace_to_preset,
 )
 
@@ -256,6 +257,7 @@ __all__ = [
     "WorkspaceLayout",
     "WorkspaceSerializationError",
     "preset_to_workspace",
+    "resource_ref_for",
     "workspace_to_preset",
     "StreamingHook",
     "Tracer",

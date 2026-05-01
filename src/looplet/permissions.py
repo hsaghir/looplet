@@ -263,11 +263,19 @@ class PermissionHook:
 
     def to_config(self) -> dict:
         """Workspace round-trip: emit ``engine`` as an ``@ref`` so the
-        workspace writer auto-generates ``resources/engine.py``. The
-        rule list does not survive auto-emit — users edit the generated
-        builder to declare their rules in code.
+        workspace writer auto-generates ``resources/<name>.py``.
+
+        When ``self.engine`` was produced by a workspace resource
+        builder (its class lives in ``_chw_resource_<name>``), the
+        original ref name is preserved — e.g. a workspace declaring
+        ``resources/sql_permissions.py`` round-trips as
+        ``{"engine": "@sql_permissions"}``. Otherwise the writer
+        emits the generic ``"@engine"`` name.
         """
-        return {"engine": "@engine"}
+        from looplet.workspace import resource_ref_for  # noqa: PLC0415
+
+        ref = resource_ref_for(self.engine)
+        return {"engine": ref or "@engine"}
 
     def on_event(self, payload: Any) -> Any:
         """Fire on ``PRE_TOOL_USE`` and convert engine outcomes to decisions."""

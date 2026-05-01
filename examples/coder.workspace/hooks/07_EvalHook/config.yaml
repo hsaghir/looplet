@@ -1,0 +1,4 @@
+class_name: EvalHook
+kwargs:
+  evaluators: "@eval_evaluators"
+  collectors: "@eval_collectors"

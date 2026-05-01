@@ -67,6 +67,27 @@ Callable / opaque ``LoopConfig`` fields (``build_briefing``,
 omitted from the serialized config and a list of skipped fields is
 returned in the resulting :class:`Workspace.serialization_warnings`.
 
+These fields can still be wired **declaratively on load** by
+hand-authoring ``config.yaml`` with ``"@<name>"`` references that
+resolve against ``resources/<name>.py`` builders — the same
+mechanism hook kwargs use. Example::
+
+    # config.yaml
+    max_steps: 20
+    compact_service: "@compact_service"
+    tracer: "@tracer"
+
+    # resources/compact_service.py
+    from looplet.compact import PruneToolResults, TruncateCompact, compact_chain
+    def build(runtime=None):
+        return compact_chain(PruneToolResults(), TruncateCompact())
+
+This eliminates the ``setup.py`` detour for the common case of
+attaching callable LoopConfig services. ``setup.py`` is still
+required for: (a) injecting shared resources into top-level tool
+function module globals, and (b) live-state callables that close
+over ``state`` per turn.
+
 Why this is in Looplet (not in a research extension)
 ----------------------------------------------------
 
@@ -1072,6 +1093,15 @@ def workspace_to_preset(
             memory_sources.append(StaticMemorySource(text=memory_file.read_text(encoding="utf-8")))
     if memory_sources:
         cfg_kwargs["memory_sources"] = memory_sources
+
+    # Resolve ``"@<name>"`` references in config kwargs against the
+    # shared-resource registry so callable / opaque LoopConfig fields
+    # (tracer, router, compact_service, recovery_registry, cache_policy,
+    # approval_handler, domain, build_briefing, output_schema, …) can be
+    # wired declaratively from ``resources/<name>.py`` builders instead
+    # of forcing every workspace into a ``setup.py`` detour. Symmetric
+    # with the hook-kwargs ref resolution below.
+    cfg_kwargs = _resolve_refs(cfg_kwargs, resources)
 
     config = LoopConfig(**cfg_kwargs)
 

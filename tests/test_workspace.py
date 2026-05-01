@@ -995,3 +995,64 @@ def test_workspace_extends_other_workspace(tmp_path) -> None:
     )
     preset = workspace_to_preset(ext, strict=True)
     assert "done" in preset.tools._tools
+
+
+# ── @ref resolution in config.yaml (declarative LoopConfig services) ──
+
+
+def test_compact_service_via_at_ref_in_config(tmp_path) -> None:
+    """A workspace can wire ``LoopConfig.compact_service`` declaratively
+    via ``compact_service: "@compact_service"`` in config.yaml plus a
+    ``resources/compact_service.py`` builder — no setup.py needed."""
+    import json as _json
+
+    ws = tmp_path
+    (ws / "workspace.json").write_text(_json.dumps({"name": "x", "schema_version": 1}))
+    (ws / "config.yaml").write_text('max_steps: 3\ncompact_service: "@compact_service"\n')
+    (ws / "resources").mkdir()
+    (ws / "resources/compact_service.py").write_text(
+        "from looplet.compact import PruneToolResults, TruncateCompact, compact_chain\n"
+        "def build(runtime=None):\n"
+        "    return compact_chain(PruneToolResults(keep_recent=4), TruncateCompact(keep_recent=2))\n"
+    )
+
+    preset = workspace_to_preset(ws, strict=True)
+    assert preset.config.compact_service is not None
+    # _CompactChain from looplet.compact wires through.
+    assert type(preset.config.compact_service).__module__ == "looplet.compact"
+
+
+def test_tracer_via_at_ref_in_config(tmp_path) -> None:
+    """``tracer`` callable wired declaratively via @ref."""
+    import json as _json
+
+    ws = tmp_path
+    (ws / "workspace.json").write_text(_json.dumps({"name": "x", "schema_version": 1}))
+    (ws / "config.yaml").write_text('max_steps: 3\ntracer: "@tracer"\n')
+    (ws / "resources").mkdir()
+    (ws / "resources/tracer.py").write_text(
+        "EVENTS = []\n"
+        "def _trace(event, payload=None):\n"
+        "    EVENTS.append((event, payload))\n"
+        "def build(runtime=None):\n"
+        "    return _trace\n"
+    )
+
+    preset = workspace_to_preset(ws, strict=True)
+    assert preset.config.tracer is not None
+    assert callable(preset.config.tracer)
+
+
+def test_unresolved_at_ref_in_config_raises_in_strict(tmp_path) -> None:
+    """A typo'd @ref in config.yaml fails loud at load time, same as
+    hook kwargs — no silent string-into-LoopConfig leakage."""
+    import json as _json
+
+    import pytest
+
+    ws = tmp_path
+    (ws / "workspace.json").write_text(_json.dumps({"name": "x", "schema_version": 1}))
+    (ws / "config.yaml").write_text('max_steps: 3\ntracer: "@nonexistent_resource"\n')
+
+    with pytest.raises(WorkspaceSerializationError, match="unresolved resource reference"):
+        workspace_to_preset(ws, strict=True)

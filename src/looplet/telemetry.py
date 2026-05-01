@@ -351,7 +351,7 @@ class MetricsHook:
 
     def to_config(self) -> dict:
         """Workspace round-trip: emit ``collector`` as an ``@ref`` so the
-        v2 workspace writer auto-generates ``resources/collector.py`` and
+        workspace writer auto-generates ``resources/collector.py`` and
         the loader rebuilds a fresh ``MetricsCollector`` per load.
         """
         return {"collector": "@collector"}

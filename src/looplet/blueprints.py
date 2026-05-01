@@ -1,8 +1,8 @@
-"""Blueprints and conversion helpers for looplet cartridges.
+"""Blueprints and conversion helpers for looplet bundles.
 
 The blueprint layer is a small, serialisable description of an agent's
 observable looplet structure. It is not a Python decompiler; it records
-stable structure so cartridges can be inspected, compared, exported as
+stable structure so bundles can be inspected, compared, exported as
 library wrappers, and packaged back into runnable bundles.
 """
 
@@ -147,7 +147,7 @@ def blueprint_from_bundle(
     bundle_root: SkillBundle | str | Path,
     runtime: SkillRuntime | None = None,
 ) -> AgentBlueprint:
-    """Load a cartridge and return its structural blueprint."""
+    """Load a bundle and return its structural blueprint."""
     bundle = bundle_root if isinstance(bundle_root, SkillBundle) else load_skill_bundle(bundle_root)
     preset = bundle.build_preset(runtime or SkillRuntime())
     return blueprint_from_preset(
@@ -214,10 +214,10 @@ def export_bundle_to_library_code(
     *,
     function_name: str = "build",
 ) -> Path:
-    """Export a cartridge as exact, editable Python library wrapper code.
+    """Export a bundle as exact, editable Python library wrapper code.
 
-    This mode preserves behavior by delegating to the source cartridge. It is
-    the reliable conversion path for arbitrary cartridges, including those
+    This mode preserves behavior by delegating to the source bundle. It is
+    the reliable conversion path for arbitrary bundles, including those
     with closures or product-owned runtime shells.
     """
     if not function_name.isidentifier() or keyword.iskeyword(function_name):
@@ -228,10 +228,10 @@ def export_bundle_to_library_code(
     target.parent.mkdir(parents=True, exist_ok=True)
     blueprint_json = json.dumps(blueprint.to_dict(), indent=2, sort_keys=True)
     target.write_text(
-        f'''"""Generated local looplet library wrapper for the {bundle.skill.name} cartridge.
+        f'''"""Generated local looplet library wrapper for the {bundle.skill.name} bundle.
 
-This preserves exact behavior by loading the original cartridge from the
-absolute path recorded below. Keep that cartridge available, or re-export
+This preserves exact behavior by loading the original bundle from the
+absolute path recorded below. Keep that bundle available, or re-export
 after moving it.
 """
 
@@ -249,7 +249,7 @@ BLUEPRINT = AgentBlueprint.from_dict(json.loads(_BLUEPRINT_JSON))
 
 
 def {function_name}(runtime: SkillRuntime | None = None):
-    """Build the same AgentPreset as the source cartridge."""
+    """Build the same AgentPreset as the source bundle."""
     return load_skill_bundle(_BUNDLE_PATH).build_preset(runtime or SkillRuntime())
 ''',
         encoding="utf-8",
@@ -267,7 +267,7 @@ def package_agent_factory_as_bundle(
     instructions: str = "",
     entrypoint: str = "looplet.py",
 ) -> Path:
-    """Package an importable looplet factory as a runnable cartridge."""
+    """Package an importable looplet factory as a runnable bundle."""
     if ":" not in factory_ref:
         raise ValueError("factory_ref must use 'module:attribute' syntax")
     _resolve_factory(factory_ref)
@@ -285,7 +285,7 @@ def package_agent_factory_as_bundle(
     (root / "SKILL.md").write_text(skill_text, encoding="utf-8")
     entrypoint_path.parent.mkdir(parents=True, exist_ok=True)
     entrypoint_path.write_text(
-        f'''"""Generated looplet cartridge wrapper for {factory_ref}."""
+        f'''"""Generated looplet bundle wrapper for {factory_ref}."""
 
 from __future__ import annotations
 
@@ -319,7 +319,7 @@ def claude_skill_compatibility(skill_root: str | Path) -> ClaudeSkillCompatibili
     )
     if skill.metadata.get("entrypoint"):
         return ClaudeSkillCompatibility(
-            level="looplet-cartridge",
+            level="looplet-bundle",
             can_wrap=True,
             can_run_exactly=True,
             skill_name=skill.name,
@@ -353,7 +353,7 @@ def claude_skill_compatibility(skill_root: str | Path) -> ClaudeSkillCompatibili
 
 
 def wrap_claude_skill_as_bundle(skill_root: str | Path, out_dir: str | Path) -> Path:
-    """Wrap a Claude Skill folder as an instruction-only looplet cartridge."""
+    """Wrap a Claude Skill folder as an instruction-only looplet bundle."""
     skill_file = _skill_file_for(skill_root)
     source_root = skill_file.parent
     target = Path(out_dir)
@@ -370,7 +370,7 @@ def wrap_claude_skill_as_bundle(skill_root: str | Path, out_dir: str | Path) -> 
     if target.exists():
         raise ValueError("out_dir already exists; choose a new directory")
     report = claude_skill_compatibility(source_root)
-    if report.level == "looplet-cartridge":
+    if report.level == "looplet-bundle":
         temp_target = _copytree_temp_directory(source_root, target)
         try:
             temp_target.rename(target)

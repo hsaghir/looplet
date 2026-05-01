@@ -263,7 +263,7 @@ class PermissionHook:
 
     def to_config(self) -> dict:
         """Workspace round-trip: emit ``engine`` as an ``@ref`` so the
-        v2 workspace writer auto-generates ``resources/engine.py``. The
+        workspace writer auto-generates ``resources/engine.py``. The
         rule list does not survive auto-emit — users edit the generated
         builder to declare their rules in code.
         """

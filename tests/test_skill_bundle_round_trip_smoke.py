@@ -24,7 +24,7 @@ from looplet.blueprints import (
 ROOT = Path(__file__).resolve().parents[1]
 CODER_BUNDLE = ROOT / "tests" / "fixtures" / "coder_skill_bundle"
 
-# Cartridge tests load real bundles, exec spec-loaded modules, and run
+# Bundle tests load real bundles, exec spec-loaded modules, and run
 # full blueprint comparisons. Under coverage instrumentation in CI the
 # combined import + exec + compare pass repeatedly busts the default
 # 30s timeout. Bump the per-test budget for the whole module.
@@ -167,7 +167,7 @@ Run the helper script when chart data must be normalized.
     assert "scripts require an explicit looplet tool adapter" in report.warnings
 
 
-def test_cli_exports_packages_and_wraps_cartridges(tmp_path, capsys):
+def test_cli_exports_packages_and_wraps_bundles(tmp_path, capsys):
     exported = tmp_path / "coder_export.py"
     packaged = tmp_path / "coder-packaged"
 
@@ -423,13 +423,13 @@ description: File parents should be rejected clearly.
         wrap_claude_skill_as_bundle(claude_skill, parent_file / "target")
 
 
-def test_wrap_looplet_cartridge_preserves_existing_entrypoint(tmp_path):
-    source = tmp_path / "source-cartridge"
+def test_wrap_looplet_bundle_preserves_existing_entrypoint(tmp_path):
+    source = tmp_path / "source-bundle"
     source.mkdir()
     (source / "SKILL.md").write_text(
         """---
 name: existing
-description: Existing looplet cartridge.
+description: Existing looplet bundle.
 entrypoint: custom.py
 ---
 
@@ -442,15 +442,15 @@ entrypoint: custom.py
 
 
 def build(runtime):
-    return minimal_preset(max_steps=runtime.max_steps, system_prompt='custom cartridge')
+    return minimal_preset(max_steps=runtime.max_steps, system_prompt='custom bundle')
 """,
         encoding="utf-8",
     )
 
-    wrapped = wrap_claude_skill_as_bundle(source, tmp_path / "wrapped-cartridge")
+    wrapped = wrap_claude_skill_as_bundle(source, tmp_path / "wrapped-bundle")
     bundle = load_skill_bundle(wrapped)
     preset = bundle.build_preset(SkillRuntime(max_steps=2))
 
     assert bundle.skill.metadata["entrypoint"] == "custom.py"
-    assert preset.config.system_prompt == "custom cartridge"
+    assert preset.config.system_prompt == "custom bundle"
     assert not (wrapped / "looplet.py").exists()

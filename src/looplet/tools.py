@@ -356,7 +356,7 @@ class ToolSpec:
     requires: list[str] = field(default_factory=list)
     """Names of shared resources the tool needs at dispatch time.
 
-    Workspace v2 mechanism for tool dependency injection: ``tool.yaml``
+    Workspace mechanism for tool dependency injection: ``tool.yaml``
     can declare ``requires: [workspace_config, file_cache]`` and the
     workspace loader populates this list. The
     :class:`BaseToolRegistry` dispatcher then resolves each name
@@ -403,7 +403,7 @@ class ToolSpec:
             return list(self.parameters.get("required", []))
         required: list[str] = []
         for name, desc in self.parameters.items():
-            # Workspace v2 ``tool.yaml`` form: dict descriptor.
+            # Workspace ``tool.yaml`` form: dict descriptor.
             if isinstance(desc, dict):
                 if "default" not in desc:
                     required.append(name)
@@ -594,7 +594,7 @@ class BaseToolRegistry:
 
         Tools whose ``ToolSpec.requires`` lists a resource name receive
         the resolved instance through ``ctx.resources[name]`` at
-        dispatch time. Workspace v2's ``workspace_to_preset`` calls
+        dispatch time. Workspace's ``workspace_to_preset`` calls
         this with the loaded ``resources/<name>.py`` builders' output;
         in-process callers can call it directly to wire a registry.
         """
@@ -749,7 +749,7 @@ class BaseToolRegistry:
             exec_kwargs["ctx"] = ctx
 
         # Populate ``ctx.resources`` for tools that declared
-        # ``ToolSpec.requires``. This is the workspace v2 dependency-
+        # ``ToolSpec.requires``. This is the workspace dependency-
         # injection path that replaces the legacy
         # ``WORKSPACE_CONFIG = None`` / ``setup.py`` global-overwrite
         # pattern. Auto-creates a ToolContext when the tool accepts

@@ -1,8 +1,8 @@
 """Runnable skill bundle for the looplet coder example.
 
-The cartridge is intentionally thin: it loads the same composition
+The bundle is intentionally thin: it loads the same composition
 helpers as ``examples/coder/agent.py`` and delegates to them. That
-means the cartridge and the library entrypoint are *literally* the
+means the bundle and the library entrypoint are *literally* the
 same agent, configured identically. To change behavior, edit
 ``examples/coder/wiring.py`` once.
 
@@ -12,7 +12,7 @@ may already have their own ``examples`` namespace package on
 ``sys.path`` that shadows ours, so we resolve the three sibling
 modules (``tools.py``, ``hooks.py``, ``wiring.py``) by absolute file
 path rather than relying on ``import examples.coder.*``. See
-``test_distributions_include_coder_cartridge_and_dependency``.
+``test_distributions_include_coder_bundle_and_dependency``.
 """
 
 from __future__ import annotations
@@ -153,7 +153,7 @@ def run(
     trace_dir: str | Path | None,
     provenance: bool,
 ) -> int:
-    """Run the coder cartridge with byte-for-byte-compatible terminal output."""
+    """Run the coder bundle with byte-for-byte-compatible terminal output."""
     workspace_str = os.path.abspath(os.fspath(workspace))
     base_url = os.environ.get("OPENAI_BASE_URL", "http://localhost:11434/v1")
     api_key = os.environ.get("OPENAI_API_KEY", "x")

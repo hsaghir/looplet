@@ -46,7 +46,7 @@ Every looplet agent turn is the same small mechanism:
 4. State records the step.
 5. The loop yields a `Step` back to your `for` loop.
 
-That is the whole mental model. Presets, skills, cartridges, provenance,
+That is the whole mental model. Presets, skills, bundles, provenance,
 native tool calling, and evals are useful layers around this mechanism;
 they do not replace it.
 
@@ -56,7 +56,7 @@ for step in composable_loop(llm=llm, tools=tools, state=state, config=config, ho
 ```
 
 Start with ordinary Python code when you want full control. Start with a
-cartridge when you want to run or share a packaged capability:
+bundle when you want to run or share a packaged capability:
 
 ```bash
 python -m looplet run ./skills/coder "Fix the tests" --workspace .
@@ -273,7 +273,7 @@ python -m looplet.examples.data_agent --resume                    # resume from 
 python -m looplet.examples.data_agent --scripted --auto-approve   # no model required
 ```
 
-Runnable cartridges package the same primitives behind a portable folder:
+Runnable bundles package the same primitives behind a portable folder:
 
 ```bash
 python -m looplet list-bundles tests/fixtures --json
@@ -326,7 +326,7 @@ Not a usage reference.
 | --- | --- |
 | [docs/tutorial.md](docs/tutorial.md) | Build your first agent in 5 steps |
 | [docs/hooks.md](docs/hooks.md) | Writing and composing hooks |
-| [docs/skills.md](docs/skills.md) | Lazy skills, runnable cartridges, blueprints, and Claude Skill wrapping |
+| [docs/skills.md](docs/skills.md) | Lazy skills, runnable bundles, blueprints, and Claude Skill wrapping |
 | [docs/evals.md](docs/evals.md) | pytest-style agent evaluation |
 | [docs/provenance.md](docs/provenance.md) | Capturing prompts + trajectories |
 | [docs/recipes.md](docs/recipes.md) | Ollama, OTel, MCP, cost accounting, checkpoints |

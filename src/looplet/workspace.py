@@ -1,4 +1,4 @@
-"""Composable Harness Workspace (CHW) — bidirectional cartridge ↔ preset.
+"""Workspace — bidirectional ``AgentPreset`` ↔ directory round-trip.
 
 A *workspace* is a directory layout that round-trips with an
 :class:`AgentPreset` losslessly for the JSON-able subset of the harness
@@ -13,7 +13,7 @@ Make the agent harness an editable artifact on disk so external tools
 (harness search, GEPA-style evolution, diff/review workflows) can
 mutate components by file diff, version-control the result with git,
 and re-materialise an :class:`AgentPreset` for execution — without
-anyone forking the loop or replacing the cartridge mechanism.
+anyone forking the loop or replacing the workspace mechanism.
 
 Layout
 ------
@@ -99,7 +99,7 @@ Why this is in Looplet (not in a research extension)
 ----------------------------------------------------
 
 The disk format is generic infrastructure: anyone can use it for
-cartridge editing, agent diffing, code review, packaging, or
+workspace editing, agent diffing, code review, packaging, or
 between-round harness search. The research-specific layer
 (manifests with ``predicted_fixes``/``predicted_regressions``,
 the evolve agent, the search loop) lives in downstream packages
@@ -242,7 +242,7 @@ class WorkspaceSerializationError(RuntimeError):
 
 @dataclass
 class Workspace:
-    """A loaded composable harness workspace.
+    """A loaded Workspace.
 
     Serves both as the in-memory representation of an on-disk workspace
     and as the structured target of :func:`preset_to_workspace`.
@@ -259,7 +259,7 @@ class Workspace:
 
     @classmethod
     def from_directory(cls, path: str | Path) -> "Workspace":
-        """Load workspace metadata from a CHW directory.
+        """Load workspace metadata from a workspace directory.
 
         Use :func:`workspace_to_preset` to materialise the
         :class:`AgentPreset` from the loaded workspace.
@@ -270,8 +270,7 @@ class Workspace:
         meta_path = root / WorkspaceLayout.WORKSPACE_JSON
         if not meta_path.is_file():
             raise FileNotFoundError(
-                f"workspace metadata not found at {meta_path}; "
-                f"is this a Composable Harness Workspace?"
+                f"workspace metadata not found at {meta_path}; is this a Workspace directory?"
             )
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
         return cls(
@@ -489,7 +488,7 @@ def _load_resources(root: Path, runtime: dict[str, Any] | None = None) -> dict[s
     loader inspects the signature: ``build()`` (zero-arg) keeps the
     legacy contract; ``build(runtime)`` lets the resource read the
     host-supplied ``runtime`` dict (e.g. ``runtime['workspace']`` for
-    the coder cartridge). Resources are shared by every ``"@<name>"``
+    the coder workspace). Resources are shared by every ``"@<name>"``
     reference in hook / tool kwargs.
     """
     import inspect as _inspect  # noqa: PLC0415
@@ -697,7 +696,7 @@ def preset_to_workspace(
     overwrite: bool = False,
     strict: bool = False,
 ) -> Workspace:
-    """Write an :class:`AgentPreset` to a CHW directory.
+    """Write an :class:`AgentPreset` to a workspace directory.
 
     Args:
         preset: The harness to serialise.
@@ -707,7 +706,7 @@ def preset_to_workspace(
         description: Free-form description stored in
             ``workspace.json``.
         overwrite: Allow writing into a non-empty existing directory
-            (its CHW-managed subdirectories are wiped first).
+            (its workspace-managed subdirectories are wiped first).
         strict: When ``True``, raise
             :class:`WorkspaceSerializationError` on any non-round-trippable
             component. When ``False`` (default), record warnings on the
@@ -1268,7 +1267,7 @@ def _write_tool(spec: Any, tools_root: Path, warnings: list[str], strict: bool) 
             val = getattr(spec, opt)
             if val is not None:
                 yaml_payload[opt] = val
-    # Round-trip the resource-requirements list (workspace v2 tool DI).
+    # Round-trip the resource-requirements list (workspace tool DI).
     requires = getattr(spec, "requires", None) or []
     if requires:
         yaml_payload["requires"] = list(requires)
@@ -1611,7 +1610,7 @@ def workspace_to_preset(
     strict: bool = False,
     runtime: dict[str, Any] | None = None,
 ) -> "AgentPreset":
-    """Read a CHW directory and materialise an :class:`AgentPreset`.
+    """Read a workspace directory and materialise an :class:`AgentPreset`.
 
     Args:
         workspace_dir: Path to the workspace root.
@@ -1625,7 +1624,7 @@ def workspace_to_preset(
             verification and CI lint.
         runtime: Optional dict of host-supplied runtime values
             (e.g. ``{"workspace": "/tmp/myrepo"}`` for the coder
-            cartridge). Three integration points read it:
+            coder workspace). Three integration points read it:
               * ``${runtime.<key>}`` placeholders in ``config.yaml``
                 are substituted before constructing ``LoopConfig``.
               * ``resources/<name>.py`` builders that declare
@@ -1645,7 +1644,7 @@ def workspace_to_preset(
         raise FileNotFoundError(
             f"workspace metadata not found at "
             f"{root / WorkspaceLayout.WORKSPACE_JSON}; "
-            f"is this a Composable Harness Workspace?"
+            f"is this a Workspace directory?"
         )
 
     # Shared-resource registry — built once, referenced by ``@<name>``
@@ -1914,7 +1913,7 @@ def _workspace_to_preset_inner(
     preset = AgentPreset(config=config, hooks=hooks, tools=registry, state=state)
 
     # ``setup.py`` escape hatch — runs after the declarative load to
-    # let the cartridge attach callable / opaque fields that don't
+    # let the workspace attach callable / opaque fields that don't
     # round-trip via JSON (e.g. ``LoopConfig.tracer``,
     # ``LoopConfig.compact_service``, custom domain adapters), or
     # inject shared resources into top-level tool/hook modules.

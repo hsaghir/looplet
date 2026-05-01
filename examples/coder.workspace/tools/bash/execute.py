@@ -1,7 +1,7 @@
 """bash tool — execute a shell command in the workspace root.
 
 Receives the workspace_config resource through ``ctx.resources``
-(workspace v2 tool DI; ``tool.yaml`` declares ``requires:
+(workspace tool DI; ``tool.yaml`` declares ``requires:
 [workspace_config]``). Top-level function (no closures) so it
 round-trips losslessly through ``preset_to_workspace``.
 

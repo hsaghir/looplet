@@ -1,7 +1,7 @@
 """Evaluators for the coder workspace's EvalHook.
 
-Re-uses the v1 cartridge's ``build_eval_hook`` evaluators so the
-v2 workspace produces identical scores. The list lands in
+Re-uses the looplet.examples coder reference's ``build_eval_hook`` evaluators so the
+workspace produces identical scores. The list lands in
 ``hooks/07_EvalHook/config.yaml`` via the ``@eval_evaluators`` ref.
 """
 

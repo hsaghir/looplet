@@ -106,7 +106,7 @@ Every turn follows the same five-step story:
 4. State records the step.
 5. The loop yields a `Step` to your code.
 
-Cartridges, presets, provenance, and evals all compile into this same
+Bundles, presets, provenance, and evals all compile into this same
 mechanism.
 
 ```mermaid
@@ -142,7 +142,7 @@ need. The loop uses `hasattr` — no base class, no registration.
    subclassing a framework.
 3. **Keep the trace.** The same step stream powers live debugging,
    provenance, replay, and pytest-style evals.
-4. **Package capabilities.** Skills and cartridges let you share a runnable
+4. **Package capabilities.** Skills and bundles let you share a runnable
     agent folder while keeping the core loop inspectable Python.
 
 ## Why looplet?
@@ -255,7 +255,7 @@ looplet difference: every lookup, warning, and final claim is visible as
 a step you can log, gate, replay, or evaluate.
 
 ```bash
-# Load the v2 workspace; pass --workspace to point at the project to audit.
+# Load the workspace; pass --workspace to point at the project to audit.
 OPENAI_BASE_URL=http://127.0.0.1:11434/v1 \
 OPENAI_API_KEY=ollama OPENAI_MODEL=llama3.1 \
 python -c "from looplet import workspace_to_preset; \
@@ -265,7 +265,7 @@ p = workspace_to_preset('examples/dep_doctor.workspace', runtime={'workspace': '
 Then explore `examples/git_detective.workspace/` for codebase-health reports,
 `examples/threat_intel.workspace/` for local-first security briefings, and
 `examples/coder.workspace/` for a coding-agent reference implementation —
-each is a self-contained Composable Harness Workspace under
+each is a self-contained Workspace under
 [`examples/`](https://github.com/hsaghir/looplet/tree/master/examples)
 that round-trips losslessly with an `AgentPreset` via `preset_to_workspace`
 / `workspace_to_preset`.

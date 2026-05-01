@@ -1,10 +1,10 @@
 """Composition layer for the coder example.
 
 The reusable building block. Both the library entrypoint
-(:mod:`examples.coder.agent`) and the runnable cartridge
+(:mod:`examples.coder.agent`) and the runnable bundle
 (``examples/coder/skill/looplet.py``) delegate to the helpers below
 to construct identical hook stacks, memory sources, and evaluators.
-That guarantees library/cartridge parity is *structural* rather
+That guarantees library/bundle parity is *structural* rather
 than coincidental — the two surfaces cannot drift without someone
 deliberately editing both call sites.
 
@@ -211,7 +211,7 @@ def build_default_hooks(
 
 
 def build_default_memory_sources(workspace: str, max_steps: int) -> list:
-    """Project-context memory sources used by both library and cartridge."""
+    """Project-context memory sources used by both library and bundle."""
     instructions = _discover_instructions(workspace)
     project_ctx = _project_context(workspace)
     sources: list = []

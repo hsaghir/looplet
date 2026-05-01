@@ -1,5 +1,6 @@
 class_name: StagnationHook
 kwargs:
-  threshold: 3
+  threshold: 6
+  nudge: "[stagnation] Re-read the file, try a different approach, or think()."
   reset_after_nudge: true
   ignore_tools: ["think", "done"]

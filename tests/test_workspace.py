@@ -459,15 +459,19 @@ def test_hello_workspace_loads_and_runs_end_to_end() -> None:
 # ── examples/coder.workspace end-to-end (real-world v2 cartridge) ──
 
 
-def test_coder_workspace_loads_with_shared_filecache() -> None:
+def test_coder_workspace_loads_with_shared_filecache(tmp_path) -> None:
     """examples/coder.workspace migrates the v1 coder cartridge to the
     v2 layout. Validates that:
-      * 5 built-in + custom hooks load with strict=True
+      * Declarative + setup.py-injected hooks load (8 total — TestGuard,
+        FileCache, StaleFile, Stagnation, ThresholdCompact, PerToolLimit
+        from YAML; LinterHook + EvalHook appended by setup.py to match
+        v1 cartridge feature-for-feature)
       * 9 tools (bash/list_dir/read/write/edit/glob/grep/think/done) load
       * FileCacheHook and StaleFileHook share the SAME FileCache instance
         via @file_cache (proves the shared-resource registry under load)
       * setup.py wires WORKSPACE_CONFIG + FILE_CACHE module globals into
         every tool that needs them
+      * setup.py also attaches compact_service + project-context memory
     """
     import json as _json
     from pathlib import Path as _P
@@ -476,7 +480,15 @@ def test_coder_workspace_loads_with_shared_filecache() -> None:
     from looplet.testing import MockLLMBackend
 
     workspace_dir = _P(__file__).resolve().parents[1] / "examples" / "coder.workspace"
-    preset = workspace_to_preset(workspace_dir, strict=True)
+    # Use a tmp_path workspace so EvalHook's pytest collector doesn't
+    # recurse into the looplet test suite when it runs at on_loop_end.
+    target_repo = tmp_path / "target"
+    target_repo.mkdir()
+    preset = workspace_to_preset(
+        workspace_dir,
+        strict=True,
+        runtime={"workspace": str(target_repo)},
+    )
 
     hook_names = [type(h).__name__ for h in preset.hooks]
     assert hook_names == [
@@ -485,6 +497,9 @@ def test_coder_workspace_loads_with_shared_filecache() -> None:
         "StaleFileHook",
         "StagnationHook",
         "ThresholdCompactHook",
+        "PerToolLimitHook",
+        "LinterHook",
+        "EvalHook",
     ]
     assert sorted(preset.tools._tools.keys()) == [
         "bash",
@@ -503,6 +518,12 @@ def test_coder_workspace_loads_with_shared_filecache() -> None:
     fc_hook = next(h for h in preset.hooks if type(h).__name__ == "FileCacheHook")
     sf_hook = next(h for h in preset.hooks if type(h).__name__ == "StaleFileHook")
     assert fc_hook._cache is sf_hook._cache
+
+    # setup.py attaches compact_service.
+    assert preset.config.compact_service is not None
+
+    # setup.py appends the live-state CallableMemorySource for project ctx.
+    assert preset.config.memory_sources, "setup.py should attach memory sources"
 
     # End-to-end smoke: think → done with the real loop.
     llm = MockLLMBackend(
@@ -703,3 +724,102 @@ def test_coder_workspace_runtime_kwarg_routes_files(tmp_path):
         )
     )
     assert (target / "hello.py").read_text().strip() == "print('hi')"
+
+
+# ── Bidirectional + v1↔v2 parity ──────────────────────────────
+
+
+def test_coder_workspace_bidirectional_round_trip(tmp_path) -> None:
+    """Load coder.workspace → snapshot to a fresh dir → reload. The
+    declarative hooks (with to_config()) and tools survive in-process
+    round-trip; setup.py-appended hooks (EvalHook) drop on reload
+    because their callable evaluators don't round-trip."""
+    from pathlib import Path as _P
+
+    workspace_dir = _P(__file__).resolve().parents[1] / "examples" / "coder.workspace"
+    target = tmp_path / "target"
+    target.mkdir()
+    snap_dir = tmp_path / "snapshot"
+
+    preset = workspace_to_preset(workspace_dir, strict=True, runtime={"workspace": str(target)})
+    preset_to_workspace(preset, snap_dir, name="coder-snap")
+
+    # The auto-emitted resources/file_cache.py builder reads
+    # runtime['workspace']; pass it on reload.
+    reloaded = workspace_to_preset(snap_dir, runtime={"workspace": str(target)})
+
+    # All 7 declarative hooks survive the round-trip.
+    reloaded_names = [type(h).__name__ for h in reloaded.hooks]
+    assert reloaded_names == [
+        "TestGuardHook",
+        "FileCacheHook",
+        "StaleFileHook",
+        "StagnationHook",
+        "ThresholdCompactHook",
+        "PerToolLimitHook",
+        "LinterHook",
+    ]
+    assert sorted(reloaded.tools._tools.keys()) == [
+        "bash",
+        "done",
+        "edit_file",
+        "glob",
+        "grep",
+        "list_dir",
+        "read_file",
+        "think",
+        "write_file",
+    ]
+
+
+def test_threat_intel_workspace_attaches_compact_service(tmp_path) -> None:
+    """setup.py wires LoopConfig.compact_service so the workspace
+    matches the v1 cartridge feature-for-feature."""
+    from pathlib import Path as _P
+
+    workspace_dir = _P(__file__).resolve().parents[1] / "examples" / "threat_intel.workspace"
+    preset = workspace_to_preset(workspace_dir, strict=True)
+    assert preset.config.compact_service is not None
+
+
+def test_dep_doctor_workspace_attaches_compact_and_memory(tmp_path) -> None:
+    """compact_service + memory/00_static.md both reach the preset."""
+    from pathlib import Path as _P
+
+    workspace_dir = _P(__file__).resolve().parents[1] / "examples" / "dep_doctor.workspace"
+    preset = workspace_to_preset(workspace_dir, strict=True)
+    assert preset.config.compact_service is not None
+    sources = preset.config.memory_sources or []
+    assert any("Audit Standards" in getattr(s, "text", "") for s in sources), (
+        "memory/00_static.md should land in config.memory_sources"
+    )
+
+
+def test_git_detective_workspace_attaches_compact_and_memory(tmp_path) -> None:
+    from pathlib import Path as _P
+
+    workspace_dir = _P(__file__).resolve().parents[1] / "examples" / "git_detective.workspace"
+    preset = workspace_to_preset(workspace_dir, strict=True)
+    assert preset.config.compact_service is not None
+    sources = preset.config.memory_sources or []
+    assert any("Report Standards" in getattr(s, "text", "") for s in sources)
+
+
+def test_runtime_substitution_in_hook_config(tmp_path) -> None:
+    """${runtime.<key>} placeholders in hook config.yaml are substituted
+    just like they are in the top-level config.yaml. Used by coder's
+    LinterHook to receive the runtime workspace path declaratively."""
+    out = tmp_path / "ws"
+    out.mkdir()
+    (out / "workspace.json").write_text(json.dumps({"name": "x", "schema_version": 1}))
+    hook_dir = out / "hooks" / "00_PathReader"
+    hook_dir.mkdir(parents=True)
+    (hook_dir / "hook.py").write_text(
+        "class PathReader:\n    def __init__(self, *, path):\n        self.path = path\n"
+    )
+    (hook_dir / "config.yaml").write_text(
+        "class_name: PathReader\nkwargs:\n  path: ${runtime.workspace}\n"
+    )
+
+    preset = workspace_to_preset(out, strict=True, runtime={"workspace": "/tmp/some-path"})
+    assert preset.hooks[0].path == "/tmp/some-path"

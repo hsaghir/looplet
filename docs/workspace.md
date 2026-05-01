@@ -1,4 +1,4 @@
-# Composable Harness Workspace (CHW)
+# Workspace
 
 `looplet.workspace` makes the agent harness an editable artifact on
 disk. It is the bidirectional, lossless inverse of
@@ -186,7 +186,7 @@ print(ws.name, ws.description, ws.schema_version)
 
 | You want to … | Use |
 |---|---|
-| Ship a runnable cartridge as a Python package with a custom `build()` factory | `SkillBundle` |
+| Ship a runnable bundle as a Python package with a custom `build()` factory | `SkillBundle` |
 | Edit prompt / tool / hook content as text files, version-control diffs, and re-execute | `Workspace` |
 | Mutate the harness from another agent (search, GEPA-style evolution, code review) | `Workspace` |
 | Snapshot the live preset of a running agent for later inspection | `Workspace` |

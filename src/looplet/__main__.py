@@ -4,11 +4,11 @@ Subcommands:
     show <trace-dir>              One-page summary of a captured trace directory.
     doctor                        Check local looplet/backend configuration.
     run <bundle> <task>           Run a runnable skill bundle.
-    blueprint <bundle>            Print a cartridge blueprint as JSON.
-    export-code <bundle> <file>   Export a cartridge as Python wrapper code.
-    package <factory> <dir>       Package an importable factory as a cartridge.
-    wrap-claude-skill <src> <dir> Wrap a Claude Skill as a looplet cartridge.
-    list-bundles <roots...>       List runnable cartridges under one or more roots.
+    blueprint <bundle>            Print a bundle blueprint as JSON.
+    export-code <bundle> <file>   Export a bundle as Python wrapper code.
+    package <factory> <dir>       Package an importable factory as a bundle.
+    wrap-claude-skill <src> <dir> Wrap a Claude Skill as a looplet bundle.
+    list-bundles <roots...>       List runnable bundles under one or more roots.
     eval <args...>                Run evals or browse cases (see `looplet eval -h`).
 """
 
@@ -709,7 +709,7 @@ def main(argv: list[str] | None = None) -> int:
 
     export_code = sub.add_parser(
         "export-code",
-        help="Export a cartridge as exact Python library wrapper code",
+        help="Export a bundle as exact Python library wrapper code",
     )
     export_code.add_argument("bundle", type=Path, help="Path to a runnable skill bundle")
     export_code.add_argument("out_file", type=Path, help="Python file to write")

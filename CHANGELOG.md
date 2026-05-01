@@ -6,6 +6,21 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- **Naming consolidation.** Dropped the legacy "cartridge" /
+  "Composable Harness Workspace (CHW)" / "workspace v2" terminology
+  in favour of the two canonical names already used in code:
+  `Workspace` (the round-trippable directory format from
+  `looplet.workspace`) and `SkillBundle` (the runnable folder format
+  from `looplet.bundles`). All docstrings, doc pages, README, and
+  comments now use these names. The `ClaudeSkillCompatibility.level`
+  string `"looplet-cartridge"` is renamed to `"looplet-bundle"` —
+  the only minor breaking change in this consolidation. Renamed
+  `tests/test_cartridge_round_trip_smoke.py` to
+  `tests/test_skill_bundle_round_trip_smoke.py`. No behavioural
+  change; the `_chw_*` synthetic module-name prefixes (used
+  internally by the workspace loader) keep their names.
+
 ### Removed (BREAKING)
 
 - **All `setup.py` files removed from shipped example workspaces.**

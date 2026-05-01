@@ -258,7 +258,7 @@ class ToolContext:
     """Shared resource registry keyed by ``@<name>`` ref name.
 
     Populated by the dispatcher when the tool's ``ToolSpec.requires``
-    list declares dependencies (workspace v2 ``tool.yaml`` ``requires:``
+    list declares dependencies (workspace ``tool.yaml`` ``requires:``
     field). The dispatcher resolves each requested ref against the
     workspace's resource registry and hands the live instance to the
     tool through this dict — eliminating the v1 module-global

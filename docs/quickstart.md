@@ -154,9 +154,9 @@ Run against any saved trajectory:
 looplet eval traces/ --evals eval_my_agent.py --threshold 0.7 -v
 ```
 
-## 7. Run or share a cartridge
+## 7. Run or share a bundle
 
-A cartridge is a portable skill folder that builds normal looplet
+A bundle is a portable skill folder that builds normal looplet
 primitives. It is the beginner-friendly way to run or share a complete
 capability without hiding the underlying loop.
 
@@ -166,7 +166,7 @@ python -m looplet blueprint ./skills/coder --workspace .
 python -m looplet export-code ./skills/coder coder_agent.py
 ```
 
-Advanced users can package an importable looplet factory as a cartridge:
+Advanced users can package an importable looplet factory as a bundle:
 
 ```bash
 python -m looplet package my_agent:build ./skills/my-agent \
@@ -188,7 +188,7 @@ python -m looplet wrap-claude-skill ./claude-skills/pdf ./skills/pdf
 
 - [Tutorial](tutorial.md) — hooks, compaction, crash-resume, approval, in five steps.
 - [Recipes](recipes.md) — Ollama, MCP, cost accounting, multi-model routing.
-- [Skills](skills.md) — lazy skills, runnable cartridges, blueprints, and Claude Skill wrapping.
+- [Skills](skills.md) — lazy skills, runnable bundles, blueprints, and Claude Skill wrapping.
 - [Pitfalls](pitfalls.md) — ten sharp edges worth knowing.
 - [Hooks reference](hooks.md) — every extension point, every signature.
 

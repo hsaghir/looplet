@@ -1,4 +1,4 @@
-"""Tests for the Composable Harness Workspace (CHW) round-trip.
+"""Tests for the Workspace round-trip.
 
 Verifies:
 
@@ -422,11 +422,11 @@ def test_setup_py_invalid_signature_raises(tmp_path: Path) -> None:
         workspace_to_preset(out, strict=True)
 
 
-# ── examples/hello.workspace end-to-end (proof-of-concept v2 cartridge) ───
+# ── examples/hello.workspace end-to-end (proof-of-concept workspace) ───
 
 
 def test_hello_workspace_loads_and_runs_end_to_end() -> None:
-    """examples/hello.workspace is the proof-of-concept v2 cartridge:
+    """examples/hello.workspace is the proof-of-concept workspace:
     fully declarative layout with shared resources + setup.py wiring.
     Loads, runs scripted, and the shared GreetingLog round-trips
     state between the greet tool and the PolitenessGate hook."""
@@ -473,16 +473,16 @@ def test_hello_workspace_loads_and_runs_end_to_end() -> None:
     assert hook.log.names() == ["Alice", "Bob"]
 
 
-# ── examples/coder.workspace end-to-end (real-world v2 cartridge) ──
+# ── examples/coder.workspace end-to-end (real-world workspace) ──
 
 
 def test_coder_workspace_loads_with_shared_filecache(tmp_path) -> None:
-    """examples/coder.workspace migrates the v1 coder cartridge to the
+    """examples/coder.workspace migrates the v1 coder bundle to the
     v2 layout. Validates that:
       * Declarative + setup.py-injected hooks load (8 total — TestGuard,
         FileCache, StaleFile, Stagnation, ThresholdCompact, PerToolLimit
         from YAML; LinterHook + EvalHook appended by setup.py to match
-        v1 cartridge feature-for-feature)
+        looplet.examples coder reference feature-for-feature)
       * 9 tools (bash/list_dir/read/write/edit/glob/grep/think/done) load
       * FileCacheHook and StaleFileHook share the SAME FileCache instance
         via @file_cache (proves the shared-resource registry under load)
@@ -564,7 +564,7 @@ def test_coder_workspace_loads_with_shared_filecache(tmp_path) -> None:
 
 def test_threat_intel_workspace_loads() -> None:
     """examples/threat_intel.workspace migrates the threat-intel
-    cartridge. Loads with strict=True; tools re-import from the
+    bundle. Loads with strict=True; tools re-import from the
     original module so their typing/closure environment stays intact."""
     from pathlib import Path as _P
 
@@ -808,7 +808,7 @@ def test_coder_workspace_bidirectional_round_trip(tmp_path) -> None:
 
 def test_threat_intel_workspace_attaches_compact_service(tmp_path) -> None:
     """setup.py wires LoopConfig.compact_service so the workspace
-    matches the v1 cartridge feature-for-feature."""
+    matches the looplet.examples coder reference feature-for-feature."""
     from pathlib import Path as _P
 
     workspace_dir = _P(__file__).resolve().parents[1] / "examples" / "threat_intel.workspace"
@@ -997,7 +997,7 @@ def test_streaming_hook_declarative_via_at_ref(tmp_path) -> None:
 def test_workspace_extends_other_workspace(tmp_path) -> None:
     """A workspace's setup.py can load another workspace and merge
     its tools/hooks. Demonstrates inheritance/composition between
-    cartridges without forking the loop."""
+    bundles without forking the loop."""
     import json as _json
 
     base = tmp_path / "base"

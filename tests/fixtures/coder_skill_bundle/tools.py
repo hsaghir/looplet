@@ -7,7 +7,7 @@ control flow, no hook logic — just the executable surface area.
 The module exports a single composition function,
 :func:`make_tools`, that wires every ``@tool``-decorated callable
 into a :class:`looplet.tools.BaseToolRegistry` ready to plug into
-either the library entrypoint or the runnable cartridge.
+either the library entrypoint or the runnable bundle.
 
 :class:`FileCache` is kept here because every tool in the bundle
 either reads from it (``read_file``) or invalidates it

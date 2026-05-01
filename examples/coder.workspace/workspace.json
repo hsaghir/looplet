@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "name": "coder",
-  "description": "Workspace-native coder agent. v2 of examples/coder/skill — every component (config, prompt, tools, hooks, shared resources) is a file you can edit, diff, and version-control. Same behavior as the v1 cartridge.",
+  "description": "Workspace-native coder agent. Every component (config, prompt, tools, hooks, shared resources) is a file you can edit, diff, and version-control. Behaves identically to the previous library example.",
   "metadata": {
     "tags": ["coding", "software-engineering", "testing", "workspace-native"]
   }

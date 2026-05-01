@@ -175,7 +175,7 @@ class StagnationHook:
         self._last_progress = None
 
     def to_config(self) -> dict[str, Any]:
-        """Round-trip kwargs for ``preset_to_workspace`` / CHW.
+        """Round-trip kwargs for ``preset_to_workspace``.
 
         Only round-trips the JSON-able fields (``threshold``, string
         ``nudge``, ``reset_after_nudge``, ``ignore_tools``). Callable

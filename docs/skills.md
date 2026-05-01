@@ -75,10 +75,10 @@ same observable, hook-based execution path.
 ## Runnable Bundles
 
 A simple skill is an instruction payload. A runnable bundle is a full
-domain cartridge: `SKILL.md` plus a trusted Python entrypoint that builds
+domain bundle: `SKILL.md` plus a trusted Python entrypoint that builds
 normal looplet primitives.
 
-The loop story does not change when you use a cartridge: the cartridge
+The loop story does not change when you use a bundle: the bundle
 builds tools, hooks, config, and state; the LLM proposes a tool call; the
 registry dispatches it; hooks observe or steer; state records the step; and
 the loop yields a `Step`.
@@ -130,7 +130,7 @@ explicit trace directory, traces are written under
 `.looplet/traces/<skill-name>-<id>/` inside the runtime workspace. Pass
 `provenance=False` to disable this when you need an unrecorded run.
 
-The CLI can run a cartridge directly:
+The CLI can run a bundle directly:
 
 ```bash
 python -m looplet run ./skills/coder "Fix the tests" --workspace .
@@ -138,7 +138,7 @@ python -m looplet run ./skills/coder "Fix the tests" --workspace . --trace-dir .
 python -m looplet run ./skills/coder "Fix the tests" --workspace . --no-trace
 ```
 
-Cartridges can also be discovered without importing their Python
+Bundles can also be discovered without importing their Python
 entrypoints. This is the lightweight index path for product UIs and agent
 menus: it reads `SKILL.md`, checks whether the declared entrypoint exists,
 and returns `BundleCard` records.
@@ -160,11 +160,11 @@ python -m looplet list-bundles ./skills --include-invalid
 
 By default, instruction-only Claude Skills are skipped because they do not
 have a runnable entrypoint yet. Pass `--include-invalid` when you want to
-surface folders that look like cartridges but need repair or wrapping.
+surface folders that look like bundles but need repair or wrapping.
 
 Bundles may optionally expose `scripted_responses()` for deterministic
 dogfood runs and `render_step(step)` for domain-specific terminal output.
-For product cartridges that need exact terminal behavior, a bundle can also
+For product bundles that need exact terminal behavior, a bundle can also
 expose `run(...)`. In that case `looplet run` delegates the whole shell to
 the bundle while still passing the default provenance setting and trace
 directory options through. The delegated callable receives keyword-only
@@ -187,7 +187,7 @@ def run(
 
 ## Blueprints and round trips
 
-Cartridges can be inspected as versioned `AgentBlueprint` records. A
+Bundles can be inspected as versioned `AgentBlueprint` records. A
 blueprint is a stable structural view of the built `AgentPreset`: config,
 tool schemas, hook order, memory source types, state type, metadata, and
 source location. It is intentionally not a Python decompiler; arbitrary
@@ -203,10 +203,10 @@ print(blueprint.fingerprint())
 ```
 
 Use `export_bundle_to_library_code()` when a beginner wants to move from a
-cartridge command to normal Python call sites. The generated module is an
-exact local wrapper around the cartridge and includes the captured blueprint
+bundle command to normal Python call sites. The generated module is an
+exact local wrapper around the bundle and includes the captured blueprint
 for inspection. Because it preserves behavior by loading the original
-cartridge path, keep that cartridge available or re-export after moving it:
+bundle path, keep that bundle available or re-export after moving it:
 
 ```python
 from looplet import export_bundle_to_library_code
@@ -222,7 +222,7 @@ python -m looplet export-code ./skills/coder coder_agent.py --function-name buil
 ```
 
 Use `package_agent_factory_as_bundle()` when an advanced user has an
-importable looplet factory and wants a runnable cartridge entrypoint tied
+importable looplet factory and wants a runnable bundle entrypoint tied
 to that factory reference:
 
 ```python
@@ -244,21 +244,21 @@ python -m looplet package my_agent:build ./skills/my-agent \
   --description "Run my custom looplet agent."
 ```
 
-`compare_blueprints()` checks whether two factories or cartridges build the
+`compare_blueprints()` checks whether two factories or bundles build the
 same looplet structure. This is the programmatic equivalent of the coder
-parity checks: compare the generated wrapper or packaged cartridge against
+parity checks: compare the generated wrapper or packaged bundle against
 the original before you trust the conversion.
 
 Generated factory packages preserve exact behavior by importing the factory
 reference. To move them to another environment, ship the referenced module
-and its dependencies alongside the cartridge or install them in that
+and its dependencies alongside the bundle or install them in that
 environment.
 
 ## Claude Skill compatibility
 
 looplet can load Claude/Agent Skills-style folders as lazy skills today.
 It can also wrap instruction-only Claude Skills as runnable looplet
-cartridges:
+bundles:
 
 ```python
 from looplet import claude_skill_compatibility, wrap_claude_skill_as_bundle
@@ -276,14 +276,14 @@ python -m looplet wrap-claude-skill ./claude-skills/pdf ./skills/pdf
 
 Compatibility levels are explicit:
 
-- `instruction-only`: can be wrapped and run as a minimal looplet cartridge.
+- `instruction-only`: can be wrapped and run as a minimal looplet bundle.
 - `resources-present`: resources are copied, but remain inert unless exposed
   as normal looplet tools.
 - `scripts-present`: instructions can be wrapped, but scripts require an
   explicit tool adapter before looplet can claim exact behavior.
-- `looplet-cartridge`: the folder already declares a looplet entrypoint;
-  wrapping copies the cartridge as-is and preserves that entrypoint.
+- `looplet-bundle`: the folder already declares a looplet entrypoint;
+  wrapping copies the bundle as-is and preserves that entrypoint.
 
 This means looplet can run a useful subset of Claude Skills directly as
-cartridges, while surfacing adapter gaps instead of pretending Claude-specific
+bundles, while surfacing adapter gaps instead of pretending Claude-specific
 runtime behavior is automatically reproducible.

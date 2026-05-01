@@ -1,4 +1,4 @@
-"""Runnable skill bundles for loading domain cartridges.
+"""Runnable skill bundles for loading domain bundles.
 
 Bundles are deliberately a thin layer over existing looplet primitives.
 A bundle entrypoint returns an :class:`AgentPreset`; the core loop still
@@ -44,7 +44,7 @@ BuildSkillBundle = Callable[["SkillRuntime"], AgentPreset]
 
 @dataclass(frozen=True)
 class BundleCard:
-    """Lightweight runnable cartridge discovery record."""
+    """Lightweight runnable bundle discovery record."""
 
     name: str
     description: str
@@ -85,7 +85,7 @@ class SkillRuntime:
 
 @dataclass(frozen=True)
 class SkillBundle:
-    """A runnable skill cartridge loaded from disk."""
+    """A runnable skill bundle loaded from disk."""
 
     skill: Skill
     root: Path
@@ -128,7 +128,7 @@ def discover_skill_bundles(
 
     Roots may be bundle directories, ``SKILL.md`` files, or directories
     containing many skill folders. Instruction-only skills are skipped by
-    default because they are not runnable cartridges until wrapped.
+    default because they are not runnable bundles until wrapped.
 
     Args:
         roots: Paths to scan for bundles.
@@ -281,7 +281,7 @@ def run_skill_bundle(
 ) -> Iterator[Step]:
     """Run a loaded bundle with ``composable_loop``.
 
-    This helper is the console/cartridge adapter: it loads a bundle,
+    This helper is the console/bundle adapter: it loads a bundle,
     asks the bundle for normal looplet primitives, and delegates to the
     unchanged core loop.
     """

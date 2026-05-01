@@ -835,7 +835,7 @@ class EvalHook:
 
     def to_config(self) -> dict:
         """Workspace round-trip: emit ``evaluators`` (and ``collectors``
-        when present) as ``@ref`` strings so the v2 workspace writer
+        when present) as ``@ref`` strings so the workspace writer
         auto-generates ``resources/<name>.py`` builders. Lambda
         evaluators land in placeholder builders the user must replace;
         top-level callables ride straight through.

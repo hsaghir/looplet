@@ -1,7 +1,7 @@
 """Compaction service for the coder workspace.
 
 Two-stage chain: prune old tool results first, then truncate any
-remaining historical turns. Mirrors the pattern the v1 cartridge
+remaining historical turns. Mirrors the pattern the looplet.examples coder reference
 used; lifts it out of ``setup.py`` so the entire workspace is
 declarative.
 """

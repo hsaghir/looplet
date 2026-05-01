@@ -31,7 +31,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from examples.coder.tools import FileCache
+from coder_lib_tools import FileCache
+
 from looplet.hook_decision import HookDecision, InjectContext
 
 __all__ = [

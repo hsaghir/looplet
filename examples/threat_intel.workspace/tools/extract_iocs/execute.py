@@ -1,6 +1,5 @@
-"""extract_iocs — re-import. This tool takes ctx: ToolContext to call
-``ctx.llm.generate(...)`` for severity classification."""
+"""extract_iocs — re-import from co-located ``threat_intel_lib.py``."""
 
-from examples.threat_intel.agent import extract_iocs as _spec
+from threat_intel_lib import extract_iocs as execute
 
-execute = _spec.execute
+__all__ = ["execute"]

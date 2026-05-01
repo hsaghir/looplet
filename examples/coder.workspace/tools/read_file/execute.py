@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from examples.coder.tools import _resolve_safe_path
+from coder_lib_tools import _resolve_safe_path
 
 WORKSPACE_CONFIG = None
 FILE_CACHE = None

@@ -1,5 +1,5 @@
-"""parse_deps — re-import from examples.dep_doctor.agent."""
+"""parse_deps — re-import from co-located ``dep_doctor_lib.py``."""
 
-from examples.dep_doctor.agent import parse_deps as _spec
+from dep_doctor_lib import parse_deps as execute
 
-execute = _spec.execute
+__all__ = ["execute"]

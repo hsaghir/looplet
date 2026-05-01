@@ -1,3 +1,5 @@
-from examples.threat_intel.agent import assess_risk as _spec
+"""assess_risk — re-import from co-located ``threat_intel_lib.py``."""
 
-execute = _spec.execute
+from threat_intel_lib import assess_risk as execute
+
+__all__ = ["execute"]

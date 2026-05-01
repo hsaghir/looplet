@@ -15,7 +15,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from examples.coder.tools import _is_path_inside, _run
+from coder_lib_tools import _is_path_inside, _run
 
 # Set by setup.py at workspace load time.
 WORKSPACE_CONFIG = None

@@ -1385,12 +1385,14 @@ def workspace_to_preset(
                 ``def build(runtime)`` (or ``**kwargs``) receive it.
               * ``setup.py``'s ``setup(...)`` receives it via the
                 ``runtime`` kwarg when its signature accepts it.
-    """
-    from looplet.loop import LoopConfig  # noqa: PLC0415
-    from looplet.presets import AgentPreset  # noqa: PLC0415
-    from looplet.tools import BaseToolRegistry, ToolSpec  # noqa: PLC0415
-    from looplet.types import DefaultState  # noqa: PLC0415
 
+    Self-contained workspaces may co-locate helper modules (by
+    convention ``<workspace>/lib.py``); the loader pushes the workspace
+    root onto :data:`sys.path` for the duration of the load so
+    ``from lib import X`` resolves cleanly inside tools / hooks /
+    resources / setup.py without forcing every workspace to register an
+    import shim.
+    """
     root = Path(workspace_dir)
     if not (root / WorkspaceLayout.WORKSPACE_JSON).is_file():
         raise FileNotFoundError(
@@ -1404,6 +1406,50 @@ def workspace_to_preset(
     # same live object (e.g. a FileCache) on reload, instead of
     # silently splitting into two independent instances.
     runtime_dict = dict(runtime or {})
+
+    # Workspaces are self-contained — their tools / hooks / resources
+    # may reference co-located helper modules (conventionally
+    # ``<workspace>/<wsname>_lib.py`` or similar; pick a name unique to
+    # this workspace so two workspaces loaded back-to-back don't share
+    # a cached ``lib`` module). The loader pushes the workspace root
+    # onto ``sys.path`` for the duration of this load so
+    # ``from <wsname>_lib import X`` resolves without forcing every
+    # workspace to ship a setup.py shim.
+    import sys as _sys  # noqa: PLC0415
+
+    root_str = str(root)
+    _path_pushed = root_str not in _sys.path
+    if _path_pushed:
+        _sys.path.insert(0, root_str)
+    try:
+        return _workspace_to_preset_inner(
+            root, runtime_dict, state_factory=state_factory, strict=strict
+        )
+    finally:
+        if _path_pushed:
+            try:
+                _sys.path.remove(root_str)
+            except ValueError:
+                pass
+
+
+def _workspace_to_preset_inner(
+    root: Path,
+    runtime_dict: dict[str, Any],
+    *,
+    state_factory: Callable[[int], Any] | None,
+    strict: bool,
+) -> "AgentPreset":
+    """Inner workspace loader. Assumes ``sys.path`` already includes
+    the workspace root so co-located ``lib.py`` modules import cleanly.
+    Split out from :func:`workspace_to_preset` to keep the path-management
+    boilerplate at the public boundary.
+    """
+    from looplet.loop import LoopConfig  # noqa: PLC0415
+    from looplet.presets import AgentPreset  # noqa: PLC0415
+    from looplet.tools import BaseToolRegistry, ToolSpec  # noqa: PLC0415
+    from looplet.types import DefaultState  # noqa: PLC0415
+
     resources = _load_resources(root, runtime_dict)
 
     # Config

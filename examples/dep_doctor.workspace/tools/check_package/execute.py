@@ -1,5 +1,5 @@
-"""check_package — re-import from examples.dep_doctor.agent."""
+"""check_package — re-import from co-located ``dep_doctor_lib.py``."""
 
-from examples.dep_doctor.agent import check_package as _spec
+from dep_doctor_lib import check_package as execute
 
-execute = _spec.execute
+__all__ = ["execute"]

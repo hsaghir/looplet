@@ -255,25 +255,25 @@ looplet difference: every lookup, warning, and final claim is visible as
 a step you can log, gate, replay, or evaluate.
 
 ```bash
+# Load the v2 workspace; pass --workspace to point at the project to audit.
 OPENAI_BASE_URL=http://127.0.0.1:11434/v1 \
 OPENAI_API_KEY=ollama OPENAI_MODEL=llama3.1 \
-python examples/dep_doctor/agent.py /path/to/project
-
-# No model required: deterministic local dogfood run
-python examples/dep_doctor/agent.py examples/dep_doctor/demo_project --scripted
+python -c "from looplet import workspace_to_preset; \
+p = workspace_to_preset('examples/dep_doctor.workspace', runtime={'workspace': '/path/to/project'})"
 ```
 
-Then explore `examples/git_detective/` for codebase-health reports,
-`examples/threat_intel/` for local-first security briefings, and
-`examples/coder/` for a coding-agent reference implementation.
+Then explore `examples/git_detective.workspace/` for codebase-health reports,
+`examples/threat_intel.workspace/` for local-first security briefings, and
+`examples/coder.workspace/` for a coding-agent reference implementation —
+each is a self-contained Composable Harness Workspace under
+[`examples/`](https://github.com/hsaghir/looplet/tree/master/examples)
+that round-trips losslessly with an `AgentPreset` via `preset_to_workspace`
+/ `workspace_to_preset`.
 
 ```bash
-# More no-model dogfood runs
+# More dogfood — load each workspace and run a scripted loop.
 python -m looplet.examples.hello_world --scripted
 python -m looplet.examples.ollama_hello --scripted
-python examples/git_detective/agent.py . --scripted
-python examples/threat_intel/agent.py --scripted
-python examples/coder/agent.py "Create a tiny add function with tests" --scripted
 python -m looplet.examples.coding_agent "Implement add" --scripted --workspace /tmp/demo
 python -m looplet.examples.data_agent --scripted --auto-approve --clean
 ```

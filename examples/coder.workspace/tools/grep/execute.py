@@ -6,7 +6,7 @@ import os
 import subprocess
 from pathlib import Path
 
-from examples.coder.tools import _resolve_safe_path
+from coder_lib_tools import _resolve_safe_path
 
 WORKSPACE_CONFIG = None
 

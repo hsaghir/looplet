@@ -25,7 +25,7 @@ from looplet.testing import MockLLMBackend
 
 pytestmark = pytest.mark.smoke
 
-CODER_BUNDLE = Path(__file__).resolve().parents[1] / "examples" / "coder" / "skill"
+CODER_BUNDLE = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "coder_skill_bundle"
 
 
 class TestSkillBundles:
@@ -310,9 +310,12 @@ class TestSkillBundles:
         assert sys.modules["pytest"] is loaded_pytest
 
     def test_bundle_local_examples_package_can_shadow_loaded_examples(self, tmp_path):
-        from examples.coder import agent as coder  # noqa: F401
+        # Force the coder bundle to register its sibling modules under
+        # ``examples.coder.*`` so we can verify the new bundle's load
+        # does not disturb them.
+        from tests.fixtures.coder_skill_bundle import _compat as coder  # noqa: F401
 
-        original_agent_module = sys.modules["examples.coder.agent"]
+        original_tools_module = sys.modules["examples.coder.tools"]
         project = tmp_path / "project"
         bundle_root = project / "skill"
         examples_pkg = project / "examples"
@@ -344,8 +347,8 @@ class TestSkillBundles:
 
         assert loaded.module.loaded_value() == "local examples"
         assert "examples.helper" not in sys.modules
-        assert sys.modules["examples.coder.agent"] is original_agent_module
-        from examples.coder import agent as restored_coder
+        assert sys.modules["examples.coder.tools"] is original_tools_module
+        from tests.fixtures.coder_skill_bundle import _compat as restored_coder
 
         assert restored_coder is coder
 
@@ -585,7 +588,7 @@ class TestSkillBundles:
         assert "warning: config.max_steps differs from runtime.max_steps (1 != 8)" in captured.err
 
     def test_coder_bundle_matches_coder_example_primitives(self, tmp_path):
-        from examples.coder import agent as coder
+        from tests.fixtures.coder_skill_bundle import _compat as coder
 
         bundle = load_skill_bundle(CODER_BUNDLE)
         preset = bundle.build_preset(SkillRuntime(workspace=tmp_path, max_steps=8))
@@ -601,7 +604,7 @@ class TestSkillBundles:
         assert any(isinstance(hook, coder.LinterHook) for hook in preset.hooks)
 
     def test_coder_bundle_runs_scripted_loop_like_example(self, tmp_path):
-        from examples.coder import agent as coder
+        from tests.fixtures.coder_skill_bundle import _compat as coder
 
         bundle = load_skill_bundle(CODER_BUNDLE)
         llm = MockLLMBackend(responses=coder.scripted_responses())
@@ -629,7 +632,7 @@ class TestSkillBundles:
         assert list((tmp_path / ".looplet" / "traces").glob("coder-*/trajectory.json"))
 
     def test_run_skill_bundle_can_disable_default_trace(self, tmp_path):
-        from examples.coder import agent as coder
+        from tests.fixtures.coder_skill_bundle import _compat as coder
 
         bundle = load_skill_bundle(CODER_BUNDLE)
         llm = MockLLMBackend(responses=coder.scripted_responses())
@@ -719,38 +722,14 @@ class TestSkillBundles:
         assert steps[0].tool_result.error is None
         assert steps[0].tool_result.data == {"value": "runtime-ok"}
 
-    def test_cli_coder_bundle_matches_original_coder_stdout_byte_for_byte(self, tmp_path, capsys):
-        from examples.coder import agent as coder
-
-        workspace = tmp_path / "workspace"
-        task = "Create a tiny add function with tests"
-        original_rc = coder.main(
-            [task, "--workspace", str(workspace), "--max-steps", "8", "--scripted"]
-        )
-        original_out = capsys.readouterr().out
-        shutil.rmtree(workspace)
-
-        skill_rc = cli_main(
-            [
-                "run",
-                str(CODER_BUNDLE),
-                task,
-                "--workspace",
-                str(workspace),
-                "--max-steps",
-                "8",
-                "--scripted",
-            ]
-        )
-        skill_out = capsys.readouterr().out
-
-        assert original_rc == 0
-        assert skill_rc == 0
-        assert skill_out == original_out
-        assert list((workspace / ".looplet" / "traces").glob("coder-*/trajectory.json"))
+    # NOTE: ``test_cli_coder_bundle_matches_original_coder_stdout_byte_for_byte``
+    # was removed when the v1 ``examples/coder/agent.py`` CLI was deleted —
+    # there is no longer an "original" stdout to compare against. The
+    # bundle's CLI behaviour is still exercised by
+    # ``test_cli_runs_coder_bundle_with_scripted_responses`` below.
 
     def test_cli_runs_coder_bundle_with_scripted_responses(self, tmp_path, capsys):
-        from examples.coder import agent as coder
+        from tests.fixtures.coder_skill_bundle import _compat as coder
 
         args = [
             "run",
@@ -1825,7 +1804,7 @@ class TestSkillBundles:
         assert not trace_dir.exists()
 
     def test_coder_bundle_no_trace_preserves_non_scripted_call_count(self, tmp_path, capsys):
-        from examples.coder import agent as coder
+        from tests.fixtures.coder_skill_bundle import _compat as coder
 
         class FakeOpenAIBackend:
             def __init__(self, *args, **kwargs):

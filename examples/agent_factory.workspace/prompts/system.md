@@ -28,32 +28,28 @@ Every agent **must** have a `done` tool — it's the completion sentinel.
    - Does it need any hook? (most agents don't — only add if you have a real reason)
    - Does it need any resource? (rarely — only for shared state)
 
-2. **Write the system prompt first** (`prompts/system.md`). It should cover: role, available tools, expected workflow, when to call `done`. Keep it under 500 words.
+2. **Scaffold the skeleton FIRST** with one `scaffold_workspace(path=..., name=..., tools=[...])` call. This creates `workspace.json`, `config.yaml`, `prompts/system.md` (with TODOs), and `tools/<name>/{tool.yaml, execute.py}` stubs (raise `NotImplementedError`) for every tool you listed. The standard `done` tool is added automatically.
 
-3. **Write tools one at a time.** Each tool is `tools/<name>/tool.yaml` + `tools/<name>/execute.py`.
-   - `tool.yaml` declares: `name`, `description` (multi-paragraph using YAML `|-` block scalar is best — explain Usage, Examples, Refusals, Recovery), `parameters` (with type and description), and optional `requires:` (list of resource names).
-   - `execute.py` defines `def execute(ctx: ToolContext, *, <params>) -> dict`. The `ctx` is positional-only; the rest are keyword-only. Return a dict (this is what the model sees).
+   - The scaffold call is idempotent — if the host already pre-scaffolded the same path, your call is a no-op (`{scaffolded: true}` with existing files preserved).
+   - DO NOT spend turns on `list_dir` to check what's there. Just call `scaffold_workspace` — it's safe to re-run.
+   - DO NOT manually create `workspace.json` / `config.yaml` / done tool — the scaffolder gets those right every time.
+
+3. **Fill in the system prompt** (`prompts/system.md`). The scaffolder leaves TODO markers; replace them via `multi_edit` / `edit_file`. Cover: role, available tools, expected workflow, when to call `done`. Keep it under 500 words.
+
+4. **Fill in each tool body** — `tools/<name>/tool.yaml` (description + parameters) and `tools/<name>/execute.py` (replace `def execute(ctx, **kwargs):` with explicit keyword params + the real implementation).
+   - `tool.yaml` declares: `name`, `description` (multi-paragraph using YAML `|-` block scalar — explain Usage, Examples), `parameters` (with type and description), optional `requires:` (resource names).
+   - `execute.py` defines `def execute(ctx: ToolContext, *, <params>) -> dict`. The `ctx` is positional-only; the rest are keyword-only. Return a dict.
    - For tools that call the LLM: use `ctx.llm.generate(prompt=..., system_prompt=...)`.
 
-4. **Write `config.yaml`** with sensible defaults:
-   ```yaml
-   max_steps: 20
-   max_tokens: 2000
-   temperature: 0.7
-   done_tool: done
-   ```
+5. **Validate** with `validate_workspace(workspace_path)`. This runs `workspace_to_preset()` and reports any structural errors. Fix and re-validate until it loads cleanly.
 
-5. **Write `workspace.json`** — one line: `{"name": "<agent-name>", "schema_version": 1}`.
-
-6. **Validate** with `validate_workspace(workspace_path)`. This runs `workspace_to_preset()` and reports any structural errors. Fix and re-validate until it loads cleanly.
-
-7. **Test** — write a short `tests/test_<agent>.py` that:
+6. **Test** — write a short `tests/test_<agent>.py` that:
    - Loads the workspace via `workspace_to_preset(...)` and checks the tool list.
    - Asserts `preset.config.system_prompt` is non-empty.
    - (Optional) Runs the agent end-to-end with `MockLLMBackend` for a deterministic smoke test.
    - Run via `bash`: `pytest tests/test_<agent>.py -v`.
 
-8. **`done`** with a one-line summary of what was built.
+7. **`done`** with a one-line summary of what was built.
 
 ## Style rules
 

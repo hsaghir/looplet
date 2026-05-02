@@ -1,0 +1,49 @@
+"""agent_factory.workspace setup.py — auto-scaffolds the target.
+
+When the factory is loaded with these runtime kwargs:
+
+    runtime={
+        "workspace": "/path/to/project",   # standard, where the agent runs
+        "scaffold_to": "summarizer.workspace",  # OPTIONAL relative path
+        "scaffold_name": "summarizer",          # OPTIONAL, defaults to dir name
+        "scaffold_tools": ["a", "b"],            # OPTIONAL, list of tool names
+    }
+
+…we scaffold the target workspace skeleton BEFORE the loop runs, so
+the agent starts with the boilerplate already laid out and spends LLM
+turns on the interesting work (tool bodies, system prompt, tests).
+
+The agent's system prompt mentions: "If the target workspace already
+has a skeleton, customize it via multi_edit. Otherwise, write the
+files yourself." So both paths work — host pre-scaffold OR agent
+self-scaffolds.
+
+If ``scaffold_to`` is not provided, this is a no-op and the factory
+behaves exactly as before.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from looplet.scaffold import scaffold_workspace
+
+
+def setup(preset, resources, *, runtime=None, **_kwargs):
+    runtime = runtime or {}
+    target = runtime.get("scaffold_to")
+    tools = runtime.get("scaffold_tools")
+    if not target or not tools:
+        return preset
+
+    workspace_root = Path(runtime.get("workspace", "."))
+    target_path = workspace_root / target if not Path(target).is_absolute() else Path(target)
+    name = runtime.get("scaffold_name") or target_path.stem.replace(".workspace", "")
+
+    scaffold_workspace(
+        target_path,
+        name=name,
+        tools=list(tools),
+        overwrite=True,  # idempotent — _write_if_absent preserves existing files
+    )
+    return preset

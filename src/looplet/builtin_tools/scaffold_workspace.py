@@ -19,6 +19,7 @@ kwargs instead — that saves the agent a tool turn.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from looplet.scaffold import scaffold_workspace as _scaffold
@@ -38,9 +39,7 @@ def _execute(
     target_path = path
     cfg = ctx.resources.get("workspace_config") if ctx.resources else None
     host_ws = getattr(cfg, "path", None) if cfg is not None else None
-    if host_ws and not _is_absolute(path):
-        from pathlib import Path  # noqa: PLC0415
-
+    if host_ws and not Path(path).is_absolute():
         target_path = str(Path(host_ws) / path)
 
     try:
@@ -69,12 +68,6 @@ def _execute(
             "to confirm the result loads cleanly."
         ),
     }
-
-
-def _is_absolute(p: str) -> bool:
-    from pathlib import Path  # noqa: PLC0415
-
-    return Path(p).is_absolute()
 
 
 SPEC = ToolSpec(

@@ -4,15 +4,22 @@ A workspace enables built-ins by listing them in ``config.yaml``::
 
     builtin_tools:
       - subagent
+      - scaffold_workspace
 
 The loader looks each name up here at workspace-load time and
 registers it in the tool registry alongside the workspace's
 own ``tools/<name>/`` directories.
 
 Built-ins live here (rather than in every workspace's ``tools/``)
-so they evolve with looplet: a new release ships an improved
-``subagent`` tool and every workspace using ``builtin_tools:
-[subagent]`` picks it up immediately, no per-workspace edit needed.
+so they evolve with looplet: a new release ships an improved tool
+and every workspace using ``builtin_tools:`` picks it up
+immediately, no per-workspace edit needed.
+
+Currently shipped built-ins:
+
+* ``subagent`` — invoke another workspace as a synchronous sub-loop.
+* ``scaffold_workspace`` — create a stubbed workspace skeleton in one
+  call (agent-callable wrapper around :func:`looplet.scaffold.scaffold_workspace`).
 
 Adding a new built-in: write a small module exposing a ``SPEC``
 :class:`looplet.tools.ToolSpec`, then list its ``name`` in

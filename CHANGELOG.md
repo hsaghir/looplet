@@ -81,7 +81,32 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - **`subagent` recursion depth via process-global env var
   (`LOOPLET_SUBAGENT_DEPTH`)** — two parallel parent loops in the
   same process raced. Replaced with a `ContextVar` (threadsafe and
-  per-async-task).
+  per-async-task). The sub-loop receives a freshly-constructed
+  `runtime` (it does NOT share the parent's `resources` /
+  `file_cache` instances — only the workspace path is forwarded).
+- **`validate_workspace` was silent on TODO-laden scaffolds.** Now
+  scans the system prompt for `<TODO:` markers and tool execute.py
+  files for `NotImplementedError("scaffold:` and surfaces both as
+  warnings — agents can no longer `done` on an unfilled skeleton. (#48)
+- **`subagent` cwd-fallback was silent.** When neither the parent's
+  `workspace_config` resource nor `ctx.metadata['runtime']` is
+  present, the sub-loop's `runtime['workspace']` falls back to
+  `Path.cwd()` AND the response now includes a structured
+  `warning` field with explicit recovery hints. (#48)
+- **Tool name vs directory name mismatches** (e.g. `tools/foo/`
+  whose `tool.yaml` declares `name: WRONG_NAME`) used to silently
+  register the wrong name and leave the agent unable to use `foo`.
+  The loader now warns in loose mode and raises
+  `WorkspaceSerializationError` in strict mode. (#48)
+- **Documentation cleanups (#48).** `subagent` module docstring no
+  longer claims to "share the parent's runtime" (it constructs a
+  fresh one). `builtin_tools/__init__.py` now lists both shipped
+  built-ins (`subagent`, `scaffold_workspace`).
+- **Internal cleanup (#48).** Removed redundant `extends:` line
+  check; rewrote tempdir registry as module-level state with single
+  `atexit.register`; inlined a one-line `_is_absolute` helper;
+  removed duplicate import; switched `subagent.max_steps` sentinel
+  from `0` to `None`.
 
 - **`examples/coder.workspace` per-tool guidance + safety.** Three
   information-additive improvements modelled on patterns observed in

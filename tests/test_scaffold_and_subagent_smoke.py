@@ -15,6 +15,7 @@ Covers:
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 import pytest
@@ -297,14 +298,14 @@ def test_validate_workspace_warns_on_unfilled_scaffold(tmp_path: Path) -> None:
     assert any("NotImplementedError" in w for w in warnings), warnings
 
 
-def test_loader_warns_on_tool_name_mismatch(tmp_path: Path, caplog) -> None:
+def test_loader_warns_on_tool_name_mismatch(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     p = scaffold_workspace(tmp_path / "x.workspace", name="x", tools=["foo"])
     # Edit tool.yaml to use a different name than the directory.
     (p / "tools" / "foo" / "tool.yaml").write_text(
         "name: BADNAME\ndescription: x\nparameters: {}\n"
     )
-    import logging
-
     with caplog.at_level(logging.WARNING):
         workspace_to_preset(p)
     assert any("tool name mismatch" in rec.message for rec in caplog.records), [
@@ -333,3 +334,32 @@ def test_subagent_warns_on_cwd_fallback(tmp_path: Path) -> None:
     result = spec.execute(ctx, workspace=str(child), task="hi", max_steps=3)
     assert "warning" in result, result
     assert "defaulted to cwd" in result["warning"]
+
+
+def test_validate_workspace_no_false_positive_on_legitimate_todo_prose(tmp_path: Path) -> None:
+    """Agents whose mission legitimately mentions 'TODO:' (e.g. a code reviewer)
+    must NOT trigger the scaffold-leftover warning.
+
+    Regression for the over-loose detector that fired on any 'TODO:' in
+    the first 600 chars of the prompt.
+    """
+    p = scaffold_workspace(tmp_path / "x.workspace", name="x", tools=["a"])
+    # Replace the system prompt with a legitimate one that mentions TODO.
+    (p / "prompts" / "system.md").write_text(
+        "# Code Reviewer\n\nLook for TODO: comments in the code and "
+        "report them. Always finish with `done`.\n"
+    )
+    # Replace the tool stub with a real implementation so no NotImplementedError.
+    (p / "tools" / "a" / "execute.py").write_text(
+        "def execute(ctx, **kwargs):\n    return {'ok': True}\n"
+    )
+    repo_root = Path(__file__).resolve().parents[1]
+    factory = repo_root / "examples" / "agent_factory.workspace"
+    p_factory = workspace_to_preset(str(factory), runtime={"workspace": str(tmp_path)})
+    from looplet.types import ToolCall as _TC
+
+    r = p_factory.tools.dispatch(
+        _TC(tool="validate_workspace", args={"workspace_path": "x.workspace"})
+    )
+    warnings = (r.data or {}).get("warnings", [])
+    assert not any("TODO" in w for w in warnings), warnings

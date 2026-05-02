@@ -103,17 +103,32 @@ def _run(cmd: str, cwd: str, timeout: int = 120) -> dict:
         )
         stdout = r.stdout.strip()
         stderr = r.stderr.strip()
+        result: dict = {"exit_code": r.returncode}
+        # Spill long stdout/stderr to scratch files inside the
+        # workspace so the model can re-read specific ranges via
+        # ``read_file`` instead of guessing at the truncated middle.
+        full_stdout_chars = len(r.stdout)
+        full_stderr_chars = len(r.stderr)
         if len(stdout) > 15000:
+            spill = _spill_output(cwd, "stdout", r.stdout)
             stdout = (
                 stdout[:7000]
-                + f"\n\n... [{len(stdout) - 14000} chars truncated] ...\n\n"
+                + f"\n\n... [{len(stdout) - 14000} chars truncated — full output at {spill}] ...\n\n"
                 + stdout[-7000:]
             )
+            result["stdout_spill_file"] = spill
+            result["stdout_full_chars"] = full_stdout_chars
         if len(stderr) > 5000:
+            spill = _spill_output(cwd, "stderr", r.stderr)
             stderr = (
-                stderr[:2000] + f"\n... [{len(stderr) - 4000} chars truncated] ..." + stderr[-2000:]
+                stderr[:2000]
+                + f"\n... [{len(stderr) - 4000} chars truncated — full output at {spill}] ..."
+                + stderr[-2000:]
             )
-        result: dict = {"stdout": stdout, "stderr": stderr, "exit_code": r.returncode}
+            result["stderr_spill_file"] = spill
+            result["stderr_full_chars"] = full_stderr_chars
+        result["stdout"] = stdout
+        result["stderr"] = stderr
         # Add semantic exit code interpretation
         interpretation = _interpret_exit_code(cmd, r.returncode)
         if interpretation:
@@ -123,6 +138,23 @@ def _run(cmd: str, cwd: str, timeout: int = 120) -> dict:
         return {"stdout": "", "stderr": f"Command timed out after {timeout}s", "exit_code": -1}
     except Exception as e:
         return {"stdout": "", "stderr": str(e), "exit_code": -1}
+
+
+def _spill_output(workspace: str, stream: str, content: str) -> str:
+    """Write a long stdout/stderr blob to a workspace-relative scratch file.
+
+    Returns the workspace-relative path so the model can read_file it
+    without escaping the workspace root. The dir ``.coder_scratch/``
+    is auto-created and re-used across calls.
+    """
+    import time as _time
+
+    scratch_dir = Path(workspace) / ".coder_scratch"
+    scratch_dir.mkdir(parents=True, exist_ok=True)
+    name = f"bash_{stream}_{int(_time.time() * 1000)}.log"
+    out = scratch_dir / name
+    out.write_text(content)
+    return f".coder_scratch/{name}"
 
 
 def _fuzzy_find(text: str, target: str, threshold: float = 0.6) -> list[tuple[int, float, str]]:
@@ -159,6 +191,134 @@ def _is_path_inside(target: Path, root: Path) -> bool:
         return True
     except ValueError:
         return False
+
+
+# ── File I/O helpers ───────────────────────────────────────────────
+
+
+# Common binary/non-text suffixes that read_file should reject up
+# front. The list is conservative — when a real text file slips in
+# (e.g. ``.svg``, ``.csv``) the content-sniff below catches the
+# opposite case.
+_BINARY_SUFFIXES: frozenset[str] = frozenset(
+    {
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".bmp",
+        ".webp",
+        ".ico",
+        ".tiff",
+        ".pdf",
+        ".zip",
+        ".tar",
+        ".gz",
+        ".bz2",
+        ".xz",
+        ".7z",
+        ".rar",
+        ".pyc",
+        ".pyo",
+        ".so",
+        ".dll",
+        ".dylib",
+        ".o",
+        ".a",
+        ".class",
+        ".jar",
+        ".exe",
+        ".bin",
+        ".wasm",
+        ".mp3",
+        ".mp4",
+        ".wav",
+        ".ogg",
+        ".flac",
+        ".mov",
+        ".avi",
+        ".mkv",
+        ".sqlite",
+        ".db",
+        ".pkl",
+        ".npy",
+        ".npz",
+        ".h5",
+        ".pt",
+        ".onnx",
+        ".woff",
+        ".woff2",
+        ".ttf",
+        ".otf",
+    }
+)
+
+
+def is_binary_file(path: Path) -> tuple[bool, str]:
+    """Return (is_binary, reason) without raising.
+
+    First checks the extension; if inconclusive, sniffs the first 8 KiB
+    for NUL bytes (the classic ``file(1)`` heuristic). The reason is a
+    short human-readable string suitable for inclusion in a tool error.
+    """
+    suffix = path.suffix.lower()
+    if suffix in _BINARY_SUFFIXES:
+        return True, f"binary file extension {suffix!r}"
+    try:
+        with path.open("rb") as fh:
+            chunk = fh.read(8192)
+    except OSError as exc:
+        return False, f"could not sniff: {exc}"
+    if b"\x00" in chunk:
+        return True, "contains NUL bytes (binary)"
+    # Heuristic: if >30% of bytes are non-printable / non-whitespace
+    # ASCII control chars, treat as binary. This catches things like
+    # tar headers, raw protobuf, etc.
+    if chunk:
+        printable = sum(1 for b in chunk if b >= 0x20 or b in (0x09, 0x0A, 0x0D))
+        if printable / len(chunk) < 0.7:
+            return True, "low printable-byte ratio (binary)"
+    return False, ""
+
+
+def read_text_with_fallback(path: Path) -> tuple[str | None, str]:
+    """Read a text file with encoding fallback.
+
+    Returns (content, encoding_used). content is None on failure;
+    encoding_used carries the error message in that case.
+    """
+    for encoding in ("utf-8", "utf-8-sig", "latin-1"):
+        try:
+            return path.read_text(encoding=encoding), encoding
+        except UnicodeDecodeError:
+            continue
+        except OSError as exc:
+            return None, f"OSError: {exc}"
+    return None, "could not decode with utf-8/utf-8-sig/latin-1"
+
+
+def atomic_write_text(path: Path, content: str, encoding: str = "utf-8") -> None:
+    """Write ``content`` to ``path`` atomically (tmp + os.replace).
+
+    Avoids torn writes if the agent crashes / is killed mid-write.
+    Parent directories are created if missing.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # NamedTemporaryFile creates the file in the same directory so
+    # os.replace is guaranteed atomic on the same filesystem.
+    import tempfile
+
+    fd, tmp_path = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding=encoding) as fh:
+            fh.write(content)
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 # ── Bash safety helpers ────────────────────────────────────────────
@@ -375,6 +535,29 @@ class FileCache:
         self._mtimes: dict[str, float] = {}  # path -> mtime when last read
         self._hashes: dict[str, str] = {}  # path -> content hash when last read
         self._read_set: set[str] = set()  # every path ever passed to record()
+        # Sliding window of recent normalized bash commands. The bash
+        # tool consults this to refuse repeated identical commands
+        # (the model often loops on a failing command, asking the
+        # same thing 5+ times in a row instead of trying a new tactic).
+        self._recent_bash: list[str] = []
+        self._recent_bash_max: int = 4
+
+    def record_bash(self, command: str) -> int:
+        """Record a normalized bash command and return how many of the
+        last ``_recent_bash_max`` commands are identical to it.
+        """
+        norm = " ".join(command.strip().split())
+        self._recent_bash.append(norm)
+        if len(self._recent_bash) > self._recent_bash_max:
+            self._recent_bash = self._recent_bash[-self._recent_bash_max :]
+        return self._recent_bash.count(norm)
+
+    def recent_bash_repeats(self, command: str) -> int:
+        """Return how many of the recent bash commands match ``command``
+        WITHOUT recording it. Used by bash to refuse before running.
+        """
+        norm = " ".join(command.strip().split())
+        return self._recent_bash.count(norm)
 
     def record(self, path: str) -> None:
         p = Path(self._workspace) / path

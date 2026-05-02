@@ -3,14 +3,20 @@ description: |-
   Create a new file or overwrite an existing one with the provided content.
 
   Usage:
-  - Use this for **NEW** files only. To modify an existing file, use `edit_file` (it preserves the rest of the file and produces a reviewable diff).
-  - Overwrites any existing content; the file_cache is invalidated so a subsequent read_file returns the new content.
+  - Use this for **NEW** files only by default. To modify an existing file, use `edit_file` (preserves the rest of the file and produces a reviewable diff).
+  - **Refuses to clobber an existing file** unless you pass `overwrite=true`. This prevents accidental wipes when the model meant `edit_file`.
+  - Writes are **atomic** (tmp file + os.replace) so a crash mid-write can't leave a half-written file.
   - Parent directories are created automatically.
   - The path is relative to the project root and must stay inside it (paths escaping via `..` are refused).
+  - On overwrite, the file_cache entry for the path is invalidated so a subsequent read_file returns the new content.
 
   Examples:
   - `write_file(file_path="src/utils.py", content="def foo(): ...")` — new file
+  - `write_file(file_path="src/utils.py", content=..., overwrite=True)` — explicit replace of an existing file
   - DO NOT use this to "update" a file you already read — that's `edit_file`.
+
+  Recovery:
+  - "already exists" → use `edit_file` (preferred) or pass `overwrite=True`
 parameters:
   file_path:
     type: string
@@ -18,6 +24,10 @@ parameters:
   content:
     type: string
     description: Full file contents.
+  overwrite:
+    type: boolean
+    description: Allow replacing an existing file. Default false (refuses to clobber).
+    default: false
 requires:
   - workspace_config
   - file_cache

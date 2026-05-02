@@ -41,6 +41,7 @@ from looplet.types import ToolContext
 
 def execute(ctx: ToolContext, *, command: str) -> dict:
     cfg = ctx.resources.get("workspace_config")
+    cache = ctx.resources.get("file_cache")
     workspace = cfg.path if cfg is not None else "."
 
     # Destructive-command pre-flight. Returns model-actionable error
@@ -86,6 +87,29 @@ def execute(ctx: ToolContext, *, command: str) -> dict:
             "first_token": view["first_token"],
             "recovery": "read_file(file_path=...)",
         }
+
+    # Repeated-command refusal: if the model has already issued this
+    # exact command twice in a row, it's almost certainly stuck in a
+    # loop on a failing step. Refuse so the model is forced to try
+    # something different (read the file, change the args, ask for help).
+    if cache is not None:
+        repeats = cache.recent_bash_repeats(command)
+        if repeats >= 2:
+            return {
+                "error": (
+                    f"Refused: this exact bash command has been run "
+                    f"{repeats + 1} times in a row with no progress. "
+                    f"Repeating the same command will produce the same "
+                    f"result. Try a different approach: read the failing "
+                    f"file, change the command, or use a different tool."
+                ),
+                "repeats": repeats + 1,
+                "recovery": (
+                    "Inspect what's failing with read_file or grep, then "
+                    "issue a NEW command that addresses the root cause."
+                ),
+            }
+        cache.record_bash(command)
 
     result = _run(command, workspace)
 

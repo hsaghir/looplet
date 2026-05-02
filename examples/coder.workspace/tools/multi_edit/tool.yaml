@@ -1,0 +1,34 @@
+name: multi_edit
+description: |-
+  Apply a batch of exact-string replacements to a single file atomically.
+
+  Usage:
+  - Use this when you have **2+ edits to make on the same file**. Doing them as separate `edit_file` calls means N×(read + edit + verify) round-trips; multi_edit applies them all in one shot.
+  - **Atomic**: all edits succeed and the file is written, or none are applied. If edit #3 of 5 fails, the file is unchanged.
+  - Same read-required-first discipline as `edit_file`: you must have called `read_file` on the path in the current session.
+  - Edits are applied **in order** against an in-memory copy. So later edits see the effect of earlier edits — handy for staged renames.
+  - Each edit must include `old_string` and `new_string` (exact match, like `edit_file`). Optional `replace_all: true` allows multiple-match replacement (default refuses with the match count).
+  - Atomic write to disk via tmp + os.replace.
+
+  Examples:
+  - Rename a function and its 3 call sites in one file:
+    `multi_edit(file_path="src/api.py", edits=[
+        {"old_string": "def old_name(", "new_string": "def new_name("},
+        {"old_string": "old_name(x, y)", "new_string": "new_name(x, y)", "replace_all": true},
+    ])`
+
+  Recovery:
+  - "not been read" → call `read_file` first
+  - "edit #N not found" → no edits were applied; re-read the file, fix the failing edit
+  - "matches N locations" → add more context OR pass `replace_all: true` for that edit
+parameters:
+  file_path:
+    type: string
+    description: Path to edit (relative to project root).
+  edits:
+    type: array
+    description: |-
+      Ordered list of {old_string, new_string, replace_all?} dicts. Applied left-to-right; later edits see the effect of earlier ones.
+requires:
+  - workspace_config
+  - file_cache

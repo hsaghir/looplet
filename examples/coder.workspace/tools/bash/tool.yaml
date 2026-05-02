@@ -27,3 +27,4 @@ parameters:
 timeout_s: 600
 requires:
   - workspace_config
+  - file_cache

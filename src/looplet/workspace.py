@@ -1862,22 +1862,17 @@ def workspace_to_preset(
                 pass
 
 
-def _register_extends_tempdir(path: Path) -> None:
-    """Register a merged-extends tempdir for cleanup at interpreter exit.
-
-    The merged dir holds Python module caches that may still be bound
-    to its path until process end (so we can't ``shutil.rmtree`` on
-    workspace-load completion). Best-effort cleanup at exit is safer
-    than relying on the OS to garbage-collect ``/tmp``.
-    """
-    _EXTENDS_TEMPDIRS.append(path)
-
-
 _EXTENDS_TEMPDIRS: list[Path] = []
 
 
 def _cleanup_extends_tempdirs() -> None:
-    """Best-effort rmtree of every merged-extends tempdir at exit."""
+    """Best-effort rmtree of every merged-extends tempdir at exit.
+
+    Registered as an :mod:`atexit` hook at module import time so the
+    process leaves no per-load tempdirs behind. Cleared in LIFO order
+    (children before parents) which matches the order they were
+    materialized in :func:`_resolve_extends`.
+    """
     import shutil  # noqa: PLC0415
 
     while _EXTENDS_TEMPDIRS:
@@ -1909,9 +1904,10 @@ def _resolve_extends(root: Path, *, _seen: set[Path] | None = None) -> Path:
     far; revisiting raises :class:`WorkspaceSerializationError`.
 
     The merged workspace dir is created via :func:`tempfile.mkdtemp`
-    with a stable prefix; it is NOT cleaned up automatically because
-    the loaded preset's modules may continue importing from it. The OS
-    handles cleanup on process exit (``/tmp`` is volatile).
+    with a stable prefix and tracked in :data:`_EXTENDS_TEMPDIRS`,
+    which means it survives until interpreter exit (the loaded preset's
+    modules may continue importing from it) and is then cleaned up
+    via the module-level ``atexit`` hook.
     """
     cfg_path = root / WorkspaceLayout.CONFIG_YAML
     if not cfg_path.is_file():
@@ -1946,7 +1942,7 @@ def _resolve_extends(root: Path, *, _seen: set[Path] | None = None) -> Path:
     # Register for cleanup at interpreter exit so the OS doesn't have
     # to (the merged dir holds .pyc caches and may import modules that
     # are still bound to its path until process end).
-    _register_extends_tempdir(merged)
+    _EXTENDS_TEMPDIRS.append(merged)
     # Copy parent first, then overlay child.
     _shutil.copytree(parent_root, merged, dirs_exist_ok=True, symlinks=False)
     _shutil.copytree(root, merged, dirs_exist_ok=True, symlinks=False)

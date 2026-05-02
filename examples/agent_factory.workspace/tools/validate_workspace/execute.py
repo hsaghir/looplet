@@ -81,8 +81,10 @@ def execute(
     # ``<TODO: ...>`` markers in the system prompt and
     # ``raise NotImplementedError("scaffold: implement <name>")`` in
     # tool bodies; if either survives, the agent has not finished
-    # the work and should not declare done.
-    todo_in_prompt = "<TODO:" in sys_prompt or "TODO:" in sys_prompt[:600]
+    # the work and should not declare done. We only check for the
+    # exact scaffold marker (``<TODO:``) so legitimate prompts that
+    # mention "TODO:" comments don't trigger a false positive.
+    todo_in_prompt = "<TODO:" in sys_prompt
     scaffold_stubs: list[str] = []
     tools_dir = abs_path / "tools"
     if tools_dir.is_dir():
@@ -108,7 +110,9 @@ def execute(
             for warning in (
                 "system_prompt is empty — add prompts/system.md" if sys_prompt_chars == 0 else None,
                 "no `done` tool — every agent must have one" if "done" not in tools else None,
-                "system_prompt still has TODO markers — fill them in" if todo_in_prompt else None,
+                "system_prompt still has <TODO:> markers — fill them in"
+                if todo_in_prompt
+                else None,
                 (
                     f"tools still raise NotImplementedError (unfilled scaffolds): "
                     f"{', '.join(scaffold_stubs)}"

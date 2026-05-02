@@ -76,14 +76,19 @@ def _execute(
             "max_depth": max_depth,
         }
 
+    # Resolve the host workspace path once. Both the path-resolution
+    # below (for relative ``workspace=`` args) and the runtime
+    # construction further down need it; doing the lookup here keeps
+    # the two consumers in sync and avoids a duplicated try/getattr
+    # dance.
+    cfg = ctx.resources.get("workspace_config") if ctx.resources else None
+    host_ws_str: str | None = getattr(cfg, "path", None) if cfg is not None else None
+
     # Resolve the target workspace path. Allow either absolute or
     # relative-to-the-host-workspace if a workspace_config resource is
     # available; otherwise relative to cwd.
     ws_path = Path(workspace)
-    host_ws_str: str | None = None
     if not ws_path.is_absolute():
-        cfg = ctx.resources.get("workspace_config") if ctx.resources else None
-        host_ws_str = getattr(cfg, "path", None) if cfg is not None else None
         if host_ws_str:
             ws_path = Path(host_ws_str) / workspace
         else:
@@ -103,9 +108,6 @@ def _execute(
     # (which read ``runtime['workspace']``) bind to the same project
     # root. Caller may override via ctx.metadata['runtime'] when they
     # want the sub-loop to operate on a different workspace.
-    if host_ws_str is None:
-        cfg = ctx.resources.get("workspace_config") if ctx.resources else None
-        host_ws_str = getattr(cfg, "path", None) if cfg is not None else None
     metadata_runtime = (ctx.metadata or {}).get("runtime") if ctx.metadata else None
     runtime: dict[str, Any] = dict(metadata_runtime) if metadata_runtime else {}
     fallback_used = False

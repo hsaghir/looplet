@@ -73,13 +73,8 @@ def _execute(
     # available; otherwise relative to cwd.
     ws_path = Path(workspace)
     if not ws_path.is_absolute():
-        # Try the host workspace if we can find one in resources.
-        host_ws = None
-        try:
-            cfg = ctx.metadata.get("workspace_config") if ctx.metadata else None
-            host_ws = getattr(cfg, "path", None) if cfg is not None else None
-        except Exception:
-            host_ws = None
+        cfg = ctx.resources.get("workspace_config") if ctx.resources else None
+        host_ws = getattr(cfg, "path", None) if cfg is not None else None
         if host_ws:
             ws_path = Path(host_ws) / workspace
         else:
@@ -94,8 +89,8 @@ def _execute(
     from looplet import composable_loop, workspace_to_preset  # noqa: PLC0415
 
     # Inherit runtime from the parent if we can. The standard hand-off
-    # is via ctx.metadata["runtime"], which the workspace loader sets.
-    runtime = (ctx.metadata or {}).get("runtime", {})
+    # is via ctx.metadata["runtime"] (set by the workspace loader).
+    runtime = (ctx.metadata or {}).get("runtime", {}) if ctx.metadata else {}
     sub_preset = workspace_to_preset(str(ws_path), runtime=dict(runtime))
 
     # Sub-loop budget: explicit ``max_steps`` overrides; otherwise
@@ -173,10 +168,29 @@ SPEC = ToolSpec(
         "Returns: ``{summary, result, final_tool, steps_used, ...}``."
     ),
     parameters={
-        "workspace": "str — path to the sub-agent workspace",
-        "task": "str — natural-language task for the sub-agent",
-        "max_steps": "int — optional cap on sub-loop steps",
-        "max_depth": "int — recursion limit (default 5)",
+        "type": "object",
+        "properties": {
+            "workspace": {
+                "type": "string",
+                "description": "Path to the sub-agent workspace (absolute or relative to host).",
+            },
+            "task": {
+                "type": "string",
+                "description": "Natural-language task to give the sub-agent.",
+            },
+            "max_steps": {
+                "type": "integer",
+                "description": "Optional cap on sub-loop steps.",
+                "default": 0,
+            },
+            "max_depth": {
+                "type": "integer",
+                "description": "Recursion limit (default 5).",
+                "default": 5,
+            },
+        },
+        "required": ["workspace", "task"],
     },
+    requires=["workspace_config"],
     execute=_execute,
 )

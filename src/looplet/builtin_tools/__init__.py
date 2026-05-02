@@ -21,11 +21,13 @@ Adding a new built-in: write a small module exposing a ``SPEC``
 
 from __future__ import annotations
 
+from looplet.builtin_tools.scaffold_workspace import SPEC as _SCAFFOLD_SPEC
 from looplet.builtin_tools.subagent import SPEC as _SUBAGENT_SPEC
 from looplet.tools import ToolSpec
 
 AVAILABLE: dict[str, ToolSpec] = {
     _SUBAGENT_SPEC.name: _SUBAGENT_SPEC,
+    _SCAFFOLD_SPEC.name: _SCAFFOLD_SPEC,
 }
 
 

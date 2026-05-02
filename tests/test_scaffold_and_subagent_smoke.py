@@ -164,3 +164,54 @@ def test_subagent_missing_workspace_returns_structured_error(tmp_path: Path) -> 
     ctx = ToolContext(llm=MockLLMBackend(responses=[]), metadata={})
     result = spec.execute(ctx, workspace=str(tmp_path / "nope"), task="hi")
     assert "not found" in result.get("error", "")
+
+
+# ── scaffold_workspace as a built-in tool ──────────────────────
+
+
+def test_builtin_tools_registers_scaffold_workspace(tmp_path: Path) -> None:
+    parent = tmp_path / "p.workspace"
+    scaffold_workspace(parent, name="p", tools=[])
+    cfg = parent / "config.yaml"
+    cfg.write_text(cfg.read_text() + "builtin_tools:\n  - scaffold_workspace\n")
+    p = workspace_to_preset(parent)
+    assert "scaffold_workspace" in p.tools._tools
+
+
+def test_scaffold_workspace_tool_creates_workspace(tmp_path: Path) -> None:
+    """Dispatching scaffold_workspace tool builds a loadable child workspace."""
+    parent = tmp_path / "factory.workspace"
+    scaffold_workspace(parent, name="factory", tools=[])
+    cfg = parent / "config.yaml"
+    cfg.write_text(cfg.read_text() + "builtin_tools:\n  - scaffold_workspace\n")
+    p = workspace_to_preset(parent)
+    spec = p.tools._tools["scaffold_workspace"]
+    ctx = ToolContext(metadata={})
+    result = spec.execute(
+        ctx,
+        path=str(tmp_path / "child.workspace"),
+        name="child",
+        tools=["alpha", "beta"],
+    )
+    assert result.get("scaffolded") is True
+    assert "child.workspace" in result.get("path", "")
+    # Loadable.
+    sub = workspace_to_preset(tmp_path / "child.workspace")
+    assert sorted(sub.tools._tools.keys()) == ["alpha", "beta", "done"]
+
+
+def test_scaffold_workspace_tool_existing_dir_returns_recovery(tmp_path: Path) -> None:
+    """File-exists error is returned as structured tool result, not raised."""
+    parent = tmp_path / "p.workspace"
+    scaffold_workspace(parent, name="p", tools=[])
+    cfg = parent / "config.yaml"
+    cfg.write_text(cfg.read_text() + "builtin_tools:\n  - scaffold_workspace\n")
+    p = workspace_to_preset(parent)
+    spec = p.tools._tools["scaffold_workspace"]
+    # Pre-create non-empty dir.
+    (tmp_path / "blocked").mkdir()
+    (tmp_path / "blocked" / "stuff.txt").write_text("hi")
+    ctx = ToolContext(metadata={})
+    result = spec.execute(ctx, path=str(tmp_path / "blocked"), name="x", tools=["a"])
+    assert "FileExistsError" in result.get("error", "")
+    assert "overwrite=True" in result.get("recovery", "")

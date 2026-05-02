@@ -46,8 +46,14 @@ Every agent **must** have a `done` tool — it's the completion sentinel.
 6. **Test** — write a short `tests/test_<agent>.py` that:
    - Loads the workspace via `workspace_to_preset(...)` and checks the tool list.
    - Asserts `preset.config.system_prompt` is non-empty.
-   - (Optional) Runs the agent end-to-end with `MockLLMBackend` for a deterministic smoke test.
+   - **Asserts on each non-LLM tool's OUTPUT FORMAT**, not just shape. For pure-Python tools (formatters, parsers, validators), call `execute(...)` directly with realistic input and check the actual string/structure. Examples:
+     - `assert result["markdown"].startswith("# Release Notes")` — not just `"markdown" in result`.
+     - `assert "{'sha':" not in result["markdown"]` — catches the dict-stringification bug where the agent wrote `f"- {commit}"` instead of `f"- {commit['message']}"`.
+     - `assert "Alice" in result["minutes"]` — the meeting transcript mentioned Alice; her name must appear.
+   - (Optional) Run the agent end-to-end with `MockLLMBackend` for a deterministic smoke test.
    - Run via `bash`: `pytest tests/test_<agent>.py -v`.
+
+   Tests that only check shape (key presence) silently pass on logic bugs. The cost of one content assertion per pure-Python tool is one line; the cost of shipping a buggy formatter is a real user seeing `- {'sha': 'abc', 'message': 'feat: x'}` in their release notes.
 
 7. **`done`** with a one-line summary of what was built.
 
@@ -110,6 +116,40 @@ returned by the previous step. If step 1 returned 47 commits, step 2's
 ```
 
 This data-piping reminder is the single biggest determinant of agent behavioral quality. Every multi-step agent's system prompt must contain it.
+
+#### 2a. Anti-pattern to call out explicitly (this is the #1 quality killer)
+
+Models — even strong ones like Claude — frequently fabricate intermediate args. The pattern looks like this:
+
+```
+[step 1] fetch_commits(since_tag="HEAD~5") → returns 5 real commits with sha 7321837, 7851476, ...
+[step 2] group_by_type(commits=[
+    {"sha": "a1b2c3d", "message": "feat: add looplet scheduling"},
+    {"sha": "b2c3d4e", "message": "fix: resolve memory leak"},
+    ...
+])  ← ALL FAKE — model invented short example shas instead of using step 1's real result
+```
+
+The agent successfully reaches `done` but the output is fiction. To prevent this, the produced agent's `system.md` must include a verbatim "DO NOT FABRICATE" warning that names the specific anti-pattern. Example wording to copy into the produced agent's prompt:
+
+```
+## CRITICAL: never invent example data
+
+When you call a tool that consumes another tool's output (e.g. `group_by_type`
+takes `commits` from `fetch_commits`), you MUST pass the EXACT data returned
+in the previous step's tool result.
+
+Wrong (and the failure mode that produces silently bad output):
+   group_by_type(commits=[{"sha": "abc1234", "message": "feat: example"}])
+
+Right:
+   group_by_type(commits=<the literal commits list returned by fetch_commits in
+                          the previous step — copy it whole, do not invent shas
+                          or shorten the messages>)
+
+If the previous step returned 47 commits, you pass 47 commits — not 3 examples,
+not placeholders. Fabricated input → fabricated output → user gets fiction.
+```
 
 ### 3. Make tools forgiving of arg shape
 

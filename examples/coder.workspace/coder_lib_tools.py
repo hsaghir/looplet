@@ -23,6 +23,7 @@ import os
 import re
 import subprocess
 from pathlib import Path
+from typing import Any
 
 from looplet import tool, tools_from
 
@@ -160,6 +161,200 @@ def _is_path_inside(target: Path, root: Path) -> bool:
         return False
 
 
+# ── Bash safety helpers ────────────────────────────────────────────
+
+
+# Commands that destroy data or alter system state. The bash tool
+# refuses to run any pipeline whose first token (or, after a
+# control-operator split, the first token of any subcommand) appears
+# in this set without the user's permission engine having explicitly
+# allowed it. The list intentionally covers the common footguns rather
+# than trying to be exhaustive — anything novel still flows through
+# the regular permission engine, which is the principled gate.
+_DESTRUCTIVE_COMMANDS: frozenset[str] = frozenset(
+    {
+        "dd",  # raw block-device writes
+        "mkfs",  # filesystem creation
+        "shred",  # secure delete
+        "shutdown",
+        "reboot",
+        "halt",
+        "poweroff",
+        "kill",  # process termination (kills any pid; use Ctrl-C in tests)
+        "killall",
+        "pkill",
+    }
+)
+
+# Argument-pattern flags that turn an otherwise-safe command into a
+# destructive one (e.g. ``rm -rf`` vs ``rm`` alone — the latter is
+# fine for individual files). Maps command name → tuple of flag
+# patterns that elevate it.
+_DESTRUCTIVE_FLAGS: dict[str, tuple[str, ...]] = {
+    "rm": ("-rf", "-fr", "-Rf", "-fR", "--recursive"),
+    "git": (
+        "push --force",
+        "push -f",
+        "reset --hard",
+        "clean -fd",
+        "branch -D",
+        "checkout --force",
+    ),
+}
+
+
+def classify_bash_command(command: str) -> dict[str, Any]:
+    r"""Inspect ``command`` and return a structured safety classification.
+
+    Returns a dict with:
+
+    * ``destructive`` (bool) — True when the command is in the
+      destructive-name set or matches a destructive-flag pattern.
+    * ``reasons`` (list[str]) — human-readable reasons; empty when
+      the command is considered safe.
+    * ``first_token`` (str) — the leading executable name parsed from
+      the command (best-effort; complex shell syntax may not parse).
+
+    The bash tool surfaces these as a model-actionable error rather
+    than running the command. Callers building their own bash wrapper
+    can use ``classify_bash_command`` directly to filter or warn.
+
+    The classification is deliberately conservative: it covers
+    *patterns the model commonly tries by mistake* (\`rm -rf\` on
+    cwd, ``git push --force`` to a shared remote) and bows out for
+    novel commands so the permission engine can decide. It is **not**
+    a sandbox.
+    """
+    reasons: list[str] = []
+    # Split on bash control operators so we can inspect each subcommand.
+    # ``cmd1 && cmd2 || cmd3 ; cmd4 | cmd5 & cmd6`` → 6 tokens.
+    parts = re.split(r"&&|\|\||\||;|&", command)
+    first_token = ""
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+        # The leading word is the command name; strip leading parens
+        # / brackets that wrap subshells (best-effort; not a parser).
+        head = part.lstrip("()[]{ \t").split()
+        if not head:
+            continue
+        name = head[0]
+        if not first_token:
+            first_token = name
+        if name in _DESTRUCTIVE_COMMANDS:
+            reasons.append(f"destructive command {name!r} (in {sorted(_DESTRUCTIVE_COMMANDS)})")
+            continue
+        bad_flags = _DESTRUCTIVE_FLAGS.get(name, ())
+        for flag in bad_flags:
+            # Substring match works for both single-token (-rf) and
+            # multi-token (push --force) patterns.
+            if flag in part:
+                reasons.append(f"destructive flag {flag!r} in {name!r} subcommand")
+                break
+    return {
+        "destructive": bool(reasons),
+        "reasons": reasons,
+        "first_token": first_token,
+    }
+
+
+def classify_sed_command(command: str) -> dict[str, Any]:
+    """Detect ``sed -i`` (in-place edit) usage in ``command``.
+
+    ``sed -i`` rewrites files outside the model's read-then-edit
+    discipline and bypasses the file_cache invalidation that
+    ``edit_file`` does — so a subsequent ``read_file`` may return
+    cached pre-edit content. Surface a model-actionable error
+    pointing the model at ``edit_file`` instead of refusing
+    silently.
+
+    Returns a dict with:
+
+    * ``in_place_edit`` (bool) — True when any subcommand is
+      ``sed -i ...`` or ``sed --in-place ...``.
+    * ``recommendation`` (str) — short guidance ("use edit_file
+      instead") when ``in_place_edit``; empty otherwise.
+    """
+    parts = re.split(r"&&|\|\||\||;|&", command)
+    for part in parts:
+        part = part.strip()
+        # Token-aware: avoid matching ``sed-i`` package names or
+        # ``echo "sed -i"`` content.
+        if not part.startswith("sed "):
+            continue
+        # Look for ``-i`` as a standalone flag or a flag with bundled
+        # backup-suffix arg (``-i.bak``); also ``--in-place``.
+        tokens = part.split()
+        for tok in tokens[1:]:
+            if tok == "-i" or tok.startswith("-i.") or tok == "--in-place":
+                return {
+                    "in_place_edit": True,
+                    "recommendation": (
+                        "Use the edit_file tool for in-place file edits. "
+                        "sed -i bypasses the file cache, so the next "
+                        "read_file can return stale content."
+                    ),
+                }
+    return {"in_place_edit": False, "recommendation": ""}
+
+
+_VIEW_COMMANDS: frozenset[str] = frozenset({"cat", "head", "tail", "less", "more"})
+
+
+def classify_view_command(command: str) -> dict[str, Any]:
+    """Detect ``cat``/``head``/``tail``/``less``/``more`` used to view a single
+    source file (which bypasses the read_file file_cache).
+
+    Heuristics:
+
+    * Only flags the *first* subcommand of the pipeline, because using
+      ``... | head`` to trim *output* of another command is fine.
+    * Refuses only when the command's positional args look like file
+      paths (no ``-`` stdin marker, at least one arg without a leading
+      ``-`` that points at an existing-looking source file).
+    * Lets ``cat``-as-pipe-source through when the file is clearly not
+      project source (e.g. ``/proc/...``, ``/dev/...``, ``/tmp/`` outside
+      the workspace) — but the conservative default is to refuse so the
+      model self-corrects to ``read_file``.
+
+    Returns ``{"viewing_file": bool, "first_token": str, "recommendation": str}``.
+    """
+    parts = re.split(r"&&|\|\||;", command)
+    first = parts[0].strip() if parts else ""
+    tokens = first.split()
+    if not tokens:
+        return {"viewing_file": False, "first_token": "", "recommendation": ""}
+    name = tokens[0].rsplit("/", 1)[-1]
+    if name not in _VIEW_COMMANDS:
+        return {"viewing_file": False, "first_token": name, "recommendation": ""}
+    # Look at positional args (skip flags). If none look like files,
+    # this is probably reading from stdin / a pipe — let it through.
+    positional = [t for t in tokens[1:] if not t.startswith("-")]
+    if not positional:
+        return {"viewing_file": False, "first_token": name, "recommendation": ""}
+
+    # Allow virtual / device paths (these are never project source).
+    def is_project_path(arg: str) -> bool:
+        if arg.startswith(("/proc/", "/dev/", "/sys/")):
+            return False
+        return True
+
+    if not any(is_project_path(p) for p in positional):
+        return {"viewing_file": False, "first_token": name, "recommendation": ""}
+    return {
+        "viewing_file": True,
+        "first_token": name,
+        "recommendation": (
+            f"Use read_file to view source files. `{name}` bypasses "
+            "the file_cache, so a subsequent edit_file on the same "
+            "path will be refused with 'not been read in current "
+            "session'. Pipe-trimming output of another command "
+            "(e.g. `grep ... | head`) is still fine."
+        ),
+    }
+
+
 # ── File cache ─────────────────────────────────────────────────────
 
 
@@ -179,6 +374,7 @@ class FileCache:
         self._order: list[str] = []
         self._mtimes: dict[str, float] = {}  # path -> mtime when last read
         self._hashes: dict[str, str] = {}  # path -> content hash when last read
+        self._read_set: set[str] = set()  # every path ever passed to record()
 
     def record(self, path: str) -> None:
         p = Path(self._workspace) / path
@@ -188,6 +384,7 @@ class FileCache:
             content = p.read_text()
             self._hashes[path] = hashlib.sha256(content.encode()).hexdigest()[:16]
             self._mtimes[path] = p.stat().st_mtime
+            self._read_set.add(path)
             if len(content) > self._max_chars:
                 content = content[: self._max_chars] + "\n... [truncated]"
             self._recent[path] = content
@@ -233,6 +430,17 @@ class FileCache:
         file_unchanged optimization must not fire on the next read.
         """
         self._hashes.pop(path, None)
+
+    def was_read(self, path: str) -> bool:
+        """True iff ``read_file`` has been called for ``path`` in this
+        session. Used by ``edit_file`` to enforce read-before-edit:
+        editing a file the model hasn't read is almost always a sign
+        the model is guessing at content. The error returned by
+        ``edit_file`` in that case names the read tool explicitly so
+        the model fixes the next call rather than retrying with
+        different text.
+        """
+        return path in self._read_set
 
     def render(self) -> str:
         if not self._recent:

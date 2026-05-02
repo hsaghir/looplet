@@ -1,16 +1,28 @@
 name: read_file
-description: Read a file with line numbers. Optionally specify start_line and/or end_line.
+description: |-
+  Read a file from the project filesystem with line numbers.
+
+  Usage:
+  - The default reads the whole file. Pass `start_line` and/or `end_line` (1-indexed) to read a specific range — useful for files >2000 lines.
+  - Output is `cat -n` style: `   N | <line>`. Edits MUST use the literal content AFTER the ` | ` separator, never the line-number prefix.
+  - Files larger than 20K characters are truncated in the middle (first 10K chars + last 10K chars) so the model still sees both ends; use start_line/end_line to read specific regions of larger files.
+  - This tool is the **prerequisite for edit_file**: edit_file refuses to run on a file that hasn't been read in the current session, because edits without reads almost always fail (the model guesses at content). Always read_file first.
+  - On a re-read of an unchanged file the result returns `file_unchanged: true` instead of the content; use the earlier read instead of re-reading. The cache is invalidated automatically by write_file / edit_file / external bash modifications, so you'll always see fresh content after a change.
+
+  Examples:
+  - `read_file(file_path="src/foo.py")` — whole file
+  - `read_file(file_path="src/foo.py", start_line=120, end_line=180)` — just lines 120-180
 parameters:
   file_path:
     type: string
     description: Path to file (relative to project root).
   start_line:
     type: integer
-    description: Optional starting line (1-indexed).
+    description: Optional 1-indexed starting line. 0 (default) means start at line 1.
     default: 0
   end_line:
     type: integer
-    description: Optional ending line (1-indexed, inclusive).
+    description: Optional 1-indexed ending line, inclusive. 0 (default) means read to end.
     default: 0
 concurrent_safe: true
 requires:

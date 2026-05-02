@@ -1,9 +1,20 @@
 name: write_file
-description: Create or overwrite a file. Use for new files only.
+description: |-
+  Create a new file or overwrite an existing one with the provided content.
+
+  Usage:
+  - Use this for **NEW** files only. To modify an existing file, use `edit_file` (it preserves the rest of the file and produces a reviewable diff).
+  - Overwrites any existing content; the file_cache is invalidated so a subsequent read_file returns the new content.
+  - Parent directories are created automatically.
+  - The path is relative to the project root and must stay inside it (paths escaping via `..` are refused).
+
+  Examples:
+  - `write_file(file_path="src/utils.py", content="def foo(): ...")` — new file
+  - DO NOT use this to "update" a file you already read — that's `edit_file`.
 parameters:
   file_path:
     type: string
-    description: Path to write (relative to project root).
+    description: Path to write (relative to project root). Parent dirs created if missing.
   content:
     type: string
     description: Full file contents.

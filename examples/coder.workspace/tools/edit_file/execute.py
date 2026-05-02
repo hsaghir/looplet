@@ -23,6 +23,23 @@ def execute(ctx: ToolContext, *, file_path: str, old_string: str, new_string: st
         return {"error": f"Path '{file_path}' is outside the project directory."}
     if not p.exists():
         return {"error": f"File not found: {file_path}"}
+    # Read-before-edit enforcement. Editing a file the model hasn't
+    # read in this session is almost always a sign that the model is
+    # guessing at content — the resulting old_string usually doesn't
+    # match and the call wastes a turn. Refuse early with a message
+    # that names the read tool so the model self-corrects.
+    if cache is not None and not cache.was_read(file_path):
+        return {
+            "error": (
+                f"Cannot edit {file_path!r}: this file has not been read in "
+                f"the current session. Call read_file({file_path!r}) first so "
+                f"you can copy old_string verbatim from its content. Editing "
+                f"without reading first usually fails because the file's "
+                f"actual contents differ from what was assumed."
+            ),
+            "missing": "prior_read",
+            "recovery": f"read_file(file_path={file_path!r})",
+        }
     if old_string == new_string:
         return {"error": "old_string and new_string are identical. No change needed."}
     text = p.read_text()

@@ -1,9 +1,21 @@
 name: glob
-description: Find files by glob pattern.
+description: |-
+  Find files in the project by glob pattern.
+
+  Usage:
+  - Use Python `pathlib.Path.glob` syntax: `*` matches any chars in a name, `**` matches any number of directories, `?` matches a single char.
+  - Path patterns are rooted at the project root: `src/**/*.py` finds every Python file under src/.
+  - Returns paths relative to the project root, sorted, capped at 100 results.
+  - Use this to find files by NAME pattern. Use `grep` to find files by CONTENT.
+
+  Examples:
+  - `glob(pattern="**/*.py")` — every Python file in the project
+  - `glob(pattern="tests/test_*.py")` — every test file
+  - `glob(pattern="src/**/cli.*")` — any cli.* under src/
 parameters:
   pattern:
     type: string
-    description: Glob pattern (e.g. "**/*.py").
+    description: Glob pattern. Use ** for recursive directory match.
 concurrent_safe: true
 requires:
   - workspace_config

@@ -34,12 +34,16 @@ Files created:
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 # ── file templates ───────────────────────────────────────────────
 
 
-_WORKSPACE_JSON = '{{"name": {name!r}, "schema_version": 1}}\n'
+# ``{name_json}`` is filled with ``json.dumps(name)`` — produces
+# valid JSON (double-quoted), unlike ``{name!r}`` which emits Python
+# repr (single-quoted) and breaks ``json.loads(workspace.json)``.
+_WORKSPACE_JSON = '{{"name": {name_json}, "schema_version": 1}}\n'
 
 _CONFIG_YAML = """\
 max_steps: 20
@@ -160,7 +164,10 @@ def scaffold_workspace(
     tool_set = list(dict.fromkeys([*tools, "done"]))
 
     root.mkdir(parents=True, exist_ok=True)
-    _write_if_absent(root / "workspace.json", _WORKSPACE_JSON.format(name=name))
+    _write_if_absent(
+        root / "workspace.json",
+        _WORKSPACE_JSON.format(name_json=json.dumps(name)),
+    )
     _write_if_absent(root / "config.yaml", _CONFIG_YAML)
 
     prompts_dir = root / "prompts"

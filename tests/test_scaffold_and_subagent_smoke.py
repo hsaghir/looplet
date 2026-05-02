@@ -15,7 +15,6 @@ Covers:
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 import pytest
@@ -38,6 +37,23 @@ def test_scaffold_creates_loadable_workspace(tmp_path: Path) -> None:
     assert sorted(preset.tools._tools.keys()) == ["bar", "done", "foo"]
     assert preset.config.max_steps == 20
     assert "agent" in (preset.config.system_prompt or "").lower()
+    # Regression: workspace.json must be valid JSON (catch the
+    # repr-vs-dumps bug). ``workspace_to_preset`` only checks that the
+    # file exists, so we parse explicitly.
+    import json as _json
+
+    meta = _json.loads((p / "workspace.json").read_text())
+    assert meta == {"name": "agent", "schema_version": 1}
+
+
+def test_scaffold_workspace_json_handles_special_chars(tmp_path: Path) -> None:
+    """Names with quotes / backslashes / non-ASCII must round-trip via JSON."""
+    import json as _json
+
+    tricky = 'agent "with quotes" and \\backslashes\\ and 日本語'
+    p = scaffold_workspace(tmp_path / "x.workspace", name=tricky, tools=[])
+    meta = _json.loads((p / "workspace.json").read_text())
+    assert meta["name"] == tricky
 
 
 def test_scaffold_done_tool_always_added(tmp_path: Path) -> None:
@@ -147,14 +163,16 @@ def test_subagent_recursion_guard(tmp_path: Path) -> None:
     mock = MockLLMBackend(responses=[])
     ctx = ToolContext(llm=mock, metadata={})
 
-    # Pretend we're already at max depth.
-    os.environ["LOOPLET_SUBAGENT_DEPTH"] = "5"
+    # Pretend we're already at max depth via the ContextVar.
+    from looplet.builtin_tools.subagent import _DEPTH_VAR
+
+    token = _DEPTH_VAR.set(5)
     try:
         result = spec.execute(ctx, workspace=str(child), task="hi", max_depth=5)
         assert "would exceed" in result.get("error", "")
         assert result.get("depth") == 5
     finally:
-        os.environ.pop("LOOPLET_SUBAGENT_DEPTH", None)
+        _DEPTH_VAR.reset(token)
 
 
 def test_subagent_missing_workspace_returns_structured_error(tmp_path: Path) -> None:
@@ -215,3 +233,44 @@ def test_scaffold_workspace_tool_existing_dir_returns_recovery(tmp_path: Path) -
     result = spec.execute(ctx, path=str(tmp_path / "blocked"), name="x", tools=["a"])
     assert "FileExistsError" in result.get("error", "")
     assert "overwrite=True" in result.get("recovery", "")
+
+
+def test_subagent_forwards_workspace_to_subloop_runtime(tmp_path: Path) -> None:
+    """Subagent must propagate the parent's workspace path so the
+    sub-loop's ``runtime["workspace"]`` is the same project root.
+
+    Regression for the bug where ``runtime`` was read from
+    ``ctx.metadata["runtime"]`` (which the loop never sets) instead
+    of being constructed from the parent's ``workspace_config``.
+    """
+    parent = _make_parent_with_subagent(tmp_path)
+    child = tmp_path / "child.workspace"
+    scaffold_workspace(child, name="child", tools=[])
+    # Add a setup.py to the child that records the runtime it received.
+    (child / "setup.py").write_text(
+        "from pathlib import Path\n"
+        "def setup(preset, resources, *, runtime=None, **_):\n"
+        "    Path(runtime['workspace'], '_seen.txt').write_text(runtime['workspace'])\n"
+        "    return preset\n"
+    )
+
+    p = workspace_to_preset(parent, runtime={"workspace": str(tmp_path)})
+    spec = p.tools._tools["subagent"]
+    mock = MockLLMBackend(responses=[json.dumps({"tool": "done", "args": {"summary": "ok"}})])
+    # Build a context that mimics what the dispatcher would produce.
+    # The factory normally injects ``workspace_config`` via ``requires``,
+    # but a scaffold-only parent has no such resource — so we exercise
+    # the documented ``ctx.metadata['runtime']`` fall-through path.
+    from looplet.types import ToolContext
+
+    ctx = ToolContext(
+        llm=mock,
+        resources={},
+        metadata={"runtime": {"workspace": str(tmp_path)}},
+    )
+    result = spec.execute(ctx, workspace=str(child), task="hi", max_steps=3)
+    assert result.get("final_tool") == "done"
+    seen = (tmp_path / "_seen.txt").read_text()
+    assert seen == str(tmp_path), (
+        f"sub-loop saw runtime['workspace']={seen!r}, expected {str(tmp_path)!r}"
+    )

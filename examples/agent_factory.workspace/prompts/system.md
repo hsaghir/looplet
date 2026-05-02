@@ -77,13 +77,13 @@ def _extract_json(raw: str):
         pass
     # Strip code fences (```json … ```).
     if raw.startswith("```"):
-        raw = re.sub(r"^```(?:json)?\\s*|\\s*```$", "", raw, flags=re.DOTALL)
+        raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.DOTALL)
         try:
             return json.loads(raw)
         except json.JSONDecodeError:
             pass
     # Find the first balanced [...] or {...}.
-    match = re.search(r"(\\[.*\\]|\\{.*\\})", raw, re.DOTALL)
+    match = re.search(r"(\[.*\]|\{.*\})", raw, re.DOTALL)
     if match:
         return json.loads(match.group(1))
     raise ValueError(f"No JSON found in LLM response: {raw[:200]!r}")
@@ -137,6 +137,6 @@ The child workspace inherits all tools, hooks, and resources from the parent —
 ## Common pitfalls
 
 - **Tool name must match the directory name** in the response visible to the model — set `name:` in `tool.yaml` to the dir name.
-- **`done` is not optional.** Every agent must have a `done` tool. Copy it from `examples/coder.workspace/tools/done/`.
+- **`done` is not optional.** The scaffolder writes `tools/done/` automatically — never delete it. (If you ever scaffold without the standard scaffolder, copy `done` from `examples/coder.workspace/tools/done/`.)
 - **`prompts/system.md` is required.** Without it, the agent has no idea what it is.
 - **Don't over-engineer.** A useful agent has 3-6 tools. Resist the urge to add a tool for every concept.

@@ -3,9 +3,12 @@ description: |-
   Structurally validate a looplet workspace by attempting to load it via `workspace_to_preset()`.
 
   Usage:
-  - Call this after writing every file in a generated workspace to confirm it loads cleanly. Cheap (no LLM, no I/O outside the workspace).
+  - Call this after writing every file in a generated workspace to confirm it loads cleanly.
   - On success, returns the tool names, hook names, and key config values. Use this to confirm the agent has the tools it should.
   - On failure, returns a structured error: type + message + (best-effort) which file is the culprit. Fix the file and re-validate.
+
+  Side effects:
+  - Loading runs the workspace's ``setup.py`` (if any), imports its ``resources/*.py`` and ``hooks/*/hook.py`` modules, and constructs each hook. Anything those constructors do (open files, read env vars, make network calls) WILL execute. Don't validate untrusted workspaces.
 
   When to call:
   - After writing `workspace.json`, `config.yaml`, and at least one tool — get an early signal.

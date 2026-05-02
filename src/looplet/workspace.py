@@ -1862,6 +1862,29 @@ def workspace_to_preset(
                 pass
 
 
+def _register_extends_tempdir(path: Path) -> None:
+    """Register a merged-extends tempdir for cleanup at interpreter exit.
+
+    The merged dir holds Python module caches that may still be bound
+    to its path until process end (so we can't ``shutil.rmtree`` on
+    workspace-load completion). Best-effort cleanup at exit is safer
+    than relying on the OS to garbage-collect ``/tmp``.
+    """
+    import atexit  # noqa: PLC0415
+    import shutil  # noqa: PLC0415
+
+    if not getattr(_register_extends_tempdir, "_registered", False):
+        _register_extends_tempdir._dirs = []  # type: ignore[attr-defined]
+
+        def _cleanup() -> None:
+            for d in _register_extends_tempdir._dirs:  # type: ignore[attr-defined]
+                shutil.rmtree(d, ignore_errors=True)
+
+        atexit.register(_cleanup)
+        _register_extends_tempdir._registered = True  # type: ignore[attr-defined]
+    _register_extends_tempdir._dirs.append(path)  # type: ignore[attr-defined]
+
+
 def _resolve_extends(root: Path, *, _seen: set[Path] | None = None) -> Path:
     """Resolve ``extends:`` in a workspace's config.yaml.
 
@@ -1915,15 +1938,21 @@ def _resolve_extends(root: Path, *, _seen: set[Path] | None = None) -> Path:
     import tempfile as _tempfile  # noqa: PLC0415
 
     merged = Path(_tempfile.mkdtemp(prefix=f"looplet_extends_{root.name}_"))
+    # Register for cleanup at interpreter exit so the OS doesn't have
+    # to (the merged dir holds .pyc caches and may import modules that
+    # are still bound to its path until process end).
+    _register_extends_tempdir(merged)
     # Copy parent first, then overlay child.
     _shutil.copytree(parent_root, merged, dirs_exist_ok=True, symlinks=False)
     _shutil.copytree(root, merged, dirs_exist_ok=True, symlinks=False)
-    # Strip the ``extends:`` line from the merged config.yaml so the
-    # inner loader doesn't re-resolve it.
+    # Strip the top-level ``extends:`` line from the merged config.yaml
+    # so the inner loader doesn't re-resolve it. Only top-level (indent
+    # 0) lines are stripped — an "extends:" string inside a deeper
+    # block scalar is preserved.
     merged_cfg = merged / WorkspaceLayout.CONFIG_YAML
     if merged_cfg.is_file():
         lines = merged_cfg.read_text(encoding="utf-8").splitlines()
-        kept = [ln for ln in lines if not ln.strip().startswith("extends:")]
+        kept = [ln for ln in lines if not (ln.startswith("extends:") or ln.startswith("extends: "))]
         merged_cfg.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
     return merged
 

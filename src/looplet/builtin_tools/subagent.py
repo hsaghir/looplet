@@ -20,11 +20,11 @@ The result returned to the parent is the sub-loop's final tool result
 
 ## Recursion safety
 
-A small ``LOOPLET_SUBAGENT_DEPTH`` env-var counter increments on each
-sub-loop entry and decrements on exit. If it exceeds
-``max_depth`` (default 5) the call is refused with a structured error
-pointing the agent at the depth budget. This prevents an agent from
-spawning itself indefinitely.
+A small ``contextvars.ContextVar`` counter increments on each sub-loop
+entry and decrements on exit. If it exceeds ``max_depth`` (default 5)
+the call is refused with a structured error pointing the agent at the
+depth budget. Threadsafe and per-async-task — two parallel parent
+loops in the same process don't share the counter.
 
 ## Why no parallel fan-out
 
@@ -37,14 +37,19 @@ place to express concurrency.
 
 from __future__ import annotations
 
-import os
+import contextvars
 from pathlib import Path
 from typing import Any
 
 from looplet.tools import ToolSpec
 from looplet.types import DefaultState, ToolContext
 
-_DEPTH_ENV = "LOOPLET_SUBAGENT_DEPTH"
+# Per-task recursion depth — threadsafe and per-async-task, unlike a
+# process-global env var. ``ContextVar.set`` returns a token used by
+# ``reset`` so nested sub-loops restore depth precisely on exit.
+_DEPTH_VAR: contextvars.ContextVar[int] = contextvars.ContextVar(
+    "looplet_subagent_depth", default=0
+)
 DEFAULT_MAX_DEPTH = 5
 
 
@@ -57,7 +62,7 @@ def _execute(
     max_depth: int = DEFAULT_MAX_DEPTH,
 ) -> dict:
     # Recursion guard.
-    depth = int(os.environ.get(_DEPTH_ENV, "0"))
+    depth = _DEPTH_VAR.get()
     if depth >= max_depth:
         return {
             "error": (
@@ -72,11 +77,12 @@ def _execute(
     # relative-to-the-host-workspace if a workspace_config resource is
     # available; otherwise relative to cwd.
     ws_path = Path(workspace)
+    host_ws_str: str | None = None
     if not ws_path.is_absolute():
         cfg = ctx.resources.get("workspace_config") if ctx.resources else None
-        host_ws = getattr(cfg, "path", None) if cfg is not None else None
-        if host_ws:
-            ws_path = Path(host_ws) / workspace
+        host_ws_str = getattr(cfg, "path", None) if cfg is not None else None
+        if host_ws_str:
+            ws_path = Path(host_ws_str) / workspace
         else:
             ws_path = Path.cwd() / workspace
     if not ws_path.is_dir():
@@ -88,10 +94,19 @@ def _execute(
     # Defer the heavy imports so this module remains cheap to import.
     from looplet import composable_loop, workspace_to_preset  # noqa: PLC0415
 
-    # Inherit runtime from the parent if we can. The standard hand-off
-    # is via ctx.metadata["runtime"] (set by the workspace loader).
-    runtime = (ctx.metadata or {}).get("runtime", {}) if ctx.metadata else {}
-    sub_preset = workspace_to_preset(str(ws_path), runtime=dict(runtime))
+    # Build a runtime dict for the sub-loop. The parent's
+    # ``workspace_config.path`` is the canonical "where am I" value;
+    # forward it so the sub-loop's resources/file_cache.py builders
+    # (which read ``runtime['workspace']``) bind to the same project
+    # root. Caller may override via ctx.metadata['runtime'] when they
+    # want the sub-loop to operate on a different workspace.
+    if host_ws_str is None:
+        cfg = ctx.resources.get("workspace_config") if ctx.resources else None
+        host_ws_str = getattr(cfg, "path", None) if cfg is not None else None
+    metadata_runtime = (ctx.metadata or {}).get("runtime") if ctx.metadata else None
+    runtime: dict[str, Any] = dict(metadata_runtime) if metadata_runtime else {}
+    runtime.setdefault("workspace", host_ws_str or str(Path.cwd()))
+    sub_preset = workspace_to_preset(str(ws_path), runtime=runtime)
 
     # Sub-loop budget: explicit ``max_steps`` overrides; otherwise
     # inherit from sub_preset's own config.
@@ -103,10 +118,8 @@ def _execute(
     else:
         steps = sub_preset.config.max_steps
 
-    # Bump depth env-var so any nested subagent calls see the updated
-    # depth. We restore the old value after the sub-loop returns.
-    prev_depth = os.environ.get(_DEPTH_ENV)
-    os.environ[_DEPTH_ENV] = str(depth + 1)
+    # Bump depth for any nested subagent calls inside this run.
+    token = _DEPTH_VAR.set(depth + 1)
 
     state = DefaultState(max_steps=steps)
     last_step: Any = None
@@ -123,11 +136,7 @@ def _execute(
             sub_steps += 1
             last_step = step
     finally:
-        # Restore parent's depth (or remove if we set it from absent).
-        if prev_depth is None:
-            os.environ.pop(_DEPTH_ENV, None)
-        else:
-            os.environ[_DEPTH_ENV] = prev_depth
+        _DEPTH_VAR.reset(token)
 
     # Surface the final tool result. By convention sub-agents end with
     # ``done(summary=...)``, so we expose the summary at the top level

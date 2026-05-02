@@ -28,6 +28,61 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   change. ROADMAP entries that have shipped are dropped.
 
 ### Added
+- **`extends:` workspace composition.** A workspace's `config.yaml` may
+  now declare `extends: <path>`. At load time the parent workspace is
+  recursively materialized and overlaid with the child via a tempdir;
+  child files override parent files at matching paths. Multi-level
+  inheritance works (grandparent → parent → child), cycles raise
+  `WorkspaceSerializationError`, missing parent paths raise a clear
+  error. (#44)
+- **`examples/agent_factory.workspace`.** First product built on
+  `extends:`. Inherits all `coder.workspace` tools and adds a
+  `validate_workspace` tool that calls `workspace_to_preset()` and
+  returns structured success/error. ~4500-char system prompt teaching
+  the workspace v2 grammar, robustness rules, and `extends:` usage. (#44, #45)
+- **`looplet.scaffold.scaffold_workspace()`.** Plain Python helper that
+  creates a working but stubbed workspace skeleton in one call:
+  `workspace.json` + `config.yaml` + `prompts/system.md` +
+  `tools/<name>/{tool.yaml, execute.py}` stubs (raise
+  `NotImplementedError`) + the standard `done` tool. Idempotent —
+  re-running preserves existing files via `_write_if_absent`. (#46)
+- **`builtin_tools:` directive in `config.yaml`.** Workspaces can opt
+  into looplet-shipped tools without writing a `tools/<name>/` dir:
+  ```yaml
+  builtin_tools:
+    - subagent
+    - scaffold_workspace
+  ```
+  Resolved at load time via `looplet.builtin_tools.AVAILABLE`. (#46)
+- **`subagent` built-in tool.** Invokes another workspace as a
+  sub-loop, sharing the parent's LLM and forwarding the parent's
+  `workspace_config.path` as the sub-loop's `runtime["workspace"]`.
+  Returns the sub-loop's final `done` summary. Recursion-guarded via
+  `contextvars.ContextVar` (default `max_depth=5`). Sequential only —
+  parallel fan-out deferred. (#46)
+- **`scaffold_workspace` built-in tool.** Agent-callable wrapper
+  around the scaffold helper. The agent factory uses it as the very
+  first tool call. (#46)
+
+### Fixed
+- **`scaffold_workspace` wrote invalid JSON** (`workspace.json`
+  emitted single-quoted Python repr instead of double-quoted JSON).
+  `Workspace.from_directory()` and any external `json.loads()` failed.
+  Now uses `json.dumps(name)` to emit RFC-compliant JSON.
+- **`agent_factory` `_extract_json` example** in `prompts/system.md`
+  was double-escaped inside an r-string (`\\s` instead of `\s`,
+  `\\[` instead of `\[`), so the regex matched nothing. Agents that
+  copied the helper verbatim got a broken extractor. Fixed.
+- **`subagent` did not actually inherit parent runtime.** Docstring
+  promised `workspace_config` propagation; code read
+  `ctx.metadata["runtime"]` which the loop never sets. Now reads the
+  parent's `workspace_config` resource and forwards
+  `runtime["workspace"]` to the sub-loop's resource builders.
+- **`subagent` recursion depth via process-global env var
+  (`LOOPLET_SUBAGENT_DEPTH`)** — two parallel parent loops in the
+  same process raced. Replaced with a `ContextVar` (threadsafe and
+  per-async-task).
+
 - **`examples/coder.workspace` per-tool guidance + safety.** Three
   information-additive improvements modelled on patterns observed in
   production coding agents:

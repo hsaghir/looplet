@@ -402,7 +402,37 @@ def _load_yaml(text: str) -> Any:
             key, _, raw_val = stripped.partition(":")
             raw_val = raw_val.strip()
             pos += 1
-            if not raw_val:
+            if raw_val in ("|", "|-", "|+", ">", ">-", ">+"):
+                # YAML block scalar — gather all subsequent lines whose
+                # indent exceeds ``indent``, strip the leading common
+                # indent, and join with newlines (literal ``|`` style)
+                # or spaces (folded ``>`` style). The trailing chomp
+                # indicator (``-`` strip / ``+`` keep / default clip)
+                # only matters for trailing newlines, which we always
+                # strip for tool descriptions.
+                style = raw_val[0]
+                block_lines: list[str] = []
+                while pos < len(lines):
+                    nl = lines[pos]
+                    if nl.strip() == "":
+                        block_lines.append("")
+                        pos += 1
+                        continue
+                    nl_indent = len(nl) - len(nl.lstrip())
+                    if nl_indent <= indent:
+                        break
+                    block_lines.append(nl)
+                    pos += 1
+                # Find common leading indent among non-blank lines.
+                non_blank = [bl for bl in block_lines if bl.strip()]
+                common = (
+                    min(len(bl) - len(bl.lstrip()) for bl in non_blank) if non_blank else indent + 2
+                )
+                stripped_lines = [bl[common:] if bl else "" for bl in block_lines]
+                joiner = "\n" if style == "|" else " "
+                value = joiner.join(stripped_lines).rstrip("\n")
+                out[key.strip()] = value
+            elif not raw_val:
                 # Nested block follows.
                 out[key.strip()] = parse_block(indent + 2)
             else:

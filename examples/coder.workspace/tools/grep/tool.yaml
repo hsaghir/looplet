@@ -1,16 +1,28 @@
 name: grep
-description: Search file contents with regex. Returns file:line:content.
+description: |-
+  Recursively search file contents using `grep -rn`. Returns `path:line:content` matches.
+
+  Usage:
+  - Use this to find files by CONTENT (e.g. "where is function foo defined?", "which files import X?"). Use `glob` to find files by NAME pattern.
+  - The pattern is passed to `grep` directly so you get the full grep regex syntax. Quote the pattern if it contains special chars.
+  - `path` defaults to the project root; pass a subdir to narrow the search.
+  - `include` is passed as `--include=<glob>` so you can scope by file type without two grep calls (e.g. `include="*.py"` ignores non-Python files).
+  - Output capped at 50 matches and 10s timeout. For massive codebases, narrow the path or include first.
+
+  Examples:
+  - `grep(pattern="def authenticate", include="*.py")` — find Python defs of authenticate
+  - `grep(pattern="TODO|FIXME", path="src/")` — find every TODO in src/
 parameters:
   pattern:
     type: string
-    description: Regex pattern.
+    description: Regex pattern (grep-style; basic regex by default, no need to escape `[]`).
   path:
     type: string
-    description: Search root (relative to project).
+    description: Directory to search in, relative to project root.
     default: "."
   include:
     type: string
-    description: Optional --include filter (e.g. "*.py").
+    description: Optional grep `--include=<glob>` filter (e.g. "*.py", "*.{js,ts}").
     default: ""
 concurrent_safe: true
 requires:

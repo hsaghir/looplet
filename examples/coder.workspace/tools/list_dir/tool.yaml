@@ -1,13 +1,24 @@
 name: list_dir
-description: List directory contents as a tree. Use at the start to understand project structure.
+description: |-
+  Render a tree view of a directory in the project.
+
+  Usage:
+  - Call this **first** on a new task to understand project layout (file/dir count, language, top-level structure).
+  - Default `depth=2` shows the project skeleton without overwhelming detail. Increase for deep dives, decrease (depth=1) for a quick scan.
+  - Common scratch / cache directories are skipped automatically: `.git`, `__pycache__`, `node_modules`, `.venv`, `venv`, `.tox`, `.mypy_cache`, `.ruff_cache`, `.pytest_cache`.
+  - Capped at 200 entries per call to keep the response readable. If output is truncated, narrow the path or use `glob` for targeted file matching.
+
+  When to prefer other tools:
+  - Looking for files matching a name pattern → `glob`
+  - Looking for files containing some text → `grep`
 parameters:
   path:
     type: string
-    description: Path relative to the project root.
+    description: Directory to list, relative to project root.
     default: "."
   depth:
     type: integer
-    description: Tree depth.
+    description: Tree depth. depth=1 lists immediate children only; depth=2 (default) descends one level into each subdir.
     default: 2
 concurrent_safe: true
 requires:

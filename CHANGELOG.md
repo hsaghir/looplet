@@ -28,6 +28,29 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   change. ROADMAP entries that have shipped are dropped.
 
 ### Added
+- **`examples/coder.workspace` per-tool guidance + safety.** Three
+  information-additive improvements modelled on patterns observed in
+  production coding agents:
+  1. **Read-required-first on `edit_file`.** `FileCache` now tracks
+     every path passed to `read_file`; `edit_file` refuses with a
+     model-actionable error (`{error, missing: "prior_read",
+     recovery: "read_file(...)"}`) when called on a file that hasn't
+     been read in the current session. Editing without reading is the
+     #1 cause of `old_string` mismatch failures.
+  2. **`bash` safety classifiers.** New `classify_bash_command` and
+     `classify_sed_command` helpers in `coder_lib_tools.py` flag
+     destructive command/flag combinations (`rm -rf`, `git push
+     --force`, `git reset --hard`, `shutdown`, `mkfs`, …) and
+     `sed -i` in-place edits (which bypass the file_cache and cause
+     stale reads). The bash tool refuses both with a structured error
+     pointing at a safer alternative (`edit_file` for in-place edits).
+     The classifiers are exported so other workspaces can reuse them.
+  3. **Rich per-tool descriptions.** Every `tool.yaml` in
+     `examples/coder.workspace` rewritten as a multi-paragraph
+     description (Usage / Refusals / Examples / Recovery sections)
+     using YAML block scalars (`|-`). The looplet workspace YAML
+     loader gained `|`/`|-`/`>` block-scalar support so these
+     descriptions round-trip correctly.
 - **`ToolError.recovery_hint`** — structured suggestion (dict or str)
   for how the caller could recover. The dispatcher now populates it
   on the four self-correctable errors: unknown-tool ("did you mean?"),

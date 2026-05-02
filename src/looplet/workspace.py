@@ -1798,6 +1798,23 @@ def workspace_to_preset(
             f"is this a Workspace directory?"
         )
 
+    # ``extends:`` resolution. If config.yaml declares
+    # ``extends: <path>``, we merge the parent workspace under the
+    # current one — for every file under tools/, hooks/, resources/,
+    # prompts/, memory/, and any top-level *.py the child doesn't
+    # provide, we transparently inherit from the parent. Implemented by
+    # materializing a merged directory in a tempdir and loading from
+    # there. Multi-level extends is supported: the parent's own
+    # ``extends:`` is resolved recursively before the merge.
+    extended_root = _resolve_extends(root)
+    if extended_root is not root:
+        # Re-validate metadata in the merged dir.
+        if not (extended_root / WorkspaceLayout.WORKSPACE_JSON).is_file():
+            raise WorkspaceSerializationError(
+                f"merged workspace at {extended_root} missing workspace.json"
+            )
+        root = extended_root
+
     # Shared-resource registry — built once, referenced by ``@<name>``
     # strings throughout hook / tool kwargs. Lets two hooks share the
     # same live object (e.g. a FileCache) on reload, instead of
@@ -1843,6 +1860,72 @@ def workspace_to_preset(
                 _sys.path.remove(p)
             except ValueError:
                 pass
+
+
+def _resolve_extends(root: Path, *, _seen: set[Path] | None = None) -> Path:
+    """Resolve ``extends:`` in a workspace's config.yaml.
+
+    If ``config.yaml`` declares ``extends: <path>`` (relative to ``root``
+    or absolute), the parent workspace is recursively resolved and a
+    *merged* workspace directory is materialized under a tempdir:
+
+    * Parent files are copied first (recursively).
+    * Child files overlay on top — any same-relative-path file in the
+      child wins.
+
+    Returns the path to the merged workspace, or ``root`` itself when
+    there is no ``extends:`` to resolve. Multi-level inheritance works
+    (parent can itself ``extends:`` a grandparent).
+
+    Cycle detection: ``_seen`` carries the resolved paths visited so
+    far; revisiting raises :class:`WorkspaceSerializationError`.
+
+    The merged workspace dir is created via :func:`tempfile.mkdtemp`
+    with a stable prefix; it is NOT cleaned up automatically because
+    the loaded preset's modules may continue importing from it. The OS
+    handles cleanup on process exit (``/tmp`` is volatile).
+    """
+    cfg_path = root / WorkspaceLayout.CONFIG_YAML
+    if not cfg_path.is_file():
+        return root
+    cfg_text = cfg_path.read_text(encoding="utf-8")
+    cfg = _load_yaml(cfg_text) or {}
+    extends_val = cfg.get("extends")
+    if not extends_val:
+        return root
+
+    seen = set(_seen) if _seen is not None else set()
+    root_resolved = root.resolve()
+    if root_resolved in seen:
+        raise WorkspaceSerializationError(f"circular ``extends:`` detected at {root}")
+    seen.add(root_resolved)
+
+    parent_path = Path(extends_val)
+    if not parent_path.is_absolute():
+        parent_path = (root / parent_path).resolve()
+    if not parent_path.is_dir():
+        raise WorkspaceSerializationError(
+            f"extends: {extends_val!r} → {parent_path} does not exist or is not a directory"
+        )
+
+    # Resolve parent's own extends first (recursive).
+    parent_root = _resolve_extends(parent_path, _seen=seen)
+
+    import shutil as _shutil  # noqa: PLC0415
+    import tempfile as _tempfile  # noqa: PLC0415
+
+    merged = Path(_tempfile.mkdtemp(prefix=f"looplet_extends_{root.name}_"))
+    # Copy parent first, then overlay child.
+    _shutil.copytree(parent_root, merged, dirs_exist_ok=True, symlinks=False)
+    _shutil.copytree(root, merged, dirs_exist_ok=True, symlinks=False)
+    # Strip the ``extends:`` line from the merged config.yaml so the
+    # inner loader doesn't re-resolve it.
+    merged_cfg = merged / WorkspaceLayout.CONFIG_YAML
+    if merged_cfg.is_file():
+        lines = merged_cfg.read_text(encoding="utf-8").splitlines()
+        kept = [ln for ln in lines if not ln.strip().startswith("extends:")]
+        merged_cfg.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
+    return merged
 
 
 def _workspace_to_preset_inner(

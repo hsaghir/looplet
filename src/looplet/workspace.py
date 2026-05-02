@@ -1870,19 +1870,24 @@ def _register_extends_tempdir(path: Path) -> None:
     workspace-load completion). Best-effort cleanup at exit is safer
     than relying on the OS to garbage-collect ``/tmp``.
     """
-    import atexit  # noqa: PLC0415
+    _EXTENDS_TEMPDIRS.append(path)
+
+
+_EXTENDS_TEMPDIRS: list[Path] = []
+
+
+def _cleanup_extends_tempdirs() -> None:
+    """Best-effort rmtree of every merged-extends tempdir at exit."""
     import shutil  # noqa: PLC0415
 
-    if not getattr(_register_extends_tempdir, "_registered", False):
-        _register_extends_tempdir._dirs = []  # type: ignore[attr-defined]
+    while _EXTENDS_TEMPDIRS:
+        d = _EXTENDS_TEMPDIRS.pop()
+        shutil.rmtree(d, ignore_errors=True)
 
-        def _cleanup() -> None:
-            for d in _register_extends_tempdir._dirs:  # type: ignore[attr-defined]
-                shutil.rmtree(d, ignore_errors=True)
 
-        atexit.register(_cleanup)
-        _register_extends_tempdir._registered = True  # type: ignore[attr-defined]
-    _register_extends_tempdir._dirs.append(path)  # type: ignore[attr-defined]
+import atexit as _atexit  # noqa: E402, PLC0415
+
+_atexit.register(_cleanup_extends_tempdirs)
 
 
 def _resolve_extends(root: Path, *, _seen: set[Path] | None = None) -> Path:
@@ -1952,7 +1957,7 @@ def _resolve_extends(root: Path, *, _seen: set[Path] | None = None) -> Path:
     merged_cfg = merged / WorkspaceLayout.CONFIG_YAML
     if merged_cfg.is_file():
         lines = merged_cfg.read_text(encoding="utf-8").splitlines()
-        kept = [ln for ln in lines if not (ln.startswith("extends:") or ln.startswith("extends: "))]
+        kept = [ln for ln in lines if not ln.startswith("extends:")]
         merged_cfg.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
     return merged
 
@@ -2107,6 +2112,23 @@ def _workspace_to_preset_inner(
                 timeout_s=yaml_payload.get("timeout_s"),
                 requires=list(yaml_payload.get("requires", []) or []),
             )
+            # Surface tool name ↔ directory name mismatches. The agent's
+            # system prompt and tool catalog use ``spec.name``, but
+            # users debug via the directory layout. A typo in
+            # ``name:`` silently registers the wrong tool name and
+            # makes the agent lose access to the tool. Warn (loose
+            # mode) or raise (strict mode) so the mismatch is caught
+            # at load time.
+            if spec.name != tool_dir.name:
+                msg = (
+                    f"tool name mismatch: directory is {tool_dir.name!r} but "
+                    f"tool.yaml declares name: {spec.name!r}. The registered "
+                    f"tool name will be {spec.name!r} (yaml wins). Rename "
+                    f"the directory or fix the yaml so they match."
+                )
+                if strict:
+                    raise WorkspaceSerializationError(msg)
+                logger.warning("%s", msg)
             # Surface ``requires:`` typos at load time. Without this,
             # a tool that declares ``requires: [my_resoruce]`` (typo)
             # silently receives ``ctx.resources["my_resoruce"] = None``

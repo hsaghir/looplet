@@ -14,9 +14,12 @@ The agent can then dispatch a sub-task to any other workspace::
     )
 
 The sub-loop runs synchronously, sharing the parent's ``llm`` and
-``runtime`` (so the same workspace_config / file_cache is in scope).
-The result returned to the parent is the sub-loop's final tool result
-(typically the ``done`` summary).
+constructing a fresh ``runtime`` that defaults to the parent's
+``workspace_config.path`` (so resource builders like
+``resources/file_cache.py`` bind to the same project root). Other
+runtime values can be overridden via ``ctx.metadata["runtime"]``.
+The result returned to the parent is the sub-loop's final tool
+result (typically the ``done`` summary).
 
 ## Recursion safety
 
@@ -58,7 +61,7 @@ def _execute(
     *,
     workspace: str,
     task: str,
-    max_steps: int = 0,
+    max_steps: int | None = None,
     max_depth: int = DEFAULT_MAX_DEPTH,
 ) -> dict:
     # Recursion guard.
@@ -105,12 +108,22 @@ def _execute(
         host_ws_str = getattr(cfg, "path", None) if cfg is not None else None
     metadata_runtime = (ctx.metadata or {}).get("runtime") if ctx.metadata else None
     runtime: dict[str, Any] = dict(metadata_runtime) if metadata_runtime else {}
-    runtime.setdefault("workspace", host_ws_str or str(Path.cwd()))
+    fallback_used = False
+    if "workspace" not in runtime:
+        if host_ws_str:
+            runtime["workspace"] = host_ws_str
+        else:
+            # No parent workspace_config and no explicit metadata.runtime —
+            # fall back to cwd, but make it loud so the host knows the
+            # sub-loop is rooted in whichever dir the process happens to
+            # be running from.
+            runtime["workspace"] = str(Path.cwd())
+            fallback_used = True
     sub_preset = workspace_to_preset(str(ws_path), runtime=runtime)
 
     # Sub-loop budget: explicit ``max_steps`` overrides; otherwise
     # inherit from sub_preset's own config.
-    if max_steps > 0:
+    if max_steps is not None and max_steps > 0:
         steps = max_steps
         # Apply the override to the sub-preset's config so the loop
         # honours it and ``DefaultState(max_steps=...)`` matches.
@@ -148,7 +161,7 @@ def _execute(
         if last_step.tool_result is not None and last_step.tool_result.data:
             final_data = dict(last_step.tool_result.data)
 
-    return {
+    result: dict[str, Any] = {
         "workspace": str(ws_path),
         "steps_used": sub_steps,
         "max_steps": steps,
@@ -157,13 +170,23 @@ def _execute(
         "result": final_data,
         "depth": depth + 1,
     }
+    if fallback_used:
+        result["warning"] = (
+            "no workspace_config resource on the parent and no "
+            "ctx.metadata['runtime'] — sub-loop's runtime['workspace'] "
+            f"defaulted to cwd ({runtime['workspace']!r}). Pass "
+            "runtime={'workspace': '...'} to workspace_to_preset for "
+            "the parent, or set ctx.metadata['runtime'] before calling."
+        )
+    return result
 
 
 SPEC = ToolSpec(
     name="subagent",
     description=(
         "Invoke another looplet workspace as a sub-agent. The sub-agent "
-        "shares this agent's LLM and runtime, runs to its own ``done`` "
+        "shares this agent's LLM and inherits the parent's workspace "
+        "path, runs to its own ``done`` "
         "tool, and returns the final result. Use this for hierarchical "
         "task decomposition: dispatch a focused sub-task to a workspace "
         "that specializes in it, then continue with the result.\n\n"
@@ -189,8 +212,11 @@ SPEC = ToolSpec(
             },
             "max_steps": {
                 "type": "integer",
-                "description": "Optional cap on sub-loop steps.",
-                "default": 0,
+                "description": (
+                    "Optional cap on sub-loop steps. Omit to inherit "
+                    "the sub-workspace's own ``max_steps`` from its "
+                    "config.yaml."
+                ),
             },
             "max_depth": {
                 "type": "integer",

@@ -261,8 +261,6 @@ def test_subagent_forwards_workspace_to_subloop_runtime(tmp_path: Path) -> None:
     # The factory normally injects ``workspace_config`` via ``requires``,
     # but a scaffold-only parent has no such resource — so we exercise
     # the documented ``ctx.metadata['runtime']`` fall-through path.
-    from looplet.types import ToolContext
-
     ctx = ToolContext(
         llm=mock,
         resources={},
@@ -274,3 +272,64 @@ def test_subagent_forwards_workspace_to_subloop_runtime(tmp_path: Path) -> None:
     assert seen == str(tmp_path), (
         f"sub-loop saw runtime['workspace']={seen!r}, expected {str(tmp_path)!r}"
     )
+
+
+def test_validate_workspace_warns_on_unfilled_scaffold(tmp_path: Path) -> None:
+    """A freshly scaffolded workspace must surface TODO + NotImplementedError
+    warnings so the agent doesn't ``done`` on an empty agent."""
+    repo_root = Path(__file__).resolve().parents[1]
+    factory = repo_root / "examples" / "agent_factory.workspace"
+    # Pre-scaffold a child via the factory's setup.py.
+    workspace_to_preset(
+        str(factory),
+        runtime={
+            "workspace": str(tmp_path),
+            "scaffold_to": "auto.workspace",
+            "scaffold_tools": ["alpha"],
+        },
+    )
+    p = workspace_to_preset(str(factory), runtime={"workspace": str(tmp_path)})
+    from looplet.types import ToolCall as _TC
+
+    r = p.tools.dispatch(_TC(tool="validate_workspace", args={"workspace_path": "auto.workspace"}))
+    warnings = (r.data or {}).get("warnings", [])
+    assert any("TODO" in w for w in warnings), warnings
+    assert any("NotImplementedError" in w for w in warnings), warnings
+
+
+def test_loader_warns_on_tool_name_mismatch(tmp_path: Path, caplog) -> None:
+    p = scaffold_workspace(tmp_path / "x.workspace", name="x", tools=["foo"])
+    # Edit tool.yaml to use a different name than the directory.
+    (p / "tools" / "foo" / "tool.yaml").write_text(
+        "name: BADNAME\ndescription: x\nparameters: {}\n"
+    )
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        workspace_to_preset(p)
+    assert any("tool name mismatch" in rec.message for rec in caplog.records), [
+        r.message for r in caplog.records
+    ]
+
+
+def test_loader_strict_raises_on_tool_name_mismatch(tmp_path: Path) -> None:
+    p = scaffold_workspace(tmp_path / "x.workspace", name="x", tools=["foo"])
+    (p / "tools" / "foo" / "tool.yaml").write_text(
+        "name: BADNAME\ndescription: x\nparameters: {}\n"
+    )
+    with pytest.raises(WorkspaceSerializationError, match="tool name mismatch"):
+        workspace_to_preset(p, strict=True)
+
+
+def test_subagent_warns_on_cwd_fallback(tmp_path: Path) -> None:
+    parent = _make_parent_with_subagent(tmp_path)
+    child = tmp_path / "child.workspace"
+    scaffold_workspace(child, name="child", tools=[])
+    p = workspace_to_preset(parent)
+    spec = p.tools._tools["subagent"]
+    mock = MockLLMBackend(responses=[json.dumps({"tool": "done", "args": {"summary": "ok"}})])
+    # Empty resources + empty metadata -> cwd fallback fires.
+    ctx = ToolContext(llm=mock, resources={}, metadata={})
+    result = spec.execute(ctx, workspace=str(child), task="hi", max_steps=3)
+    assert "warning" in result, result
+    assert "defaulted to cwd" in result["warning"]

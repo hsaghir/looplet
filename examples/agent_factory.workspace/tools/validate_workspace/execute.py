@@ -74,7 +74,26 @@ def execute(
 
     tools = sorted(preset.tools._tools.keys())
     hooks = [type(h).__name__ for h in preset.hooks]
-    sys_prompt_chars = len(preset.config.system_prompt or "")
+    sys_prompt = preset.config.system_prompt or ""
+    sys_prompt_chars = len(sys_prompt)
+
+    # Detect scaffolded-but-unfilled artifacts. The scaffolder writes
+    # ``<TODO: ...>`` markers in the system prompt and
+    # ``raise NotImplementedError("scaffold: implement <name>")`` in
+    # tool bodies; if either survives, the agent has not finished
+    # the work and should not declare done.
+    todo_in_prompt = "<TODO:" in sys_prompt or "TODO:" in sys_prompt[:600]
+    scaffold_stubs: list[str] = []
+    tools_dir = abs_path / "tools"
+    if tools_dir.is_dir():
+        for tool_dir in sorted(p for p in tools_dir.iterdir() if p.is_dir()):
+            execute_py = tool_dir / "execute.py"
+            if not execute_py.is_file():
+                continue
+            body = execute_py.read_text(encoding="utf-8", errors="replace")
+            if 'NotImplementedError("scaffold: implement' in body:
+                scaffold_stubs.append(tool_dir.name)
+
     return {
         "valid": True,
         "workspace_path": workspace_path,
@@ -89,6 +108,13 @@ def execute(
             for warning in (
                 "system_prompt is empty — add prompts/system.md" if sys_prompt_chars == 0 else None,
                 "no `done` tool — every agent must have one" if "done" not in tools else None,
+                "system_prompt still has TODO markers — fill them in" if todo_in_prompt else None,
+                (
+                    f"tools still raise NotImplementedError (unfilled scaffolds): "
+                    f"{', '.join(scaffold_stubs)}"
+                )
+                if scaffold_stubs
+                else None,
             )
             if warning is not None
         ],

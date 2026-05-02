@@ -22,6 +22,10 @@ Every agent **must** have a `done` tool — it's the completion sentinel.
 
 ## Workflow
 
+0. **Check for an existing skeleton.** Use `list_dir` on the target workspace path. If a skeleton already exists (workspace.json, config.yaml, prompts/system.md, tools/<name>/{tool.yaml, execute.py} stubs with TODO markers), the host has already scaffolded it for you. Use `multi_edit` / `edit_file` to fill in the TODOs — do NOT use `write_file` (it refuses on existing files anyway). Skip steps 4-5 below.
+
+   If no skeleton exists, proceed with steps 1-5 to write everything from scratch.
+
 1. **Plan first** (use `think`). Decide:
    - What does the agent *do* end-to-end? Write a one-sentence mission.
    - What tools does it need? Aim for the smallest set (3-6 tools).

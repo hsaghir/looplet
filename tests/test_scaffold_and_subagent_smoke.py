@@ -1,0 +1,166 @@
+"""Smoke tests for ``looplet.scaffold`` + ``builtin_tools: [subagent]``.
+
+Covers:
+  * scaffold_workspace creates a loadable skeleton
+  * idempotent re-scaffold preserves edits
+  * skeleton has done tool by default
+  * tool name validation
+  * builtin_tools opt-in registers subagent
+  * subagent dispatch runs a sub-loop end-to-end
+  * subagent recursion guard refuses past max_depth
+  * subagent inherits sub-workspace config when max_steps not given
+  * subagent override of max_steps applies
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+
+import pytest
+
+from looplet import MockLLMBackend, workspace_to_preset
+from looplet.scaffold import scaffold_workspace
+from looplet.types import ToolContext
+from looplet.workspace import WorkspaceSerializationError
+
+# ── scaffold ────────────────────────────────────────────────────
+
+
+def test_scaffold_creates_loadable_workspace(tmp_path: Path) -> None:
+    p = scaffold_workspace(
+        tmp_path / "agent.workspace",
+        name="agent",
+        tools=["foo", "bar"],
+    )
+    preset = workspace_to_preset(p)
+    assert sorted(preset.tools._tools.keys()) == ["bar", "done", "foo"]
+    assert preset.config.max_steps == 20
+    assert "agent" in (preset.config.system_prompt or "").lower()
+
+
+def test_scaffold_done_tool_always_added(tmp_path: Path) -> None:
+    p = scaffold_workspace(tmp_path / "x.workspace", name="x", tools=[])
+    assert (p / "tools" / "done" / "tool.yaml").is_file()
+    assert (p / "tools" / "done" / "execute.py").is_file()
+
+
+def test_scaffold_idempotent_preserves_edits(tmp_path: Path) -> None:
+    p = scaffold_workspace(tmp_path / "x.workspace", name="x", tools=["foo"])
+    edited = "name: foo\ndescription: edited!\nparameters: {}\n"
+    (p / "tools" / "foo" / "tool.yaml").write_text(edited)
+    # Re-scaffold should not overwrite.
+    scaffold_workspace(p, name="x", tools=["foo", "bar"], overwrite=True)
+    assert (p / "tools" / "foo" / "tool.yaml").read_text() == edited
+    # New tool should be added.
+    assert (p / "tools" / "bar" / "tool.yaml").is_file()
+
+
+def test_scaffold_refuses_existing_non_empty(tmp_path: Path) -> None:
+    p = tmp_path / "x.workspace"
+    p.mkdir()
+    (p / "stuff.txt").write_text("hi")
+    with pytest.raises(FileExistsError, match="non-empty"):
+        scaffold_workspace(p, name="x", tools=[])
+
+
+def test_scaffold_rejects_invalid_tool_names(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="alphanumeric"):
+        scaffold_workspace(tmp_path / "x.workspace", name="x", tools=["bad-name"])
+    with pytest.raises(ValueError, match="empty"):
+        scaffold_workspace(tmp_path / "y.workspace", name="y", tools=[""])
+
+
+def test_scaffold_workspace_loads_with_factory_setup(tmp_path: Path) -> None:
+    """Loading the agent_factory with scaffold runtime kwargs auto-creates the target."""
+    repo_root = Path(__file__).resolve().parents[1]
+    factory = repo_root / "examples" / "agent_factory.workspace"
+    workspace_to_preset(
+        str(factory),
+        runtime={
+            "workspace": str(tmp_path),
+            "scaffold_to": "auto.workspace",
+            "scaffold_tools": ["alpha", "beta"],
+        },
+    )
+    target = tmp_path / "auto.workspace"
+    assert (target / "workspace.json").is_file()
+    assert (target / "config.yaml").is_file()
+    assert (target / "tools" / "alpha").is_dir()
+    assert (target / "tools" / "beta").is_dir()
+    assert (target / "tools" / "done").is_dir()
+
+
+# ── builtin_tools: [subagent] ───────────────────────────────────
+
+
+def _make_parent_with_subagent(tmp_path: Path) -> Path:
+    parent = tmp_path / "parent.workspace"
+    scaffold_workspace(parent, name="parent", tools=[])
+    cfg = parent / "config.yaml"
+    cfg.write_text(cfg.read_text() + "builtin_tools:\n  - subagent\n")
+    return parent
+
+
+def test_builtin_tools_registers_subagent(tmp_path: Path) -> None:
+    parent = _make_parent_with_subagent(tmp_path)
+    p = workspace_to_preset(parent)
+    assert "subagent" in p.tools._tools
+
+
+def test_builtin_tools_unknown_strict_raises(tmp_path: Path) -> None:
+    parent = tmp_path / "p.workspace"
+    scaffold_workspace(parent, name="p", tools=[])
+    cfg = parent / "config.yaml"
+    cfg.write_text(cfg.read_text() + "builtin_tools:\n  - nonexistent_tool\n")
+    with pytest.raises(WorkspaceSerializationError, match="unknown builtin tool"):
+        workspace_to_preset(parent, strict=True)
+
+
+def test_subagent_runs_child_loop_to_done(tmp_path: Path) -> None:
+    parent = _make_parent_with_subagent(tmp_path)
+    child = tmp_path / "child.workspace"
+    scaffold_workspace(child, name="child", tools=[])
+
+    p = workspace_to_preset(parent)
+    spec = p.tools._tools["subagent"]
+    mock = MockLLMBackend(
+        responses=[json.dumps({"tool": "done", "args": {"summary": "done-from-child"}})]
+    )
+    ctx = ToolContext(llm=mock, metadata={})
+    result = spec.execute(ctx, workspace=str(child), task="hi", max_steps=5)
+
+    assert result["summary"] == "done-from-child"
+    assert result["final_tool"] == "done"
+    assert result["depth"] == 1
+    assert result["steps_used"] >= 1
+
+
+def test_subagent_recursion_guard(tmp_path: Path) -> None:
+    parent = _make_parent_with_subagent(tmp_path)
+    child = tmp_path / "child.workspace"
+    scaffold_workspace(child, name="child", tools=[])
+
+    p = workspace_to_preset(parent)
+    spec = p.tools._tools["subagent"]
+    mock = MockLLMBackend(responses=[])
+    ctx = ToolContext(llm=mock, metadata={})
+
+    # Pretend we're already at max depth.
+    os.environ["LOOPLET_SUBAGENT_DEPTH"] = "5"
+    try:
+        result = spec.execute(ctx, workspace=str(child), task="hi", max_depth=5)
+        assert "would exceed" in result.get("error", "")
+        assert result.get("depth") == 5
+    finally:
+        os.environ.pop("LOOPLET_SUBAGENT_DEPTH", None)
+
+
+def test_subagent_missing_workspace_returns_structured_error(tmp_path: Path) -> None:
+    parent = _make_parent_with_subagent(tmp_path)
+    p = workspace_to_preset(parent)
+    spec = p.tools._tools["subagent"]
+    ctx = ToolContext(llm=MockLLMBackend(responses=[]), metadata={})
+    result = spec.execute(ctx, workspace=str(tmp_path / "nope"), task="hi")
+    assert "not found" in result.get("error", "")

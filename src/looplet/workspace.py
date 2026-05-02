@@ -2018,6 +2018,13 @@ def _workspace_to_preset_inner(
     # with the hook-kwargs ref resolution below.
     cfg_kwargs = _resolve_refs(cfg_kwargs, resources)
 
+    # ``builtin_tools:`` is a workspace-loader directive, not a
+    # ``LoopConfig`` field — pop it before constructing the config so
+    # ``LoopConfig(**cfg_kwargs)`` doesn't choke on an unknown kwarg.
+    # The popped list is consumed below where the tool registry is
+    # populated.
+    _builtin_tool_names: list[str] = list(cfg_kwargs.pop("builtin_tools", None) or [])
+
     config = LoopConfig(**cfg_kwargs)
 
     # Track tool + hook modules so setup.py can wire shared resources
@@ -2092,6 +2099,26 @@ def _workspace_to_preset_inner(
                     if strict:
                         raise WorkspaceSerializationError(msg)
                     logger.warning("%s; tool will receive None for missing resources", msg)
+            registry.register(spec)
+
+    # Built-in tools — opt-in via ``builtin_tools:`` in config.yaml.
+    # These are looplet-shipped tools (``subagent``, future helpers)
+    # that any workspace can enable without writing a tools/<name>/
+    # directory. Looked up in :mod:`looplet.builtin_tools` by name.
+    if _builtin_tool_names:
+        from looplet.builtin_tools import get_builtin_tool  # noqa: PLC0415
+
+        for bname in _builtin_tool_names:
+            spec = get_builtin_tool(bname)
+            if spec is None:
+                msg = (
+                    f"unknown builtin tool {bname!r}; "
+                    f"available built-ins: see ``looplet.builtin_tools.AVAILABLE``"
+                )
+                if strict:
+                    raise WorkspaceSerializationError(msg)
+                logger.warning("%s; skipping", msg)
+                continue
             registry.register(spec)
     # Hand the resource registry to the tool registry so any tool whose
     # ``ToolSpec.requires`` lists a resource name receives the live

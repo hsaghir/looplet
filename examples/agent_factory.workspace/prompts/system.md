@@ -63,6 +63,71 @@ Every agent **must** have a `done` tool — it's the completion sentinel.
 - No unnecessary error handling — fail fast. The loop and the dispatcher already catch and surface tool errors.
 - Workspace files are co-located: a `lib.py` next to `tools/` is fine for shared helpers.
 
+## Robustness rules (NON-NEGOTIABLE — these are the common quality failures)
+
+### 1. Parsing LLM output as JSON
+
+Models occasionally return prose around JSON ("Here are your recipes: [...]"). A naive `json.loads(raw)` crashes the tool on those turns. **For every tool that asks the LLM for JSON, write a tolerant extractor**:
+
+```python
+import json, re
+
+def _extract_json(raw: str):
+    # Try strict first.
+    raw = raw.strip()
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
+    # Strip code fences (```json … ```).
+    if raw.startswith("```"):
+        raw = re.sub(r"^```(?:json)?\\s*|\\s*```$", "", raw, flags=re.DOTALL)
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            pass
+    # Find the first balanced [...] or {...}.
+    match = re.search(r"(\\[.*\\]|\\{.*\\})", raw, re.DOTALL)
+    if match:
+        return json.loads(match.group(1))
+    raise ValueError(f"No JSON found in LLM response: {raw[:200]!r}")
+```
+
+If a tool needs structured output, also instruct the LLM in the `system_prompt`: `"Return ONLY a JSON array. No prose, no code fences."` Belt and suspenders.
+
+### 2. Chained-tool data piping
+
+When the workflow chains tools (e.g. `fetch → group → format`), the SECOND tool's args **MUST come from the first tool's actual result**, not example data the model invents.
+
+**Make this loud in `prompts/system.md`** with explicit wiring:
+
+```
+Workflow:
+1. Call `fetch_commits(since_tag=...)`. Save the returned `commits` list.
+2. Call `group_by_type(commits=<commits from step 1>)`. Save the returned `groups`.
+3. Call `format_notes(groups=<groups from step 2>, version=...)`.
+4. Call `done`.
+
+CRITICAL: never fabricate inputs to step 2 or 3. Use the EXACT data
+returned by the previous step. If step 1 returned 47 commits, step 2's
+`commits` arg must contain those 47 commits, not a placeholder.
+```
+
+This data-piping reminder is the single biggest determinant of agent behavioral quality. Every multi-step agent's system prompt must contain it.
+
+### 3. Make tools forgiving of arg shape
+
+If a tool expects `commits: list[dict]` but receives a `dict` (because the model wrapped it), unwrap defensively:
+
+```python
+def execute(ctx, *, commits) -> dict:
+    if isinstance(commits, dict) and "commits" in commits:
+        commits = commits["commits"]   # accept the wrapped form too
+    ...
+```
+
+This costs 2 lines and prevents whole categories of model-shape errors.
+
 ## Composition: `extends:`
 
 If the brief asks for an agent that *extends* an existing workspace (e.g. "a security-focused coder"), use `extends:` in `config.yaml`:

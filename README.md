@@ -1,6 +1,6 @@
 # looplet
 
-![demo — 4-tool data-cleanup loop with a DebugHook trace and a human approval pause](docs/demo.gif)
+![looplet new — agents from a paragraph, in one command](demo/looplet_new.gif)
 
 [![CI](https://github.com/hsaghir/looplet/actions/workflows/ci.yml/badge.svg)](https://github.com/hsaghir/looplet/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/hsaghir/looplet/branch/master/graph/badge.svg)](https://codecov.io/gh/hsaghir/looplet)
@@ -9,30 +9,87 @@
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Status: Beta](https://img.shields.io/badge/status-beta-orange.svg)](ROADMAP.md)
 
-**looplet exposes the agent loop as an iterator, makes every step observable, and lets you compose behavior with hooks.**
-Build LLM agents that call tools in a loop while you keep ordinary
-Python control over every step — no graph DSL, no subclassing, no
-vendor lock-in. **Zero runtime dependencies.**
-
-> Elevator pitch: looplet is the tiny agent loop you can actually own.
-> Yield every tool call, inspect every result, intercept any decision,
-> and grow from a 30-line prototype to a production agent without
-> switching frameworks.
-
-```python
-from looplet import composable_loop
-
-for step in composable_loop(llm=llm, tools=tools, task=task, config=cfg, state=state):
-    print(step.pretty())          # → "#1 ✓ search(query='…') → 12 items [182ms]"
-    if step.tool_result.error:
-        break                     # your loop, your control flow
-```
+**Describe an agent in one paragraph. Get a working agent in 5 minutes.**
+Looplet treats agents as data — a workspace is a directory of files
+(`config.yaml`, `prompts/system.md`, `tools/<name>/{tool.yaml,
+execute.py}`) that the loader materialises into a runnable agent. The
+`agent_factory` workspace builds new workspaces from English briefs;
+the loop engine runs them. **Zero runtime dependencies.**
 
 ```bash
-pip install looplet               # core — zero third-party packages pulled in
-pip install "looplet[openai]"     # works with OpenAI, Ollama, Together, Groq, vLLM, …
-pip install "looplet[anthropic]"  # or Anthropic directly
+pip install looplet
+export OPENAI_BASE_URL=https://api.openai.com/v1   # any OpenAI-compatible endpoint
+export OPENAI_API_KEY=sk-...
+export OPENAI_MODEL=gpt-4o-mini
+
+looplet new "An agent that takes a URL and returns the page title and a 2-sentence summary"
+looplet run-workspace ./agent.workspace "Summarize https://example.com"
 ```
+
+The recording above shows exactly that, end to end on a real LLM and a real URL: build the agent in ~170s, run it on `example.com` in ~12s, get the correct title + LLM summary back. Three minutes, blank dir → working agent.
+
+> Underneath, looplet exposes the agent loop as an iterator, makes
+> every step observable, and lets you compose behaviour with hooks.
+> The factory is built on the same primitives you'd use for a
+> hand-rolled agent — see [The mental model](#the-mental-model--one-picture)
+> below.
+
+---
+
+## Quickstart — three paths
+
+### 1. Generate an agent with `looplet new`
+
+```bash
+looplet new "<one paragraph describing what the agent should do>" \
+    ./my_agent.workspace
+```
+
+The factory writes `my_agent.workspace/` with `workspace.json`,
+`config.yaml`, `prompts/system.md`, and one `tools/<name>/` directory
+per tool the agent picks. Then it writes a pytest suite, runs it, and
+hands you the working workspace.
+
+Required env vars (any OpenAI-compatible endpoint — OpenAI, Ollama,
+Together, Groq, vLLM, Anthropic via proxy, …):
+
+| Var | Example |
+|---|---|
+| `OPENAI_BASE_URL` | `https://api.openai.com/v1` |
+| `OPENAI_API_KEY` | `sk-…` |
+| `OPENAI_MODEL` | `gpt-4o-mini`, `claude-sonnet-4.6`, `llama3.1` |
+
+Run `looplet doctor` to verify connectivity.
+
+### 2. Run any workspace with `looplet run-workspace`
+
+```bash
+looplet run-workspace ./my_agent.workspace "<task to give the agent>"
+```
+
+Loads the workspace, runs the loop, prints the final `done` summary.
+
+### 3. Hand-write the loop in Python (for full control)
+
+```python
+from looplet import composable_loop, workspace_to_preset
+
+preset = workspace_to_preset("./my_agent.workspace")
+
+for step in composable_loop(
+    llm=preset.llm,
+    config=preset.config,
+    tools=preset.tools,
+    state=preset.state,
+    hooks=preset.hooks,
+    task={"goal": "Summarize https://example.com"},
+):
+    print(step.pretty())
+```
+
+`composable_loop` is a generator. You see every step, can break out at
+any point, and can plug your own hooks in for context management,
+human approval, observability, or evaluation.
 
 ---
 
@@ -46,17 +103,18 @@ Every looplet agent turn is the same small mechanism:
 4. State records the step.
 5. The loop yields a `Step` back to your `for` loop.
 
-That is the whole mental model. Presets, skills, bundles, provenance,
-native tool calling, and evals are useful layers around this mechanism;
-they do not replace it.
+That's it. `agent_factory.workspace` is a special workspace whose
+tools (`scaffold_workspace`, `multi_edit`, `validate_workspace`, etc.)
+write OTHER workspaces. Once a workspace exists, it's just data the
+loop iterates over.
 
 ```python
 for step in composable_loop(llm=llm, tools=tools, state=state, config=config, hooks=hooks):
-  print(step.pretty())
+    print(step.pretty())
 ```
 
-Start with ordinary Python code when you want full control. Start with a
-bundle when you want to run or share a packaged capability:
+Start with `looplet new` if you want a working agent right now. Drop
+into the Python API when you need full control.
 
 ```bash
 python -m looplet run ./skills/coder "Fix the tests" --workspace .
@@ -189,7 +247,9 @@ all, or none — and [drop in your own](docs/hooks.md) in 10 lines.
 
 ---
 
-## Your first agent (60 seconds)
+## Hand-write an agent in Python (60 seconds)
+
+If you'd rather skip the factory and code an agent directly:
 
 ```python
 from looplet import BaseToolRegistry, OpenAIBackend, composable_loop
@@ -227,6 +287,10 @@ OPENAI_BASE_URL=http://127.0.0.1:11434/v1 \
 OPENAI_API_KEY=ollama OPENAI_MODEL=llama3.1 \
 python -m looplet.examples.hello_world
 ```
+
+The factory's output is the same shape: a directory of YAML +
+Python files that the same `composable_loop` runs. Use whichever
+entry point matches your taste.
 
 ---
 
@@ -324,7 +388,8 @@ Not a usage reference.
 
 | Doc | What's in it |
 | --- | --- |
-| [docs/tutorial.md](docs/tutorial.md) | Build your first agent in 5 steps |
+| [**docs/agent-factory.md**](docs/agent-factory.md) | **`looplet new` — generate agents from English briefs (start here)** |
+| [docs/tutorial.md](docs/tutorial.md) | Hand-write your first agent in 5 steps |
 | [docs/hooks.md](docs/hooks.md) | Writing and composing hooks |
 | [docs/skills.md](docs/skills.md) | Lazy skills, runnable bundles, blueprints, and Claude Skill wrapping |
 | [docs/evals.md](docs/evals.md) | pytest-style agent evaluation |

@@ -28,8 +28,15 @@ logger = logging.getLogger(__name__)
 MAX_LLM_RETRIES = 2
 RETRY_BACKOFF_BASE = 1.0  # seconds
 PARSE_RECOVERY_MAX = 2  # max consecutive parse recovery attempts
-TOOL_RESULT_MAX_CHARS = 6000  # truncate tool result data
-TOOL_RESULT_MAX_ROWS = 50  # max rows per result
+# Re-export from the central context_budget module so single-source-of-truth
+# tunables live in one place and can be overridden via LOOPLET_* env vars.
+# Modules that have historically imported these names from scaffolding still
+# work; the values come from looplet.context_budget at module-import time.
+from looplet.context_budget import (  # noqa: E402, PLC0415
+    TOOL_RESULT_MAX_CHARS,
+    TOOL_RESULT_MAX_ROWS,
+)
+
 DIMINISHING_RETURNS_WINDOW = 5  # steps to track
 DIMINISHING_RETURNS_THRESHOLD = 0  # new items in window to be "diminishing"
 

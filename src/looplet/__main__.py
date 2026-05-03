@@ -766,6 +766,13 @@ def main(argv: list[str] | None = None) -> int:
         help="Arguments forwarded to looplet.evals.eval_cli",
     )
 
+    # ── factory subcommands (``new``, ``run-workspace``) ──
+    # Lives in a dedicated module so the two factory-facing commands
+    # can evolve independently of the bundle / trace / eval CLI.
+    from looplet.cli.factory_commands import add_subparsers as _add_factory  # noqa: PLC0415
+
+    _add_factory(sub)
+
     args = parser.parse_args(argv)
 
     if args.command == "show":
@@ -821,6 +828,13 @@ def main(argv: list[str] | None = None) -> int:
         from looplet.evals import eval_cli  # noqa: PLC0415
 
         return eval_cli(args.eval_args)
+    # Factory subcommands (``new``, ``run-workspace``) attach their
+    # handler via ``set_defaults(_handler=...)`` so we dispatch
+    # generically here. Keeps ``__main__`` from growing per-command
+    # branches as more factory commands land.
+    handler = getattr(args, "_handler", None)
+    if handler is not None:
+        return int(handler(args))
     # Unreachable — argparse rejects unknown commands.
     return 2
 

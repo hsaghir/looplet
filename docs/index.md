@@ -6,17 +6,18 @@ hide:
 
 <div class="hero" markdown>
 
-<p class="hero-eyebrow">One iterator · Observable steps · Composable hooks</p>
+<p class="hero-eyebrow">Describe an agent. Get a working agent in 5 minutes.</p>
 
-# The agent loop you can actually own.
+# Agents from a paragraph.
 
 <p class="hero-sub" markdown>
-**looplet** exposes the agent loop as an iterator, makes every step
-observable, and lets you compose behavior with hooks. The LLM proposes a
-tool call, the registry dispatches it, hooks observe or steer, state
-records the step, and the loop yields control back to you. No graph DSL,
-no agent runtime, no hidden state. Works with any OpenAI-compatible
-endpoint or Anthropic directly.
+**looplet** treats agents as data — a workspace is a directory of
+files (`config.yaml`, `prompts/system.md`, `tools/<name>/{tool.yaml,
+execute.py}`) that the loader materialises into a runnable agent.
+The `agent_factory` workspace builds new workspaces from English
+briefs; the loop engine runs them. Underneath, the same
+`composable_loop` iterator gives you full control if you'd rather
+hand-write the agent. **Zero runtime dependencies.**
 </p>
 
 <p class="hero-badges" markdown>
@@ -28,8 +29,8 @@ endpoint or Anthropic directly.
 </p>
 
 <div class="hero-cta">
-  <a href="quickstart/" class="md-button md-button--primary">Quickstart →</a>
-  <a href="tutorial/" class="md-button">5-step tutorial</a>
+  <a href="agent-factory/" class="md-button md-button--primary">Agent factory →</a>
+  <a href="tutorial/" class="md-button">Hand-write an agent</a>
   <a href="https://github.com/hsaghir/looplet" class="md-button">GitHub ⭐</a>
 </div>
 

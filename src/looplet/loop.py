@@ -47,6 +47,19 @@ from looplet.tools import BaseToolRegistry, _summarize_args_dict
 from looplet.types import AgentState, Step, ToolCall, ToolContext, ToolResult
 from looplet.validation import validate_args as _validate_args
 
+
+def _get_persist_threshold() -> int:
+    """Read ``TOOL_RESULT_PERSIST_THRESHOLD_CHARS`` lazily.
+
+    Lazy lookup so tests / runtime tuning that overwrites the
+    constant on the :mod:`looplet.context_budget` module after import
+    sees the new value (the dispatcher reads it on every tool call).
+    """
+    from looplet.context_budget import TOOL_RESULT_PERSIST_THRESHOLD_CHARS  # noqa: PLC0415
+
+    return TOOL_RESULT_PERSIST_THRESHOLD_CHARS
+
+
 if TYPE_CHECKING:
     from looplet.cache import CachePolicy
     from looplet.checkpoint import Checkpoint
@@ -380,6 +393,19 @@ class LoopConfig:
     recovery_temperature: float = 0.1
     # Name of the tool that signals task completion.
     done_tool: str = "done"
+
+    tool_result_persist_dir: str | None = None
+    """Optional directory for Layer-1 persist-and-preview of large
+    tool results. When set, tool results whose serialized size exceeds
+    :data:`looplet.context_budget.TOOL_RESULT_PERSIST_THRESHOLD_CHARS`
+    are written to ``<persist_dir>/tool-output-<hash>.txt`` and the
+    LLM-facing result is replaced with a preview + the file path. The
+    model can then read more on demand via its own file-reading tools.
+
+    Mirrors Claude Code's per-session ``tool-results/`` directory.
+    When ``None`` (default) only inline truncation applies — the full
+    output simply gets capped at ``TOOL_RESULT_MAX_CHARS``.
+    """
 
     max_turn_continuations: int = 0
     """When > 0, ``llm_call_with_retry`` will issue up to this many
@@ -1997,7 +2023,11 @@ def composable_loop(
                 if not (tool_spec and tool_spec.free) and not was_intercepted:
                     state.queries_used += 1
 
-                tool_result.data = truncate_tool_result(tool_result.data)
+                tool_result.data = truncate_tool_result(
+                    tool_result.data,
+                    persist_dir=config.tool_result_persist_dir,
+                    persist_threshold=_get_persist_threshold(),
+                )
 
                 # Emit ToolDispatchEvent
                 if stream is not None and _ToolDispatchEvent is not None:

@@ -420,12 +420,99 @@ class DefaultState:
         return max(0, self.max_steps - len(self.steps))
 
     def context_summary(self) -> str:
+        """Render recent step results into the LLM's context.
+
+        Mirrors Claude Code's tool-result-block pattern: the model
+        sees the **actual data** that previous tools returned, not a
+        digest. This eliminates the fabrication failure mode where
+        the model invents plausible content for a chained tool's
+        argument because the previous step's data was elided.
+
+        Three nested budgets (centralised in
+        :mod:`looplet.context_budget`):
+
+        * ``CONTEXT_WINDOW_STEPS`` — sliding window of recent steps
+          (older are out of scope for this layer; the compact layer
+          handles them).
+        * ``CONTEXT_INLINE_PER_STEP_CHARS`` — per-step soft cap;
+          longer steps get a "[truncated; full result N chars]" tail.
+        * ``CONTEXT_WINDOW_TOTAL_CHARS`` — aggregate cap across the
+          whole window. When exceeded, the largest step contributions
+          are progressively truncated until the total fits.
+        """
         if not self.steps:
             return ""
-        lines = []
-        for step in self.steps[-5:]:
-            lines.append(step.summary() if hasattr(step, "summary") else str(step))
-        return "\n".join(lines)
+
+        # Lazy import keeps the module-import order stable and lets
+        # tests monkeypatch budgets without re-importing types.
+        import json as _json  # noqa: PLC0415
+
+        from looplet.context_budget import (  # noqa: PLC0415
+            CONTEXT_INLINE_PER_STEP_CHARS,
+            CONTEXT_WINDOW_STEPS,
+            CONTEXT_WINDOW_TOTAL_CHARS,
+        )
+
+        # Pass 1: render each step in the window with per-step cap.
+        # The first tuple element is just an ordering tag (we don't use
+        # it for anything but stable iteration) so ``int`` covers both
+        # the real step number and the ``id(step)`` fallback.
+        rendered: list[tuple[int, str]] = []
+        for step in self.steps[-CONTEXT_WINDOW_STEPS:]:
+            tr = getattr(step, "tool_result", None)
+            if tr is None:
+                rendered.append((id(step), str(step)))
+                continue
+            tool_name = getattr(tr, "tool", "?")
+            args_summary = getattr(tr, "args_summary", "") or ""
+            err = getattr(tr, "error", None)
+            data = getattr(tr, "data", None)
+            raw_number = getattr(step, "number", None)
+            number_int = int(raw_number) if isinstance(raw_number, int) else len(rendered) + 1
+            number_label = str(raw_number) if raw_number is not None else str(number_int)
+            if err:
+                block = f"S{number_label} ✗ {tool_name}({args_summary}) → ERROR: {err[:200]}"
+            else:
+                # Show the actual data so the model can reference it
+                # verbatim on the next turn (e.g. pipe ``commits`` from
+                # ``fetch_commits`` into ``group_by_type``). Pre-truncated
+                # at dispatch time by ``truncate_tool_result``; this layer
+                # caps the *serialized* form for prompt assembly.
+                payload = _json.dumps(data, default=str, ensure_ascii=False)
+                if len(payload) > CONTEXT_INLINE_PER_STEP_CHARS:
+                    keep = CONTEXT_INLINE_PER_STEP_CHARS
+                    payload = (
+                        payload[:keep] + f"\n... [truncated; full result {len(payload)} chars]"
+                    )
+                block = f"S{number_label} ✓ {tool_name}({args_summary}) → {payload}"
+            rendered.append((number_int, block))
+
+        # Pass 2: enforce aggregate cap. When the total exceeds budget,
+        # progressively shrink the LARGEST entries (not the most recent)
+        # so the most recent step retains as much detail as possible.
+        # We use a two-pointer / repeated-shrink loop because greedy
+        # one-shot truncation can over-cut a single block when many
+        # blocks are large.
+        def _total(blocks: list[tuple[int, str]]) -> int:
+            return sum(len(b) for _, b in blocks) + (len(blocks) - 1) * 2  # "\n\n" joins
+
+        while _total(rendered) > CONTEXT_WINDOW_TOTAL_CHARS:
+            # Find the largest block index.
+            largest_idx = max(range(len(rendered)), key=lambda i: len(rendered[i][1]))
+            num, block = rendered[largest_idx]
+            # If we can still meaningfully shrink it, halve it; otherwise drop oldest.
+            if len(block) > 200:
+                shrunk_to = max(200, len(block) // 2)
+                rendered[largest_idx] = (
+                    num,
+                    block[:shrunk_to] + f"\n... [aggregate-cap truncated; was {len(block)} chars]",
+                )
+            else:
+                # Every block is already minimal; drop the oldest until under cap.
+                rendered.pop(0)
+                if not rendered:
+                    break
+        return "\n\n".join(b for _, b in rendered)
 
     def snapshot(self) -> dict[str, Any]:
         return {

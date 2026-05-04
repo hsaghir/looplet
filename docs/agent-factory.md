@@ -83,6 +83,90 @@ Load a workspace and run it on a task.
 
 ---
 
+## Wrapping existing tools and data (the killer use case)
+
+Most useful agents aren't built on greenfield Python — they're built on tools and data the team already has: an internal CLI, a vendor SDK, a helper module, a shell script. Naming any of these in the brief makes the factory introspect the real surface and write thin wrappers, instead of hallucinating signatures from training data.
+
+The factory's planning phase recognises three patterns and uses bash + `inspect` to ground itself in the real source:
+
+| Pattern in the brief | What the factory does |
+|---|---|
+| Mentions a CLI on `$PATH` (e.g. `gh`, `kubectl`, `aws`, an internal CLI) | Runs `<cli> --help` and a couple of `<cli> <subcommand> --help` calls; detects `--json` support; writes subprocess-based tool bodies that call the real subcommands |
+| Mentions a Python dotted path (`pkg.module` or `pkg.module:Class`) | Imports it, runs `inspect.signature` on the public callables, and writes tool bodies that call the real methods. For class wraps it uses the workspace `resources/` mechanism: `resources/<name>.py` builds the singleton, every tool declares `requires: [<name>]`, the body looks it up via `ctx.resources["<name>"]` |
+| Mentions a local script (`./scripts/foo.sh`, `~/bin/bar.py`) | Reads the file and writes a subprocess- or import-based wrapper from the actual source |
+
+### Example: wrap the GitHub CLI
+
+```bash
+looplet new "Wrap the gh CLI as a triage agent that surfaces my open PRs and issues that need attention today" \
+    ./gh_triager.workspace
+```
+
+Produces tools like:
+
+```python
+# tools/list_my_prs/execute.py
+import json, subprocess
+
+def execute(ctx, *, limit: int = 20) -> dict:
+    result = subprocess.run(
+        ["gh", "pr", "list", "--author", "@me", "--state", "open",
+         "--limit", str(limit), "--json",
+         "number,title,repository,updatedAt,reviewDecision,isDraft,url"],
+        capture_output=True, text=True, check=True,
+    )
+    return {"prs": json.loads(result.stdout)}
+```
+
+The agent picked the right `--json` field set and the right `--author @me` flag because it ran `gh pr list --help` first.
+
+### Example: wrap an existing Python class
+
+```bash
+looplet new "Wrap mycompany.search:SearchClient as a SOC investigator with search/pivot/scan tools, backed by DuckDBBackend(':memory:')" \
+    ./soc_investigator.workspace
+```
+
+Produces a workspace with the `resources/` mechanism wired correctly:
+
+```python
+# resources/searchclient.py
+from mycompany.search import SearchClient
+from mycompany.backends.duckdb_backend import DuckDBBackend
+
+def build():
+    return SearchClient(DuckDBBackend(":memory:"))
+```
+
+```yaml
+# tools/search/tool.yaml
+name: search
+parameters:
+  pattern: { type: string }
+  window: { type: array, default: null }
+  tables: { type: array, default: null }
+requires:
+  - searchclient
+```
+
+```python
+# tools/search/execute.py
+def execute(ctx, *, pattern, window=None, tables=None) -> dict:
+    ep = ctx.resources["searchclient"]
+    hits = ep.search(pattern, window=window, tables=tables)
+    return {"hits": [h.__dict__ for h in hits], "count": len(hits)}
+```
+
+Every signature matches the real class — including default values like `mode="full"` and `profile_top_k=10` — because the factory ran `inspect.signature` first.
+
+### Why this works without flags
+
+The factory's system prompt tells the agent to introspect *first* (before scaffolding) whenever the brief mentions an existing CLI / module / script. The agent has `bash`, `read_file`, and `multi_edit` tools already; a one-line `bash("python -c 'import inspect; ...'")` is all the introspection it needs. There is no special CLI flag — naming the thing in the brief is enough.
+
+If the brief is purely greenfield ("an agent that takes a URL and returns the title…"), the factory falls through to ordinary scaffold-and-fill behaviour. The introspection step only fires when there's something concrete to wrap.
+
+---
+
 ## What the factory does internally
 
 `agent_factory.workspace` is a workspace itself — see

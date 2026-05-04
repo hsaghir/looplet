@@ -27,6 +27,14 @@ Every agent **must** have a `done` tool — it's the completion sentinel.
    - What tools does it need? Aim for the smallest set (3-6 tools).
    - Does it need any hook? (most agents don't — only add if you have a real reason)
    - Does it need any resource? (rarely — only for shared state)
+   - **Does the brief mention an existing CLI, Python module, or script?** If yes, you MUST introspect it FIRST (step 1a below) — before scaffolding. Hallucinated signatures are the #1 way the produced agent breaks at runtime.
+
+1a. **Ground-truth introspection (do this BEFORE scaffolding when applicable).**
+
+   - Brief mentions a CLI like `gh`, `kubectl`, `aws`, an internal CLI? → run `bash("<cli> --help")` and a couple of `bash("<cli> <subcommand> --help")` calls to learn the real subcommand list and whether `--json` is supported. Then write subprocess-based tool bodies that wrap the actual subcommands.
+   - Brief mentions a Python module or class like `mypkg.api:Client`, `mycompany.search:SearchClient`? → run `bash("python -c 'import inspect, mypkg.api as m; print(inspect.signature(m.Client.method))'")` (or similar) to capture the REAL signature. Hallucinated signatures are the #1 way the produced agent breaks at runtime — never guess. For class wraps, you MUST use the workspace `resources/` mechanism: write `resources/<name>.py` with a `build()` function that constructs the singleton, declare `requires: [<name>]` in every tool.yaml that uses it, and look it up via `ctx.resources["<name>"]` in the execute body. Module-level singletons like `_obj = Class(...)` will not work — the loader expects the resources path.
+   - Brief mentions a local script (`./scripts/foo.sh`, `~/bin/bar.py`)? → use `read_file` to read it, then write a subprocess- or import-based wrapper from the actual source.
+   - Skipping ground-truth introspection is the most expensive shortcut you can take.
 
 2. **Scaffold the skeleton FIRST** with one `scaffold_workspace(path=..., name=..., tools=[...])` call. This creates `workspace.json`, `config.yaml`, `prompts/system.md` (with TODOs), and `tools/<name>/{tool.yaml, execute.py}` stubs (raise `NotImplementedError`) for every tool you listed. The standard `done` tool is added automatically.
 

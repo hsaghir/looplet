@@ -123,8 +123,6 @@ def _factory_workspace_path() -> Path:
 
 
 # ── ``looplet new`` ─────────────────────────────────────────────
-
-
 def cmd_new(args: argparse.Namespace) -> int:
     if _check_env() != 0:
         return 1
@@ -141,7 +139,6 @@ def cmd_new(args: argparse.Namespace) -> int:
         print(_dim(f"  tools:  {', '.join(tools)} (pre-scaffolded)"))
     print(_dim(f"  model:  {os.environ['OPENAI_MODEL']}"))
     print()
-
     try:
         from looplet import composable_loop, workspace_to_preset  # noqa: PLC0415
         from looplet.types import DefaultState  # noqa: PLC0415
@@ -253,8 +250,6 @@ def cmd_new(args: argparse.Namespace) -> int:
 
 
 # ── ``looplet run-workspace`` ───────────────────────────────────
-
-
 def cmd_run_workspace(args: argparse.Namespace) -> int:
     if _check_env() != 0:
         return 1
@@ -334,8 +329,6 @@ def cmd_run_workspace(args: argparse.Namespace) -> int:
 
 
 # ── argparse wiring (called from __main__.main) ─────────────────
-
-
 def add_subparsers(sub: "argparse._SubParsersAction") -> None:
     """Register ``new`` and ``run-workspace`` on the top-level parser.
 

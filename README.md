@@ -28,6 +28,17 @@ looplet run-workspace ./agent.workspace "Summarize https://example.com"
 
 The recording above shows exactly that, end to end on a real LLM and a real URL: build the agent in ~170s, run it on `example.com` in ~12s, get the correct title + LLM summary back. Three minutes, blank dir → working agent.
 
+**Mention an existing CLI or Python module in your brief, and the factory wraps it.**
+The agent's most valuable tools usually exist already — your team's CLIs, internal SDKs, helper modules. Name them in the brief and the factory introspects the real surface and writes thin wrappers around it (no hallucinated signatures).
+
+```bash
+# Wrap the gh CLI as a triage agent (factory runs `gh --help`, picks JSON-supporting subcommands)
+looplet new "Wrap the gh CLI as a triage agent that surfaces my open PRs and issues that need attention today"
+
+# Wrap an existing Python class as agent tools (factory introspects via inspect.signature)
+looplet new "Wrap mycompany.search:SearchClient as a SOC investigator with search/pivot/scan tools, backed by DuckDBBackend(':memory:')"
+```
+
 > Underneath, looplet exposes the agent loop as an iterator, makes
 > every step observable, and lets you compose behaviour with hooks.
 > The factory is built on the same primitives you'd use for a

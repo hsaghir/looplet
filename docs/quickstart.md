@@ -30,7 +30,7 @@ pip install "looplet[anthropic]"
 ```bash
 export OPENAI_BASE_URL=https://api.openai.com/v1   # or Ollama, Groq, Together, vLLM, …
 export OPENAI_API_KEY=sk-…
-export OPENAI_MODEL=gpt-4o-mini
+export OPENAI_MODEL=gpt-5.5
 ```
 
 Run the bundled hello-world to sanity-check the wiring:
@@ -51,7 +51,7 @@ from looplet import (
 )
 
 llm = OpenAIBackend(base_url="https://api.openai.com/v1",
-                    api_key="sk-...", model="gpt-4o-mini")
+                    api_key="sk-...", model="gpt-5.5")
 
 @tool(description="Search the docs.")
 def search(query: str) -> dict:
@@ -121,7 +121,7 @@ from looplet import ProvenanceSink
 
 sink = ProvenanceSink(dir="traces/run_1", redact=lambda s: s.replace("secret", "[REDACTED]"))
 llm  = sink.wrap_llm(OpenAIBackend(base_url="https://api.openai.com/v1",
-                                    api_key="sk-...", model="gpt-4o-mini"))
+                                    api_key="sk-...", model="gpt-5.5"))
 
 for step in composable_loop(llm=llm, tools=tools, hooks=[sink.trajectory_hook()], ...):
     print(step.pretty())

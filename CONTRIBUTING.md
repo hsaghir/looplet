@@ -18,7 +18,7 @@ Then from the repo root:
 ```bash
 make install           # uv sync --all-extras (matches CI)
 make check             # everything CI runs: lint + format + pyright + pytest
-make test              # just the tests (~2s, 1307 tests)
+make test              # just the tests (~2min, 1674 tests)
 make install-hooks     # one-time: install a pre-push git hook that runs `make check`
 ```
 
@@ -68,7 +68,7 @@ Run it before every push, or let the pre-push hook do it for you.
 
 Before opening a PR, please verify:
 
-- [ ] `make check` passes (lint + format + pyright + 1307 tests).
+- [ ] `make check` passes (lint + format + pyright + 1674 tests).
 - [ ] New public API has docstrings and tests.
 - [ ] `CHANGELOG.md` has an entry under `## Unreleased` describing your
       change (unless it's a docs-only or internal refactor with no

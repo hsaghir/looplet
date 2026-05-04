@@ -17,7 +17,7 @@ agent — it's just an agent that builds other agents.
 # 1. Configure any OpenAI-compatible endpoint.
 export OPENAI_BASE_URL=https://api.openai.com/v1   # or http://127.0.0.1:11434/v1 for Ollama, etc.
 export OPENAI_API_KEY=sk-...
-export OPENAI_MODEL=gpt-4o-mini                    # or claude-sonnet-4.6, llama3.1, …
+export OPENAI_MODEL=gpt-5.5                       # or claude-sonnet-4.6, llama3.1, …
 
 # 2. Generate the agent.
 looplet new "an agent that takes a URL and returns the page title and a 2-sentence summary" \
@@ -230,18 +230,7 @@ does under the hood.
 
 ## Quality
 
-The factory has been dogfood-tested on five distinct briefs:
-
-| Agent | Tools | Verdict |
-|---|---|---|
-| `meeting_notes` | extract_decisions, extract_action_items, format_minutes | A — correct minutes from real transcripts |
-| `recipe_finder` | brainstorm_recipes, pick_best | A — pipes real recipes through correctly |
-| `haiku_writer` | brainstorm_imagery, compose_haiku | A — on-topic 5-7-5 haiku |
-| `json_validator` | parse_json, check_required_fields, format_report | A — correct missing-field detection |
-| `git_release_notes` | fetch_commits, group_by_type, format_notes | A — real commit shas, no fabrication |
-
-All five reach `done` end-to-end on real LLM input and produce
-correct, well-formatted output.
+Factory output is validated by the smoke-test suite (`tests/test_cli_new_smoke.py`) and dogfood runs across the canonical briefs in [issue #56](https://github.com/hsaghir/looplet/issues/56). Each produced workspace structurally validates via `workspace_to_preset()`, has a non-empty system prompt and `done` tool, and (for wrap-CLI / wrap-class briefs) uses real signatures from the introspected source.
 
 ---
 

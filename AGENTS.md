@@ -5,9 +5,14 @@
 
 ## What is looplet?
 
-A composable tool-calling loop for LLM agents. You own the loop as a
-Python iterator (`for step in composable_loop(...)`) and inject behavior
-via hook protocols. Zero runtime dependencies. Provider-agnostic.
+A composable tool-calling loop for LLM agents. Zero runtime dependencies. Provider-agnostic.
+
+Agents can be expressed two ways:
+
+- **In Python**: `tools_from([...])` + `LoopConfig(...)` + `composable_loop(...)`. Everything in-process; no files. Best for: in-memory orchestration, sub-agents, library code that *uses* an agent.
+- **As a workspace**: a directory of files (`workspace.json`, `config.yaml`, `prompts/system.md`, `tools/<name>/{tool.yaml, execute.py}`, `resources/<name>.py`) loaded via `workspace_to_preset(path)` into the same loop. Best for: agents you want to *ship*, version, share, or have another agent edit.
+
+The two are isomorphic: `preset_to_workspace(preset, path)` round-trips a Python-built `AgentPreset` to disk; `workspace_to_preset(path)` round-trips back. Pick whichever shape fits the problem; you can switch later.
 
 ## Design principles
 
@@ -26,9 +31,6 @@ Keep looplet minimal, simple, powerful, and familiar to Python users.
 - **Familiar Python:** prefer functions, classes, dataclasses, protocols,
     iterators, and importable factories. Avoid DSLs, magic globals,
     mandatory inheritance, and dependency-heavy plugin systems.
-- **Layered cartridges:** skills and cartridges are packaging and
-    distribution layers over looplet primitives, not a second runtime.
-    Preserve the rule that everything compiles into the core loop story.
 - **Honest conversion:** exact wrappers and blueprint comparisons are
     reliable; expanded source generation should depend on explicit recorded
     recipes, not decompiling arbitrary Python.
@@ -74,6 +76,156 @@ composable_loop(llm, tools, state, config, hooks)
 | `router` | Multi-model routing | `ModelRouter`, `SimpleRouter`, `RoutingLLMBackend` |
 | `streaming` | Event emitters | `StreamingHook`, `EventEmitter`, `CallbackEmitter` |
 | `validation` | Schema enforcement | `ValidatingToolRegistry`, `OutputSchema` |
+
+## Workspace format
+
+A workspace is a directory of files the loader materialises into a runnable agent. Required + optional layout:
+
+```
+my_agent.workspace/
+├── workspace.json          # REQUIRED  {"name": "my_agent", "schema_version": 1}
+├── config.yaml             # REQUIRED  LoopConfig fields: max_steps, system_prompt, ...
+├── prompts/system.md       # REQUIRED  the agent's system prompt
+├── tools/<name>/
+│   ├── tool.yaml           # REQUIRED  name, description, parameters, requires
+│   └── execute.py          # REQUIRED  def execute(ctx, *, ...) -> dict
+├── tools/done/             # REQUIRED  every agent needs a done tool (scaffold_workspace adds it)
+├── resources/<name>.py     # OPTIONAL  shared singletons (DB clients, configs); each exports build()
+├── hooks/<name>/           # OPTIONAL  cross-cutting policy (approval, redaction, ...)
+│   ├── hook.py             #          class FooHook with on_event(self, event, payload)
+│   └── config.yaml         #          class_name + kwargs for instantiation
+└── setup.py                # OPTIONAL  def setup(preset, resources, *, runtime=None) -> preset
+```
+
+`config.yaml` knobs that show up most often:
+
+```yaml
+max_steps: 30                        # LoopConfig.max_steps
+system_prompt_path: prompts/system.md  # alternative to inlining
+temperature: 0.2
+done_tool: done
+
+# Composition: inherit tools, hooks, resources from another workspace.
+# Resolved relative to this workspace's directory.
+extends: ../coder.workspace
+
+# Built-in tools to wire in. Currently shipped: subagent, scaffold_workspace.
+builtin_tools:
+  - subagent
+```
+
+`tool.yaml` for a tool that needs a shared resource:
+
+```yaml
+name: search
+description: |-
+  Search the SIEM for events matching a pattern.
+
+  Usage: pass `pattern` and an optional `window`. Returns up to 100 hits
+  ordered by recency. The body uses ``ctx.resources["siem"]`` so the same
+  client instance is reused across calls.
+parameters:
+  pattern:
+    type: string
+    description: Plain-text pattern to search for.
+  window:
+    type: string
+    description: Time window like '24h' or '7d'.
+    default: "24h"
+requires:
+  - siem      # MUST match resources/siem.py — loader injects ctx.resources["siem"]
+```
+
+`tools/search/execute.py`:
+
+```python
+def execute(ctx, *, pattern: str, window: str = "24h") -> dict:
+    siem = ctx.resources["siem"]            # loader resolved this from resources/siem.py
+    hits = siem.search(pattern, window=window)
+    return {"hits": hits, "count": len(hits)}
+```
+
+`resources/siem.py`:
+
+```python
+"""Shared SIEM client singleton — built once when the workspace loads."""
+from mycompany.siem import SIEMClient
+
+def build():
+    return SIEMClient.from_env()
+```
+
+### Loader rules to know
+
+- **`done` is required.** A workspace without `tools/done/` will load but the loop has no completion sentinel. `scaffold_workspace()` always writes one.
+- **`requires:` must match a `resources/<name>.py`.** Mismatch → tool dispatch raises `KeyError` deep inside `execute()`. Validate workspaces with `workspace_to_preset(path, strict=True)` to catch this at load time.
+- **`extends:` is resolved before this workspace's overrides apply.** Tools/hooks defined locally override inherited ones with the same name.
+- **`setup.py` runs at load time** with `(preset, resources, *, runtime=None, **kwargs)`. Use it to mutate the preset (e.g. add a hook only when `runtime["debug"]` is set). Most workspaces don't need one.
+- **`builtin_tools:` resolves to looplet-shipped tools.** Today: `subagent` (run a sub-loop), `scaffold_workspace` (the agent-facing scaffolder).
+
+### Round-trip API
+
+```python
+from looplet import workspace_to_preset, preset_to_workspace, AgentPreset
+
+# Disk → preset → loop
+preset = workspace_to_preset("./my_agent.workspace", runtime={"workspace": "/path/to/project"})
+# preset.config, preset.tools, preset.hooks, preset.state, preset.llm
+
+# Preset → disk (lossless for declarative presets)
+preset_to_workspace(preset, "./serialised.workspace")
+```
+
+`workspace_to_preset` raises `WorkspaceSerializationError` with a structured message naming the offending file when something is malformed.
+
+---
+
+## Recipe 0 — Scaffold a workspace from Python
+
+This is the agent-facing equivalent of the `looplet new` human CLI: when a coding agent needs to **create a new agent as files**, it calls `scaffold_workspace()` directly and edits the produced files. No factory, no LLM-in-the-loop.
+
+```python
+from pathlib import Path
+from looplet.scaffold import scaffold_workspace
+
+# 1. Create the skeleton. Always idempotent — existing files are preserved.
+root = scaffold_workspace(
+    Path("./url_summariser.workspace"),
+    name="url_summariser",
+    tools=["fetch_url", "extract_title", "summarize_text"],
+)
+# root now contains: workspace.json, config.yaml, prompts/system.md (with TODO markers),
+# and tools/<name>/{tool.yaml, execute.py} stubs that raise NotImplementedError.
+
+# 2. Fill in the system prompt and each tool body. Use ordinary Python file I/O.
+(root / "prompts/system.md").write_text("You are a URL summariser. ...")
+(root / "tools/fetch_url/execute.py").write_text(
+    'import urllib.request\n\n'
+    'def execute(ctx, *, url: str) -> dict:\n'
+    '    return {"html": urllib.request.urlopen(url).read().decode("utf-8")}\n'
+)
+# ... and so on for the other tools.
+
+# 3. Validate before running. Catches missing requires:, empty system prompt,
+#    unfilled NotImplementedError stubs, etc.
+from looplet import workspace_to_preset
+preset = workspace_to_preset(str(root), runtime={"workspace": "."})
+
+# 4. Run.
+from looplet import composable_loop
+for step in composable_loop(
+    llm=my_llm, config=preset.config, tools=preset.tools,
+    state=preset.state, hooks=preset.hooks,
+    task={"goal": "Summarize https://example.com"},
+):
+    print(step.pretty())
+```
+
+`scaffold_workspace(path, *, name, tools, overwrite=False)` raises `FileExistsError` on a non-empty directory unless `overwrite=True`. With `overwrite=True`, files already present are NOT clobbered — safe to re-run after edits.
+
+For class-wraps (singleton resources), write `resources/<name>.py` with a `build()` function and add `requires: [<name>]` to every tool.yaml that uses it. Don't try to construct the singleton at module top-level — the loader expects the `resources/` mechanism so the same instance threads through `ctx.resources["<name>"]` on every dispatch.
+
+---
 
 ## Recipe 1 — Minimal agent (5 lines)
 
@@ -201,11 +353,8 @@ class SecurityGuard:
         if tool_call.tool == "bash":
             cmd = tool_call.args.get("command", "")
             if any(danger in cmd for danger in ["rm -rf", "sudo", "> /dev/"]):
-                from looplet import ToolResult
-                return ToolResult(
-                    tool="bash", args_summary=cmd[:50],
-                    data=None, error="Blocked: dangerous command",
-                )
+                from looplet import Deny
+                return Deny("Blocked: dangerous shell command (rm -rf / sudo / > /dev/).")
         return None  # allow
 
     def post_dispatch(self, state, session_log, tool_call, tool_result, step_num):
@@ -509,7 +658,7 @@ principled fixes in the library; the notes below are the "right way."
 
 ```bash
 uv sync                       # install deps
-uv run pytest                 # full suite (~1062 tests, ~1s)
+uv run pytest                 # full suite (~1674 tests, ~2 min)
 uv run pytest -m smoke        # smoke tests only
 uv run ruff check .           # lint
 uv run ruff format --check .  # format check
@@ -558,8 +707,20 @@ src/looplet/
   cache.py             # Prompt caching
   telemetry.py         # Tracer / MetricsCollector / MetricsHook / TracingHook
   examples/
-    hello_world.py     # Minimal example
+    hello_world.py     # Minimal Python-API example (no workspace)
     coding_agent.py    # Production reference (bash/read/write/edit/glob/grep)
+```
+
+Fully-declarative shipped workspaces live at the repo root under `examples/`:
+
+```
+examples/
+  hello.workspace/             # Two-tool starter; load with workspace_to_preset()
+  coder.workspace/             # Coding agent: bash, read, write, edit, grep, glob, multi_edit
+  dep_doctor.workspace/        # Audits a repo's dependency files
+  git_detective.workspace/     # Investigates repo health from git history
+  threat_intel.workspace/      # Local-first security briefings
+  agent_factory.workspace/     # The factory itself (extends coder.workspace)
 ```
 
 ## Type contracts
@@ -752,8 +913,12 @@ symbols live in `looplet.<module>`.
 | `eval_run_batch` | `evals` | Run many eval scenarios |
 | `minimal_preset` | `presets` | Bare-bones agent preset |
 | `preview_prompt` | `prompts` | Debug: render next prompt |
+| `preset_to_workspace` | `workspace` | Serialise an `AgentPreset` to a workspace directory |
 | `replay_loop` | `provenance` | Replay a recorded trajectory |
 | `research_agent_preset` | `presets` | Pre-built research agent |
 | `run_compact` | `compact` | Invoke a compact service |
 | `run_sub_loop` | `subagent` | Spawn a sub-agent loop |
+| `scaffold_workspace` | `scaffold` | Write a workspace skeleton (workspace.json + config.yaml + tool stubs); idempotent |
+| `workspace_to_preset` | `workspace` | Load a workspace directory into an `AgentPreset` |
+| `WorkspaceSerializationError` | `workspace` | Raised on malformed workspace files; message names the offending file |
 

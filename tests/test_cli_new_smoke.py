@@ -159,7 +159,9 @@ def test_pretty_printer_renders_steps_without_ansi_when_not_tty() -> None:
     # Per-step content present.
     assert "step  1" in out
     assert "hello" in out
+    assert "why" in out
     assert "say hi" in out
+    assert "💭" not in out
     assert "step  2" in out
     assert "permission denied" in out
     # Finish line present with stats.

@@ -1,0 +1,43 @@
+name: todo
+description: |-
+  Manage a session task checklist for coding work. Stores the list in `.coder_scratch/todos.json` inside the project workspace.
+
+  Usage:
+  - Use this at the start of non-trivial tasks to create a short checklist, then update items as work progresses.
+  - `operation="replace"` replaces the whole list with `todos=[{"title": ..., "status": ...}]` items.
+  - `operation="add"` appends one item from `title` (status defaults to `not-started`).
+  - `operation="update"` changes one item by `id`; pass `title`, `status`, and/or `notes`.
+  - `operation="list"` returns the current list without changing it.
+  - `operation="clear"` removes all items after the task is complete.
+  - Status values: `not-started`, `in-progress`, `completed`, `blocked`.
+
+  Examples:
+  - `todo(operation="replace", todos=[{"title": "Add tests", "status": "not-started"}, {"title": "Implement fix", "status": "not-started"}])`
+  - `todo(operation="update", id=2, status="in-progress")`
+parameters:
+  operation:
+    type: string
+    description: One of list, replace, add, update, clear.
+    default: list
+  todos:
+    type: array
+    description: Full replacement list for operation=replace. Each item may include id, title, status, notes.
+    default: []
+  id:
+    type: integer
+    description: Item id for operation=update.
+    default: 0
+  title:
+    type: string
+    description: Item title for operation=add or optional replacement title for operation=update.
+    default: ""
+  status:
+    type: string
+    description: New item status. Use not-started, in-progress, completed, or blocked.
+    default: ""
+  notes:
+    type: string
+    description: Optional notes for operation=add or operation=update.
+    default: ""
+requires:
+  - workspace_config

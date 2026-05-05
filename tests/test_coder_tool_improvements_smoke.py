@@ -11,8 +11,13 @@ Covers:
 
 from __future__ import annotations
 
+import json
+import shutil
+import subprocess
 import sys
 import tempfile
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -181,6 +186,12 @@ def test_bash_tool_runs_safe_command(preset):
         ("list_dir", "tree"),
         ("glob", "pattern"),
         ("grep", "regex"),
+        ("todo", "checklist"),
+        ("web_fetch", "HTTP"),
+        ("subagent", "focused"),
+        ("notebook_edit", "Jupyter"),
+        ("git_inspect", "read-only"),
+        ("worktree", "worktree"),
     ],
 )
 def test_tool_descriptions_are_rich(preset, tool_name, marker):
@@ -232,6 +243,7 @@ def test_write_file_refuses_existing_without_overwrite(preset):
 
 def test_write_file_overwrite_works(preset):
     Path(_workspace(preset), "x.py").write_text("old\n")
+    preset.tools.dispatch(ToolCall(tool="read_file", args={"file_path": "x.py"}))
     r = preset.tools.dispatch(
         ToolCall(
             tool="write_file",
@@ -240,6 +252,33 @@ def test_write_file_overwrite_works(preset):
     )
     assert r.data.get("written") == "x.py"
     assert Path(_workspace(preset), "x.py").read_text() == "new"
+
+
+def test_write_file_overwrite_requires_prior_read(preset):
+    Path(_workspace(preset), "x.py").write_text("old\n")
+    r = preset.tools.dispatch(
+        ToolCall(
+            tool="write_file",
+            args={"file_path": "x.py", "content": "new", "overwrite": True},
+        )
+    )
+    assert r.data.get("missing") == "prior_read"
+    assert "read_file" in r.data.get("recovery", "")
+
+
+def test_write_file_overwrite_refuses_stale_read(preset):
+    target = Path(_workspace(preset), "x.py")
+    target.write_text("old\n")
+    preset.tools.dispatch(ToolCall(tool="read_file", args={"file_path": "x.py"}))
+    target.write_text("user changed\n")
+    r = preset.tools.dispatch(
+        ToolCall(
+            tool="write_file",
+            args={"file_path": "x.py", "content": "new", "overwrite": True},
+        )
+    )
+    assert r.data.get("stale") is True
+    assert target.read_text() == "user changed\n"
 
 
 def test_write_file_creates_parent_dirs(preset):
@@ -363,3 +402,199 @@ def test_bash_repeat_window_only_holds_recent_4(preset):
         preset.tools.dispatch(ToolCall(tool="bash", args={"command": cmd}))
     r = preset.tools.dispatch(ToolCall(tool="bash", args={"command": "echo a"}))
     assert "a" in r.data.get("stdout", "")
+
+
+def test_todo_replace_update_and_persist(preset):
+    r = preset.tools.dispatch(
+        ToolCall(
+            tool="todo",
+            args={
+                "operation": "replace",
+                "todos": [
+                    {"title": "Explore", "status": "completed"},
+                    {"title": "Implement", "status": "in-progress"},
+                ],
+            },
+        )
+    )
+    assert r.data.get("count") == 2
+    assert r.data["todos"][1]["id"] == 2
+    r = preset.tools.dispatch(
+        ToolCall(tool="todo", args={"operation": "update", "id": 2, "status": "completed"})
+    )
+    assert r.data["status_counts"]["completed"] == 2
+    list_result = preset.tools.dispatch(ToolCall(tool="todo", args={"operation": "list"}))
+    assert [item["title"] for item in list_result.data["todos"]] == ["Explore", "Implement"]
+
+
+def test_grep_supports_modes_filters_and_pagination(preset):
+    workspace = Path(_workspace(preset))
+    (workspace / "a.py").write_text("needle one\nneedle two\n")
+    (workspace / "b.txt").write_text("needle text\n")
+    r = preset.tools.dispatch(
+        ToolCall(
+            tool="grep",
+            args={
+                "pattern": "needle",
+                "glob": "*.py",
+                "output_mode": "content",
+                "head_limit": 1,
+            },
+        )
+    )
+    assert r.data.get("count") == 2
+    assert r.data.get("truncated") is True
+    assert r.data.get("matches") == ["a.py:1:needle one"]
+    files = preset.tools.dispatch(
+        ToolCall(
+            tool="grep",
+            args={"pattern": "needle", "glob": "*.py", "output_mode": "files_with_matches"},
+        )
+    )
+    assert files.data.get("filenames") == ["a.py"]
+
+
+def test_web_fetch_extracts_local_html(preset):
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = b"<html><head><title>Docs</title></head><body><h1>Needle Docs</h1><p>Hello from docs.</p></body></html>"
+            self.send_response(200)
+            self.send_header("content-type", "text/html; charset=utf-8")
+            self.send_header("content-length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format, *args):
+            return None
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        url = f"http://127.0.0.1:{server.server_port}/docs"
+        r = preset.tools.dispatch(ToolCall(tool="web_fetch", args={"url": url}))
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert r.data.get("status") == 200
+    assert r.data.get("title") == "Docs"
+    assert "Hello from docs" in r.data.get("text", "")
+
+
+def test_notebook_edit_replaces_cell_after_read(preset):
+    notebook = {
+        "cells": [
+            {
+                "cell_type": "code",
+                "execution_count": None,
+                "id": "abc123",
+                "metadata": {},
+                "outputs": [],
+                "source": ["print('old')\n"],
+            }
+        ],
+        "metadata": {},
+        "nbformat": 4,
+        "nbformat_minor": 5,
+    }
+    path = Path(_workspace(preset), "analysis.ipynb")
+    path.write_text(json.dumps(notebook) + "\n")
+    preset.tools.dispatch(ToolCall(tool="read_file", args={"file_path": "analysis.ipynb"}))
+    r = preset.tools.dispatch(
+        ToolCall(
+            tool="notebook_edit",
+            args={
+                "notebook_path": "analysis.ipynb",
+                "cell_id": "abc123",
+                "new_source": "print('new')\n",
+            },
+        )
+    )
+    assert r.data.get("cell_id") == "abc123"
+    updated = json.loads(path.read_text())
+    assert updated["cells"][0]["source"] == ["print('new')"]
+
+
+def test_notebook_edit_requires_prior_read(preset):
+    path = Path(_workspace(preset), "analysis.ipynb")
+    path.write_text(json.dumps({"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}))
+    r = preset.tools.dispatch(
+        ToolCall(tool="notebook_edit", args={"notebook_path": "analysis.ipynb", "cell_id": "x"})
+    )
+    assert r.data.get("missing") == "prior_read"
+
+
+def test_git_inspect_status(preset):
+    if shutil.which("git") is None:
+        pytest.skip("git not available")
+    workspace = Path(_workspace(preset))
+    subprocess.run(["git", "init"], cwd=workspace, check=True, capture_output=True, text=True)
+    (workspace / "tracked.txt").write_text("hi\n")
+    r = preset.tools.dispatch(ToolCall(tool="git_inspect", args={"operation": "status"}))
+    assert r.data.get("exit_code") == 0
+    assert "tracked.txt" in r.data.get("stdout", "")
+
+
+def test_worktree_create_list_remove_managed_path(preset):
+    if shutil.which("git") is None:
+        pytest.skip("git not available")
+    workspace = Path(_workspace(preset))
+    subprocess.run(["git", "init"], cwd=workspace, check=True, capture_output=True, text=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=workspace, check=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=workspace, check=True)
+    (workspace / "tracked.txt").write_text("hi\n")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=workspace, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "init"], cwd=workspace, check=True, capture_output=True, text=True
+    )
+    created = preset.tools.dispatch(
+        ToolCall(
+            tool="worktree", args={"operation": "create", "name": "experiment", "base_ref": "HEAD"}
+        )
+    )
+    assert created.data.get("exit_code") == 0, created.data
+    worktree_path = Path(created.data["path"])
+    assert worktree_path.exists()
+    listed = preset.tools.dispatch(ToolCall(tool="worktree", args={"operation": "list"}))
+    assert str(worktree_path) in listed.data.get("stdout", "")
+    refused = preset.tools.dispatch(
+        ToolCall(tool="worktree", args={"operation": "remove", "name": "experiment"})
+    )
+    assert "confirm=true" in refused.data.get("error", "")
+    removed = preset.tools.dispatch(
+        ToolCall(
+            tool="worktree", args={"operation": "remove", "name": "experiment", "confirm": True}
+        )
+    )
+    assert removed.data.get("exit_code") == 0, removed.data
+    assert not worktree_path.exists()
+
+
+def test_subagent_direct_dispatch_explains_missing_llm(preset):
+    r = preset.tools.dispatch(ToolCall(tool="subagent", args={"prompt": "Inspect the repo"}))
+    assert "ctx.llm" in r.data.get("error", "")
+
+
+def test_subagent_runs_inside_loop(preset):
+    from looplet import composable_loop
+    from looplet.testing import MockLLMBackend
+
+    llm = MockLLMBackend(
+        responses=[
+            json.dumps({"tool": "subagent", "args": {"prompt": "Think once", "max_steps": 1}}),
+            json.dumps({"tool": "think", "args": {"thought": "sub thought"}}),
+            json.dumps({"tool": "done", "args": {"summary": "subagent complete"}}),
+        ]
+    )
+    steps = list(
+        composable_loop(
+            llm=llm,
+            tools=preset.tools,
+            state=preset.state,
+            config=preset.config,
+            hooks=preset.hooks,
+            task={"q": "run subagent"},
+        )
+    )
+    assert [step.tool_call.tool for step in steps] == ["subagent", "done"]
+    assert steps[0].tool_result.data["step_count"] == 1

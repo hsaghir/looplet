@@ -1,0 +1,38 @@
+name: worktree
+description: |-
+  Manage git worktrees for isolated coding attempts.
+
+  Usage:
+  - `operation="list"` shows current worktrees.
+  - `operation="create"` creates a sibling managed worktree under `<repo>.worktrees/<name>` from `base_ref`.
+  - `operation="remove"` removes a managed worktree and requires `confirm=true`.
+  - Worktree names are sanitized to letters, numbers, dot, dash, and underscore.
+  - This tool only removes paths inside the managed sibling worktree directory.
+
+  Examples:
+  - `worktree(operation="create", name="experiment-auth", base_ref="HEAD")`
+  - `worktree(operation="list")`
+  - `worktree(operation="remove", name="experiment-auth", confirm=true)`
+parameters:
+  operation:
+    type: string
+    description: list, create, or remove.
+    default: list
+  name:
+    type: string
+    description: Managed worktree name for create/remove.
+    default: ""
+  base_ref:
+    type: string
+    description: Git ref to create the worktree from.
+    default: HEAD
+  confirm:
+    type: boolean
+    description: Required true for remove.
+    default: false
+  force:
+    type: boolean
+    description: Pass --force to git worktree remove.
+    default: false
+requires:
+  - workspace_config

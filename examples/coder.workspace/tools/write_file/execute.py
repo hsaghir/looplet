@@ -29,10 +29,11 @@ def execute(
         return {
             "error": f"{file_path!r} is a directory, not a file.",
         }
+    exists = p.exists()
     # Safer-overwrite: refuse to clobber an existing file unless
     # the caller explicitly opts in. This prevents the model from
     # accidentally wiping a file it should have edited instead.
-    if p.exists() and not overwrite:
+    if exists and not overwrite:
         return {
             "error": (
                 f"Refused: {file_path!r} already exists. write_file "
@@ -46,11 +47,31 @@ def execute(
                 f"edit_file(file_path={file_path!r}, ...)  OR  write_file(..., overwrite=True)"
             ),
         }
+    if exists and overwrite and cache is not None:
+        if not cache.was_read(file_path):
+            return {
+                "error": (
+                    f"Cannot overwrite {file_path!r}: this file has not been read "
+                    "in the current session. Call read_file first so the full-file "
+                    "replacement is based on current content."
+                ),
+                "missing": "prior_read",
+                "recovery": f"read_file(file_path={file_path!r})",
+            }
+        if not cache.is_unchanged(file_path):
+            return {
+                "error": (
+                    f"Cannot overwrite {file_path!r}: file was modified since "
+                    "the last read. Re-read it before replacing the full file."
+                ),
+                "stale": True,
+                "recovery": f"read_file(file_path={file_path!r})",
+            }
     atomic_write_text(p, content)
     if cache is not None:
         cache.invalidate(file_path)
     return {
         "written": file_path,
         "lines": content.count("\n") + (0 if content.endswith("\n") or not content else 1),
-        "overwritten": p.exists() and overwrite,
+        "overwritten": exists and overwrite,
     }

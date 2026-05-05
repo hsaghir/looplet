@@ -199,6 +199,28 @@ def _render_transcript(session_log: Any | None, conversation: Any | None) -> tup
     return "", "empty"
 
 
+def _compact_conversation_if_smaller(
+    conversation: Any | None,
+    *,
+    keep_recent: int,
+    summarizer: Callable[[list[Any]], str] | None = None,
+) -> int | None:
+    """Compact a conversation only when the message count shrinks."""
+    if conversation is None or not hasattr(conversation, "compact"):
+        return _message_count(conversation)
+    before = _message_count(conversation)
+    original_messages = list(getattr(conversation, "messages", []))
+    if summarizer is None:
+        conversation.compact(keep_recent=keep_recent)
+    else:
+        conversation.compact(summarizer=summarizer, keep_recent=keep_recent)
+    after = _message_count(conversation)
+    if before is not None and after is not None and after >= before:
+        conversation.messages = original_messages
+        return before
+    return after
+
+
 def _stage_report(name: str, outcome: CompactOutcome) -> dict[str, Any]:
     return {
         "name": name,
@@ -291,9 +313,10 @@ class TruncateCompact:
         compacted_step_range = candidate_step_range if session_was_compacted else None
 
         # Conversation side (optional — most domains don't thread one).
-        if conversation is not None and hasattr(conversation, "compact"):
-            conversation.compact(keep_recent=self.keep_recent)
-        messages_after = _message_count(conversation)
+        messages_after = _compact_conversation_if_smaller(
+            conversation,
+            keep_recent=self.keep_recent,
+        )
 
         return CompactOutcome(
             reason=reason,
@@ -525,12 +548,14 @@ class SummarizeCompact:
                 entries_after=session_entries_after,
             )
             compacted_step_range = candidate_step_range if session_was_compacted else None
-            if conversation is not None and hasattr(conversation, "compact"):
-                conversation.compact(keep_recent=self.keep_recent)
+            messages_after = _compact_conversation_if_smaller(
+                conversation,
+                keep_recent=self.keep_recent,
+            )
             return CompactOutcome(
                 reason=reason,
                 messages_before=messages_before,
-                messages_after=_message_count(conversation),
+                messages_after=messages_after,
                 session_entries_before=session_entries_before,
                 session_entries_after=session_entries_after,
                 compacted_step_range=compacted_step_range,
@@ -610,16 +635,11 @@ class SummarizeCompact:
                 # a splice failure break the loop.
                 pass
 
-        if conversation is not None and hasattr(conversation, "compact"):
-            if summary_text:
-                conversation.compact(
-                    summarizer=lambda _messages: summary_text,
-                    keep_recent=self.keep_recent,
-                )
-            else:
-                conversation.compact(keep_recent=self.keep_recent)
-
-        messages_after = _message_count(conversation)
+        messages_after = _compact_conversation_if_smaller(
+            conversation,
+            keep_recent=self.keep_recent,
+            summarizer=(lambda _messages: summary_text) if summary_text else None,
+        )
         final_summary = summary_text or fallback_summary
         return CompactOutcome(
             reason=reason,

@@ -133,12 +133,15 @@ def cmd_new(args: argparse.Namespace) -> int:
     tools: list[str] = args.tool or []
 
     print(f"{_bold('looplet new')} → {target_dir}")
-    print(_dim(f"  brief:  {description[:80]}{'…' if len(description) > 80 else ''}"))
-    print(_dim(f"  name:   {name}"))
-    if tools:
-        print(_dim(f"  tools:  {', '.join(tools)} (pre-scaffolded)"))
-    print(_dim(f"  model:  {os.environ['OPENAI_MODEL']}"))
-    print()
+    if not getattr(args, "pretty", False):
+        # In --pretty mode the printer renders its own header below;
+        # avoid printing the duplicate banner.
+        print(_dim(f"  brief:  {description[:80]}{'…' if len(description) > 80 else ''}"))
+        print(_dim(f"  name:   {name}"))
+        if tools:
+            print(_dim(f"  tools:  {', '.join(tools)} (pre-scaffolded)"))
+        print(_dim(f"  model:  {os.environ['OPENAI_MODEL']}"))
+        print()
     try:
         from looplet import composable_loop, workspace_to_preset  # noqa: PLC0415
         from looplet.types import DefaultState  # noqa: PLC0415
@@ -176,6 +179,22 @@ def cmd_new(args: argparse.Namespace) -> int:
             f"Workspace name should be: {name}"
         )
 
+    pretty = None
+    if getattr(args, "pretty", False) and not args.quiet:
+        from looplet.cli._pretty import PrettyPrinter  # noqa: PLC0415
+
+        pretty = PrettyPrinter(
+            title=f"looplet new · building {name}",
+            max_steps=preset.config.max_steps,
+        )
+        pretty.header(
+            [
+                f"  brief:  {description[:80]}{'…' if len(description) > 80 else ''}",
+                f"  target: {target_dir}",
+                f"  model:  {os.environ['OPENAI_MODEL']}",
+            ]
+        )
+
     t0 = time.time()
     n_steps = 0
     n_denies = 0
@@ -193,13 +212,17 @@ def cmd_new(args: argparse.Namespace) -> int:
             tool_call = step.tool_call
             tool_result = step.tool_result
             if tool_call is None:
+                if pretty is not None:
+                    pretty.step(step)
                 continue
             err = (tool_result and tool_result.error) or (
                 tool_result.data.get("error") if tool_result and tool_result.data else None
             )
             if err:
                 n_denies += 1
-            if not args.quiet:
+            if pretty is not None:
+                pretty.step(step)
+            elif not args.quiet:
                 tag = _red("✗") if err else _green("✓")
                 short = json.dumps(tool_call.args, default=str)[:80]
                 print(f"  {tag} step {n_steps:>2}: {tool_call.tool}({short})")
@@ -269,9 +292,10 @@ def cmd_run_workspace(args: argparse.Namespace) -> int:
         return 1
 
     print(f"{_bold('looplet run')} {workspace_path}")
-    print(_dim(f"  task:  {task[:100]}{'…' if len(task) > 100 else ''}"))
-    print(_dim(f"  model: {os.environ['OPENAI_MODEL']}"))
-    print()
+    if not getattr(args, "pretty", False):
+        print(_dim(f"  task:  {task[:100]}{'…' if len(task) > 100 else ''}"))
+        print(_dim(f"  model: {os.environ['OPENAI_MODEL']}"))
+        print()
 
     try:
         backend = _build_backend()
@@ -283,6 +307,20 @@ def cmd_run_workspace(args: argparse.Namespace) -> int:
         return 1
 
     state = DefaultState(max_steps=args.max_steps or preset.config.max_steps)
+    pretty = None
+    if getattr(args, "pretty", False) and not args.quiet:
+        from looplet.cli._pretty import PrettyPrinter  # noqa: PLC0415
+
+        pretty = PrettyPrinter(
+            title=f"looplet run · {workspace_path.name}",
+            max_steps=preset.config.max_steps,
+        )
+        pretty.header(
+            [
+                f"  task:  {task[:80]}{'…' if len(task) > 80 else ''}",
+                f"  model: {os.environ['OPENAI_MODEL']}",
+            ]
+        )
     t0 = time.time()
     n_steps = 0
     final_summary: str | None = None
@@ -300,8 +338,12 @@ def cmd_run_workspace(args: argparse.Namespace) -> int:
             tool_call = step.tool_call
             tool_result = step.tool_result
             if tool_call is None:
+                if pretty is not None:
+                    pretty.step(step)
                 continue
-            if not args.quiet:
+            if pretty is not None:
+                pretty.step(step)
+            elif not args.quiet:
                 err = (tool_result and tool_result.error) or (
                     tool_result.data.get("error") if tool_result and tool_result.data else None
                 )
@@ -370,6 +412,11 @@ def add_subparsers(sub: "argparse._SubParsersAction") -> None:
         help="Override the factory's default max_steps (default: 80)",
     )
     new_p.add_argument("--quiet", action="store_true", help="Suppress per-step output")
+    new_p.add_argument(
+        "--pretty",
+        action="store_true",
+        help="Render the build as a live human-friendly trace (boxed header, per-step reasoning + result summary, colored).",
+    )
     new_p.set_defaults(_handler=cmd_new)
 
     run_p = sub.add_parser(
@@ -388,6 +435,11 @@ def add_subparsers(sub: "argparse._SubParsersAction") -> None:
         help="Override the workspace's default max_steps",
     )
     run_p.add_argument("--quiet", action="store_true", help="Suppress per-step output")
+    run_p.add_argument(
+        "--pretty",
+        action="store_true",
+        help="Render the run as a live human-friendly trace (boxed header, per-step reasoning + result summary, colored).",
+    )
     run_p.set_defaults(_handler=cmd_run_workspace)
 
 

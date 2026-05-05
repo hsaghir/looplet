@@ -104,3 +104,84 @@ def test_new_command_registered_on_top_level() -> None:
     out = captured.getvalue()
     assert "new" in out
     assert "run-workspace" in out
+
+
+# ── --pretty (stdlib-only renderer) ────────────────────────────
+
+
+def test_pretty_printer_renders_steps_without_ansi_when_not_tty() -> None:
+    """``PrettyPrinter`` should emit plain text (no escape sequences)
+    when stdout isn't a TTY — keeps CI logs and ``tee`` clean."""
+    import io as _io
+    from types import SimpleNamespace as NS
+
+    # Patch _COLOR off and capture stdout.
+    from looplet.cli import _pretty as p_mod
+    from looplet.cli._pretty import PrettyPrinter
+
+    original = p_mod._COLOR
+    p_mod._COLOR = False
+    captured = _io.StringIO()
+    try:
+        with patch.object(sys, "stdout", captured):
+            printer = PrettyPrinter(title="testing")
+            printer.header(["  task: smoke", "  model: mock"])
+            printer.step(
+                NS(
+                    tool_call=NS(
+                        tool="hello",
+                        args={"who": "world"},
+                        reasoning="say hi",
+                    ),
+                    tool_result=NS(error=None, data={"ok": True}, duration_ms=4.0),
+                )
+            )
+            printer.step(
+                NS(
+                    tool_call=NS(
+                        tool="bash",
+                        args={"command": "ls"},
+                        reasoning="list things",
+                    ),
+                    tool_result=NS(error="permission denied", data=None, duration_ms=1.0),
+                )
+            )
+            printer.finish(summary="finished")
+    finally:
+        p_mod._COLOR = original
+
+    out = captured.getvalue()
+    # No raw ANSI escape sequences leak into the output.
+    assert "\033[" not in out, f"ansi leaked: {out!r}"
+    # Header content present.
+    assert "testing" in out
+    assert "task: smoke" in out
+    # Per-step content present.
+    assert "step  1" in out
+    assert "hello" in out
+    assert "say hi" in out
+    assert "step  2" in out
+    assert "permission denied" in out
+    # Finish line present with stats.
+    assert "done" in out
+    assert "2 steps" in out
+    assert "1 errors" in out
+    assert "agent says: finished" in out
+
+
+def test_new_help_advertises_pretty() -> None:
+    """``looplet new --help`` should mention the --pretty flag."""
+    captured = io.StringIO()
+    with pytest.raises(SystemExit) as exc, patch.object(sys, "stdout", captured):
+        main(["new", "--help"])
+    assert exc.value.code == 0
+    assert "--pretty" in captured.getvalue()
+
+
+def test_run_workspace_help_advertises_pretty() -> None:
+    """``looplet run-workspace --help`` should mention the --pretty flag."""
+    captured = io.StringIO()
+    with pytest.raises(SystemExit) as exc, patch.object(sys, "stdout", captured):
+        main(["run-workspace", "--help"])
+    assert exc.value.code == 0
+    assert "--pretty" in captured.getvalue()

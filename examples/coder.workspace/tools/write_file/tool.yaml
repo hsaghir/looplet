@@ -5,6 +5,7 @@ description: |-
   Usage:
   - Use this for **NEW** files only by default. To modify an existing file, use `edit_file` (preserves the rest of the file and produces a reviewable diff).
   - **Refuses to clobber an existing file** unless you pass `overwrite=true`. This prevents accidental wipes when the model meant `edit_file`.
+  - When overwriting an existing file, the file must have been read in this session and must still match the last read content. If another command, linter, or user changed it, re-read before overwriting.
   - Writes are **atomic** (tmp file + os.replace) so a crash mid-write can't leave a half-written file.
   - Parent directories are created automatically.
   - The path is relative to the project root and must stay inside it (paths escaping via `..` are refused).
@@ -12,11 +13,12 @@ description: |-
 
   Examples:
   - `write_file(file_path="src/utils.py", content="def foo(): ...")` — new file
-  - `write_file(file_path="src/utils.py", content=..., overwrite=True)` — explicit replace of an existing file
+  - `write_file(file_path="src/utils.py", content=..., overwrite=True)` — explicit replace of an existing file after `read_file`
   - DO NOT use this to "update" a file you already read — that's `edit_file`.
 
   Recovery:
-  - "already exists" → use `edit_file` (preferred) or pass `overwrite=True`
+  - "already exists" → use `edit_file` (preferred) or read the file and pass `overwrite=True`
+  - "modified since last read" → call `read_file` again, then retry if replacement is still intentional
 parameters:
   file_path:
     type: string

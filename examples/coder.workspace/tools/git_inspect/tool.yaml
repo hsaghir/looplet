@@ -1,0 +1,29 @@
+name: git_inspect
+description: |-
+  Inspect git repository state with safe, read-only git commands.
+
+  Usage:
+  - Prefer this over ad-hoc `bash` for git status, diffs, changed files, current branch, and recent commits.
+  - This tool never commits, pushes, checks out, resets, or modifies files.
+  - Use `pathspec` to scope `diff`, `diff_stat`, or `changed_files` to one file or directory.
+
+  Examples:
+  - `git_inspect(operation="status")`
+  - `git_inspect(operation="diff", pathspec="src/")`
+  - `git_inspect(operation="recent", max_count=5)`
+parameters:
+  operation:
+    type: string
+    description: status, diff, diff_stat, branch, recent, or changed_files.
+    default: status
+  pathspec:
+    type: string
+    description: Optional git pathspec for diff operations.
+    default: ""
+  max_count:
+    type: integer
+    description: Maximum recent commits for operation=recent.
+    default: 10
+concurrent_safe: true
+requires:
+  - workspace_config

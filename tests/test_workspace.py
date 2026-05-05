@@ -483,7 +483,7 @@ def test_coder_workspace_loads_with_shared_filecache(tmp_path) -> None:
         FileCache, StaleFile, Stagnation, ThresholdCompact, PerToolLimit
         from YAML; LinterHook + EvalHook appended by setup.py to match
         looplet.examples coder reference feature-for-feature)
-      * 9 tools (bash/list_dir/read/write/edit/glob/grep/think/done) load
+    * Coder tools (bash/list_dir/read/write/edit/glob/grep/think/done plus optional helpers) load
       * FileCacheHook and StaleFileHook share the SAME FileCache instance
         via @file_cache (proves the shared-resource registry under load)
       * setup.py wires WORKSPACE_CONFIG + FILE_CACHE module globals into
@@ -522,12 +522,18 @@ def test_coder_workspace_loads_with_shared_filecache(tmp_path) -> None:
         "bash",
         "done",
         "edit_file",
+        "git_inspect",
         "glob",
         "grep",
         "list_dir",
         "multi_edit",
+        "notebook_edit",
         "read_file",
+        "subagent",
         "think",
+        "todo",
+        "web_fetch",
+        "worktree",
         "write_file",
     ]
 
@@ -798,12 +804,18 @@ def test_coder_workspace_bidirectional_round_trip(tmp_path) -> None:
         "bash",
         "done",
         "edit_file",
+        "git_inspect",
         "glob",
         "grep",
         "list_dir",
         "multi_edit",
+        "notebook_edit",
         "read_file",
+        "subagent",
         "think",
+        "todo",
+        "web_fetch",
+        "worktree",
         "write_file",
     ]
 

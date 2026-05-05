@@ -12,10 +12,10 @@ this module exposes it as a **service** so users can:
 * Trigger compaction manually from a hook at any time by calling
   :func:`run_compact`.
 
-The default service :class:`DefaultCompactService` preserves the
-existing three-strategy chain (aggressive budget → reactive compact →
-clear old results) so existing behavior is unchanged when no service
-is configured.
+The default service :class:`DefaultCompactService` is the recommended
+production starting point: it prunes old bulky tool payloads, preserves
+the older working session in a compact summary, and falls back to
+deterministic truncation when the summariser cannot help.
 """
 
 from __future__ import annotations
@@ -30,10 +30,12 @@ if TYPE_CHECKING:
 __all__ = [
     "CompactService",
     "CompactOutcome",
+    "DefaultCompactService",
     "TruncateCompact",
     "SummarizeCompact",
     "PruneToolResults",
     "compact_chain",
+    "default_compact_service",
     "run_compact",
 ]
 
@@ -50,6 +52,10 @@ class CompactOutcome:
     reason: str = ""
     messages_before: int | None = None
     messages_after: int | None = None
+    session_entries_before: int | None = None
+    session_entries_after: int | None = None
+    compacted_step_range: tuple[int, int] | None = None
+    summary: str = ""
     llm_calls_spent: int = 0
     extra: dict[str, Any] | None = None
     cleanup: "Callable[[], None] | None" = None
@@ -63,9 +69,10 @@ class CompactOutcome:
     def compacted(self) -> bool:
         """True when the compaction actually reduced context size.
 
-        Checks ``messages_before`` vs ``messages_after`` when both are
-        set; also returns True when ``extra`` contains a positive
-        ``"cleared"`` count (from :class:`PruneToolResults`).
+        Checks conversation message counts, session-log entry counts,
+        explicit compacted step ranges, and tool-result pruning counts.
+        This keeps chained services honest when a stage mutates only
+        one history surface.
         """
         if (
             self.messages_before is not None
@@ -73,9 +80,32 @@ class CompactOutcome:
             and self.messages_after < self.messages_before
         ):
             return True
+        if (
+            self.session_entries_before is not None
+            and self.session_entries_after is not None
+            and self.session_entries_after < self.session_entries_before
+        ):
+            return True
+        if self.compacted_step_range is not None:
+            return True
         if self.extra and self.extra.get("cleared", 0) > 0:
             return True
         return False
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a small JSON-able summary for lifecycle events and tests."""
+        return {
+            "reason": self.reason,
+            "messages_before": self.messages_before,
+            "messages_after": self.messages_after,
+            "session_entries_before": self.session_entries_before,
+            "session_entries_after": self.session_entries_after,
+            "compacted_step_range": self.compacted_step_range,
+            "summary": self.summary,
+            "llm_calls_spent": self.llm_calls_spent,
+            "compacted": self.compacted,
+            "extra": dict(self.extra or {}),
+        }
 
 
 @runtime_checkable
@@ -99,6 +129,124 @@ class CompactService(Protocol):
         step_num: int,
         reason: str,
     ) -> CompactOutcome: ...
+
+
+def _message_count(conversation: Any | None) -> int | None:
+    if conversation is None or not hasattr(conversation, "messages"):
+        return None
+    return len(conversation.messages)
+
+
+def _session_entry_count(session_log: Any | None) -> int | None:
+    if session_log is None or not hasattr(session_log, "entries"):
+        return None
+    return len(session_log.entries)
+
+
+def _older_entries(entries: list[Any], keep_recent: int) -> list[Any]:
+    if keep_recent <= 0:
+        return list(entries)
+    return list(entries[:-keep_recent])
+
+
+def _compacted_step_range(session_log: Any | None, keep_recent: int) -> tuple[int, int] | None:
+    if session_log is None or not hasattr(session_log, "entries"):
+        return None
+    entries = _older_entries(list(session_log.entries), keep_recent)
+    compactable = [
+        entry
+        for entry in entries
+        if getattr(entry, "tool", "") not in {"__summary__", "__compact_summary__"}
+        and isinstance(getattr(entry, "step", None), int)
+        and getattr(entry, "step") > 0
+    ]
+    if not compactable:
+        return None
+    return (compactable[0].step, compactable[-1].step)
+
+
+def _session_log_was_compacted(
+    *,
+    summary: str,
+    entries_before: int | None,
+    entries_after: int | None,
+) -> bool:
+    return bool(
+        summary
+        or (
+            entries_before is not None
+            and entries_after is not None
+            and entries_after < entries_before
+        )
+    )
+
+
+def _render_transcript(session_log: Any | None, conversation: Any | None) -> tuple[str, str]:
+    if session_log is not None and hasattr(session_log, "render"):
+        try:
+            rendered = session_log.render() or ""
+        except Exception:  # noqa: BLE001
+            rendered = ""
+        if rendered.strip():
+            return rendered, "session_log"
+    if conversation is not None and hasattr(conversation, "render"):
+        try:
+            rendered = conversation.render() or ""
+        except Exception:  # noqa: BLE001
+            rendered = ""
+        if rendered.strip():
+            return rendered, "conversation"
+    return "", "empty"
+
+
+def _stage_report(name: str, outcome: CompactOutcome) -> dict[str, Any]:
+    return {
+        "name": name,
+        "compacted": outcome.compacted,
+        "messages_before": outcome.messages_before,
+        "messages_after": outcome.messages_after,
+        "session_entries_before": outcome.session_entries_before,
+        "session_entries_after": outcome.session_entries_after,
+        "compacted_step_range": outcome.compacted_step_range,
+        "llm_calls_spent": outcome.llm_calls_spent,
+        "mode": (outcome.extra or {}).get("mode"),
+        "cleared": (outcome.extra or {}).get("cleared", 0),
+    }
+
+
+def _merge_outcomes(reason: str, outcomes: list[tuple[str, CompactOutcome]]) -> CompactOutcome:
+    """Combine several stage outcomes into one production-facing report."""
+    if not outcomes:
+        return CompactOutcome(reason=reason)
+    first = outcomes[0][1]
+    last = outcomes[-1][1]
+    step_ranges = [out.compacted_step_range for _, out in outcomes if out.compacted_step_range]
+    compacted_step_range = None
+    if step_ranges:
+        compacted_step_range = (min(r[0] for r in step_ranges), max(r[1] for r in step_ranges))
+    summary = next((out.summary for _, out in outcomes if out.summary), "")
+    stages = [_stage_report(name, out) for name, out in outcomes]
+    extra: dict[str, Any] = {
+        "mode": "default",
+        "stages": stages,
+        "stage_count": len(outcomes),
+    }
+    for _, out in outcomes:
+        if out.extra:
+            for key in ("cleared",):
+                if key in out.extra:
+                    extra[key] = extra.get(key, 0) + out.extra[key]
+    return CompactOutcome(
+        reason=reason,
+        messages_before=first.messages_before,
+        messages_after=last.messages_after,
+        session_entries_before=first.session_entries_before,
+        session_entries_after=last.session_entries_after,
+        compacted_step_range=compacted_step_range,
+        summary=summary,
+        llm_calls_spent=sum(out.llm_calls_spent for _, out in outcomes),
+        extra=extra,
+    )
 
 
 class TruncateCompact:
@@ -130,19 +278,33 @@ class TruncateCompact:
         # Session-log side.
         from looplet.scaffolding import emergency_truncate  # noqa: PLC0415
 
-        messages_before = len(conversation.messages) if conversation is not None else None
-        emergency_truncate(state, session_log, keep_recent=self.keep_recent)
+        messages_before = _message_count(conversation)
+        session_entries_before = _session_entry_count(session_log)
+        candidate_step_range = _compacted_step_range(session_log, self.keep_recent)
+        summary = emergency_truncate(state, session_log, keep_recent=self.keep_recent) or ""
+        session_entries_after = _session_entry_count(session_log)
+        session_was_compacted = _session_log_was_compacted(
+            summary=summary,
+            entries_before=session_entries_before,
+            entries_after=session_entries_after,
+        )
+        compacted_step_range = candidate_step_range if session_was_compacted else None
 
         # Conversation side (optional — most domains don't thread one).
         if conversation is not None and hasattr(conversation, "compact"):
             conversation.compact(keep_recent=self.keep_recent)
-        messages_after = len(conversation.messages) if conversation is not None else None
+        messages_after = _message_count(conversation)
 
         return CompactOutcome(
             reason=reason,
             messages_before=messages_before,
             messages_after=messages_after,
+            session_entries_before=session_entries_before,
+            session_entries_after=session_entries_after,
+            compacted_step_range=compacted_step_range,
+            summary=summary,
             llm_calls_spent=0,
+            extra={"mode": "truncate", "keep_recent": self.keep_recent},
         )
 
 
@@ -202,6 +364,7 @@ def run_compact(
         messages_before=outcome.messages_before,
         messages_after=outcome.messages_after,
         reason=reason,
+        outcome=outcome,
     )
 
     # Post-compact cleanup callback — domain-specific state resets.
@@ -228,6 +391,7 @@ def _emit_compact_event(
     messages_before: int | None,
     messages_after: int | None = None,
     reason: str,
+    outcome: CompactOutcome | None = None,
 ) -> list[Any]:
     """Dispatch a compact lifecycle event via ``on_event``.
 
@@ -244,7 +408,7 @@ def _emit_compact_event(
         session_log=session_log,
         messages_before=messages_before,
         messages_after=messages_after,
-        extra={"reason": reason},
+        extra={"reason": reason, **({"outcome": outcome.to_dict()} if outcome else {})},
     )
     decisions: list[HookDecision] = []
     for hook in hooks:
@@ -301,9 +465,10 @@ class SummarizeCompact:
     """Ask the LLM to summarise the session, then keep N recent entries.
 
     Spends one LLM call to produce a dense 4-section summary (goal,
-    findings, open questions, recent decisions), spliced into the
-    session log before the recent entries. Falls back to deterministic
-    keep-recent on any summariser error — compaction always succeeds.
+    findings, open questions, recent decisions). When the session log
+    is long enough to shorten, the summary is spliced in before the
+    recent entries. Falls back to deterministic keep-recent on any
+    summariser error — compaction always succeeds.
 
     Prefer for long-running autonomous sessions where reasoning-chain
     preservation matters. Avoid for sub-second latency budgets or
@@ -340,28 +505,38 @@ class SummarizeCompact:
             llm_call_with_retry,
         )
 
-        messages_before = len(conversation.messages) if conversation is not None else None
+        messages_before = _message_count(conversation)
+        session_entries_before = _session_entry_count(session_log)
+        candidate_step_range = _compacted_step_range(session_log, self.keep_recent)
 
         # 1. Build transcript text: session_log.render() is the
-        #    single source of truth for what the agent has seen.
-        transcript = ""
-        if hasattr(session_log, "render"):
-            try:
-                transcript = session_log.render() or ""
-            except Exception:  # noqa: BLE001
-                transcript = ""
+        #    preferred source of truth for what the agent has seen;
+        #    conversation.render() is the fallback for loops that do
+        #    not thread a SessionLog.
+        transcript, transcript_source = _render_transcript(session_log, conversation)
 
         # Short-circuit: nothing to compact.
         if not transcript.strip():
-            emergency_truncate(state, session_log, keep_recent=self.keep_recent)
+            summary = emergency_truncate(state, session_log, keep_recent=self.keep_recent) or ""
+            session_entries_after = _session_entry_count(session_log)
+            session_was_compacted = _session_log_was_compacted(
+                summary=summary,
+                entries_before=session_entries_before,
+                entries_after=session_entries_after,
+            )
+            compacted_step_range = candidate_step_range if session_was_compacted else None
             if conversation is not None and hasattr(conversation, "compact"):
                 conversation.compact(keep_recent=self.keep_recent)
             return CompactOutcome(
                 reason=reason,
                 messages_before=messages_before,
-                messages_after=(len(conversation.messages) if conversation is not None else None),
+                messages_after=_message_count(conversation),
+                session_entries_before=session_entries_before,
+                session_entries_after=session_entries_after,
+                compacted_step_range=compacted_step_range,
+                summary=summary,
                 llm_calls_spent=0,
-                extra={"mode": "empty_fallback"},
+                extra={"mode": "empty_fallback", "transcript_source": transcript_source},
             )
 
         # Escape curly braces in transcript before str.format() — tool
@@ -394,15 +569,24 @@ class SummarizeCompact:
             import logging  # noqa: PLC0415
 
             logging.getLogger(__name__).exception(
-                "LLMCompactService summary call raised; falling back",
+                "SummarizeCompact summary call raised; falling back",
             )
 
         # 3. Apply compaction. Deterministic keep-recent runs either
         #    way (so the log is actually shorter); the summary is
         #    spliced in as a synthetic entry.
-        emergency_truncate(state, session_log, keep_recent=self.keep_recent)
+        fallback_summary = (
+            emergency_truncate(state, session_log, keep_recent=self.keep_recent) or ""
+        )
+        session_entries_after_truncate = _session_entry_count(session_log)
+        session_was_compacted = _session_log_was_compacted(
+            summary=fallback_summary,
+            entries_before=session_entries_before,
+            entries_after=session_entries_after_truncate,
+        )
+        compacted_step_range = candidate_step_range if session_was_compacted else None
 
-        if summary_text and hasattr(session_log, "entries"):
+        if summary_text and session_was_compacted and hasattr(session_log, "entries"):
             try:
                 from looplet.session import LogEntry  # noqa: PLC0415
 
@@ -427,17 +611,29 @@ class SummarizeCompact:
                 pass
 
         if conversation is not None and hasattr(conversation, "compact"):
-            conversation.compact(keep_recent=self.keep_recent)
+            if summary_text:
+                conversation.compact(
+                    summarizer=lambda _messages: summary_text,
+                    keep_recent=self.keep_recent,
+                )
+            else:
+                conversation.compact(keep_recent=self.keep_recent)
 
-        messages_after = len(conversation.messages) if conversation is not None else None
+        messages_after = _message_count(conversation)
+        final_summary = summary_text or fallback_summary
         return CompactOutcome(
             reason=reason,
             messages_before=messages_before,
             messages_after=messages_after,
+            session_entries_before=session_entries_before,
+            session_entries_after=_session_entry_count(session_log),
+            compacted_step_range=compacted_step_range,
+            summary=final_summary,
             llm_calls_spent=llm_calls_spent,
             extra={
                 "mode": "llm_summary" if summary_text else "llm_fallback",
                 "summary_chars": len(summary_text) if summary_text else 0,
+                "transcript_source": transcript_source,
             },
         )
 
@@ -492,8 +688,14 @@ class PruneToolResults:
         step_num: int,
         reason: str,
     ) -> CompactOutcome:
+        session_entries_before = _session_entry_count(session_log)
         if conversation is None or not hasattr(conversation, "messages"):
-            return CompactOutcome(reason=reason, extra={"mode": "no_conversation"})
+            return CompactOutcome(
+                reason=reason,
+                session_entries_before=session_entries_before,
+                session_entries_after=_session_entry_count(session_log),
+                extra={"mode": "no_conversation"},
+            )
 
         from looplet.conversation import MessageRole  # noqa: PLC0415
 
@@ -527,9 +729,134 @@ class PruneToolResults:
             reason=reason,
             messages_before=messages_before,
             messages_after=messages_before,  # structure unchanged
+            session_entries_before=session_entries_before,
+            session_entries_after=_session_entry_count(session_log),
             llm_calls_spent=0,
             extra={"mode": "prune", "cleared": cleared},
         )
+
+
+# ── Production default ───────────────────────────────────────────
+
+
+class DefaultCompactService:
+    """Recommended production compaction service.
+
+    The service keeps looplet's core simple by composing ordinary
+    compaction stages:
+
+    1. :class:`PruneToolResults` clears old bulky tool payloads while
+       keeping conversation structure intact.
+    2. :class:`SummarizeCompact` preserves older working context in a
+       concise summary and keeps recent entries verbatim.
+    3. :class:`TruncateCompact` runs only if the first two stages had
+       no effect, providing a deterministic last-resort fallback.
+
+    Use this when you want the normal, production-ready behaviour and
+    do not need to choose individual stages yourself. Use
+    :func:`compact_chain` or your own :class:`CompactService` when you
+    want a different policy.
+    """
+
+    def __init__(
+        self,
+        *,
+        keep_recent: int = 2,
+        keep_recent_tool_results: int = 5,
+        use_llm_summary: bool = True,
+        summary_max_chars: int = 4000,
+        summary_max_tokens: int = 1200,
+        compactable_tools: frozenset[str] | None = None,
+    ) -> None:
+        self.keep_recent = keep_recent
+        self.keep_recent_tool_results = keep_recent_tool_results
+        self.use_llm_summary = use_llm_summary
+        self.prune = PruneToolResults(
+            keep_recent=keep_recent_tool_results,
+            compactable_tools=compactable_tools,
+        )
+        self.summarize: CompactService
+        if use_llm_summary:
+            self.summarize = SummarizeCompact(
+                keep_recent=keep_recent,
+                summary_max_chars=summary_max_chars,
+                summary_max_tokens=summary_max_tokens,
+            )
+        else:
+            self.summarize = TruncateCompact(keep_recent=keep_recent)
+        self.fallback = TruncateCompact(keep_recent=max(1, keep_recent))
+
+    def compact(
+        self,
+        *,
+        state: AgentState,
+        session_log: SessionLog,
+        llm: LLMBackend,
+        conversation: Any | None,
+        step_num: int,
+        reason: str,
+    ) -> CompactOutcome:
+        outcomes: list[tuple[str, CompactOutcome]] = []
+
+        prune_outcome = self.prune.compact(
+            state=state,
+            session_log=session_log,
+            llm=llm,
+            conversation=conversation,
+            step_num=step_num,
+            reason=reason,
+        )
+        outcomes.append(("prune_tool_results", prune_outcome))
+
+        summarize_outcome = self.summarize.compact(
+            state=state,
+            session_log=session_log,
+            llm=llm,
+            conversation=conversation,
+            step_num=step_num,
+            reason=reason,
+        )
+        outcomes.append(
+            ("summarize_context" if self.use_llm_summary else "truncate_context", summarize_outcome)
+        )
+
+        if not any(outcome.compacted for _, outcome in outcomes):
+            fallback_outcome = self.fallback.compact(
+                state=state,
+                session_log=session_log,
+                llm=llm,
+                conversation=conversation,
+                step_num=step_num,
+                reason=reason,
+            )
+            outcomes.append(("fallback_truncate", fallback_outcome))
+
+        merged = _merge_outcomes(reason, outcomes)
+        if merged.extra is None:
+            merged.extra = {}
+        merged.extra.update(
+            {
+                "mode": "default",
+                "keep_recent": self.keep_recent,
+                "keep_recent_tool_results": self.keep_recent_tool_results,
+                "use_llm_summary": self.use_llm_summary,
+            }
+        )
+        return merged
+
+
+def default_compact_service(**kwargs: Any) -> DefaultCompactService:
+    """Return the recommended production compaction service.
+
+    This small factory is convenient in workspace resource builders::
+
+        from looplet import default_compact_service
+
+        def build(runtime=None):
+            return default_compact_service(keep_recent=3)
+    """
+
+    return DefaultCompactService(**kwargs)
 
 
 # ── Chained compaction ───────────────────────────────────────────
@@ -594,13 +921,7 @@ class _CompactChain:
             total_llm += outcome.llm_calls_spent
 
             # Did this stage have an effect?
-            _shrank = (
-                outcome.messages_before is not None
-                and outcome.messages_after is not None
-                and outcome.messages_after < outcome.messages_before
-            )
-            _pruned = outcome.extra is not None and outcome.extra.get("cleared", 0) > 0
-            if _shrank or _pruned or i == len(self._stages) - 1:
+            if outcome.compacted or i == len(self._stages) - 1:
                 outcome.llm_calls_spent = total_llm
                 if outcome.extra is None:
                     outcome.extra = {}

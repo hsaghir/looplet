@@ -61,7 +61,7 @@ composable_loop(llm, tools, state, config, hooks)
 | `tools` | Tool schema inference, registry & dispatch | `@tool`, `tools_from`, `BaseToolRegistry`, `ToolSpec` |
 | `backends` | LLM adapters | `OpenAIBackend`, `AnthropicBackend`, `AsyncOpenAIBackend` |
 | `permissions` | Declarative permission engine | `PermissionEngine`, `PermissionHook`, `PermissionRule` |
-| `compact` | Context management | `compact_chain`, `PruneToolResults`, `SummarizeCompact`, `TruncateCompact` |
+| `compact` | Context management | `DefaultCompactService`, `compact_chain`, `PruneToolResults`, `SummarizeCompact`, `TruncateCompact` |
 | `checkpoint` | Crash-resume | `FileCheckpointStore`, `resume_loop_state` |
 | `hooks` | Hook decisions | `HookDecision`, `InjectContext`, `Allow`, `Deny`, `Block`, `Stop` |
 | `skills` | Composable bundles | `Skill` |
@@ -270,7 +270,7 @@ for step in composable_loop(
 from looplet import (
     composable_loop, LoopConfig, DefaultState, tool, tools_from,
     HookDecision, InjectContext, StaticMemorySource,
-    compact_chain, PruneToolResults, SummarizeCompact, TruncateCompact,
+    DefaultCompactService,
     ContextBudget, ThresholdCompactHook, EvalHook,
 )
 
@@ -310,11 +310,7 @@ class MyHook:
 config = LoopConfig(
     max_steps=20,
     system_prompt="You are a Python developer. Use bash for tests.",
-    compact_service=compact_chain(
-        PruneToolResults(keep_recent=5),
-        SummarizeCompact(keep_recent=2),
-        TruncateCompact(keep_recent=1),
-    ),
+    compact_service=DefaultCompactService(keep_recent=2, keep_recent_tool_results=5),
     memory_sources=[StaticMemorySource("Always write tests first.")],
 )
 
@@ -583,7 +579,7 @@ def check_done(self, state, session_log, context, step_num):
 ```python
 config = LoopConfig(
     memory_sources=[StaticMemorySource("Always use type hints. Write tests first.")],
-    compact_service=compact_chain(...),
+    compact_service=DefaultCompactService(),
 )
 ```
 
@@ -857,6 +853,7 @@ symbols live in `looplet.<module>`.
 | `ContextBudget` | `budget` | Context window thresholds |
 | `Continue` | `hook_decision` | Factory: explicit no-op |
 | `Conversation` | `conversation` | Message thread container |
+| `DefaultCompactService` | `compact` | Recommended production compaction service |
 | `DefaultState` | `types` | Built-in `AgentState` impl |
 | `Deny` | `hook_decision` | Factory: deny permission |
 | `DomainAdapter` | `loop` | Bundle domain callables |
@@ -905,6 +902,7 @@ symbols live in `looplet.<module>`.
 | `coding_agent_preset` | `presets` | Pre-built coding agent |
 | `compact_chain` | `compact` | Chain compaction strategies |
 | `composable_loop` | `loop` | **The loop generator** |
+| `default_compact_service` | `compact` | Factory for the recommended compaction service |
 | `emit_event` | `loop` | Fire a `LifecycleEvent` to hooks |
 | `eval_cli` | `evals` | CLI entry for evals |
 | `eval_discover` | `evals` | Find eval scenarios |

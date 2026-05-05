@@ -7,9 +7,10 @@ frameworks, shown as one agent that actually needs them:
   freely, but calling ``delete_rows`` must get human sign-off. The
   sync handler blocks on ``input()`` until you approve / deny.
 
-* **Compact** — ``compact_chain(PruneToolResults, TruncateCompact)``
-  fires whenever the session grows past a tiny 4 000-token budget,
-  so you'll actually watch it happen on a normal-sized run.
+* **Compact** — ``DefaultCompactService`` fires whenever the session
+    grows past a tiny 4 000-token budget, so you'll actually watch it
+    happen on a normal-sized run. This example disables the summary LLM
+    call so scripted/offline runs stay deterministic.
 
 * **Checkpoints** — every step is serialised to
   ``./checkpoints/data_agent/``. Kill the script (Ctrl-C) mid-run
@@ -46,13 +47,11 @@ from pathlib import Path
 from looplet import (
     ApprovalHook,
     ContextBudget,
+    DefaultCompactService,
     DefaultState,
     LoopConfig,
     MockLLMBackend,
-    PruneToolResults,
     ThresholdCompactHook,
-    TruncateCompact,
-    compact_chain,
     composable_loop,
     probe_native_tool_support,
     tool,
@@ -238,10 +237,11 @@ def main(argv: list[str] | None = None) -> int:
 
     tools = build_tools()
 
-    # ── Compact: two-stage chain, tiny budget so it fires on a short run.
-    compact_service = compact_chain(
-        PruneToolResults(keep_recent=3),
-        TruncateCompact(keep_recent=4),
+    # ── Compact: default service, tiny budget so it fires on a short run.
+    compact_service = DefaultCompactService(
+        keep_recent=4,
+        keep_recent_tool_results=3,
+        use_llm_summary=False,
     )
     budget = ContextBudget(
         context_window=4_000,

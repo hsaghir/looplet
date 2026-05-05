@@ -13,6 +13,7 @@ from looplet import (
 )
 from looplet.compact import (
     CompactOutcome,
+    DefaultCompactService,
     PruneToolResults,
     SummarizeCompact,
     TruncateCompact,
@@ -227,6 +228,32 @@ class TestCompactChain:
         )
         assert out.extra["chain_stage"] == 0
 
+    def test_session_log_only_compaction_counts_as_effective(self):
+        class SessionOnlyCompact:
+            def compact(self, *, session_log, reason, **kwargs):
+                before = len(session_log.entries)
+                del session_log.entries[:-1]
+                return CompactOutcome(
+                    reason=reason,
+                    session_entries_before=before,
+                    session_entries_after=len(session_log.entries),
+                    compacted_step_range=(1, before - 1),
+                    extra={"mode": "session_only"},
+                )
+
+        chain = compact_chain(SessionOnlyCompact(), TruncateCompact(keep_recent=1))
+        log = _log(5)
+        out = chain.compact(
+            state=type("S", (), {"steps": []})(),
+            session_log=log,
+            llm=None,
+            conversation=None,
+            step_num=5,
+            reason="test",
+        )
+        assert out.extra["chain_stage"] == 0
+        assert len(log.entries) == 1
+
 
 # ── CompactOutcome.cleanup ───────────────────────────────────────
 
@@ -324,3 +351,85 @@ class TestLoopIntegration:
             )
         )
         assert len(steps) == 2
+
+
+class _SummaryLLM:
+    def __init__(self, text: str = "LLM summary kept") -> None:
+        self.text = text
+        self.calls = 0
+
+    def generate(self, prompt, *, max_tokens=2000, system_prompt="", temperature=0.2):
+        self.calls += 1
+        return self.text
+
+
+class TestSummarizeCompact:
+    def test_reuses_llm_summary_for_conversation_boundary(self):
+        conv = _conv_with_tool_results(5)
+        log = _log(5)
+        llm = _SummaryLLM("TASK: preserve this summary")
+        out = SummarizeCompact(keep_recent=2).compact(
+            state=type("S", (), {"steps": []})(),
+            session_log=log,
+            llm=llm,
+            conversation=conv,
+            step_num=5,
+            reason="test",
+        )
+        assert out.summary == "TASK: preserve this summary"
+        boundaries = conv.find_compaction_boundaries()
+        assert boundaries
+        assert boundaries[-1].metadata["summary"] == "TASK: preserve this summary"
+        assert out.session_entries_after < out.session_entries_before
+
+    def test_short_session_log_does_not_grow(self):
+        conv = _conv_with_tool_results(4)
+        log = _log(2)
+        llm = _SummaryLLM("summary for conversation only")
+        out = SummarizeCompact(keep_recent=1).compact(
+            state=type("S", (), {"steps": []})(),
+            session_log=log,
+            llm=llm,
+            conversation=conv,
+            step_num=4,
+            reason="test",
+        )
+        assert out.summary == "summary for conversation only"
+        assert out.session_entries_after == out.session_entries_before
+        assert out.compacted_step_range is None
+
+
+class TestDefaultCompactService:
+    def test_prunes_and_summarizes_in_one_service(self):
+        conv = _conv_with_tool_results(8)
+        log = _log(8)
+        llm = _SummaryLLM("default summary")
+        out = DefaultCompactService(keep_recent=2, keep_recent_tool_results=3).compact(
+            state=type("S", (), {"steps": []})(),
+            session_log=log,
+            llm=llm,
+            conversation=conv,
+            step_num=8,
+            reason="proactive",
+        )
+        assert out.compacted is True
+        assert out.llm_calls_spent == 1
+        assert out.summary == "default summary"
+        assert out.extra["mode"] == "default"
+        stage_names = [stage["name"] for stage in out.extra["stages"]]
+        assert stage_names == ["prune_tool_results", "summarize_context"]
+        assert out.extra["cleared"] > 0
+
+    def test_can_run_without_llm_summary(self):
+        log = _log(6)
+        out = DefaultCompactService(keep_recent=2, use_llm_summary=False).compact(
+            state=type("S", (), {"steps": []})(),
+            session_log=log,
+            llm=None,
+            conversation=None,
+            step_num=6,
+            reason="offline",
+        )
+        assert out.llm_calls_spent == 0
+        assert out.session_entries_after < out.session_entries_before
+        assert out.extra["use_llm_summary"] is False

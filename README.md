@@ -106,7 +106,7 @@ for step in composable_loop(..., hooks=[RedactPII(), RetryFlakyTool()]):
     ...
 ```
 
-Ship-ready hooks already wired in: `ApprovalHook`, `PermissionHook`, `CheckpointHook`, `ContextPressureHook`, `ThresholdCompactHook`, `ProvenanceSink`, `TracingHook`, `MetricsHook`, `EvalHook`, plus the `compact_chain(Prune, Summarize, Truncate)` context strategy. [Drop in your own](docs/hooks.md) in 10 lines.
+Ship-ready hooks already wired in: `ApprovalHook`, `PermissionHook`, `CheckpointHook`, `ContextPressureHook`, `ThresholdCompactHook`, `ProvenanceSink`, `TracingHook`, `MetricsHook`, `EvalHook`, plus `DefaultCompactService` for production context management. [Drop in your own](docs/hooks.md) in 10 lines.
 
 ---
 

@@ -1,18 +1,15 @@
 """Compaction service for the coder workspace.
 
-Two-stage chain: prune old tool results first, then truncate any
-remaining historical turns. Mirrors the pattern the looplet.examples coder reference
-used; lifts it out of ``setup.py`` so the entire workspace is
-declarative.
+Uses looplet's production default: prune old tool payloads, summarize
+older working context, keep recent steps verbatim, and truncate only as
+a fallback. Kept as a declarative resource so ``config.yaml`` can refer
+to it with ``compact_service: "@compact_service"``.
 """
 
 from __future__ import annotations
 
-from looplet.compact import PruneToolResults, TruncateCompact, compact_chain
+from looplet.compact import default_compact_service
 
 
 def build(runtime=None):
-    return compact_chain(
-        PruneToolResults(keep_recent=10),
-        TruncateCompact(keep_recent=5),
-    )
+    return default_compact_service(keep_recent=5, keep_recent_tool_results=10)

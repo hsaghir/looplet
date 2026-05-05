@@ -433,3 +433,43 @@ class TestDefaultCompactService:
         assert out.llm_calls_spent == 0
         assert out.session_entries_after < out.session_entries_before
         assert out.extra["use_llm_summary"] is False
+
+    def test_repeat_compaction_does_not_expand_conversation(self):
+        conv = Conversation()
+        for step in range(1, 8):
+            conv.append(Message(role=MessageRole.USER, content=f"user {step}"))
+            conv.append(Message(role=MessageRole.ASSISTANT, content=f"assistant {step}"))
+            conv.append(
+                Message(
+                    role=MessageRole.TOOL,
+                    content="large result" * 200,
+                    tool_result=ToolResult(tool="tool", args_summary="", data={"step": step}),
+                )
+            )
+        log = _log(7)
+        service = DefaultCompactService(keep_recent=2, keep_recent_tool_results=2)
+
+        first = service.compact(
+            state=type("S", (), {"steps": []})(),
+            session_log=log,
+            llm=_SummaryLLM("first summary"),
+            conversation=conv,
+            step_num=8,
+            reason="first",
+        )
+        messages_after_first = len(conv.messages)
+        entries_after_first = len(log.entries)
+        second = service.compact(
+            state=type("S", (), {"steps": []})(),
+            session_log=log,
+            llm=_SummaryLLM("second summary"),
+            conversation=conv,
+            step_num=9,
+            reason="second",
+        )
+
+        assert first.compacted is True
+        assert len(conv.messages) <= messages_after_first
+        assert len(log.entries) <= entries_after_first
+        assert second.messages_after <= second.messages_before
+        assert second.session_entries_after <= second.session_entries_before

@@ -295,7 +295,7 @@ class PrettyPrinter:
         if self.show_reasoning and reasoning:
             first = reasoning.strip().splitlines()[0].strip()
             if first:
-                print(f"     {_dim('💭')} {_italic(_grey(_truncate(first, self._width - 8)))}")
+                print(f"     {_dim('why')} {_italic(_grey(_truncate(first, self._width - 9)))}")
 
         # Line 3: tool result summary.
         if tr is not None:

@@ -1,8 +1,8 @@
 # Demo script — GIF recording
 
-The hero GIF at the top of the README is produced from a deterministic
-scripted run of `examples/scripted_demo.py` — no API key, no network,
-no flaky timing. Re-record whenever the loop's output format changes.
+The README hero GIF is produced from a deterministic pretty trace in
+`examples/pretty_demo.py` — no API key, no network, no flaky timing.
+Re-record whenever the CLI pretty output changes.
 
 ## Prep
 
@@ -17,6 +17,26 @@ clear
 ```
 
 ## Record
+
+```bash
+cd <repo-root>
+rm -f demo/looplet_pretty.cast demo/looplet_pretty.gif
+asciinema rec demo/looplet_pretty.cast --overwrite --cols 88 --rows 24 \
+  --command "uv run --quiet --active python -m looplet.examples.pretty_demo"
+agg demo/looplet_pretty.cast demo/looplet_pretty.gif --theme monokai \
+  --cols 88 --rows 24 --font-size 15 --fps-cap 12 --idle-time-limit 1 \
+  --last-frame-duration 2
+```
+
+Output: a short, deterministic GIF that shows the same append-only
+pretty printer used by `looplet new --pretty` and
+`looplet run-workspace --pretty`.
+
+## Docs Loop Demo
+
+`docs/demo.gif` is a separate deterministic loop demo. It shows a real
+`composable_loop(...)` run with a mock LLM, an approval prompt, and
+`Step.pretty()` output.
 
 ```bash
 cd <repo-root>
@@ -50,7 +70,7 @@ variation between runs.
 - The `$` prompt is the only thing before the command.
 - No stderr warnings leaked into the tape (check with
   `grep -i warn docs/demo.cast`).
-- GIF is under 200 KB and loops smoothly.
+- GIF is compact enough for README use and loops smoothly.
 - Frame count roughly matches lines of output (use Pillow to inspect
   if curious).
 

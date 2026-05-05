@@ -1,6 +1,6 @@
 # looplet
 
-![looplet new — agents from a paragraph, in one command](demo/looplet_new.gif)
+![looplet pretty trace — agents from a paragraph, then run them](demo/looplet_pretty.gif)
 
 [![CI](https://github.com/hsaghir/looplet/actions/workflows/ci.yml/badge.svg)](https://github.com/hsaghir/looplet/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/hsaghir/looplet/branch/master/graph/badge.svg)](https://codecov.io/gh/hsaghir/looplet)
@@ -20,7 +20,7 @@ looplet new "An agent that takes a URL and returns the page title and a 2-senten
 looplet run-workspace ./agent.workspace "Summarize https://example.com"
 ```
 
-The recording above is exactly that — blank directory to working agent in three minutes, end-to-end on a real LLM.
+The recording above is a deterministic `--pretty` trace of that same CLI flow: build an agent workspace, then run it against a real task. The real factory path uses the same commands; the recorded trace is scripted so the docs stay stable and tiny.
 
 **Mention an existing CLI, Python module, or script in your brief, and the factory wraps it.** Your team's tools already exist; looplet introspects the real surface and writes thin wrappers around them — no hallucinated signatures.
 

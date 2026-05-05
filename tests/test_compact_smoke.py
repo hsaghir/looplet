@@ -7,6 +7,7 @@ import pytest
 from looplet import (
     CompactOutcome,
     CompactService,
+    DefaultCompactService,
     EventPayload,
     LifecycleEvent,
     TruncateCompact,
@@ -17,8 +18,11 @@ pytestmark = pytest.mark.smoke
 
 
 class TestDefaultCompactService:
-    def test_default_service_is_compact_service(self):
+    def test_truncate_service_is_compact_service(self):
         assert isinstance(TruncateCompact(), CompactService)
+
+    def test_default_service_is_compact_service(self):
+        assert isinstance(DefaultCompactService(), CompactService)
 
     def test_default_service_returns_outcome(self):
         svc = TruncateCompact()
@@ -38,14 +42,34 @@ class TestDefaultCompactService:
         assert isinstance(outcome, CompactOutcome)
         assert outcome.reason == "test"
 
+    def test_outcome_reports_session_log_compaction(self):
+        from looplet.session import SessionLog
+
+        log = SessionLog()
+        for step in range(1, 7):
+            log.record(step=step, theory="", tool="read", reasoning=f"step {step}")
+        outcome = TruncateCompact(keep_recent=2).compact(
+            state=type("S", (), {"steps": []})(),
+            session_log=log,
+            llm=None,
+            conversation=None,
+            step_num=6,
+            reason="test",
+        )
+        assert outcome.session_entries_before == 6
+        assert outcome.session_entries_after < 6
+        assert outcome.compacted_step_range == (1, 4)
+        assert outcome.compacted is True
+        assert outcome.to_dict()["compacted"] is True
+
 
 class TestRunCompactEvents:
     def test_pre_and_post_compact_events_fire(self):
-        seen: list[LifecycleEvent] = []
+        seen: list[EventPayload] = []
 
         class Observer:
             def on_event(self, payload: EventPayload):
-                seen.append(payload.event)
+                seen.append(payload)
                 return None
 
         state = type("S", (), {"steps": []})()
@@ -62,8 +86,10 @@ class TestRunCompactEvents:
             step_num=0,
             reason="test",
         )
-        assert LifecycleEvent.PRE_COMPACT in seen
-        assert LifecycleEvent.POST_COMPACT in seen
+        assert LifecycleEvent.PRE_COMPACT in [payload.event for payload in seen]
+        assert LifecycleEvent.POST_COMPACT in [payload.event for payload in seen]
+        post = next(payload for payload in seen if payload.event == LifecycleEvent.POST_COMPACT)
+        assert post.extra["outcome"]["reason"] == "test"
         assert outcome.reason == "test"
 
     def test_pre_compact_can_abort(self):

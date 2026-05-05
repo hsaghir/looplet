@@ -49,10 +49,12 @@ from looplet.checkpoint import FileCheckpointStore
 from looplet.compact import (
     CompactOutcome,
     CompactService,
+    DefaultCompactService,
     PruneToolResults,
     SummarizeCompact,
     TruncateCompact,
     compact_chain,
+    default_compact_service,
     run_compact,
 )
 from looplet.conversation import Conversation, Message
@@ -230,10 +232,12 @@ __all__ = [
     # ── CONTEXT MANAGEMENT ──────────────────────────────────────
     "CompactService",
     "CompactOutcome",
+    "DefaultCompactService",
     "TruncateCompact",
     "SummarizeCompact",
     "PruneToolResults",
     "compact_chain",
+    "default_compact_service",
     "run_compact",
     "ContextBudget",
     "ThresholdCompactHook",

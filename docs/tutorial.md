@@ -68,25 +68,30 @@ See [hooks.md](hooks.md) for the full walkthrough.
 
 ## Step 4 — Add context management
 
-For long sessions, add a compaction chain so the agent doesn't run out
-of context:
+For long sessions, add the default compaction service so the agent can
+keep working under context pressure:
 
 ```python
 from looplet import (
-    compact_chain, PruneToolResults, SummarizeCompact, TruncateCompact,
+    DefaultCompactService,
     ContextBudget, ThresholdCompactHook,
 )
 
 config = LoopConfig(
     max_steps=50,
-    compact_service=compact_chain(
-        PruneToolResults(keep_recent=5),   # free: clear old tool output
-        SummarizeCompact(keep_recent=2),   # 1 LLM call: summarise middle
-        TruncateCompact(keep_recent=1),    # free: drop everything old
+    compact_service=DefaultCompactService(
+        keep_recent=2,
+        keep_recent_tool_results=5,
     ),
 )
 hooks = [ThresholdCompactHook(ContextBudget(context_window=128_000))]
 ```
+
+`DefaultCompactService` prunes old bulky tool results, summarizes older
+working context, keeps recent steps verbatim, and reports what changed
+through compaction lifecycle events. Use `compact_chain(...)` with
+`PruneToolResults`, `SummarizeCompact`, and `TruncateCompact` when you
+want a custom policy.
 
 ## Step 5 — Add crash-resume and approval
 

@@ -26,8 +26,23 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   framing trimmed from public docstrings and comments now that the
   migration to the workspace format is complete. No behavioural
   change. ROADMAP entries that have shipped are dropped.
+- **Coding and research presets now use `DefaultCompactService`.** The
+  preset path gets the same production compaction policy users can
+  import directly: prune old tool payloads, summarize older context,
+  keep recent steps verbatim, and report stage-level outcomes.
+- **Docs and shipped examples now teach `DefaultCompactService` first.**
+  README, tutorial, AGENTS guide, packaged examples, and bundled
+  workspace `compact_service.py` resources now point to the coherent
+  default service, leaving `compact_chain(...)` as the custom-policy
+  escape hatch.
 
 ### Added
+- **`DefaultCompactService` and `default_compact_service(...)`.** A
+  clear production default for context compaction that composes
+  `PruneToolResults`, `SummarizeCompact`, and deterministic truncate
+  fallback into one inspectable service. `CompactOutcome` now reports
+  session-log entry counts, compacted step ranges, summaries, and a
+  JSON-able `to_dict()` used in `POST_COMPACT` event payloads.
 - **`extends:` workspace composition.** A workspace's `config.yaml` may
   now declare `extends: <path>`. At load time the parent workspace is
   recursively materialized and overlaid with the child via a tempdir;

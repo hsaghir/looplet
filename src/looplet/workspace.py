@@ -78,9 +78,9 @@ mechanism hook kwargs use. Example::
     tracer: "@tracer"
 
     # resources/compact_service.py
-    from looplet.compact import PruneToolResults, TruncateCompact, compact_chain
+    from looplet.compact import default_compact_service
     def build(runtime=None):
-        return compact_chain(PruneToolResults(), TruncateCompact())
+        return default_compact_service(keep_recent=2)
 
 This eliminates the ``setup.py`` detour for the common case of
 attaching callable LoopConfig services. Tool dependency injection

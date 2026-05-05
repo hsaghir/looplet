@@ -28,12 +28,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from looplet.budget import ContextBudget, ThresholdCompactHook
-from looplet.compact import (
-    PruneToolResults,
-    SummarizeCompact,
-    TruncateCompact,
-    compact_chain,
-)
+from looplet.compact import DefaultCompactService
 from looplet.loop import LoopConfig
 from looplet.memory import StaticMemorySource
 from looplet.tools import BaseToolRegistry, ToolSpec, register_done_tool, tool, tools_from
@@ -443,11 +438,7 @@ def coding_agent_preset(
             "install packages, and execute commands. Use edit for targeted "
             "fixes, write for new files. Run tests before calling done."
         ),
-        compact_service=compact_chain(
-            PruneToolResults(keep_recent=5),
-            SummarizeCompact(keep_recent=2),
-            TruncateCompact(keep_recent=1),
-        ),
+        compact_service=DefaultCompactService(keep_recent=2, keep_recent_tool_results=5),
         memory_sources=[
             StaticMemorySource(
                 "## Coding Standards (persistent)\n"
@@ -517,11 +508,7 @@ def research_agent_preset(
             "to understand the codebase. Produce clear, structured findings. "
             "Call done with a comprehensive summary when finished."
         ),
-        compact_service=compact_chain(
-            PruneToolResults(keep_recent=8),
-            SummarizeCompact(keep_recent=3),
-            TruncateCompact(keep_recent=2),
-        ),
+        compact_service=DefaultCompactService(keep_recent=3, keep_recent_tool_results=8),
         context_window=context_window,
     )
 

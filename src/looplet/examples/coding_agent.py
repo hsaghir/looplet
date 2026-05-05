@@ -13,16 +13,16 @@ Demonstrates how a well-structured agent harness works:
    remediation steps, so the agent self-corrects without human input.
 5. **Persistent standards** — coding standards are injected via
    ``StaticMemorySource`` and survive all compactions.
-6. **Compaction chain** — for long sessions: prune old tool results
-   first (free), then LLM-summarize (one call), then truncate (last resort).
+6. **Default compaction** — for long sessions: prune old tool results,
+   summarize older context, then truncate only as a last resort.
 
 This agent:
   - Receives a task ("implement a fibonacci function with tests")
   - Uses the same tools as Claude Code: bash, read, write, edit, glob, grep, think
   - Gets just-in-time review feedback via a ``post_dispatch`` hook
   - Keeps running until tests pass (``check_done`` quality gate)
-  - Has persistent memory (coding standards survive compaction)
-  - Uses ``compact_chain`` for context management in long sessions
+    - Has persistent memory (coding standards survive compaction)
+    - Uses ``DefaultCompactService`` for context management in long sessions
 
 Run::
 
@@ -44,6 +44,7 @@ from typing import Any
 
 from looplet import (
     ContextBudget,
+    DefaultCompactService,
     DefaultState,
     DomainAdapter,
     EvalContext,
@@ -52,12 +53,8 @@ from looplet import (
     InjectContext,
     LoopConfig,
     MockLLMBackend,
-    PruneToolResults,
     StaticMemorySource,
-    SummarizeCompact,
     ThresholdCompactHook,
-    TruncateCompact,
-    compact_chain,
     composable_loop,
     probe_native_tool_support,
     tool,
@@ -378,20 +375,14 @@ CODING_STANDARDS = StaticMemorySource("""\
 """)
 
 # ═══════════════════════════════════════════════════════════════════
-# 4. COMPACTION CHAIN — cheap first, then LLM, then truncate
+# 4. DEFAULT COMPACTION — prune, summarize, then truncate fallback
 #
-# Long sessions need context management. The chain tries the
-# cheapest strategy first:
-#   1. PruneToolResults — clear old tool output (free)
-#   2. SummarizeCompact — LLM summary of middle (one call)
-#   3. TruncateCompact — drop everything except last 2 (free, last resort)
+# Long sessions need context management. DefaultCompactService keeps
+# recent steps verbatim, prunes old bulky tool results, summarizes the
+# older working session, and falls back to deterministic truncation.
 # ═══════════════════════════════════════════════════════════════════
 
-COMPACT_SERVICE = compact_chain(
-    PruneToolResults(keep_recent=5),
-    SummarizeCompact(keep_recent=2),
-    TruncateCompact(keep_recent=1),
-)
+COMPACT_SERVICE = DefaultCompactService(keep_recent=2, keep_recent_tool_results=5)
 
 # ═══════════════════════════════════════════════════════════════════
 # 5. DOMAIN ADAPTER — Bundle domain callables in one object

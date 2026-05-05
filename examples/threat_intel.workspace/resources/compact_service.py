@@ -1,16 +1,12 @@
 """Compaction service for the threat_intel workspace.
 
-PruneToolResults(keep_recent=6) + TruncateCompact(keep_recent=3).
-Lifted out of setup.py so the workspace is fully declarative.
+Uses looplet's production default as a declarative resource.
 """
 
 from __future__ import annotations
 
-from looplet.compact import PruneToolResults, TruncateCompact, compact_chain
+from looplet.compact import default_compact_service
 
 
 def build(runtime=None):
-    return compact_chain(
-        PruneToolResults(keep_recent=6),
-        TruncateCompact(keep_recent=3),
-    )
+    return default_compact_service(keep_recent=3, keep_recent_tool_results=6)

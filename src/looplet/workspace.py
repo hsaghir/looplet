@@ -375,14 +375,19 @@ def _dump_yaml(value: Any, indent: int = 0) -> str:
     )
 
 
-def _load_yaml(text: str) -> Any:
+def _load_yaml(text: str, *, source_path: str | Path | None = None) -> Any:
     """Parse the YAML subset emitted by :func:`_dump_yaml`.
 
     Supports key: value lines, nested dicts (indent 2), lists with ``- ``,
     and JSON-style scalars (true/false/null/numbers/quoted strings). For
     anything beyond this subset we fall back to JSON parsing of the line
     value.
+
+    The optional ``source_path`` is appended to parse errors so a
+    typo in ``hooks/05_QualityGate/config.yaml`` reports its location
+    instead of leaving the user to grep every workspace YAML file.
     """
+    src = f" (in {source_path})" if source_path else ""
     lines = [line.rstrip() for line in text.splitlines()]
     pos = 0
 
@@ -419,7 +424,7 @@ def _load_yaml(text: str) -> Any:
             if stripped.startswith("- "):
                 break
             if ":" not in stripped:
-                raise WorkspaceSerializationError(f"unparseable workspace YAML line: {line!r}")
+                raise WorkspaceSerializationError(f"unparseable workspace YAML line{src}: {line!r}")
             key, _, raw_val = stripped.partition(":")
             raw_val = raw_val.strip()
             pos += 1
@@ -2135,7 +2140,7 @@ def _resolve_extends(root: Path, *, _seen: set[Path] | None = None) -> Path:
     if not cfg_path.is_file():
         return root
     cfg_text = cfg_path.read_text(encoding="utf-8")
-    cfg = _load_yaml(cfg_text) or {}
+    cfg = _load_yaml(cfg_text, source_path=cfg_path) or {}
     extends_val = cfg.get("extends")
     if not extends_val:
         return root
@@ -2208,7 +2213,7 @@ def _workspace_to_preset_inner(
         # workspace authors can parameterise config.yaml without needing
         # a setup.py for the common cases.
         raw_cfg_text = _apply_runtime_substitutions(raw_cfg_text, runtime_dict)
-        cfg_kwargs.update(_load_yaml(raw_cfg_text) or {})
+        cfg_kwargs.update(_load_yaml(raw_cfg_text, source_path=cfg_path) or {})
 
     sys_prompt_path = root / WorkspaceLayout.SYSTEM_PROMPT_MD
     if sys_prompt_path.is_file():
@@ -2313,7 +2318,8 @@ def _workspace_to_preset_inner(
                 _load_yaml(
                     _apply_runtime_substitutions(
                         spec_path.read_text(encoding="utf-8"), runtime_dict
-                    )
+                    ),
+                    source_path=spec_path,
                 )
                 or {}
             )
@@ -2427,17 +2433,35 @@ def _workspace_to_preset_inner(
         for hook_dir in (p for p in hooks_dir.iterdir() if p.is_dir()):
             cfg_yaml = hook_dir / "config.yaml"
             order_value: int | float = float("inf")  # un-ordered hooks sort last
+            enabled = True
             if cfg_yaml.is_file():
                 try:
                     raw = cfg_yaml.read_text(encoding="utf-8")
-                    parsed = _load_yaml(_apply_runtime_substitutions(raw, runtime_dict)) or {}
-                    if isinstance(parsed, dict) and "order" in parsed:
-                        order_value = int(parsed["order"])
+                    parsed = (
+                        _load_yaml(
+                            _apply_runtime_substitutions(raw, runtime_dict),
+                            source_path=cfg_yaml,
+                        )
+                        or {}
+                    )
+                    if isinstance(parsed, dict):
+                        if "order" in parsed:
+                            order_value = int(parsed["order"])
+                        if "enabled" in parsed:
+                            enabled = bool(parsed["enabled"])
                 except (WorkspaceSerializationError, ValueError, TypeError):
                     # Malformed config.yaml will be re-raised below
                     # with full context — here we just fall back to
                     # alphabetical ordering for this hook.
                     pass
+            # ``enabled: false`` lets workspace authors ablate a hook
+            # without renaming or deleting its directory — essential
+            # for ``extends:``-based ablation cells, where a child
+            # workspace toggles individual parent hooks off to measure
+            # their contribution.
+            if not enabled:
+                logger.info("skipping disabled hook %s", hook_dir.name)
+                continue
             # Tuple sort: explicit order first, then directory name.
             # When ``order_value == inf`` (no ``order:`` field), hooks
             # sort by dirname only — the legacy behaviour.
@@ -2456,7 +2480,10 @@ def _workspace_to_preset_inner(
             hook_modules[hook_dir.name] = module
             hook_cfg = (
                 _load_yaml(
-                    _apply_runtime_substitutions(cfg_yaml.read_text(encoding="utf-8"), runtime_dict)
+                    _apply_runtime_substitutions(
+                        cfg_yaml.read_text(encoding="utf-8"), runtime_dict
+                    ),
+                    source_path=cfg_yaml,
                 )
                 if cfg_yaml.is_file()
                 else {}
@@ -2501,7 +2528,7 @@ def _workspace_to_preset_inner(
             except TypeError as exc:
                 msg = (
                     f"hook {hook_dir.name!r} ({class_name or cls.__name__}) could not be "
-                    f"instantiated with kwargs={kwargs}: {exc}. "
+                    f"instantiated with kwargs={kwargs} (in {cfg_yaml}): {exc}. "
                     f"Implement to_config(self) -> dict on the hook class so the "
                     f"workspace round-trip can capture its constructor kwargs."
                 )

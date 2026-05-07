@@ -17,6 +17,7 @@ Verifies:
 from __future__ import annotations
 
 import json
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -2447,3 +2448,134 @@ class TestResolverErrorContext:
         assert "typo" in msg
         # No "(in ...)" suffix when source_path not supplied.
         assert "(in " not in msg
+
+
+# ── Hook enabled: false directive ──────────────────────
+
+
+class TestHookEnabledDirective:
+    """``enabled: false`` in hooks/<dir>/config.yaml skips the hook
+    at workspace-load time without renaming or deleting the directory.
+    Pairs with ``order:`` and the ``extends:`` mechanism for clean
+    ablation cells."""
+
+    def _two_hook_workspace(self, tmp_path: Path) -> Path:
+        from looplet.workspace import WorkspaceLayout
+
+        ws = tmp_path / "ws"
+        (ws / WorkspaceLayout.HOOKS_DIR).mkdir(parents=True)
+        (ws / "workspace.json").write_text('{"name": "t"}')
+        for name in ("a_hook", "b_hook"):
+            d = ws / WorkspaceLayout.HOOKS_DIR / name
+            d.mkdir()
+            (d / "hook.py").write_text(
+                textwrap.dedent(f"""
+                from looplet import LoopHook
+
+                class {name.title().replace("_", "")}(LoopHook):
+                    pass
+            """)
+            )
+        return ws
+
+    def test_enabled_false_skips_hook(self, tmp_path: Path) -> None:
+        from looplet.workspace import WorkspaceLayout, workspace_to_preset
+
+        ws = self._two_hook_workspace(tmp_path)
+        # Disable a_hook only.
+        (ws / WorkspaceLayout.HOOKS_DIR / "a_hook" / "config.yaml").write_text("enabled: false\n")
+        preset = workspace_to_preset(ws)
+        names = [type(h).__name__ for h in preset.hooks]
+        assert "AHook" not in names
+        assert "BHook" in names
+
+    def test_enabled_true_keeps_hook(self, tmp_path: Path) -> None:
+        from looplet.workspace import WorkspaceLayout, workspace_to_preset
+
+        ws = self._two_hook_workspace(tmp_path)
+        (ws / WorkspaceLayout.HOOKS_DIR / "a_hook" / "config.yaml").write_text("enabled: true\n")
+        preset = workspace_to_preset(ws)
+        names = [type(h).__name__ for h in preset.hooks]
+        assert "AHook" in names
+        assert "BHook" in names
+
+    def test_enabled_field_not_passed_to_constructor(self, tmp_path: Path) -> None:
+        """``enabled:`` is a workspace directive, not a hook kwarg."""
+        from looplet.workspace import WorkspaceLayout, workspace_to_preset
+
+        ws = self._two_hook_workspace(tmp_path)
+        # Hook with strict __init__ — would TypeError if `enabled` leaked.
+        (ws / WorkspaceLayout.HOOKS_DIR / "a_hook" / "hook.py").write_text(
+            textwrap.dedent("""
+                from looplet import LoopHook
+
+                class Ahook(LoopHook):
+                    def __init__(self):
+                        super().__init__()
+            """)
+        )
+        (ws / WorkspaceLayout.HOOKS_DIR / "a_hook" / "config.yaml").write_text("enabled: true\n")
+        preset = workspace_to_preset(ws)
+        assert any(type(h).__name__ == "Ahook" for h in preset.hooks)
+
+
+# ── YAML parse errors include source path ──────────────────────
+
+
+class TestYamlParseErrorContext:
+    def test_load_yaml_includes_source_path(self) -> None:
+        from looplet.workspace import WorkspaceSerializationError, _load_yaml
+
+        bad = "key without colon\n"
+        with pytest.raises(WorkspaceSerializationError) as exc:
+            _load_yaml(bad, source_path="/path/to/hooks/05/config.yaml")
+        msg = str(exc.value)
+        assert "/path/to/hooks/05/config.yaml" in msg
+
+    def test_load_yaml_no_source_path_unchanged(self) -> None:
+        from looplet.workspace import WorkspaceSerializationError, _load_yaml
+
+        with pytest.raises(WorkspaceSerializationError) as exc:
+            _load_yaml("key without colon\n")
+        assert "(in " not in str(exc.value)
+
+
+# ── Hook constructor TypeError includes cfg_yaml path ──────────────────────
+
+
+class TestHookConstructorErrorContext:
+    def test_constructor_typeerror_includes_path(self, tmp_path: Path) -> None:
+        from looplet.workspace import (
+            WorkspaceLayout,
+            WorkspaceSerializationError,
+            workspace_to_preset,
+        )
+
+        ws = tmp_path / "ws"
+        d = ws / WorkspaceLayout.HOOKS_DIR / "bad_hook"
+        d.mkdir(parents=True)
+        (ws / "workspace.json").write_text('{"name": "t"}')
+        # Hook with a constructor that requires ``required_arg``.
+        (d / "hook.py").write_text(
+            textwrap.dedent("""
+            from looplet import LoopHook
+
+            class BadHook(LoopHook):
+                def __init__(self, required_arg):
+                    super().__init__()
+                    self.required_arg = required_arg
+        """)
+        )
+        # config.yaml passes a wrong kwarg — constructor will TypeError.
+        (d / "config.yaml").write_text(
+            textwrap.dedent("""
+            kwargs:
+              wrong_arg: 42
+        """)
+        )
+        with pytest.raises(WorkspaceSerializationError) as exc:
+            workspace_to_preset(ws, strict=True)
+        msg = str(exc.value)
+        assert "bad_hook" in msg
+        # The cfg_yaml path is now part of the error.
+        assert "config.yaml" in msg

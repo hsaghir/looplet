@@ -642,8 +642,15 @@ class LoopConfig:
     """
 
 
-def _default_extract_entities(data: Any) -> list[str]:
-    """Fallback: no entity extraction."""
+def _default_extract_entities(data: Any, state: Any = None) -> list[str]:
+    """Fallback: no entity extraction.
+
+    Accepts a ``state`` kwarg (defaulting to ``None``) so domain
+    extractors that need the live state can have a stateless signature
+    in ``${py:...}`` workspace refs and still receive it from the loop.
+    Stateless extractors keep the 1-arg form working — the loop only
+    passes ``state`` when the callable's signature accepts it.
+    """
     return []
 
 
@@ -1471,11 +1478,35 @@ def composable_loop(
     build_briefing = (
         config.build_briefing or (_dom.build_briefing if _dom else None) or _default_build_briefing
     )
-    extract_entities = (
+    _raw_extract_entities = (
         config.extract_entities
         or (_dom.extract_entities if _dom else None)
         or _default_extract_entities
     )
+    # Adapt the extractor's call signature: callables that accept a
+    # ``state`` kwarg (or take 2+ positional args) get the live state
+    # passed; legacy 1-arg ``extract_entities(data)`` callables keep
+    # working unchanged. This lets domain extractors that need to
+    # update ``state.*`` fields ship as static functions referenced
+    # from a workspace via ``${py:...}`` instead of method-local
+    # closures.
+    import inspect as _inspect  # noqa: PLC0415
+
+    try:
+        _ee_sig = _inspect.signature(_raw_extract_entities)
+        _ee_params = _ee_sig.parameters
+        _ee_takes_state = "state" in _ee_params or any(
+            p.kind == _inspect.Parameter.VAR_KEYWORD for p in _ee_params.values()
+        )
+    except (TypeError, ValueError):  # builtins / C-impls without signatures
+        _ee_takes_state = False
+
+    if _ee_takes_state:
+
+        def extract_entities(data: Any) -> list[str]:
+            return _raw_extract_entities(data, state=state)
+    else:
+        extract_entities = _raw_extract_entities
     build_prompt_fn = config.build_prompt or (_dom.build_prompt if _dom else None)
 
     # ── Loop state ──────────────────────────────────────────

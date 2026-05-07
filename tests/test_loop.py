@@ -725,3 +725,95 @@ class TestComposableLoopHooks:
         )
         # Should stop very early
         assert len(steps) <= 3
+
+
+class TestExtractEntitiesSignatureDispatch:
+    """Loop dispatches ``extract_entities`` based on its signature.
+
+    Stateless ``(data) -> list[str]`` callables keep the legacy 1-arg
+    contract. Stateful ``(data, state=None) -> list[str]`` callables
+    receive the live state, so domain extractors can update
+    ``state.*`` fields without becoming method-local closures.
+    """
+
+    def _run_loop(self, extractor, *, max_steps: int = 2):
+        """Run a tiny loop with a scripted MockLLM and the given extractor."""
+        import json
+
+        from looplet import (
+            DefaultState,
+            LoopConfig,
+            MockLLMBackend,
+            composable_loop,
+            register_done_tool,
+        )
+        from looplet.tools import BaseToolRegistry, ToolSpec
+
+        tools = BaseToolRegistry()
+        tools.register(
+            ToolSpec(
+                name="echo",
+                description="echo",
+                parameters={"text": "string"},
+                execute=lambda **kw: {"text": kw.get("text", ""), "tag": "ent-1"},
+            )
+        )
+        register_done_tool(tools)
+
+        responses = [
+            json.dumps({"tool": "echo", "args": {"text": "hi"}, "reasoning": "x"}),
+            json.dumps({"tool": "done", "args": {"summary": "ok"}, "reasoning": "x"}),
+        ]
+        llm = MockLLMBackend(responses=responses)
+        state = DefaultState(max_steps=max_steps)
+        config = LoopConfig(max_steps=max_steps, extract_entities=extractor)
+        steps = list(
+            composable_loop(
+                llm=llm,
+                task={"id": "t"},
+                tools=tools,
+                state=state,
+                config=config,
+            )
+        )
+        return steps, state
+
+    def test_legacy_one_arg_extractor_keeps_working(self):
+        """``extract_entities(data) -> list[str]`` — backward compat."""
+        seen: list = []
+
+        def stateless(data):
+            seen.append(data)
+            return ["A"]
+
+        steps, _ = self._run_loop(stateless)
+        assert seen, "extractor should have been called"
+        assert all(isinstance(d, dict) for d in seen)
+
+    def test_two_arg_extractor_receives_state(self):
+        """``extract_entities(data, state=None)`` — gets live state."""
+        observed = {"states": []}
+
+        def stateful(data, state=None):
+            observed["states"].append(state)
+            # Mutate state to prove identity.
+            if state is not None and not hasattr(state, "_marker"):
+                state._marker = "set"
+            return ["B"]
+
+        steps, state = self._run_loop(stateful)
+        assert observed["states"], "extractor should have been called"
+        assert all(s is state for s in observed["states"])
+        assert getattr(state, "_marker", None) == "set"
+
+    def test_kwargs_extractor_receives_state(self):
+        """``extract_entities(data, **kw)`` — sig-detect picks it up too."""
+        observed = {"states": []}
+
+        def varkw(data, **kw):
+            observed["states"].append(kw.get("state"))
+            return ["C"]
+
+        steps, state = self._run_loop(varkw)
+        assert observed["states"]
+        assert all(s is state for s in observed["states"])

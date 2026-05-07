@@ -68,14 +68,27 @@ omitted from the serialized config and a list of skipped fields is
 returned in the resulting :class:`Workspace.serialization_warnings`.
 
 These fields can still be wired **declaratively on load** by
-hand-authoring ``config.yaml`` with ``"@<name>"`` references that
-resolve against ``resources/<name>.py`` builders — the same
-mechanism hook kwargs use. Example::
+hand-authoring ``config.yaml`` with the workspace reference grammar.
+Three reference forms are supported, applied uniformly to every
+string value the loader processes:
+
+* ``${ref:name}``           — resolve from the resource registry
+                              (``resources/name.py::build()``)
+* ``${py:module:symbol}``   — import a Python object by dotted path
+* ``${runtime.field}``      — read the per-invocation runtime dict;
+                              supports nested ``${runtime.a.b}`` and
+                              defaults via ``${runtime.x:-default}``
+
+The legacy ``"@name"`` form continues to work as an alias for
+``${ref:name}`` so older workspaces keep loading unchanged.
+
+Example::
 
     # config.yaml
-    max_steps: 20
-    compact_service: "@compact_service"
-    tracer: "@tracer"
+    max_steps: ${runtime.max_steps:-20}
+    compact_service: ${ref:compact_service}
+    tracer: ${py:my.module:make_tracer}
+    state: ${py:my.app.state:MyAgentState}
 
     # resources/compact_service.py
     from looplet.compact import default_compact_service
@@ -83,12 +96,19 @@ mechanism hook kwargs use. Example::
         return default_compact_service(keep_recent=2)
 
 This eliminates the ``setup.py`` detour for the common case of
-attaching callable LoopConfig services. Tool dependency injection
-also goes through the same resource registry: ``tool.yaml`` declares
-``requires: [<name>, ...]`` and the dispatcher hands the resolved
-instances to the tool's ``execute(ctx, ...)`` via
-``ctx.resources[name]``. Memory sources accept ``@ref`` entries the
-same way (``memory_sources: ['@project_memory']`` in ``config.yaml``).
+attaching callable ``LoopConfig`` services or custom state classes.
+Tool dependency injection also goes through the same resource
+registry: ``tool.yaml`` declares ``requires: [<name>, ...]`` and the
+dispatcher hands the resolved instances to the tool's
+``execute(ctx, ...)`` via ``ctx.resources[name]``. Memory sources
+accept the same references (``memory_sources: ['${ref:project_memory}']``).
+
+Workspace authors retrieve loaded resources from
+:attr:`AgentPreset.resources` after calling
+:func:`workspace_to_preset` — useful for callers (benchmarks,
+evidence-bundle writers) that need post-load access to live objects
+without writing a setup.py themselves.
+
 ``setup.py`` remains as an opt-in escape hatch for users with
 truly imperative load-time wiring needs, but no shipped example
 needs one — every published workspace is fully declarative.

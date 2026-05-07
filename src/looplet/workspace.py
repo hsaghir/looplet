@@ -68,14 +68,27 @@ omitted from the serialized config and a list of skipped fields is
 returned in the resulting :class:`Workspace.serialization_warnings`.
 
 These fields can still be wired **declaratively on load** by
-hand-authoring ``config.yaml`` with ``"@<name>"`` references that
-resolve against ``resources/<name>.py`` builders — the same
-mechanism hook kwargs use. Example::
+hand-authoring ``config.yaml`` with the workspace reference grammar.
+Three reference forms are supported, applied uniformly to every
+string value the loader processes:
+
+* ``${ref:name}``           — resolve from the resource registry
+                              (``resources/name.py::build()``)
+* ``${py:module:symbol}``   — import a Python object by dotted path
+* ``${runtime.field}``      — read the per-invocation runtime dict;
+                              supports nested ``${runtime.a.b}`` and
+                              defaults via ``${runtime.x:-default}``
+
+The legacy ``"@name"`` form continues to work as an alias for
+``${ref:name}`` so older workspaces keep loading unchanged.
+
+Example::
 
     # config.yaml
-    max_steps: 20
-    compact_service: "@compact_service"
-    tracer: "@tracer"
+    max_steps: ${runtime.max_steps:-20}
+    compact_service: ${ref:compact_service}
+    tracer: ${py:my.module:make_tracer}
+    state: ${py:my.app.state:MyAgentState}
 
     # resources/compact_service.py
     from looplet.compact import default_compact_service
@@ -83,12 +96,19 @@ mechanism hook kwargs use. Example::
         return default_compact_service(keep_recent=2)
 
 This eliminates the ``setup.py`` detour for the common case of
-attaching callable LoopConfig services. Tool dependency injection
-also goes through the same resource registry: ``tool.yaml`` declares
-``requires: [<name>, ...]`` and the dispatcher hands the resolved
-instances to the tool's ``execute(ctx, ...)`` via
-``ctx.resources[name]``. Memory sources accept ``@ref`` entries the
-same way (``memory_sources: ['@project_memory']`` in ``config.yaml``).
+attaching callable ``LoopConfig`` services or custom state classes.
+Tool dependency injection also goes through the same resource
+registry: ``tool.yaml`` declares ``requires: [<name>, ...]`` and the
+dispatcher hands the resolved instances to the tool's
+``execute(ctx, ...)`` via ``ctx.resources[name]``. Memory sources
+accept the same references (``memory_sources: ['${ref:project_memory}']``).
+
+Workspace authors retrieve loaded resources from
+:attr:`AgentPreset.resources` after calling
+:func:`workspace_to_preset` — useful for callers (benchmarks,
+evidence-bundle writers) that need post-load access to live objects
+without writing a setup.py themselves.
+
 ``setup.py`` remains as an opt-in escape hatch for users with
 truly imperative load-time wiring needs, but no shipped example
 needs one — every published workspace is fully declarative.
@@ -355,14 +375,19 @@ def _dump_yaml(value: Any, indent: int = 0) -> str:
     )
 
 
-def _load_yaml(text: str) -> Any:
+def _load_yaml(text: str, *, source_path: str | Path | None = None) -> Any:
     """Parse the YAML subset emitted by :func:`_dump_yaml`.
 
     Supports key: value lines, nested dicts (indent 2), lists with ``- ``,
     and JSON-style scalars (true/false/null/numbers/quoted strings). For
     anything beyond this subset we fall back to JSON parsing of the line
     value.
+
+    The optional ``source_path`` is appended to parse errors so a
+    typo in ``hooks/05_QualityGate/config.yaml`` reports its location
+    instead of leaving the user to grep every workspace YAML file.
     """
+    src = f" (in {source_path})" if source_path else ""
     lines = [line.rstrip() for line in text.splitlines()]
     pos = 0
 
@@ -388,7 +413,8 @@ def _load_yaml(text: str) -> Any:
         out: dict[str, Any] = {}
         while pos < len(lines):
             line = lines[pos]
-            if not line.strip():
+            if not line.strip() or line.lstrip().startswith("#"):
+                # Skip blank lines and full-line comments.
                 pos += 1
                 continue
             cur_indent = len(line) - len(line.lstrip())
@@ -398,7 +424,7 @@ def _load_yaml(text: str) -> Any:
             if stripped.startswith("- "):
                 break
             if ":" not in stripped:
-                raise WorkspaceSerializationError(f"unparseable workspace YAML line: {line!r}")
+                raise WorkspaceSerializationError(f"unparseable workspace YAML line{src}: {line!r}")
             key, _, raw_val = stripped.partition(":")
             raw_val = raw_val.strip()
             pos += 1
@@ -444,7 +470,7 @@ def _load_yaml(text: str) -> Any:
         out: list[Any] = []
         while pos < len(lines):
             line = lines[pos]
-            if not line.strip():
+            if not line.strip() or line.lstrip().startswith("#"):
                 pos += 1
                 continue
             cur_indent = len(line) - len(line.lstrip())
@@ -599,6 +625,116 @@ def _register_resource_origin(instance: Any, name: str) -> None:
 _REF_PREFIX = "@"
 
 
+# Unified ``${kind:value}`` reference grammar — applied to every
+# string value the workspace loader resolves. Three kinds today:
+#
+#   ${ref:name}           → looked up in the resources registry
+#   ${py:module:symbol}   → importlib.import_module + getattr
+#   ${runtime.field}      → looked up in the per-invocation runtime dict
+#
+# Anything not matching this pattern (and not the legacy ``@name``
+# form) passes through unchanged. The grammar is intentionally
+# *closed* — there is no escape hatch for arbitrary expressions; if
+# a workspace needs imperative wiring it falls back to ``setup.py``.
+#
+# Same syntax for ``${runtime.x}`` as ``_apply_runtime_substitutions``
+# uses on raw text below; this resolver handles the structured-value
+# path (preserves the resolved object's identity instead of stringifying).
+_REF_PATTERN = re.compile(r"^\$\{(?P<kind>ref|py|runtime)(?::|\.)(?P<value>[^}]+)\}$")
+
+
+def _resolve_py_ref(spec: str) -> Any:
+    """Resolve a ``module:symbol`` (or ``module.symbol``) string to a Python object.
+
+    Accepts both colon and dot as the module/attribute separator on
+    the rightmost split. ``module`` may itself contain dots
+    (``a.b.c:Class``). Symbol may be nested via dots
+    (``module:Class.factory``).
+    """
+    if ":" in spec:
+        module_path, _, attr_path = spec.partition(":")
+    elif "." in spec:
+        module_path, _, attr_path = spec.rpartition(".")
+    else:
+        raise WorkspaceSerializationError(
+            f"py: reference {spec!r} must be 'module:symbol' or 'module.symbol'"
+        )
+    if not module_path or not attr_path:
+        raise WorkspaceSerializationError(f"py: reference {spec!r} has empty module or symbol part")
+    try:
+        module = importlib.import_module(module_path)
+    except ImportError as exc:
+        raise WorkspaceSerializationError(
+            f"py: reference {spec!r} — could not import {module_path!r}: {exc}"
+        ) from exc
+    obj: Any = module
+    for attr in attr_path.split("."):
+        if not hasattr(obj, attr):
+            raise WorkspaceSerializationError(
+                f"py: reference {spec!r} — {attr!r} not found on {obj!r}"
+            )
+        obj = getattr(obj, attr)
+    return obj
+
+
+def _resolve_runtime_ref(field: str, runtime: dict[str, Any] | None) -> Any:
+    """Resolve a ``${runtime.field}`` reference. Field may use
+    ``a.b`` dotted lookup into nested dicts.
+
+    Supports a default with ``:-`` syntax: ``${runtime.x:-default}``
+    (matches the shell convention; consistent with text-mode
+    substitution conventions).
+    """
+    # Default form: "field:-default"
+    default_marker = ":-"
+    has_default = default_marker in field
+    default_str: str | None = None
+    if has_default:
+        field, _, default_str = field.partition(default_marker)
+    runtime = runtime or {}
+    parts = field.split(".")
+    val: Any = runtime
+    for part in parts:
+        if isinstance(val, dict) and part in val:
+            val = val[part]
+        else:
+            if has_default:
+                # Bare strings are returned as-is; numeric defaults
+                # are parsed best-effort.
+                return _coerce_default(default_str)
+            raise WorkspaceSerializationError(
+                f"unresolved ${{runtime.{field}}} reference; known runtime keys: {sorted(runtime)}"
+            )
+    return val
+
+
+def _coerce_default(text: str | None) -> Any:
+    """Best-effort coerce a default string from ``${runtime.x:-default}``.
+
+    Tries int → float → bool → string in that order. Bare ``null``
+    becomes ``None``. Workspace authors who need richer defaults
+    should set them in the factory function signature instead.
+    """
+    if text is None:
+        return None
+    s = text.strip()
+    if s in ("null", "None"):
+        return None
+    if s in ("true", "True"):
+        return True
+    if s in ("false", "False"):
+        return False
+    try:
+        return int(s)
+    except ValueError:
+        pass
+    try:
+        return float(s)
+    except ValueError:
+        pass
+    return s
+
+
 def resource_ref_for(value: Any) -> str | None:
     """Return ``"@<name>"`` when ``value`` was produced by a workspace
     ``resources/<name>.py`` builder; ``None`` otherwise.
@@ -657,25 +793,80 @@ def resource_ref_for(value: Any) -> str | None:
     return None
 
 
-def _resolve_refs(value: Any, resources: dict[str, Any]) -> Any:
-    """Replace any ``"@<name>"`` strings in ``value`` with their
-    resolved resource. Recurses into dicts and lists. Other types pass
-    through unchanged.
+def _resolve_refs(
+    value: Any,
+    resources: dict[str, Any],
+    *,
+    runtime: dict[str, Any] | None = None,
+    source_path: str | Path | None = None,
+) -> Any:
+    """Replace structured references in ``value`` with resolved objects.
 
-    Raises :class:`WorkspaceSerializationError` when a reference points
-    at a missing resource so loading fails loud.
+    Supports four reference forms (all in string values; recurses into
+    dicts and lists):
+
+    * ``${ref:name}``         → ``resources[name]`` (raises if missing)
+    * ``${py:module:symbol}`` → imported Python object
+    * ``${runtime.field}``    → looked up in ``runtime`` (supports
+      ``${runtime.field:-default}`` for missing keys)
+    * ``"@name"`` (legacy)    → equivalent to ``${ref:name}``
+
+    Other types pass through unchanged.
+
+    The ``runtime`` parameter is keyword-only and defaults to ``None``
+    so existing callers that only need ref-resolution work unchanged.
+
+    The optional ``source_path`` is appended to every error message
+    so a typo in ``hooks/05_QualityGate/config.yaml`` reports its
+    location instead of leaving the user to grep for the bad ref.
     """
-    if isinstance(value, str) and value.startswith(_REF_PREFIX):
-        name = value[len(_REF_PREFIX) :]
-        if name not in resources:
-            raise WorkspaceSerializationError(
-                f"unresolved resource reference {value!r}; known resources: {sorted(resources)}"
-            )
-        return resources[name]
+    src = f" (in {source_path})" if source_path else ""
+    if isinstance(value, str):
+        m = _REF_PATTERN.match(value)
+        if m:
+            kind = m.group("kind")
+            spec = m.group("value")
+            if kind == "ref":
+                if spec not in resources:
+                    raise WorkspaceSerializationError(
+                        f"unresolved ${{ref:{spec}}} reference{src}; "
+                        f"known resources: {sorted(resources)}"
+                    )
+                return resources[spec]
+            if kind == "py":
+                try:
+                    return _resolve_py_ref(spec)
+                except WorkspaceSerializationError as exc:
+                    if src:
+                        raise WorkspaceSerializationError(f"{exc}{src}") from exc
+                    raise
+            if kind == "runtime":
+                try:
+                    return _resolve_runtime_ref(spec, runtime)
+                except WorkspaceSerializationError as exc:
+                    if src:
+                        raise WorkspaceSerializationError(f"{exc}{src}") from exc
+                    raise
+        # Legacy ``@name`` form.
+        if value.startswith(_REF_PREFIX):
+            name = value[len(_REF_PREFIX) :]
+            if name not in resources:
+                raise WorkspaceSerializationError(
+                    f"unresolved resource reference {value!r}{src}; "
+                    f"known resources: {sorted(resources)}"
+                )
+            return resources[name]
+        return value
     if isinstance(value, dict):
-        return {k: _resolve_refs(v, resources) for k, v in value.items()}
+        return {
+            k: _resolve_refs(v, resources, runtime=runtime, source_path=source_path)
+            for k, v in value.items()
+        }
     if isinstance(value, list):
-        return [_resolve_refs(item, resources) for item in value]
+        return [
+            _resolve_refs(item, resources, runtime=runtime, source_path=source_path)
+            for item in value
+        ]
     return value
 
 
@@ -788,31 +979,67 @@ def _render_dataclass_kwargs(instance: Any, imports: set[str]) -> str:
     return ", ".join(parts)
 
 
-_RUNTIME_PLACEHOLDER = re.compile(r"\$\{runtime\.([A-Za-z_][A-Za-z0-9_]*)\}")
+_RUNTIME_PLACEHOLDER = re.compile(
+    # Match ``${runtime.field}`` or ``${runtime.field:-default}`` —
+    # ``field`` may be dotted for nested lookup.  Same shape as the
+    # structured grammar in ``_resolve_refs`` so workspace authors
+    # can use one syntax for both raw text (config.yaml interpolation
+    # before YAML parse) and structured values (after parse).
+    r"\$\{runtime\.([A-Za-z_][A-Za-z0-9_.]*)(:-[^}]*)?\}"
+)
 
 
 def _apply_runtime_substitutions(text: str, runtime: dict[str, Any]) -> str:
     """Replace ``${runtime.<key>}`` placeholders in ``text`` with the
     string form of ``runtime[<key>]``.
 
-    Used on ``config.yaml`` (and any other plain-text workspace file the
-    loader passes through this) so workspace authors can parameterise
-    paths and other host-supplied values without writing a setup.py.
+    Supports the same ``:-default`` form as the structured grammar
+    (``${runtime.x:-15}``). Dotted keys descend nested dicts. Unknown
+    keys without a default raise so a typo fails loudly at load time.
 
-    Unknown keys raise :class:`WorkspaceSerializationError` so a typo
-    fails loudly at load time rather than silently leaving the
-    placeholder string in the running config.
+    **Scalar-only at text time.** When the resolved runtime value is
+    a non-scalar (dict, list, custom object), the placeholder is
+    *left intact* and the structured-value pass (``_resolve_refs``,
+    run after YAML parsing) handles it — so callers passing structured
+    runtime values like ``runtime={'alert': {...}}`` see them as the
+    original object, not as a stringified ``"{'id': 'X', ...}"``.
     """
+
+    _SCALAR_TYPES = (str, int, float, bool, type(None))
 
     def _sub(match: "re.Match[str]") -> str:
         key = match.group(1)
-        if key not in runtime:
-            raise WorkspaceSerializationError(
-                f"unresolved ${{runtime.{key}}} placeholder; known runtime keys: {sorted(runtime)}"
-            )
-        return str(runtime[key])
+        default_part = match.group(2) or ""
+        has_default = default_part.startswith(":-")
+        default_text = default_part[2:] if has_default else None
 
-    return _RUNTIME_PLACEHOLDER.sub(_sub, text)
+        # Walk dotted path.
+        parts = key.split(".")
+        val: Any = runtime
+        for part in parts:
+            if isinstance(val, dict) and part in val:
+                val = val[part]
+            else:
+                if has_default:
+                    return default_text or ""
+                raise WorkspaceSerializationError(
+                    f"unresolved ${{runtime.{key}}} placeholder; "
+                    f"known runtime keys: {sorted(runtime)}"
+                )
+        # Only stringify scalars at text-pass time. Non-scalars stay
+        # as the original placeholder so the structured pass can
+        # resolve them with identity preserved.
+        if not isinstance(val, _SCALAR_TYPES):
+            return match.group(0)
+        return str(val)
+
+    # Strip full-line comments before substitution so the regex
+    # doesn't fire on placeholder-shaped text inside YAML # comments
+    # (the rest of the loader strips them anyway in ``_load_yaml``).
+    text_no_comments = "\n".join(
+        line for line in text.splitlines() if not line.lstrip().startswith("#")
+    )
+    return _RUNTIME_PLACEHOLDER.sub(_sub, text_no_comments)
 
 
 def _hook_class(hook: Any) -> type:
@@ -1913,7 +2140,7 @@ def _resolve_extends(root: Path, *, _seen: set[Path] | None = None) -> Path:
     if not cfg_path.is_file():
         return root
     cfg_text = cfg_path.read_text(encoding="utf-8")
-    cfg = _load_yaml(cfg_text) or {}
+    cfg = _load_yaml(cfg_text, source_path=cfg_path) or {}
     extends_val = cfg.get("extends")
     if not extends_val:
         return root
@@ -1986,7 +2213,7 @@ def _workspace_to_preset_inner(
         # workspace authors can parameterise config.yaml without needing
         # a setup.py for the common cases.
         raw_cfg_text = _apply_runtime_substitutions(raw_cfg_text, runtime_dict)
-        cfg_kwargs.update(_load_yaml(raw_cfg_text) or {})
+        cfg_kwargs.update(_load_yaml(raw_cfg_text, source_path=cfg_path) or {})
 
     sys_prompt_path = root / WorkspaceLayout.SYSTEM_PROMPT_MD
     if sys_prompt_path.is_file():
@@ -2046,7 +2273,12 @@ def _workspace_to_preset_inner(
     # wired declaratively from ``resources/<name>.py`` builders instead
     # of forcing every workspace into a ``setup.py`` detour. Symmetric
     # with the hook-kwargs ref resolution below.
-    cfg_kwargs = _resolve_refs(cfg_kwargs, resources)
+    cfg_kwargs = _resolve_refs(
+        cfg_kwargs,
+        resources,
+        runtime=runtime_dict,
+        source_path=str(cfg_path) if cfg_path.is_file() else "config.yaml",
+    )
 
     # ``builtin_tools:`` is a workspace-loader directive, not a
     # ``LoopConfig`` field — pop it before constructing the config so
@@ -2054,6 +2286,13 @@ def _workspace_to_preset_inner(
     # The popped list is consumed below where the tool registry is
     # populated.
     _builtin_tool_names: list[str] = list(cfg_kwargs.pop("builtin_tools", None) or [])
+
+    # ``state:`` is a workspace-loader directive that lets a workspace
+    # describe the state object declaratively (any reference: a
+    # ``${ref:...}`` resource, a ``${py:...}`` factory callable, or a
+    # pre-resolved instance from ``_resolve_refs``). Falls back to the
+    # ``state_factory`` constructor arg, and finally to ``DefaultState``.
+    _state_directive = cfg_kwargs.pop("state", None)
 
     config = LoopConfig(**cfg_kwargs)
 
@@ -2079,7 +2318,8 @@ def _workspace_to_preset_inner(
                 _load_yaml(
                     _apply_runtime_substitutions(
                         spec_path.read_text(encoding="utf-8"), runtime_dict
-                    )
+                    ),
+                    source_path=spec_path,
                 )
                 or {}
             )
@@ -2173,11 +2413,61 @@ def _workspace_to_preset_inner(
     if resources:
         registry.set_resources(resources)
 
-    # Hooks (alphabetical-by-dirname → list order).
+    # Hooks (explicit ``order:`` in config.yaml wins; ties + missing
+    # values fall back to alphabetical-by-dirname).
+    #
+    # The directory-name convention (``00_FirstHook``, ``01_SecondHook``)
+    # works for small hook chains but doesn't scale — inserting a hook
+    # between positions 5 and 6 in a chain of 30 means renaming 24
+    # directories with ``git mv``, destroying history and producing
+    # noisy merge conflicts. The ``order:`` directive lets workspace
+    # authors keep stable directory names while still controlling
+    # execution order via a small integer in each hook's config.yaml.
     hooks: list[Any] = []
     hooks_dir = root / WorkspaceLayout.HOOKS_DIR
     if hooks_dir.is_dir():
-        for hook_dir in sorted(p for p in hooks_dir.iterdir() if p.is_dir()):
+        # First pass: collect (order_key, hook_dir) pairs so we can sort
+        # by explicit ``order:`` field with directory name as the
+        # tie-breaker.
+        hook_entries: list[tuple[Any, Path]] = []
+        for hook_dir in (p for p in hooks_dir.iterdir() if p.is_dir()):
+            cfg_yaml = hook_dir / "config.yaml"
+            order_value: int | float = float("inf")  # un-ordered hooks sort last
+            enabled = True
+            if cfg_yaml.is_file():
+                try:
+                    raw = cfg_yaml.read_text(encoding="utf-8")
+                    parsed = (
+                        _load_yaml(
+                            _apply_runtime_substitutions(raw, runtime_dict),
+                            source_path=cfg_yaml,
+                        )
+                        or {}
+                    )
+                    if isinstance(parsed, dict):
+                        if "order" in parsed:
+                            order_value = int(parsed["order"])
+                        if "enabled" in parsed:
+                            enabled = bool(parsed["enabled"])
+                except (WorkspaceSerializationError, ValueError, TypeError):
+                    # Malformed config.yaml will be re-raised below
+                    # with full context — here we just fall back to
+                    # alphabetical ordering for this hook.
+                    pass
+            # ``enabled: false`` lets workspace authors ablate a hook
+            # without renaming or deleting its directory — essential
+            # for ``extends:``-based ablation cells, where a child
+            # workspace toggles individual parent hooks off to measure
+            # their contribution.
+            if not enabled:
+                logger.info("skipping disabled hook %s", hook_dir.name)
+                continue
+            # Tuple sort: explicit order first, then directory name.
+            # When ``order_value == inf`` (no ``order:`` field), hooks
+            # sort by dirname only — the legacy behaviour.
+            hook_entries.append(((order_value, hook_dir.name), hook_dir))
+        hook_entries.sort(key=lambda x: x[0])
+        for _key, hook_dir in hook_entries:
             hook_py = hook_dir / "hook.py"
             cfg_yaml = hook_dir / "config.yaml"
             if not hook_py.is_file():
@@ -2190,7 +2480,10 @@ def _workspace_to_preset_inner(
             hook_modules[hook_dir.name] = module
             hook_cfg = (
                 _load_yaml(
-                    _apply_runtime_substitutions(cfg_yaml.read_text(encoding="utf-8"), runtime_dict)
+                    _apply_runtime_substitutions(
+                        cfg_yaml.read_text(encoding="utf-8"), runtime_dict
+                    ),
+                    source_path=cfg_yaml,
                 )
                 if cfg_yaml.is_file()
                 else {}
@@ -2224,13 +2517,18 @@ def _workspace_to_preset_inner(
             kwargs = dict(hook_cfg.get("kwargs", {}) or {})
             # Resolve ``"@<name>"`` references against the shared-resource
             # registry so hooks can share live objects on reload.
-            kwargs = _resolve_refs(kwargs, resources)
+            kwargs = _resolve_refs(
+                kwargs,
+                resources,
+                runtime=runtime_dict,
+                source_path=str(cfg_yaml),
+            )
             try:
                 hooks.append(cls(**kwargs))
             except TypeError as exc:
                 msg = (
                     f"hook {hook_dir.name!r} ({class_name or cls.__name__}) could not be "
-                    f"instantiated with kwargs={kwargs}: {exc}. "
+                    f"instantiated with kwargs={kwargs} (in {cfg_yaml}): {exc}. "
                     f"Implement to_config(self) -> dict on the hook class so the "
                     f"workspace round-trip can capture its constructor kwargs."
                 )
@@ -2238,13 +2536,40 @@ def _workspace_to_preset_inner(
                     raise WorkspaceSerializationError(msg) from exc
                 logger.warning("%s; skipping hook", msg)
 
-    # State
+    # State — priority: declarative ``state:`` directive in config.yaml,
+    # then ``state_factory`` constructor arg, then ``DefaultState``.
     max_steps = int(getattr(config, "max_steps", 15))
-    state = (
-        state_factory(max_steps) if state_factory is not None else DefaultState(max_steps=max_steps)
-    )
+    state: Any
+    if _state_directive is not None:
+        # ``_resolve_refs`` already turned ``${...}`` values into objects.
+        # If the result is callable, call it with no args (factory protocol);
+        # if it has ``__init__`` taking ``max_steps``, pass it; otherwise
+        # treat as a pre-built instance.
+        if callable(_state_directive) and not isinstance(_state_directive, type):
+            # Plain callable factory — call with no args.
+            state = _state_directive()
+        elif inspect.isclass(_state_directive):
+            # Class reference — try ``Class(max_steps=...)`` first,
+            # fall back to ``Class()`` for stateless types.
+            try:
+                state = _state_directive(max_steps=max_steps)
+            except TypeError:
+                state = _state_directive()
+        else:
+            # Pre-built instance — use as-is.
+            state = _state_directive
+    elif state_factory is not None:
+        state = state_factory(max_steps)
+    else:
+        state = DefaultState(max_steps=max_steps)
 
-    preset = AgentPreset(config=config, hooks=hooks, tools=registry, state=state)
+    preset = AgentPreset(
+        config=config,
+        hooks=hooks,
+        tools=registry,
+        state=state,
+        resources=dict(resources),
+    )
 
     # ``setup.py`` escape hatch — runs after the declarative load to
     # let the workspace attach callable / opaque fields that don't
@@ -2253,7 +2578,11 @@ def _workspace_to_preset_inner(
     # inject shared resources into top-level tool/hook modules.
     setup_path = root / WorkspaceLayout.SETUP_PY
     if setup_path.is_file():
-        module = _import_module_from_path(setup_path, "_chw_setup")
+        # Module name is derived from the workspace directory so two
+        # workspaces loaded in the same process don't collide in
+        # ``sys.modules`` (the legacy ``_chw_setup`` constant did).
+        ws_slug = re.sub(r"\W+", "_", root.name).strip("_") or "workspace"
+        module = _import_module_from_path(setup_path, f"looplet_setup_{ws_slug}")
         setup_fn = getattr(module, "setup", None)
         if not callable(setup_fn):
             raise WorkspaceSerializationError(

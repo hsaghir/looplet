@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import os
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from looplet.budget import ContextBudget, ThresholdCompactHook
@@ -69,6 +69,20 @@ class AgentPreset:
 
     state: DefaultState
     """Agent state with budget tracking."""
+
+    resources: dict[str, Any] = field(default_factory=dict)
+    """Workspace-built resources, exposed by name.
+
+    When a preset is loaded from a workspace, every resource declared
+    in ``resources/<name>.py`` is published here under its declared
+    name. Callers that need post-load access to live objects (e.g. the
+    benchmark harness pulling out an ``ExplorationPrimitives`` to feed
+    the loop, or an evidence-bundle writer pulling out a session log
+    for archival) read from this dict.
+
+    Empty for presets constructed directly in code (no workspace).
+    Mutable: callers may inject test doubles by direct assignment.
+    """
 
     def run(
         self,

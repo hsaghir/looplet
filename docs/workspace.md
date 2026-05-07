@@ -45,7 +45,7 @@ agent.workspace/
 ├── hooks/
 │   └── 00_DemoCounter/      # leading number = sort order = hook list order
 │       ├── hook.py          # exposes `class HookClass`
-│       └── config.yaml      # class_name + kwargs for HookClass(**kwargs)
+│       └── config.yaml      # class (or class_name) + kwargs for HookClass(**kwargs)
 └── memory/
     └── 00_static.md         # one StaticMemorySource per file
 ```
@@ -53,6 +53,44 @@ agent.workspace/
 Sort order matters for hooks: directories are loaded alphabetically,
 which becomes the hook-list order at execution time. Use `00_`, `10_`,
 `20_` prefixes to keep room for inserts.
+
+---
+
+## Reference grammar
+
+Any string value in `config.yaml`, hook `config.yaml`, or `tool.yaml`
+can use the workspace reference grammar to resolve to a Python
+object at load time. Three forms, one resolver, one mental model:
+
+| Form | Resolves to |
+|---|---|
+| `${ref:name}` | The resource built by `resources/name.py::build()` |
+| `${py:module:symbol}` | `importlib.import_module(module).symbol` (dotted symbols allowed: `${py:my.app:Class.factory}`) |
+| `${runtime.field}` | The value of `runtime[field]` passed to `workspace_to_preset(workspace_path, runtime=...)`. Supports nested lookup (`${runtime.a.b.c}`) and defaults (`${runtime.x:-15}`) |
+
+The legacy `"@name"` form is still accepted as an alias for
+`${ref:name}` so older workspaces keep loading unchanged.
+
+References work uniformly:
+
+```yaml
+# config.yaml
+max_steps: ${runtime.max_steps:-15}
+compact_service: ${ref:compact_service}
+state: ${py:my.app.state:MyAgentState}
+memory_sources:
+  - ${ref:project_memory}
+
+# hooks/00_MyHook/config.yaml
+class: ${py:my.app.hooks:MyHook}
+kwargs:
+  llm: ${ref:llm}
+  threshold: ${runtime.threshold:-0.85}
+```
+
+After load, every built resource is exposed on `preset.resources`
+keyed by name, so callers (benchmarks, evidence-bundle writers, SDK
+shims) can reach live objects without going through `setup.py`.
 
 ---
 

@@ -6,6 +6,44 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **Unified workspace reference grammar.** Three forms, one resolver,
+  applied uniformly to every string value the workspace loader
+  processes:
+  ```yaml
+  max_steps:       ${runtime.max_steps:-15}     # per-invocation data
+  compact_service: ${ref:compact_service}       # resource registry
+  state:           ${py:my.app.state:MyState}   # imported Python symbol
+  ```
+  `${runtime.x}` supports nested lookup (`${runtime.a.b}`) and
+  defaults (`${runtime.x:-15}`). The legacy `"@name"` form continues
+  to work as an alias for `${ref:name}` so existing workspaces load
+  unchanged. See `docs/workspace.md#reference-grammar` for the full
+  spec.
+- **`AgentPreset.resources` field.** The workspace loader now
+  populates this dict with every resource it built. Callers that
+  need post-load access to live objects (benchmarks, evidence-bundle
+  writers, SDK shims) read from `preset.resources` by name — no more
+  module-hunting to reach a resource the workspace constructed.
+  Empty for presets built directly in code.
+- **Declarative `state:` directive in `config.yaml`.** Workspaces
+  can now describe their state class via the same grammar instead
+  of relying on the `state_factory` constructor arg of
+  `workspace_to_preset`:
+  ```yaml
+  state: ${py:my.app.state:MyAgentState}   # → MyAgentState(max_steps=...)
+  state: ${ref:my_state}                   # → resource as-is
+  ```
+  Priority: `state:` directive > `state_factory` arg > `DefaultState`.
+  Closes the last gap where a non-trivial workspace had to write
+  `setup.py` just to attach a custom state class.
+
+### Fixed
+- **YAML parser now skips full-line comments.** `#` lines used to
+  raise `WorkspaceSerializationError`. Same fix applied to the
+  runtime-substitution pre-pass so `${runtime.x}` inside a YAML
+  comment doesn't fire the regex.
+
 ### Removed (BREAKING)
 
 - **`looplet.flags` module deleted.** All feature flags migrated to

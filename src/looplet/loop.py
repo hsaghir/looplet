@@ -77,6 +77,46 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+# ── LoopContext ──────────────────────────────────────────────────
+
+
+@dataclass
+class LoopContext:
+    """Mutable handle to live loop state, passed to hooks via :meth:`LoopHook.bind`.
+
+    Hooks that need long-lived access to ``state``, ``tools``,
+    ``conversation``, or the current ``step_num`` outside their
+    declared method signatures used to capture them in closures —
+    which then refused to round-trip through ``to_config()`` because
+    closures can't be serialised. ``LoopContext`` makes this
+    first-class:
+
+        class MyHook:
+            def bind(self, ctx):
+                self.ctx = ctx
+
+            def pre_prompt(self, state, session_log, context, step_num):
+                # Read live values from ctx anytime, not just from the
+                # method args. Tools registry, conversation history,
+                # current step_num, and shared resources are all here.
+                if self.ctx.step_num > 5:
+                    return self.ctx.tools.list_names()
+
+    Mirrors :class:`looplet.types.ToolContext` (the runtime handle for
+    tools) for symmetry. The loop owns the instance and mutates
+    ``step_num`` and ``conversation`` as it progresses, so hooks read
+    the latest values without having to re-bind.
+    """
+
+    state: Any
+    session_log: Any
+    conversation: Any
+    tools: Any
+    config: Any
+    resources: dict[str, Any] = field(default_factory=dict)
+    step_num: int = 0
+
+
 # ── Hook Protocol ────────────────────────────────────────────────
 
 
@@ -126,6 +166,20 @@ class LoopHook(Protocol):
         4. ``config.build_briefing`` callable — briefing section only
         5. ``pre_prompt`` hooks — additive text appended to briefing
         6. Default 7-section template from ``looplet.prompts``
+
+    Optional ``bind(self, ctx: LoopContext) -> None`` method:
+        Hooks may also define ``bind`` to receive a long-lived handle
+        to live loop state (``state``, ``tools``, ``conversation``,
+        ``resources``, current ``step_num``). Called once after preset
+        load and before :meth:`pre_loop`. The loop mutates
+        ``ctx.step_num`` and ``ctx.conversation`` as it progresses,
+        so a hook that stores ``self.ctx = ctx`` reads live values
+        forever after — replacing the closures-over-loop-state
+        anti-pattern that broke ``to_config()`` workspace round-trip.
+
+        ``bind`` is intentionally NOT part of the Protocol body so
+        the ``runtime_checkable`` ``isinstance(h, LoopHook)`` check
+        keeps working for hooks that don't need long-lived ctx.
     """
 
     def pre_loop(
@@ -137,6 +191,17 @@ class LoopHook(Protocol):
         """Called once at the start of the loop, before any steps.
 
         Use for initialization, state setup, or emitting start events.
+
+        Hooks that need access to the tool registry (e.g. to register
+        derived tools at load time) can declare an optional ``tools=``
+        kwarg::
+
+            def pre_loop(self, state, session_log, context, tools=None):
+                tools.register(my_derived_spec)
+
+        The loop introspects the signature once and only passes
+        ``tools`` to hooks that accept it; legacy 3-arg hooks keep
+        working unchanged.
         """
         ...
 
@@ -642,8 +707,15 @@ class LoopConfig:
     """
 
 
-def _default_extract_entities(data: Any) -> list[str]:
-    """Fallback: no entity extraction."""
+def _default_extract_entities(data: Any, state: Any = None) -> list[str]:
+    """Fallback: no entity extraction.
+
+    Accepts a ``state`` kwarg (defaulting to ``None``) so domain
+    extractors that need the live state can have a stateless signature
+    in ``${py:...}`` workspace refs and still receive it from the loop.
+    Stateless extractors keep the 1-arg form working — the loop only
+    passes ``state`` when the callable's signature accepts it.
+    """
     return []
 
 
@@ -991,6 +1063,7 @@ _KNOWN_HOOK_METHODS = frozenset(
         "build_prompt",
         "on_loop_end",
         "on_event",
+        "bind",
     }
 )
 
@@ -1471,11 +1544,35 @@ def composable_loop(
     build_briefing = (
         config.build_briefing or (_dom.build_briefing if _dom else None) or _default_build_briefing
     )
-    extract_entities = (
+    _raw_extract_entities = (
         config.extract_entities
         or (_dom.extract_entities if _dom else None)
         or _default_extract_entities
     )
+    # Adapt the extractor's call signature: callables that accept a
+    # ``state`` kwarg (or take 2+ positional args) get the live state
+    # passed; legacy 1-arg ``extract_entities(data)`` callables keep
+    # working unchanged. This lets domain extractors that need to
+    # update ``state.*`` fields ship as static functions referenced
+    # from a workspace via ``${py:...}`` instead of method-local
+    # closures.
+    import inspect as _inspect  # noqa: PLC0415
+
+    try:
+        _ee_sig = _inspect.signature(_raw_extract_entities)
+        _ee_params = _ee_sig.parameters
+        _ee_takes_state = "state" in _ee_params or any(
+            p.kind == _inspect.Parameter.VAR_KEYWORD for p in _ee_params.values()
+        )
+    except (TypeError, ValueError):  # builtins / C-impls without signatures
+        _ee_takes_state = False
+
+    if _ee_takes_state:
+
+        def extract_entities(data: Any) -> list[str]:
+            return _raw_extract_entities(data, state=state)
+    else:
+        extract_entities = _raw_extract_entities
     build_prompt_fn = config.build_prompt or (_dom.build_prompt if _dom else None)
 
     # ── Loop state ──────────────────────────────────────────
@@ -1510,9 +1607,48 @@ def composable_loop(
         setattr(state, "conversation", _conv)  # noqa: B010
     except AttributeError:
         pass
+
+    # ── Bind LoopContext ──────────────────────────────────────
+    # Hooks that need long-lived access to state/tools/conversation
+    # outside their declared method signatures used to capture them
+    # in closures, which broke ``to_config()`` workspace round-trip
+    # (closures can't be serialised). ``LoopContext`` is the
+    # principled replacement: a mutable handle the loop owns and
+    # mutates as it progresses (step_num, conversation), so a hook
+    # that binds once reads live values forever after.
+    loop_ctx = LoopContext(
+        state=state,
+        session_log=session_log,
+        conversation=_conv,
+        tools=tools,
+        config=config,
+        resources=dict(getattr(config, "resources", {}) or {}),
+        step_num=0,
+    )
+    for hook in hooks:
+        if hasattr(hook, "bind"):
+            hook.bind(loop_ctx)
+
     for hook in hooks:
         if hasattr(hook, "pre_loop"):
-            hook.pre_loop(state, session_log, context)
+            # Sig-aware dispatch: hooks that declare ``tools=`` (or
+            # ``**kwargs``) get the live tool registry so they can
+            # register derived tools at load time. Legacy 3-arg hooks
+            # are called as before. Same pattern as ``extract_entities``
+            # and ``build_trace`` callable signature detection.
+            import inspect as _inspect  # noqa: PLC0415
+
+            try:
+                _pl_params = _inspect.signature(hook.pre_loop).parameters
+                _pl_takes_tools = "tools" in _pl_params or any(
+                    p.kind == _inspect.Parameter.VAR_KEYWORD for p in _pl_params.values()
+                )
+            except (TypeError, ValueError):
+                _pl_takes_tools = False
+            if _pl_takes_tools:
+                hook.pre_loop(state, session_log, context, tools=tools)
+            else:
+                hook.pre_loop(state, session_log, context)
 
     # Fire SESSION_START — single-slot subscribers to lifecycle
     # events get it in one place alongside the per-method pre_loop.
@@ -1538,6 +1674,11 @@ def composable_loop(
 
     while state.budget_remaining > 0 and not done:
         step_num = state.step_count + 1 + _step_offset
+        # Mirror current step + conversation into the bound LoopContext
+        # so any hook that captured ``self.ctx = ctx`` in ``bind()``
+        # reads the live values (rather than a snapshot from start-of-loop).
+        loop_ctx.step_num = step_num
+        loop_ctx.conversation = _conv
         _hook_requested_stop = False  # reset per step; honored after dispatch
 
         # Clear per-step hook context so hooks start each step with
@@ -2343,7 +2484,21 @@ def composable_loop(
     elapsed = (time.time() - t0) * 1000
     _build_trace_fn = config.build_trace or (config.domain.build_trace if config.domain else None)
     if _build_trace_fn is not None:
-        trace = _build_trace_fn(
+        # Pass ``context`` through when the callable's signature
+        # accepts it. Domain trace-builders that need the live loop
+        # context (e.g. an exploration object) can declare
+        # ``def build_trace(*, task, state, ..., context=None)`` and
+        # ship as a static ``${py:...}`` ref instead of a closure.
+        import inspect as _inspect  # noqa: PLC0415
+
+        try:
+            _bt_params = _inspect.signature(_build_trace_fn).parameters
+            _bt_takes_context = "context" in _bt_params or any(
+                p.kind == _inspect.Parameter.VAR_KEYWORD for p in _bt_params.values()
+            )
+        except (TypeError, ValueError):
+            _bt_takes_context = False
+        _bt_kwargs: dict[str, Any] = dict(
             task=task,
             state=state,
             session_log=session_log,
@@ -2352,6 +2507,9 @@ def composable_loop(
             llm_calls=llm_calls,
             elapsed_ms=elapsed,
         )
+        if _bt_takes_context:
+            _bt_kwargs["context"] = context
+        trace = _build_trace_fn(**_bt_kwargs)
     else:
         trace = {
             "task": task,

@@ -725,3 +725,309 @@ class TestComposableLoopHooks:
         )
         # Should stop very early
         assert len(steps) <= 3
+
+
+class TestExtractEntitiesSignatureDispatch:
+    """Loop dispatches ``extract_entities`` based on its signature.
+
+    Stateless ``(data) -> list[str]`` callables keep the legacy 1-arg
+    contract. Stateful ``(data, state=None) -> list[str]`` callables
+    receive the live state, so domain extractors can update
+    ``state.*`` fields without becoming method-local closures.
+    """
+
+    def _run_loop(self, extractor, *, max_steps: int = 2):
+        """Run a tiny loop with a scripted MockLLM and the given extractor."""
+        import json
+
+        from looplet import (
+            DefaultState,
+            LoopConfig,
+            MockLLMBackend,
+            composable_loop,
+            register_done_tool,
+        )
+        from looplet.tools import BaseToolRegistry, ToolSpec
+
+        tools = BaseToolRegistry()
+        tools.register(
+            ToolSpec(
+                name="echo",
+                description="echo",
+                parameters={"text": "string"},
+                execute=lambda **kw: {"text": kw.get("text", ""), "tag": "ent-1"},
+            )
+        )
+        register_done_tool(tools)
+
+        responses = [
+            json.dumps({"tool": "echo", "args": {"text": "hi"}, "reasoning": "x"}),
+            json.dumps({"tool": "done", "args": {"summary": "ok"}, "reasoning": "x"}),
+        ]
+        llm = MockLLMBackend(responses=responses)
+        state = DefaultState(max_steps=max_steps)
+        config = LoopConfig(max_steps=max_steps, extract_entities=extractor)
+        steps = list(
+            composable_loop(
+                llm=llm,
+                task={"id": "t"},
+                tools=tools,
+                state=state,
+                config=config,
+            )
+        )
+        return steps, state
+
+    def test_legacy_one_arg_extractor_keeps_working(self):
+        """``extract_entities(data) -> list[str]`` — backward compat."""
+        seen: list = []
+
+        def stateless(data):
+            seen.append(data)
+            return ["A"]
+
+        steps, _ = self._run_loop(stateless)
+        assert seen, "extractor should have been called"
+        assert all(isinstance(d, dict) for d in seen)
+
+    def test_two_arg_extractor_receives_state(self):
+        """``extract_entities(data, state=None)`` — gets live state."""
+        observed = {"states": []}
+
+        def stateful(data, state=None):
+            observed["states"].append(state)
+            # Mutate state to prove identity.
+            if state is not None and not hasattr(state, "_marker"):
+                state._marker = "set"
+            return ["B"]
+
+        steps, state = self._run_loop(stateful)
+        assert observed["states"], "extractor should have been called"
+        assert all(s is state for s in observed["states"])
+        assert getattr(state, "_marker", None) == "set"
+
+    def test_kwargs_extractor_receives_state(self):
+        """``extract_entities(data, **kw)`` — sig-detect picks it up too."""
+        observed = {"states": []}
+
+        def varkw(data, **kw):
+            observed["states"].append(kw.get("state"))
+            return ["C"]
+
+        steps, state = self._run_loop(varkw)
+        assert observed["states"]
+        assert all(s is state for s in observed["states"])
+
+
+class TestPreLoopToolsKwarg:
+    """Hooks that declare ``tools=`` get the live registry at pre_loop."""
+
+    def _run(self, hook, *, max_steps: int = 2):
+        import json
+
+        from looplet import (
+            DefaultState,
+            LoopConfig,
+            MockLLMBackend,
+            composable_loop,
+            register_done_tool,
+        )
+        from looplet.tools import BaseToolRegistry, ToolSpec
+
+        tools = BaseToolRegistry()
+        tools.register(
+            ToolSpec(
+                name="echo",
+                description="echo",
+                parameters={"text": "string"},
+                execute=lambda **kw: {"text": kw.get("text", "")},
+            )
+        )
+        register_done_tool(tools)
+        responses = [
+            json.dumps({"tool": "echo", "args": {"text": "hi"}, "reasoning": "x"}),
+            json.dumps({"tool": "done", "args": {"summary": "ok"}, "reasoning": "x"}),
+        ]
+        llm = MockLLMBackend(responses=responses)
+        state = DefaultState(max_steps=max_steps)
+        list(
+            composable_loop(
+                llm=llm,
+                task={"id": "t"},
+                tools=tools,
+                hooks=[hook],
+                state=state,
+                config=LoopConfig(max_steps=max_steps),
+            )
+        )
+        return tools
+
+    def test_legacy_three_arg_pre_loop_keeps_working(self):
+        observed = {"called": 0}
+
+        class Legacy:
+            def pre_loop(self, state, session_log, context):
+                observed["called"] += 1
+
+        self._run(Legacy())
+        assert observed["called"] == 1
+
+    def test_pre_loop_with_tools_kwarg_receives_registry(self):
+        observed = {"received": None}
+
+        class TakesTools:
+            def pre_loop(self, state, session_log, context, tools=None):
+                observed["received"] = tools
+
+        tools = self._run(TakesTools())
+        assert observed["received"] is tools
+
+    def test_pre_loop_can_register_derived_tool(self):
+        """A pre_loop hook can register tools the loop will then dispatch."""
+        from looplet.tools import ToolSpec
+
+        class Registrar:
+            def pre_loop(self, state, session_log, context, tools=None):
+                tools.register(
+                    ToolSpec(
+                        name="derived",
+                        description="derived at load time",
+                        parameters={},
+                        execute=lambda **kw: {"hello": "world"},
+                    )
+                )
+
+        tools = self._run(Registrar())
+        assert "derived" in {s.name for s in tools._tools.values()}
+
+    def test_kwargs_pre_loop_receives_tools(self):
+        observed = {"got_tools": False}
+
+        class VarKw:
+            def pre_loop(self, state, session_log, context, **kw):
+                observed["got_tools"] = "tools" in kw
+
+        self._run(VarKw())
+        assert observed["got_tools"] is True
+
+
+# ══════════════════════════════════════════════════════════════════
+# LoopContext / hook bind() — closures-over-state are first class
+# ══════════════════════════════════════════════════════════════════
+
+
+class TestLoopContextBind:
+    """Hooks that define ``bind(ctx)`` receive a mutable handle to live
+    loop state. Replaces the closures-over-state anti-pattern that
+    used to break workspace round-trip via ``to_config()``."""
+
+    def test_bind_called_once_with_loop_context(self):
+        from looplet.loop import LoopConfig, LoopContext, composable_loop
+
+        captured: dict[str, object] = {}
+
+        class CaptureHook:
+            def bind(self, ctx):
+                captured["ctx"] = ctx
+                captured["call_count"] = captured.get("call_count", 0) + 1
+
+        state = SimpleState()
+        llm = _make_done_llm([], done_summary="ok")
+        reg = _make_registry_with_done()
+        list(
+            composable_loop(
+                llm,
+                state=state,
+                tools=reg,
+                hooks=[CaptureHook()],
+                config=LoopConfig(max_steps=5),
+            )
+        )
+        assert captured["call_count"] == 1
+        ctx = captured["ctx"]
+        assert isinstance(ctx, LoopContext)
+        assert ctx.state is state
+        assert ctx.tools is reg
+        # config is the resolved LoopConfig instance
+        assert ctx.config is not None
+
+    def test_step_num_mutates_as_loop_progresses(self):
+        from looplet.loop import LoopConfig, composable_loop
+
+        observed_step_nums: list[int] = []
+
+        class WatchHook:
+            def bind(self, ctx):
+                self.ctx = ctx
+
+            def pre_prompt(self, state, session_log, context, step_num):
+                # Reading from the bound ctx returns the live step_num,
+                # not a stale snapshot from bind()-time.
+                observed_step_nums.append(self.ctx.step_num)
+                return None
+
+        state = SimpleState()
+        llm = _make_done_llm([], done_summary="ok")
+        reg = _make_registry_with_done()
+        list(
+            composable_loop(
+                llm,
+                state=state,
+                tools=reg,
+                hooks=[WatchHook()],
+                config=LoopConfig(max_steps=3),
+            )
+        )
+        # At least one step ran; ctx.step_num was non-zero on entry.
+        assert observed_step_nums
+        assert observed_step_nums[0] >= 1
+
+    def test_hook_without_bind_works_unchanged(self):
+        """Backward compat: hooks lacking ``bind`` aren't broken."""
+        from looplet.loop import LoopConfig, composable_loop
+
+        called = []
+
+        class LegacyHook:
+            def pre_loop(self, state, session_log, context):
+                called.append("pre_loop")
+
+        state = SimpleState()
+        llm = _make_done_llm([], done_summary="ok")
+        reg = _make_registry_with_done()
+        list(
+            composable_loop(
+                llm,
+                state=state,
+                tools=reg,
+                hooks=[LegacyHook()],
+                config=LoopConfig(max_steps=3),
+            )
+        )
+        assert called == ["pre_loop"]
+
+    def test_loop_context_carries_tools_and_resources(self):
+        """``ctx.tools`` is the live registry; ``ctx.resources`` is
+        sourced from config when available."""
+        from looplet.loop import LoopConfig, composable_loop
+
+        seen: dict = {}
+
+        class ToolsHook:
+            def bind(self, ctx):
+                seen["tools_is_registry"] = ctx.tools is not None
+                seen["resources_is_dict"] = isinstance(ctx.resources, dict)
+
+        state = SimpleState()
+        llm = _make_done_llm([], done_summary="ok")
+        reg = _make_registry_with_done()
+        list(
+            composable_loop(
+                llm,
+                state=state,
+                tools=reg,
+                hooks=[ToolsHook()],
+                config=LoopConfig(max_steps=3),
+            )
+        )
+        assert seen == {"tools_is_registry": True, "resources_is_dict": True}

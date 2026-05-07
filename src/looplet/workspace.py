@@ -793,6 +793,7 @@ def _resolve_refs(
     resources: dict[str, Any],
     *,
     runtime: dict[str, Any] | None = None,
+    source_path: str | Path | None = None,
 ) -> Any:
     """Replace structured references in ``value`` with resolved objects.
 
@@ -809,7 +810,12 @@ def _resolve_refs(
 
     The ``runtime`` parameter is keyword-only and defaults to ``None``
     so existing callers that only need ref-resolution work unchanged.
+
+    The optional ``source_path`` is appended to every error message
+    so a typo in ``hooks/05_QualityGate/config.yaml`` reports its
+    location instead of leaving the user to grep for the bad ref.
     """
+    src = f" (in {source_path})" if source_path else ""
     if isinstance(value, str):
         m = _REF_PATTERN.match(value)
         if m:
@@ -818,27 +824,44 @@ def _resolve_refs(
             if kind == "ref":
                 if spec not in resources:
                     raise WorkspaceSerializationError(
-                        f"unresolved ${{ref:{spec}}} reference; "
+                        f"unresolved ${{ref:{spec}}} reference{src}; "
                         f"known resources: {sorted(resources)}"
                     )
                 return resources[spec]
             if kind == "py":
-                return _resolve_py_ref(spec)
+                try:
+                    return _resolve_py_ref(spec)
+                except WorkspaceSerializationError as exc:
+                    if src:
+                        raise WorkspaceSerializationError(f"{exc}{src}") from exc
+                    raise
             if kind == "runtime":
-                return _resolve_runtime_ref(spec, runtime)
+                try:
+                    return _resolve_runtime_ref(spec, runtime)
+                except WorkspaceSerializationError as exc:
+                    if src:
+                        raise WorkspaceSerializationError(f"{exc}{src}") from exc
+                    raise
         # Legacy ``@name`` form.
         if value.startswith(_REF_PREFIX):
             name = value[len(_REF_PREFIX) :]
             if name not in resources:
                 raise WorkspaceSerializationError(
-                    f"unresolved resource reference {value!r}; known resources: {sorted(resources)}"
+                    f"unresolved resource reference {value!r}{src}; "
+                    f"known resources: {sorted(resources)}"
                 )
             return resources[name]
         return value
     if isinstance(value, dict):
-        return {k: _resolve_refs(v, resources, runtime=runtime) for k, v in value.items()}
+        return {
+            k: _resolve_refs(v, resources, runtime=runtime, source_path=source_path)
+            for k, v in value.items()
+        }
     if isinstance(value, list):
-        return [_resolve_refs(item, resources, runtime=runtime) for item in value]
+        return [
+            _resolve_refs(item, resources, runtime=runtime, source_path=source_path)
+            for item in value
+        ]
     return value
 
 
@@ -2245,7 +2268,12 @@ def _workspace_to_preset_inner(
     # wired declaratively from ``resources/<name>.py`` builders instead
     # of forcing every workspace into a ``setup.py`` detour. Symmetric
     # with the hook-kwargs ref resolution below.
-    cfg_kwargs = _resolve_refs(cfg_kwargs, resources, runtime=runtime_dict)
+    cfg_kwargs = _resolve_refs(
+        cfg_kwargs,
+        resources,
+        runtime=runtime_dict,
+        source_path=str(cfg_path) if cfg_path.is_file() else "config.yaml",
+    )
 
     # ``builtin_tools:`` is a workspace-loader directive, not a
     # ``LoopConfig`` field — pop it before constructing the config so
@@ -2379,11 +2407,43 @@ def _workspace_to_preset_inner(
     if resources:
         registry.set_resources(resources)
 
-    # Hooks (alphabetical-by-dirname → list order).
+    # Hooks (explicit ``order:`` in config.yaml wins; ties + missing
+    # values fall back to alphabetical-by-dirname).
+    #
+    # The directory-name convention (``00_FirstHook``, ``01_SecondHook``)
+    # works for small hook chains but doesn't scale — inserting a hook
+    # between positions 5 and 6 in a chain of 30 means renaming 24
+    # directories with ``git mv``, destroying history and producing
+    # noisy merge conflicts. The ``order:`` directive lets workspace
+    # authors keep stable directory names while still controlling
+    # execution order via a small integer in each hook's config.yaml.
     hooks: list[Any] = []
     hooks_dir = root / WorkspaceLayout.HOOKS_DIR
     if hooks_dir.is_dir():
-        for hook_dir in sorted(p for p in hooks_dir.iterdir() if p.is_dir()):
+        # First pass: collect (order_key, hook_dir) pairs so we can sort
+        # by explicit ``order:`` field with directory name as the
+        # tie-breaker.
+        hook_entries: list[tuple[Any, Path]] = []
+        for hook_dir in (p for p in hooks_dir.iterdir() if p.is_dir()):
+            cfg_yaml = hook_dir / "config.yaml"
+            order_value: int | float = float("inf")  # un-ordered hooks sort last
+            if cfg_yaml.is_file():
+                try:
+                    raw = cfg_yaml.read_text(encoding="utf-8")
+                    parsed = _load_yaml(_apply_runtime_substitutions(raw, runtime_dict)) or {}
+                    if isinstance(parsed, dict) and "order" in parsed:
+                        order_value = int(parsed["order"])
+                except (WorkspaceSerializationError, ValueError, TypeError):
+                    # Malformed config.yaml will be re-raised below
+                    # with full context — here we just fall back to
+                    # alphabetical ordering for this hook.
+                    pass
+            # Tuple sort: explicit order first, then directory name.
+            # When ``order_value == inf`` (no ``order:`` field), hooks
+            # sort by dirname only — the legacy behaviour.
+            hook_entries.append(((order_value, hook_dir.name), hook_dir))
+        hook_entries.sort(key=lambda x: x[0])
+        for _key, hook_dir in hook_entries:
             hook_py = hook_dir / "hook.py"
             cfg_yaml = hook_dir / "config.yaml"
             if not hook_py.is_file():
@@ -2430,7 +2490,12 @@ def _workspace_to_preset_inner(
             kwargs = dict(hook_cfg.get("kwargs", {}) or {})
             # Resolve ``"@<name>"`` references against the shared-resource
             # registry so hooks can share live objects on reload.
-            kwargs = _resolve_refs(kwargs, resources, runtime=runtime_dict)
+            kwargs = _resolve_refs(
+                kwargs,
+                resources,
+                runtime=runtime_dict,
+                source_path=str(cfg_yaml),
+            )
             try:
                 hooks.append(cls(**kwargs))
             except TypeError as exc:
@@ -2485,7 +2550,11 @@ def _workspace_to_preset_inner(
     # inject shared resources into top-level tool/hook modules.
     setup_path = root / WorkspaceLayout.SETUP_PY
     if setup_path.is_file():
-        module = _import_module_from_path(setup_path, "_chw_setup")
+        # Module name is derived from the workspace directory so two
+        # workspaces loaded in the same process don't collide in
+        # ``sys.modules`` (the legacy ``_chw_setup`` constant did).
+        ws_slug = re.sub(r"\W+", "_", root.name).strip("_") or "workspace"
+        module = _import_module_from_path(setup_path, f"looplet_setup_{ws_slug}")
         setup_fn = getattr(module, "setup", None)
         if not callable(setup_fn):
             raise WorkspaceSerializationError(

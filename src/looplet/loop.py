@@ -137,6 +137,17 @@ class LoopHook(Protocol):
         """Called once at the start of the loop, before any steps.
 
         Use for initialization, state setup, or emitting start events.
+
+        Hooks that need access to the tool registry (e.g. to register
+        derived tools at load time) can declare an optional ``tools=``
+        kwarg::
+
+            def pre_loop(self, state, session_log, context, tools=None):
+                tools.register(my_derived_spec)
+
+        The loop introspects the signature once and only passes
+        ``tools`` to hooks that accept it; legacy 3-arg hooks keep
+        working unchanged.
         """
         ...
 
@@ -1543,7 +1554,24 @@ def composable_loop(
         pass
     for hook in hooks:
         if hasattr(hook, "pre_loop"):
-            hook.pre_loop(state, session_log, context)
+            # Sig-aware dispatch: hooks that declare ``tools=`` (or
+            # ``**kwargs``) get the live tool registry so they can
+            # register derived tools at load time. Legacy 3-arg hooks
+            # are called as before. Same pattern as ``extract_entities``
+            # and ``build_trace`` callable signature detection.
+            import inspect as _inspect  # noqa: PLC0415
+
+            try:
+                _pl_params = _inspect.signature(hook.pre_loop).parameters
+                _pl_takes_tools = "tools" in _pl_params or any(
+                    p.kind == _inspect.Parameter.VAR_KEYWORD for p in _pl_params.values()
+                )
+            except (TypeError, ValueError):
+                _pl_takes_tools = False
+            if _pl_takes_tools:
+                hook.pre_loop(state, session_log, context, tools=tools)
+            else:
+                hook.pre_loop(state, session_log, context)
 
     # Fire SESSION_START — single-slot subscribers to lifecycle
     # events get it in one place alongside the per-method pre_loop.

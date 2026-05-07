@@ -817,3 +817,95 @@ class TestExtractEntitiesSignatureDispatch:
         steps, state = self._run_loop(varkw)
         assert observed["states"]
         assert all(s is state for s in observed["states"])
+
+
+class TestPreLoopToolsKwarg:
+    """Hooks that declare ``tools=`` get the live registry at pre_loop."""
+
+    def _run(self, hook, *, max_steps: int = 2):
+        import json
+
+        from looplet import (
+            DefaultState,
+            LoopConfig,
+            MockLLMBackend,
+            composable_loop,
+            register_done_tool,
+        )
+        from looplet.tools import BaseToolRegistry, ToolSpec
+
+        tools = BaseToolRegistry()
+        tools.register(
+            ToolSpec(
+                name="echo",
+                description="echo",
+                parameters={"text": "string"},
+                execute=lambda **kw: {"text": kw.get("text", "")},
+            )
+        )
+        register_done_tool(tools)
+        responses = [
+            json.dumps({"tool": "echo", "args": {"text": "hi"}, "reasoning": "x"}),
+            json.dumps({"tool": "done", "args": {"summary": "ok"}, "reasoning": "x"}),
+        ]
+        llm = MockLLMBackend(responses=responses)
+        state = DefaultState(max_steps=max_steps)
+        list(
+            composable_loop(
+                llm=llm,
+                task={"id": "t"},
+                tools=tools,
+                hooks=[hook],
+                state=state,
+                config=LoopConfig(max_steps=max_steps),
+            )
+        )
+        return tools
+
+    def test_legacy_three_arg_pre_loop_keeps_working(self):
+        observed = {"called": 0}
+
+        class Legacy:
+            def pre_loop(self, state, session_log, context):
+                observed["called"] += 1
+
+        self._run(Legacy())
+        assert observed["called"] == 1
+
+    def test_pre_loop_with_tools_kwarg_receives_registry(self):
+        observed = {"received": None}
+
+        class TakesTools:
+            def pre_loop(self, state, session_log, context, tools=None):
+                observed["received"] = tools
+
+        tools = self._run(TakesTools())
+        assert observed["received"] is tools
+
+    def test_pre_loop_can_register_derived_tool(self):
+        """A pre_loop hook can register tools the loop will then dispatch."""
+        from looplet.tools import ToolSpec
+
+        class Registrar:
+            def pre_loop(self, state, session_log, context, tools=None):
+                tools.register(
+                    ToolSpec(
+                        name="derived",
+                        description="derived at load time",
+                        parameters={},
+                        execute=lambda **kw: {"hello": "world"},
+                    )
+                )
+
+        tools = self._run(Registrar())
+        assert "derived" in {s.name for s in tools._tools.values()}
+
+    def test_kwargs_pre_loop_receives_tools(self):
+        observed = {"got_tools": False}
+
+        class VarKw:
+            def pre_loop(self, state, session_log, context, **kw):
+                observed["got_tools"] = "tools" in kw
+
+        self._run(VarKw())
+        assert observed["got_tools"] is True

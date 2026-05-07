@@ -2012,3 +2012,229 @@ def test_resource_origin_drops_unhashable_to_prevent_id_reuse_collision(
         "this would leak a stale id reservation that a later same-typed "
         f"object could collide with (size went from {before} to {after})"
     )
+
+
+# ── Unified ${kind:value} reference grammar ────────────────────
+
+
+class TestUnifiedReferenceGrammar:
+    """Tests for the ${ref:...} / ${py:...} / ${runtime.x} grammar."""
+
+    def test_legacy_at_ref_still_resolves(self) -> None:
+        from looplet.workspace import _resolve_refs
+
+        sentinel = object()
+        assert _resolve_refs("@x", {"x": sentinel}) is sentinel
+
+    def test_dollar_ref_resolves_resource_by_name(self) -> None:
+        from looplet.workspace import _resolve_refs
+
+        sentinel = object()
+        assert _resolve_refs("${ref:x}", {"x": sentinel}) is sentinel
+
+    def test_dollar_ref_unknown_resource_raises(self) -> None:
+        from looplet.workspace import WorkspaceSerializationError, _resolve_refs
+
+        with pytest.raises(WorkspaceSerializationError, match="ref:missing"):
+            _resolve_refs("${ref:missing}", {})
+
+    def test_py_ref_imports_module_symbol(self) -> None:
+        from looplet.workspace import _resolve_refs
+
+        cls = _resolve_refs("${py:looplet.loop:LoopConfig}", {})
+        assert cls.__name__ == "LoopConfig"
+
+    def test_py_ref_supports_dot_separator(self) -> None:
+        from looplet.workspace import _resolve_refs
+
+        cls = _resolve_refs("${py:looplet.loop.LoopConfig}", {})
+        assert cls.__name__ == "LoopConfig"
+
+    def test_py_ref_nested_attribute(self) -> None:
+        from looplet.workspace import _resolve_refs
+
+        # Walk to a method on a class.
+        method = _resolve_refs("${py:looplet.loop:LoopConfig.__init__}", {})
+        assert callable(method)
+
+    def test_py_ref_unknown_module_raises(self) -> None:
+        from looplet.workspace import WorkspaceSerializationError, _resolve_refs
+
+        with pytest.raises(WorkspaceSerializationError, match="not.exist"):
+            _resolve_refs("${py:looplet.does.not.exist:Foo}", {})
+
+    def test_py_ref_unknown_symbol_raises(self) -> None:
+        from looplet.workspace import WorkspaceSerializationError, _resolve_refs
+
+        with pytest.raises(WorkspaceSerializationError, match="DefinitelyNotASymbol"):
+            _resolve_refs("${py:looplet.loop:DefinitelyNotASymbol}", {})
+
+    def test_runtime_ref_resolves_field(self) -> None:
+        from looplet.workspace import _resolve_refs
+
+        assert _resolve_refs("${runtime.x}", {}, runtime={"x": 42}) == 42
+
+    def test_runtime_ref_dotted_path(self) -> None:
+        from looplet.workspace import _resolve_refs
+
+        runtime = {"a": {"b": {"c": "deep"}}}
+        assert _resolve_refs("${runtime.a.b.c}", {}, runtime=runtime) == "deep"
+
+    def test_runtime_ref_default_when_missing(self) -> None:
+        from looplet.workspace import _resolve_refs
+
+        assert _resolve_refs("${runtime.x:-fallback}", {}, runtime={}) == "fallback"
+
+    def test_runtime_ref_default_coerces_int(self) -> None:
+        from looplet.workspace import _resolve_refs
+
+        assert _resolve_refs("${runtime.x:-15}", {}, runtime={}) == 15
+
+    def test_runtime_ref_default_coerces_bool_and_none(self) -> None:
+        from looplet.workspace import _resolve_refs
+
+        assert _resolve_refs("${runtime.x:-true}", {}, runtime={}) is True
+        assert _resolve_refs("${runtime.x:-null}", {}, runtime={}) is None
+
+    def test_runtime_ref_unknown_no_default_raises(self) -> None:
+        from looplet.workspace import WorkspaceSerializationError, _resolve_refs
+
+        with pytest.raises(WorkspaceSerializationError, match="runtime"):
+            _resolve_refs("${runtime.x}", {}, runtime={})
+
+    def test_recurses_into_dicts_and_lists(self) -> None:
+        from looplet.workspace import _resolve_refs
+
+        sentinel = object()
+        out = _resolve_refs(
+            {"a": "@x", "b": ["${ref:x}", "literal"]},
+            {"x": sentinel},
+        )
+        assert out == {"a": sentinel, "b": [sentinel, "literal"]}
+
+    def test_non_string_passes_through(self) -> None:
+        from looplet.workspace import _resolve_refs
+
+        assert _resolve_refs(42, {}) == 42
+        assert _resolve_refs(None, {}) is None
+        assert _resolve_refs(True, {}) is True
+
+    def test_string_without_ref_passes_through(self) -> None:
+        from looplet.workspace import _resolve_refs
+
+        assert _resolve_refs("plain string", {}) == "plain string"
+        assert _resolve_refs("$not a ref", {}) == "$not a ref"
+
+    def test_workspace_loaded_preset_exposes_resources_dict(self, tmp_path: Path) -> None:
+        """``AgentPreset.resources`` is populated from the workspace."""
+        ws = tmp_path / "rsrc.workspace"
+        ws.mkdir()
+        (ws / "workspace.json").write_text(
+            '{"schema_version": 1, "name": "rsrc", "description": "test"}'
+        )
+        (ws / "config.yaml").write_text("max_steps: 10\n")
+        (ws / "prompts").mkdir()
+        (ws / "prompts" / "system.md").write_text("test prompt")
+        (ws / "tools" / "done").mkdir(parents=True)
+        (ws / "tools" / "done" / "tool.yaml").write_text(
+            "name: done\ndescription: Mark task complete\nparameters:\n"
+            "  summary:\n    type: string\n    description: brief summary\n"
+        )
+        (ws / "tools" / "done" / "execute.py").write_text(
+            "def execute(*, summary):\n    return {'summary': summary}\n"
+        )
+        (ws / "resources").mkdir()
+        (ws / "resources" / "my_resource.py").write_text(
+            "def build(runtime=None):\n    return {'kind': 'my-resource'}\n"
+        )
+
+        from looplet.workspace import workspace_to_preset
+
+        preset = workspace_to_preset(ws)
+        assert "my_resource" in preset.resources
+        assert preset.resources["my_resource"] == {"kind": "my-resource"}
+
+
+class TestDeclarativeStateField:
+    """Tests for the ``state:`` directive in config.yaml."""
+
+    def _scaffold(self, root: Path, config_extra: str) -> None:
+        """Build a minimal workspace with the given ``config.yaml`` extras."""
+        root.mkdir()
+        (root / "workspace.json").write_text(
+            '{"schema_version": 1, "name": "s", "description": "test"}'
+        )
+        (root / "config.yaml").write_text(f"max_steps: 10\n{config_extra}\n")
+        (root / "prompts").mkdir()
+        (root / "prompts" / "system.md").write_text("p")
+        (root / "tools" / "done").mkdir(parents=True)
+        (root / "tools" / "done" / "tool.yaml").write_text(
+            "name: done\ndescription: done\nparameters:\n"
+            "  summary:\n    type: string\n    description: s\n"
+        )
+        (root / "tools" / "done" / "execute.py").write_text(
+            "def execute(*, summary):\n    return {'summary': summary}\n"
+        )
+
+    def test_state_via_py_class_ref(self, tmp_path: Path) -> None:
+        """state: ${py:looplet.types:DefaultState} → DefaultState(max_steps=...)"""
+        ws = tmp_path / "s.workspace"
+        self._scaffold(ws, 'state: "${py:looplet.types:DefaultState}"')
+        from looplet.workspace import workspace_to_preset
+
+        preset = workspace_to_preset(ws)
+        from looplet.types import DefaultState
+
+        assert isinstance(preset.state, DefaultState)
+        assert preset.state.max_steps == 10
+
+    def test_state_via_resource_ref(self, tmp_path: Path) -> None:
+        """state: ${ref:my_state} pulls a resource."""
+        ws = tmp_path / "s.workspace"
+        self._scaffold(ws, 'state: "${ref:my_state}"')
+        (ws / "resources").mkdir()
+        (ws / "resources" / "my_state.py").write_text(
+            "from looplet.types import DefaultState\n"
+            "def build(runtime=None):\n"
+            "    s = DefaultState(max_steps=99)\n"
+            "    s.custom_field = 'set'\n"
+            "    return s\n"
+        )
+        from looplet.workspace import workspace_to_preset
+
+        preset = workspace_to_preset(ws)
+        assert preset.state.max_steps == 99
+        assert preset.state.custom_field == "set"
+
+    def test_state_directive_overrides_state_factory(self, tmp_path: Path) -> None:
+        """state: directive wins over the state_factory constructor arg."""
+        ws = tmp_path / "s.workspace"
+        self._scaffold(ws, 'state: "${py:looplet.types:DefaultState}"')
+        from looplet.workspace import workspace_to_preset
+
+        called_factory = []
+
+        def factory(max_steps):
+            called_factory.append(True)
+            raise AssertionError("state_factory should not be called when state: is present")
+
+        preset = workspace_to_preset(ws, state_factory=factory)
+        assert called_factory == []
+        assert preset.state.max_steps == 10
+
+    def test_no_state_directive_falls_back_to_state_factory(self, tmp_path: Path) -> None:
+        """When config.yaml has no ``state:`` field, state_factory takes effect."""
+        ws = tmp_path / "s.workspace"
+        self._scaffold(ws, "")
+        from looplet.workspace import workspace_to_preset
+
+        sentinel = object()
+
+        class FakeState:
+            def __init__(self, max_steps):
+                self.max_steps = max_steps
+                self.marker = sentinel
+
+        preset = workspace_to_preset(ws, state_factory=FakeState)
+        assert preset.state.marker is sentinel
+        assert preset.state.max_steps == 10

@@ -2374,7 +2374,21 @@ def composable_loop(
     elapsed = (time.time() - t0) * 1000
     _build_trace_fn = config.build_trace or (config.domain.build_trace if config.domain else None)
     if _build_trace_fn is not None:
-        trace = _build_trace_fn(
+        # Pass ``context`` through when the callable's signature
+        # accepts it. Domain trace-builders that need the live loop
+        # context (e.g. an exploration object) can declare
+        # ``def build_trace(*, task, state, ..., context=None)`` and
+        # ship as a static ``${py:...}`` ref instead of a closure.
+        import inspect as _inspect  # noqa: PLC0415
+
+        try:
+            _bt_params = _inspect.signature(_build_trace_fn).parameters
+            _bt_takes_context = "context" in _bt_params or any(
+                p.kind == _inspect.Parameter.VAR_KEYWORD for p in _bt_params.values()
+            )
+        except (TypeError, ValueError):
+            _bt_takes_context = False
+        _bt_kwargs: dict[str, Any] = dict(
             task=task,
             state=state,
             session_log=session_log,
@@ -2383,6 +2397,9 @@ def composable_loop(
             llm_calls=llm_calls,
             elapsed_ms=elapsed,
         )
+        if _bt_takes_context:
+            _bt_kwargs["context"] = context
+        trace = _build_trace_fn(**_bt_kwargs)
     else:
         trace = {
             "task": task,

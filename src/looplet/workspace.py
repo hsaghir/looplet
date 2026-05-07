@@ -968,7 +968,16 @@ def _apply_runtime_substitutions(text: str, runtime: dict[str, Any]) -> str:
     Supports the same ``:-default`` form as the structured grammar
     (``${runtime.x:-15}``). Dotted keys descend nested dicts. Unknown
     keys without a default raise so a typo fails loudly at load time.
+
+    **Scalar-only at text time.** When the resolved runtime value is
+    a non-scalar (dict, list, custom object), the placeholder is
+    *left intact* and the structured-value pass (``_resolve_refs``,
+    run after YAML parsing) handles it — so callers passing structured
+    runtime values like ``runtime={'alert': {...}}`` see them as the
+    original object, not as a stringified ``"{'id': 'X', ...}"``.
     """
+
+    _SCALAR_TYPES = (str, int, float, bool, type(None))
 
     def _sub(match: "re.Match[str]") -> str:
         key = match.group(1)
@@ -989,6 +998,11 @@ def _apply_runtime_substitutions(text: str, runtime: dict[str, Any]) -> str:
                     f"unresolved ${{runtime.{key}}} placeholder; "
                     f"known runtime keys: {sorted(runtime)}"
                 )
+        # Only stringify scalars at text-pass time. Non-scalars stay
+        # as the original placeholder so the structured pass can
+        # resolve them with identity preserved.
+        if not isinstance(val, _SCALAR_TYPES):
+            return match.group(0)
         return str(val)
 
     # Strip full-line comments before substitution so the regex

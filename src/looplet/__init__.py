@@ -93,7 +93,14 @@ from looplet.hook_decision import (
     Stop,
 )
 from looplet.limits import BudgetWarningHook, PerToolLimitHook
-from looplet.loop import DomainAdapter, LoopConfig, LoopHook, composable_loop, emit_event
+from looplet.loop import (
+    DomainAdapter,
+    LoopConfig,
+    LoopContext,
+    LoopHook,
+    composable_loop,
+    emit_event,
+)
 from looplet.mcp import MCPToolAdapter
 from looplet.memory import CallableMemorySource, StaticMemorySource
 from looplet.native_tools import (
@@ -172,6 +179,7 @@ __all__ = [
     "composable_loop",
     "async_composable_loop",
     "LoopConfig",
+    "LoopContext",
     "LoopHook",
     "Step",
     "ToolCall",

@@ -909,3 +909,125 @@ class TestPreLoopToolsKwarg:
 
         self._run(VarKw())
         assert observed["got_tools"] is True
+
+
+# ══════════════════════════════════════════════════════════════════
+# LoopContext / hook bind() — closures-over-state are first class
+# ══════════════════════════════════════════════════════════════════
+
+
+class TestLoopContextBind:
+    """Hooks that define ``bind(ctx)`` receive a mutable handle to live
+    loop state. Replaces the closures-over-state anti-pattern that
+    used to break workspace round-trip via ``to_config()``."""
+
+    def test_bind_called_once_with_loop_context(self):
+        from looplet.loop import LoopConfig, LoopContext, composable_loop
+
+        captured: dict[str, object] = {}
+
+        class CaptureHook:
+            def bind(self, ctx):
+                captured["ctx"] = ctx
+                captured["call_count"] = captured.get("call_count", 0) + 1
+
+        state = SimpleState()
+        llm = _make_done_llm([], done_summary="ok")
+        reg = _make_registry_with_done()
+        list(
+            composable_loop(
+                llm,
+                state=state,
+                tools=reg,
+                hooks=[CaptureHook()],
+                config=LoopConfig(max_steps=5),
+            )
+        )
+        assert captured["call_count"] == 1
+        ctx = captured["ctx"]
+        assert isinstance(ctx, LoopContext)
+        assert ctx.state is state
+        assert ctx.tools is reg
+        # config is the resolved LoopConfig instance
+        assert ctx.config is not None
+
+    def test_step_num_mutates_as_loop_progresses(self):
+        from looplet.loop import LoopConfig, composable_loop
+
+        observed_step_nums: list[int] = []
+
+        class WatchHook:
+            def bind(self, ctx):
+                self.ctx = ctx
+
+            def pre_prompt(self, state, session_log, context, step_num):
+                # Reading from the bound ctx returns the live step_num,
+                # not a stale snapshot from bind()-time.
+                observed_step_nums.append(self.ctx.step_num)
+                return None
+
+        state = SimpleState()
+        llm = _make_done_llm([], done_summary="ok")
+        reg = _make_registry_with_done()
+        list(
+            composable_loop(
+                llm,
+                state=state,
+                tools=reg,
+                hooks=[WatchHook()],
+                config=LoopConfig(max_steps=3),
+            )
+        )
+        # At least one step ran; ctx.step_num was non-zero on entry.
+        assert observed_step_nums
+        assert observed_step_nums[0] >= 1
+
+    def test_hook_without_bind_works_unchanged(self):
+        """Backward compat: hooks lacking ``bind`` aren't broken."""
+        from looplet.loop import LoopConfig, composable_loop
+
+        called = []
+
+        class LegacyHook:
+            def pre_loop(self, state, session_log, context):
+                called.append("pre_loop")
+
+        state = SimpleState()
+        llm = _make_done_llm([], done_summary="ok")
+        reg = _make_registry_with_done()
+        list(
+            composable_loop(
+                llm,
+                state=state,
+                tools=reg,
+                hooks=[LegacyHook()],
+                config=LoopConfig(max_steps=3),
+            )
+        )
+        assert called == ["pre_loop"]
+
+    def test_loop_context_carries_tools_and_resources(self):
+        """``ctx.tools`` is the live registry; ``ctx.resources`` is
+        sourced from config when available."""
+        from looplet.loop import LoopConfig, composable_loop
+
+        seen: dict = {}
+
+        class ToolsHook:
+            def bind(self, ctx):
+                seen["tools_is_registry"] = ctx.tools is not None
+                seen["resources_is_dict"] = isinstance(ctx.resources, dict)
+
+        state = SimpleState()
+        llm = _make_done_llm([], done_summary="ok")
+        reg = _make_registry_with_done()
+        list(
+            composable_loop(
+                llm,
+                state=state,
+                tools=reg,
+                hooks=[ToolsHook()],
+                config=LoopConfig(max_steps=3),
+            )
+        )
+        assert seen == {"tools_is_registry": True, "resources_is_dict": True}

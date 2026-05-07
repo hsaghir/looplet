@@ -77,6 +77,46 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+# ── LoopContext ──────────────────────────────────────────────────
+
+
+@dataclass
+class LoopContext:
+    """Mutable handle to live loop state, passed to hooks via :meth:`LoopHook.bind`.
+
+    Hooks that need long-lived access to ``state``, ``tools``,
+    ``conversation``, or the current ``step_num`` outside their
+    declared method signatures used to capture them in closures —
+    which then refused to round-trip through ``to_config()`` because
+    closures can't be serialised. ``LoopContext`` makes this
+    first-class:
+
+        class MyHook:
+            def bind(self, ctx):
+                self.ctx = ctx
+
+            def pre_prompt(self, state, session_log, context, step_num):
+                # Read live values from ctx anytime, not just from the
+                # method args. Tools registry, conversation history,
+                # current step_num, and shared resources are all here.
+                if self.ctx.step_num > 5:
+                    return self.ctx.tools.list_names()
+
+    Mirrors :class:`looplet.types.ToolContext` (the runtime handle for
+    tools) for symmetry. The loop owns the instance and mutates
+    ``step_num`` and ``conversation`` as it progresses, so hooks read
+    the latest values without having to re-bind.
+    """
+
+    state: Any
+    session_log: Any
+    conversation: Any
+    tools: Any
+    config: Any
+    resources: dict[str, Any] = field(default_factory=dict)
+    step_num: int = 0
+
+
 # ── Hook Protocol ────────────────────────────────────────────────
 
 
@@ -126,6 +166,20 @@ class LoopHook(Protocol):
         4. ``config.build_briefing`` callable — briefing section only
         5. ``pre_prompt`` hooks — additive text appended to briefing
         6. Default 7-section template from ``looplet.prompts``
+
+    Optional ``bind(self, ctx: LoopContext) -> None`` method:
+        Hooks may also define ``bind`` to receive a long-lived handle
+        to live loop state (``state``, ``tools``, ``conversation``,
+        ``resources``, current ``step_num``). Called once after preset
+        load and before :meth:`pre_loop`. The loop mutates
+        ``ctx.step_num`` and ``ctx.conversation`` as it progresses,
+        so a hook that stores ``self.ctx = ctx`` reads live values
+        forever after — replacing the closures-over-loop-state
+        anti-pattern that broke ``to_config()`` workspace round-trip.
+
+        ``bind`` is intentionally NOT part of the Protocol body so
+        the ``runtime_checkable`` ``isinstance(h, LoopHook)`` check
+        keeps working for hooks that don't need long-lived ctx.
     """
 
     def pre_loop(
@@ -1009,6 +1063,7 @@ _KNOWN_HOOK_METHODS = frozenset(
         "build_prompt",
         "on_loop_end",
         "on_event",
+        "bind",
     }
 )
 
@@ -1552,6 +1607,28 @@ def composable_loop(
         setattr(state, "conversation", _conv)  # noqa: B010
     except AttributeError:
         pass
+
+    # ── Bind LoopContext ──────────────────────────────────────
+    # Hooks that need long-lived access to state/tools/conversation
+    # outside their declared method signatures used to capture them
+    # in closures, which broke ``to_config()`` workspace round-trip
+    # (closures can't be serialised). ``LoopContext`` is the
+    # principled replacement: a mutable handle the loop owns and
+    # mutates as it progresses (step_num, conversation), so a hook
+    # that binds once reads live values forever after.
+    loop_ctx = LoopContext(
+        state=state,
+        session_log=session_log,
+        conversation=_conv,
+        tools=tools,
+        config=config,
+        resources=dict(getattr(config, "resources", {}) or {}),
+        step_num=0,
+    )
+    for hook in hooks:
+        if hasattr(hook, "bind"):
+            hook.bind(loop_ctx)
+
     for hook in hooks:
         if hasattr(hook, "pre_loop"):
             # Sig-aware dispatch: hooks that declare ``tools=`` (or
@@ -1597,6 +1674,11 @@ def composable_loop(
 
     while state.budget_remaining > 0 and not done:
         step_num = state.step_count + 1 + _step_offset
+        # Mirror current step + conversation into the bound LoopContext
+        # so any hook that captured ``self.ctx = ctx`` in ``bind()``
+        # reads the live values (rather than a snapshot from start-of-loop).
+        loop_ctx.step_num = step_num
+        loop_ctx.conversation = _conv
         _hook_requested_stop = False  # reset per step; honored after dispatch
 
         # Clear per-step hook context so hooks start each step with

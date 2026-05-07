@@ -2539,6 +2539,7 @@ def _workspace_to_preset_inner(
     # State — priority: declarative ``state:`` directive in config.yaml,
     # then ``state_factory`` constructor arg, then ``DefaultState``.
     max_steps = int(getattr(config, "max_steps", 15))
+    state: Any
     if _state_directive is not None:
         # ``_resolve_refs`` already turned ``${...}`` values into objects.
         # If the result is callable, call it with no args (factory protocol);

@@ -2304,10 +2304,15 @@ def composable_loop(
             if gate_warning is not None:
                 logger.info("Quality gate rejected done() at step %d", step_num)
                 quality_gate_message = gate_warning
+                # Mirror the gate reason into ``error`` as well as
+                # ``data['rejected']``: builders grepping for errors
+                # otherwise miss schema-level rejections entirely (a
+                # frequent friction surfaced during dogfooding).
                 tool_result = ToolResult(
                     tool=done_tool_name,
                     args_summary="rejected",
                     data={"rejected": True, "reason": gate_warning},
+                    error=gate_warning,
                 )
                 step = Step(number=cur_step, tool_call=tool_call, tool_result=tool_result)
                 state.steps.append(step)

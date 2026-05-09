@@ -690,22 +690,49 @@ def _load_yaml(text: str, *, source_path: str | Path | None = None) -> Any:
 
 
 def _import_module_from_path(path: Path, module_name: str) -> Any:
-    spec = importlib.util.spec_from_file_location(module_name, path)
-    if spec is None or spec.loader is None:
-        raise WorkspaceSerializationError(f"cannot import module from {path}")
-    module = importlib.util.module_from_spec(spec)
-    # Register in ``sys.modules`` so ``inspect.getmodule(cls)`` /
-    # ``inspect.getsource(cls)`` can find the on-disk source for
-    # workspace-defined classes (hooks / resources). Without this,
-    # round-tripping a loaded workspace's own inline ``hook.py``
-    # falls back to the placeholder branch in ``_render_hook_source``
-    # because the dynamically-loaded module has no ``sys.modules``
-    # entry for ``inspect`` to consult.
-    import sys as _sys  # noqa: PLC0415
+    """Load a workspace-shipped Python module from ``path``.
 
+    Reads the source verbatim and executes it into a fresh
+    :class:`types.ModuleType`. We deliberately avoid Python's normal
+    :class:`importlib.machinery.SourceFileLoader` for two reasons:
+
+    1. *Hot reload correctness.* ``SourceFileLoader`` writes a
+       ``__pycache__/<name>.cpython-XYZ.pyc`` next to the source, and
+       on subsequent imports it reuses that bytecode whenever the
+       source mtime matches the value stored in the ``.pyc`` header.
+       That mtime is recorded with **second** resolution, so two
+       writes within the same wall-clock second silently re-use the
+       old bytecode — which means a cartridge reloaded after a fast
+       edit returns the previous tool body. Reading the source
+       directly each time avoids the cache entirely.
+
+    2. *Cartridge cleanliness.* ``SourceFileLoader`` litters the
+       cartridge directory with ``__pycache__/`` folders, which makes
+       \"the cartridge is just files\" demonstrably untrue — a
+       reviewer doing ``ls`` sees engine artefacts mixed with the
+       agent's contract.
+
+    The module is registered in :data:`sys.modules` under
+    ``module_name`` so :func:`inspect.getmodule` /
+    :func:`inspect.getsource` can recover the on-disk source for
+    workspace-defined classes (hooks / resources). Linecache uses
+    ``__file__`` to fetch source on demand for tracebacks.
+    """
+    import sys as _sys  # noqa: PLC0415
+    import types as _types  # noqa: PLC0415
+
+    try:
+        source = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise WorkspaceSerializationError(f"cannot read module {path}: {exc}") from exc
+
+    code = compile(source, str(path), "exec")
+    module = _types.ModuleType(module_name)
+    module.__file__ = str(path)
+    module.__loader__ = None  # type: ignore[assignment]
     _sys.modules[module_name] = module
     try:
-        spec.loader.exec_module(module)  # type: ignore[union-attr]
+        exec(code, module.__dict__)
     except Exception:
         _sys.modules.pop(module_name, None)
         raise
@@ -2613,6 +2640,45 @@ def _workspace_to_preset_inner(
                     if strict:
                         raise WorkspaceSerializationError(msg)
                     logger.warning("%s; tool will receive None for missing resources", msg)
+            # Surface ``parameters: {}`` mismatches with the execute.py
+            # signature. The most common scaffold-then-edit friction:
+            # ``scaffold_workspace`` writes ``parameters: {}`` and
+            # ``def execute(ctx, **kwargs)`` together. Users replace
+            # ``**kwargs`` with explicit keyword params (``*, name: str``)
+            # but forget to also fill in ``parameters:``. The dispatcher
+            # then rejects every call with VALIDATION because the schema
+            # advertises zero parameters. We detect the mismatch here and
+            # warn pointing at the tool.yaml. Detection is deliberately
+            # conservative: we only flag declared-empty parameters paired
+            # with a non-``**kwargs`` signature that has at least one
+            # required keyword-only parameter beyond ``ctx``.
+            if not spec.parameters:
+                try:
+                    sig = inspect.signature(execute_fn)
+                    explicit = [
+                        p
+                        for p in sig.parameters.values()
+                        if p.kind == inspect.Parameter.KEYWORD_ONLY and p.name != "ctx"
+                    ]
+                    has_var_keyword = any(
+                        p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+                    )
+                except (TypeError, ValueError):
+                    explicit = []
+                    has_var_keyword = True
+                if explicit and not has_var_keyword:
+                    declared = [p.name for p in explicit]
+                    msg = (
+                        f"tool {spec.name!r} (in {tool_dir.name!r}): "
+                        f"execute.py declares keyword params {declared} but "
+                        f"tool.yaml has empty ``parameters: {{}}``. The "
+                        f"dispatcher will reject every call with a VALIDATION "
+                        f"error. Add the parameters block to {spec_path.name}, "
+                        f"or accept ``**kwargs`` in execute.py."
+                    )
+                    if strict:
+                        raise WorkspaceSerializationError(msg)
+                    logger.warning("%s", msg)
             registry.register(spec)
 
             # v1.0: ``output_schema:`` on the done tool installs an

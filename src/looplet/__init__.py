@@ -127,6 +127,7 @@ from looplet.presets import (
 from looplet.prompts import preview_prompt
 from looplet.provenance import ProvenanceSink, TrajectoryRecorder, replay_loop
 from looplet.resilient import ResilientBackend, RetryExhausted
+from looplet.scaffold import scaffold_workspace
 from looplet.session import SessionLog
 from looplet.skills import (
     FileSkillStore,
@@ -275,6 +276,7 @@ __all__ = [
     "WorkspaceSerializationError",
     "preset_to_workspace",
     "resource_ref_for",
+    "scaffold_workspace",
     "workspace_to_preset",
     "StreamingHook",
     "Tracer",

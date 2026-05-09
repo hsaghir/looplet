@@ -794,3 +794,46 @@ def test_permission_deny_message_includes_canonical_prefix(tmp_path: Path) -> No
     assert "forbidden" in err, f"rule reason 'forbidden' missing from error: {err!r}"
     assert blocked.tool_result.error_detail is not None
     assert blocked.tool_result.error_detail.kind == ErrorKind.PERMISSION_DENIED
+
+
+# ── fix 14: AGENTS.md symbol-index entries are all top-level importable ─
+
+
+def test_agents_md_symbol_index_entries_are_importable() -> None:
+    """The AGENTS.md "Symbol index (A-Z)" table promises:
+
+        Everything in ``from looplet import X`` is listed here.
+
+    A ninth-pass dogfood found ``scaffold_workspace`` in the table but
+    only at ``looplet.scaffold.scaffold_workspace``. This regression
+    test pins the contract: every symbol the table lists must be
+    importable from ``looplet`` top-level. New additions to the table
+    that aren't on the public API will fail this test.
+    """
+    import importlib  # noqa: PLC0415
+    import re  # noqa: PLC0415
+
+    text = (Path(__file__).resolve().parents[1] / "AGENTS.md").read_text(encoding="utf-8")
+    rows: list[tuple[str, str]] = []
+    in_table = False
+    for line in text.splitlines():
+        if "## Symbol index" in line:
+            in_table = True
+            continue
+        if not in_table:
+            continue
+        if line.startswith("|---"):
+            continue
+        m = re.match(r"^\|\s*`([A-Za-z_][A-Za-z0-9_]*)`\s*\|\s*`([a-z_]+)`\s*\|", line)
+        if m:
+            rows.append((m.group(1), m.group(2)))
+        elif line.strip() == "" and rows:
+            break
+
+    assert rows, "couldn't parse the symbol-index table from AGENTS.md"
+    looplet_pkg = importlib.import_module("looplet")
+    missing = [(s, m) for s, m in rows if not hasattr(looplet_pkg, s)]
+    assert not missing, (
+        f"AGENTS.md symbol-index lists {len(missing)} symbol(s) that aren't "
+        f"importable from `looplet`: {missing[:5]}"
+    )

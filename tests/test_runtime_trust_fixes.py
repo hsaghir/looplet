@@ -330,3 +330,114 @@ def test_output_schema_rejection_populates_tool_result_error(tmp_path: Path) -> 
     second = steps[1]
     assert second.tool_result.error is None
     assert (second.tool_result.data or {}).get("summary") == "ok"
+
+
+# ── fix 5: extends does key-level config merge, not file-level ────
+
+
+def test_extends_carries_grandparent_config_keys(tmp_path: Path) -> None:
+    """A child extending a parent extending a grandparent inherits keys
+    from every level. Before the fix, the child's config.yaml overlay
+    silently wiped every grandparent key the child didn't redeclare.
+    """
+    import json as _json  # noqa: PLC0415
+
+    gp = tmp_path / "gp.workspace"
+    gp.mkdir()
+    (gp / "workspace.json").write_text(_json.dumps({"name": "gp", "schema_version": 1}))
+    (gp / "config.yaml").write_text(
+        "max_steps: 9\nmax_tokens: 1500\ntemperature: 0.5\ndone_tool: done\n"
+    )
+    (gp / "prompts").mkdir()
+    (gp / "prompts" / "system.md").write_text("gp\n")
+    (gp / "tools" / "done").mkdir(parents=True)
+    (gp / "tools" / "done" / "tool.yaml").write_text(
+        "name: done\ndescription: x\nparameters:\n  answer: { type: string }\n"
+    )
+    (gp / "tools" / "done" / "execute.py").write_text(
+        "def execute(ctx, *, answer): return {'answer': answer, 'done': True}\n"
+    )
+
+    p = tmp_path / "p.workspace"
+    p.mkdir()
+    (p / "workspace.json").write_text(_json.dumps({"name": "p", "schema_version": 1}))
+    (p / "config.yaml").write_text("extends: ../gp.workspace\ntemperature: 0.3\n")
+    (p / "prompts").mkdir()
+    (p / "prompts" / "system.md").write_text("p\n")
+
+    c = tmp_path / "c.workspace"
+    c.mkdir()
+    (c / "workspace.json").write_text(_json.dumps({"name": "c", "schema_version": 1}))
+    (c / "config.yaml").write_text("extends: ../p.workspace\ntemperature: 0.0\n")
+    (c / "prompts").mkdir()
+    (c / "prompts" / "system.md").write_text("c\n")
+
+    preset = workspace_to_preset(str(c), strict=True)
+    # Grandparent's max_tokens must survive 2 levels of extends.
+    assert preset.config.max_tokens == 1500, (
+        f"max_tokens={preset.config.max_tokens}; extends dropped grandparent key"
+    )
+    # Grandparent's max_steps must survive too.
+    assert preset.config.max_steps == 9
+    # Child's temperature wins (0.0 over parent's 0.3 over gp's 0.5).
+    assert preset.config.temperature == 0.0
+
+
+def test_extends_block_merge_preserves_unset_subkeys(tmp_path: Path) -> None:
+    """Child overriding one sub-key of a block (model.reasoning_effort) must
+    not erase sibling sub-keys (model.provider, model.name) from the parent.
+    """
+    import json as _json  # noqa: PLC0415
+
+    parent = tmp_path / "p.workspace"
+    parent.mkdir()
+    (parent / "workspace.json").write_text(_json.dumps({"name": "p", "schema_version": 1}))
+    (parent / "config.yaml").write_text(
+        "model:\n  provider: anthropic\n  name: claude-sonnet-4.6\n  reasoning_effort: medium\n"
+    )
+    (parent / "prompts").mkdir()
+    (parent / "prompts" / "system.md").write_text("p\n")
+
+    child = tmp_path / "c.workspace"
+    child.mkdir()
+    (child / "workspace.json").write_text(_json.dumps({"name": "c", "schema_version": 1}))
+    (child / "config.yaml").write_text(
+        "extends: ../p.workspace\nmodel:\n  reasoning_effort: high\n"
+    )
+    (child / "prompts").mkdir()
+    (child / "prompts" / "system.md").write_text("c\n")
+
+    preset = workspace_to_preset(str(child))
+    meta = (preset.config.tool_metadata or {}).get("model", {})
+    assert meta.get("provider") == "anthropic", f"parent model.provider erased; meta={meta}"
+    assert meta.get("name") == "claude-sonnet-4.6"
+    assert meta.get("reasoning_effort") == "high"
+
+
+# ── fix 6: missing done tool warns at load time ───────────────────
+
+
+def test_loader_warns_when_done_tool_unregistered(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A typo or missing done dir triggers a load-time warning that
+    names the missing tool and the available alternatives."""
+    import json as _json  # noqa: PLC0415
+
+    ws = tmp_path / "no_done.workspace"
+    ws.mkdir()
+    (ws / "workspace.json").write_text(_json.dumps({"name": "x", "schema_version": 1}))
+    # done_tool refers to a tool that doesn't exist.
+    (ws / "config.yaml").write_text("max_steps: 4\ndone_tool: dont\n")
+    (ws / "prompts").mkdir()
+    (ws / "prompts" / "system.md").write_text("test\n")
+    (ws / "tools" / "noop").mkdir(parents=True)
+    (ws / "tools" / "noop" / "tool.yaml").write_text("name: noop\ndescription: x\nparameters: {}\n")
+    (ws / "tools" / "noop" / "execute.py").write_text("def execute(ctx) -> dict:\n    return {}\n")
+
+    with caplog.at_level(logging.WARNING, logger="looplet.workspace"):
+        workspace_to_preset(str(ws), strict=True)
+    msgs = [rec.getMessage() for rec in caplog.records]
+    assert any("done_tool" in m and "dont" in m and "noop" in m for m in msgs), (
+        f"expected done_tool warning naming missing+available, got: {msgs}"
+    )

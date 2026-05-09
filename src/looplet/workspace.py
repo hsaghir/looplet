@@ -2387,19 +2387,64 @@ def _resolve_extends(root: Path, *, _seen: set[Path] | None = None) -> Path:
     # to (the merged dir holds .pyc caches and may import modules that
     # are still bound to its path until process end).
     _EXTENDS_TEMPDIRS.append(merged)
-    # Copy parent first, then overlay child.
+    # Copy parent first, then overlay child. Directory overlay is
+    # correct for tools/, hooks/, resources/, prompts/, memory/ —
+    # each entry lives in its own subdirectory and the child either
+    # adds a new entry or replaces an entry of the same name.
     _shutil.copytree(parent_root, merged, dirs_exist_ok=True, symlinks=False)
     _shutil.copytree(root, merged, dirs_exist_ok=True, symlinks=False)
-    # Strip the top-level ``extends:`` line from the merged config.yaml
-    # so the inner loader doesn't re-resolve it. Only top-level (indent
-    # 0) lines are stripped — an "extends:" string inside a deeper
-    # block scalar is preserved.
-    merged_cfg = merged / WorkspaceLayout.CONFIG_YAML
-    if merged_cfg.is_file():
-        lines = merged_cfg.read_text(encoding="utf-8").splitlines()
-        kept = [ln for ln in lines if not ln.startswith("extends:")]
-        merged_cfg.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
+
+    # config.yaml needs *key-level* merging, not file-level overlay.
+    # File-level overlay would cause the child's config.yaml to wholly
+    # replace the parent's, silently dropping every parent key the child
+    # didn't redeclare (e.g. ``max_tokens``, ``max_steps``, ``model:``,
+    # ``permissions:``, ...). Builders observing this from outside the
+    # merge would see ``extends:`` as a partial inheritance mechanism
+    # — which is the opposite of what the schema promises.
+    #
+    # The merge strategy is shallow: top-level scalars and lists are
+    # replaced wholesale by the child if redeclared, while top-level
+    # mappings (``model:``, ``permissions:``, ``memory:``,
+    # ``tool_metadata:``) are recursively shallow-merged so a child
+    # can override a single key inside a block (e.g. just
+    # ``model.reasoning_effort``) without losing siblings. Lists are
+    # NOT concatenated — wholesale-replace mirrors how layered config
+    # files (Kubernetes overlays, Terraform locals, Hydra) handle them.
+    parent_cfg_path = parent_root / WorkspaceLayout.CONFIG_YAML
+    child_cfg_path = root / WorkspaceLayout.CONFIG_YAML
+    parent_cfg = (
+        _load_yaml(parent_cfg_path.read_text(encoding="utf-8"))
+        if parent_cfg_path.is_file()
+        else None
+    ) or {}
+    child_cfg = (
+        _load_yaml(child_cfg_path.read_text(encoding="utf-8")) if child_cfg_path.is_file() else None
+    ) or {}
+    # Drop the child's ``extends:`` so the inner loader doesn't re-resolve.
+    child_cfg.pop("extends", None)
+    parent_cfg.pop("extends", None)  # belt and braces; should already be gone
+    merged_cfg = _shallow_merge_config(parent_cfg, child_cfg)
+    merged_cfg_path = merged / WorkspaceLayout.CONFIG_YAML
+    merged_cfg_path.write_text(_dump_yaml(merged_cfg) + "\n", encoding="utf-8")
     return merged
+
+
+def _shallow_merge_config(parent: dict[str, Any], child: dict[str, Any]) -> dict[str, Any]:
+    """Shallow-merge two parsed config.yaml dicts.
+
+    Top-level scalars and lists from ``child`` win wholesale. Top-level
+    mappings are recursively shallow-merged so a child can override one
+    sub-key (``model.reasoning_effort``) without erasing siblings
+    (``model.provider``). Used by :func:`_resolve_extends`.
+    """
+    out: dict[str, Any] = dict(parent)
+    for key, child_val in child.items():
+        parent_val = out.get(key)
+        if isinstance(parent_val, dict) and isinstance(child_val, dict):
+            out[key] = _shallow_merge_config(parent_val, child_val)
+        else:
+            out[key] = child_val
+    return out
 
 
 def _workspace_to_preset_inner(
@@ -2921,6 +2966,24 @@ def _workspace_to_preset_inner(
         state = state_factory(max_steps)
     else:
         state = DefaultState(max_steps=max_steps)
+
+    # Sanity check: warn when ``done_tool`` doesn't point at any
+    # registered tool. We deliberately only warn (not raise even under
+    # strict) because some legitimate use cases construct ``done``
+    # later (sub-agent presets where the parent injects a done tool,
+    # workspaces extended by host code, test fixtures). The runtime
+    # will surface the missing tool when the LLM tries to dispatch
+    # it; this warning lets a builder catch the typo at load time
+    # without breaking those use cases.
+    if config.done_tool and config.done_tool not in registry.tool_names:
+        msg = (
+            f"config.yaml declares ``done_tool: {config.done_tool!r}`` but no "
+            f"such tool is registered. Available tools: {sorted(registry.tool_names)}. "
+            f"Add a ``tools/{config.done_tool}/`` directory or fix the "
+            f"``done_tool:`` field. The loop will fail at the agent's first "
+            f"done() call."
+        )
+        logger.warning("%s", msg)
 
     preset = AgentPreset(
         config=config,

@@ -661,3 +661,46 @@ def test_preview_prompt_includes_system_prompt() -> None:
     )
     # Also smoke-check that the user-prompt section is still there.
     assert "TASK" in text
+
+
+# ── fix 12: helpful TypeError when tools= is a list ───────────────
+
+
+def test_composable_loop_helpful_error_when_tools_is_a_list() -> None:
+    """A common new-user mistake: pass a list of @tool ToolSpecs to
+    composable_loop instead of wrapping with tools_from. The downstream
+    failure was a bare ``AttributeError: 'list' object has no attribute
+    'tool_catalog_text'`` deep inside prompt assembly. The loop now
+    catches the mistake at the entry point and points at tools_from.
+    """
+    import json as _json  # noqa: PLC0415
+
+    from looplet import (  # noqa: PLC0415
+        DefaultState,
+        LoopConfig,
+        MockLLMBackend,
+        composable_loop,
+        tool,
+    )
+
+    @tool
+    def greet(*, name: str) -> dict:
+        return {"hi": name}
+
+    backend = MockLLMBackend(
+        responses=[_json.dumps({"tool": "done", "args": {}, "reasoning": "", "call_id": "1"})]
+    )
+
+    with pytest.raises(TypeError) as exc_info:
+        list(
+            composable_loop(
+                llm=backend,
+                tools=[greet],  # mistake: list, not registry
+                state=DefaultState(max_steps=2),
+                config=LoopConfig(max_steps=2),
+                task={"description": "go"},
+            )
+        )
+    msg = str(exc_info.value)
+    # Must name the fix so a builder reading the traceback can act.
+    assert "tools_from" in msg, f"expected 'tools_from' in error: {msg}"

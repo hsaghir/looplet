@@ -1399,6 +1399,18 @@ def composable_loop(
         task = {}
     if tools is None:
         raise ValueError("tools is required")
+    # Common new-user mistake: pass a list of @tool ToolSpecs (or plain
+    # functions) instead of a registry. The downstream failure is a
+    # bare ``AttributeError: 'list' object has no attribute
+    # 'tool_catalog_text'`` deep inside prompt assembly. Catch the
+    # mistake at the entry point and tell the user about ``tools_from``.
+    if isinstance(tools, list):
+        raise TypeError(
+            "composable_loop(tools=...) expects a tool registry, not a list. "
+            "Wrap your list of @tool functions with ``tools_from(...)``: "
+            "``from looplet import tools_from; tools = tools_from([greet, ...], "
+            "include_done=True, done_parameters={'answer': 'Final answer'})``."
+        )
     if config is None:
         config = LoopConfig()
     if max_steps is not None:

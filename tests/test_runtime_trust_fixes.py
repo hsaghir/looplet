@@ -441,3 +441,199 @@ def test_loader_warns_when_done_tool_unregistered(
     assert any("done_tool" in m and "dont" in m and "noop" in m for m in msgs), (
         f"expected done_tool warning naming missing+available, got: {msgs}"
     )
+
+
+# ── fix 7: malformed parameters: in tool.yaml gives a clear error ─
+
+
+def test_loader_clean_error_when_tool_parameters_is_a_list(tmp_path: Path) -> None:
+    """A common mistake: ``parameters:`` written as a list of dicts.
+
+    Before the fix, the loader called ``dict(...)`` on the list and
+    surfaced ``ValueError: dictionary update sequence element #0 has
+    length 1; 2 is required`` — a Python implementation detail with no
+    pointer to the offending file. Now the loader names the tool, file
+    path, and expected shape.
+    """
+    import json as _json  # noqa: PLC0415
+
+    ws = tmp_path / "bad.workspace"
+    ws.mkdir()
+    (ws / "workspace.json").write_text(_json.dumps({"name": "bad", "schema_version": 1}))
+    (ws / "config.yaml").write_text("max_steps: 4\ndone_tool: done\n")
+    (ws / "prompts").mkdir()
+    (ws / "prompts" / "system.md").write_text("test\n")
+    (ws / "tools" / "done").mkdir(parents=True)
+    (ws / "tools" / "done" / "tool.yaml").write_text("name: done\ndescription: x\nparameters: {}\n")
+    (ws / "tools" / "done" / "execute.py").write_text("def execute(ctx) -> dict:\n    return {}\n")
+    (ws / "tools" / "weird").mkdir(parents=True)
+    (ws / "tools" / "weird" / "tool.yaml").write_text(
+        "name: weird\ndescription: x\nparameters:\n  - name: a\n  - name: b\n"
+    )
+    (ws / "tools" / "weird" / "execute.py").write_text(
+        "def execute(ctx, **kwargs) -> dict:\n    return {}\n"
+    )
+
+    with pytest.raises(Exception, match="weird") as exc_info:
+        workspace_to_preset(str(ws), strict=True)
+    # The error should also mention 'parameters' so the builder knows
+    # which YAML key to fix.
+    assert "parameters" in str(exc_info.value).lower()
+
+
+# ── fix 8: malformed hook return doesn't crash the loop ───────────
+
+
+def test_loop_isolates_check_done_returning_garbage(tmp_path: Path) -> None:
+    """A check_done hook that returns a non-HookDecision dict must
+    not bring the loop down with a TypeError. Log loudly, treat as
+    'no decision', let done() through.
+    """
+    import json as _json  # noqa: PLC0415
+
+    from looplet import (  # noqa: PLC0415
+        DefaultState,
+        MockLLMBackend,
+        composable_loop,
+    )
+
+    ws = tmp_path / "weird_hook.workspace"
+    ws.mkdir()
+    (ws / "workspace.json").write_text(_json.dumps({"name": "wh", "schema_version": 1}))
+    (ws / "config.yaml").write_text("max_steps: 4\ndone_tool: done\n")
+    (ws / "prompts").mkdir()
+    (ws / "prompts" / "system.md").write_text("test\n")
+    (ws / "tools" / "done").mkdir(parents=True)
+    (ws / "tools" / "done" / "tool.yaml").write_text(
+        "name: done\ndescription: x\nparameters:\n  answer: { type: string }\n"
+    )
+    (ws / "tools" / "done" / "execute.py").write_text(
+        "def execute(ctx, *, answer: str) -> dict:\n    return {'answer': answer, 'done': True}\n"
+    )
+    (ws / "hooks" / "00_WeirdHook").mkdir(parents=True)
+    (ws / "hooks" / "00_WeirdHook" / "config.yaml").write_text(
+        "class_name: WeirdHook\nkwargs: {}\n"
+    )
+    (ws / "hooks" / "00_WeirdHook" / "hook.py").write_text(
+        "class WeirdHook:\n"
+        "    def check_done(self, state, session_log, context, step_num):\n"
+        "        return {'this_is': 'not a HookDecision'}\n"
+    )
+
+    preset = workspace_to_preset(str(ws), strict=True)
+    backend = MockLLMBackend(
+        responses=[
+            _json.dumps({"tool": "done", "args": {"answer": "ok"}, "reasoning": "", "call_id": "1"})
+        ]
+    )
+    state = DefaultState(max_steps=preset.config.max_steps)
+    # The loop must not raise even though the hook's return value
+    # would otherwise crash normalize_hook_return.
+    steps = list(
+        composable_loop(
+            llm=backend,
+            tools=preset.tools,
+            state=state,
+            config=preset.config,
+            hooks=preset.hooks,
+            task={"description": "go"},
+        )
+    )
+    assert len(steps) >= 1
+    assert steps[-1].tool_call.tool == "done"
+
+
+# ── fix 9: parse extracts call_id and doesn't promote it to args ─
+
+
+def test_parse_does_not_absorb_call_id_into_tool_args() -> None:
+    """A common LLM/Mock response shape includes ``call_id`` at the
+    top level alongside ``tool``/``args``. Before the fix, the
+    flat-args fallback in ``_dict_to_tool_call`` swept ``call_id``
+    into the tool's kwargs, so the dispatcher rejected every call
+    with ``unexpected argument: ['call_id']``.
+    """
+    import json as _json  # noqa: PLC0415
+
+    from looplet.parse import parse_multi_tool_calls  # noqa: PLC0415
+
+    raw = _json.dumps({"tool": "slow", "args": {}, "reasoning": "", "call_id": "abc-123"})
+    calls = parse_multi_tool_calls(raw)
+    assert len(calls) == 1
+    call = calls[0]
+    assert call.tool == "slow"
+    assert call.args == {}, f"call_id leaked into args: {call.args}"
+    # The parser should also surface the call_id on the ToolCall
+    # itself so traces can correlate request <-> response.
+    assert call.call_id == "abc-123"
+
+
+# ── fix 10: ProvenanceSink redact also scrubs trace files ────────
+
+
+def test_provenance_sink_redact_scrubs_trace_file(tmp_path: Path) -> None:
+    """SPEC and AGENTS.md promise the trace file is sanitized when a
+    ``redact`` callable is passed. Before the fix, only upstream LLM
+    text was redacted; the trajectory.json captured tool args
+    (including the agent's ``done({answer: 'contact alice@x.com'})``)
+    verbatim.
+    """
+    import json as _json  # noqa: PLC0415
+
+    from looplet import DefaultState, MockLLMBackend, composable_loop  # noqa: PLC0415
+    from looplet.provenance import ProvenanceSink  # noqa: PLC0415
+
+    ws = tmp_path / "redact.workspace"
+    ws.mkdir()
+    (ws / "workspace.json").write_text(_json.dumps({"name": "rd", "schema_version": 1}))
+    (ws / "config.yaml").write_text("max_steps: 3\ndone_tool: done\n")
+    (ws / "prompts").mkdir()
+    (ws / "prompts" / "system.md").write_text("test\n")
+    (ws / "tools" / "done").mkdir(parents=True)
+    (ws / "tools" / "done" / "tool.yaml").write_text(
+        "name: done\ndescription: x\nparameters:\n  answer: { type: string }\n"
+    )
+    (ws / "tools" / "done" / "execute.py").write_text(
+        "def execute(ctx, *, answer: str) -> dict:\n    return {'answer': answer, 'done': True}\n"
+    )
+    preset = workspace_to_preset(str(ws), strict=True)
+
+    traces = tmp_path / "traces"
+    sink = ProvenanceSink(
+        dir=str(traces),
+        redact=lambda s: s.replace("alice@example.com", "[EMAIL]"),
+    )
+    base = MockLLMBackend(
+        responses=[
+            _json.dumps(
+                {
+                    "tool": "done",
+                    "args": {"answer": "contact alice@example.com"},
+                    "reasoning": "",
+                    "call_id": "1",
+                }
+            )
+        ]
+    )
+    llm = sink.wrap_llm(base)
+    hooks = list(preset.hooks) + [sink.trajectory_hook()]
+    state = DefaultState(max_steps=preset.config.max_steps)
+    list(
+        composable_loop(
+            llm=llm,
+            tools=preset.tools,
+            state=state,
+            config=preset.config,
+            hooks=hooks,
+            task={"description": "go"},
+        )
+    )
+    sink.flush()
+
+    files = list(traces.rglob("*.json")) + list(traces.rglob("*.jsonl"))
+    assert files, f"no trace files written under {traces}"
+    for tf in files:
+        text = tf.read_text(encoding="utf-8", errors="replace")
+        assert "alice@example.com" not in text, (
+            f"PII leaked into trace file {tf.name}: {text[:200]}"
+        )

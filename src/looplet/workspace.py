@@ -2637,10 +2637,22 @@ def _workspace_to_preset_inner(
                     raise WorkspaceSerializationError(msg)
                 logger.warning("%s; skipping", msg)
                 continue
+            raw_parameters = yaml_payload.get("parameters", {}) or {}
+            if not isinstance(raw_parameters, dict):
+                msg = (
+                    f"tool {yaml_payload.get('name', tool_dir.name)!r} (in "
+                    f"{tool_dir.name!r}): tool.yaml ``parameters:`` must be a "
+                    f'mapping ("name: {{type: ...}}" entries), got '
+                    f"{type(raw_parameters).__name__}. Source: {spec_path}."
+                )
+                if strict:
+                    raise WorkspaceSerializationError(msg)
+                logger.warning("%s; skipping tool", msg)
+                continue
             spec = ToolSpec(
                 name=str(yaml_payload.get("name", tool_dir.name)),
                 description=str(yaml_payload.get("description", "")),
-                parameters=dict(yaml_payload.get("parameters", {}) or {}),
+                parameters=dict(raw_parameters),
                 execute=execute_fn,
                 concurrent_safe=bool(yaml_payload.get("concurrent_safe", False)),
                 free=bool(yaml_payload.get("free", False)),

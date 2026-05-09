@@ -2266,8 +2266,20 @@ def composable_loop(
             gate_warning: str | None = None
             for hook in hooks:
                 if hasattr(hook, "check_done"):
-                    w = _call_check_done(hook, state, session_log, context, step_num, tool_call)
-                    _decision = normalize_hook_return(w, slot="check_done")
+                    try:
+                        w = _call_check_done(hook, state, session_log, context, step_num, tool_call)
+                        _decision = normalize_hook_return(w, slot="check_done")
+                    except Exception:  # noqa: BLE001
+                        # Isolate buggy hooks: a single check_done that
+                        # raises (or returns garbage normalize_hook_return
+                        # rejects) must not crash the loop. Log loudly,
+                        # treat as 'no decision', and let the agent's
+                        # done() through.
+                        logger.exception(
+                            "check_done hook %s raised or returned invalid value; continuing",
+                            type(hook).__name__,
+                        )
+                        _decision = None
                     if _decision is not None:
                         _emit_hook_decision_event(
                             hooks,

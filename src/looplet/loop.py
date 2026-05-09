@@ -1406,6 +1406,19 @@ def composable_loop(
     """
     if task is None:
         task = {}
+    # Common new-user mistake: pass a bare string instead of a dict.
+    # The docs and AGENTS.md show ``task={'goal': '...'}`` / ``{'description':
+    # '...'}``; a bare string crashes downstream with
+    # ``AttributeError: 'str' object has no attribute 'items'`` because
+    # the prompt builder iterates ``task.items()``. Catch the shape
+    # mistake at the entry point.
+    if isinstance(task, str):
+        raise TypeError(
+            "composable_loop(task=...) expects a dict, not a string. "
+            f"Wrap the value in a dict like ``task={{'description': {task!r}}}``"
+            " or ``task={{'goal': '...'}}``. The prompt builder iterates the "
+            "dict's keys to render the TASK section."
+        )
     if tools is None:
         raise ValueError("tools is required")
     # Common new-user mistake: pass a list of @tool ToolSpecs (or plain

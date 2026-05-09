@@ -298,6 +298,14 @@ def llm_call_with_retry(
             if _is_prompt_too_long(e):
                 logger.warning("Prompt too long (not retrying): %s", e)
                 return LLMResult(None, e)
+            # MockLLMBackend(cycle=False) raises LLMResponsesExhausted when
+            # a test scripted fewer responses than the loop asked for.
+            # Retrying the same exhausted mock never helps; surface the
+            # error immediately so the test author sees the actionable
+            # message on the first try, not after N seconds of backoff.
+            if type(e).__name__ == "LLMResponsesExhausted":
+                logger.warning("Mock LLM exhausted (not retrying): %s", e)
+                return LLMResult(None, e)
             if attempt < max_retries:
                 wait = RETRY_BACKOFF_BASE * (2**attempt)
                 logger.warning(

@@ -837,3 +837,163 @@ def test_agents_md_symbol_index_entries_are_importable() -> None:
         f"AGENTS.md symbol-index lists {len(missing)} symbol(s) that aren't "
         f"importable from `looplet`: {missing[:5]}"
     )
+
+
+# ── fix 15: helpful error when task= is a string ─────────────────
+
+
+def test_composable_loop_helpful_error_when_task_is_a_string() -> None:
+    """A common new-user mistake is to pass a bare string as the task
+    (the README shows dicts, but copy-paste drift is real). Before the
+    fix, the loop crashed downstream with
+    ``AttributeError: 'str' object has no attribute 'items'`` deep
+    inside the prompt builder. Now the error is caught at the entry
+    point and tells the user how to fix it.
+    """
+    import json as _json  # noqa: PLC0415
+
+    from looplet import (  # noqa: PLC0415
+        DefaultState,
+        LoopConfig,
+        MockLLMBackend,
+        composable_loop,
+        tool,
+        tools_from,
+    )
+
+    @tool
+    def noop() -> dict:
+        return {}
+
+    tools = tools_from([noop], include_done=True, done_parameters={"answer": "x"})
+    backend = MockLLMBackend(
+        responses=[_json.dumps({"tool": "done", "args": {}, "reasoning": "", "call_id": "1"})]
+    )
+    cfg = LoopConfig(max_steps=2)
+    state = DefaultState(max_steps=2)
+    with pytest.raises(TypeError) as exc_info:
+        list(
+            composable_loop(
+                llm=backend,
+                tools=tools,
+                state=state,
+                config=cfg,
+                task="just a string task",  # mistake: not a dict
+            )
+        )
+    msg = str(exc_info.value)
+    # The error must name 'dict' so the fix is obvious.
+    assert "dict" in msg.lower(), f"expected 'dict' in error: {msg}"
+
+
+# ── fix 16: memory source raising doesn't crash the loop ────────
+
+
+def test_loop_isolates_memory_source_that_raises(tmp_path: Path) -> None:
+    """A buggy memory source that raises during ``load(state)`` must
+    not crash the loop. AGENTS.md promises hooks are isolated; memory
+    sources should follow the same contract. Before the fix,
+    ``render_memory`` propagated the exception out of the prompt
+    builder, killing the entire run.
+    """
+    import json as _json  # noqa: PLC0415
+
+    from looplet import (  # noqa: PLC0415
+        CallableMemorySource,
+        DefaultState,
+        LoopConfig,
+        MockLLMBackend,
+        composable_loop,
+        tool,
+        tools_from,
+    )
+
+    def broken_load(state: object) -> str:
+        raise RuntimeError("memory broken")
+
+    @tool
+    def noop() -> dict:
+        return {}
+
+    tools = tools_from([noop], include_done=True, done_parameters={"answer": "x"})
+    backend = MockLLMBackend(
+        responses=[
+            _json.dumps({"tool": "done", "args": {"answer": "ok"}, "reasoning": "", "call_id": "1"})
+        ]
+    )
+    cfg = LoopConfig(
+        max_steps=2,
+        memory_sources=[CallableMemorySource(fn=broken_load)],
+    )
+    state = DefaultState(max_steps=2)
+    # The loop must not raise — memory source crash is isolated.
+    steps = list(
+        composable_loop(
+            llm=backend,
+            tools=tools,
+            state=state,
+            config=cfg,
+            task={"description": "go"},
+        )
+    )
+    assert len(steps) >= 1
+    assert steps[-1].tool_call.tool == "done"
+
+
+# ── fix 17: LLMResponsesExhausted is not retried ─────────────────
+
+
+def test_loop_does_not_retry_mock_exhaustion(tmp_path: Path) -> None:
+    """MockLLMBackend(cycle=False) raises LLMResponsesExhausted when a
+    test scripted fewer responses than the loop asked for. Before the
+    fix, the retry-with-backoff loop in scaffolding waited 1s + 2s
+    before giving up — making test failures slow and noisy. The new
+    type-name check short-circuits the retry, surfacing the clear
+    error immediately.
+    """
+    import json as _json  # noqa: PLC0415
+    import time as _time  # noqa: PLC0415
+
+    from looplet import (  # noqa: PLC0415
+        DefaultState,
+        LoopConfig,
+        MockLLMBackend,
+        composable_loop,
+        tool,
+        tools_from,
+    )
+
+    @tool
+    def noop() -> dict:
+        return {}
+
+    tools = tools_from([noop], include_done=True, done_parameters={"answer": "x"})
+    backend = MockLLMBackend(
+        responses=[_json.dumps({"tool": "noop", "args": {}, "reasoning": "", "call_id": "1"})],
+        cycle=False,
+    )
+    cfg = LoopConfig(max_steps=10)
+    state = DefaultState(max_steps=10)
+
+    t0 = _time.monotonic()
+    steps = list(
+        composable_loop(
+            llm=backend,
+            tools=tools,
+            state=state,
+            config=cfg,
+            task={"description": "spin"},
+        )
+    )
+    elapsed = _time.monotonic() - t0
+    # Without the fix, retry waited ~3s of backoff; with the fix it
+    # short-circuits, so a generous bound of 1s catches regressions.
+    assert elapsed < 1.0, (
+        f"loop took {elapsed:.2f}s before surfacing exhaustion; "
+        f"the retry-with-backoff path probably ran (regressed)."
+    )
+    # The loop should still surface the error as a step (existing
+    # behaviour) — we only changed how fast.
+    assert any(s.tool_call.tool == "__llm_error__" for s in steps), (
+        f"expected an __llm_error__ step; got tools {[s.tool_call.tool for s in steps]}"
+    )

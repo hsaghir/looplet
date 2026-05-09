@@ -637,3 +637,27 @@ def test_provenance_sink_redact_scrubs_trace_file(tmp_path: Path) -> None:
         assert "alice@example.com" not in text, (
             f"PII leaked into trace file {tf.name}: {text[:200]}"
         )
+
+
+# ── fix 11: preview_prompt now includes the system prompt ─────────
+
+
+def test_preview_prompt_includes_system_prompt() -> None:
+    """preview_prompt promises to render 'the prompt the LLM would see'.
+
+    The LLM receives both a system prompt and a user message; before
+    the fix, preview_prompt returned only the user message, so anyone
+    debugging a prompt regression by reading preview output couldn't
+    see the system prompt at all. Now the system prompt is prepended
+    when ``config`` is provided.
+    """
+    from looplet import LoopConfig  # noqa: PLC0415
+    from looplet.prompts import preview_prompt  # noqa: PLC0415
+
+    cfg = LoopConfig(max_steps=4, system_prompt="MAGIC-SYSTEM-MARKER-XYZ")
+    text = preview_prompt(task={"goal": "go"}, config=cfg)
+    assert "MAGIC-SYSTEM-MARKER-XYZ" in text, (
+        f"preview_prompt dropped the system prompt; got: {text[:200]!r}"
+    )
+    # Also smoke-check that the user-prompt section is still there.
+    assert "TASK" in text

@@ -40,6 +40,7 @@ __all__ = [
     "SkillActivationHook",
     "SkillCard",
     "SkillManager",
+    "build_skill_manager_for_workspace",
     "install_skills",
     "make_skill_tools",
 ]
@@ -460,3 +461,41 @@ def _score_skill(skill: Skill, terms: list[str]) -> int:
         if term in body:
             score += 1
     return score
+
+
+def build_skill_manager_for_workspace(
+    workspace_dir: "str | Path | None" = None,
+    *,
+    runtime: dict | None = None,
+    skills_subdir: str = "skills",
+) -> "SkillManager":
+    """One-line builder for ``resources/skill_manager.py``.
+
+    Resolves the skills directory (``<workspace>/<skills_subdir>``)
+    from the workspace path encoded in ``runtime["workspace"]`` (the
+    convention used by the workspace loader) — or from
+    ``workspace_dir`` if you call this manually.
+
+    Returns an empty manager (no SKILL.md files found) without raising,
+    so a workspace can declare the resource even when its ``skills/``
+    directory is empty.
+
+    Use in ``resources/skill_manager.py``::
+
+        from looplet.skills import build_skill_manager_for_workspace
+
+        def build(runtime=None):
+            return build_skill_manager_for_workspace(runtime=runtime)
+    """
+    base: Path | None = None
+    if workspace_dir is not None:
+        base = Path(workspace_dir)
+    elif runtime is not None:
+        ws = runtime.get("workspace") or runtime.get("workspace_root")
+        if ws:
+            base = Path(str(ws))
+    if base is None:
+        base = Path.cwd()
+    skills_dir = base / skills_subdir
+    store = FileSkillStore(skills_dir if skills_dir.is_dir() else base)
+    return SkillManager(store)

@@ -483,9 +483,50 @@ def _load_yaml(text: str, *, source_path: str | Path | None = None) -> Any:
             pos += 1
             if not after:
                 out.append(parse_block(indent + 2))
+            elif _is_inline_single_key_dict(after):
+                # ``- key: <flow value or scalar>`` — single-key dict.
+                # Used by ``builtin_hooks: [- name: {kwargs}]`` style.
+                key, _, val = after.partition(":")
+                out.append(
+                    {key.strip(): _scalar(val.strip()) if val.strip() else parse_block(indent + 2)}
+                )
             else:
                 out.append(_scalar(after))
         return out
+
+    def _is_inline_single_key_dict(s: str) -> bool:
+        # Plain ``key: value`` after the ``- ``. The colon must be
+        # outside any quoted string or flow collection. Cheap-and-cheerful
+        # detector: look for the FIRST top-level colon, ignoring colons
+        # inside ``{...}`` / ``[...]`` / quoted strings.
+        depth_curly = 0
+        depth_square = 0
+        in_str: str | None = None
+        for i, ch in enumerate(s):
+            if in_str:
+                if ch == in_str and (i == 0 or s[i - 1] != "\\"):
+                    in_str = None
+                continue
+            if ch in ('"', "'"):
+                in_str = ch
+                continue
+            if ch == "{":
+                depth_curly += 1
+            elif ch == "}":
+                depth_curly -= 1
+            elif ch == "[":
+                depth_square += 1
+            elif ch == "]":
+                depth_square -= 1
+            elif ch == ":" and depth_curly == 0 and depth_square == 0:
+                # Must be followed by space or end-of-line for YAML key
+                if i + 1 == len(s) or s[i + 1] == " ":
+                    # Cheap sanity: key part before colon must not
+                    # itself contain spaces (would mean it's a sentence,
+                    # not a key — see issue with ``- some sentence: blah``).
+                    key_part = s[:i].strip()
+                    return bool(key_part) and " " not in key_part
+        return False
 
     def _scalar(raw: str) -> Any:
         if raw in ("null", "~", ""):
@@ -552,14 +593,24 @@ def _load_resources(root: Path, runtime: dict[str, Any] | None = None) -> dict[s
     workspace round-trip — even when the instance's class lives in a
     third-party module (e.g. ``looplet.permissions.PermissionEngine``)
     rather than the workspace's own resource module.
+
+    Reserved key: ``"runtime"`` is auto-injected with the host-supplied
+    runtime dict so tools can ``requires: [runtime]`` and read
+    ``ctx.resources["runtime"]`` directly, without the boilerplate of
+    a one-line ``resources/runtime.py`` builder. A workspace that
+    ships its own ``resources/runtime.py`` overrides this default
+    (the explicit file wins).
     """
     import inspect as _inspect  # noqa: PLC0415
 
+    runtime_dict = dict(runtime or {})
+    # Pre-seed the reserved ``runtime`` resource. Workspace-defined
+    # ``resources/runtime.py`` (if any) overwrites this below.
+    resources: dict[str, Any] = {"runtime": runtime_dict}
+
     resources_dir = root / WorkspaceLayout.RESOURCES_DIR
     if not resources_dir.is_dir():
-        return {}
-    runtime_dict = dict(runtime or {})
-    resources: dict[str, Any] = {}
+        return resources
     for resource_file in sorted(resources_dir.glob("*.py")):
         name = resource_file.stem
         module = _import_module_from_path(resource_file, f"_chw_resource_{name}")
@@ -2287,6 +2338,13 @@ def _workspace_to_preset_inner(
     # populated.
     _builtin_tool_names: list[str] = list(cfg_kwargs.pop("builtin_tools", None) or [])
 
+    # Symmetric ``builtin_hooks:`` directive — opt into looplet-shipped
+    # hooks (``skill_activation``, ...) without writing a hooks/<name>/
+    # directory. Each entry is either a string (name) or a single-key
+    # dict ``{name: {kwarg: value}}``. ``${ref:...}`` and ``${runtime.x}``
+    # syntax in kwargs are resolved against the live resource registry.
+    _builtin_hook_specs: list[Any] = list(cfg_kwargs.pop("builtin_hooks", None) or [])
+
     # ``state:`` is a workspace-loader directive that lets a workspace
     # describe the state object declaratively (any reference: a
     # ``${ref:...}`` resource, a ``${py:...}`` factory callable, or a
@@ -2535,6 +2593,48 @@ def _workspace_to_preset_inner(
                 if strict:
                     raise WorkspaceSerializationError(msg) from exc
                 logger.warning("%s; skipping hook", msg)
+
+    # Built-in hooks — symmetric to ``builtin_tools:``. Each entry is
+    # either a string (name) or a single-key dict ``{name: {kwargs...}}``.
+    if _builtin_hook_specs:
+        from looplet.builtin_hooks import build_builtin_hook  # noqa: PLC0415
+
+        for entry in _builtin_hook_specs:
+            if isinstance(entry, str):
+                hname, raw_kwargs = entry, {}
+            elif isinstance(entry, dict) and len(entry) == 1:
+                hname, raw_kwargs = next(iter(entry.items()))
+                raw_kwargs = dict(raw_kwargs or {})
+            else:
+                msg = f"builtin_hooks entry must be a string or single-key dict, got {entry!r}"
+                if strict:
+                    raise WorkspaceSerializationError(msg)
+                logger.warning("%s; skipping", msg)
+                continue
+            kwargs = _resolve_refs(
+                raw_kwargs,
+                resources,
+                runtime=runtime_dict,
+                source_path="config.yaml:builtin_hooks",
+            )
+            try:
+                hook = build_builtin_hook(hname, resources=resources, kwargs=kwargs)
+            except KeyError as exc:
+                msg = (
+                    f"unknown builtin hook {hname!r}: {exc}; "
+                    f"see looplet.builtin_hooks.AVAILABLE for the registry"
+                )
+                if strict:
+                    raise WorkspaceSerializationError(msg) from exc
+                logger.warning("%s; skipping", msg)
+                continue
+            except Exception as exc:  # noqa: BLE001
+                msg = f"builtin hook {hname!r} could not be built: {exc}"
+                if strict:
+                    raise WorkspaceSerializationError(msg) from exc
+                logger.warning("%s; skipping", msg)
+                continue
+            hooks.append(hook)
 
     # State — priority: declarative ``state:`` directive in config.yaml,
     # then ``state_factory`` constructor arg, then ``DefaultState``.

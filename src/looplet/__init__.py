@@ -102,7 +102,11 @@ from looplet.loop import (
     emit_event,
 )
 from looplet.mcp import MCPToolAdapter
-from looplet.memory import CallableMemorySource, StaticMemorySource
+from looplet.memory import (
+    AgentsMdMemorySource,
+    CallableMemorySource,
+    StaticMemorySource,
+)
 from looplet.native_tools import (
     NativeToolProbeResult,
     probe_native_tool_support,
@@ -252,6 +256,7 @@ __all__ = [
     "CachePolicy",
     "StaticMemorySource",
     "CallableMemorySource",
+    "AgentsMdMemorySource",
     # ── APPROVAL / PERMISSIONS ──────────────────────────────────
     "ApprovalHook",
     "PermissionEngine",

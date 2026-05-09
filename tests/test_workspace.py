@@ -509,15 +509,19 @@ def test_coder_workspace_loads_with_shared_filecache(tmp_path) -> None:
     )
 
     hook_names = [type(h).__name__ for h in preset.hooks]
+    # Order: directory hooks (sorted by ``order:``) first, then
+    # ``builtin_hooks:`` entries in declaration order. The migration
+    # to ``builtin_hooks:`` moved StagnationHook + ThresholdCompactHook
+    # + PerToolLimitHook to the end without changing their kwargs.
     assert hook_names == [
         "TestGuardHook",
         "FileCacheHook",
         "StaleFileHook",
+        "LinterHook",
+        "EvalHook",
         "StagnationHook",
         "ThresholdCompactHook",
         "PerToolLimitHook",
-        "LinterHook",
-        "EvalHook",
     ]
     assert sorted(preset.tools._tools.keys()) == [
         "bash",
@@ -790,16 +794,18 @@ def test_coder_workspace_bidirectional_round_trip(tmp_path) -> None:
     # EvalHook now that its evaluators + collectors live in
     # resources/eval_evaluators.py and resources/eval_collectors.py
     # (referenced via @ref instead of injected via setup.py).
+    # The 3 generic guards (Stagnation, ThresholdCompact, PerToolLimit)
+    # are wired via ``builtin_hooks:`` and land at the end of the list.
     reloaded_names = [type(h).__name__ for h in reloaded.hooks]
     assert reloaded_names == [
         "TestGuardHook",
         "FileCacheHook",
         "StaleFileHook",
+        "LinterHook",
+        "EvalHook",
         "StagnationHook",
         "ThresholdCompactHook",
         "PerToolLimitHook",
-        "LinterHook",
-        "EvalHook",
     ]
     assert sorted(reloaded.tools._tools.keys()) == [
         "bash",

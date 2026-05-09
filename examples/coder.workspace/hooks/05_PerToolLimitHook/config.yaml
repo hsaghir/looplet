@@ -1,3 +1,0 @@
-class_name: PerToolLimitHook
-kwargs:
-  default_limit: 100

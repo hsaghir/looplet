@@ -147,3 +147,69 @@ class MyHook:
 class MyHook(LoopHook):         # unnecessary
     ...
 ```
+
+## 11. Don't run linters / type-checkers / LSP after every `write`
+
+A good editing trajectory looks like: `write A`, `write B`, `edit C`,
+then `done()`. The intermediate states almost always fail to compile
+or type-check — that's normal, the work isn't finished yet.
+
+If you wire a `post_dispatch` hook that runs `mypy` / `tsc` / LSP
+diagnostics after every edit and injects the errors as
+`InjectContext(...)`, the model receives a constant stream of "you
+broke it" feedback during a sequence of edits that, taken together,
+would have been correct. Models then abandon multi-step refactors and
+revert to single-edit-then-verify patterns that are objectively worse.
+
+```python
+# ✗ do not do this
+class LSPFeedback:
+    def post_dispatch(self, state, session_log, tool_call, tool_result, step_num):
+        if tool_call.tool in {"write", "edit"}:
+            errors = run_typechecker()        # noisy mid-sequence
+            if errors:
+                return InjectContext(f"Type errors:\n{errors}")
+        return None
+
+# ✓ do this — only check at natural sync points (done() or explicit checkpoints)
+class LSPFeedback:
+    def check_done(self, state, session_log, context, step_num):
+        errors = run_typechecker()
+        if errors:
+            return Block(f"Type errors before done():\n{errors}")
+        return None
+```
+
+Credit to Mario Zechner's [Pi](https://github.com/earendil-works/pi)
+write-up for naming this anti-pattern crisply.
+
+## 12. Aggressive compaction silently destroys prompt caching
+
+Anthropic and OpenAI cache prompt prefixes; the cache breakpoint moves
+forward as the conversation grows. If your compaction strategy
+*rewrites* the prefix on every turn (e.g. by pruning all tool results
+older than N tokens, or summarising older messages in place), the
+cache hit rate collapses and per-turn cost can rise 5–10×.
+
+```python
+# ✗ silently cache-hostile — every turn rewrites the prefix
+config = LoopConfig(
+    compact_service=PruneToolResults(keep_recent_tool_results=2),
+    cache_policy=CachePolicy(...),
+)
+
+# ✓ keep enough recent results to stay behind the cache breakpoint,
+#    and only summarise on overflow, not every turn
+config = LoopConfig(
+    compact_service=DefaultCompactService(
+        keep_recent=4,
+        keep_recent_tool_results=10,    # ≥ what cache_policy expects to keep stable
+    ),
+    cache_policy=CachePolicy(...),
+)
+```
+
+If you're unsure, run with `MetricsHook` for a few turns and inspect
+the `usage.cache_read_input_tokens` reported by your provider. A
+healthy run shows that number climbing; a cache-hostile run shows it
+flat near zero.

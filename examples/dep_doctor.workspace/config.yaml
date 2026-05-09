@@ -3,3 +3,10 @@ max_tokens: 2000
 temperature: 0.2
 done_tool: done
 compact_service: "@compact_service"
+
+# Generic guard hooks via the looplet-shipped registry.
+# Use JSON syntax for flow-style kwargs (also valid YAML, and what the
+# tiny built-in loader understands).
+builtin_hooks:
+  - stagnation
+  - per_tool_limit: {"default_limit": 15, "limits": {"check_package": 12, "find_alternatives": 4}}

@@ -1,6 +1,0 @@
-class_name: PerToolLimitHook
-kwargs:
-  default_limit: 8
-  limits:
-    fetch_feed: 3
-    search_cve: 5

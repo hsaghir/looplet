@@ -1,0 +1,12 @@
+name: read_text
+description: |-
+  Read a UTF-8 text file and return its contents.
+
+  Use this for any file the user references — CSVs, JSON, plaintext,
+  source files. Returns ``{"content": str, "size": int, "lines": int}``.
+parameters:
+  path:
+    type: string
+    description: Filesystem path to read (absolute or relative to the project root).
+requires:
+  - runtime

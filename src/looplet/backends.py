@@ -276,6 +276,7 @@ class OpenAIBackend:
             kwargs["max_tokens"] = _mt
 
         response = self._client.chat.completions.create(**kwargs)
+        self._record_usage(response)
         return response.choices[0].message.content or ""
 
     def generate_with_tools(
@@ -309,7 +310,21 @@ class OpenAIBackend:
             kwargs["max_tokens"] = _mt
 
         response = self._client.chat.completions.create(**kwargs)
+        self._record_usage(response)
         return _openai_message_to_blocks(response.choices[0].message)
+
+    def _record_usage(self, response: Any) -> None:
+        """Stash usage on ``self.last_usage`` for cost tracking.
+
+        Imports ``looplet.cost.extract_usage`` lazily to avoid a hard
+        dependency from backends ↔ cost.
+        """
+        try:
+            from looplet.cost import extract_usage  # noqa: PLC0415
+
+            self.last_usage = extract_usage(response)
+        except Exception:  # noqa: BLE001 - usage tracking is best-effort
+            self.last_usage = {}
 
 
 class OpenAIStreamingBackend(OpenAIBackend):
@@ -408,6 +423,16 @@ class AnthropicBackend:
         self._client = client
         self._model = model
         self._default_max_tokens = default_max_tokens
+        # See ``OpenAIBackend.last_usage``; same contract.
+        self.last_usage: dict[str, int] = {}
+
+    def _record_usage(self, response: Any) -> None:
+        try:
+            from looplet.cost import extract_usage  # noqa: PLC0415
+
+            self.last_usage = extract_usage(response)
+        except Exception:  # noqa: BLE001
+            self.last_usage = {}
 
     @classmethod
     def from_env(
@@ -455,6 +480,7 @@ class AnthropicBackend:
             kwargs["system"] = system_prompt
 
         response = self._client.messages.create(**kwargs)
+        self._record_usage(response)
         # Anthropic returns a list of content blocks
         parts = []
         for block in response.content:
@@ -483,6 +509,7 @@ class AnthropicBackend:
             kwargs["system"] = system_prompt
 
         response = self._client.messages.create(**kwargs)
+        self._record_usage(response)
         return _anthropic_response_to_blocks(response)
 
 
@@ -556,6 +583,16 @@ class AsyncOpenAIBackend:
         self._model = model
         self._default_max_tokens = default_max_tokens
         self._tool_choice = tool_choice
+        # See ``OpenAIBackend.last_usage``; same contract.
+        self.last_usage: dict[str, int] = {}
+
+    def _record_usage(self, response: Any) -> None:
+        try:
+            from looplet.cost import extract_usage  # noqa: PLC0415
+
+            self.last_usage = extract_usage(response)
+        except Exception:  # noqa: BLE001
+            self.last_usage = {}
 
     @classmethod
     def from_env(
@@ -611,6 +648,7 @@ class AsyncOpenAIBackend:
             kwargs["max_tokens"] = _mt
 
         response = await self._client.chat.completions.create(**kwargs)
+        self._record_usage(response)
         return response.choices[0].message.content or ""
 
     async def generate_with_tools(
@@ -640,6 +678,7 @@ class AsyncOpenAIBackend:
             kwargs["max_tokens"] = _mt
 
         response = await self._client.chat.completions.create(**kwargs)
+        self._record_usage(response)
         return _openai_message_to_blocks(response.choices[0].message)
 
     async def stream(

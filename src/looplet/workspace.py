@@ -138,9 +138,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
-from looplet.memory import PersistentMemorySource, StaticMemorySource
-
 if TYPE_CHECKING:
+    from looplet.memory import PersistentMemorySource
     from looplet.presets import AgentPreset
     from looplet.tools import BaseToolRegistry
 
@@ -484,12 +483,31 @@ def _load_yaml(text: str, *, source_path: str | Path | None = None) -> Any:
             if not after:
                 out.append(parse_block(indent + 2))
             elif _is_inline_single_key_dict(after):
-                # ``- key: <flow value or scalar>`` — single-key dict.
-                # Used by ``builtin_hooks: [- name: {kwargs}]`` style.
+                # ``- key: <flow value or scalar>`` — may be a single-key
+                # dict (when no follow-on fields at the same indent),
+                # OR the first key of a multi-field block mapping list
+                # item:
+                #     - key: value
+                #       other: thing
+                # The follow-on fields live at the indent of the dash
+                # plus 2 (the standard YAML alignment for keys after
+                # ``- ``). We parse them via ``parse_block(...)`` and
+                # merge into the item; absent follow-ons, the result
+                # is the same single-key dict the parser produced before.
                 key, _, val = after.partition(":")
-                out.append(
-                    {key.strip(): _scalar(val.strip()) if val.strip() else parse_block(indent + 2)}
-                )
+                item: dict[str, Any] = {}
+                if val.strip():
+                    item[key.strip()] = _scalar(val.strip())
+                else:
+                    item[key.strip()] = parse_block(cur_indent + 2)
+                # Consume any additional ``key: value`` lines at
+                # ``cur_indent + 2``. ``parse_block`` returns ``{}`` if
+                # nothing matches, so this is a no-op when the list
+                # item is genuinely single-key.
+                extra = parse_block(cur_indent + 2)
+                if isinstance(extra, dict):
+                    item.update(extra)
+                out.append(item)
             else:
                 out.append(_scalar(after))
         return out
@@ -535,10 +553,24 @@ def _load_yaml(text: str, *, source_path: str | Path | None = None) -> Any:
             return True
         if raw == "false":
             return False
-        if raw.startswith(("[", "{", '"')):
+        if raw.startswith(('"', "'")):
             try:
                 return json.loads(raw)
             except json.JSONDecodeError:
+                # Single-quoted YAML strings: trim the quotes by hand
+                # since json.loads only accepts double-quoted strings.
+                if raw.startswith("'") and raw.endswith("'") and len(raw) >= 2:
+                    return raw[1:-1]
+                return raw
+        if raw.startswith(("[", "{")):
+            try:
+                return json.loads(raw)
+            except json.JSONDecodeError:
+                # Strict JSON failed (likely YAML flow style with
+                # unquoted keys/values). Try the tolerant flow parser.
+                parsed, ok = _parse_flow(raw)
+                if ok:
+                    return parsed
                 return raw
         try:
             if "." in raw or "e" in raw or "E" in raw:
@@ -546,6 +578,110 @@ def _load_yaml(text: str, *, source_path: str | Path | None = None) -> Any:
             return int(raw)
         except ValueError:
             return raw
+
+    def _parse_flow(raw: str) -> tuple[Any, bool]:
+        """Parse a YAML flow scalar (``[a, b]`` or ``{k: v, k2: v2}``).
+
+        Tolerant of unquoted strings (the common YAML idiom). Returns
+        ``(value, True)`` on success or ``(None, False)`` on failure.
+        Nested flow collections are supported.
+        """
+        text = raw.strip()
+        try:
+            value, idx = _parse_flow_value(text, 0)
+        except (ValueError, IndexError):
+            return None, False
+        # All input must be consumed (modulo trailing whitespace).
+        if text[idx:].strip():
+            return None, False
+        return value, True
+
+    def _skip_ws(s: str, i: int) -> int:
+        while i < len(s) and s[i] in " \t":
+            i += 1
+        return i
+
+    def _parse_flow_value(s: str, i: int) -> tuple[Any, int]:
+        i = _skip_ws(s, i)
+        if i >= len(s):
+            raise ValueError("unexpected end of flow value")
+        ch = s[i]
+        if ch == "[":
+            return _parse_flow_list(s, i)
+        if ch == "{":
+            return _parse_flow_map(s, i)
+        if ch in ('"', "'"):
+            return _parse_flow_quoted(s, i)
+        # Bare scalar: read until , } ] (or end).
+        start = i
+        while i < len(s) and s[i] not in ",}]":
+            i += 1
+        token = s[start:i].strip()
+        return _scalar(token), i
+
+    def _parse_flow_list(s: str, i: int) -> tuple[list[Any], int]:
+        assert s[i] == "["
+        out: list[Any] = []
+        i = _skip_ws(s, i + 1)
+        if i < len(s) and s[i] == "]":
+            return out, i + 1
+        while i < len(s):
+            value, i = _parse_flow_value(s, i)
+            out.append(value)
+            i = _skip_ws(s, i)
+            if i < len(s) and s[i] == ",":
+                i = _skip_ws(s, i + 1)
+                continue
+            if i < len(s) and s[i] == "]":
+                return out, i + 1
+            raise ValueError(f"expected ',' or ']' in flow list at offset {i}")
+        raise ValueError("unterminated flow list")
+
+    def _parse_flow_map(s: str, i: int) -> tuple[dict[str, Any], int]:
+        assert s[i] == "{"
+        out: dict[str, Any] = {}
+        i = _skip_ws(s, i + 1)
+        if i < len(s) and s[i] == "}":
+            return out, i + 1
+        while i < len(s):
+            # Parse key (bare or quoted, terminate on ':').
+            if s[i] in ('"', "'"):
+                key_value, i = _parse_flow_quoted(s, i)
+                key = str(key_value)
+            else:
+                start = i
+                while i < len(s) and s[i] != ":":
+                    if s[i] in ",}]":
+                        raise ValueError("missing ':' in flow map")
+                    i += 1
+                key = s[start:i].strip()
+            if i >= len(s) or s[i] != ":":
+                raise ValueError(f"expected ':' in flow map at offset {i}")
+            i = _skip_ws(s, i + 1)
+            value, i = _parse_flow_value(s, i)
+            out[key] = value
+            i = _skip_ws(s, i)
+            if i < len(s) and s[i] == ",":
+                i = _skip_ws(s, i + 1)
+                continue
+            if i < len(s) and s[i] == "}":
+                return out, i + 1
+            raise ValueError(f"expected ',' or '}}' in flow map at offset {i}")
+        raise ValueError("unterminated flow map")
+
+    def _parse_flow_quoted(s: str, i: int) -> tuple[str, int]:
+        quote = s[i]
+        i += 1
+        start = i
+        while i < len(s) and s[i] != quote:
+            if s[i] == "\\" and i + 1 < len(s):
+                i += 2
+                continue
+            i += 1
+        if i >= len(s):
+            raise ValueError("unterminated quoted string")
+        text = s[start:i]
+        return text, i + 1
 
     return parse_block(0)
 
@@ -1958,12 +2094,15 @@ def _write_memory(
     ``memory_sources`` list and the resource auto-emit machinery
     copies the original on-disk source verbatim.
     """
+    from looplet.memory import (  # noqa: PLC0415
+        CallableMemorySource,
+        StaticMemorySource,
+    )
+
     if isinstance(source, StaticMemorySource):
         (memory_root / f"{index:02d}_static.md").write_text(source.text, encoding="utf-8")
         return None
     # CallableMemorySource: three branches in priority order.
-    from looplet.memory import CallableMemorySource  # noqa: PLC0415
-
     if isinstance(source, CallableMemorySource):
         fn = source.fn
         fn_name = getattr(fn, "__name__", "")
@@ -2286,7 +2425,10 @@ def _workspace_to_preset_inner(
     file_memory_sources: list[PersistentMemorySource] = []
     memory_dir = root / WorkspaceLayout.MEMORY_DIR
     if memory_dir.is_dir():
-        from looplet.memory import CallableMemorySource  # noqa: PLC0415
+        from looplet.memory import (  # noqa: PLC0415
+            CallableMemorySource,
+            StaticMemorySource,
+        )
 
         memory_files = sorted(
             p for p in memory_dir.iterdir() if p.is_file() and p.suffix in (".md", ".py")
@@ -2351,6 +2493,33 @@ def _workspace_to_preset_inner(
     # pre-resolved instance from ``_resolve_refs``). Falls back to the
     # ``state_factory`` constructor arg, and finally to ``DefaultState``.
     _state_directive = cfg_kwargs.pop("state", None)
+
+    # ── v1.0 declarative slots (SPEC.md): model, permissions, memory.
+    # Each is consumed here, *not* by ``LoopConfig``. We pop them off
+    # cfg_kwargs so the LoopConfig constructor doesn't see unknown
+    # kwargs, then process them after the config is built.
+    _model_block = cfg_kwargs.pop("model", None)
+    _permissions_block = cfg_kwargs.pop("permissions", None)
+    _memory_block = cfg_kwargs.pop("memory", None)
+
+    # Apply ``model:`` overrides BEFORE constructing LoopConfig so the
+    # structured block wins over flat ``temperature:`` / ``max_tokens:``
+    # at the top level. ``compile_model_block`` returns a dict of
+    # LoopConfig field overrides plus an updated ``tool_metadata``
+    # carrying provider / name / reasoning_effort for downstream
+    # tooling to read.
+    if _model_block is not None:
+        from looplet.spec_slots import compile_model_block  # noqa: PLC0415
+
+        try:
+            model_overrides = compile_model_block(_model_block, existing_cfg=cfg_kwargs)
+        except ValueError as exc:
+            msg = f"invalid 'model' block in {cfg_path}: {exc}"
+            if strict:
+                raise WorkspaceSerializationError(msg) from exc
+            logger.warning("%s; ignoring model block", msg)
+            model_overrides = {}
+        cfg_kwargs.update(model_overrides)
 
     config = LoopConfig(**cfg_kwargs)
 
@@ -2445,6 +2614,30 @@ def _workspace_to_preset_inner(
                         raise WorkspaceSerializationError(msg)
                     logger.warning("%s; tool will receive None for missing resources", msg)
             registry.register(spec)
+
+            # v1.0: ``output_schema:`` on the done tool installs an
+            # OutputSchema validator on the LoopConfig so the loop
+            # validates the agent's done() args before terminating.
+            # Only the configured ``done_tool`` is treated specially;
+            # output_schema on other tools is recorded in tool metadata
+            # and may be enforced by future spec versions but is not
+            # part of the v1.0 loader contract.
+            if (
+                spec.name == config.done_tool
+                and config.output_schema is None
+                and isinstance(yaml_payload.get("output_schema"), dict)
+            ):
+                from looplet.spec_slots import compile_output_schema  # noqa: PLC0415
+
+                try:
+                    config.output_schema = compile_output_schema(
+                        dict(yaml_payload["output_schema"])
+                    )
+                except (ValueError, TypeError) as exc:
+                    msg = f"invalid output_schema in {spec_path}: {exc}"
+                    if strict:
+                        raise WorkspaceSerializationError(msg) from exc
+                    logger.warning("%s; ignoring output_schema", msg)
 
     # Built-in tools — opt-in via ``builtin_tools:`` in config.yaml.
     # These are looplet-shipped tools (``subagent``, future helpers)
@@ -2670,6 +2863,52 @@ def _workspace_to_preset_inner(
         state=state,
         resources=dict(resources),
     )
+
+    # ── v1.0 declarative slots: permissions, memory.long_term ───────
+    # Both are processed AFTER hooks/state/preset are built so the
+    # auto-installed hook lands at the end of the hook list (after any
+    # user-defined permission policy in ``hooks/``) and the long-term
+    # memory file appends to file-based memory sources already loaded.
+    # ``setup.py`` (below) can still override either, by design.
+
+    if _permissions_block is not None:
+        from looplet.spec_slots import compile_permissions_block  # noqa: PLC0415
+
+        try:
+            permission_hook = compile_permissions_block(_permissions_block)
+        except ValueError as exc:
+            msg = f"invalid 'permissions' block in {cfg_path}: {exc}"
+            if strict:
+                raise WorkspaceSerializationError(msg) from exc
+            logger.warning("%s; ignoring permissions block", msg)
+        else:
+            preset.hooks.append(permission_hook)
+
+    # Long-term memory: explicit ``memory: { long_term: <path> }`` wins;
+    # otherwise, auto-load ``memory/long_term.md`` if present. Either
+    # path resolves relative to the cartridge root and is appended to
+    # the existing memory_sources so existing static files are not
+    # disturbed.
+    long_term_path: Path | None = None
+    if isinstance(_memory_block, dict):
+        explicit = _memory_block.get("long_term")
+        if isinstance(explicit, str) and explicit:
+            long_term_path = (root / explicit).resolve()
+    if long_term_path is None:
+        from looplet.spec_slots import default_long_term_memory_path  # noqa: PLC0415
+
+        candidate = root / default_long_term_memory_path()
+        if candidate.is_file():
+            long_term_path = candidate.resolve()
+    if long_term_path is not None and long_term_path.is_file():
+        from looplet.memory import StaticMemorySource  # noqa: PLC0415
+
+        long_term_source = StaticMemorySource(
+            text=long_term_path.read_text(encoding="utf-8"),
+        )
+        if preset.config.memory_sources is None:
+            preset.config.memory_sources = []
+        preset.config.memory_sources = list(preset.config.memory_sources) + [long_term_source]
 
     # ``setup.py`` escape hatch — runs after the declarative load to
     # let the workspace attach callable / opaque fields that don't

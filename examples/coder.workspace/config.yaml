@@ -11,6 +11,37 @@ memory_sources:
   - "@instructions_memory"
   - "@project_memory"
 
+# v1.0 model binding. Provider/name/effort live in tool_metadata so
+# downstream tooling (cost, routing, governance) can read them; the
+# loop continues to read the flat fields above for back-compat.
+model:
+  provider: anthropic
+  name: claude-sonnet-4.6
+  reasoning_effort: high
+
+# v1.0 declarative permissions. Compiled into a PermissionHook by
+# the loader. Replaces the previous hand-written BashPermissionHook
+# class — the same rules, expressed in the schema.
+permissions:
+  default: allow
+  deny:
+    - tool: bash
+      contains:
+        command: "rm -rf"
+      reason: "destructive recursive delete"
+    - tool: bash
+      contains:
+        command: "sudo "
+      reason: "escalated privileges"
+    - tool: bash
+      contains:
+        command: "> /dev/"
+      reason: "raw device write"
+    - tool: write_file
+      contains:
+        file_path: "/etc/"
+      reason: "system path"
+
 # Generic guard / budget hooks via the looplet-shipped registry.
 # Coder-specific hooks (TestGuardHook, FileCacheHook, StaleFileHook,
 # LinterHook, EvalHook) live under hooks/ alongside this file.

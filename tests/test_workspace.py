@@ -510,9 +510,8 @@ def test_coder_workspace_loads_with_shared_filecache(tmp_path) -> None:
 
     hook_names = [type(h).__name__ for h in preset.hooks]
     # Order: directory hooks (sorted by ``order:``) first, then
-    # ``builtin_hooks:`` entries in declaration order. The migration
-    # to ``builtin_hooks:`` moved StagnationHook + ThresholdCompactHook
-    # + PerToolLimitHook to the end without changing their kwargs.
+    # ``builtin_hooks:`` entries in declaration order, then the
+    # auto-installed ``permissions:`` PermissionHook (v1.0 spec slot).
     assert hook_names == [
         "TestGuardHook",
         "FileCacheHook",
@@ -522,6 +521,7 @@ def test_coder_workspace_loads_with_shared_filecache(tmp_path) -> None:
         "StagnationHook",
         "ThresholdCompactHook",
         "PerToolLimitHook",
+        "PermissionHook",
     ]
     assert sorted(preset.tools._tools.keys()) == [
         "bash",
@@ -806,6 +806,7 @@ def test_coder_workspace_bidirectional_round_trip(tmp_path) -> None:
         "StagnationHook",
         "ThresholdCompactHook",
         "PerToolLimitHook",
+        "PermissionHook",
     ]
     assert sorted(reloaded.tools._tools.keys()) == [
         "bash",

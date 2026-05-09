@@ -1,6 +1,0 @@
-class_name: PerToolLimitHook
-kwargs:
-  default_limit: 15
-  limits:
-    check_package: 12
-    find_alternatives: 4

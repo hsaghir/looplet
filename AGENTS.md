@@ -35,6 +35,69 @@ Keep looplet minimal, simple, powerful, and familiar to Python users.
     reliable; expanded source generation should depend on explicit recorded
     recipes, not decompiling arbitrary Python.
 
+## Anti-features (deliberately out of scope)
+
+These are things looplet does **not** do, on purpose. Each was
+considered and rejected because it would either bloat the core or
+foreclose a composition the user might want. If you find yourself
+asking "should looplet add X?", check this list first.
+
+- **No built-in TUI.** looplet is a library; it yields `Step` objects.
+    A TUI/CLI shell ships separately (e.g. `looplet new`) and stays
+    optional. Anyone wanting a Pi/Claude-Code-style terminal app should
+    build it on top, not bake it in.
+- **No approval popups in the default path.** `PermissionEngine`
+    defaults to ALLOW. Approval gates lead to fatigue or get disabled
+    entirely. The recommended security boundary is **the container or
+    sandbox the loop runs in**, not a per-tool dialog. `ApprovalHook`
+    exists for human-supervised loops; it is opt-in.
+- **No plan mode.** Write a `PLAN.md`, or compose a planning sub-agent
+    via `run_sub_loop`. The loop does not need to know about phases.
+- **No built-in to-do list.** They confuse models. Use a `TODO.md`
+    file (the agent can read/write it like any other file) or compose
+    one as a tool.
+- **No background bash / daemon tasks.** Use tmux, systemd, or a job
+    queue. The loop runs to completion synchronously and yields.
+- **No mid-edit linting / type-checking.** See
+    [Pitfall #11](docs/pitfalls.md). Run checks at `done()` or explicit
+    sync points, not after every `write`.
+- **No magic globals or DSLs.** Configuration is dataclasses; tools are
+    functions; hooks are Protocol-conforming objects. Importable, testable,
+    boring.
+- **No mandatory inheritance.** Every extension point is a Protocol.
+    `class MyHook:` works; `class MyHook(LoopHook):` is unnecessary.
+
+If a feature in this list turns out to be wrong, the bar to add it is:
+(a) it cannot be expressed as a hook/tool/preset, AND (b) every loop
+user pays for it whether they want it or not. Both must hold.
+
+## Security stance: container, not popup
+
+looplet's default permission posture is **allow-all**. This is
+deliberate. The reasoning:
+
+1. Approval popups create alarm fatigue — users either rubber-stamp or
+   disable them, so they degrade into security theater.
+2. The right boundary for an autonomous coding agent is the **process
+   sandbox**: a container, a VM, a chroot, an unprivileged user, a
+   firewalled VPC. These bound *all* tool effects, including ones the
+   approval list forgot to enumerate.
+3. Any project that needs human-in-the-loop approval can opt in
+   explicitly with `PermissionHook(engine)` or `ApprovalHook(...)`,
+   composed like any other hook.
+
+Recommended deployment patterns:
+
+- **Local development:** run inside a Docker container or a fresh git
+    worktree (`git worktree add`).
+- **CI / automated runs:** ephemeral container with the repo mounted
+    read-write and the network restricted to the LLM provider.
+- **Human-supervised:** `PermissionHook` + `ApprovalHook`; treat the
+    user as the sandbox.
+
+Do not rely on prompt-level guidance ("don't run `rm -rf`") as a
+security control. Models will, eventually, ignore it.
+
 ## Architecture (30-second version)
 
 ```
@@ -101,7 +164,9 @@ my_agent.workspace/
 
 ```yaml
 max_steps: 30                        # LoopConfig.max_steps
-system_prompt_path: prompts/system.md  # alternative to inlining
+# system prompt: write it as prompts/system.md — the loader auto-loads
+# the file. (Do NOT put `system_prompt_path:` here; that's not a real
+# LoopConfig field.) For inline use, set `system_prompt: |- ...` instead.
 temperature: 0.2
 done_tool: done
 

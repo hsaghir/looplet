@@ -10,3 +10,11 @@ compact_service: "@compact_service"
 memory_sources:
   - "@instructions_memory"
   - "@project_memory"
+
+# Generic guard / budget hooks via the looplet-shipped registry.
+# Coder-specific hooks (TestGuardHook, FileCacheHook, StaleFileHook,
+# LinterHook, EvalHook) live under hooks/ alongside this file.
+builtin_hooks:
+  - stagnation: {"threshold": 6, "nudge": "[stagnation] Re-read the file, try a different approach, or think().", "reset_after_nudge": true, "ignore_tools": ["think", "done"]}
+  - threshold_compact: {"budget": {"context_window": 128000, "warning_at": 80000, "error_at": 100000, "compact_buffer": 13000}, "fire_tier": "warning"}
+  - per_tool_limit: {"default_limit": 100}

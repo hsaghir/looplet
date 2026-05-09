@@ -20,6 +20,9 @@ Currently shipped built-ins:
 * ``subagent`` — invoke another workspace as a synchronous sub-loop.
 * ``scaffold_workspace`` — create a stubbed workspace skeleton in one
   call (agent-callable wrapper around :func:`looplet.scaffold.scaffold_workspace`).
+* ``search_skills`` — list installed agentskills.io SKILL.md bundles by
+  task description without loading them.
+* ``activate_skill`` — load one SKILL.md body into subsequent prompts.
 
 Adding a new built-in: write a small module exposing a ``SPEC``
 :class:`looplet.tools.ToolSpec`, then list its ``name`` in
@@ -29,12 +32,20 @@ Adding a new built-in: write a small module exposing a ``SPEC``
 from __future__ import annotations
 
 from looplet.builtin_tools.scaffold_workspace import SPEC as _SCAFFOLD_SPEC
+from looplet.builtin_tools.skills import (
+    ACTIVATE_SPEC as _ACTIVATE_SKILL_SPEC,
+)
+from looplet.builtin_tools.skills import (
+    SEARCH_SPEC as _SEARCH_SKILLS_SPEC,
+)
 from looplet.builtin_tools.subagent import SPEC as _SUBAGENT_SPEC
 from looplet.tools import ToolSpec
 
 AVAILABLE: dict[str, ToolSpec] = {
     _SUBAGENT_SPEC.name: _SUBAGENT_SPEC,
     _SCAFFOLD_SPEC.name: _SCAFFOLD_SPEC,
+    _SEARCH_SKILLS_SPEC.name: _SEARCH_SKILLS_SPEC,
+    _ACTIVATE_SKILL_SPEC.name: _ACTIVATE_SKILL_SPEC,
 }
 
 

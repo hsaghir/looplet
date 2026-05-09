@@ -1,4 +1,0 @@
-class_name: StagnationHook
-kwargs:
-  threshold: 3
-  ignore_tools: ["think", "done"]

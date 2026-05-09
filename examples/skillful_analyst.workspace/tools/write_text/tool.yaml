@@ -1,0 +1,14 @@
+name: write_text
+description: |-
+  Write a UTF-8 text file, creating parent directories as needed.
+
+  Returns ``{"path": str, "bytes": int}``. Overwrites existing files.
+parameters:
+  path:
+    type: string
+    description: Filesystem path to write (absolute or relative to the project root).
+  content:
+    type: string
+    description: Full text content. UTF-8.
+requires:
+  - runtime

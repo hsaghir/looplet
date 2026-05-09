@@ -196,6 +196,14 @@ Five fully-declarative workspaces ship in `examples/`:
 | [`git_detective.workspace`](examples/git_detective.workspace/) | Investigates repo health from git history |
 | [`threat_intel.workspace`](examples/threat_intel.workspace/) | Local-first security briefings |
 
+> **Four tools is usually enough.** `coder.workspace` ships with
+> `bash`, `read`, `write`, `edit` — the same four that
+> [Pi](https://github.com/earendil-works/pi) used to rank #2 on
+> TerminalBench. `grep` and `glob` are convenience wrappers over
+> `bash`; you can drop them and the agent still works. Resist the
+> urge to add a tool until the model demonstrably can't accomplish
+> the task with the four it has.
+
 Load any of them:
 
 ```python

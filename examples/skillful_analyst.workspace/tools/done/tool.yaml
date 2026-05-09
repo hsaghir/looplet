@@ -1,0 +1,6 @@
+name: done
+description: Signal task completion. Pass a short summary in ``answer``.
+parameters:
+  answer:
+    type: string
+    description: One-line summary of what was accomplished, or what was left undone and why.

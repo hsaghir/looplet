@@ -704,3 +704,93 @@ def test_composable_loop_helpful_error_when_tools_is_a_list() -> None:
     msg = str(exc_info.value)
     # Must name the fix so a builder reading the traceback can act.
     assert "tools_from" in msg, f"expected 'tools_from' in error: {msg}"
+
+
+# ── fix 13: permission denial includes "Permission denied for tool X" prefix ─
+
+
+def test_permission_deny_message_includes_canonical_prefix(tmp_path: Path) -> None:
+    """Before the fix, a deny rule with ``reason: 'forbidden'`` produced
+    ``error='forbidden'`` — losing the canonical 'Permission denied for
+    tool X' phrase entirely. Builders grepping ``tool_result.error`` for
+    'denied' or 'permission' missed it. Now the canonical prefix is
+    always present and the rule reason is appended as context.
+    """
+    import json as _json  # noqa: PLC0415
+
+    from looplet import (  # noqa: PLC0415
+        DefaultState,
+        MockLLMBackend,
+        composable_loop,
+    )
+    from looplet.types import ErrorKind  # noqa: PLC0415
+
+    ws = tmp_path / "p.workspace"
+    ws.mkdir()
+    (ws / "workspace.json").write_text(_json.dumps({"name": "p", "schema_version": 1}))
+    (ws / "config.yaml").write_text(
+        textwrap.dedent("""\
+            max_steps: 4
+            done_tool: done
+            permissions:
+              default: allow
+              deny:
+                - tool: shell
+                  contains:
+                    cmd: "danger"
+                  reason: "forbidden"
+        """)
+    )
+    (ws / "prompts").mkdir()
+    (ws / "prompts" / "system.md").write_text("test\n")
+    (ws / "tools" / "done").mkdir(parents=True)
+    (ws / "tools" / "done" / "tool.yaml").write_text(
+        "name: done\ndescription: x\nparameters:\n  summary: { type: string }\n"
+    )
+    (ws / "tools" / "done" / "execute.py").write_text(
+        "def execute(ctx, *, summary: str) -> dict:\n    return {'summary': summary}\n"
+    )
+    (ws / "tools" / "shell").mkdir(parents=True)
+    (ws / "tools" / "shell" / "tool.yaml").write_text(
+        "name: shell\ndescription: x\nparameters:\n  cmd: { type: string }\n"
+    )
+    (ws / "tools" / "shell" / "execute.py").write_text(
+        "def execute(ctx, *, cmd: str) -> dict:\n    return {'ran': cmd}\n"
+    )
+    preset = workspace_to_preset(str(ws), strict=True)
+    backend = MockLLMBackend(
+        responses=[
+            _json.dumps(
+                {
+                    "tool": "shell",
+                    "args": {"cmd": "danger-attempt"},
+                    "reasoning": "",
+                    "call_id": "1",
+                }
+            ),
+            _json.dumps(
+                {"tool": "done", "args": {"summary": "ok"}, "reasoning": "", "call_id": "2"}
+            ),
+        ]
+    )
+    state = DefaultState(max_steps=preset.config.max_steps)
+    steps = list(
+        composable_loop(
+            llm=backend,
+            tools=preset.tools,
+            state=state,
+            config=preset.config,
+            hooks=preset.hooks,
+            task={"description": "go"},
+        )
+    )
+    blocked = next((s for s in steps if s.tool_call.tool == "shell"), None)
+    assert blocked is not None, "expected a shell step"
+    err = blocked.tool_result.error or ""
+    assert "permission denied" in err.lower(), (
+        f"expected canonical 'permission denied' in error: {err!r}"
+    )
+    # The rule reason still appears as context.
+    assert "forbidden" in err, f"rule reason 'forbidden' missing from error: {err!r}"
+    assert blocked.tool_result.error_detail is not None
+    assert blocked.tool_result.error_detail.kind == ErrorKind.PERMISSION_DENIED

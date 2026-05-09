@@ -1146,9 +1146,12 @@ def _intercept_tool_calls(
             if _d.updated_args is not None:
                 tc.args = _d.updated_args
             if _d.permission == "deny":
+                _prefix = f"Permission denied for tool '{tc.tool}'"
+                _reason = _d.block or ""
+                _msg = f"{_prefix}: {_reason}" if _reason else _prefix
                 _te = ToolError(
                     kind=ErrorKind.PERMISSION_DENIED,
-                    message=_d.block or f"Permission denied for tool '{tc.tool}'",
+                    message=_msg,
                     retriable=False,
                 )
                 result.intercepted[tc_idx] = ToolResult(
@@ -1193,9 +1196,12 @@ def _intercept_tool_calls(
             if _decision.updated_args is not None:
                 tc.args = _decision.updated_args
             if _decision.permission == "deny":
+                _prefix = f"Permission denied for tool '{tc.tool}'"
+                _reason = _decision.block or ""
+                _msg = f"{_prefix}: {_reason}" if _reason else _prefix
                 _te = ToolError(
                     kind=ErrorKind.PERMISSION_DENIED,
-                    message=_decision.block or f"Permission denied for tool '{tc.tool}'",
+                    message=_msg,
                     retriable=False,
                 )
                 result.intercepted[tc_idx] = ToolResult(
@@ -1234,11 +1240,14 @@ def _intercept_tool_calls(
                 )
             allowed = _decision is None or _decision.permission != "deny"
             if not allowed:
-                _msg = (
-                    _decision.block
-                    if _decision and _decision.block
-                    else f"Permission denied for tool '{tc.tool}'"
-                )
+                # Always prefix the canonical phrase 'Permission denied for
+                # tool X' so builders grepping for ``permission`` or ``denied``
+                # find it. The hook's specific reason (rule.reason in the
+                # PermissionEngine, or _decision.block elsewhere) is appended
+                # as context, preserving the actionable detail.
+                _prefix = f"Permission denied for tool '{tc.tool}'"
+                _reason = _decision.block if _decision and _decision.block else ""
+                _msg = f"{_prefix}: {_reason}" if _reason else _prefix
                 _te = ToolError(
                     kind=ErrorKind.PERMISSION_DENIED,
                     message=_msg,

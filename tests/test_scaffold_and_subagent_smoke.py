@@ -1,7 +1,7 @@
 """Smoke tests for ``looplet.scaffold`` + ``builtin_tools: [subagent]``.
 
 Covers:
-  * scaffold_workspace creates a loadable skeleton
+  * scaffold_cartridge creates a loadable skeleton
   * idempotent re-scaffold preserves edits
   * skeleton has done tool by default
   * tool name validation
@@ -20,30 +20,30 @@ from pathlib import Path
 
 import pytest
 
-from looplet import MockLLMBackend, workspace_to_preset
-from looplet.scaffold import scaffold_workspace
+from looplet import MockLLMBackend, cartridge_to_preset
+from looplet.cartridge import CartridgeSerializationError
+from looplet.scaffold import scaffold_cartridge
 from looplet.types import ToolContext
-from looplet.workspace import WorkspaceSerializationError
 
 # ── scaffold ────────────────────────────────────────────────────
 
 
 def test_scaffold_creates_loadable_workspace(tmp_path: Path) -> None:
-    p = scaffold_workspace(
+    p = scaffold_cartridge(
         tmp_path / "agent.workspace",
         name="agent",
         tools=["foo", "bar"],
     )
-    preset = workspace_to_preset(p)
+    preset = cartridge_to_preset(p)
     assert sorted(preset.tools._tools.keys()) == ["bar", "done", "foo"]
     assert preset.config.max_steps == 20
     assert "agent" in (preset.config.system_prompt or "").lower()
     # Regression: workspace.json must be valid JSON (catch the
-    # repr-vs-dumps bug). ``workspace_to_preset`` only checks that the
+    # repr-vs-dumps bug). ``cartridge_to_preset`` only checks that the
     # file exists, so we parse explicitly.
     import json as _json
 
-    meta = _json.loads((p / "workspace.json").read_text())
+    meta = _json.loads((p / "cartridge.json").read_text())
     assert meta == {"name": "agent", "schema_version": 1}
 
 
@@ -52,23 +52,23 @@ def test_scaffold_workspace_json_handles_special_chars(tmp_path: Path) -> None:
     import json as _json
 
     tricky = 'agent "with quotes" and \\backslashes\\ and 日本語'
-    p = scaffold_workspace(tmp_path / "x.workspace", name=tricky, tools=[])
-    meta = _json.loads((p / "workspace.json").read_text())
+    p = scaffold_cartridge(tmp_path / "x.workspace", name=tricky, tools=[])
+    meta = _json.loads((p / "cartridge.json").read_text())
     assert meta["name"] == tricky
 
 
 def test_scaffold_done_tool_always_added(tmp_path: Path) -> None:
-    p = scaffold_workspace(tmp_path / "x.workspace", name="x", tools=[])
+    p = scaffold_cartridge(tmp_path / "x.workspace", name="x", tools=[])
     assert (p / "tools" / "done" / "tool.yaml").is_file()
     assert (p / "tools" / "done" / "execute.py").is_file()
 
 
 def test_scaffold_idempotent_preserves_edits(tmp_path: Path) -> None:
-    p = scaffold_workspace(tmp_path / "x.workspace", name="x", tools=["foo"])
+    p = scaffold_cartridge(tmp_path / "x.workspace", name="x", tools=["foo"])
     edited = "name: foo\ndescription: edited!\nparameters: {}\n"
     (p / "tools" / "foo" / "tool.yaml").write_text(edited)
     # Re-scaffold should not overwrite.
-    scaffold_workspace(p, name="x", tools=["foo", "bar"], overwrite=True)
+    scaffold_cartridge(p, name="x", tools=["foo", "bar"], overwrite=True)
     assert (p / "tools" / "foo" / "tool.yaml").read_text() == edited
     # New tool should be added.
     assert (p / "tools" / "bar" / "tool.yaml").is_file()
@@ -79,21 +79,21 @@ def test_scaffold_refuses_existing_non_empty(tmp_path: Path) -> None:
     p.mkdir()
     (p / "stuff.txt").write_text("hi")
     with pytest.raises(FileExistsError, match="non-empty"):
-        scaffold_workspace(p, name="x", tools=[])
+        scaffold_cartridge(p, name="x", tools=[])
 
 
 def test_scaffold_rejects_invalid_tool_names(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="alphanumeric"):
-        scaffold_workspace(tmp_path / "x.workspace", name="x", tools=["bad-name"])
+        scaffold_cartridge(tmp_path / "x.workspace", name="x", tools=["bad-name"])
     with pytest.raises(ValueError, match="empty"):
-        scaffold_workspace(tmp_path / "y.workspace", name="y", tools=[""])
+        scaffold_cartridge(tmp_path / "y.workspace", name="y", tools=[""])
 
 
 def test_scaffold_workspace_loads_with_factory_setup(tmp_path: Path) -> None:
     """Loading the agent_factory with scaffold runtime kwargs auto-creates the target."""
     repo_root = Path(__file__).resolve().parents[1]
-    factory = repo_root / "examples" / "agent_factory.workspace"
-    workspace_to_preset(
+    factory = repo_root / "examples" / "agent_factory.cartridge"
+    cartridge_to_preset(
         str(factory),
         runtime={
             "workspace": str(tmp_path),
@@ -102,7 +102,7 @@ def test_scaffold_workspace_loads_with_factory_setup(tmp_path: Path) -> None:
         },
     )
     target = tmp_path / "auto.workspace"
-    assert (target / "workspace.json").is_file()
+    assert (target / "cartridge.json").is_file()
     assert (target / "config.yaml").is_file()
     assert (target / "tools" / "alpha").is_dir()
     assert (target / "tools" / "beta").is_dir()
@@ -114,7 +114,7 @@ def test_scaffold_workspace_loads_with_factory_setup(tmp_path: Path) -> None:
 
 def _make_parent_with_subagent(tmp_path: Path) -> Path:
     parent = tmp_path / "parent.workspace"
-    scaffold_workspace(parent, name="parent", tools=[])
+    scaffold_cartridge(parent, name="parent", tools=[])
     cfg = parent / "config.yaml"
     cfg.write_text(cfg.read_text() + "builtin_tools:\n  - subagent\n")
     return parent
@@ -122,25 +122,25 @@ def _make_parent_with_subagent(tmp_path: Path) -> Path:
 
 def test_builtin_tools_registers_subagent(tmp_path: Path) -> None:
     parent = _make_parent_with_subagent(tmp_path)
-    p = workspace_to_preset(parent)
+    p = cartridge_to_preset(parent)
     assert "subagent" in p.tools._tools
 
 
 def test_builtin_tools_unknown_strict_raises(tmp_path: Path) -> None:
     parent = tmp_path / "p.workspace"
-    scaffold_workspace(parent, name="p", tools=[])
+    scaffold_cartridge(parent, name="p", tools=[])
     cfg = parent / "config.yaml"
     cfg.write_text(cfg.read_text() + "builtin_tools:\n  - nonexistent_tool\n")
-    with pytest.raises(WorkspaceSerializationError, match="unknown builtin tool"):
-        workspace_to_preset(parent, strict=True)
+    with pytest.raises(CartridgeSerializationError, match="unknown builtin tool"):
+        cartridge_to_preset(parent, strict=True)
 
 
 def test_subagent_runs_child_loop_to_done(tmp_path: Path) -> None:
     parent = _make_parent_with_subagent(tmp_path)
     child = tmp_path / "child.workspace"
-    scaffold_workspace(child, name="child", tools=[])
+    scaffold_cartridge(child, name="child", tools=[])
 
-    p = workspace_to_preset(parent)
+    p = cartridge_to_preset(parent)
     spec = p.tools._tools["subagent"]
     mock = MockLLMBackend(
         responses=[json.dumps({"tool": "done", "args": {"summary": "done-from-child"}})]
@@ -157,9 +157,9 @@ def test_subagent_runs_child_loop_to_done(tmp_path: Path) -> None:
 def test_subagent_recursion_guard(tmp_path: Path) -> None:
     parent = _make_parent_with_subagent(tmp_path)
     child = tmp_path / "child.workspace"
-    scaffold_workspace(child, name="child", tools=[])
+    scaffold_cartridge(child, name="child", tools=[])
 
-    p = workspace_to_preset(parent)
+    p = cartridge_to_preset(parent)
     spec = p.tools._tools["subagent"]
     mock = MockLLMBackend(responses=[])
     ctx = ToolContext(llm=mock, metadata={})
@@ -178,33 +178,33 @@ def test_subagent_recursion_guard(tmp_path: Path) -> None:
 
 def test_subagent_missing_workspace_returns_structured_error(tmp_path: Path) -> None:
     parent = _make_parent_with_subagent(tmp_path)
-    p = workspace_to_preset(parent)
+    p = cartridge_to_preset(parent)
     spec = p.tools._tools["subagent"]
     ctx = ToolContext(llm=MockLLMBackend(responses=[]), metadata={})
     result = spec.execute(ctx, workspace=str(tmp_path / "nope"), task="hi")
     assert "not found" in result.get("error", "")
 
 
-# ── scaffold_workspace as a built-in tool ──────────────────────
+# ── scaffold_cartridge as a built-in tool ──────────────────────
 
 
 def test_builtin_tools_registers_scaffold_workspace(tmp_path: Path) -> None:
     parent = tmp_path / "p.workspace"
-    scaffold_workspace(parent, name="p", tools=[])
+    scaffold_cartridge(parent, name="p", tools=[])
     cfg = parent / "config.yaml"
-    cfg.write_text(cfg.read_text() + "builtin_tools:\n  - scaffold_workspace\n")
-    p = workspace_to_preset(parent)
-    assert "scaffold_workspace" in p.tools._tools
+    cfg.write_text(cfg.read_text() + "builtin_tools:\n  - scaffold_cartridge\n")
+    p = cartridge_to_preset(parent)
+    assert "scaffold_cartridge" in p.tools._tools
 
 
 def test_scaffold_workspace_tool_creates_workspace(tmp_path: Path) -> None:
-    """Dispatching scaffold_workspace tool builds a loadable child workspace."""
+    """Dispatching scaffold_cartridge tool builds a loadable child workspace."""
     parent = tmp_path / "factory.workspace"
-    scaffold_workspace(parent, name="factory", tools=[])
+    scaffold_cartridge(parent, name="factory", tools=[])
     cfg = parent / "config.yaml"
-    cfg.write_text(cfg.read_text() + "builtin_tools:\n  - scaffold_workspace\n")
-    p = workspace_to_preset(parent)
-    spec = p.tools._tools["scaffold_workspace"]
+    cfg.write_text(cfg.read_text() + "builtin_tools:\n  - scaffold_cartridge\n")
+    p = cartridge_to_preset(parent)
+    spec = p.tools._tools["scaffold_cartridge"]
     ctx = ToolContext(metadata={})
     result = spec.execute(
         ctx,
@@ -215,18 +215,18 @@ def test_scaffold_workspace_tool_creates_workspace(tmp_path: Path) -> None:
     assert result.get("scaffolded") is True
     assert "child.workspace" in result.get("path", "")
     # Loadable.
-    sub = workspace_to_preset(tmp_path / "child.workspace")
+    sub = cartridge_to_preset(tmp_path / "child.workspace")
     assert sorted(sub.tools._tools.keys()) == ["alpha", "beta", "done"]
 
 
 def test_scaffold_workspace_tool_existing_dir_returns_recovery(tmp_path: Path) -> None:
     """File-exists error is returned as structured tool result, not raised."""
     parent = tmp_path / "p.workspace"
-    scaffold_workspace(parent, name="p", tools=[])
+    scaffold_cartridge(parent, name="p", tools=[])
     cfg = parent / "config.yaml"
-    cfg.write_text(cfg.read_text() + "builtin_tools:\n  - scaffold_workspace\n")
-    p = workspace_to_preset(parent)
-    spec = p.tools._tools["scaffold_workspace"]
+    cfg.write_text(cfg.read_text() + "builtin_tools:\n  - scaffold_cartridge\n")
+    p = cartridge_to_preset(parent)
+    spec = p.tools._tools["scaffold_cartridge"]
     # Pre-create non-empty dir.
     (tmp_path / "blocked").mkdir()
     (tmp_path / "blocked" / "stuff.txt").write_text("hi")
@@ -246,7 +246,7 @@ def test_subagent_forwards_workspace_to_subloop_runtime(tmp_path: Path) -> None:
     """
     parent = _make_parent_with_subagent(tmp_path)
     child = tmp_path / "child.workspace"
-    scaffold_workspace(child, name="child", tools=[])
+    scaffold_cartridge(child, name="child", tools=[])
     # Add a setup.py to the child that records the runtime it received.
     (child / "setup.py").write_text(
         "from pathlib import Path\n"
@@ -255,7 +255,7 @@ def test_subagent_forwards_workspace_to_subloop_runtime(tmp_path: Path) -> None:
         "    return preset\n"
     )
 
-    p = workspace_to_preset(parent, runtime={"workspace": str(tmp_path)})
+    p = cartridge_to_preset(parent, runtime={"workspace": str(tmp_path)})
     spec = p.tools._tools["subagent"]
     mock = MockLLMBackend(responses=[json.dumps({"tool": "done", "args": {"summary": "ok"}})])
     # Build a context that mimics what the dispatcher would produce.
@@ -279,9 +279,9 @@ def test_validate_workspace_warns_on_unfilled_scaffold(tmp_path: Path) -> None:
     """A freshly scaffolded workspace must surface TODO + NotImplementedError
     warnings so the agent doesn't ``done`` on an empty agent."""
     repo_root = Path(__file__).resolve().parents[1]
-    factory = repo_root / "examples" / "agent_factory.workspace"
+    factory = repo_root / "examples" / "agent_factory.cartridge"
     # Pre-scaffold a child via the factory's setup.py.
-    workspace_to_preset(
+    cartridge_to_preset(
         str(factory),
         runtime={
             "workspace": str(tmp_path),
@@ -289,7 +289,7 @@ def test_validate_workspace_warns_on_unfilled_scaffold(tmp_path: Path) -> None:
             "scaffold_tools": ["alpha"],
         },
     )
-    p = workspace_to_preset(str(factory), runtime={"workspace": str(tmp_path)})
+    p = cartridge_to_preset(str(factory), runtime={"workspace": str(tmp_path)})
     from looplet.types import ToolCall as _TC
 
     r = p.tools.dispatch(_TC(tool="validate_workspace", args={"workspace_path": "auto.workspace"}))
@@ -301,32 +301,32 @@ def test_validate_workspace_warns_on_unfilled_scaffold(tmp_path: Path) -> None:
 def test_loader_warns_on_tool_name_mismatch(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    p = scaffold_workspace(tmp_path / "x.workspace", name="x", tools=["foo"])
+    p = scaffold_cartridge(tmp_path / "x.workspace", name="x", tools=["foo"])
     # Edit tool.yaml to use a different name than the directory.
     (p / "tools" / "foo" / "tool.yaml").write_text(
         "name: BADNAME\ndescription: x\nparameters: {}\n"
     )
     with caplog.at_level(logging.WARNING):
-        workspace_to_preset(p)
+        cartridge_to_preset(p)
     assert any("tool name mismatch" in rec.message for rec in caplog.records), [
         r.message for r in caplog.records
     ]
 
 
 def test_loader_strict_raises_on_tool_name_mismatch(tmp_path: Path) -> None:
-    p = scaffold_workspace(tmp_path / "x.workspace", name="x", tools=["foo"])
+    p = scaffold_cartridge(tmp_path / "x.workspace", name="x", tools=["foo"])
     (p / "tools" / "foo" / "tool.yaml").write_text(
         "name: BADNAME\ndescription: x\nparameters: {}\n"
     )
-    with pytest.raises(WorkspaceSerializationError, match="tool name mismatch"):
-        workspace_to_preset(p, strict=True)
+    with pytest.raises(CartridgeSerializationError, match="tool name mismatch"):
+        cartridge_to_preset(p, strict=True)
 
 
 def test_subagent_warns_on_cwd_fallback(tmp_path: Path) -> None:
     parent = _make_parent_with_subagent(tmp_path)
     child = tmp_path / "child.workspace"
-    scaffold_workspace(child, name="child", tools=[])
-    p = workspace_to_preset(parent)
+    scaffold_cartridge(child, name="child", tools=[])
+    p = cartridge_to_preset(parent)
     spec = p.tools._tools["subagent"]
     mock = MockLLMBackend(responses=[json.dumps({"tool": "done", "args": {"summary": "ok"}})])
     # Empty resources + empty metadata -> cwd fallback fires.
@@ -343,7 +343,7 @@ def test_validate_workspace_no_false_positive_on_legitimate_todo_prose(tmp_path:
     Regression for the over-loose detector that fired on any 'TODO:' in
     the first 600 chars of the prompt.
     """
-    p = scaffold_workspace(tmp_path / "x.workspace", name="x", tools=["a"])
+    p = scaffold_cartridge(tmp_path / "x.workspace", name="x", tools=["a"])
     # Replace the system prompt with a legitimate one that mentions TODO.
     (p / "prompts" / "system.md").write_text(
         "# Code Reviewer\n\nLook for TODO: comments in the code and "
@@ -354,8 +354,8 @@ def test_validate_workspace_no_false_positive_on_legitimate_todo_prose(tmp_path:
         "def execute(ctx, **kwargs):\n    return {'ok': True}\n"
     )
     repo_root = Path(__file__).resolve().parents[1]
-    factory = repo_root / "examples" / "agent_factory.workspace"
-    p_factory = workspace_to_preset(str(factory), runtime={"workspace": str(tmp_path)})
+    factory = repo_root / "examples" / "agent_factory.cartridge"
+    p_factory = cartridge_to_preset(str(factory), runtime={"workspace": str(tmp_path)})
     from looplet.types import ToolCall as _TC
 
     r = p_factory.tools.dispatch(

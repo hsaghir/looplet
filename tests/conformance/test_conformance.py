@@ -20,8 +20,8 @@ from typing import Any
 
 import pytest
 
+from looplet.cartridge import cartridge_to_preset
 from looplet.permissions import PermissionDecision, PermissionHook
-from looplet.workspace import workspace_to_preset
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
@@ -94,7 +94,7 @@ def test_conformance_fixture(fixture_dir: Path) -> None:
     cartridge = fixture_dir / "cartridge"
     assert cartridge.is_dir(), f"fixture {fixture_dir.name} missing cartridge/"
     expected = json.loads(expected_path.read_text())
-    preset = workspace_to_preset(str(cartridge), strict=True)
+    preset = cartridge_to_preset(str(cartridge), strict=True)
     summary = _summarise_preset(preset)
     assert summary == expected, (
         f"conformance fixture {fixture_dir.name!r} mismatch.\n"

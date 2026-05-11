@@ -1,7 +1,7 @@
 """Wrap a workspace as a tool, then call it from a parent loop.
 
 The parent runs a tiny scripted loop with one custom tool,
-``ask_helper``, whose body loads ``examples/hello.workspace``,
+``ask_helper``, whose body loads ``examples/hello.cartridge``,
 runs ``run_sub_loop`` against it with a fresh task, and returns the
 sub-agent's summary. The parent never directly imports the sub-agent;
 it only knows it called a tool.
@@ -18,16 +18,16 @@ from pathlib import Path
 from looplet import (
     DefaultState,
     LoopConfig,
+    cartridge_to_preset,
     composable_loop,
     tool,
     tools_from,
-    workspace_to_preset,
 )
 from looplet.backends import OpenAIBackend
 from looplet.subagent import run_sub_loop
 
 REPO = Path(__file__).resolve().parents[3]
-HELLO_WS = REPO / "examples" / "hello.workspace"
+HELLO_WS = REPO / "examples" / "hello.cartridge"
 
 
 def _backend() -> OpenAIBackend:
@@ -43,9 +43,9 @@ def main(argv: list[str] | None = None) -> int:
     parent_task = argv[0] if argv else "Use ask_helper to greet Alice, then call done."
 
     backend = _backend()
-    sub_preset = workspace_to_preset(str(HELLO_WS), runtime={"workspace": str(REPO)})
+    sub_preset = cartridge_to_preset(str(HELLO_WS), runtime={"workspace": str(REPO)})
 
-    @tool(description="Run the hello.workspace sub-agent on a question.")
+    @tool(description="Run the hello.cartridge sub-agent on a question.")
     def ask_helper(*, question: str) -> dict:
         result = run_sub_loop(
             llm=backend,

@@ -17,7 +17,7 @@ This snippet ships a policy with three rules:
 # The shipped coder has bash but its hooks are not named *Permission*,
 # so this admission policy denies it. (Real deployments should rename
 # the relevant hook or relax the policy.)
-uv run python examples/snippets/07_admission/admit.py examples/coder.workspace
+uv run python examples/snippets/07_admission/admit.py examples/coder.cartridge
 
 # The refactorer trivially passes because it has no hooks dir of its
 # own — and the policy is purely static, so it does not chase
@@ -25,7 +25,7 @@ uv run python examples/snippets/07_admission/admit.py examples/coder.workspace
 # admission of an inheriting cartridge either needs to resolve the
 # parent or inherit policy decisions.
 uv run python examples/snippets/07_admission/admit.py \
-    examples/snippets/01_inheritance/refactorer.workspace
+    examples/snippets/01_inheritance/refactorer.cartridge
 ```
 
 ## Why this matters

@@ -10,9 +10,9 @@ A composable tool-calling loop for LLM agents. Zero runtime dependencies. Provid
 Agents can be expressed two ways:
 
 - **In Python**: `tools_from([...])` + `LoopConfig(...)` + `composable_loop(...)`. Everything in-process; no files. Best for: in-memory orchestration, sub-agents, library code that *uses* an agent.
-- **As a workspace**: a directory of files (`workspace.json`, `config.yaml`, `prompts/system.md`, `tools/<name>/{tool.yaml, execute.py}`, `resources/<name>.py`) loaded via `workspace_to_preset(path)` into the same loop. Best for: agents you want to *ship*, version, share, or have another agent edit.
+- **As a cartridge**: a directory of files (`cartridge.json`, `config.yaml`, `prompts/system.md`, `tools/<name>/{tool.yaml, execute.py}`, `resources/<name>.py`) loaded via `cartridge_to_preset(path)` into the same loop. Best for: agents you want to *ship*, version, share, or have another agent edit.
 
-The two are isomorphic: `preset_to_workspace(preset, path)` round-trips a Python-built `AgentPreset` to disk; `workspace_to_preset(path)` round-trips back. Pick whichever shape fits the problem; you can switch later.
+The two are isomorphic: `preset_to_cartridge(preset, path)` round-trips a Python-built `AgentPreset` to disk; `cartridge_to_preset(path)` round-trips back. Pick whichever shape fits the problem; you can switch later.
 
 ## Design principles
 
@@ -140,19 +140,19 @@ composable_loop(llm, tools, state, config, hooks)
 | `streaming` | Event emitters | `StreamingHook`, `EventEmitter`, `CallbackEmitter` |
 | `validation` | Schema enforcement | `ValidatingToolRegistry`, `OutputSchema` |
 
-## Workspace format
+## Cartridge format
 
-A workspace is a directory of files the loader materialises into a runnable agent. Required + optional layout:
+A cartridge is a directory of files the loader materialises into a runnable agent. Required + optional layout:
 
 ```
-my_agent.workspace/
-├── workspace.json          # REQUIRED  {"name": "my_agent", "schema_version": 1}
+my_agent.cartridge/
+├── cartridge.json          # REQUIRED  {"name": "my_agent", "schema_version": 1}
 ├── config.yaml             # REQUIRED  LoopConfig fields: max_steps, system_prompt, ...
 ├── prompts/system.md       # REQUIRED  the agent's system prompt
 ├── tools/<name>/
 │   ├── tool.yaml           # REQUIRED  name, description, parameters, requires
 │   └── execute.py          # REQUIRED  def execute(ctx, *, ...) -> dict
-├── tools/done/             # REQUIRED  every agent needs a done tool (scaffold_workspace adds it)
+├── tools/done/             # REQUIRED  every agent needs a done tool (scaffold_cartridge adds it)
 ├── resources/<name>.py     # OPTIONAL  shared singletons (DB clients, configs); each exports build()
 ├── hooks/<name>/           # OPTIONAL  cross-cutting policy (approval, redaction, ...)
 │   ├── hook.py             #          class FooHook with on_event(self, event, payload)
@@ -170,11 +170,11 @@ max_steps: 30                        # LoopConfig.max_steps
 temperature: 0.2
 done_tool: done
 
-# Composition: inherit tools, hooks, resources from another workspace.
-# Resolved relative to this workspace's directory.
-extends: ../coder.workspace
+# Composition: inherit tools, hooks, resources from another cartridge.
+# Resolved relative to this cartridge's directory.
+extends: ../coder.cartridge
 
-# Built-in tools to wire in. Currently shipped: subagent, scaffold_workspace.
+# Built-in tools to wire in. Currently shipped: subagent, scaffold_cartridge.
 builtin_tools:
   - subagent
 ```
@@ -213,7 +213,7 @@ def execute(ctx, *, pattern: str, window: str = "24h") -> dict:
 `resources/siem.py`:
 
 ```python
-"""Shared SIEM client singleton — built once when the workspace loads."""
+"""Shared SIEM client singleton — built once when the cartridge loads."""
 from mycompany.siem import SIEMClient
 
 def build():
@@ -222,44 +222,44 @@ def build():
 
 ### Loader rules to know
 
-- **`done` is required.** A workspace without `tools/done/` will load but the loop has no completion sentinel. `scaffold_workspace()` always writes one.
-- **`requires:` must match a `resources/<name>.py`.** Mismatch → tool dispatch raises `KeyError` deep inside `execute()`. Validate workspaces with `workspace_to_preset(path, strict=True)` to catch this at load time.
-- **`extends:` is resolved before this workspace's overrides apply.** Tools/hooks defined locally override inherited ones with the same name.
-- **`setup.py` runs at load time** with `(preset, resources, *, runtime=None, **kwargs)`. Use it to mutate the preset (e.g. add a hook only when `runtime["debug"]` is set). Most workspaces don't need one.
-- **`builtin_tools:` resolves to looplet-shipped tools.** Today: `subagent` (run a sub-loop), `scaffold_workspace` (the agent-facing scaffolder).
+- **`done` is required.** A cartridge without `tools/done/` will load but the loop has no completion sentinel. `scaffold_cartridge()` always writes one.
+- **`requires:` must match a `resources/<name>.py`.** Mismatch → tool dispatch raises `KeyError` deep inside `execute()`. Validate cartridges with `cartridge_to_preset(path, strict=True)` to catch this at load time.
+- **`extends:` is resolved before this cartridge's overrides apply.** Tools/hooks defined locally override inherited ones with the same name.
+- **`setup.py` runs at load time** with `(preset, resources, *, runtime=None, **kwargs)`. Use it to mutate the preset (e.g. add a hook only when `runtime["debug"]` is set). Most cartridges don't need one.
+- **`builtin_tools:` resolves to looplet-shipped tools.** Today: `subagent` (run a sub-loop), `scaffold_cartridge` (the agent-facing scaffolder).
 
 ### Round-trip API
 
 ```python
-from looplet import workspace_to_preset, preset_to_workspace, AgentPreset
+from looplet import cartridge_to_preset, preset_to_cartridge, AgentPreset
 
 # Disk → preset → loop
-preset = workspace_to_preset("./my_agent.workspace", runtime={"workspace": "/path/to/project"})
+preset = cartridge_to_preset("./my_agent.cartridge", runtime={"workspace": "/path/to/project"})
 # preset.config, preset.tools, preset.hooks, preset.state, preset.llm
 
 # Preset → disk (lossless for declarative presets)
-preset_to_workspace(preset, "./serialised.workspace")
+preset_to_cartridge(preset, "./serialised.cartridge")
 ```
 
-`workspace_to_preset` raises `WorkspaceSerializationError` with a structured message naming the offending file when something is malformed.
+`cartridge_to_preset` raises `CartridgeSerializationError` with a structured message naming the offending file when something is malformed.
 
 ---
 
-## Recipe 0 — Scaffold a workspace from Python
+## Recipe 0 — Scaffold a cartridge from Python
 
-This is the agent-facing equivalent of the `looplet new` human CLI: when a coding agent needs to **create a new agent as files**, it calls `scaffold_workspace()` directly and edits the produced files. No factory, no LLM-in-the-loop.
+This is the agent-facing equivalent of the `looplet new` human CLI: when a coding agent needs to **create a new agent as files**, it calls `scaffold_cartridge()` directly and edits the produced files. No factory, no LLM-in-the-loop.
 
 ```python
 from pathlib import Path
-from looplet.scaffold import scaffold_workspace
+from looplet.scaffold import scaffold_cartridge
 
 # 1. Create the skeleton. Always idempotent — existing files are preserved.
-root = scaffold_workspace(
-    Path("./url_summariser.workspace"),
+root = scaffold_cartridge(
+    Path("./url_summariser.cartridge"),
     name="url_summariser",
     tools=["fetch_url", "extract_title", "summarize_text"],
 )
-# root now contains: workspace.json, config.yaml, prompts/system.md (with TODO markers),
+# root now contains: cartridge.json, config.yaml, prompts/system.md (with TODO markers),
 # and tools/<name>/{tool.yaml, execute.py} stubs that raise NotImplementedError.
 
 # 2. Fill in the system prompt and each tool body. Use ordinary Python file I/O.
@@ -273,8 +273,8 @@ root = scaffold_workspace(
 
 # 3. Validate before running. Catches missing requires:, empty system prompt,
 #    unfilled NotImplementedError stubs, etc.
-from looplet import workspace_to_preset
-preset = workspace_to_preset(str(root), runtime={"workspace": "."})
+from looplet import cartridge_to_preset
+preset = cartridge_to_preset(str(root), runtime={"workspace": "."})
 
 # 4. Run.
 from looplet import composable_loop
@@ -286,7 +286,7 @@ for step in composable_loop(
     print(step.pretty())
 ```
 
-`scaffold_workspace(path, *, name, tools, overwrite=False)` raises `FileExistsError` on a non-empty directory unless `overwrite=True`. With `overwrite=True`, files already present are NOT clobbered — safe to re-run after edits.
+`scaffold_cartridge(path, *, name, tools, overwrite=False)` raises `FileExistsError` on a non-empty directory unless `overwrite=True`. With `overwrite=True`, files already present are NOT clobbered — safe to re-run after edits.
 
 For class-wraps (singleton resources), write `resources/<name>.py` with a `build()` function and add `requires: [<name>]` to every tool.yaml that uses it. Don't try to construct the singleton at module top-level — the loader expects the `resources/` mechanism so the same instance threads through `ctx.resources["<name>"]` on every dispatch.
 
@@ -768,20 +768,20 @@ src/looplet/
   cache.py             # Prompt caching
   telemetry.py         # Tracer / MetricsCollector / MetricsHook / TracingHook
   examples/
-    hello_world.py     # Minimal Python-API example (no workspace)
+    hello_world.py     # Minimal Python-API example (no cartridge)
     coding_agent.py    # Production reference (bash/read/write/edit/glob/grep)
 ```
 
-Fully-declarative shipped workspaces live at the repo root under `examples/`:
+Fully-declarative shipped cartridges live at the repo root under `examples/`:
 
 ```
 examples/
-  hello.workspace/             # Two-tool starter; load with workspace_to_preset()
-  coder.workspace/             # Coding agent: bash, read, write, edit, grep, glob, multi_edit
-  dep_doctor.workspace/        # Audits a repo's dependency files
-  git_detective.workspace/     # Investigates repo health from git history
-  threat_intel.workspace/      # Local-first security briefings
-  agent_factory.workspace/     # The factory itself (extends coder.workspace)
+  hello.cartridge/             # Two-tool starter; load with cartridge_to_preset()
+  coder.cartridge/             # Coding agent: bash, read, write, edit, grep, glob, multi_edit
+  dep_doctor.cartridge/        # Audits a repo's dependency files
+  git_detective.cartridge/     # Investigates repo health from git history
+  threat_intel.cartridge/      # Local-first security briefings
+  agent_factory.cartridge/     # The factory itself (extends coder.cartridge)
 ```
 
 ## Type contracts
@@ -976,12 +976,12 @@ symbols live in `looplet.<module>`.
 | `eval_run_batch` | `evals` | Run many eval scenarios |
 | `minimal_preset` | `presets` | Bare-bones agent preset |
 | `preview_prompt` | `prompts` | Debug: render next prompt |
-| `preset_to_workspace` | `workspace` | Serialise an `AgentPreset` to a workspace directory |
+| `preset_to_cartridge` | `cartridge` | Serialise an `AgentPreset` to a cartridge directory |
 | `replay_loop` | `provenance` | Replay a recorded trajectory |
 | `research_agent_preset` | `presets` | Pre-built research agent |
 | `run_compact` | `compact` | Invoke a compact service |
 | `run_sub_loop` | `subagent` | Spawn a sub-agent loop |
-| `scaffold_workspace` | `scaffold` | Write a workspace skeleton (workspace.json + config.yaml + tool stubs); idempotent |
-| `workspace_to_preset` | `workspace` | Load a workspace directory into an `AgentPreset` |
-| `WorkspaceSerializationError` | `workspace` | Raised on malformed workspace files; message names the offending file |
+| `scaffold_cartridge` | `scaffold` | Write a cartridge skeleton (cartridge.json + config.yaml + tool stubs); idempotent |
+| `cartridge_to_preset` | `cartridge` | Load a cartridge directory into an `AgentPreset` |
+| `CartridgeSerializationError` | `cartridge` | Raised on malformed cartridge files; message names the offending file |
 

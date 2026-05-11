@@ -11,7 +11,7 @@
    ``compile`` + ``exec`` it directly, so the cache is bypassed and
    no ``__pycache__`` is written into the user's cartridge.
 
-2. **scaffold-then-edit silently rejects calls.** ``scaffold_workspace``
+2. **scaffold-then-edit silently rejects calls.** ``scaffold_cartridge``
    writes ``parameters: {}`` and ``def execute(ctx, **kwargs)`` together.
    Users replace ``**kwargs`` with explicit keyword params (``*, name: str``)
    but forget to update ``parameters:``. The dispatcher then rejects
@@ -30,14 +30,14 @@ from pathlib import Path
 
 import pytest
 
-from looplet import workspace_to_preset
+from looplet import cartridge_to_preset
 from looplet.types import ToolCall
 
 
 def _write_basic_workspace(root: Path) -> Path:
     ws = root / "rt.workspace"
     ws.mkdir()
-    (ws / "workspace.json").write_text(json.dumps({"name": "rt", "schema_version": 1}) + "\n")
+    (ws / "cartridge.json").write_text(json.dumps({"name": "rt", "schema_version": 1}) + "\n")
     (ws / "config.yaml").write_text("max_steps: 4\ndone_tool: done\n")
     (ws / "prompts").mkdir()
     (ws / "prompts" / "system.md").write_text("test agent\n")
@@ -65,7 +65,7 @@ def test_workspace_reload_picks_up_edited_tool_body(tmp_path: Path) -> None:
         "def execute(ctx) -> dict:\n    return {'version': 1}\n"
     )
 
-    preset1 = workspace_to_preset(str(ws), strict=True)
+    preset1 = cartridge_to_preset(str(ws), strict=True)
     out1 = preset1.tools.dispatch(ToolCall(tool="stamp", args={}, reasoning="x", call_id="1")).data
     assert (out1 or {}).get("version") == 1
 
@@ -74,7 +74,7 @@ def test_workspace_reload_picks_up_edited_tool_body(tmp_path: Path) -> None:
         "def execute(ctx) -> dict:\n    return {'version': 2}\n"
     )
 
-    preset2 = workspace_to_preset(str(ws), strict=True)
+    preset2 = cartridge_to_preset(str(ws), strict=True)
     out2 = preset2.tools.dispatch(ToolCall(tool="stamp", args={}, reasoning="x", call_id="2")).data
     assert (out2 or {}).get("version") == 2, (
         f"second load returned stale body: {out2!r} "
@@ -96,11 +96,11 @@ def test_workspace_load_does_not_pollute_cartridge_with_pycache(tmp_path: Path) 
         "def execute(ctx) -> dict:\n    return {'ok': True}\n"
     )
 
-    workspace_to_preset(str(ws), strict=True)
+    cartridge_to_preset(str(ws), strict=True)
 
     pycache_dirs = list(ws.rglob("__pycache__"))
     assert pycache_dirs == [], (
-        f"workspace_to_preset created __pycache__ inside the cartridge: {pycache_dirs}"
+        f"cartridge_to_preset created __pycache__ inside the cartridge: {pycache_dirs}"
     )
 
 
@@ -119,12 +119,12 @@ def test_workspace_reload_after_seconds_still_works(tmp_path: Path) -> None:
     (ws / "tools" / "stamp" / "execute.py").write_text(
         "def execute(ctx) -> dict:\n    return {'version': 1}\n"
     )
-    workspace_to_preset(str(ws), strict=True)
+    cartridge_to_preset(str(ws), strict=True)
     time.sleep(1.1)
     (ws / "tools" / "stamp" / "execute.py").write_text(
         "def execute(ctx) -> dict:\n    return {'version': 2}\n"
     )
-    preset = workspace_to_preset(str(ws), strict=True)
+    preset = cartridge_to_preset(str(ws), strict=True)
     out = preset.tools.dispatch(ToolCall(tool="stamp", args={}, reasoning="x", call_id="1")).data
     assert (out or {}).get("version") == 2
 
@@ -146,7 +146,7 @@ def test_loader_warns_on_empty_parameters_with_explicit_signature(
     )
 
     with caplog.at_level(logging.WARNING, logger="looplet.workspace"):
-        workspace_to_preset(str(ws))
+        cartridge_to_preset(str(ws))
 
     msgs = [rec.getMessage() for rec in caplog.records]
     assert any("greet" in m and "parameters" in m and "VALIDATION" in m for m in msgs), (
@@ -167,7 +167,7 @@ def test_loader_strict_rejects_empty_parameters_with_explicit_signature(
         "def execute(ctx, *, name: str) -> dict:\n    return {'hi': name}\n"
     )
     with pytest.raises(Exception, match="parameters"):
-        workspace_to_preset(str(ws), strict=True)
+        cartridge_to_preset(str(ws), strict=True)
 
 
 def test_loader_does_not_warn_when_kwargs_signature(
@@ -183,7 +183,7 @@ def test_loader_does_not_warn_when_kwargs_signature(
         "def execute(ctx, **kwargs) -> dict:\n    return {**kwargs}\n"
     )
     with caplog.at_level(logging.WARNING, logger="looplet.workspace"):
-        workspace_to_preset(str(ws), strict=True)
+        cartridge_to_preset(str(ws), strict=True)
     msgs = [rec.getMessage() for rec in caplog.records]
     assert not any("greet" in m and "VALIDATION" in m for m in msgs), (
         f"unexpected mismatch warning for **kwargs: {msgs}"
@@ -208,7 +208,7 @@ def test_loader_does_not_warn_when_parameters_filled(
         "def execute(ctx, *, name: str) -> dict:\n    return {'hi': name}\n"
     )
     with caplog.at_level(logging.WARNING, logger="looplet.workspace"):
-        workspace_to_preset(str(ws), strict=True)
+        cartridge_to_preset(str(ws), strict=True)
     msgs = [rec.getMessage() for rec in caplog.records]
     assert not any("greet" in m and "VALIDATION" in m for m in msgs), (
         f"unexpected mismatch warning when parameters are filled: {msgs}"
@@ -271,13 +271,13 @@ def test_output_schema_rejection_populates_tool_result_error(tmp_path: Path) -> 
     from looplet import (  # noqa: PLC0415
         DefaultState,
         MockLLMBackend,
+        cartridge_to_preset,
         composable_loop,
-        workspace_to_preset,
     )
 
     ws = tmp_path / "se.workspace"
     ws.mkdir()
-    (ws / "workspace.json").write_text(_json.dumps({"name": "se", "schema_version": 1}) + "\n")
+    (ws / "cartridge.json").write_text(_json.dumps({"name": "se", "schema_version": 1}) + "\n")
     (ws / "config.yaml").write_text("max_steps: 3\ndone_tool: done\n")
     (ws / "prompts").mkdir()
     (ws / "prompts" / "system.md").write_text("go\n")
@@ -299,7 +299,7 @@ def test_output_schema_rejection_populates_tool_result_error(tmp_path: Path) -> 
         "def execute(ctx, **k) -> dict:\n    return {**k}\n"
     )
 
-    preset = workspace_to_preset(str(ws), strict=True)
+    preset = cartridge_to_preset(str(ws), strict=True)
     backend = MockLLMBackend(
         responses=[
             _json.dumps({"tool": "done", "args": {}, "reasoning": "r", "call_id": "1"}),
@@ -344,7 +344,7 @@ def test_extends_carries_grandparent_config_keys(tmp_path: Path) -> None:
 
     gp = tmp_path / "gp.workspace"
     gp.mkdir()
-    (gp / "workspace.json").write_text(_json.dumps({"name": "gp", "schema_version": 1}))
+    (gp / "cartridge.json").write_text(_json.dumps({"name": "gp", "schema_version": 1}))
     (gp / "config.yaml").write_text(
         "max_steps: 9\nmax_tokens: 1500\ntemperature: 0.5\ndone_tool: done\n"
     )
@@ -360,19 +360,19 @@ def test_extends_carries_grandparent_config_keys(tmp_path: Path) -> None:
 
     p = tmp_path / "p.workspace"
     p.mkdir()
-    (p / "workspace.json").write_text(_json.dumps({"name": "p", "schema_version": 1}))
+    (p / "cartridge.json").write_text(_json.dumps({"name": "p", "schema_version": 1}))
     (p / "config.yaml").write_text("extends: ../gp.workspace\ntemperature: 0.3\n")
     (p / "prompts").mkdir()
     (p / "prompts" / "system.md").write_text("p\n")
 
     c = tmp_path / "c.workspace"
     c.mkdir()
-    (c / "workspace.json").write_text(_json.dumps({"name": "c", "schema_version": 1}))
+    (c / "cartridge.json").write_text(_json.dumps({"name": "c", "schema_version": 1}))
     (c / "config.yaml").write_text("extends: ../p.workspace\ntemperature: 0.0\n")
     (c / "prompts").mkdir()
     (c / "prompts" / "system.md").write_text("c\n")
 
-    preset = workspace_to_preset(str(c), strict=True)
+    preset = cartridge_to_preset(str(c), strict=True)
     # Grandparent's max_tokens must survive 2 levels of extends.
     assert preset.config.max_tokens == 1500, (
         f"max_tokens={preset.config.max_tokens}; extends dropped grandparent key"
@@ -391,7 +391,7 @@ def test_extends_block_merge_preserves_unset_subkeys(tmp_path: Path) -> None:
 
     parent = tmp_path / "p.workspace"
     parent.mkdir()
-    (parent / "workspace.json").write_text(_json.dumps({"name": "p", "schema_version": 1}))
+    (parent / "cartridge.json").write_text(_json.dumps({"name": "p", "schema_version": 1}))
     (parent / "config.yaml").write_text(
         "model:\n  provider: anthropic\n  name: claude-sonnet-4.6\n  reasoning_effort: medium\n"
     )
@@ -400,14 +400,14 @@ def test_extends_block_merge_preserves_unset_subkeys(tmp_path: Path) -> None:
 
     child = tmp_path / "c.workspace"
     child.mkdir()
-    (child / "workspace.json").write_text(_json.dumps({"name": "c", "schema_version": 1}))
+    (child / "cartridge.json").write_text(_json.dumps({"name": "c", "schema_version": 1}))
     (child / "config.yaml").write_text(
         "extends: ../p.workspace\nmodel:\n  reasoning_effort: high\n"
     )
     (child / "prompts").mkdir()
     (child / "prompts" / "system.md").write_text("c\n")
 
-    preset = workspace_to_preset(str(child))
+    preset = cartridge_to_preset(str(child))
     meta = (preset.config.tool_metadata or {}).get("model", {})
     assert meta.get("provider") == "anthropic", f"parent model.provider erased; meta={meta}"
     assert meta.get("name") == "claude-sonnet-4.6"
@@ -426,7 +426,7 @@ def test_loader_warns_when_done_tool_unregistered(
 
     ws = tmp_path / "no_done.workspace"
     ws.mkdir()
-    (ws / "workspace.json").write_text(_json.dumps({"name": "x", "schema_version": 1}))
+    (ws / "cartridge.json").write_text(_json.dumps({"name": "x", "schema_version": 1}))
     # done_tool refers to a tool that doesn't exist.
     (ws / "config.yaml").write_text("max_steps: 4\ndone_tool: dont\n")
     (ws / "prompts").mkdir()
@@ -436,7 +436,7 @@ def test_loader_warns_when_done_tool_unregistered(
     (ws / "tools" / "noop" / "execute.py").write_text("def execute(ctx) -> dict:\n    return {}\n")
 
     with caplog.at_level(logging.WARNING, logger="looplet.workspace"):
-        workspace_to_preset(str(ws), strict=True)
+        cartridge_to_preset(str(ws), strict=True)
     msgs = [rec.getMessage() for rec in caplog.records]
     assert any("done_tool" in m and "dont" in m and "noop" in m for m in msgs), (
         f"expected done_tool warning naming missing+available, got: {msgs}"
@@ -459,7 +459,7 @@ def test_loader_clean_error_when_tool_parameters_is_a_list(tmp_path: Path) -> No
 
     ws = tmp_path / "bad.workspace"
     ws.mkdir()
-    (ws / "workspace.json").write_text(_json.dumps({"name": "bad", "schema_version": 1}))
+    (ws / "cartridge.json").write_text(_json.dumps({"name": "bad", "schema_version": 1}))
     (ws / "config.yaml").write_text("max_steps: 4\ndone_tool: done\n")
     (ws / "prompts").mkdir()
     (ws / "prompts" / "system.md").write_text("test\n")
@@ -475,7 +475,7 @@ def test_loader_clean_error_when_tool_parameters_is_a_list(tmp_path: Path) -> No
     )
 
     with pytest.raises(Exception, match="weird") as exc_info:
-        workspace_to_preset(str(ws), strict=True)
+        cartridge_to_preset(str(ws), strict=True)
     # The error should also mention 'parameters' so the builder knows
     # which YAML key to fix.
     assert "parameters" in str(exc_info.value).lower()
@@ -499,7 +499,7 @@ def test_loop_isolates_check_done_returning_garbage(tmp_path: Path) -> None:
 
     ws = tmp_path / "weird_hook.workspace"
     ws.mkdir()
-    (ws / "workspace.json").write_text(_json.dumps({"name": "wh", "schema_version": 1}))
+    (ws / "cartridge.json").write_text(_json.dumps({"name": "wh", "schema_version": 1}))
     (ws / "config.yaml").write_text("max_steps: 4\ndone_tool: done\n")
     (ws / "prompts").mkdir()
     (ws / "prompts" / "system.md").write_text("test\n")
@@ -520,7 +520,7 @@ def test_loop_isolates_check_done_returning_garbage(tmp_path: Path) -> None:
         "        return {'this_is': 'not a HookDecision'}\n"
     )
 
-    preset = workspace_to_preset(str(ws), strict=True)
+    preset = cartridge_to_preset(str(ws), strict=True)
     backend = MockLLMBackend(
         responses=[
             _json.dumps({"tool": "done", "args": {"answer": "ok"}, "reasoning": "", "call_id": "1"})
@@ -585,7 +585,7 @@ def test_provenance_sink_redact_scrubs_trace_file(tmp_path: Path) -> None:
 
     ws = tmp_path / "redact.workspace"
     ws.mkdir()
-    (ws / "workspace.json").write_text(_json.dumps({"name": "rd", "schema_version": 1}))
+    (ws / "cartridge.json").write_text(_json.dumps({"name": "rd", "schema_version": 1}))
     (ws / "config.yaml").write_text("max_steps: 3\ndone_tool: done\n")
     (ws / "prompts").mkdir()
     (ws / "prompts" / "system.md").write_text("test\n")
@@ -596,7 +596,7 @@ def test_provenance_sink_redact_scrubs_trace_file(tmp_path: Path) -> None:
     (ws / "tools" / "done" / "execute.py").write_text(
         "def execute(ctx, *, answer: str) -> dict:\n    return {'answer': answer, 'done': True}\n"
     )
-    preset = workspace_to_preset(str(ws), strict=True)
+    preset = cartridge_to_preset(str(ws), strict=True)
 
     traces = tmp_path / "traces"
     sink = ProvenanceSink(
@@ -727,7 +727,7 @@ def test_permission_deny_message_includes_canonical_prefix(tmp_path: Path) -> No
 
     ws = tmp_path / "p.workspace"
     ws.mkdir()
-    (ws / "workspace.json").write_text(_json.dumps({"name": "p", "schema_version": 1}))
+    (ws / "cartridge.json").write_text(_json.dumps({"name": "p", "schema_version": 1}))
     (ws / "config.yaml").write_text(
         textwrap.dedent("""\
             max_steps: 4
@@ -757,7 +757,7 @@ def test_permission_deny_message_includes_canonical_prefix(tmp_path: Path) -> No
     (ws / "tools" / "shell" / "execute.py").write_text(
         "def execute(ctx, *, cmd: str) -> dict:\n    return {'ran': cmd}\n"
     )
-    preset = workspace_to_preset(str(ws), strict=True)
+    preset = cartridge_to_preset(str(ws), strict=True)
     backend = MockLLMBackend(
         responses=[
             _json.dumps(
@@ -804,8 +804,8 @@ def test_agents_md_symbol_index_entries_are_importable() -> None:
 
         Everything in ``from looplet import X`` is listed here.
 
-    A ninth-pass dogfood found ``scaffold_workspace`` in the table but
-    only at ``looplet.scaffold.scaffold_workspace``. This regression
+    A ninth-pass dogfood found ``scaffold_cartridge`` in the table but
+    only at ``looplet.scaffold.scaffold_cartridge``. This regression
     test pins the contract: every symbol the table lists must be
     importable from ``looplet`` top-level. New additions to the table
     that aren't on the public API will fail this test.

@@ -100,7 +100,7 @@ class PerToolLimitHook:
         self._counts.clear()
 
     def to_config(self) -> dict[str, Any]:
-        """Round-trip kwargs for ``preset_to_workspace``."""
+        """Round-trip kwargs for ``preset_to_cartridge``."""
         return {
             "limits": dict(self._limits),
             "default_limit": self._default_limit,
@@ -207,7 +207,7 @@ class BudgetWarningHook:
         self._total = None
 
     def to_config(self) -> dict[str, Any]:
-        """Round-trip kwargs for ``preset_to_workspace``.
+        """Round-trip kwargs for ``preset_to_cartridge``.
 
         Round-trips when ``message`` is a string (the common case);
         when it's a callable, returns the default-message form so the

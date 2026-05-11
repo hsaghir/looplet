@@ -187,7 +187,7 @@ class ThresholdCompactHook:
         return list(self._fired_at)
 
     def to_config(self) -> dict[str, Any]:
-        """Round-trip kwargs for ``preset_to_workspace``.
+        """Round-trip kwargs for ``preset_to_cartridge``.
 
         Returns the constructor kwargs needed to rebuild this hook —
         the budget is unpacked into its scalar fields so the workspace

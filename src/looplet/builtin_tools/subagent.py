@@ -100,7 +100,7 @@ def _execute(
         }
 
     # Defer the heavy imports so this module remains cheap to import.
-    from looplet import composable_loop, workspace_to_preset  # noqa: PLC0415
+    from looplet import cartridge_to_preset, composable_loop  # noqa: PLC0415
 
     # Build a runtime dict for the sub-loop. The parent's
     # ``workspace_config.path`` is the canonical "where am I" value;
@@ -121,7 +121,7 @@ def _execute(
             # be running from.
             runtime["workspace"] = str(Path.cwd())
             fallback_used = True
-    sub_preset = workspace_to_preset(str(ws_path), runtime=runtime)
+    sub_preset = cartridge_to_preset(str(ws_path), runtime=runtime)
 
     # Sub-loop budget: explicit ``max_steps`` overrides; otherwise
     # inherit from sub_preset's own config.
@@ -177,7 +177,7 @@ def _execute(
             "no workspace_config resource on the parent and no "
             "ctx.metadata['runtime'] — sub-loop's runtime['workspace'] "
             f"defaulted to cwd ({runtime['workspace']!r}). Pass "
-            "runtime={'workspace': '...'} to workspace_to_preset for "
+            "runtime={'workspace': '...'} to cartridge_to_preset for "
             "the parent, or set ctx.metadata['runtime'] before calling."
         )
     return result

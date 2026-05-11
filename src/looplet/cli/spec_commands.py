@@ -136,7 +136,7 @@ def cmd_conform(args: argparse.Namespace) -> int:
     Returns 0 if every fixture matches its ``expected.json`` summary,
     1 if any mismatched, 2 if no fixtures found.
     """
-    from looplet.workspace import workspace_to_preset  # noqa: PLC0415
+    from looplet.cartridge import cartridge_to_preset  # noqa: PLC0415
 
     fixtures_dir = Path(args.fixtures or _default_fixtures_dir())
     if not fixtures_dir.is_dir():
@@ -156,7 +156,7 @@ def cmd_conform(args: argparse.Namespace) -> int:
         print(_red(f"error: no fixtures found under {fixtures_dir}"), file=sys.stderr)
         return 2
 
-    loader: Callable[..., Any] = workspace_to_preset
+    loader: Callable[..., Any] = cartridge_to_preset
     print(_bold(f"Cartridge Spec v1.0 conformance — {len(fixtures)} fixture(s)"))
     print(_dim(f"  fixtures: {fixtures_dir}"))
     print()
@@ -216,7 +216,7 @@ def _print_summary_diff(expected: dict, actual: dict) -> None:
 
 def cmd_describe(args: argparse.Namespace) -> int:
     """Print a one-screen structural summary of a cartridge."""
-    from looplet.workspace import workspace_to_preset  # noqa: PLC0415
+    from looplet.cartridge import cartridge_to_preset  # noqa: PLC0415
 
     cartridge_path = Path(args.cartridge)
     if not cartridge_path.is_dir():
@@ -224,7 +224,7 @@ def cmd_describe(args: argparse.Namespace) -> int:
         return 2
 
     try:
-        preset = workspace_to_preset(str(cartridge_path), strict=False)
+        preset = cartridge_to_preset(str(cartridge_path), strict=False)
     except Exception as e:  # noqa: BLE001
         print(_red(f"error loading cartridge: {type(e).__name__}: {e}"), file=sys.stderr)
         return 1

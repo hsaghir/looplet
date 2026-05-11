@@ -592,7 +592,7 @@ class BaseToolRegistry:
 
         Tools whose ``ToolSpec.requires`` lists a resource name receive
         the resolved instance through ``ctx.resources[name]`` at
-        dispatch time. Workspace's ``workspace_to_preset`` calls
+        dispatch time. Workspace's ``cartridge_to_preset`` calls
         this with the loaded ``resources/<name>.py`` builders' output;
         in-process callers can call it directly to wire a registry.
         """

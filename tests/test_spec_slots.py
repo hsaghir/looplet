@@ -1,7 +1,7 @@
 """Tests for the v1.0 declarative slots: model, permissions, memory, output_schema.
 
 Each block has a small unit test plus an integration test that goes
-through ``workspace_to_preset`` end-to-end on a tmp cartridge.
+through ``cartridge_to_preset`` end-to-end on a tmp cartridge.
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from looplet.cartridge import cartridge_to_preset
 from looplet.permissions import PermissionDecision, PermissionEngine, PermissionHook
 from looplet.spec_slots import (
     compile_model_block,
@@ -20,7 +21,6 @@ from looplet.spec_slots import (
     default_long_term_memory_path,
 )
 from looplet.validation import OutputSchema, validate_args
-from looplet.workspace import workspace_to_preset
 
 # ── unit tests: compile_permissions_block ──────────────────────────
 
@@ -204,7 +204,7 @@ def test_default_long_term_memory_path() -> None:
     assert default_long_term_memory_path() == "memory/long_term.md"
 
 
-# ── integration tests via workspace_to_preset ──────────────────────
+# ── integration tests via cartridge_to_preset ──────────────────────
 
 
 def _write_minimal_workspace(root: Path, *, config_yaml: str, done_yaml: str | None = None) -> None:
@@ -248,7 +248,7 @@ def test_loader_installs_permissions_hook(tmp_path: Path) -> None:
             """
         ),
     )
-    preset = workspace_to_preset(str(tmp_path))
+    preset = cartridge_to_preset(str(tmp_path))
     perm_hooks = [h for h in preset.hooks if isinstance(h, PermissionHook)]
     assert len(perm_hooks) == 1
     engine = perm_hooks[0].engine
@@ -270,7 +270,7 @@ def test_loader_compiles_structured_model_block(tmp_path: Path) -> None:
             """
         ),
     )
-    preset = workspace_to_preset(str(tmp_path))
+    preset = cartridge_to_preset(str(tmp_path))
     assert preset.config.max_tokens == 4096
     assert preset.config.temperature == 0.0
     metadata = preset.config.tool_metadata.get("model", {})
@@ -282,7 +282,7 @@ def test_loader_auto_loads_long_term_memory(tmp_path: Path) -> None:
     _write_minimal_workspace(tmp_path, config_yaml="max_steps: 3\n")
     (tmp_path / "memory").mkdir(exist_ok=True)
     (tmp_path / "memory" / "long_term.md").write_text("REMEMBER: always test in tmp.\n")
-    preset = workspace_to_preset(str(tmp_path))
+    preset = cartridge_to_preset(str(tmp_path))
     rendered = "\n".join(s.text for s in preset.config.memory_sources if hasattr(s, "text"))
     assert "REMEMBER" in rendered
 
@@ -299,7 +299,7 @@ def test_loader_explicit_memory_long_term_path(tmp_path: Path) -> None:
     )
     (tmp_path / "notes").mkdir(exist_ok=True)
     (tmp_path / "notes" / "big.md").write_text("THE-BIG-NOTE\n")
-    preset = workspace_to_preset(str(tmp_path))
+    preset = cartridge_to_preset(str(tmp_path))
     rendered = "\n".join(s.text for s in preset.config.memory_sources if hasattr(s, "text"))
     assert "THE-BIG-NOTE" in rendered
 
@@ -324,7 +324,7 @@ def test_loader_installs_output_schema_from_done_tool(tmp_path: Path) -> None:
             """
         ),
     )
-    preset = workspace_to_preset(str(tmp_path))
+    preset = cartridge_to_preset(str(tmp_path))
     assert preset.config.output_schema is not None
     assert "summary" in preset.config.output_schema.fields
     assert "passed" in preset.config.output_schema.fields
@@ -341,7 +341,7 @@ def test_loader_strict_rejects_invalid_permissions(tmp_path: Path) -> None:
         ),
     )
     with pytest.raises(Exception, match="permissions"):
-        workspace_to_preset(str(tmp_path), strict=True)
+        cartridge_to_preset(str(tmp_path), strict=True)
 
 
 def test_loader_strict_rejects_invalid_output_schema(tmp_path: Path) -> None:
@@ -360,4 +360,4 @@ def test_loader_strict_rejects_invalid_output_schema(tmp_path: Path) -> None:
         ),
     )
     with pytest.raises(Exception, match="output_schema"):
-        workspace_to_preset(str(tmp_path), strict=True)
+        cartridge_to_preset(str(tmp_path), strict=True)

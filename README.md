@@ -17,10 +17,10 @@ export OPENAI_API_KEY=sk-...
 export OPENAI_MODEL=gpt-5.5
 
 looplet new "An agent that takes a URL and returns the page title and a 2-sentence summary"
-looplet run-workspace ./agent.workspace "Summarize https://example.com"
+looplet run-workspace ./agent.cartridge "Summarize https://example.com"
 ```
 
-The recording above is a deterministic `--pretty` trace of that same CLI flow: build an agent workspace, then run it against a real task. The real factory path uses the same commands; the recorded trace is scripted so the docs stay stable and tiny.
+The recording above is a deterministic `--pretty` trace of that same CLI flow: build an agent cartridge, then run it against a real task. The real factory path uses the same commands; the recorded trace is scripted so the docs stay stable and tiny.
 
 **Mention an existing CLI, Python module, or script in your brief, and the factory wraps it.** Your team's tools already exist; looplet introspects the real surface and writes thin wrappers around them — no hallucinated signatures.
 
@@ -42,7 +42,7 @@ Most agent frameworks give you `agent.run(task)` — a black box. When the agent
 
 **Looplet does the opposite: the loop is the product.** Every step is a `Step` object you can inspect, save, or diff. Every decision the loop makes — what goes in the next prompt, whether to compact context, whether to dispatch a dangerous tool, whether to stop — is a `Protocol` method you implement in a few lines. Hooks compose without inheritance. Nothing is hidden.
 
-Agents are **data**. A workspace is a directory of files (`workspace.json`, `config.yaml`, `prompts/system.md`, `tools/<name>/{tool.yaml, execute.py}`) that the loader materialises into a runnable agent. The factory builds new workspaces from English briefs; the loop engine runs them. **Zero runtime dependencies.**
+Agents are **data**. A cartridge is a directory of files (`cartridge.json`, `config.yaml`, `prompts/system.md`, `tools/<name>/{tool.yaml, execute.py}`) that the loader materialises into a runnable agent. The factory builds new cartridges from English briefs; the loop engine runs them. **Zero runtime dependencies.**
 
 ---
 
@@ -115,18 +115,18 @@ Ship-ready hooks already wired in: `ApprovalHook`, `PermissionHook`, `Checkpoint
 ### 1. Generate an agent from a brief
 
 ```bash
-looplet new "<one paragraph>" ./my_agent.workspace
-looplet run-workspace ./my_agent.workspace "<task>"
+looplet new "<one paragraph>" ./my_agent.cartridge
+looplet run-workspace ./my_agent.cartridge "<task>"
 ```
 
-The factory writes `workspace.json`, `config.yaml`, `prompts/system.md`, and one `tools/<name>/` directory per tool the agent picks. See [docs/agent-factory.md](docs/agent-factory.md).
+The factory writes `cartridge.json`, `config.yaml`, `prompts/system.md`, and one `tools/<name>/` directory per tool the agent picks. See [docs/agent-factory.md](docs/agent-factory.md).
 
 ### 2. Hand-write the loop in Python
 
 ```python
-from looplet import composable_loop, workspace_to_preset
+from looplet import composable_loop, cartridge_to_preset
 
-preset = workspace_to_preset("./my_agent.workspace")
+preset = cartridge_to_preset("./my_agent.cartridge")
 
 for step in composable_loop(
     llm=preset.llm, config=preset.config, tools=preset.tools,
@@ -138,7 +138,7 @@ for step in composable_loop(
 
 `composable_loop` is a generator — break out at any point, plug in your own hooks, swap context strategy. See [docs/tutorial.md](docs/tutorial.md).
 
-### 3. Skip the workspace entirely
+### 3. Skip the cartridge entirely
 
 ```python
 from looplet import BaseToolRegistry, OpenAIBackend, composable_loop
@@ -186,17 +186,17 @@ Run `looplet doctor` to verify connectivity.
 
 ## Examples
 
-Five fully-declarative workspaces ship in `examples/`:
+Five fully-declarative cartridges ship in `examples/`:
 
 | Workspace | What it does |
 |---|---|
-| [`hello.workspace`](examples/hello.workspace/) | Two-tool starter; load and run with any backend |
-| [`coder.workspace`](examples/coder.workspace/) | Coding agent — bash, read, write, edit, grep, glob |
-| [`dep_doctor.workspace`](examples/dep_doctor.workspace/) | Audits a repo's dependency files for security/license/maintenance risk |
-| [`git_detective.workspace`](examples/git_detective.workspace/) | Investigates repo health from git history |
-| [`threat_intel.workspace`](examples/threat_intel.workspace/) | Local-first security briefings |
+| [`hello.cartridge`](examples/hello.cartridge/) | Two-tool starter; load and run with any backend |
+| [`coder.cartridge`](examples/coder.cartridge/) | Coding agent — bash, read, write, edit, grep, glob |
+| [`dep_doctor.cartridge`](examples/dep_doctor.cartridge/) | Audits a repo's dependency files for security/license/maintenance risk |
+| [`git_detective.cartridge`](examples/git_detective.cartridge/) | Investigates repo health from git history |
+| [`threat_intel.cartridge`](examples/threat_intel.cartridge/) | Local-first security briefings |
 
-> **Four tools is usually enough.** `coder.workspace` ships with
+> **Four tools is usually enough.** `coder.cartridge` ships with
 > `bash`, `read`, `write`, `edit` — the same four that
 > [Pi](https://github.com/earendil-works/pi) used to rank #2 on
 > TerminalBench. `grep` and `glob` are convenience wrappers over
@@ -207,13 +207,13 @@ Five fully-declarative workspaces ship in `examples/`:
 Load any of them:
 
 ```python
-from looplet import workspace_to_preset, composable_loop
-preset = workspace_to_preset("examples/dep_doctor.workspace", runtime={"workspace": "/path/to/project"})
+from looplet import cartridge_to_preset, composable_loop
+preset = cartridge_to_preset("examples/dep_doctor.cartridge", runtime={"workspace": "/path/to/project"})
 for step in composable_loop(llm=preset.llm, config=preset.config, tools=preset.tools, state=preset.state, hooks=preset.hooks, task={"goal": "Audit dependencies"}):
     print(step.pretty())
 ```
 
-Or use them as a starting point: `cp -r examples/coder.workspace ./my_agent.workspace`, then edit. Each workspace round-trips losslessly with an `AgentPreset` via `preset_to_workspace` / `workspace_to_preset`.
+Or use them as a starting point: `cp -r examples/coder.cartridge ./my_agent.cartridge`, then edit. Each cartridge round-trips losslessly with an `AgentPreset` via `preset_to_cartridge` / `cartridge_to_preset`.
 
 ---
 
@@ -223,7 +223,7 @@ Or use them as a starting point: `cp -r examples/coder.workspace ./my_agent.work
 |---|---|
 | [**docs/agent-factory.md**](docs/agent-factory.md) | **`looplet new` — generate agents from English briefs (start here)** |
 | [docs/tutorial.md](docs/tutorial.md) | Hand-write your first agent in 5 steps |
-| [docs/workspace.md](docs/workspace.md) | Workspace file layout reference |
+| [docs/cartridge.md](docs/cartridge.md) | Workspace file layout reference |
 | [docs/hooks.md](docs/hooks.md) | Writing and composing hooks |
 | [docs/evals.md](docs/evals.md) | pytest-style agent evaluation |
 | [docs/provenance.md](docs/provenance.md) | Capturing prompts + trajectories |

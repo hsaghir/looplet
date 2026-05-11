@@ -66,7 +66,7 @@ def _build_steps() -> list[Step]:
     return [
         _step(
             1,
-            "scaffold_workspace",
+            "scaffold_cartridge",
             args={"path": "./url_summarizer.workspace", "tools": ["fetch_url", "summarize"]},
             reasoning="Start from a normal looplet workspace: config, prompt, tools, and done.",
             data={

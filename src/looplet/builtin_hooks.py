@@ -110,7 +110,7 @@ def build_builtin_hook(
     Args:
         name: Entry in :data:`AVAILABLE`.
         resources: The active resource registry (from
-            ``workspace_to_preset``); built-in builders look up
+            ``cartridge_to_preset``); built-in builders look up
             shared resources like ``skill_manager`` here.
         kwargs: Per-instance kwargs from ``config.yaml``.
 

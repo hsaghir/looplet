@@ -11,7 +11,7 @@ versions* on the same task.
 
 ```bash
 uv run python examples/snippets/09_lifecycle/tag_trajectory.py \
-    examples/hello.workspace
+    examples/hello.cartridge
 ```
 
 Output (truncated):
@@ -19,7 +19,7 @@ Output (truncated):
 ```
 {
   "cartridge": {
-    "path": ".../examples/hello.workspace",
+    "path": ".../examples/hello.cartridge",
     "name": "hello",
     "content_sha256": "f3b21e...",
     "files": 7

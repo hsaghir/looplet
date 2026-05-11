@@ -12,8 +12,8 @@ uv run python examples/snippets/06_registry/registry.py list .
 # "Pull" a cartridge by cloning a git repo's subdirectory.
 uv run python examples/snippets/06_registry/registry.py pull \
     https://github.com/hsaghir/looplet.git \
-    examples/threat_intel.workspace \
-    /tmp/threat_intel.workspace
+    examples/threat_intel.cartridge \
+    /tmp/threat_intel.cartridge
 ```
 
 The point is not the script. It is that the script *can be 60 lines*

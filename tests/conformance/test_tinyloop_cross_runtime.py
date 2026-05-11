@@ -82,12 +82,18 @@ def test_tinyloop_rejects_missing_manifest(tinyloop_module, tmp_path) -> None:
     assert "workspace.json" in msg or "cartridge.json" in msg
 
 
-def test_tinyloop_accepts_cartridge_json_alias(tinyloop_module, tmp_path) -> None:
-    """The cartridge.json manifest filename works the same as workspace.json."""
+def test_tinyloop_accepts_workspace_json_legacy_alias(tinyloop_module, tmp_path) -> None:
+    """The legacy workspace.json manifest filename still loads.
+
+    The fixtures now ship cartridge.json (canonical name); this test
+    pins backwards compatibility for the historical workspace.json
+    spelling so external cartridges built before the rename still
+    load on tinyloop.
+    """
     import shutil
 
     dst = tmp_path / "minimal.cartridge"
     shutil.copytree(FIXTURE / "cartridge", dst)
-    (dst / "workspace.json").rename(dst / "cartridge.json")
+    (dst / "cartridge.json").rename(dst / "workspace.json")
     cart = tinyloop_module.load_cartridge(dst)
     assert cart.name == "minimal"

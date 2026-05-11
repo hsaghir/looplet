@@ -1,6 +1,6 @@
 """Static workspace ablation driver.
 
-Mutates a copy of examples/coder.workspace 5 ways and prints a table
+Mutates a copy of examples/coder.cartridge 5 ways and prints a table
 of static properties. No LLM calls; runs in <1 second. The point is
 to show the *mechanism* of an ablation matrix, not to measure
 performance.
@@ -16,10 +16,10 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from looplet import workspace_to_preset
+from looplet import cartridge_to_preset
 
 REPO = Path(__file__).resolve().parents[3]
-BASELINE = REPO / "examples" / "coder.workspace"
+BASELINE = REPO / "examples" / "coder.cartridge"
 
 
 def _baseline(_ws: Path) -> None:
@@ -55,7 +55,7 @@ ABLATIONS = [
 
 
 def _measure(ws_path: Path) -> dict:
-    preset = workspace_to_preset(str(ws_path), runtime={"workspace": "."})
+    preset = cartridge_to_preset(str(ws_path), runtime={"workspace": "."})
     tools = sorted(t["name"] for t in preset.tools.introspect()["tools"])
     return {
         "n_tools": len(tools),

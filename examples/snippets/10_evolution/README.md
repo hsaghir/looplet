@@ -14,7 +14,7 @@ which mutations improved a static score.
 
 ```bash
 uv run python examples/snippets/10_evolution/evolve.py \
-    examples/hello.workspace 5
+    examples/hello.cartridge 5
 ```
 
 The eval here is intentionally trivial (number of tools + prompt

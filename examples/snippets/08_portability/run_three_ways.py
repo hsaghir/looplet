@@ -1,4 +1,4 @@
-"""Run the hello.workspace via three different runtimes.
+"""Run the hello.cartridge via three different runtimes.
 
 All three use the same MockLLMBackend script so the demo is offline
 and deterministic. The point is that the same workspace artifact
@@ -16,14 +16,14 @@ from pathlib import Path
 
 from looplet import (
     DefaultState,
+    cartridge_to_preset,
     composable_loop,
-    workspace_to_preset,
 )
 from looplet.subagent import run_sub_loop
 from looplet.testing import MockLLMBackend
 
 REPO = Path(__file__).resolve().parents[3]
-HELLO_WS = REPO / "examples" / "hello.workspace"
+HELLO_WS = REPO / "examples" / "hello.cartridge"
 
 
 def make_backend() -> MockLLMBackend:
@@ -39,7 +39,7 @@ def make_backend() -> MockLLMBackend:
 def via_local_loop() -> int:
     print("=== runtime 1: local composable_loop ===")
     backend = make_backend()
-    preset = workspace_to_preset(str(HELLO_WS), runtime={"workspace": str(REPO)})
+    preset = cartridge_to_preset(str(HELLO_WS), runtime={"workspace": str(REPO)})
     state = DefaultState(max_steps=preset.config.max_steps)
     n = 0
     for step in composable_loop(
@@ -57,7 +57,7 @@ def via_local_loop() -> int:
 def via_subagent() -> int:
     print("=== runtime 2: sub-agent invocation ===")
     backend = make_backend()
-    preset = workspace_to_preset(str(HELLO_WS), runtime={"workspace": str(REPO)})
+    preset = cartridge_to_preset(str(HELLO_WS), runtime={"workspace": str(REPO)})
     result = run_sub_loop(
         llm=backend,
         tools=preset.tools,
@@ -78,7 +78,7 @@ def via_replay() -> int:
     load saved trajectory data instead of re-scripting."""
     print("=== runtime 3: replay (deterministic re-run) ===")
     backend = make_backend()
-    preset = workspace_to_preset(str(HELLO_WS), runtime={"workspace": str(REPO)})
+    preset = cartridge_to_preset(str(HELLO_WS), runtime={"workspace": str(REPO)})
     state = DefaultState(max_steps=preset.config.max_steps)
     seen_tools = []
     for step in composable_loop(

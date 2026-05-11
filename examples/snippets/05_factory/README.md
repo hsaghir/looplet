@@ -4,7 +4,7 @@ Cartridges are files. An agent that can read, write, and validate
 files can build them. There is no separate "code generation"
 abstraction needed.
 
-This snippet **points at the existing `examples/agent_factory.workspace/`**
+This snippet **points at the existing `examples/agent_factory.cartridge/`**
 shipped with looplet. The factory's tools are
 `scaffold_workspace`, `write_file`, `read_file`, and
 `validate_workspace`. Given a one-paragraph brief, it produces a
@@ -28,5 +28,5 @@ The factory does not need to know anything about code generation,
 framework internals, or runtime construction. It manipulates a
 static artifact, the same way infrastructure-as-code tools generate
 Terraform modules and scaffolders generate npm packages. The agent
-factory is itself a cartridge (`examples/agent_factory.workspace/`);
+factory is itself a cartridge (`examples/agent_factory.cartridge/`);
 recursion is just composition.

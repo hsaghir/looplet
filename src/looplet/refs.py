@@ -3,7 +3,7 @@
 This module owns the small registry that lets hooks like
 :class:`looplet.permissions.PermissionHook` ask "was this engine handed
 to me by a workspace ``resources/<name>.py`` builder?" — and if so,
-return ``"@<name>"`` so :func:`looplet.workspace.preset_to_workspace`
+return ``"@<name>"`` so :func:`looplet.workspace.preset_to_cartridge`
 can serialise the original reference instead of a placeholder.
 
 It lives in its own tiny module (rather than inside ``workspace.py``)

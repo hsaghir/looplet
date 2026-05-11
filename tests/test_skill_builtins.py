@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from looplet import workspace_to_preset
+from looplet import cartridge_to_preset
 from looplet.builtin_tools import AVAILABLE
 from looplet.skills import (
     Skill,
@@ -66,7 +66,7 @@ def test_build_skill_manager_handles_missing_dir(tmp_path: Path) -> None:
 
 def test_skillful_analyst_workspace_loads_without_setup_py() -> None:
     """The shipped example workspace must be 100% declarative."""
-    ws = Path(__file__).resolve().parents[1] / "examples" / "skillful_analyst.workspace"
+    ws = Path(__file__).resolve().parents[1] / "examples" / "skillful_analyst.cartridge"
     assert not (ws / "setup.py").exists(), "skillful_analyst should not need setup.py"
     assert not (ws / "hooks").exists(), (
         "skillful_analyst should not need hooks/ — the skill_activation built-in "
@@ -77,7 +77,7 @@ def test_skillful_analyst_workspace_loads_without_setup_py() -> None:
         "ctx.resources['runtime'] which the loader auto-injects."
     )
 
-    preset = workspace_to_preset(ws, strict=True, runtime={"project_root": "/tmp"})
+    preset = cartridge_to_preset(ws, strict=True, runtime={"project_root": "/tmp"})
     tool_names = set(preset.tools.tool_names)
     assert {"search_skills", "activate_skill", "done", "read_text", "write_text"} <= tool_names
     hook_classes = {type(h).__name__ for h in preset.hooks}
@@ -89,8 +89,8 @@ def test_skillful_analyst_workspace_loads_without_setup_py() -> None:
 
 def test_skill_can_be_activated_via_workspace_loaded_resource(tmp_path: Path) -> None:
     """End-to-end: load the example workspace, search + activate via the loaded tools."""
-    ws = Path(__file__).resolve().parents[1] / "examples" / "skillful_analyst.workspace"
-    preset = workspace_to_preset(ws, strict=True, runtime={"project_root": str(tmp_path)})
+    ws = Path(__file__).resolve().parents[1] / "examples" / "skillful_analyst.cartridge"
+    preset = cartridge_to_preset(ws, strict=True, runtime={"project_root": str(tmp_path)})
 
     # The loader resolved skill_manager from resources/skill_manager.py.
     # Both built-ins should now find it via ctx.resources.

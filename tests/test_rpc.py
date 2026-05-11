@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 
 from looplet.rpc import RPCServer
-from looplet.scaffold import scaffold_workspace
+from looplet.scaffold import scaffold_cartridge
 from looplet.testing import MockLLMBackend
 
 
@@ -67,7 +67,7 @@ def test_run_without_workspace_errors() -> None:
 
 
 def test_full_run_streams_steps_and_done(tmp_path: Path) -> None:
-    ws = scaffold_workspace(tmp_path / "w.workspace", name="w", tools=["greet"])
+    ws = scaffold_cartridge(tmp_path / "w.workspace", name="w", tools=["greet"])
     # Replace the NotImplementedError stub with a real implementation
     (ws / "tools" / "greet" / "execute.py").write_text(
         "def execute(ctx, *, name):\n    return {'greeting': f'Hello, {name}!'}\n"

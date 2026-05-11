@@ -32,8 +32,8 @@ each file means, and what a conformant loader must do with them.
 ## Layout (canonical)
 
 ```
-my_agent.workspace/                # or my_agent.cartridge/
-├── workspace.json              # required: name, schema_version (alias: cartridge.json)
+my_agent.cartridge/                # or my_agent.cartridge/
+├── cartridge.json              # required: name, schema_version (alias: cartridge.json)
 ├── config.yaml                 # required: loop config + declarative slots
 ├── prompts/
 │   └── system.md               # required: the system prompt, alone
@@ -55,11 +55,11 @@ my_agent.workspace/                # or my_agent.cartridge/
 
 The `.workspace` and `.cartridge` directory suffixes are conventional
 but not load-bearing (loaders MUST accept any directory containing a
-valid manifest file). The manifest may be named `workspace.json`
+valid manifest file). The manifest may be named `cartridge.json`
 (historical) or `cartridge.json` (spec terminology); they are
-equivalent. If both are present, `workspace.json` wins.
+equivalent. If both are present, `cartridge.json` wins.
 
-## Manifest — `workspace.json` / `cartridge.json`
+## Manifest — `cartridge.json` / `cartridge.json`
 
 ```json
 {
@@ -160,7 +160,7 @@ loaders MUST auto-load it as a long-term memory source.
 ### Inheritance
 
 ```yaml
-extends: ../base.workspace        # one parent
+extends: ../base.cartridge        # one parent
 ```
 
 The loader resolves the chain top-down: ancestor first, child wins on
@@ -316,7 +316,7 @@ the declarative slots above cover the published examples.
 A loader implementation MUST:
 
 1. **Validate the manifest.** Reject cartridges with no
-   `workspace.json` or with `schema_version` greater than the loader
+   `cartridge.json` or with `schema_version` greater than the loader
    supports.
 2. **Resolve `extends:`.** Apply ancestors top-down before reading
    the leaf.
@@ -351,13 +351,13 @@ cartridges paired with locked-down expected loader outputs. Each
 fixture pairs a cartridge with an `expected.json` describing the
 tools, hooks, and config a v1.0 loader MUST produce. The
 `looplet conform` driver runs all fixtures against any
-`workspace_to_preset`-shaped callable and reports per-fixture
+`cartridge_to_preset`-shaped callable and reports per-fixture
 pass/fail. Run `python -m looplet conform` from this repository to
 exercise the suite against the reference loader.
 
 ## Versioning policy
 
-- **`schema_version`** in `workspace.json` is the cartridge's
+- **`schema_version`** in `cartridge.json` is the cartridge's
   declared spec major. v1.x is additive: a v1.1 loader MUST load
   any v1.0 cartridge with no behaviour change. v2 is reserved for
   breaking shape changes (slot rename, slot removal, semantics flip)
@@ -367,7 +367,7 @@ exercise the suite against the reference loader.
   loader supports MUST fail with a structured error.
 - **Forward compatibility.** A v1.0 cartridge that uses *only* v1.0
   slots is guaranteed to load on every future v1.x loader.
-- **Cartridge `version`** (in `workspace.json`) is independent of
+- **Cartridge `version`** (in `cartridge.json`) is independent of
   `schema_version`. Cartridge authors choose semver,
   content-addressed, calendar, or anything else; loaders MUST treat
   it as opaque.

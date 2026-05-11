@@ -57,16 +57,25 @@ __all__ = [
 _WATCHED_SUFFIXES: tuple[str, ...] = (".py", ".yaml", ".yml", ".md", ".json")
 
 
-def fingerprint_workspace(root: str | Path) -> dict[str, float]:
-    """Return ``{relpath: mtime_ns}`` for every watched file under ``root``.
+def fingerprint_workspace(root: str | Path) -> dict[str, str]:
+    """Return ``{relpath: fingerprint}`` for every watched file under ``root``.
 
-    Returns an empty dict if ``root`` does not exist (so the watcher
-    can be constructed before the workspace is generated).
+    Each fingerprint is a short string combining ``mtime_ns``, ``size``, and
+    a 64-bit BLAKE2b digest of the file contents. The digest is what makes
+    the fingerprint correct on filesystems whose ``mtime`` resolution is
+    coarse enough to collapse rapid writes (tmpfs, some network mounts).
+    Without it, two writes within a few microseconds can yield the same
+    ``mtime_ns`` and the watcher silently misses the second edit.
+
+    Returns an empty dict if ``root`` does not exist (so the watcher can
+    be constructed before the workspace is generated).
     """
+    import hashlib  # noqa: PLC0415
+
     base = Path(root)
     if not base.is_dir():
         return {}
-    fp: dict[str, float] = {}
+    fp: dict[str, str] = {}
     for p in base.rglob("*"):
         if not p.is_file():
             continue
@@ -78,9 +87,12 @@ def fingerprint_workspace(root: str | Path) -> dict[str, float]:
         if any(part.startswith("__pycache__") or part.startswith(".") for part in parts):
             continue
         try:
-            fp[str(rel)] = p.stat().st_mtime_ns
+            stat = p.stat()
+            data = p.read_bytes()
         except OSError:
             continue
+        digest = hashlib.blake2b(data, digest_size=8).hexdigest()
+        fp[str(rel)] = f"{stat.st_mtime_ns}:{stat.st_size}:{digest}"
     return fp
 
 
@@ -98,7 +110,7 @@ class WorkspaceWatcher:
     root: str | Path
     runtime: dict[str, Any] | None = None
     strict: bool = False
-    _fp: dict[str, float] = field(default_factory=dict, init=False)
+    _fp: dict[str, str] = field(default_factory=dict, init=False)
     _preset: Any = field(default=None, init=False)
 
     def preset(self) -> Any:

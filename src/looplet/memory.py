@@ -29,9 +29,12 @@ string joined by blank lines with empty/None returns skipped.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Protocol, runtime_checkable
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "PersistentMemorySource",
@@ -191,12 +194,24 @@ def render_memory(
     Falsy outputs (``None`` / empty / whitespace-only) are silently
     skipped so adding an optional source never yields stray blank
     sections. Returns an empty string when there is nothing to render.
+
+    Sources are isolated: if one ``load`` raises, the exception is
+    logged and the source is skipped, mirroring hook isolation in
+    the loop. A single buggy memory source must not bring the loop
+    down.
     """
     if not sources:
         return ""
     chunks: list[str] = []
     for src in sources:
-        text = src.load(state)
+        try:
+            text = src.load(state)
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "memory source %s.load() raised; skipping for this turn",
+                type(src).__name__,
+            )
+            continue
         if text is None:
             continue
         s = str(text).strip()

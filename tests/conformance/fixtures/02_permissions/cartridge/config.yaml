@@ -1,0 +1,10 @@
+max_steps: 8
+permissions:
+  default: allow
+  deny:
+    - tool: bash
+      contains:
+        command: "rm -rf"
+      reason: "destructive"
+  ask:
+    - tool: write

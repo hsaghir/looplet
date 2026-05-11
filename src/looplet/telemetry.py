@@ -356,7 +356,7 @@ class MetricsHook:
         builder, the original ref name is preserved. Otherwise the
         writer emits the generic ``"@collector"`` name.
         """
-        from looplet.workspace import resource_ref_for  # noqa: PLC0415
+        from looplet.refs import resource_ref_for  # noqa: PLC0415
 
         ref = resource_ref_for(self._collector)
         return {"collector": ref or "@collector"}

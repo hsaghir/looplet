@@ -204,6 +204,16 @@ def _dict_to_tool_call(d: dict) -> ToolCall | None:
             "theory",
             "thought",
             "thinking",
+            # Call identifiers: Anthropic native tool_use blocks have
+            # ``id``, OpenAI tool calls have ``id``/``call_id``, and
+            # MockLLMBackend / RPC consumers commonly include
+            # ``call_id`` for traceability. Without these in the
+            # meta-key list, an empty-args response with a top-level
+            # ``call_id`` triggers the flat-args fallback and the
+            # dispatcher rejects every call with an "unexpected
+            # argument: ['call_id']" error.
+            "call_id",
+            "id",
         }
         flat = {k: v for k, v in d.items() if k not in _meta_keys}
         if flat:
@@ -215,6 +225,7 @@ def _dict_to_tool_call(d: dict) -> ToolCall | None:
         tool=str(tool),
         args=args,
         reasoning=str(d.get("reasoning", d.get("thinking", d.get("thought", "")))),
+        call_id=str(d.get("call_id") or d.get("id") or ""),
     )
 
 

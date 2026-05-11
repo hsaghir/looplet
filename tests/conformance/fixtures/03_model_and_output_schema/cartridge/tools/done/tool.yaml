@@ -1,0 +1,11 @@
+name: done
+description: Mark the task complete with a structured summary.
+parameters:
+  summary: { type: string }
+  passed: { type: boolean }
+output_schema:
+  type: object
+  required: [summary, passed]
+  properties:
+    summary: { type: string }
+    passed: { type: boolean }

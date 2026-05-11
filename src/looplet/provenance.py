@@ -560,6 +560,7 @@ class TrajectoryRecorder:
         tracer: Tracer | None = None,
         output_dir: str | Path | None = None,
         harness_snapshot: dict[str, Any] | None = None,
+        redact: Callable[[str], str] | None = None,
     ) -> None:
         self.trajectory = Trajectory(
             run_id=uuid4().hex[:12],
@@ -574,6 +575,12 @@ class TrajectoryRecorder:
         self._step_start_time: float = 0.0
         self._output_dir: Path | None = Path(output_dir) if output_dir is not None else None
         self._harness_snapshot = dict(harness_snapshot) if harness_snapshot is not None else None
+        # When set, every JSON document written to disk is redacted
+        # through this callable. The recorder still captures the
+        # un-redacted in-memory trajectory so callers that want raw
+        # data can read ``self.trajectory`` directly; only the
+        # on-disk artefact is scrubbed.
+        self._redact = redact
 
     # ── hook methods ────────────────────────────────────────────
 
@@ -772,15 +779,18 @@ class TrajectoryRecorder:
         """
         root = Path(directory)
         root.mkdir(parents=True, exist_ok=True)
-        (root / "trajectory.json").write_text(
-            json.dumps(self.trajectory.to_dict(), indent=2, default=str),
-            encoding="utf-8",
-        )
+        traj_text = json.dumps(self.trajectory.to_dict(), indent=2, default=str)
+        if self._redact is not None:
+            traj_text = self._redact(traj_text)
+        (root / "trajectory.json").write_text(traj_text, encoding="utf-8")
         steps_dir = root / "steps"
         steps_dir.mkdir(exist_ok=True)
         for s in self.trajectory.steps:
+            step_text = json.dumps(s.to_dict(), indent=2, default=str)
+            if self._redact is not None:
+                step_text = self._redact(step_text)
             (steps_dir / f"step_{s.step_num:02d}.json").write_text(
-                json.dumps(s.to_dict(), indent=2, default=str),
+                step_text,
                 encoding="utf-8",
             )
         if self._recording_llm is not None:
@@ -850,6 +860,7 @@ class ProvenanceSink:
             self._hook = TrajectoryRecorder(
                 recording_llm=self._recording_llm,
                 capture_context=self._capture_context,
+                redact=self._redact,
             )
         return self._hook
 

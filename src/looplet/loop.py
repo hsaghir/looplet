@@ -1146,9 +1146,12 @@ def _intercept_tool_calls(
             if _d.updated_args is not None:
                 tc.args = _d.updated_args
             if _d.permission == "deny":
+                _prefix = f"Permission denied for tool '{tc.tool}'"
+                _reason = _d.block or ""
+                _msg = f"{_prefix}: {_reason}" if _reason else _prefix
                 _te = ToolError(
                     kind=ErrorKind.PERMISSION_DENIED,
-                    message=_d.block or f"Permission denied for tool '{tc.tool}'",
+                    message=_msg,
                     retriable=False,
                 )
                 result.intercepted[tc_idx] = ToolResult(
@@ -1193,9 +1196,12 @@ def _intercept_tool_calls(
             if _decision.updated_args is not None:
                 tc.args = _decision.updated_args
             if _decision.permission == "deny":
+                _prefix = f"Permission denied for tool '{tc.tool}'"
+                _reason = _decision.block or ""
+                _msg = f"{_prefix}: {_reason}" if _reason else _prefix
                 _te = ToolError(
                     kind=ErrorKind.PERMISSION_DENIED,
-                    message=_decision.block or f"Permission denied for tool '{tc.tool}'",
+                    message=_msg,
                     retriable=False,
                 )
                 result.intercepted[tc_idx] = ToolResult(
@@ -1234,11 +1240,14 @@ def _intercept_tool_calls(
                 )
             allowed = _decision is None or _decision.permission != "deny"
             if not allowed:
-                _msg = (
-                    _decision.block
-                    if _decision and _decision.block
-                    else f"Permission denied for tool '{tc.tool}'"
-                )
+                # Always prefix the canonical phrase 'Permission denied for
+                # tool X' so builders grepping for ``permission`` or ``denied``
+                # find it. The hook's specific reason (rule.reason in the
+                # PermissionEngine, or _decision.block elsewhere) is appended
+                # as context, preserving the actionable detail.
+                _prefix = f"Permission denied for tool '{tc.tool}'"
+                _reason = _decision.block if _decision and _decision.block else ""
+                _msg = f"{_prefix}: {_reason}" if _reason else _prefix
                 _te = ToolError(
                     kind=ErrorKind.PERMISSION_DENIED,
                     message=_msg,
@@ -1397,8 +1406,33 @@ def composable_loop(
     """
     if task is None:
         task = {}
+    # Common new-user mistake: pass a bare string instead of a dict.
+    # The docs and AGENTS.md show ``task={'goal': '...'}`` / ``{'description':
+    # '...'}``; a bare string crashes downstream with
+    # ``AttributeError: 'str' object has no attribute 'items'`` because
+    # the prompt builder iterates ``task.items()``. Catch the shape
+    # mistake at the entry point.
+    if isinstance(task, str):
+        raise TypeError(
+            "composable_loop(task=...) expects a dict, not a string. "
+            f"Wrap the value in a dict like ``task={{'description': {task!r}}}``"
+            " or ``task={{'goal': '...'}}``. The prompt builder iterates the "
+            "dict's keys to render the TASK section."
+        )
     if tools is None:
         raise ValueError("tools is required")
+    # Common new-user mistake: pass a list of @tool ToolSpecs (or plain
+    # functions) instead of a registry. The downstream failure is a
+    # bare ``AttributeError: 'list' object has no attribute
+    # 'tool_catalog_text'`` deep inside prompt assembly. Catch the
+    # mistake at the entry point and tell the user about ``tools_from``.
+    if isinstance(tools, list):
+        raise TypeError(
+            "composable_loop(tools=...) expects a tool registry, not a list. "
+            "Wrap your list of @tool functions with ``tools_from(...)``: "
+            "``from looplet import tools_from; tools = tools_from([greet, ...], "
+            "include_done=True, done_parameters={'answer': 'Final answer'})``."
+        )
     if config is None:
         config = LoopConfig()
     if max_steps is not None:
@@ -2266,8 +2300,20 @@ def composable_loop(
             gate_warning: str | None = None
             for hook in hooks:
                 if hasattr(hook, "check_done"):
-                    w = _call_check_done(hook, state, session_log, context, step_num, tool_call)
-                    _decision = normalize_hook_return(w, slot="check_done")
+                    try:
+                        w = _call_check_done(hook, state, session_log, context, step_num, tool_call)
+                        _decision = normalize_hook_return(w, slot="check_done")
+                    except Exception:  # noqa: BLE001
+                        # Isolate buggy hooks: a single check_done that
+                        # raises (or returns garbage normalize_hook_return
+                        # rejects) must not crash the loop. Log loudly,
+                        # treat as 'no decision', and let the agent's
+                        # done() through.
+                        logger.exception(
+                            "check_done hook %s raised or returned invalid value; continuing",
+                            type(hook).__name__,
+                        )
+                        _decision = None
                     if _decision is not None:
                         _emit_hook_decision_event(
                             hooks,
@@ -2304,10 +2350,15 @@ def composable_loop(
             if gate_warning is not None:
                 logger.info("Quality gate rejected done() at step %d", step_num)
                 quality_gate_message = gate_warning
+                # Mirror the gate reason into ``error`` as well as
+                # ``data['rejected']``: builders grepping for errors
+                # otherwise miss schema-level rejections entirely (a
+                # frequent friction surfaced during dogfooding).
                 tool_result = ToolResult(
                     tool=done_tool_name,
                     args_summary="rejected",
                     data={"rejected": True, "reason": gate_warning},
+                    error=gate_warning,
                 )
                 step = Step(number=cur_step, tool_call=tool_call, tool_result=tool_result)
                 state.steps.append(step)

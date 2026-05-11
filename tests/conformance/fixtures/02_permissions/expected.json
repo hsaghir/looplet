@@ -1,0 +1,19 @@
+{
+  "max_steps": 8,
+  "max_tokens": 2000,
+  "temperature": 0.2,
+  "done_tool": "done",
+  "tools": [
+    {"name": "done", "requires": []}
+  ],
+  "permissions": {
+    "default": "allow",
+    "rules": [
+      {"tool": "bash", "decision": "deny", "reason": "destructive"},
+      {"tool": "write", "decision": "ask", "reason": ""}
+    ]
+  },
+  "output_schema_fields": null,
+  "model": null,
+  "memory_source_count": 0
+}

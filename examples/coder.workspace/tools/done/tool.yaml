@@ -4,3 +4,11 @@ parameters:
   summary:
     type: string
     description: One-line summary of what was accomplished.
+# v1.0 output_schema: validated by the loop before termination.
+output_schema:
+  type: object
+  required: [summary]
+  properties:
+    summary:
+      type: string
+      description: Free-form summary of the task outcome.

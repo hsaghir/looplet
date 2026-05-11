@@ -843,7 +843,7 @@ class EvalHook:
         ``{"evaluators": "@sql_evaluators"}``). Otherwise the writer
         emits the generic ``"@evaluators"`` / ``"@collectors"`` names.
         """
-        from looplet.workspace import resource_ref_for  # noqa: PLC0415
+        from looplet.refs import resource_ref_for  # noqa: PLC0415
 
         ev_ref = resource_ref_for(self.evaluators)
         cfg: dict[str, Any] = {"evaluators": ev_ref or "@evaluators"}

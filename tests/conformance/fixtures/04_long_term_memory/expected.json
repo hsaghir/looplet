@@ -1,0 +1,13 @@
+{
+  "max_steps": 5,
+  "max_tokens": 2000,
+  "temperature": 0.2,
+  "done_tool": "done",
+  "tools": [
+    {"name": "done", "requires": []}
+  ],
+  "permissions": null,
+  "output_schema_fields": null,
+  "model": null,
+  "memory_source_count": 2
+}

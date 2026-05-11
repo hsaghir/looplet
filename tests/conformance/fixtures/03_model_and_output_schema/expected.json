@@ -1,0 +1,17 @@
+{
+  "max_steps": 15,
+  "max_tokens": 4096,
+  "temperature": 0.0,
+  "done_tool": "done",
+  "tools": [
+    {"name": "done", "requires": []}
+  ],
+  "permissions": null,
+  "output_schema_fields": ["passed", "summary"],
+  "model": {
+    "provider": "anthropic",
+    "name": "claude-sonnet-4.6",
+    "reasoning_effort": "high"
+  },
+  "memory_source_count": 0
+}

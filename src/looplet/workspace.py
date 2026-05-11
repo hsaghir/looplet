@@ -138,9 +138,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
-from looplet.memory import PersistentMemorySource, StaticMemorySource
-
 if TYPE_CHECKING:
+    from looplet.memory import PersistentMemorySource
     from looplet.presets import AgentPreset
     from looplet.tools import BaseToolRegistry
 
@@ -484,12 +483,31 @@ def _load_yaml(text: str, *, source_path: str | Path | None = None) -> Any:
             if not after:
                 out.append(parse_block(indent + 2))
             elif _is_inline_single_key_dict(after):
-                # ``- key: <flow value or scalar>`` — single-key dict.
-                # Used by ``builtin_hooks: [- name: {kwargs}]`` style.
+                # ``- key: <flow value or scalar>`` — may be a single-key
+                # dict (when no follow-on fields at the same indent),
+                # OR the first key of a multi-field block mapping list
+                # item:
+                #     - key: value
+                #       other: thing
+                # The follow-on fields live at the indent of the dash
+                # plus 2 (the standard YAML alignment for keys after
+                # ``- ``). We parse them via ``parse_block(...)`` and
+                # merge into the item; absent follow-ons, the result
+                # is the same single-key dict the parser produced before.
                 key, _, val = after.partition(":")
-                out.append(
-                    {key.strip(): _scalar(val.strip()) if val.strip() else parse_block(indent + 2)}
-                )
+                item: dict[str, Any] = {}
+                if val.strip():
+                    item[key.strip()] = _scalar(val.strip())
+                else:
+                    item[key.strip()] = parse_block(cur_indent + 2)
+                # Consume any additional ``key: value`` lines at
+                # ``cur_indent + 2``. ``parse_block`` returns ``{}`` if
+                # nothing matches, so this is a no-op when the list
+                # item is genuinely single-key.
+                extra = parse_block(cur_indent + 2)
+                if isinstance(extra, dict):
+                    item.update(extra)
+                out.append(item)
             else:
                 out.append(_scalar(after))
         return out
@@ -535,10 +553,24 @@ def _load_yaml(text: str, *, source_path: str | Path | None = None) -> Any:
             return True
         if raw == "false":
             return False
-        if raw.startswith(("[", "{", '"')):
+        if raw.startswith(('"', "'")):
             try:
                 return json.loads(raw)
             except json.JSONDecodeError:
+                # Single-quoted YAML strings: trim the quotes by hand
+                # since json.loads only accepts double-quoted strings.
+                if raw.startswith("'") and raw.endswith("'") and len(raw) >= 2:
+                    return raw[1:-1]
+                return raw
+        if raw.startswith(("[", "{")):
+            try:
+                return json.loads(raw)
+            except json.JSONDecodeError:
+                # Strict JSON failed (likely YAML flow style with
+                # unquoted keys/values). Try the tolerant flow parser.
+                parsed, ok = _parse_flow(raw)
+                if ok:
+                    return parsed
                 return raw
         try:
             if "." in raw or "e" in raw or "E" in raw:
@@ -547,6 +579,110 @@ def _load_yaml(text: str, *, source_path: str | Path | None = None) -> Any:
         except ValueError:
             return raw
 
+    def _parse_flow(raw: str) -> tuple[Any, bool]:
+        """Parse a YAML flow scalar (``[a, b]`` or ``{k: v, k2: v2}``).
+
+        Tolerant of unquoted strings (the common YAML idiom). Returns
+        ``(value, True)`` on success or ``(None, False)`` on failure.
+        Nested flow collections are supported.
+        """
+        text = raw.strip()
+        try:
+            value, idx = _parse_flow_value(text, 0)
+        except (ValueError, IndexError):
+            return None, False
+        # All input must be consumed (modulo trailing whitespace).
+        if text[idx:].strip():
+            return None, False
+        return value, True
+
+    def _skip_ws(s: str, i: int) -> int:
+        while i < len(s) and s[i] in " \t":
+            i += 1
+        return i
+
+    def _parse_flow_value(s: str, i: int) -> tuple[Any, int]:
+        i = _skip_ws(s, i)
+        if i >= len(s):
+            raise ValueError("unexpected end of flow value")
+        ch = s[i]
+        if ch == "[":
+            return _parse_flow_list(s, i)
+        if ch == "{":
+            return _parse_flow_map(s, i)
+        if ch in ('"', "'"):
+            return _parse_flow_quoted(s, i)
+        # Bare scalar: read until , } ] (or end).
+        start = i
+        while i < len(s) and s[i] not in ",}]":
+            i += 1
+        token = s[start:i].strip()
+        return _scalar(token), i
+
+    def _parse_flow_list(s: str, i: int) -> tuple[list[Any], int]:
+        assert s[i] == "["
+        out: list[Any] = []
+        i = _skip_ws(s, i + 1)
+        if i < len(s) and s[i] == "]":
+            return out, i + 1
+        while i < len(s):
+            value, i = _parse_flow_value(s, i)
+            out.append(value)
+            i = _skip_ws(s, i)
+            if i < len(s) and s[i] == ",":
+                i = _skip_ws(s, i + 1)
+                continue
+            if i < len(s) and s[i] == "]":
+                return out, i + 1
+            raise ValueError(f"expected ',' or ']' in flow list at offset {i}")
+        raise ValueError("unterminated flow list")
+
+    def _parse_flow_map(s: str, i: int) -> tuple[dict[str, Any], int]:
+        assert s[i] == "{"
+        out: dict[str, Any] = {}
+        i = _skip_ws(s, i + 1)
+        if i < len(s) and s[i] == "}":
+            return out, i + 1
+        while i < len(s):
+            # Parse key (bare or quoted, terminate on ':').
+            if s[i] in ('"', "'"):
+                key_value, i = _parse_flow_quoted(s, i)
+                key = str(key_value)
+            else:
+                start = i
+                while i < len(s) and s[i] != ":":
+                    if s[i] in ",}]":
+                        raise ValueError("missing ':' in flow map")
+                    i += 1
+                key = s[start:i].strip()
+            if i >= len(s) or s[i] != ":":
+                raise ValueError(f"expected ':' in flow map at offset {i}")
+            i = _skip_ws(s, i + 1)
+            value, i = _parse_flow_value(s, i)
+            out[key] = value
+            i = _skip_ws(s, i)
+            if i < len(s) and s[i] == ",":
+                i = _skip_ws(s, i + 1)
+                continue
+            if i < len(s) and s[i] == "}":
+                return out, i + 1
+            raise ValueError(f"expected ',' or '}}' in flow map at offset {i}")
+        raise ValueError("unterminated flow map")
+
+    def _parse_flow_quoted(s: str, i: int) -> tuple[str, int]:
+        quote = s[i]
+        i += 1
+        start = i
+        while i < len(s) and s[i] != quote:
+            if s[i] == "\\" and i + 1 < len(s):
+                i += 2
+                continue
+            i += 1
+        if i >= len(s):
+            raise ValueError("unterminated quoted string")
+        text = s[start:i]
+        return text, i + 1
+
     return parse_block(0)
 
 
@@ -554,22 +690,49 @@ def _load_yaml(text: str, *, source_path: str | Path | None = None) -> Any:
 
 
 def _import_module_from_path(path: Path, module_name: str) -> Any:
-    spec = importlib.util.spec_from_file_location(module_name, path)
-    if spec is None or spec.loader is None:
-        raise WorkspaceSerializationError(f"cannot import module from {path}")
-    module = importlib.util.module_from_spec(spec)
-    # Register in ``sys.modules`` so ``inspect.getmodule(cls)`` /
-    # ``inspect.getsource(cls)`` can find the on-disk source for
-    # workspace-defined classes (hooks / resources). Without this,
-    # round-tripping a loaded workspace's own inline ``hook.py``
-    # falls back to the placeholder branch in ``_render_hook_source``
-    # because the dynamically-loaded module has no ``sys.modules``
-    # entry for ``inspect`` to consult.
-    import sys as _sys  # noqa: PLC0415
+    """Load a workspace-shipped Python module from ``path``.
 
+    Reads the source verbatim and executes it into a fresh
+    :class:`types.ModuleType`. We deliberately avoid Python's normal
+    :class:`importlib.machinery.SourceFileLoader` for two reasons:
+
+    1. *Hot reload correctness.* ``SourceFileLoader`` writes a
+       ``__pycache__/<name>.cpython-XYZ.pyc`` next to the source, and
+       on subsequent imports it reuses that bytecode whenever the
+       source mtime matches the value stored in the ``.pyc`` header.
+       That mtime is recorded with **second** resolution, so two
+       writes within the same wall-clock second silently re-use the
+       old bytecode — which means a cartridge reloaded after a fast
+       edit returns the previous tool body. Reading the source
+       directly each time avoids the cache entirely.
+
+    2. *Cartridge cleanliness.* ``SourceFileLoader`` litters the
+       cartridge directory with ``__pycache__/`` folders, which makes
+       \"the cartridge is just files\" demonstrably untrue — a
+       reviewer doing ``ls`` sees engine artefacts mixed with the
+       agent's contract.
+
+    The module is registered in :data:`sys.modules` under
+    ``module_name`` so :func:`inspect.getmodule` /
+    :func:`inspect.getsource` can recover the on-disk source for
+    workspace-defined classes (hooks / resources). Linecache uses
+    ``__file__`` to fetch source on demand for tracebacks.
+    """
+    import sys as _sys  # noqa: PLC0415
+    import types as _types  # noqa: PLC0415
+
+    try:
+        source = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise WorkspaceSerializationError(f"cannot read module {path}: {exc}") from exc
+
+    code = compile(source, str(path), "exec")
+    module = _types.ModuleType(module_name)
+    module.__file__ = str(path)
+    module.__loader__ = None  # type: ignore[assignment]
     _sys.modules[module_name] = module
     try:
-        spec.loader.exec_module(module)  # type: ignore[union-attr]
+        exec(code, module.__dict__)
     except Exception:
         _sys.modules.pop(module_name, None)
         raise
@@ -645,35 +808,18 @@ def _load_resources(root: Path, runtime: dict[str, Any] | None = None) -> dict[s
 # ``__module__``-based fallback in :func:`resource_ref_for` covers
 # those cases (closures created inside the resource module's
 # ``build()`` carry the synthetic ``_chw_resource_<name>`` module).
-_resource_origin: dict[int, str] = {}
-
-
-def _register_resource_origin(instance: Any, name: str) -> None:
-    """Record that ``instance`` came from ``resources/<name>.py``.
-
-    Only registers instances that support :mod:`weakref`. Built-in
-    containers (``list``, ``tuple``, ``dict``, ``set``) and other
-    types that reject weak references would otherwise pin a stale
-    entry forever — and Python's ``id()`` can be reused once the
-    original object is garbage-collected, leading to false positives
-    in :func:`resource_ref_for`. Skip them here; their identity is
-    recovered via the ``__module__``-based fallback path.
-    """
-    import weakref  # noqa: PLC0415
-
-    key = id(instance)
-    try:
-        weakref.finalize(instance, _resource_origin.pop, key, None)
-    except TypeError:
-        # Object can't be weak-referenced (list / tuple / dict / set /
-        # bare int / etc.) — skip the identity registration entirely
-        # so a future object at the same ``id()`` can't pick up this
-        # name by accident.
-        return
-    _resource_origin[key] = name
-
-
-_REF_PREFIX = "@"
+# ``_REF_PREFIX``, ``_resource_origin``, ``_register_resource_origin`` and
+# ``resource_ref_for`` live in :mod:`looplet.refs` so that core modules
+# (permissions, streaming, evals, telemetry) can call ``resource_ref_for``
+# without importing this 3000-line workspace loader. Re-exported here for
+# backwards compatibility — existing tests reach
+# ``looplet.workspace._resource_origin`` directly, and that still works.
+from looplet.refs import (  # noqa: E402, F401, I001, PLC0415
+    _REF_PREFIX,
+    _register_resource_origin,
+    _resource_origin,
+    resource_ref_for,
+)
 
 
 # Unified ``${kind:value}`` reference grammar — applied to every
@@ -786,62 +932,9 @@ def _coerce_default(text: str | None) -> Any:
     return s
 
 
-def resource_ref_for(value: Any) -> str | None:
-    """Return ``"@<name>"`` when ``value`` was produced by a workspace
-    ``resources/<name>.py`` builder; ``None`` otherwise.
-
-    Two detection paths:
-
-    1. **Identity registry.** :func:`_load_resources` stamps every
-       built instance into ``_resource_origin`` keyed by ``id``. This
-       handles the common case where the builder returns a stock
-       third-party object (e.g. ``PermissionEngine``,
-       ``MetricsCollector``) whose own ``__module__`` is *not* in
-       the workspace.
-    2. **Module name fallback.** When the value (or its first list
-       element) was *defined* inside the workspace's resource module
-       (e.g. a closure built by ``def build(): def fn(...): ...``),
-       its ``__module__`` starts with ``_chw_resource_``.
-
-    Used by hook ``to_config()`` implementations to round-trip the
-    *original* resource ref name (e.g. ``"@sql_permissions"``) instead
-    of a hardcoded fallback (e.g. ``"@engine"``).
-
-    Returns ``None`` for in-process objects so callers can fall back
-    to a default ref name.
-    """
-    # Path 1: identity registry — handles instances of stock classes
-    # like ``looplet.permissions.PermissionEngine`` whose own
-    # ``__module__`` is the framework, not the workspace.
-    by_id = _resource_origin.get(id(value))
-    if by_id is not None:
-        return f"{_REF_PREFIX}{by_id}"
-    # Also probe list/tuple elements for identity matches — common
-    # for ``EvalHook(evaluators=[...])`` whose list is rebuilt each
-    # call by the resource builder.
-    if isinstance(value, (list, tuple)) and value:
-        elem_id = _resource_origin.get(id(value[0]))
-        if elem_id is not None:
-            return f"{_REF_PREFIX}{elem_id}"
-
-    # Path 2: module-name fallback — handles closures defined inside
-    # the resource module (CallableMemorySource(fn=lambda ...)) and
-    # custom classes declared in the resource file.
-    candidate_modules: list[str] = []
-    cls_mod = getattr(type(value), "__module__", "") or ""
-    if cls_mod:
-        candidate_modules.append(cls_mod)
-    direct_mod = getattr(value, "__module__", "") or ""
-    if direct_mod and direct_mod != cls_mod:
-        candidate_modules.append(direct_mod)
-    if isinstance(value, (list, tuple)) and value:
-        item_mod = getattr(value[0], "__module__", "") or getattr(type(value[0]), "__module__", "")
-        if item_mod and item_mod not in candidate_modules:
-            candidate_modules.append(item_mod)
-    for mod in candidate_modules:
-        if mod.startswith("_chw_resource_"):
-            return f"{_REF_PREFIX}{mod[len('_chw_resource_') :]}"
-    return None
+# ``resource_ref_for`` is defined in :mod:`looplet.refs` and re-imported
+# above; kept available here as ``looplet.workspace.resource_ref_for`` for
+# backwards compatibility.
 
 
 def _resolve_refs(
@@ -1958,12 +2051,15 @@ def _write_memory(
     ``memory_sources`` list and the resource auto-emit machinery
     copies the original on-disk source verbatim.
     """
+    from looplet.memory import (  # noqa: PLC0415
+        CallableMemorySource,
+        StaticMemorySource,
+    )
+
     if isinstance(source, StaticMemorySource):
         (memory_root / f"{index:02d}_static.md").write_text(source.text, encoding="utf-8")
         return None
     # CallableMemorySource: three branches in priority order.
-    from looplet.memory import CallableMemorySource  # noqa: PLC0415
-
     if isinstance(source, CallableMemorySource):
         fn = source.fn
         fn_name = getattr(fn, "__name__", "")
@@ -2221,19 +2317,64 @@ def _resolve_extends(root: Path, *, _seen: set[Path] | None = None) -> Path:
     # to (the merged dir holds .pyc caches and may import modules that
     # are still bound to its path until process end).
     _EXTENDS_TEMPDIRS.append(merged)
-    # Copy parent first, then overlay child.
+    # Copy parent first, then overlay child. Directory overlay is
+    # correct for tools/, hooks/, resources/, prompts/, memory/ —
+    # each entry lives in its own subdirectory and the child either
+    # adds a new entry or replaces an entry of the same name.
     _shutil.copytree(parent_root, merged, dirs_exist_ok=True, symlinks=False)
     _shutil.copytree(root, merged, dirs_exist_ok=True, symlinks=False)
-    # Strip the top-level ``extends:`` line from the merged config.yaml
-    # so the inner loader doesn't re-resolve it. Only top-level (indent
-    # 0) lines are stripped — an "extends:" string inside a deeper
-    # block scalar is preserved.
-    merged_cfg = merged / WorkspaceLayout.CONFIG_YAML
-    if merged_cfg.is_file():
-        lines = merged_cfg.read_text(encoding="utf-8").splitlines()
-        kept = [ln for ln in lines if not ln.startswith("extends:")]
-        merged_cfg.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
+
+    # config.yaml needs *key-level* merging, not file-level overlay.
+    # File-level overlay would cause the child's config.yaml to wholly
+    # replace the parent's, silently dropping every parent key the child
+    # didn't redeclare (e.g. ``max_tokens``, ``max_steps``, ``model:``,
+    # ``permissions:``, ...). Builders observing this from outside the
+    # merge would see ``extends:`` as a partial inheritance mechanism
+    # — which is the opposite of what the schema promises.
+    #
+    # The merge strategy is shallow: top-level scalars and lists are
+    # replaced wholesale by the child if redeclared, while top-level
+    # mappings (``model:``, ``permissions:``, ``memory:``,
+    # ``tool_metadata:``) are recursively shallow-merged so a child
+    # can override a single key inside a block (e.g. just
+    # ``model.reasoning_effort``) without losing siblings. Lists are
+    # NOT concatenated — wholesale-replace mirrors how layered config
+    # files (Kubernetes overlays, Terraform locals, Hydra) handle them.
+    parent_cfg_path = parent_root / WorkspaceLayout.CONFIG_YAML
+    child_cfg_path = root / WorkspaceLayout.CONFIG_YAML
+    parent_cfg = (
+        _load_yaml(parent_cfg_path.read_text(encoding="utf-8"))
+        if parent_cfg_path.is_file()
+        else None
+    ) or {}
+    child_cfg = (
+        _load_yaml(child_cfg_path.read_text(encoding="utf-8")) if child_cfg_path.is_file() else None
+    ) or {}
+    # Drop the child's ``extends:`` so the inner loader doesn't re-resolve.
+    child_cfg.pop("extends", None)
+    parent_cfg.pop("extends", None)  # belt and braces; should already be gone
+    merged_cfg = _shallow_merge_config(parent_cfg, child_cfg)
+    merged_cfg_path = merged / WorkspaceLayout.CONFIG_YAML
+    merged_cfg_path.write_text(_dump_yaml(merged_cfg) + "\n", encoding="utf-8")
     return merged
+
+
+def _shallow_merge_config(parent: dict[str, Any], child: dict[str, Any]) -> dict[str, Any]:
+    """Shallow-merge two parsed config.yaml dicts.
+
+    Top-level scalars and lists from ``child`` win wholesale. Top-level
+    mappings are recursively shallow-merged so a child can override one
+    sub-key (``model.reasoning_effort``) without erasing siblings
+    (``model.provider``). Used by :func:`_resolve_extends`.
+    """
+    out: dict[str, Any] = dict(parent)
+    for key, child_val in child.items():
+        parent_val = out.get(key)
+        if isinstance(parent_val, dict) and isinstance(child_val, dict):
+            out[key] = _shallow_merge_config(parent_val, child_val)
+        else:
+            out[key] = child_val
+    return out
 
 
 def _workspace_to_preset_inner(
@@ -2286,7 +2427,10 @@ def _workspace_to_preset_inner(
     file_memory_sources: list[PersistentMemorySource] = []
     memory_dir = root / WorkspaceLayout.MEMORY_DIR
     if memory_dir.is_dir():
-        from looplet.memory import CallableMemorySource  # noqa: PLC0415
+        from looplet.memory import (  # noqa: PLC0415
+            CallableMemorySource,
+            StaticMemorySource,
+        )
 
         memory_files = sorted(
             p for p in memory_dir.iterdir() if p.is_file() and p.suffix in (".md", ".py")
@@ -2352,6 +2496,33 @@ def _workspace_to_preset_inner(
     # ``state_factory`` constructor arg, and finally to ``DefaultState``.
     _state_directive = cfg_kwargs.pop("state", None)
 
+    # ── v1.0 declarative slots (SPEC.md): model, permissions, memory.
+    # Each is consumed here, *not* by ``LoopConfig``. We pop them off
+    # cfg_kwargs so the LoopConfig constructor doesn't see unknown
+    # kwargs, then process them after the config is built.
+    _model_block = cfg_kwargs.pop("model", None)
+    _permissions_block = cfg_kwargs.pop("permissions", None)
+    _memory_block = cfg_kwargs.pop("memory", None)
+
+    # Apply ``model:`` overrides BEFORE constructing LoopConfig so the
+    # structured block wins over flat ``temperature:`` / ``max_tokens:``
+    # at the top level. ``compile_model_block`` returns a dict of
+    # LoopConfig field overrides plus an updated ``tool_metadata``
+    # carrying provider / name / reasoning_effort for downstream
+    # tooling to read.
+    if _model_block is not None:
+        from looplet.spec_slots import compile_model_block  # noqa: PLC0415
+
+        try:
+            model_overrides = compile_model_block(_model_block, existing_cfg=cfg_kwargs)
+        except ValueError as exc:
+            msg = f"invalid 'model' block in {cfg_path}: {exc}"
+            if strict:
+                raise WorkspaceSerializationError(msg) from exc
+            logger.warning("%s; ignoring model block", msg)
+            model_overrides = {}
+        cfg_kwargs.update(model_overrides)
+
     config = LoopConfig(**cfg_kwargs)
 
     # Track tool + hook modules so setup.py can wire shared resources
@@ -2396,10 +2567,22 @@ def _workspace_to_preset_inner(
                     raise WorkspaceSerializationError(msg)
                 logger.warning("%s; skipping", msg)
                 continue
+            raw_parameters = yaml_payload.get("parameters", {}) or {}
+            if not isinstance(raw_parameters, dict):
+                msg = (
+                    f"tool {yaml_payload.get('name', tool_dir.name)!r} (in "
+                    f"{tool_dir.name!r}): tool.yaml ``parameters:`` must be a "
+                    f'mapping ("name: {{type: ...}}" entries), got '
+                    f"{type(raw_parameters).__name__}. Source: {spec_path}."
+                )
+                if strict:
+                    raise WorkspaceSerializationError(msg)
+                logger.warning("%s; skipping tool", msg)
+                continue
             spec = ToolSpec(
                 name=str(yaml_payload.get("name", tool_dir.name)),
                 description=str(yaml_payload.get("description", "")),
-                parameters=dict(yaml_payload.get("parameters", {}) or {}),
+                parameters=dict(raw_parameters),
                 execute=execute_fn,
                 concurrent_safe=bool(yaml_payload.get("concurrent_safe", False)),
                 free=bool(yaml_payload.get("free", False)),
@@ -2444,7 +2627,70 @@ def _workspace_to_preset_inner(
                     if strict:
                         raise WorkspaceSerializationError(msg)
                     logger.warning("%s; tool will receive None for missing resources", msg)
+            # Surface ``parameters: {}`` mismatches with the execute.py
+            # signature. The most common scaffold-then-edit friction:
+            # ``scaffold_workspace`` writes ``parameters: {}`` and
+            # ``def execute(ctx, **kwargs)`` together. Users replace
+            # ``**kwargs`` with explicit keyword params (``*, name: str``)
+            # but forget to also fill in ``parameters:``. The dispatcher
+            # then rejects every call with VALIDATION because the schema
+            # advertises zero parameters. We detect the mismatch here and
+            # warn pointing at the tool.yaml. Detection is deliberately
+            # conservative: we only flag declared-empty parameters paired
+            # with a non-``**kwargs`` signature that has at least one
+            # required keyword-only parameter beyond ``ctx``.
+            if not spec.parameters:
+                try:
+                    sig = inspect.signature(execute_fn)
+                    explicit = [
+                        p
+                        for p in sig.parameters.values()
+                        if p.kind == inspect.Parameter.KEYWORD_ONLY and p.name != "ctx"
+                    ]
+                    has_var_keyword = any(
+                        p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+                    )
+                except (TypeError, ValueError):
+                    explicit = []
+                    has_var_keyword = True
+                if explicit and not has_var_keyword:
+                    declared = [p.name for p in explicit]
+                    msg = (
+                        f"tool {spec.name!r} (in {tool_dir.name!r}): "
+                        f"execute.py declares keyword params {declared} but "
+                        f"tool.yaml has empty ``parameters: {{}}``. The "
+                        f"dispatcher will reject every call with a VALIDATION "
+                        f"error. Add the parameters block to {spec_path.name}, "
+                        f"or accept ``**kwargs`` in execute.py."
+                    )
+                    if strict:
+                        raise WorkspaceSerializationError(msg)
+                    logger.warning("%s", msg)
             registry.register(spec)
+
+            # v1.0: ``output_schema:`` on the done tool installs an
+            # OutputSchema validator on the LoopConfig so the loop
+            # validates the agent's done() args before terminating.
+            # Only the configured ``done_tool`` is treated specially;
+            # output_schema on other tools is recorded in tool metadata
+            # and may be enforced by future spec versions but is not
+            # part of the v1.0 loader contract.
+            if (
+                spec.name == config.done_tool
+                and config.output_schema is None
+                and isinstance(yaml_payload.get("output_schema"), dict)
+            ):
+                from looplet.spec_slots import compile_output_schema  # noqa: PLC0415
+
+                try:
+                    config.output_schema = compile_output_schema(
+                        dict(yaml_payload["output_schema"])
+                    )
+                except (ValueError, TypeError) as exc:
+                    msg = f"invalid output_schema in {spec_path}: {exc}"
+                    if strict:
+                        raise WorkspaceSerializationError(msg) from exc
+                    logger.warning("%s; ignoring output_schema", msg)
 
     # Built-in tools — opt-in via ``builtin_tools:`` in config.yaml.
     # These are looplet-shipped tools (``subagent``, future helpers)
@@ -2663,6 +2909,24 @@ def _workspace_to_preset_inner(
     else:
         state = DefaultState(max_steps=max_steps)
 
+    # Sanity check: warn when ``done_tool`` doesn't point at any
+    # registered tool. We deliberately only warn (not raise even under
+    # strict) because some legitimate use cases construct ``done``
+    # later (sub-agent presets where the parent injects a done tool,
+    # workspaces extended by host code, test fixtures). The runtime
+    # will surface the missing tool when the LLM tries to dispatch
+    # it; this warning lets a builder catch the typo at load time
+    # without breaking those use cases.
+    if config.done_tool and config.done_tool not in registry.tool_names:
+        msg = (
+            f"config.yaml declares ``done_tool: {config.done_tool!r}`` but no "
+            f"such tool is registered. Available tools: {sorted(registry.tool_names)}. "
+            f"Add a ``tools/{config.done_tool}/`` directory or fix the "
+            f"``done_tool:`` field. The loop will fail at the agent's first "
+            f"done() call."
+        )
+        logger.warning("%s", msg)
+
     preset = AgentPreset(
         config=config,
         hooks=hooks,
@@ -2670,6 +2934,52 @@ def _workspace_to_preset_inner(
         state=state,
         resources=dict(resources),
     )
+
+    # ── v1.0 declarative slots: permissions, memory.long_term ───────
+    # Both are processed AFTER hooks/state/preset are built so the
+    # auto-installed hook lands at the end of the hook list (after any
+    # user-defined permission policy in ``hooks/``) and the long-term
+    # memory file appends to file-based memory sources already loaded.
+    # ``setup.py`` (below) can still override either, by design.
+
+    if _permissions_block is not None:
+        from looplet.spec_slots import compile_permissions_block  # noqa: PLC0415
+
+        try:
+            permission_hook = compile_permissions_block(_permissions_block)
+        except ValueError as exc:
+            msg = f"invalid 'permissions' block in {cfg_path}: {exc}"
+            if strict:
+                raise WorkspaceSerializationError(msg) from exc
+            logger.warning("%s; ignoring permissions block", msg)
+        else:
+            preset.hooks.append(permission_hook)
+
+    # Long-term memory: explicit ``memory: { long_term: <path> }`` wins;
+    # otherwise, auto-load ``memory/long_term.md`` if present. Either
+    # path resolves relative to the cartridge root and is appended to
+    # the existing memory_sources so existing static files are not
+    # disturbed.
+    long_term_path: Path | None = None
+    if isinstance(_memory_block, dict):
+        explicit = _memory_block.get("long_term")
+        if isinstance(explicit, str) and explicit:
+            long_term_path = (root / explicit).resolve()
+    if long_term_path is None:
+        from looplet.spec_slots import default_long_term_memory_path  # noqa: PLC0415
+
+        candidate = root / default_long_term_memory_path()
+        if candidate.is_file():
+            long_term_path = candidate.resolve()
+    if long_term_path is not None and long_term_path.is_file():
+        from looplet.memory import StaticMemorySource  # noqa: PLC0415
+
+        long_term_source = StaticMemorySource(
+            text=long_term_path.read_text(encoding="utf-8"),
+        )
+        if preset.config.memory_sources is None:
+            preset.config.memory_sources = []
+        preset.config.memory_sources = list(preset.config.memory_sources) + [long_term_source]
 
     # ``setup.py`` escape hatch — runs after the declarative load to
     # let the workspace attach callable / opaque fields that don't

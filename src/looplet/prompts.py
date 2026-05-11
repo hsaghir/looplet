@@ -210,14 +210,19 @@ def preview_prompt(
             task={"goal": "fix the bug"},
             tools=my_registry,
             state=my_state,
+            config=my_config,
         ))
+
+    Returns the system prompt (from ``config.system_prompt``) prepended
+    to the user prompt so the output mirrors what the LLM actually
+    receives. Without ``config``, only the user prompt is returned.
 
     Args:
         task: Task dict (same as composable_loop).
         tools: BaseToolRegistry instance.
         state: AgentState instance (or None for empty facts).
         session_log: SessionLog instance (or None for empty log).
-        config: LoopConfig (optional — used for memory_sources).
+        config: LoopConfig (optional — used for system_prompt + memory_sources).
         step_number: Which step to render for (default 1).
     """
 
@@ -230,6 +235,7 @@ def preview_prompt(
     _max = getattr(config, "max_steps", 15) if config else 15
     _briefing = ""
     _memory = ""
+    _system = getattr(config, "system_prompt", "") if config else ""
     if config is not None:
         sources = getattr(config, "memory_sources", None) or []
         parts = []
@@ -239,7 +245,7 @@ def preview_prompt(
                 parts.append(text)
         _memory = "\n".join(parts)
 
-    return build_prompt(
+    user_prompt = build_prompt(
         task=_task,
         tool_catalog=_catalog,
         state_summary=_state,
@@ -250,3 +256,7 @@ def preview_prompt(
         briefing=_briefing,
         memory=_memory,
     )
+
+    if not _system:
+        return user_prompt
+    return f"═══ SYSTEM PROMPT ═══\n{_system.rstrip()}\n\n{user_prompt}"

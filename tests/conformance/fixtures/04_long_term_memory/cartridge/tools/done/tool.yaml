@@ -1,0 +1,4 @@
+name: done
+description: Mark the task complete.
+parameters:
+  summary: { type: string }

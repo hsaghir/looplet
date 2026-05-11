@@ -808,35 +808,18 @@ def _load_resources(root: Path, runtime: dict[str, Any] | None = None) -> dict[s
 # ``__module__``-based fallback in :func:`resource_ref_for` covers
 # those cases (closures created inside the resource module's
 # ``build()`` carry the synthetic ``_chw_resource_<name>`` module).
-_resource_origin: dict[int, str] = {}
-
-
-def _register_resource_origin(instance: Any, name: str) -> None:
-    """Record that ``instance`` came from ``resources/<name>.py``.
-
-    Only registers instances that support :mod:`weakref`. Built-in
-    containers (``list``, ``tuple``, ``dict``, ``set``) and other
-    types that reject weak references would otherwise pin a stale
-    entry forever — and Python's ``id()`` can be reused once the
-    original object is garbage-collected, leading to false positives
-    in :func:`resource_ref_for`. Skip them here; their identity is
-    recovered via the ``__module__``-based fallback path.
-    """
-    import weakref  # noqa: PLC0415
-
-    key = id(instance)
-    try:
-        weakref.finalize(instance, _resource_origin.pop, key, None)
-    except TypeError:
-        # Object can't be weak-referenced (list / tuple / dict / set /
-        # bare int / etc.) — skip the identity registration entirely
-        # so a future object at the same ``id()`` can't pick up this
-        # name by accident.
-        return
-    _resource_origin[key] = name
-
-
-_REF_PREFIX = "@"
+# ``_REF_PREFIX``, ``_resource_origin``, ``_register_resource_origin`` and
+# ``resource_ref_for`` live in :mod:`looplet.refs` so that core modules
+# (permissions, streaming, evals, telemetry) can call ``resource_ref_for``
+# without importing this 3000-line workspace loader. Re-exported here for
+# backwards compatibility — existing tests reach
+# ``looplet.workspace._resource_origin`` directly, and that still works.
+from looplet.refs import (  # noqa: E402, F401, I001, PLC0415
+    _REF_PREFIX,
+    _register_resource_origin,
+    _resource_origin,
+    resource_ref_for,
+)
 
 
 # Unified ``${kind:value}`` reference grammar — applied to every
@@ -949,62 +932,9 @@ def _coerce_default(text: str | None) -> Any:
     return s
 
 
-def resource_ref_for(value: Any) -> str | None:
-    """Return ``"@<name>"`` when ``value`` was produced by a workspace
-    ``resources/<name>.py`` builder; ``None`` otherwise.
-
-    Two detection paths:
-
-    1. **Identity registry.** :func:`_load_resources` stamps every
-       built instance into ``_resource_origin`` keyed by ``id``. This
-       handles the common case where the builder returns a stock
-       third-party object (e.g. ``PermissionEngine``,
-       ``MetricsCollector``) whose own ``__module__`` is *not* in
-       the workspace.
-    2. **Module name fallback.** When the value (or its first list
-       element) was *defined* inside the workspace's resource module
-       (e.g. a closure built by ``def build(): def fn(...): ...``),
-       its ``__module__`` starts with ``_chw_resource_``.
-
-    Used by hook ``to_config()`` implementations to round-trip the
-    *original* resource ref name (e.g. ``"@sql_permissions"``) instead
-    of a hardcoded fallback (e.g. ``"@engine"``).
-
-    Returns ``None`` for in-process objects so callers can fall back
-    to a default ref name.
-    """
-    # Path 1: identity registry — handles instances of stock classes
-    # like ``looplet.permissions.PermissionEngine`` whose own
-    # ``__module__`` is the framework, not the workspace.
-    by_id = _resource_origin.get(id(value))
-    if by_id is not None:
-        return f"{_REF_PREFIX}{by_id}"
-    # Also probe list/tuple elements for identity matches — common
-    # for ``EvalHook(evaluators=[...])`` whose list is rebuilt each
-    # call by the resource builder.
-    if isinstance(value, (list, tuple)) and value:
-        elem_id = _resource_origin.get(id(value[0]))
-        if elem_id is not None:
-            return f"{_REF_PREFIX}{elem_id}"
-
-    # Path 2: module-name fallback — handles closures defined inside
-    # the resource module (CallableMemorySource(fn=lambda ...)) and
-    # custom classes declared in the resource file.
-    candidate_modules: list[str] = []
-    cls_mod = getattr(type(value), "__module__", "") or ""
-    if cls_mod:
-        candidate_modules.append(cls_mod)
-    direct_mod = getattr(value, "__module__", "") or ""
-    if direct_mod and direct_mod != cls_mod:
-        candidate_modules.append(direct_mod)
-    if isinstance(value, (list, tuple)) and value:
-        item_mod = getattr(value[0], "__module__", "") or getattr(type(value[0]), "__module__", "")
-        if item_mod and item_mod not in candidate_modules:
-            candidate_modules.append(item_mod)
-    for mod in candidate_modules:
-        if mod.startswith("_chw_resource_"):
-            return f"{_REF_PREFIX}{mod[len('_chw_resource_') :]}"
-    return None
+# ``resource_ref_for`` is defined in :mod:`looplet.refs` and re-imported
+# above; kept available here as ``looplet.workspace.resource_ref_for`` for
+# backwards compatibility.
 
 
 def _resolve_refs(

@@ -315,7 +315,7 @@ class StreamingHook:
         whose origin can't be traced fall through to a None-stub the
         user must replace.
         """
-        from looplet.workspace import resource_ref_for  # noqa: PLC0415
+        from looplet.refs import resource_ref_for  # noqa: PLC0415
 
         ref = resource_ref_for(self._emitter)
         return {"emitter": ref or "@emitter"}

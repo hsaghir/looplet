@@ -272,7 +272,7 @@ class PermissionHook:
         ``{"engine": "@sql_permissions"}``. Otherwise the writer
         emits the generic ``"@engine"`` name.
         """
-        from looplet.workspace import resource_ref_for  # noqa: PLC0415
+        from looplet.refs import resource_ref_for  # noqa: PLC0415
 
         ref = resource_ref_for(self.engine)
         return {"engine": ref or "@engine"}

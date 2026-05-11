@@ -1660,8 +1660,41 @@ def composable_loop(
         step_num=0,
     )
     for hook in hooks:
-        if hasattr(hook, "bind"):
-            hook.bind(loop_ctx)
+        bind_fn = getattr(hook, "bind", None)
+        if bind_fn is None:
+            continue
+        # Sig-aware dispatch: the looplet ``bind(loop_ctx)`` protocol
+        # is one positional arg. Some user hooks define ``bind`` for
+        # their own dependency-injection purpose with a different
+        # shape (e.g. ``bind(*, my_resource)``). Inspect the signature
+        # and only call with ``loop_ctx`` if the function actually
+        # accepts a positional arg; otherwise skip silently and let
+        # the cartridge's setup.py invoke the user-defined bind.
+        try:
+            import inspect as _inspect  # noqa: PLC0415
+
+            sig = _inspect.signature(bind_fn)
+            positional = [
+                p
+                for p in sig.parameters.values()
+                if p.kind
+                in (
+                    _inspect.Parameter.POSITIONAL_ONLY,
+                    _inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                    _inspect.Parameter.VAR_POSITIONAL,
+                )
+            ]
+            if positional:
+                bind_fn(loop_ctx)
+            # else: hook has bind() with kw-only args — not the loop's
+            # bind protocol; user's setup.py is responsible for it.
+        except (TypeError, ValueError):
+            # Builtins / C-extension callables that introspection can't
+            # inspect: try the historical contract once.
+            try:
+                bind_fn(loop_ctx)
+            except TypeError:
+                pass
 
     for hook in hooks:
         if hasattr(hook, "pre_loop"):

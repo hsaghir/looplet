@@ -194,6 +194,10 @@ class WorkspaceLayout:
     """Fixed mount points inside a workspace directory."""
 
     WORKSPACE_JSON = "workspace.json"
+    # Cartridge Spec v1.0 alias for ``workspace.json``. The loader
+    # accepts either filename so cartridges authored against the spec
+    # terminology load without renaming.
+    CARTRIDGE_JSON = "cartridge.json"
     CONFIG_YAML = "config.yaml"
     PROMPTS_DIR = "prompts"
     SYSTEM_PROMPT_MD = "prompts/system.md"
@@ -257,6 +261,27 @@ class WorkspaceSerializationError(RuntimeError):
 # ── Data class ──────────────────────────────────────────────────
 
 
+def _manifest_path(root: Path) -> Path | None:
+    """Return the path to the cartridge manifest file, or ``None``.
+
+    Accepts both ``workspace.json`` (historical name) and
+    ``cartridge.json`` (Cartridge Spec v1.0 alias). Prefers
+    ``workspace.json`` if both exist so existing cartridges keep
+    their established identity file.
+    """
+    primary = root / WorkspaceLayout.WORKSPACE_JSON
+    if primary.is_file():
+        return primary
+    alias = root / WorkspaceLayout.CARTRIDGE_JSON
+    if alias.is_file():
+        return alias
+    return None
+
+
+def _manifest_present(root: Path) -> bool:
+    return _manifest_path(root) is not None
+
+
 @dataclass
 class Workspace:
     """A loaded Workspace.
@@ -284,10 +309,12 @@ class Workspace:
         root = Path(path)
         if not root.is_dir():
             raise FileNotFoundError(f"workspace directory not found: {root}")
-        meta_path = root / WorkspaceLayout.WORKSPACE_JSON
-        if not meta_path.is_file():
+        meta_path = _manifest_path(root)
+        if meta_path is None:
             raise FileNotFoundError(
-                f"workspace metadata not found at {meta_path}; is this a Workspace directory?"
+                f"workspace metadata not found at "
+                f"{root / WorkspaceLayout.WORKSPACE_JSON} "
+                f"(or {WorkspaceLayout.CARTRIDGE_JSON}); is this a Workspace directory?"
             )
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
         return cls(
@@ -2165,7 +2192,9 @@ def workspace_to_preset(
     import shim.
     """
     root = Path(workspace_dir)
-    if not (root / WorkspaceLayout.WORKSPACE_JSON).is_file():
+    # Accept both the historical ``workspace.json`` and the spec
+    # alias ``cartridge.json``. ``workspace.json`` wins if both exist.
+    if not _manifest_present(root):
         raise FileNotFoundError(
             f"workspace metadata not found at "
             f"{root / WorkspaceLayout.WORKSPACE_JSON}; "
@@ -2183,9 +2212,9 @@ def workspace_to_preset(
     extended_root = _resolve_extends(root)
     if extended_root is not root:
         # Re-validate metadata in the merged dir.
-        if not (extended_root / WorkspaceLayout.WORKSPACE_JSON).is_file():
+        if not _manifest_present(extended_root):
             raise WorkspaceSerializationError(
-                f"merged workspace at {extended_root} missing workspace.json"
+                f"merged workspace at {extended_root} missing workspace.json (or cartridge.json)"
             )
         root = extended_root
 

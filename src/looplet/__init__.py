@@ -178,6 +178,21 @@ from looplet.workspace import (
     workspace_to_preset,
 )
 
+# ── Cartridge aliases ────────────────────────────────────────────
+# The Cartridge Spec v1.0 (SPEC.md) names the artifact a "cartridge".
+# The reference implementation has historically called it a
+# "workspace"; both terms refer to the same on-disk format, and the
+# loader accepts both ``my_agent.workspace/`` and ``my_agent.cartridge/``
+# directory suffixes (along with ``workspace.json`` / ``cartridge.json``
+# manifests). These aliases let new code use the spec terminology
+# without breaking any existing workspace.
+cartridge_to_preset = workspace_to_preset
+preset_to_cartridge = preset_to_workspace
+scaffold_cartridge = scaffold_workspace
+CartridgeSerializationError = WorkspaceSerializationError
+Cartridge = Workspace
+CartridgeLayout = WorkspaceLayout
+
 __all__ = [
     # ── ESSENTIALS (what you need for your first agent) ──────────
     "__version__",
@@ -278,6 +293,13 @@ __all__ = [
     "resource_ref_for",
     "scaffold_workspace",
     "workspace_to_preset",
+    # ── CARTRIDGE ALIASES (spec terminology; same objects) ──────
+    "Cartridge",
+    "CartridgeLayout",
+    "CartridgeSerializationError",
+    "cartridge_to_preset",
+    "preset_to_cartridge",
+    "scaffold_cartridge",
     "StreamingHook",
     "Tracer",
     "TracingHook",

@@ -32,8 +32,8 @@ each file means, and what a conformant loader must do with them.
 ## Layout (canonical)
 
 ```
-my_agent.workspace/
-├── workspace.json              # required: name, schema_version
+my_agent.workspace/                # or my_agent.cartridge/
+├── workspace.json              # required: name, schema_version (alias: cartridge.json)
 ├── config.yaml                 # required: loop config + declarative slots
 ├── prompts/
 │   └── system.md               # required: the system prompt, alone
@@ -53,10 +53,13 @@ my_agent.workspace/
 └── setup.py                    # optional: imperative escape hatch
 ```
 
-The `.workspace` directory suffix is conventional but not load-bearing
-(loaders MUST accept any directory containing a valid `workspace.json`).
+The `.workspace` and `.cartridge` directory suffixes are conventional
+but not load-bearing (loaders MUST accept any directory containing a
+valid manifest file). The manifest may be named `workspace.json`
+(historical) or `cartridge.json` (spec terminology); they are
+equivalent. If both are present, `workspace.json` wins.
 
-## Manifest — `workspace.json`
+## Manifest — `workspace.json` / `cartridge.json`
 
 ```json
 {
@@ -344,17 +347,30 @@ notice when only the old shape is present.
 ## Conformance fixtures
 
 `tests/conformance/` (in this repository) contains a small set of
-cartridges paired with expected loader outputs. Any v1.0 loader is
-expected to produce equivalent outputs against the same fixtures.
-The conformance suite will grow with v1.x; v2 will mandate it.
+cartridges paired with locked-down expected loader outputs. Each
+fixture pairs a cartridge with an `expected.json` describing the
+tools, hooks, and config a v1.0 loader MUST produce. The
+`looplet conform` driver runs all fixtures against any
+`workspace_to_preset`-shaped callable and reports per-fixture
+pass/fail. Run `python -m looplet conform` from this repository to
+exercise the suite against the reference loader.
 
-## Repository status
+## Versioning policy
 
-Today the schema lives inside the reference implementation. Once a
-second loader exists (or the cartridge registry product reaches
-beta), the spec, the JSON schema, and the conformance suite will
-move to a neutral `cartridge-spec` repository so they have a stable
-home independent of any one runtime. This is planned, not done.
+- **`schema_version`** in `workspace.json` is the cartridge's
+  declared spec major. v1.x is additive: a v1.1 loader MUST load
+  any v1.0 cartridge with no behaviour change. v2 is reserved for
+  breaking shape changes (slot rename, slot removal, semantics flip)
+  and requires a migration guide.
+- **Loaders** advertise the highest `schema_version` they support.
+  Loading a cartridge with a higher `schema_version` than the
+  loader supports MUST fail with a structured error.
+- **Forward compatibility.** A v1.0 cartridge that uses *only* v1.0
+  slots is guaranteed to load on every future v1.x loader.
+- **Cartridge `version`** (in `workspace.json`) is independent of
+  `schema_version`. Cartridge authors choose semver,
+  content-addressed, calendar, or anything else; loaders MUST treat
+  it as opaque.
 
 ## Changelog
 

@@ -2536,6 +2536,26 @@ def _workspace_to_preset_inner(
     _permissions_block = cfg_kwargs.pop("permissions", None)
     _memory_block = cfg_kwargs.pop("memory", None)
 
+    # ``output_schema:`` belongs inside ``tools/done/tool.yaml`` per
+    # SPEC.md; declaring it at the top of ``config.yaml`` is a common
+    # authoring mistake. Catch it here with an actionable message
+    # rather than silently dropping a raw dict into
+    # ``LoopConfig.output_schema`` (which expects an ``OutputSchema``
+    # instance, not a JSON-Schema-ish dict).
+    if isinstance(cfg_kwargs.get("output_schema"), dict):
+        msg = (
+            f"top-level ``output_schema:`` in {cfg_path} must be a "
+            f"compiled ``OutputSchema`` instance (e.g. supplied via a "
+            f"resource), not a raw dict. To declare an output schema "
+            f"declaratively, put the ``output_schema:`` block inside "
+            f"``tools/done/tool.yaml`` instead — see SPEC.md "
+            f"'Output contract on done'."
+        )
+        if strict:
+            raise CartridgeSerializationError(msg)
+        logger.warning("%s; dropping the top-level output_schema", msg)
+        cfg_kwargs.pop("output_schema", None)
+
     # Apply ``model:`` overrides BEFORE constructing LoopConfig so the
     # structured block wins over flat ``temperature:`` / ``max_tokens:``
     # at the top level. ``compile_model_block`` returns a dict of
@@ -2554,6 +2574,38 @@ def _workspace_to_preset_inner(
             logger.warning("%s; ignoring model block", msg)
             model_overrides = {}
         cfg_kwargs.update(model_overrides)
+
+    # Catch unknown top-level keys in ``config.yaml`` BEFORE the
+    # ``LoopConfig`` constructor would silently raise an obscure
+    # ``TypeError`` (or, worse, the loader would silently drop them
+    # because the known-directive list missed them). Anything left in
+    # ``cfg_kwargs`` after the v1.0 slot pops above MUST correspond to
+    # a real ``LoopConfig`` field; otherwise it's an authoring mistake.
+    # In practice this catches ``output_schema:`` placed at the top
+    # level instead of inside ``tools/done/tool.yaml``, hand-rolled
+    # ``rules:`` / ``arg_matcher:`` shapes for ``permissions:`` (the
+    # spec uses ``deny:``/``ask:``/``allow:`` lists), and typos like
+    # ``temprature:`` / ``done-tool:``.
+    _allowed_cfg_keys = (
+        set(CartridgeLayout.SERIALIZABLE_CONFIG_FIELDS)
+        | set(CartridgeLayout.NON_SERIALIZABLE_CONFIG_FIELDS)
+        | {"system_prompt", "memory_sources", "extends"}
+    )
+    _unknown = sorted(k for k in cfg_kwargs if k not in _allowed_cfg_keys)
+    if _unknown:
+        msg = (
+            f"unknown top-level key(s) in {cfg_path}: {_unknown}. "
+            f"Recognized v1.0 slots: ``model:``, ``permissions:``, "
+            f"``memory:``, ``builtin_tools:``, ``builtin_hooks:``, "
+            f"``state:``, ``extends:`` plus LoopConfig fields. "
+            f"Note ``output_schema:`` belongs inside ``tools/done/tool.yaml``, "
+            f"not in config.yaml."
+        )
+        if strict:
+            raise CartridgeSerializationError(msg)
+        logger.warning("%s; dropping the unknown keys", msg)
+        for k in _unknown:
+            cfg_kwargs.pop(k, None)
 
     config = LoopConfig(**cfg_kwargs)
 

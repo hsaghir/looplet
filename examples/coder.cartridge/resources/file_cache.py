@@ -9,13 +9,15 @@ StaleFileHook) reference this via ``"@file_cache"`` so they share
 one instance. Without the @ref shared registry each would silently
 get its own empty cache and the staleness detection would break.
 
-Reads ``runtime["workspace"]`` so the FileCache is bound to the same
-path the host CLI gave the workspace.
+Resolved via :func:`looplet.cartridge.runtime_helpers.resolve_project_root`
+so a host running the agent from inside the target repo doesn't need
+to pass any runtime kwargs.
 """
 
 from coder_lib_tools import FileCache
 
+from looplet.cartridge.runtime_helpers import resolve_project_root
+
 
 def build(runtime=None):
-    runtime = runtime or {}
-    return FileCache(workspace=str(runtime.get("workspace", ".")))
+    return FileCache(workspace=resolve_project_root(runtime))

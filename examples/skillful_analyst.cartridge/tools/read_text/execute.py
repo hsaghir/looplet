@@ -9,7 +9,12 @@ def execute(ctx, *, path: str) -> dict:
     p = Path(path)
     if not p.is_absolute():
         runtime = ctx.resources.get("runtime") or {}
-        root = runtime.get("project_root", ".")
+        # Resolve the project root via the standard helper so the
+        # host doesn't have to pass any runtime kwargs when running
+        # from inside the target project.
+        from looplet.cartridge.runtime_helpers import resolve_project_root  # noqa: PLC0415
+
+        root = resolve_project_root(runtime)
         p = Path(root) / p
     if not p.is_file():
         return {"error": f"file not found: {p}"}

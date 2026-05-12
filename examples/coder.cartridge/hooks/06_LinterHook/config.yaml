@@ -1,3 +1,6 @@
 class_name: LinterHook
-kwargs:
-  workspace: ${runtime.workspace}
+# No kwargs needed: the hook resolves the project root via
+# looplet.cartridge.runtime_helpers.resolve_project_root() at
+# instantiation time (runtime['project_root'], $LOOPLET_PROJECT_ROOT,
+# git toplevel, or cwd).
+kwargs: {}

@@ -471,13 +471,14 @@ def build_skill_manager_for_workspace(
 ) -> "SkillManager":
     """One-line builder for ``resources/skill_manager.py``.
 
-    Resolves the skills directory (``<workspace>/<skills_subdir>``)
-    from the workspace path encoded in ``runtime["workspace"]`` (the
-    convention used by the workspace loader) — or from
+    Resolves the skills directory (``<project_root>/<skills_subdir>``)
+    via :func:`looplet.cartridge.runtime_helpers.resolve_project_root`
+    — so a host running the agent from inside the target project
+    doesn't have to pass any runtime kwargs. Override with
     ``workspace_dir`` if you call this manually.
 
     Returns an empty manager (no SKILL.md files found) without raising,
-    so a workspace can declare the resource even when its ``skills/``
+    so a cartridge can declare the resource even when its ``skills/``
     directory is empty.
 
     Use in ``resources/skill_manager.py``::
@@ -490,12 +491,10 @@ def build_skill_manager_for_workspace(
     base: Path | None = None
     if workspace_dir is not None:
         base = Path(workspace_dir)
-    elif runtime is not None:
-        ws = runtime.get("workspace") or runtime.get("workspace_root")
-        if ws:
-            base = Path(str(ws))
-    if base is None:
-        base = Path.cwd()
+    else:
+        from looplet.cartridge.runtime_helpers import resolve_project_root  # noqa: PLC0415
+
+        base = Path(resolve_project_root(runtime))
     skills_dir = base / skills_subdir
     store = FileSkillStore(skills_dir if skills_dir.is_dir() else base)
     return SkillManager(store)

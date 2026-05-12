@@ -104,22 +104,22 @@ def _execute(
 
     # Build a runtime dict for the sub-loop. The parent's
     # ``workspace_config.path`` is the canonical "where am I" value;
-    # forward it so the sub-loop's resources/file_cache.py builders
-    # (which read ``runtime['workspace']``) bind to the same project
-    # root. Caller may override via ctx.metadata['runtime'] when they
-    # want the sub-loop to operate on a different workspace.
+    # forward it so the sub-loop's resources (which read the project
+    # root via :func:`looplet.cartridge.runtime_helpers.resolve_project_root`)
+    # bind to the same project. Caller may override via
+    # ctx.metadata['runtime'] when they want the sub-loop to operate
+    # on a different project.
     metadata_runtime = (ctx.metadata or {}).get("runtime") if ctx.metadata else None
     runtime: dict[str, Any] = dict(metadata_runtime) if metadata_runtime else {}
     fallback_used = False
-    if "workspace" not in runtime:
+    if "project_root" not in runtime and "workspace" not in runtime:
         if host_ws_str:
-            runtime["workspace"] = host_ws_str
+            runtime["project_root"] = host_ws_str
         else:
             # No parent workspace_config and no explicit metadata.runtime —
-            # fall back to cwd, but make it loud so the host knows the
-            # sub-loop is rooted in whichever dir the process happens to
-            # be running from.
-            runtime["workspace"] = str(Path.cwd())
+            # the resolver in the sub-loop will fall back to git toplevel
+            # / cwd. Flag it so the host knows the sub-loop is rooted in
+            # whichever dir the process happens to be running from.
             fallback_used = True
     sub_preset = cartridge_to_preset(str(ws_path), runtime=runtime)
 
@@ -175,10 +175,10 @@ def _execute(
     if fallback_used:
         result["warning"] = (
             "no workspace_config resource on the parent and no "
-            "ctx.metadata['runtime'] — sub-loop's runtime['workspace'] "
-            f"defaulted to cwd ({runtime['workspace']!r}). Pass "
-            "runtime={'workspace': '...'} to cartridge_to_preset for "
-            "the parent, or set ctx.metadata['runtime'] before calling."
+            "ctx.metadata['runtime'] — sub-loop's project root will be "
+            "resolved from $LOOPLET_PROJECT_ROOT, git toplevel, or cwd. "
+            "Pass runtime={'project_root': '...'} to cartridge_to_preset "
+            "for the parent, or set ctx.metadata['runtime'] before calling."
         )
     return result
 

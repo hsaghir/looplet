@@ -1,17 +1,17 @@
-"""Shared workspace_config — the workspace dir the coder operates in.
+"""Shared workspace_config — the project directory the coder operates in.
 
-The host calls ``cartridge_to_preset(path, runtime={"workspace": "/path/to/repo"})``
-and this builder reads ``runtime["workspace"]`` to set the path. Tools
-and hooks that need the workspace root read it through the @ref
-registry as ``"@workspace_config"`` so the same workspace can be
-pointed at any repo by changing one runtime kwarg.
-
-Defaults to "." so the workspace can be exercised against the
-current working directory in tests / one-off runs.
+The canonical "where am I" value for every coder tool. Resolved by
+:func:`looplet.cartridge.runtime_helpers.resolve_project_root`, which
+tries (in order): ``runtime["project_root"]``, ``runtime["workspace"]``
+(legacy), ``$LOOPLET_PROJECT_ROOT``, ``git rev-parse --show-toplevel``,
+and finally ``cwd``. So a host that runs the agent from inside the
+target repo doesn't have to pass any runtime kwargs at all.
 """
 
 from dataclasses import dataclass
 from pathlib import Path
+
+from looplet.cartridge.runtime_helpers import resolve_project_root
 
 
 @dataclass
@@ -24,5 +24,4 @@ class WorkspaceConfig:
 
 
 def build(runtime=None):
-    runtime = runtime or {}
-    return WorkspaceConfig(path=str(runtime.get("workspace", ".")))
+    return WorkspaceConfig(path=resolve_project_root(runtime))

@@ -9,7 +9,9 @@ def execute(ctx, *, path: str) -> dict:
     p = Path(path)
     if not p.is_absolute():
         runtime = ctx.resources.get("runtime") or {}
-        root = runtime.get("project_root", ".")
+        # Prefer the standardised ``workspace`` runtime key; fall back
+        # to the legacy ``project_root`` for back-compat.
+        root = runtime.get("workspace") or runtime.get("project_root") or "."
         p = Path(root) / p
     if not p.is_file():
         return {"error": f"file not found: {p}"}

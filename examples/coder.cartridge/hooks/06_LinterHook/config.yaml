@@ -1,3 +1,6 @@
 class_name: LinterHook
 kwargs:
-  workspace: ${runtime.workspace}
+  # Default to "." so the cartridge can be strict-loaded without
+  # the host having to pass runtime={"workspace": ...}. Hosts that
+  # care set runtime["workspace"] to override.
+  workspace: ${runtime.workspace:-.}

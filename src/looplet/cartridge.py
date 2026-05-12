@@ -201,6 +201,8 @@ class CartridgeLayout:
     CONFIG_YAML = "config.yaml"
     PROMPTS_DIR = "prompts"
     SYSTEM_PROMPT_MD = "prompts/system.md"
+    BRIEFING_MD = "prompts/briefing.md"
+    RECOVERY_MD = "prompts/recovery.md"
     TOOLS_DIR = "tools"
     HOOKS_DIR = "hooks"
     MEMORY_DIR = "memory"
@@ -214,6 +216,7 @@ class CartridgeLayout:
         "temperature",
         "recovery_temperature",
         "done_tool",
+        "done_tools",
         "max_turn_continuations",
         "use_native_tools",
         "concurrent_dispatch",
@@ -454,7 +457,7 @@ def _load_yaml(text: str, *, source_path: str | Path | None = None) -> Any:
             if ":" not in stripped:
                 raise CartridgeSerializationError(f"unparseable workspace YAML line{src}: {line!r}")
             key, _, raw_val = stripped.partition(":")
-            raw_val = raw_val.strip()
+            raw_val = _strip_inline_comment(raw_val.strip())
             pos += 1
             if raw_val in ("|", "|-", "|+", ">", ">-", ">+"):
                 # YAML block scalar — gather all subsequent lines whose
@@ -507,7 +510,7 @@ def _load_yaml(text: str, *, source_path: str | Path | None = None) -> Any:
             stripped = line.strip()
             if not stripped.startswith("-"):
                 break
-            after = stripped[1:].strip()
+            after = _strip_inline_comment(stripped[1:].strip())
             pos += 1
             if not after:
                 out.append(parse_block(indent + 2))
@@ -574,6 +577,52 @@ def _load_yaml(text: str, *, source_path: str | Path | None = None) -> Any:
                     key_part = s[:i].strip()
                     return bool(key_part) and " " not in key_part
         return False
+
+    def _strip_inline_comment(raw: str) -> str:
+        """Strip ``# ...`` trailing inline comments from a YAML scalar.
+
+        YAML allows ``key: value  # comment`` and only the ``value``
+        is the actual scalar. The custom parser previously kept the
+        comment glued to the value, so e.g. ``done_tool: done  # foo``
+        registered the literal string ``"done  # foo"`` as the tool
+        name — silently breaking sentinel matching.
+
+        A ``#`` is only a comment delimiter when:
+        * preceded by whitespace (or appears at start of value), AND
+        * not inside a quoted string or flow collection ``[...]`` /
+          ``{...}``. We track quote state and bracket depth as we
+          scan; ``#`` outside any quote and outside any bracket and
+          preceded by whitespace marks the start of the comment.
+        """
+        depth_curly = 0
+        depth_square = 0
+        in_str: str | None = None
+        for i, ch in enumerate(raw):
+            if in_str:
+                if ch == in_str and (i == 0 or raw[i - 1] != "\\"):
+                    in_str = None
+                continue
+            if ch in ('"', "'"):
+                in_str = ch
+                continue
+            if ch == "[":
+                depth_square += 1
+                continue
+            if ch == "]":
+                depth_square -= 1
+                continue
+            if ch == "{":
+                depth_curly += 1
+                continue
+            if ch == "}":
+                depth_curly -= 1
+                continue
+            if ch == "#" and depth_curly == 0 and depth_square == 0:
+                # Only treat as comment when preceded by whitespace
+                # or at start (so URLs / hash strings don't trigger).
+                if i == 0 or raw[i - 1] in " \t":
+                    return raw[:i].rstrip()
+        return raw
 
     def _scalar(raw: str) -> Any:
         if raw in ("null", "~", ""):
@@ -932,6 +981,80 @@ def _resolve_runtime_ref(field: str, runtime: dict[str, Any] | None) -> Any:
                 f"unresolved ${{runtime.{field}}} reference; known runtime keys: {sorted(runtime)}"
             )
     return val
+
+
+def _load_single_file_tool(tool_file: Path, *, strict: bool, tool_modules: dict[str, Any]) -> Any:
+    """Load a single-file tool (``tools/<name>.py``) into a ToolSpec.
+
+    The module declares its metadata via dunders:
+
+    * ``__name__`` (defaults to file stem)
+    * ``__description__`` (defaults to first docstring line)
+    * ``__parameters__`` (dict; defaults to ``{}``)
+    * ``__tags__`` (list[str]; v1.1 metadata; optional)
+    * ``__render__`` (dict; v1.1 render hints; optional)
+    * ``__requires__`` (list[str]; resource DI; optional)
+    * ``__concurrent_safe__`` / ``__free__`` / ``__timeout_s__`` (optional)
+
+    Required: an ``execute`` callable.
+
+    Returns ``None`` (with a warning) when ``strict=False`` and the
+    module is malformed; raises ``CartridgeSerializationError`` under
+    ``strict=True``.
+    """
+    from looplet.tools import ToolSpec  # noqa: PLC0415
+
+    name_stem = tool_file.stem
+    module = _import_module_from_path(tool_file, f"_chw_tool_{name_stem}")
+    tool_modules[name_stem] = module
+    execute_fn = getattr(module, "execute", None)
+    if not callable(execute_fn):
+        msg = (
+            f"single-file tool {tool_file} declares no callable ``execute``. "
+            f"Add ``def execute(ctx, *, ...) -> dict``."
+        )
+        if strict:
+            raise CartridgeSerializationError(msg)
+        logger.warning("%s; skipping", msg)
+        return None
+
+    # ``__name__`` is a real dunder Python sets for every module, so
+    # we can't rely on its presence as user intent. Detect by
+    # comparing to the auto-set value (``_chw_tool_<stem>``); if the
+    # user didn't override it, fall back to the file stem.
+    declared_name = getattr(module, "__name__", "")
+    if not declared_name or declared_name.startswith("_chw_tool_"):
+        declared_name = name_stem
+
+    # First non-empty line of the module docstring is a sensible
+    # default description.
+    raw_doc = (module.__doc__ or "").strip()
+    default_desc = raw_doc.splitlines()[0] if raw_doc else f"Call {declared_name}."
+    description = getattr(module, "__description__", default_desc)
+
+    raw_parameters = getattr(module, "__parameters__", {}) or {}
+    if not isinstance(raw_parameters, dict):
+        msg = (
+            f"single-file tool {tool_file}: ``__parameters__`` must be a dict, "
+            f"got {type(raw_parameters).__name__}."
+        )
+        if strict:
+            raise CartridgeSerializationError(msg)
+        logger.warning("%s; skipping", msg)
+        return None
+
+    return ToolSpec(
+        name=declared_name,
+        description=str(description),
+        parameters=dict(raw_parameters),
+        execute=execute_fn,
+        concurrent_safe=bool(getattr(module, "__concurrent_safe__", False)),
+        free=bool(getattr(module, "__free__", False)),
+        timeout_s=getattr(module, "__timeout_s__", None),
+        requires=list(getattr(module, "__requires__", []) or []),
+        tags=list(getattr(module, "__tags__", []) or []),
+        render=dict(getattr(module, "__render__", {}) or {}),
+    )
 
 
 def _coerce_default(text: str | None) -> Any:
@@ -2621,6 +2744,30 @@ def _workspace_to_preset_inner(
     registry = BaseToolRegistry()
     tools_dir = root / CartridgeLayout.TOOLS_DIR
     if tools_dir.is_dir():
+        # ── v1.1 single-file tool form ────────────────────────
+        # ``tools/<name>.py`` (no surrounding directory) is a tool
+        # whose metadata lives in module-level dunders:
+        #   __name__         (defaults to the file stem)
+        #   __description__  (defaults to first docstring line)
+        #   __parameters__   (dict; defaults to {} = no params)
+        #   __tags__         (list[str]; optional, v1.1)
+        #   __render__       (dict; optional, v1.1 render hints)
+        #   __requires__     (list[str]; optional)
+        #   __concurrent_safe__, __free__, __timeout_s__ (optional)
+        # The module MUST export a callable named ``execute``.
+        # Cuts boilerplate for trivial tools without changing the
+        # multi-file form (still preferred for tools that need
+        # extensive YAML-side metadata or substantial code).
+        for tool_file in sorted(
+            p
+            for p in tools_dir.iterdir()
+            if p.is_file() and p.suffix == ".py" and not p.name.startswith("_")
+        ):
+            spec = _load_single_file_tool(tool_file, strict=strict, tool_modules=tool_modules)
+            if spec is not None:
+                registry.register(spec)
+
+        # ── multi-file tool form (existing) ───────────────────
         for tool_dir in sorted(p for p in tools_dir.iterdir() if p.is_dir()):
             spec_path = tool_dir / "tool.yaml"
             execute_path = tool_dir / "execute.py"
@@ -2675,6 +2822,8 @@ def _workspace_to_preset_inner(
                 free=bool(yaml_payload.get("free", False)),
                 timeout_s=yaml_payload.get("timeout_s"),
                 requires=list(yaml_payload.get("requires", []) or []),
+                tags=list(yaml_payload.get("tags", []) or []),
+                render=dict(yaml_payload.get("render", {}) or {}),
             )
             # Surface tool name ↔ directory name mismatches. The agent's
             # system prompt and tool catalog use ``spec.name``, but
@@ -2758,10 +2907,14 @@ def _workspace_to_preset_inner(
             # v1.0: ``output_schema:`` on the done tool installs an
             # OutputSchema validator on the LoopConfig so the loop
             # validates the agent's done() args before terminating.
-            # Only the configured ``done_tool`` is treated specially;
-            # output_schema on other tools is recorded in tool metadata
-            # and may be enforced by future spec versions but is not
-            # part of the v1.0 loader contract.
+            # Only the configured *primary* ``done_tool`` is treated
+            # specially; output_schema on other tools (including
+            # additional v1.1 ``done_tools``) is recorded in tool
+            # metadata. Multi-sentinel cartridges where each sentinel
+            # has a different schema should put a schema on each
+            # tool.yaml and add a hook for cross-sentinel cross-checks
+            # — there is no v1.0/v1.1 loader feature for a per-sentinel
+            # schema map (deliberate: keeps the loader contract small).
             if (
                 spec.name == config.done_tool
                 and config.output_schema is None
@@ -3005,14 +3158,53 @@ def _workspace_to_preset_inner(
     # it; this warning lets a builder catch the typo at load time
     # without breaking those use cases.
     if config.done_tool and config.done_tool not in registry.tool_names:
-        msg = (
-            f"config.yaml declares ``done_tool: {config.done_tool!r}`` but no "
-            f"such tool is registered. Available tools: {sorted(registry.tool_names)}. "
-            f"Add a ``tools/{config.done_tool}/`` directory or fix the "
-            f"``done_tool:`` field. The loop will fail at the agent's first "
-            f"done() call."
-        )
-        logger.warning("%s", msg)
+        # Suppress the warning when v1.1 ``done_tools:`` is in play —
+        # the cartridge has explicitly opted into a different terminal
+        # set, and the legacy default ``done`` may be irrelevant.
+        if not config.done_tools:
+            msg = (
+                f"config.yaml declares ``done_tool: {config.done_tool!r}`` but no "
+                f"such tool is registered. Available tools: {sorted(registry.tool_names)}. "
+                f"Add a ``tools/{config.done_tool}/`` directory or fix the "
+                f"``done_tool:`` field. The loop will fail at the agent's first "
+                f"done() call."
+            )
+            logger.warning("%s", msg)
+    # v1.1 ``done_tools:`` plural — same sanity check applied to each
+    # extra terminal sentinel.
+    for extra_done in config.done_tools:
+        if extra_done and extra_done not in registry.tool_names:
+            logger.warning(
+                "config.yaml declares ``done_tools: [..., %r, ...]`` but no such tool "
+                "is registered. Available tools: %s.",
+                extra_done,
+                sorted(registry.tool_names),
+            )
+
+    # ── v1.1 prompt files: briefing + recovery ──────────────────────
+    # ``prompts/briefing.md`` (auto-prepended every step) and
+    # ``prompts/recovery.md`` (injected after a tool error) are
+    # opt-in: when present, the loader auto-instantiates a
+    # StaticBriefingHook / RecoveryHintHook and prepends them so
+    # they fire BEFORE any user hooks. Absent files mean no hook is
+    # attached (zero overhead).
+    briefing_path = root / CartridgeLayout.BRIEFING_MD
+    recovery_path = root / CartridgeLayout.RECOVERY_MD
+    if briefing_path.is_file() or recovery_path.is_file():
+        from looplet.prompt_files import RecoveryHintHook, StaticBriefingHook  # noqa: PLC0415
+
+        prompt_hooks: list[Any] = []
+        if briefing_path.is_file():
+            text = briefing_path.read_text(encoding="utf-8")
+            prompt_hooks.append(StaticBriefingHook(text=text))
+        if recovery_path.is_file():
+            text = recovery_path.read_text(encoding="utf-8")
+            prompt_hooks.append(RecoveryHintHook(text=text))
+        # Prepend so these fire before user-declared hooks (which may
+        # build on the briefing) and ahead of permission/built-in hooks
+        # (which fire on dispatch boundaries; relative order doesn't
+        # matter there).
+        hooks = [*prompt_hooks, *hooks]
 
     preset = AgentPreset(
         config=config,

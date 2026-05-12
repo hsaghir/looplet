@@ -1,15 +1,18 @@
 """Shared repo_config — points at the git repository to analyze.
 
-The host calls ``cartridge_to_preset(path, runtime={"workspace": "/path/to/repo"})``
-and this builder reads ``runtime["workspace"]``. Every git_detective tool
-declares ``requires: [repo_config]`` in its ``tool.yaml`` and reads
-this via ``ctx.resources["repo_config"]`` so the same workspace can
-be pointed at any repo by changing one runtime kwarg.
+Resolved via :func:`looplet.cartridge.runtime_helpers.resolve_project_root`,
+so a host running the agent from inside the target repo doesn't need
+to pass any runtime kwargs. Hosts that want to point at a different
+repo can pass ``runtime={"project_root": "/path/to/other/repo"}``
+(or set ``$LOOPLET_PROJECT_ROOT``).
 
-For back-compat, the legacy ``runtime["repo"]`` key is still honoured.
+Legacy ``runtime["workspace"]`` and ``runtime["repo"]`` keys are
+still honoured for back-compat.
 """
 
 from dataclasses import dataclass
+
+from looplet.cartridge.runtime_helpers import resolve_project_root
 
 
 @dataclass
@@ -19,7 +22,8 @@ class RepoConfig:
 
 def build(runtime=None):
     runtime = runtime or {}
-    # Prefer the standardised ``workspace`` key; fall back to ``repo``
-    # for cartridges built before the convention was unified.
-    path = runtime.get("workspace") or runtime.get("repo") or "."
-    return RepoConfig(path=str(path))
+    # ``repo`` is the legacy git_detective-specific key; honour it
+    # before falling through to the standard resolution chain.
+    if runtime.get("repo"):
+        return RepoConfig(path=str(runtime["repo"]))
+    return RepoConfig(path=resolve_project_root(runtime))

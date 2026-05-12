@@ -7,7 +7,8 @@ returned ``collect_test_results`` closure has
 so the snapshot writer's ``_origin_chw_resource_file`` pre-pass
 copies THIS file verbatim instead of falling back to a None-stub.
 
-Reads ``runtime['workspace']`` for the project root and an
+Reads the project root via
+:func:`looplet.cartridge.runtime_helpers.resolve_project_root` and an
 optional ``runtime['test_timeout_s']`` (default 60).
 """
 
@@ -16,10 +17,12 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+from looplet.cartridge.runtime_helpers import resolve_project_root
+
 
 def build(runtime=None):
     runtime = runtime or {}
-    workspace = str(runtime.get("workspace", "."))
+    workspace = resolve_project_root(runtime)
     timeout_s = int(runtime.get("test_timeout_s", 60))
 
     def collect_test_results(state) -> dict:

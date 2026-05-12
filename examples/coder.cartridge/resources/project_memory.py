@@ -3,10 +3,11 @@
 workspace round-trip can copy this builder verbatim instead of trying
 to re-import a lambda from coder_lib_wiring.
 
-Reads ``runtime['workspace']`` for the project root and
+Reads the project root via
+:func:`looplet.cartridge.runtime_helpers.resolve_project_root` and
 ``runtime['max_steps']`` for the budget hint surfaced to the agent.
-Falls back to ``"."`` and ``20`` respectively when unset so the
-builder still works in standalone test loads.
+Falls back to ``20`` for max_steps when unset so the builder still
+works in standalone test loads.
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ import subprocess
 from pathlib import Path
 
 from looplet import CallableMemorySource
+from looplet.cartridge.runtime_helpers import resolve_project_root
 
 
 def _project_context(workspace: str) -> str:
@@ -39,7 +41,7 @@ def _project_context(workspace: str) -> str:
 
 def build(runtime=None) -> CallableMemorySource:
     runtime = runtime or {}
-    workspace = str(runtime.get("workspace", "."))
+    workspace = resolve_project_root(runtime)
     max_steps = int(runtime.get("max_steps", 20))
     project_ctx = _project_context(workspace)
 

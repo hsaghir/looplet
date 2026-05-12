@@ -2,7 +2,8 @@
 instructions (CLAUDE.md / AGENTS.md / etc.). Returns ``None`` when
 nothing is found so the loader skips the entry.
 
-Reads ``runtime['workspace']`` for the project root.
+Resolves the project root via
+:func:`looplet.cartridge.runtime_helpers.resolve_project_root`.
 """
 
 from __future__ import annotations
@@ -10,6 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from looplet import StaticMemorySource
+from looplet.cartridge.runtime_helpers import resolve_project_root
 
 _INSTRUCTION_FILES = (
     "CLAUDE.md",
@@ -31,8 +33,7 @@ def _discover(workspace: str) -> str:
 
 
 def build(runtime=None):
-    runtime = runtime or {}
-    workspace = str(runtime.get("workspace", "."))
+    workspace = resolve_project_root(runtime)
     text = _discover(workspace)
     if not text:
         # Returning ``None`` is honoured by the loader's

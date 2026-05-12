@@ -1,6 +1,6 @@
 class_name: LinterHook
-kwargs:
-  # Default to "." so the cartridge can be strict-loaded without
-  # the host having to pass runtime={"workspace": ...}. Hosts that
-  # care set runtime["workspace"] to override.
-  workspace: ${runtime.workspace:-.}
+# No kwargs needed: the hook resolves the project root via
+# looplet.cartridge.runtime_helpers.resolve_project_root() at
+# instantiation time (runtime['project_root'], $LOOPLET_PROJECT_ROOT,
+# git toplevel, or cwd).
+kwargs: {}

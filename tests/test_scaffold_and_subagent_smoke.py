@@ -333,7 +333,7 @@ def test_subagent_warns_on_cwd_fallback(tmp_path: Path) -> None:
     ctx = ToolContext(llm=mock, resources={}, metadata={})
     result = spec.execute(ctx, workspace=str(child), task="hi", max_steps=3)
     assert "warning" in result, result
-    assert "defaulted to cwd" in result["warning"]
+    assert "project root will be resolved" in result["warning"]
 
 
 def test_validate_workspace_no_false_positive_on_legitimate_todo_prose(tmp_path: Path) -> None:

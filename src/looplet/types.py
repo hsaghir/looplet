@@ -448,10 +448,19 @@ class DefaultState:
         import json as _json  # noqa: PLC0415
 
         from looplet.context_budget import (  # noqa: PLC0415
-            CONTEXT_INLINE_PER_STEP_CHARS,
-            CONTEXT_WINDOW_STEPS,
-            CONTEXT_WINDOW_TOTAL_CHARS,
+            get_context_inline_per_step_chars,
+            get_context_window_steps,
+            get_context_window_total_chars,
         )
+
+        # Read overrides set by composable_loop from LoopConfig (or
+        # fall back to the env-overridable module defaults). This is
+        # the path that lets a cartridge declare
+        # ``context_window_steps: 20`` in config.yaml without forcing
+        # the host process to set the env var at boot time.
+        CONTEXT_WINDOW_STEPS = get_context_window_steps()
+        CONTEXT_INLINE_PER_STEP_CHARS = get_context_inline_per_step_chars()
+        CONTEXT_WINDOW_TOTAL_CHARS = get_context_window_total_chars()
 
         # Pass 1: render each step in the window with per-step cap.
         # The first tuple element is just an ordering tag (we don't use

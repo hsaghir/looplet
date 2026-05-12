@@ -259,3 +259,38 @@ The right pattern is to scrub **at the boundary, not in the loop**:
 The general principle: **never silently change what the LLM sees
 mid-conversation.** The model doesn't know the substitution happened
 and will reconstruct what it thinks the missing piece "should be."
+
+
+## 14. Default `context_window_steps=5` silently elides chained-tool source data
+
+The loop's `RECENT RESULTS` block inlines the **last N steps' tool
+results** into every prompt. The default `N` is 5 (env
+`CONTEXT_WINDOW_STEPS`, set in `looplet.context_budget`). Older steps'
+data rolls out and is only summarized in `SESSION LOG` as the agent's
+*reasoning text*, not the actual tool output.
+
+For chained tool-use cartridges where step *M* needs to reference
+data returned by step *M-K* (with K > 5), the LLM no longer sees
+the source-of-truth value. It does not say "I don't know" — it
+*reconstructs* a plausible value and proceeds. This was
+mis-diagnosed as model hallucination in the SOC-triage dogfood;
+the actual root cause was the agent's `lookup_user(...)` at step 8
+referring to a username from `get_alert(...)` at step 1, which had
+already aged out of the recent-results window.
+
+```yaml
+# config.yaml — declare a wider window when your agent chains tools
+# across many steps:
+context_window_steps: 30                   # default 5
+context_window_total_chars: 60000          # default 20 000
+context_inline_per_step_chars: 5000        # default 3 000
+```
+
+These map onto `LoopConfig.context_window_steps` etc., which override
+the env defaults for the run.
+
+**How to spot it:** wrap your backend with `ProvenanceSink` and
+`grep` the trace for the value the agent later invents. If the value
+*was* in the prompt at the call where it first appeared correctly
+but *isn't* in the prompt at the call where it appears wrong, your
+window is too narrow.

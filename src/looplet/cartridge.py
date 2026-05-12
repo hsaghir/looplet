@@ -224,6 +224,9 @@ class CartridgeLayout:
         "acceptance_criteria",
         "tool_metadata",
         "generate_kwargs",
+        "context_window_steps",
+        "context_inline_per_step_chars",
+        "context_window_total_chars",
     )
 
     # ``LoopConfig`` callable / opaque fields that cannot round-trip.

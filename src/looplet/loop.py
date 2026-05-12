@@ -546,6 +546,34 @@ class LoopConfig:
     a truncation note.  None = no limit.
     """
 
+    # ── Recent-results window (per-cartridge override of env defaults) ─
+
+    context_window_steps: int | None = None
+    """How many recent steps to inline in the LLM's RECENT RESULTS section.
+
+    The default (``None``) reads :data:`looplet.context_budget.CONTEXT_WINDOW_STEPS`
+    (env var ``CONTEXT_WINDOW_STEPS``, default 5). For chained tool-use
+    cartridges where step N references data from step N-K (K > 5), set
+    this higher so the source data stays in the LLM's view. A SOC
+    triage cartridge that pivots from ``get_alert`` (step 1) to
+    ``lookup_user`` (step 8) needs at least 8 here, or it will
+    hallucinate a username that wasn't in its context.
+    """
+
+    context_inline_per_step_chars: int | None = None
+    """Per-step soft cap on inlined recent-result size (characters).
+    ``None`` reads :data:`looplet.context_budget.CONTEXT_INLINE_PER_STEP_CHARS`
+    (env default 3000). Increase for tools that return rich JSON the
+    agent must reason over downstream.
+    """
+
+    context_window_total_chars: int | None = None
+    """Aggregate cap across the entire recent-results window. ``None``
+    reads :data:`looplet.context_budget.CONTEXT_WINDOW_TOTAL_CHARS`
+    (env default 20 000). The largest steps are progressively
+    truncated when the total exceeds this.
+    """
+
     # ── Optional wired capabilities ──────────────────────────────
 
     router: ModelRouter | None = None
@@ -1441,6 +1469,45 @@ def composable_loop(
         config.system_prompt = system_prompt
     if hooks is None:
         hooks = []
+
+    # ── Per-run context-window overrides ────────────────────────
+    # Push LoopConfig overrides into the contextvars consumed by
+    # ``DefaultState.context_summary``. Each is reset in the
+    # ``finally`` at the end of the loop. Without this, cartridges
+    # had no path to override the env-default
+    # ``CONTEXT_WINDOW_STEPS=5``, which silently elided source-of-truth
+    # tool results past 5 steps and caused chained-tool-use agents to
+    # invent plausible-looking arguments for downstream calls.
+    from looplet.context_budget import (  # noqa: PLC0415
+        _CONTEXT_INLINE_PER_STEP_CHARS_OVERRIDE,
+        _CONTEXT_WINDOW_STEPS_OVERRIDE,
+        _CONTEXT_WINDOW_TOTAL_CHARS_OVERRIDE,
+    )
+
+    _ctx_tokens: list[tuple[Any, Any]] = []
+    if config.context_window_steps is not None:
+        _ctx_tokens.append(
+            (
+                _CONTEXT_WINDOW_STEPS_OVERRIDE,
+                _CONTEXT_WINDOW_STEPS_OVERRIDE.set(int(config.context_window_steps)),
+            )
+        )
+    if config.context_inline_per_step_chars is not None:
+        _ctx_tokens.append(
+            (
+                _CONTEXT_INLINE_PER_STEP_CHARS_OVERRIDE,
+                _CONTEXT_INLINE_PER_STEP_CHARS_OVERRIDE.set(
+                    int(config.context_inline_per_step_chars)
+                ),
+            )
+        )
+    if config.context_window_total_chars is not None:
+        _ctx_tokens.append(
+            (
+                _CONTEXT_WINDOW_TOTAL_CHARS_OVERRIDE,
+                _CONTEXT_WINDOW_TOTAL_CHARS_OVERRIDE.set(int(config.context_window_total_chars)),
+            )
+        )
 
     # ── Input guards ────────────────────────────────────────────
     if not callable(getattr(llm, "generate", None)):
@@ -2602,6 +2669,13 @@ def composable_loop(
             "total_time_ms": elapsed,
             "conversation": _conv,
         }
+    # Reset per-run context-window overrides so the next loop in the
+    # same process sees a clean slate.
+    for var, token in _ctx_tokens:
+        try:
+            var.reset(token)
+        except (LookupError, ValueError):
+            pass
     return trace
 
 

@@ -53,6 +53,7 @@ from looplet.cartridge import (
     preset_to_cartridge,
     resource_ref_for,
 )
+from looplet.cartridge.scaffold import scaffold_cartridge
 from looplet.checkpoint import FileCheckpointStore
 from looplet.compact import (
     CompactOutcome,
@@ -135,7 +136,6 @@ from looplet.presets import (
 from looplet.prompts import preview_prompt
 from looplet.provenance import ProvenanceSink, TrajectoryRecorder, replay_loop
 from looplet.resilient import ResilientBackend, RetryExhausted
-from looplet.scaffold import scaffold_cartridge
 from looplet.session import SessionLog
 from looplet.skills import (
     FileSkillStore,

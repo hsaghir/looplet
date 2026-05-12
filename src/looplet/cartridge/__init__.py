@@ -2689,7 +2689,7 @@ def _workspace_to_preset_inner(
     # carrying provider / name / reasoning_effort for downstream
     # tooling to read.
     if _model_block is not None:
-        from looplet.spec_slots import compile_model_block  # noqa: PLC0415
+        from looplet.cartridge.spec_slots import compile_model_block  # noqa: PLC0415
 
         try:
             model_overrides = compile_model_block(_model_block, existing_cfg=cfg_kwargs)
@@ -2920,7 +2920,7 @@ def _workspace_to_preset_inner(
                 and config.output_schema is None
                 and isinstance(yaml_payload.get("output_schema"), dict)
             ):
-                from looplet.spec_slots import compile_output_schema  # noqa: PLC0415
+                from looplet.cartridge.spec_slots import compile_output_schema  # noqa: PLC0415
 
                 try:
                     config.output_schema = compile_output_schema(
@@ -3191,7 +3191,10 @@ def _workspace_to_preset_inner(
     briefing_path = root / CartridgeLayout.BRIEFING_MD
     recovery_path = root / CartridgeLayout.RECOVERY_MD
     if briefing_path.is_file() or recovery_path.is_file():
-        from looplet.prompt_files import RecoveryHintHook, StaticBriefingHook  # noqa: PLC0415
+        from looplet.cartridge.prompt_files import (  # noqa: PLC0415
+            RecoveryHintHook,
+            StaticBriefingHook,
+        )
 
         prompt_hooks: list[Any] = []
         if briefing_path.is_file():
@@ -3222,7 +3225,7 @@ def _workspace_to_preset_inner(
     # ``setup.py`` (below) can still override either, by design.
 
     if _permissions_block is not None:
-        from looplet.spec_slots import compile_permissions_block  # noqa: PLC0415
+        from looplet.cartridge.spec_slots import compile_permissions_block  # noqa: PLC0415
 
         try:
             permission_hook = compile_permissions_block(_permissions_block)
@@ -3245,7 +3248,7 @@ def _workspace_to_preset_inner(
         if isinstance(explicit, str) and explicit:
             long_term_path = (root / explicit).resolve()
     if long_term_path is None:
-        from looplet.spec_slots import default_long_term_memory_path  # noqa: PLC0415
+        from looplet.cartridge.spec_slots import default_long_term_memory_path  # noqa: PLC0415
 
         candidate = root / default_long_term_memory_path()
         if candidate.is_file():

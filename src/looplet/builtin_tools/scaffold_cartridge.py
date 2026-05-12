@@ -22,7 +22,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from looplet.scaffold import scaffold_cartridge as _scaffold
+from looplet.cartridge.scaffold import scaffold_cartridge as _scaffold
 from looplet.tools import ToolSpec
 from looplet.types import ToolContext
 

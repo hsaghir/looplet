@@ -2452,8 +2452,18 @@ def composable_loop(
                         gate_warning = _decision.block or "blocked by hook"
                         break
 
-            # Output schema validation — reject done() if payload is invalid
-            if gate_warning is None and config.output_schema is not None:
+            # Output schema validation — reject done() if payload is invalid.
+            # Per Cartridge Spec v1.1: output_schema attaches only to the
+            # PRIMARY ``done_tool``. Secondary ``done_tools`` (the v1.1
+            # plural sentinels) have their own (different) payloads and
+            # are not validated by the loop. Without this guard, the
+            # loop would reject a perfectly valid ``escalate`` payload
+            # because it doesn't match the schema authored for ``resolve``.
+            if (
+                gate_warning is None
+                and config.output_schema is not None
+                and tool_call.tool == config.done_tool
+            ):
                 validation = _validate_args(config.output_schema, tool_call.args)
                 if not validation.valid:
                     gate_warning = (

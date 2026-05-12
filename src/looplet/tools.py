@@ -592,7 +592,7 @@ class BaseToolRegistry:
 
         Tools whose ``ToolSpec.requires`` lists a resource name receive
         the resolved instance through ``ctx.resources[name]`` at
-        dispatch time. Workspace's ``workspace_to_preset`` calls
+        dispatch time. Workspace's ``cartridge_to_preset`` calls
         this with the loaded ``resources/<name>.py`` builders' output;
         in-process callers can call it directly to wire a registry.
         """
@@ -610,14 +610,22 @@ class BaseToolRegistry:
         multiple ``Skill`` bundles that happen to share a tool name.
         """
         if spec.name in self._tools:
-            import logging  # noqa: PLC0415
+            existing = self._tools[spec.name]
+            # Suppress the warning when the "new" registration is the
+            # *same object* as the existing one. This is the common
+            # case when a child cartridge inherits a built-in tool
+            # via ``extends:`` and the same built-in is also listed in
+            # its own ``builtin_tools:``. The two registrations point
+            # at the same ToolSpec; warning would be noise.
+            if existing is not spec:
+                import logging  # noqa: PLC0415
 
-            logging.getLogger(__name__).warning(
-                "Tool %r is already registered — overwriting. "
-                "This usually indicates a name collision between skills "
-                "or tool bundles; give one of them a unique name.",
-                spec.name,
-            )
+                logging.getLogger(__name__).warning(
+                    "Tool %r is already registered — overwriting. "
+                    "This usually indicates a name collision between skills "
+                    "or tool bundles; give one of them a unique name.",
+                    spec.name,
+                )
         # Eagerly compute ctx-acceptance so dispatch is thread-safe.
         if spec._accepts_ctx is None:
             spec._accepts_ctx = _accepts_ctx(spec.execute)

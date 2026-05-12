@@ -9,8 +9,8 @@ path*, not in the diff content.
 Run::
 
     uv run python examples/snippets/03_diff/diff_workspaces.py \
-        examples/coder.workspace \
-        examples/snippets/01_inheritance/refactorer.workspace
+        examples/coder.cartridge \
+        examples/snippets/01_inheritance/refactorer.cartridge
 """
 
 from __future__ import annotations

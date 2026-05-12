@@ -86,12 +86,12 @@ def test_run_workspace_path_must_exist(monkeypatch: pytest.MonkeyPatch, tmp_path
 
 def test_factory_workspace_path_resolves_in_repo() -> None:
     """``_factory_workspace_path`` finds the bundled
-    examples/agent_factory.workspace when run from the repo."""
+    examples/agent_factory.cartridge when run from the repo."""
     from looplet.cli.factory_commands import _factory_workspace_path
 
     p = _factory_workspace_path()
     assert p.is_dir()
-    assert (p / "workspace.json").is_file()
+    assert (p / "cartridge.json").is_file()
     assert (p / "config.yaml").is_file()
 
 

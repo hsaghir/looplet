@@ -7,11 +7,11 @@ Inheritance chains arbitrarily deep — exactly like classes.
 This snippet ships a **two-hop chain**:
 
 ```
-coder.workspace                              (bundled)
+coder.cartridge                              (bundled)
   ↑ extends
-refactorer.workspace                         (this snippet)
+refactorer.cartridge                         (this snippet)
   ↑ extends
-pytest_refactorer.workspace                  (this snippet)
+pytest_refactorer.cartridge                  (this snippet)
 ```
 
 The middle cartridge narrows `coder` to a Python-only refactoring
@@ -24,27 +24,27 @@ or forking anything.
 
 ```text
 01_inheritance/
-├── refactorer.workspace/
+├── refactorer.cartridge/
 │   ├── workspace.json
-│   ├── config.yaml          # extends ../../../coder.workspace
+│   ├── config.yaml          # extends ../../../coder.cartridge
 │   └── prompts/system.md    # narrower mission
-└── pytest_refactorer.workspace/
+└── pytest_refactorer.cartridge/
     ├── workspace.json
-    ├── config.yaml          # extends ../refactorer.workspace
+    ├── config.yaml          # extends ../refactorer.cartridge
     └── prompts/system.md    # adds pytest discipline
 ```
 
-`refactorer.workspace/config.yaml` in full:
+`refactorer.cartridge/config.yaml` in full:
 
 ```yaml
-extends: ../../../coder.workspace
+extends: ../../../coder.cartridge
 max_steps: 12
 ```
 
-`pytest_refactorer.workspace/config.yaml` in full:
+`pytest_refactorer.cartridge/config.yaml` in full:
 
 ```yaml
-extends: ../refactorer.workspace
+extends: ../refactorer.cartridge
 max_steps: 16
 ```
 
@@ -57,9 +57,9 @@ copy-pasted tool registrations.
 uv run python -c "
 from looplet import workspace_to_preset
 for ws in [
-    'examples/coder.workspace',
-    'examples/snippets/01_inheritance/refactorer.workspace',
-    'examples/snippets/01_inheritance/pytest_refactorer.workspace',
+    'examples/coder.cartridge',
+    'examples/snippets/01_inheritance/refactorer.cartridge',
+    'examples/snippets/01_inheritance/pytest_refactorer.cartridge',
 ]:
     p = workspace_to_preset(ws, runtime={'workspace': '.'})
     n_tools = len(p.tools.introspect()['tools'])
@@ -70,9 +70,9 @@ for ws in [
 Expected output:
 
 ```
-examples/coder.workspace                                     max_steps= 20  tools=16
-examples/snippets/01_inheritance/refactorer.workspace        max_steps= 12  tools=16
-examples/snippets/01_inheritance/pytest_refactorer.workspace max_steps= 16  tools=16
+examples/coder.cartridge                                     max_steps= 20  tools=16
+examples/snippets/01_inheritance/refactorer.cartridge        max_steps= 12  tools=16
+examples/snippets/01_inheritance/pytest_refactorer.cartridge max_steps= 16  tools=16
 ```
 
 All three levels share the same tool registry; each level overrides

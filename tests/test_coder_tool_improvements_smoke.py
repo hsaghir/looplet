@@ -1,4 +1,4 @@
-"""Smoke tests for coder.workspace tool improvements.
+"""Smoke tests for coder.cartridge tool improvements.
 
 Covers:
   1. ``edit_file`` refuses without a prior ``read_file`` in the session.
@@ -23,7 +23,7 @@ from pathlib import Path
 import pytest
 
 # Make ``coder_lib_tools`` importable for the classifier-only tests.
-_CODER_DIR = Path(__file__).resolve().parents[1] / "examples" / "coder.workspace"
+_CODER_DIR = Path(__file__).resolve().parents[1] / "examples" / "coder.cartridge"
 sys.path.insert(0, str(_CODER_DIR))
 
 from coder_lib_tools import (  # noqa: E402
@@ -32,7 +32,7 @@ from coder_lib_tools import (  # noqa: E402
     classify_view_command,
 )
 
-from looplet import workspace_to_preset  # noqa: E402
+from looplet import cartridge_to_preset  # noqa: E402
 from looplet.types import ToolCall  # noqa: E402
 
 
@@ -40,7 +40,7 @@ from looplet.types import ToolCall  # noqa: E402
 def preset():
     with tempfile.TemporaryDirectory() as td:
         Path(td, "foo.py").write_text("hello\n")
-        yield workspace_to_preset(str(_CODER_DIR), runtime={"workspace": td})
+        yield cartridge_to_preset(str(_CODER_DIR), runtime={"workspace": td})
 
 
 def test_edit_file_refuses_without_prior_read(preset):

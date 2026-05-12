@@ -8,7 +8,7 @@ their input.
 
 ## ``looplet new <description>``
 
-Runs the bundled :mod:`agent_factory.workspace` against a brief and
+Runs the bundled :mod:`agent_factory.cartridge` against a brief and
 writes the produced workspace to a directory. After this completes,
 ``./<name>.workspace/`` contains a fully-loaded looplet workspace.
 
@@ -100,24 +100,29 @@ def _build_backend():
 
 
 def _factory_workspace_path() -> Path:
-    """Locate the bundled ``examples/agent_factory.workspace`` directory.
+    """Locate the bundled ``examples/agent_factory.cartridge`` directory.
 
-    Looplet ships with this workspace in the repo's ``examples/``
+    Looplet ships with this cartridge in the repo's ``examples/``
     folder. When installed via ``pip install``, the examples may not
     be co-packaged; in that case we fall back to ``LOOPLET_FACTORY_DIR``
     or print a clear error.
+
+    Accepts both the spec name (``agent_factory.cartridge``) and the
+    historical ``agent_factory.cartridge`` so external checkouts
+    pinned to an older revision still work.
     """
-    # Walk up from this file looking for examples/agent_factory.workspace.
+    # Walk up from this file looking for the bundled factory directory.
     here = Path(__file__).resolve()
     for parent in [here.parent, *here.parents]:
-        candidate = parent / "examples" / "agent_factory.workspace"
-        if candidate.is_dir():
-            return candidate
+        for suffix in ("agent_factory.cartridge", "agent_factory.cartridge"):
+            candidate = parent / "examples" / suffix
+            if candidate.is_dir():
+                return candidate
     env_override = os.environ.get("LOOPLET_FACTORY_DIR")
     if env_override and Path(env_override).is_dir():
         return Path(env_override)
     raise FileNotFoundError(
-        "Could not locate examples/agent_factory.workspace. "
+        "Could not locate examples/agent_factory.cartridge. "
         "Set LOOPLET_FACTORY_DIR to point at it, or run from the looplet repo."
     )
 
@@ -129,7 +134,9 @@ def cmd_new(args: argparse.Namespace) -> int:
 
     description: str = args.description
     target_dir: Path = args.target.resolve()
-    name: str = args.name or target_dir.name.replace(".workspace", "").replace("-", "_")
+    name: str = args.name or target_dir.name.replace(".cartridge", "").replace(
+        ".workspace", ""
+    ).replace("-", "_")
     tools: list[str] = args.tool or []
 
     print(f"{_bold('looplet new')} → {target_dir}")
@@ -143,7 +150,7 @@ def cmd_new(args: argparse.Namespace) -> int:
         print(_dim(f"  model:  {os.environ['OPENAI_MODEL']}"))
         print()
     try:
-        from looplet import composable_loop, workspace_to_preset  # noqa: PLC0415
+        from looplet import cartridge_to_preset, composable_loop  # noqa: PLC0415
         from looplet.types import DefaultState  # noqa: PLC0415
 
         factory = _factory_workspace_path()
@@ -165,7 +172,7 @@ def cmd_new(args: argparse.Namespace) -> int:
 
     try:
         backend = _build_backend()
-        preset = workspace_to_preset(str(factory), runtime=runtime)
+        preset = cartridge_to_preset(str(factory), runtime=runtime)
     except Exception as exc:
         print(_red(f"error: factory load failed: {exc}"), file=sys.stderr)
         return 1
@@ -249,7 +256,7 @@ def cmd_new(args: argparse.Namespace) -> int:
         print(_red(f"\nerror: workspace not created at {target_dir}"), file=sys.stderr)
         return 1
     try:
-        sub_preset = workspace_to_preset(str(target_dir))
+        sub_preset = cartridge_to_preset(str(target_dir))
         produced_tools = sorted(sub_preset.tools._tools.keys())
         n_tools = len(produced_tools)
         sys_prompt_chars = len(sub_preset.config.system_prompt or "")
@@ -285,7 +292,7 @@ def cmd_run_workspace(args: argparse.Namespace) -> int:
         return 1
 
     try:
-        from looplet import composable_loop, workspace_to_preset  # noqa: PLC0415
+        from looplet import cartridge_to_preset, composable_loop  # noqa: PLC0415
         from looplet.types import DefaultState  # noqa: PLC0415
     except Exception as exc:
         print(_red(f"error: {exc}"), file=sys.stderr)
@@ -299,7 +306,7 @@ def cmd_run_workspace(args: argparse.Namespace) -> int:
 
     try:
         backend = _build_backend()
-        preset = workspace_to_preset(
+        preset = cartridge_to_preset(
             str(workspace_path), runtime={"workspace": str(workspace_path.parent)}
         )
     except Exception as exc:
@@ -420,19 +427,21 @@ def add_subparsers(sub: "argparse._SubParsersAction") -> None:
     new_p.set_defaults(_handler=cmd_new)
 
     run_p = sub.add_parser(
-        "run-workspace",
-        help="Run a workspace on a task and print the final result",
+        "run-cartridge",
+        aliases=["run-workspace"],
+        help="Run a cartridge on a task and print the final result",
         description=(
-            "Load an existing looplet workspace and run it against a task. "
-            "Requires the same env vars as ``looplet new``."
+            "Load an existing looplet cartridge and run it against a task. "
+            "Requires the same env vars as ``looplet new``. "
+            "``run-workspace`` is a back-compat alias."
         ),
     )
-    run_p.add_argument("workspace", type=Path, help="Path to a workspace directory")
+    run_p.add_argument("workspace", type=Path, help="Path to a cartridge directory")
     run_p.add_argument("task", help="Task to give the agent")
     run_p.add_argument(
         "--max-steps",
         type=int,
-        help="Override the workspace's default max_steps",
+        help="Override the cartridge's default max_steps",
     )
     run_p.add_argument("--quiet", action="store_true", help="Suppress per-step output")
     run_p.add_argument(

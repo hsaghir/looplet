@@ -6,11 +6,11 @@ import time
 from pathlib import Path
 
 from looplet.hot_reload import WorkspaceWatcher, fingerprint_workspace
-from looplet.scaffold import scaffold_workspace
+from looplet.scaffold import scaffold_cartridge
 
 
 def _scaffold(root: Path, name: str) -> Path:
-    return scaffold_workspace(root, name=name, tools=["greet"])
+    return scaffold_cartridge(root, name=name, tools=["greet"])
 
 
 def test_fingerprint_empty_when_root_missing(tmp_path: Path) -> None:

@@ -1,5 +1,0 @@
-extends: ../coder.workspace
-max_steps: 80
-builtin_tools:
-  - scaffold_workspace
-

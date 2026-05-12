@@ -11,10 +11,10 @@ hide:
 # Agents from a paragraph.
 
 <p class="hero-sub" markdown>
-**looplet** treats agents as data — a workspace is a directory of
+**looplet** treats agents as data — a cartridge is a directory of
 files (`config.yaml`, `prompts/system.md`, `tools/<name>/{tool.yaml,
 execute.py}`) that the loader materialises into a runnable agent.
-The `agent_factory` workspace builds new workspaces from English
+The `agent_factory` cartridge builds new cartridges from English
 briefs; the loop engine runs them. Underneath, the same
 `composable_loop` iterator gives you full control if you'd rather
 hand-write the agent. **Zero runtime dependencies.**
@@ -259,20 +259,20 @@ a step you can log, gate, replay, or evaluate.
 # Load the workspace; pass --workspace to point at the project to audit.
 OPENAI_BASE_URL=http://127.0.0.1:11434/v1 \
 OPENAI_API_KEY=ollama OPENAI_MODEL=llama3.1 \
-python -c "from looplet import workspace_to_preset; \
-p = workspace_to_preset('examples/dep_doctor.workspace', runtime={'workspace': '/path/to/project'})"
+python -c "from looplet import cartridge_to_preset; \
+p = cartridge_to_preset('examples/dep_doctor.cartridge', runtime={'workspace': '/path/to/project'})"
 ```
 
-Then explore `examples/git_detective.workspace/` for codebase-health reports,
-`examples/threat_intel.workspace/` for local-first security briefings, and
-`examples/coder.workspace/` for a coding-agent reference implementation —
+Then explore `examples/git_detective.cartridge/` for codebase-health reports,
+`examples/threat_intel.cartridge/` for local-first security briefings, and
+`examples/coder.cartridge/` for a coding-agent reference implementation —
 each is a self-contained Workspace under
 [`examples/`](https://github.com/hsaghir/looplet/tree/master/examples)
-that round-trips losslessly with an `AgentPreset` via `preset_to_workspace`
-/ `workspace_to_preset`.
+that round-trips losslessly with an `AgentPreset` via `preset_to_cartridge`
+/ `cartridge_to_preset`.
 
 ```bash
-# More dogfood — load each workspace and run a scripted loop.
+# More dogfood — load each cartridge and run a scripted loop.
 python -m looplet.examples.hello_world --scripted
 python -m looplet.examples.ollama_hello --scripted
 python -m looplet.examples.coding_agent "Implement add" --scripted --workspace /tmp/demo

@@ -1,10 +1,10 @@
 # The agent factory
 
 Looplet's killer feature: describe the agent you want in one
-paragraph, get a working workspace back in a few minutes. The factory
-is built on the same primitives ([`extends:`](workspace.md#extends),
-[`builtin_tools:`](workspace.md#builtin-tools),
-[`scaffold_workspace`](#scaffold_workspace)) you'd use to hand-roll an
+paragraph, get a working cartridge back in a few minutes. The factory
+is built on the same primitives ([`extends:`](cartridge.md#extends),
+[`builtin_tools:`](cartridge.md#builtin-tools),
+[`scaffold_cartridge`](#scaffold_cartridge)) you'd use to hand-roll an
 agent — it's just an agent that builds other agents.
 
 ![looplet new — agents from a paragraph, in one command](looplet_new.gif)
@@ -21,10 +21,10 @@ export OPENAI_MODEL=gpt-5.5                       # or claude-sonnet-4.6, llama3
 
 # 2. Generate the agent.
 looplet new "an agent that takes a URL and returns the page title and a 2-sentence summary" \
-    ./url_summarizer.workspace
+    ./url_summarizer.cartridge
 
 # 3. Run it on a real task.
-looplet run-workspace ./url_summarizer.workspace "Summarize https://example.com"
+looplet run-workspace ./url_summarizer.cartridge "Summarize https://example.com"
 ```
 
 That's the entire user-facing API. No Python code required to get a
@@ -34,11 +34,11 @@ working agent.
 
 ## What the factory writes
 
-For each `looplet new` invocation, the produced workspace contains:
+For each `looplet new` invocation, the produced cartridge contains:
 
 ```
-my_agent.workspace/
-├── workspace.json          # {"name": "my_agent", "schema_version": 1}
+my_agent.cartridge/
+├── cartridge.json          # {"name": "my_agent", "schema_version": 1}
 ├── config.yaml             # max_steps, max_tokens, temperature, done_tool
 ├── prompts/system.md       # role + tools + workflow + when to call done
 ├── tools/<name>/
@@ -58,12 +58,12 @@ produces correctly-formatted output.
 
 ### `looplet new <description> [target]`
 
-Generate a workspace from a brief.
+Generate a cartridge from a brief.
 
 | Flag | Default | Purpose |
 |---|---|---|
-| `target` (positional) | `./agent.workspace` | Where to write the produced workspace |
-| `--name` | derived from `target` | Workspace name (becomes `workspace.json.name`) |
+| `target` (positional) | `./agent.cartridge` | Where to write the produced cartridge |
+| `--name` | derived from `target` | Workspace name (becomes `cartridge.json.name`) |
 | `--tool TOOL` | _(none)_ | Pre-scaffold a tool by name (repeatable). When omitted, the agent picks tools from the brief. |
 | `--max-steps N` | `80` | Override the factory's max steps |
 | `--quiet` | _(off)_ | Suppress per-step output |
@@ -74,11 +74,11 @@ and picks the tool list itself.
 
 ### `looplet run-workspace <path> <task>`
 
-Load a workspace and run it on a task.
+Load a cartridge and run it on a task.
 
 | Flag | Default | Purpose |
 |---|---|---|
-| `--max-steps N` | from workspace's `config.yaml` | Override |
+| `--max-steps N` | from cartridge's `config.yaml` | Override |
 | `--quiet` | _(off)_ | Suppress per-step output |
 
 ---
@@ -92,14 +92,14 @@ The factory's planning phase recognises three patterns and uses bash + `inspect`
 | Pattern in the brief | What the factory does |
 |---|---|
 | Mentions a CLI on `$PATH` (e.g. `gh`, `kubectl`, `aws`, an internal CLI) | Runs `<cli> --help` and a couple of `<cli> <subcommand> --help` calls; detects `--json` support; writes subprocess-based tool bodies that call the real subcommands |
-| Mentions a Python dotted path (`pkg.module` or `pkg.module:Class`) | Imports it, runs `inspect.signature` on the public callables, and writes tool bodies that call the real methods. For class wraps it uses the workspace `resources/` mechanism: `resources/<name>.py` builds the singleton, every tool declares `requires: [<name>]`, the body looks it up via `ctx.resources["<name>"]` |
+| Mentions a Python dotted path (`pkg.module` or `pkg.module:Class`) | Imports it, runs `inspect.signature` on the public callables, and writes tool bodies that call the real methods. For class wraps it uses the cartridge `resources/` mechanism: `resources/<name>.py` builds the singleton, every tool declares `requires: [<name>]`, the body looks it up via `ctx.resources["<name>"]` |
 | Mentions a local script (`./scripts/foo.sh`, `~/bin/bar.py`) | Reads the file and writes a subprocess- or import-based wrapper from the actual source |
 
 ### Example: wrap the GitHub CLI
 
 ```bash
 looplet new "Wrap the gh CLI as a triage agent that surfaces my open PRs and issues that need attention today" \
-    ./gh_triager.workspace
+    ./gh_triager.cartridge
 ```
 
 Produces tools like:
@@ -124,10 +124,10 @@ The agent picked the right `--json` field set and the right `--author @me` flag 
 
 ```bash
 looplet new "Wrap mycompany.search:SearchClient as a SOC investigator with search/pivot/scan tools, backed by DuckDBBackend(':memory:')" \
-    ./soc_investigator.workspace
+    ./soc_investigator.cartridge
 ```
 
-Produces a workspace with the `resources/` mechanism wired correctly:
+Produces a cartridge with the `resources/` mechanism wired correctly:
 
 ```python
 # resources/searchclient.py
@@ -169,18 +169,18 @@ If the brief is purely greenfield ("an agent that takes a URL and returns the ti
 
 ## What the factory does internally
 
-`agent_factory.workspace` is a workspace itself — see
-`examples/agent_factory.workspace/`. It [`extends:`](workspace.md#extends)
-the bundled `coder.workspace`, so it inherits all coding tools
+`agent_factory.cartridge` is a cartridge itself — see
+`examples/agent_factory.cartridge/`. It [`extends:`](cartridge.md#extends)
+the bundled `coder.cartridge`, so it inherits all coding tools
 (`read_file`, `write_file`, `multi_edit`, `bash`, `grep`, `glob`,
 `list_dir`, `think`) and adds two factory-specific tools:
 
-* **`scaffold_workspace`** — a built-in tool that calls the
-  Python helper `looplet.scaffold.scaffold_workspace()` to write
-  the workspace skeleton in one step. The factory's prompt
+* **`scaffold_cartridge`** — a built-in tool that calls the
+  Python helper `looplet.scaffold.scaffold_cartridge()` to write
+  the cartridge skeleton in one step. The factory's prompt
   instructs the agent to call this FIRST so it skips the
-  boilerplate of writing `workspace.json` etc. by hand.
-* **`validate_workspace`** — runs `workspace_to_preset()` on the
+  boilerplate of writing `cartridge.json` etc. by hand.
+* **`validate_workspace`** — runs `cartridge_to_preset()` on the
   produced path and returns a structured success/error.
 
 The factory's system prompt includes "robustness rules" that get
@@ -209,14 +209,14 @@ top of looplet), you can pre-scaffold the skeleton via runtime
 kwargs. The factory's setup.py honours these:
 
 ```python
-from looplet import workspace_to_preset, composable_loop
+from looplet import cartridge_to_preset, composable_loop
 from looplet.types import DefaultState
 
-preset = workspace_to_preset(
-    "examples/agent_factory.workspace",
+preset = cartridge_to_preset(
+    "examples/agent_factory.cartridge",
     runtime={
         "workspace": "/path/to/your/project",
-        "scaffold_to": "my_agent.workspace",
+        "scaffold_to": "my_agent.cartridge",
         "scaffold_name": "my_agent",
         "scaffold_tools": ["fetch_url", "extract_title", "summarize_text"],
     },
@@ -230,12 +230,12 @@ does under the hood.
 
 ## Quality
 
-Factory output is validated by the smoke-test suite (`tests/test_cli_new_smoke.py`) and dogfood runs across the canonical briefs in [issue #56](https://github.com/hsaghir/looplet/issues/56). Each produced workspace structurally validates via `workspace_to_preset()`, has a non-empty system prompt and `done` tool, and (for wrap-CLI / wrap-class briefs) uses real signatures from the introspected source.
+Factory output is validated by the smoke-test suite (`tests/test_cli_new_smoke.py`) and dogfood runs across the canonical briefs in [issue #56](https://github.com/hsaghir/looplet/issues/56). Each produced workspace structurally validates via `cartridge_to_preset()`, has a non-empty system prompt and `done` tool, and (for wrap-CLI / wrap-class briefs) uses real signatures from the introspected source.
 
 ---
 
 ## See also
 
-- [Workspace format](workspace.md) — what's in a workspace dir
-- [Composition with `extends:`](workspace.md#extends) — how the factory inherits coder.workspace
-- [Built-in tools](workspace.md#builtin-tools) — `subagent`, `scaffold_workspace`
+- [Cartridge format](cartridge.md) — what's in a cartridge dir
+- [Composition with `extends:`](cartridge.md#extends) — how the factory inherits coder.cartridge
+- [Built-in tools](cartridge.md#builtin-tools) — `subagent`, `scaffold_cartridge`

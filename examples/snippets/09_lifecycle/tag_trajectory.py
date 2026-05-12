@@ -16,7 +16,7 @@ import json
 import sys
 from pathlib import Path
 
-from looplet import DefaultState, composable_loop, workspace_to_preset
+from looplet import DefaultState, cartridge_to_preset, composable_loop
 from looplet.testing import MockLLMBackend
 
 
@@ -59,7 +59,7 @@ def main() -> None:
             json.dumps({"tool": "done", "args": {"answer": "greeted"}, "reasoning": "wrap up"}),
         ]
     )
-    preset = workspace_to_preset(str(ws), runtime={"workspace": str(ws.parent)})
+    preset = cartridge_to_preset(str(ws), runtime={"workspace": str(ws.parent)})
     state = DefaultState(max_steps=preset.config.max_steps)
 
     trajectory = []

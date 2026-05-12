@@ -44,9 +44,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, TextIO
 
+from looplet.cartridge import cartridge_to_preset
 from looplet.loop import composable_loop
 from looplet.types import DefaultState
-from looplet.workspace import workspace_to_preset
 
 __all__ = [
     "RPCServer",
@@ -100,7 +100,7 @@ class RPCServer:
         if not path:
             raise ValueError("load_workspace requires 'path'")
         runtime = msg.get("runtime") or None
-        self.preset = workspace_to_preset(Path(path), runtime=runtime)
+        self.preset = cartridge_to_preset(Path(path), runtime=runtime)
         _emit(
             self.out_stream,
             {"event": "ready", "loaded": str(path), "tools": list(self.preset.tools.tool_names)},

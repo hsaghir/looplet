@@ -14,8 +14,8 @@ Compare two standalone cartridges shipped with looplet:
 
 ```bash
 uv run python examples/snippets/03_diff/diff_workspaces.py \
-    examples/threat_intel.workspace \
-    examples/dep_doctor.workspace
+    examples/threat_intel.cartridge \
+    examples/dep_doctor.cartridge
 ```
 
 Output is grouped by `# manifest`, `# config`, `# prompt`, `# tool`,

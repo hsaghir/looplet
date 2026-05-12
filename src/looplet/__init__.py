@@ -45,6 +45,14 @@ from looplet.bundles import (
     validate_skill_bundle,
 )
 from looplet.cache import CachePolicy
+from looplet.cartridge import (
+    Cartridge,
+    CartridgeLayout,
+    CartridgeSerializationError,
+    cartridge_to_preset,
+    preset_to_cartridge,
+    resource_ref_for,
+)
 from looplet.checkpoint import FileCheckpointStore
 from looplet.compact import (
     CompactOutcome,
@@ -127,7 +135,7 @@ from looplet.presets import (
 from looplet.prompts import preview_prompt
 from looplet.provenance import ProvenanceSink, TrajectoryRecorder, replay_loop
 from looplet.resilient import ResilientBackend, RetryExhausted
-from looplet.scaffold import scaffold_workspace
+from looplet.scaffold import scaffold_cartridge
 from looplet.session import SessionLog
 from looplet.skills import (
     FileSkillStore,
@@ -169,14 +177,20 @@ from looplet.types import (
     ToolResult,
     ToolValidationError,
 )
-from looplet.workspace import (
-    Workspace,
-    WorkspaceLayout,
-    WorkspaceSerializationError,
-    preset_to_workspace,
-    resource_ref_for,
-    workspace_to_preset,
-)
+
+# ── Workspace aliases (back-compat) ──────────────────────────────
+# The Cartridge Spec v1.0 (SPEC.md) names the artifact a "cartridge"
+# and is the canonical surface. The reference implementation has
+# historically called it a "workspace"; the aliases below keep the
+# old names importable so existing code (``from looplet import
+# Workspace, workspace_to_preset``) continues to work unchanged.
+# Both forms are the same objects (``is``-equal).
+Workspace = Cartridge
+WorkspaceLayout = CartridgeLayout
+WorkspaceSerializationError = CartridgeSerializationError
+workspace_to_preset = cartridge_to_preset
+preset_to_workspace = preset_to_cartridge
+scaffold_workspace = scaffold_cartridge
 
 __all__ = [
     # ── ESSENTIALS (what you need for your first agent) ──────────
@@ -271,13 +285,21 @@ __all__ = [
     "ProvenanceSink",
     "replay_loop",
     "serialize_harness",
+    # ── CARTRIDGE FORMAT (canonical; SPEC.md v1.0) ──────────────
+    "Cartridge",
+    "CartridgeLayout",
+    "CartridgeSerializationError",
+    "cartridge_to_preset",
+    "preset_to_cartridge",
+    "scaffold_cartridge",
+    "resource_ref_for",
+    # ── WORKSPACE ALIASES (back-compat; same objects) ───────────
     "Workspace",
     "WorkspaceLayout",
     "WorkspaceSerializationError",
-    "preset_to_workspace",
-    "resource_ref_for",
-    "scaffold_workspace",
     "workspace_to_preset",
+    "preset_to_workspace",
+    "scaffold_workspace",
     "StreamingHook",
     "Tracer",
     "TracingHook",

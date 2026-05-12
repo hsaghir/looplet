@@ -44,7 +44,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from looplet.workspace import workspace_to_preset
+from looplet.cartridge import cartridge_to_preset
 
 __all__ = [
     "WorkspaceWatcher",
@@ -102,9 +102,9 @@ class WorkspaceWatcher:
 
     Args:
         root: Path to the workspace directory.
-        runtime: Forwarded to :func:`workspace_to_preset` on every
+        runtime: Forwarded to :func:`cartridge_to_preset` on every
             (re)load. Same shape as the regular workspace runtime dict.
-        strict: Forwarded to :func:`workspace_to_preset`.
+        strict: Forwarded to :func:`cartridge_to_preset`.
     """
 
     root: str | Path
@@ -116,7 +116,7 @@ class WorkspaceWatcher:
     def preset(self) -> Any:
         """Return the current preset, loading it on first call."""
         if self._preset is None:
-            self._preset = workspace_to_preset(self.root, strict=self.strict, runtime=self.runtime)
+            self._preset = cartridge_to_preset(self.root, strict=self.strict, runtime=self.runtime)
             self._fp = fingerprint_workspace(self.root)
         return self._preset
 
@@ -134,12 +134,12 @@ class WorkspaceWatcher:
         """
         if not self.changed():
             return None
-        self._preset = workspace_to_preset(self.root, strict=self.strict, runtime=self.runtime)
+        self._preset = cartridge_to_preset(self.root, strict=self.strict, runtime=self.runtime)
         self._fp = fingerprint_workspace(self.root)
         return self._preset
 
     def force_reload(self) -> Any:
         """Reload regardless of fingerprint (for tests / debug)."""
-        self._preset = workspace_to_preset(self.root, strict=self.strict, runtime=self.runtime)
+        self._preset = cartridge_to_preset(self.root, strict=self.strict, runtime=self.runtime)
         self._fp = fingerprint_workspace(self.root)
         return self._preset

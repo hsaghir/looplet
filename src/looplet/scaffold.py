@@ -19,12 +19,12 @@ Programmatic use:
     )
 
 After this returns, ``summarizer.workspace/`` contains a working
-(but stubbed) workspace that ``workspace_to_preset()`` can load.
+(but stubbed) workspace that ``cartridge_to_preset()`` can load.
 The agent only needs to fill in the TODO markers.
 
 Files created:
 
-* ``workspace.json`` — required metadata (one line of JSON)
+* ``cartridge.json`` — required metadata (one line of JSON)
 * ``config.yaml`` — sensible defaults: max_steps=20, temperature=0.7
 * ``prompts/system.md`` — stub with TODO markers
 * ``tools/<name>/{tool.yaml,execute.py}`` for each tool requested
@@ -110,7 +110,7 @@ def execute(*, summary: str) -> dict:
 # ── main entry point ─────────────────────────────────────────────
 
 
-def scaffold_workspace(
+def scaffold_cartridge(
     path: str | Path,
     *,
     name: str,
@@ -123,7 +123,7 @@ def scaffold_workspace(
         path: Directory to create (created if missing). Refuses to
             overwrite an existing non-empty directory unless
             ``overwrite=True``.
-        name: Workspace name (becomes ``workspace.json`` "name" field
+        name: Workspace name (becomes ``cartridge.json`` "name" field
             and the title of the system prompt).
         tools: Tool names to scaffold under ``tools/<name>/``. The
             ``done`` tool is always added even if not listed; if you
@@ -165,7 +165,7 @@ def scaffold_workspace(
 
     root.mkdir(parents=True, exist_ok=True)
     _write_if_absent(
-        root / "workspace.json",
+        root / "cartridge.json",
         _WORKSPACE_JSON.format(name_json=json.dumps(name)),
     )
     _write_if_absent(root / "config.yaml", _CONFIG_YAML)
@@ -216,3 +216,7 @@ def _write_if_absent(path: Path, content: str) -> None:
 
 
 __all__ = ["scaffold_workspace"]
+
+
+# Back-compat alias — see SPEC.md "Workspace aliases" section.
+scaffold_workspace = scaffold_cartridge

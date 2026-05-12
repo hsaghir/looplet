@@ -773,6 +773,13 @@ def main(argv: list[str] | None = None) -> int:
 
     _add_factory(sub)
 
+    # ── spec subcommands (``conform``, ``describe``, ``diff``) ──
+    # Cartridge Spec v1.0 tooling. Operationalises the conformance,
+    # legibility, and semantic-diff promises into runnable commands.
+    from looplet.cli.spec_commands import add_subparsers as _add_spec  # noqa: PLC0415
+
+    _add_spec(sub)
+
     args = parser.parse_args(argv)
 
     if args.command == "show":

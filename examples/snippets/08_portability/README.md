@@ -8,7 +8,7 @@ The same cartridge runs three ways:
    re-executed against a `MockLLMBackend` to reproduce the run
    without the LLM.
 
-This snippet runs the shipped [hello.workspace](../../hello.workspace)
+This snippet runs the shipped [hello.cartridge](../../hello.cartridge)
 all three ways with the same backend behaviour, demonstrating that
 the artifact is invariant; the runtime is a choice.
 

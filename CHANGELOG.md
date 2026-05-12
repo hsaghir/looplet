@@ -8,7 +8,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 - **Unified workspace reference grammar.** Three forms, one resolver,
-  applied uniformly to every string value the workspace loader
+  applied uniformly to every string value the cartridge loader
   processes:
   ```yaml
   max_steps:       ${runtime.max_steps:-15}     # per-invocation data
@@ -17,19 +17,19 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   ```
   `${runtime.x}` supports nested lookup (`${runtime.a.b}`) and
   defaults (`${runtime.x:-15}`). The legacy `"@name"` form continues
-  to work as an alias for `${ref:name}` so existing workspaces load
+  to work as an alias for `${ref:name}` so existing cartridges load
   unchanged. See `docs/workspace.md#reference-grammar` for the full
   spec.
-- **`AgentPreset.resources` field.** The workspace loader now
+- **`AgentPreset.resources` field.** the cartridge loader now
   populates this dict with every resource it built. Callers that
   need post-load access to live objects (benchmarks, evidence-bundle
   writers, SDK shims) read from `preset.resources` by name — no more
-  module-hunting to reach a resource the workspace constructed.
+  module-hunting to reach a resource the cartridge constructed.
   Empty for presets built directly in code.
-- **Declarative `state:` directive in `config.yaml`.** Workspaces
+- **Declarative `state:` directive in `config.yaml`.** Cartridges
   can now describe their state class via the same grammar instead
   of relying on the `state_factory` constructor arg of
-  `workspace_to_preset`:
+  `cartridge_to_preset`:
   ```yaml
   state: ${py:my.app.state:MyAgentState}   # → MyAgentState(max_steps=...)
   state: ${ref:my_state}                   # → resource as-is
@@ -40,7 +40,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 - **YAML parser now skips full-line comments.** `#` lines used to
-  raise `WorkspaceSerializationError`. Same fix applied to the
+  raise `CartridgeSerializationError`. Same fix applied to the
   runtime-substitution pre-pass so `${runtime.x}` inside a YAML
   comment doesn't fire the regex.
 
@@ -62,7 +62,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 ### Changed
 - **Documentation cleanup.** Stale "v1 / v2 / legacy / cartridge"
   framing trimmed from public docstrings and comments now that the
-  migration to the workspace format is complete. No behavioural
+  migration to the cartridge format is complete. No behavioural
   change. ROADMAP entries that have shipped are dropped.
 - **Coding and research presets now use `DefaultCompactService`.** The
   preset path gets the same production compaction policy users can
@@ -81,30 +81,30 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   fallback into one inspectable service. `CompactOutcome` now reports
   session-log entry counts, compacted step ranges, summaries, and a
   JSON-able `to_dict()` used in `POST_COMPACT` event payloads.
-- **`extends:` workspace composition.** A workspace's `config.yaml` may
+- **`extends:` workspace composition.** A cartridge's `config.yaml` may
   now declare `extends: <path>`. At load time the parent workspace is
   recursively materialized and overlaid with the child via a tempdir;
   child files override parent files at matching paths. Multi-level
   inheritance works (grandparent → parent → child), cycles raise
-  `WorkspaceSerializationError`, missing parent paths raise a clear
+  `CartridgeSerializationError`, missing parent paths raise a clear
   error. (#44)
-- **`examples/agent_factory.workspace`.** First product built on
-  `extends:`. Inherits all `coder.workspace` tools and adds a
-  `validate_workspace` tool that calls `workspace_to_preset()` and
+- **`examples/agent_factory.cartridge`.** First product built on
+  `extends:`. Inherits all `coder.cartridge` tools and adds a
+  `validate_workspace` tool that calls `cartridge_to_preset()` and
   returns structured success/error. ~4500-char system prompt teaching
-  the workspace v2 grammar, robustness rules, and `extends:` usage. (#44, #45)
-- **`looplet.scaffold.scaffold_workspace()`.** Plain Python helper that
-  creates a working but stubbed workspace skeleton in one call:
-  `workspace.json` + `config.yaml` + `prompts/system.md` +
+  the cartridge v2 grammar, robustness rules, and `extends:` usage. (#44, #45)
+- **`looplet.scaffold.scaffold_cartridge()`.** Plain Python helper that
+  creates a working but stubbed cartridge skeleton in one call:
+  `cartridge.json` + `config.yaml` + `prompts/system.md` +
   `tools/<name>/{tool.yaml, execute.py}` stubs (raise
   `NotImplementedError`) + the standard `done` tool. Idempotent —
   re-running preserves existing files via `_write_if_absent`. (#46)
-- **`builtin_tools:` directive in `config.yaml`.** Workspaces can opt
+- **`builtin_tools:` directive in `config.yaml`.** Cartridges can opt
   into looplet-shipped tools without writing a `tools/<name>/` dir:
   ```yaml
   builtin_tools:
     - subagent
-    - scaffold_workspace
+    - scaffold_cartridge
   ```
   Resolved at load time via `looplet.builtin_tools.AVAILABLE`. (#46)
 - **`subagent` built-in tool.** Invokes another workspace as a
@@ -113,12 +113,12 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   Returns the sub-loop's final `done` summary. Recursion-guarded via
   `contextvars.ContextVar` (default `max_depth=5`). Sequential only —
   parallel fan-out deferred. (#46)
-- **`scaffold_workspace` built-in tool.** Agent-callable wrapper
+- **`scaffold_cartridge` built-in tool.** Agent-callable wrapper
   around the scaffold helper. The agent factory uses it as the very
   first tool call. (#46)
 
 ### Fixed
-- **`scaffold_workspace` wrote invalid JSON** (`workspace.json`
+- **`scaffold_cartridge` wrote invalid JSON** (`cartridge.json`
   emitted single-quoted Python repr instead of double-quoted JSON).
   `Workspace.from_directory()` and any external `json.loads()` failed.
   Now uses `json.dumps(name)` to emit RFC-compliant JSON.
@@ -136,7 +136,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   same process raced. Replaced with a `ContextVar` (threadsafe and
   per-async-task). The sub-loop receives a freshly-constructed
   `runtime` (it does NOT share the parent's `resources` /
-  `file_cache` instances — only the workspace path is forwarded).
+  `file_cache` instances — only the cartridge path is forwarded).
 - **`validate_workspace` was silent on TODO-laden scaffolds.** Now
   scans the system prompt for `<TODO:` markers and tool execute.py
   files for `NotImplementedError("scaffold:` and surfaces both as
@@ -150,18 +150,18 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   whose `tool.yaml` declares `name: WRONG_NAME`) used to silently
   register the wrong name and leave the agent unable to use `foo`.
   The loader now warns in loose mode and raises
-  `WorkspaceSerializationError` in strict mode. (#48)
+  `CartridgeSerializationError` in strict mode. (#48)
 - **Documentation cleanups (#48).** `subagent` module docstring no
   longer claims to "share the parent's runtime" (it constructs a
   fresh one). `builtin_tools/__init__.py` now lists both shipped
-  built-ins (`subagent`, `scaffold_workspace`).
+  built-ins (`subagent`, `scaffold_cartridge`).
 - **Internal cleanup (#48).** Removed redundant `extends:` line
   check; rewrote tempdir registry as module-level state with single
   `atexit.register`; inlined a one-line `_is_absolute` helper;
   removed duplicate import; switched `subagent.max_steps` sentinel
   from `0` to `None`.
 
-- **`examples/coder.workspace` per-tool guidance + safety.** Three
+- **`examples/coder.cartridge` per-tool guidance + safety.** Three
   information-additive improvements modelled on patterns observed in
   production coding agents:
   1. **Read-required-first on `edit_file`.** `FileCache` now tracks
@@ -177,9 +177,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
      `sed -i` in-place edits (which bypass the file_cache and cause
      stale reads). The bash tool refuses both with a structured error
      pointing at a safer alternative (`edit_file` for in-place edits).
-     The classifiers are exported so other workspaces can reuse them.
+     The classifiers are exported so other cartridges can reuse them.
   3. **Rich per-tool descriptions.** Every `tool.yaml` in
-     `examples/coder.workspace` rewritten as a multi-paragraph
+     `examples/coder.cartridge` rewritten as a multi-paragraph
      description (Usage / Refusals / Examples / Recovery sections)
      using YAML block scalars (`|-`). The looplet workspace YAML
      loader gained `|`/`|-`/`>` block-scalar support so these
@@ -213,7 +213,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   used to silently set `ctx.resources["my_resoruce"] = None` at
   dispatch and crash deep inside the tool body with `AttributeError`.
   The loader now warns in loose mode (default) and raises
-  `WorkspaceSerializationError` in strict mode, naming the
+  `CartridgeSerializationError` in strict mode, naming the
   unresolvable resource and listing the available ones — surfaces
   the bug at its source.
 
@@ -222,7 +222,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   "Composable Harness Workspace (CHW)" / "workspace v2" terminology
   in favour of the two canonical names already used in code:
   `Workspace` (the round-trippable directory format from
-  `looplet.workspace`) and `SkillBundle` (the runnable folder format
+  `looplet.cartridge`) and `SkillBundle` (the runnable folder format
   from `looplet.bundles`). All docstrings, doc pages, README, and
   comments now use these names. The `ClaudeSkillCompatibility.level`
   string `"looplet-cartridge"` is renamed to `"looplet-bundle"` —
@@ -230,26 +230,26 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   `tests/test_cartridge_round_trip_smoke.py` to
   `tests/test_skill_bundle_round_trip_smoke.py`. No behavioural
   change; the `_chw_*` synthetic module-name prefixes (used
-  internally by the workspace loader) keep their names.
+  internally by the cartridge loader) keep their names.
 
 ### Removed (BREAKING)
 
-- **All `setup.py` files removed from shipped example workspaces.**
+- **All `setup.py` files removed from shipped example cartridges.**
   Every workspace under `examples/*.workspace/` is now fully
   declarative; the imperative `setup.py` mechanism remains in the
   loader as the documented escape hatch for callers with truly
   imperative load-time wiring needs but no shipped example needs
   one. Migrations:
-  * `coder.workspace`: tools moved from `WORKSPACE_CONFIG` /
+  * `coder.cartridge`: tools moved from `WORKSPACE_CONFIG` /
     `FILE_CACHE` module-globals to `requires: [...]` in `tool.yaml`
     + `ctx.resources[...]` in `execute.py`. `compact_service` moved
     to `resources/compact_service.py`.
-  * `threat_intel.workspace`, `dep_doctor.workspace`,
-    `git_detective.workspace`: `compact_service` moved to
+  * `threat_intel.cartridge`, `dep_doctor.cartridge`,
+    `git_detective.cartridge`: `compact_service` moved to
     `resources/compact_service.py`. `git_detective` tools moved
     from `REPO_CONFIG` module-globals to `requires: [repo_config]`
     + `ctx.resources["repo_config"]`.
-  * `hello.workspace`: `greet` tool moved from `_GREETING_LOG`
+  * `hello.cartridge`: `greet` tool moved from `_GREETING_LOG`
     module-global to `requires: [greeting_log]` +
     `ctx.resources["greeting_log"]`.
 
@@ -259,10 +259,10 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   `examples/dep_doctor/`, `examples/git_detective/`, and
   `examples/threat_intel/` agent-CLI directories have been removed.
   Their tool functions, hook classes, and helpers now live inside the
-  matching `examples/<name>.workspace/` Composable Harness Workspaces
+  matching `examples/<name>.workspace/` Composable Harness Cartridges
   as co-located helper modules (`<wsname>_lib.py` for the simple
   examples, `coder_lib_{tools,hooks,wiring}.py` for the coder one).
-  The v2 workspaces are now the only published agent surface.
+  The v2 cartridges are now the only published agent surface.
 - The `examples/coder/skill/` SkillBundle was relocated to
   `tests/fixtures/coder_skill_bundle/` (with vendored sibling modules
   so it loads without any `examples.coder.*` import). All
@@ -278,13 +278,13 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   `tests/test_cartridge_round_trip_smoke.py`.
 
 ### Changed
-- **Workspace loader pushes the workspace root onto `sys.path`** for
-  the duration of `workspace_to_preset`, so a workspace's tools /
+- **Workspace loader pushes the cartridge root onto `sys.path`** for
+  the duration of `cartridge_to_preset`, so a cartridge's tools /
   hooks / resources / setup.py can `from <wsname>_lib import X`
   without a dedicated import shim. The path is removed on exit.
-  Workspaces should pick a unique top-level lib filename
+  Cartridges should pick a unique top-level lib filename
   (`<wsname>_lib.py`, not bare `lib.py`) to avoid sys.modules cache
-  collisions when two workspaces are loaded back-to-back in the same
+  collisions when two cartridges are loaded back-to-back in the same
   process.
 
 ### Added

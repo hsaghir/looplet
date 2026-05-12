@@ -142,6 +142,46 @@ scaled down for typical looplet workloads.
 """
 
 
+# ── Per-run overrides (set by composable_loop from LoopConfig) ─────
+#
+# Cartridges set ``LoopConfig.context_window_steps`` (etc.) to override
+# the module-level defaults for one run without polluting global state.
+# The loop pushes the override into a ``contextvars.ContextVar`` before
+# yielding each step; ``state.context_summary()`` reads the override
+# (falling back to the module constant). This keeps the env-default
+# pathway working AND lets cartridges declare a window size in
+# ``config.yaml`` instead of forcing every host process to set
+# ``CONTEXT_WINDOW_STEPS`` at boot time.
+
+import contextvars as _cv  # noqa: E402
+
+_CONTEXT_WINDOW_STEPS_OVERRIDE: _cv.ContextVar[int | None] = _cv.ContextVar(
+    "_CONTEXT_WINDOW_STEPS_OVERRIDE", default=None
+)
+_CONTEXT_INLINE_PER_STEP_CHARS_OVERRIDE: _cv.ContextVar[int | None] = _cv.ContextVar(
+    "_CONTEXT_INLINE_PER_STEP_CHARS_OVERRIDE", default=None
+)
+_CONTEXT_WINDOW_TOTAL_CHARS_OVERRIDE: _cv.ContextVar[int | None] = _cv.ContextVar(
+    "_CONTEXT_WINDOW_TOTAL_CHARS_OVERRIDE", default=None
+)
+
+
+def get_context_window_steps() -> int:
+    """Effective recent-results window: per-run override or env default."""
+    override = _CONTEXT_WINDOW_STEPS_OVERRIDE.get()
+    return override if override is not None else CONTEXT_WINDOW_STEPS
+
+
+def get_context_inline_per_step_chars() -> int:
+    override = _CONTEXT_INLINE_PER_STEP_CHARS_OVERRIDE.get()
+    return override if override is not None else CONTEXT_INLINE_PER_STEP_CHARS
+
+
+def get_context_window_total_chars() -> int:
+    override = _CONTEXT_WINDOW_TOTAL_CHARS_OVERRIDE.get()
+    return override if override is not None else CONTEXT_WINDOW_TOTAL_CHARS
+
+
 # ── Layer 3 — whole-conversation compact ──────────────────────────
 
 
@@ -164,4 +204,7 @@ __all__ = [
     "TOOL_RESULT_MAX_ROWS",
     "TOOL_RESULT_PERSIST_THRESHOLD_CHARS",
     "TOOL_RESULT_PREVIEW_CHARS",
+    "get_context_inline_per_step_chars",
+    "get_context_window_steps",
+    "get_context_window_total_chars",
 ]

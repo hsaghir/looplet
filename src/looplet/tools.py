@@ -367,6 +367,33 @@ class ToolSpec:
     for tools that don't need DI.
     """
 
+    tags: list[str] = field(default_factory=list)
+    """Free-form labels attached to the tool (cartridge-spec v1.1).
+
+    Declared in ``tool.yaml`` as ``tags: [enrichment, ioc-only]`` or
+    in single-file form as ``__tags__ = [...]``. The runtime is free
+    to ignore tags or use them (e.g., a hook may filter the tool
+    catalog by tag during a particular phase). Tags are pure
+    metadata — they do NOT affect dispatch.
+    """
+
+    render: dict[str, Any] = field(default_factory=dict)
+    """Rendering hints for prompt assembly (cartridge-spec v1.1).
+
+    Optional cartridge-side hints about how the runtime should render
+    this tool's results into the prompt's RECENT RESULTS section.
+    Recognised keys (all optional):
+
+    * ``preview: int`` — for tools whose ``data`` is a list, render
+      only the first N items plus a ``[+M more]`` tail.
+    * ``max_chars: int`` — per-step cap for THIS tool's results,
+      overriding the global ``CONTEXT_INLINE_PER_STEP_CHARS``.
+
+    Hints are advisory: a conformant runtime MAY honor them or fall
+    back to its global defaults. Tools with small outputs typically
+    leave this empty.
+    """
+
     _accepts_ctx: bool | None = field(default=None, repr=False, compare=False)
     """Cached result of ``inspect.signature(execute)`` for ``ctx`` detection."""
 

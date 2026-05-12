@@ -596,10 +596,12 @@ async def async_composable_loop(
 
         # ── Dispatch tool calls ─────────────────────────────────
         done_tool_name = config.done_tool
+        terminal_set = {done_tool_name, *config.done_tools}
         done_idx = None
         for i, tc in enumerate(tool_calls):
-            if tc.tool == done_tool_name:
+            if tc.tool in terminal_set:
                 done_idx = i
+                done_tool_name = tc.tool  # pin canonical to the firing sentinel
                 break
 
         regular_calls = tool_calls[:done_idx] if done_idx is not None else tool_calls

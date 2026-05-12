@@ -459,6 +459,20 @@ class LoopConfig:
     # Name of the tool that signals task completion.
     done_tool: str = "done"
 
+    done_tools: list[str] = field(default_factory=list)
+    """Additional terminal sentinel tools (cartridge-spec v1.1).
+
+    By default the loop ends only when the agent invokes the single
+    ``done_tool``. Cartridges that need multiple distinct outcomes
+    (e.g. ``report`` for the normal path AND ``escalate`` for the
+    alternative path) declare ``done_tools: [report, escalate]`` in
+    ``config.yaml`` to let the loop terminate on either.
+
+    The legacy ``done_tool`` is always treated as terminal too;
+    ``done_tools`` is *additive*. Empty list (the default) preserves
+    pre-v1.1 single-sentinel behaviour exactly.
+    """
+
     tool_result_persist_dir: str | None = None
     """Optional directory for Layer-1 persist-and-preview of large
     tool results. When set, tool results whose serialized size exceeds
@@ -2231,11 +2245,20 @@ def composable_loop(
         # ── Dispatch tool calls ──────────────────────────────
         all_step_entities: list[str] = []
 
+        # Effective set of terminal sentinels: legacy ``done_tool``
+        # plus the v1.1 ``done_tools`` list. The first one the agent
+        # invokes ends the loop; the legacy field stays the canonical
+        # name used in error messages and pretty-printers.
         done_tool_name = config.done_tool
+        terminal_set = {done_tool_name, *config.done_tools}
         done_idx = None
         for i, tc in enumerate(tool_calls):
-            if tc.tool == done_tool_name:
+            if tc.tool in terminal_set:
                 done_idx = i
+                # Pin the canonical name to the actual tool that fired so
+                # downstream code (eval ctx, trace builders) reports the
+                # specific terminal sentinel, not just the legacy default.
+                done_tool_name = tc.tool
                 break
 
         # Dispatch non-done tools

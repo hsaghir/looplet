@@ -93,7 +93,27 @@ use_native_tools: false
 concurrent_dispatch: false
 reactive_recovery: true
 done_tool: done                # name of the completion sentinel tool
+done_tools: []                 # v1.1: additional terminal sentinels (additive)
 ```
+
+### Multiple terminal sentinels (v1.1)
+
+By default the loop ends only when the agent invokes `done_tool`
+(default `done`). Cartridges with multiple distinct outcomes (e.g. a
+SOC-triage agent that finishes via either `report` or `escalate`)
+declare additional sentinels via `done_tools:`:
+
+```yaml
+done_tool: report              # primary sentinel; carries any output_schema
+done_tools: [escalate]         # additional terminal sentinels
+```
+
+The list is **additive**: the loop terminates when the agent invokes
+`done_tool` OR any name in `done_tools`. The primary `done_tool`
+remains the sentinel for `output_schema:` validation; secondary
+sentinels are unvalidated by the loop (their `tool.yaml` may still
+declare `output_schema:` as metadata, and a hook may enforce
+cross-sentinel checks).
 
 ### Model binding (v1.0 slot)
 
@@ -202,11 +222,37 @@ The legacy `@name` form is an alias for `${ref:name}`.
 A single Markdown file containing the agent's system prompt verbatim.
 No templating. The whole file is the prompt.
 
+### Optional prompt files (v1.1)
+
+Two additional optional files in `prompts/` get auto-attached as
+hooks when present:
+
+* **`prompts/briefing.md`** — auto-prepended to every step's
+  briefing section (via `pre_prompt`). Use for short reminders that
+  should appear in every prompt without bloating the system prompt.
+  Other hooks may add their own briefing output; all are concatenated.
+* **`prompts/recovery.md`** — injected into the prompt that follows
+  any tool error (via `post_dispatch` + `InjectContext`). Use for
+  general remediation guidance that applies broadly when something
+  goes wrong.
+
+Both are absent by default. Loaders MUST attach the corresponding
+hook (e.g. `StaticBriefingHook`, `RecoveryHintHook` in the reference
+implementation) when the file is present, and skip silently when it
+isn't.
+
+No other prompt files are recognised in v1.1. Cartridges that need
+more elaborate prompt templating use plain Python in a hook or
+resource — the cartridge format does not include a templating DSL.
+
 ## Tools — `tools/<name>/`
 
-Each tool is a directory with a `tool.yaml` manifest and an
-`execute.py` body. Loaders MAY accept additional language extensions
+Each tool is either a directory with a `tool.yaml` manifest and an
+`execute.py` body **or** (v1.1) a single Python file at
+`tools/<name>.py`. Loaders MAY accept additional language extensions
 in future spec versions.
+
+### Multi-file form (canonical)
 
 ```yaml
 # tools/bash/tool.yaml
@@ -221,6 +267,10 @@ requires:
 concurrent_safe: false
 free: false
 timeout_s: 60
+tags: [shell, mutating]                # v1.1: free-form labels (advisory)
+render:                                # v1.1: prompt-rendering hints (advisory)
+  preview: 5                           #   if data is a list, show first 5 items
+  max_chars: 4000                      #   per-step cap for THIS tool's results
 ```
 
 ```python
@@ -233,8 +283,57 @@ def execute(ctx, *, command: str) -> dict:
     return {"stdout": proc.stdout, "stderr": proc.stderr, "exit_code": proc.returncode}
 ```
 
-The `done` tool is required. The loader treats it as the loop's
-completion sentinel; `done_tool:` in `config.yaml` defaults to it.
+### Single-file form (v1.1)
+
+For tools whose body is short and whose metadata is light, a single
+`tools/<name>.py` declares everything via module-level dunders:
+
+```python
+# tools/echo.py
+"""Echo back what you got."""
+
+__name__ = "echo"
+__description__ = "Echo back what you got."
+__parameters__ = {"text": {"type": "string"}}
+__tags__ = ["test"]
+__render__ = {"preview": 5}            # optional; same shape as tool.yaml render:
+__requires__ = []                      # optional; same shape as tool.yaml requires:
+# Optional: __concurrent_safe__, __free__, __timeout_s__
+
+def execute(ctx, *, text: str) -> dict:
+    return {"echoed": text}
+```
+
+The two forms are equivalent: a tool authored in either shape
+produces the same `ToolSpec` and round-trips identically through
+`preset_to_cartridge`. Both forms can co-exist in the same
+`tools/` directory; a `tools/foo.py` file and a `tools/bar/`
+directory both register tools.
+
+### Tool fields
+
+| Field | Type | Required | Where |
+|---|---|---|---|
+| `name` | string | yes | `tool.yaml: name` / `__name__` |
+| `description` | string | yes | `tool.yaml: description` / `__description__` |
+| `parameters` | dict | yes | `tool.yaml: parameters` / `__parameters__` |
+| `requires` | list[str] | no | `tool.yaml: requires` / `__requires__` |
+| `concurrent_safe` | bool | no, default false | `tool.yaml: concurrent_safe` / `__concurrent_safe__` |
+| `free` | bool | no, default false | `tool.yaml: free` / `__free__` |
+| `timeout_s` | float | no | `tool.yaml: timeout_s` / `__timeout_s__` |
+| `tags` (v1.1) | list[str] | no, advisory | `tool.yaml: tags` / `__tags__` |
+| `render` (v1.1) | dict | no, advisory | `tool.yaml: render` / `__render__` |
+| `output_schema` | dict | no, only for done sentinels | `tool.yaml: output_schema` |
+
+`tags` and `render` are **advisory hints**: loaders MAY honor them,
+but no behaviour beyond storing them on `ToolSpec` is mandated by
+v1.1. A second runtime that ignores `render.preview` is still
+conformant; tool semantics are unchanged.
+
+The `done` tool is required by default. The loader treats it as the
+loop's completion sentinel; `done_tool:` in `config.yaml` defaults
+to it. Cartridges can declare additional terminal sentinels via
+v1.1's `done_tools:` (see Configuration section).
 
 ### Output contract on `done` (v1.0 slot)
 
@@ -374,6 +473,14 @@ exercise the suite against the reference loader.
 
 ## Changelog
 
+- **v1.1** (2026-05-12) — additive: tool `tags:` (advisory metadata),
+  tool `render:` (advisory rendering hints with `preview:` and
+  `max_chars:`), single-file tool form (`tools/<name>.py` with
+  module-level dunders), `done_tools: [a, b]` plural sentinels
+  (additive to `done_tool:`), and two optional prompt files
+  (`prompts/briefing.md` auto-prepended to the briefing section,
+  `prompts/recovery.md` injected after tool errors). All five are
+  optional; v1.0 cartridges load on a v1.1 loader unchanged.
 - **v1.0** (2026-05-09) — first numbered version. New slots:
   `model:`, `permissions:`, `memory.long_term`, `output_schema` on
   `done`. Conformance fixture seed introduced.

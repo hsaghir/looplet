@@ -76,6 +76,16 @@ def _make_arg_matcher(spec: dict[str, Any]) -> Any:
                 return False
         return True
 
+    # Round-trip metadata: stamp the closure with the spec that
+    # produced it so ``preset_to_cartridge`` can reproduce the matcher
+    # declaratively (re-emitting ``matches:`` / ``contains:`` instead
+    # of failing on the closure). Without this, every cartridge that
+    # uses ``permissions: deny: contains:`` loses its rules on
+    # round-trip because the closure isn't importable.
+    _match.__looplet_arg_matcher_spec__ = {  # type: ignore[attr-defined]
+        "matches": dict(matches) if matches else {},
+        "contains": dict(contains) if contains else {},
+    }
     return _match
 
 

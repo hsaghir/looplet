@@ -1223,6 +1223,17 @@ def _render_value_literal(value: Any, imports: set[str]) -> str:
         return "{" + ", ".join(parts) + "}"
     # Top-level importable callable / class → emit bare name + import.
     if callable(value):
+        # Special case: ``permissions:`` arg matchers carry their
+        # source spec as ``__looplet_arg_matcher_spec__`` so the
+        # round-trip writer can rebuild the matcher declaratively
+        # instead of failing on the closure. Re-emit a call to
+        # ``_make_arg_matcher({...})`` that produces an equivalent
+        # closure on reload.
+        spec_attr = getattr(value, "__looplet_arg_matcher_spec__", None)
+        if isinstance(spec_attr, dict):
+            imports.add("from looplet.cartridge.spec_slots import _make_arg_matcher")
+            spec_literal = _render_value_literal(spec_attr, imports)
+            return f"_make_arg_matcher({spec_literal})"
         mod = getattr(value, "__module__", "") or ""
         name = getattr(value, "__name__", "")
         qual = getattr(value, "__qualname__", "<lambda>")
@@ -1524,6 +1535,30 @@ def preset_to_cartridge(
     # behaves identically to the source preset (within process — across
     # processes the user must replace the placeholder with a real
     # builder).
+    #
+    # Also collect resources referenced by tool ``requires:`` lists so
+    # the round-tripped cartridge stays self-contained. Without this,
+    # a tool whose ``requires: [support_data]`` resolves at load time
+    # via the source cartridge's ``resources/support_data.py`` ends up
+    # without that resource on reload, and dispatch quietly receives
+    # ``None`` from ``ctx.resources["support_data"]``.
+    tool_required_refs: dict[str, Any] = {}
+    source_resources = dict(getattr(preset, "resources", {}) or {})
+    for spec in _iter_tool_specs(preset.tools):
+        for req_name in getattr(spec, "requires", []) or []:
+            if req_name in tool_required_refs:
+                continue
+            if req_name in ("runtime",):
+                continue  # reserved; auto-injected from runtime dict
+            inst = source_resources.get(req_name)
+            if inst is not None:
+                tool_required_refs[req_name] = inst
+    if tool_required_refs:
+        if config_field_refs is None:
+            config_field_refs = {}
+        for k, v in tool_required_refs.items():
+            config_field_refs.setdefault(k, v)
+
     _write_resources_for_refs(
         hooks_root,
         root,
@@ -1955,6 +1990,15 @@ def _write_tool(spec: Any, tools_root: Path, warnings: list[str], strict: bool) 
     requires = getattr(spec, "requires", None) or []
     if requires:
         yaml_payload["requires"] = list(requires)
+    # Round-trip v1.1 advisory metadata (tags + render hints). Both
+    # default to empty; emit only when non-empty so absent metadata
+    # round-trips as absent (not as ``tags: []``).
+    tags = getattr(spec, "tags", None) or []
+    if tags:
+        yaml_payload["tags"] = list(tags)
+    render = getattr(spec, "render", None) or {}
+    if render:
+        yaml_payload["render"] = dict(render)
     (tool_dir / "tool.yaml").write_text(_dump_yaml(yaml_payload) + "\n", encoding="utf-8")
 
     fn = spec.execute
@@ -2060,8 +2104,11 @@ def _write_hook(hook: Any, hooks_root: Path, index: int, warnings: list[str], st
         body = f"{header}{src}\n"
     (hook_dir / "hook.py").write_text(body, encoding="utf-8")
 
-    # Constructor kwargs: prefer hook.to_config(); else dataclasses.asdict;
-    # else empty (caller will supply via workspace edit).
+    # Constructor kwargs: prefer hook.to_config(); else introspect
+    # the __init__ signature and read matching attributes off the
+    # instance. Without this, hooks that take resource kwargs (the
+    # canonical v1.1 declarative pattern) lose all their configuration
+    # on round-trip because the writer falls back to ``kwargs: {}``.
     cfg_payload: dict[str, Any] = {"class_name": cls_name}
     if hasattr(hook, "to_config") and callable(hook.to_config):
         try:
@@ -2073,9 +2120,68 @@ def _write_hook(hook: Any, hooks_root: Path, index: int, warnings: list[str], st
             warnings.append(msg)
             cfg_payload["kwargs"] = {}
     else:
-        cfg_payload["kwargs"] = {}
+        cfg_payload["kwargs"] = _infer_hook_kwargs_from_init(hook)
 
     (hook_dir / "config.yaml").write_text(_dump_yaml(cfg_payload) + "\n", encoding="utf-8")
+
+
+def _infer_hook_kwargs_from_init(hook: Any) -> dict[str, Any]:
+    """Infer ``kwargs`` for a hook config by introspecting its
+    ``__init__`` signature and reading matching attributes off the
+    instance.
+
+    For each non-self parameter, look for an attribute on the instance
+    in this order: ``self.<name>``, ``self._<name>``. Resource-typed
+    values (objects produced by a ``resources/<name>.py`` builder) are
+    re-emitted as their original ``@<name>`` ref so the round-tripped
+    cartridge resolves them via the same mechanism.
+
+    Skips parameters whose value couldn't be located (defensive — the
+    user can fix the hook config manually if needed).
+    """
+    kwargs: dict[str, Any] = {}
+    try:
+        sig = inspect.signature(type(hook).__init__)
+    except (TypeError, ValueError):
+        return kwargs
+    for p_name, p in sig.parameters.items():
+        if p_name == "self":
+            continue
+        if p.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
+            continue
+        # Find the value on the instance.
+        if hasattr(hook, p_name):
+            value = getattr(hook, p_name)
+        elif hasattr(hook, f"_{p_name}"):
+            value = getattr(hook, f"_{p_name}")
+        else:
+            continue  # can't recover; skip
+        # Skip values equal to the parameter's default (keeps the
+        # round-tripped config minimal).
+        if p.default is not inspect.Parameter.empty and value is p.default:
+            continue
+        # Resource-typed value? Emit as @<name> ref.
+        ref = resource_ref_for(value)
+        if ref is not None:
+            kwargs[p_name] = ref
+            continue
+        # Plain JSON-serialisable scalar? Pass through.
+        if value is None or isinstance(value, (bool, int, float, str)):
+            kwargs[p_name] = value
+            continue
+        if isinstance(value, (list, tuple)) and all(
+            isinstance(x, (bool, int, float, str)) for x in value
+        ):
+            kwargs[p_name] = list(value)
+            continue
+        if isinstance(value, dict) and all(
+            isinstance(v, (bool, int, float, str, type(None))) for v in value.values()
+        ):
+            kwargs[p_name] = dict(value)
+            continue
+        # Otherwise: skip (can't safely round-trip). The user can
+        # supply a manual config or implement to_config().
+    return kwargs
 
 
 def _render_hook_source(cls: type, warnings: list[str], strict: bool) -> str:

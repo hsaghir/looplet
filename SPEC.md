@@ -34,7 +34,8 @@ each file means, and what a conformant loader must do with them.
 ```
 my_agent.cartridge/                # or my_agent.cartridge/
 ├── cartridge.json              # required: name, schema_version (alias: cartridge.json)
-├── config.yaml                 # required: loop config + declarative slots
+├── config.yaml                 # required: contract — what the agent does
+├── runtime.yaml                # optional: runtime knobs — how this host runs it
 ├── prompts/
 │   └── system.md               # required: the system prompt, alone
 ├── tools/
@@ -80,6 +81,55 @@ The configuration file declares loop budgets, model binding, slot
 references, and inheritance. All fields are optional except as
 noted. Loaders MUST accept any v1.0 cartridge with an empty
 `config.yaml` (defaults apply).
+
+### Field tiers (spec v2 preview)
+
+LoopConfig fields fall into three tiers:
+
+- **CONTRACT** — *what the agent does.* Lives in `config.yaml`.
+  `max_steps`, `system_prompt`, `done_tool`, `done_tools`,
+  `acceptance_criteria`, `tool_metadata`, `permissions`, `memory`,
+  `model`, `extends`, `builtin_tools`, `builtin_hooks`, etc. These
+  travel with the cartridge across hosts and SHOULD round-trip
+  identically.
+- **RUNTIME** — *how this host runs it.* Lives in the sibling
+  `runtime.yaml`. `max_tokens`, `temperature`, `recovery_temperature`,
+  `max_turn_continuations`, `use_native_tools`, `concurrent_dispatch`,
+  `reactive_recovery`, `context_window`, `context_window_steps`,
+  `context_inline_per_step_chars`, `context_window_total_chars`,
+  `max_briefing_tokens`, `router`, `tracer`, `recovery_registry`,
+  `compact_service`, `cache_policy`, `checkpoint_dir`,
+  `initial_checkpoint`, `tool_result_persist_dir`. Different hosts
+  MAY override freely.
+- **HOST** — *runtime-supplied callables.* Never serialised:
+  `approval_handler`, `cancel_token`, `render_messages_override`.
+
+**Backwards compatibility (v1.x).** Loaders MUST still accept
+RUNTIME-tier keys in `config.yaml` and SHOULD emit a deprecation
+warning naming the offending keys and the target `runtime.yaml`
+path. **v2.0 will hard-fail** on RUNTIME keys appearing in
+`config.yaml`.
+
+### Runtime configuration — `runtime.yaml`
+
+`runtime.yaml` is an optional sibling of `config.yaml` containing
+only RUNTIME-tier fields. Same YAML shape and reference grammar as
+`config.yaml` (`@<name>`, `${ref:name}`, `${py:module:symbol}`,
+`${runtime.field}`).
+
+```yaml
+# runtime.yaml
+max_tokens: 2000
+temperature: 0.2
+context_window: 128000
+compact_service: "@compact_service"
+```
+
+Merge order under `extends:`: parent `runtime.yaml` is loaded
+first, then child overrides via shallow merge (top-level scalars
+and lists replaced wholesale; mappings recursively merged) — same
+rules as `config.yaml`. Keys outside the RUNTIME or HOST tier
+appearing in `runtime.yaml` MUST raise a load-time error.
 
 ### Loop budgets
 

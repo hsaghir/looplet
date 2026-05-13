@@ -147,7 +147,8 @@ A cartridge is a directory of files the loader materialises into a runnable agen
 ```
 my_agent.cartridge/
 ├── cartridge.json          # REQUIRED  {"name": "my_agent", "schema_version": 1}
-├── config.yaml             # REQUIRED  LoopConfig fields: max_steps, system_prompt, ...
+├── config.yaml             # REQUIRED  CONTRACT tier — what the agent does (max_steps, system_prompt, done_tool, ...)
+├── runtime.yaml            # OPTIONAL  RUNTIME tier — how this host runs it (max_tokens, temperature, compact_service, ...)
 ├── prompts/system.md       # REQUIRED  the agent's system prompt
 ├── tools/<name>/
 │   ├── tool.yaml           # REQUIRED  name, description, parameters, requires
@@ -160,14 +161,13 @@ my_agent.cartridge/
 └── setup.py                # OPTIONAL  def setup(preset, resources, *, runtime=None) -> preset
 ```
 
-`config.yaml` knobs that show up most often:
+`config.yaml` (CONTRACT tier) knobs that show up most often:
 
 ```yaml
 max_steps: 30                        # LoopConfig.max_steps
 # system prompt: write it as prompts/system.md — the loader auto-loads
 # the file. (Do NOT put `system_prompt_path:` here; that's not a real
 # LoopConfig field.) For inline use, set `system_prompt: |- ...` instead.
-temperature: 0.2
 done_tool: done
 
 # Composition: inherit tools, hooks, resources from another cartridge.
@@ -178,6 +178,34 @@ extends: ../coder.cartridge
 builtin_tools:
   - subagent
 ```
+
+`runtime.yaml` (RUNTIME tier) — host-specific knobs that travel
+separately so the cartridge stays runtime-agnostic:
+
+```yaml
+max_tokens: 2000
+temperature: 0.2
+context_window: 128000
+compact_service: "@compact_service"   # resolves to resources/compact_service.py
+```
+
+Field tiers (spec v2):
+
+- **CONTRACT** (`config.yaml`): `max_steps`, `system_prompt`, `done_tool`,
+  `done_tools`, `acceptance_criteria`, `tool_metadata`, `permissions`,
+  `memory`, `model`, `extends`, `builtin_tools`, `builtin_hooks`.
+- **RUNTIME** (`runtime.yaml`): `max_tokens`, `temperature`,
+  `recovery_temperature`, `max_turn_continuations`, `use_native_tools`,
+  `concurrent_dispatch`, `reactive_recovery`, `context_window` (and
+  related), `max_briefing_tokens`, `router`, `tracer`,
+  `recovery_registry`, `compact_service`, `cache_policy`,
+  `checkpoint_dir`, `initial_checkpoint`, `tool_result_persist_dir`.
+- **HOST** (never serialised; runtime-supplied): `approval_handler`,
+  `cancel_token`, `render_messages_override`.
+
+v1.x still accepts RUNTIME keys in `config.yaml` with a
+`DeprecationWarning`; v2.0 will hard-fail. `scaffold_cartridge()` and
+`preset_to_cartridge()` always emit the split shape.
 
 `tool.yaml` for a tool that needs a shared resource:
 

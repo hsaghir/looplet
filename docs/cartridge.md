@@ -100,7 +100,8 @@ shims) can reach live objects without going through `setup.py`.
 
 | Component | How |
 |---|---|
-| Primitive scalar `LoopConfig` fields (`max_steps`, `max_tokens`, `temperature`, `done_tool`, `use_native_tools`, `concurrent_dispatch`, `reactive_recovery`, `context_window`, `max_briefing_tokens`, `checkpoint_dir`, `acceptance_criteria`, `tool_metadata`, `generate_kwargs`) | Serialised via `config.yaml` |
+| CONTRACT-tier `LoopConfig` fields (`max_steps`, `done_tool`, `done_tools`, `acceptance_criteria`, `tool_metadata`, `generate_kwargs`, `permissions`, `memory`, `model`, `extends`, `builtin_tools`, `builtin_hooks`) | Serialised via `config.yaml` |
+| RUNTIME-tier `LoopConfig` fields (`max_tokens`, `temperature`, `recovery_temperature`, `max_turn_continuations`, `use_native_tools`, `concurrent_dispatch`, `reactive_recovery`, `context_window`, `max_briefing_tokens`, `compact_service`, `cache_policy`, `checkpoint_dir`, `initial_checkpoint`, `tool_result_persist_dir`, `router`, `tracer`, `recovery_registry`) | Serialised via sibling `runtime.yaml` (spec v2). v1.x cartridges placing these in `config.yaml` continue to load with a `DeprecationWarning`; v2.0 will hard-fail. |
 | `system_prompt` | Written to `prompts/system.md` |
 | Tools whose `execute` is a top-level function | `tools/<name>/{tool.yaml, execute.py}`; the source is preserved verbatim and an `execute = <orig_name>` alias is appended so the loader finds it under the canonical name |
 | Hooks with an opt-in `to_config(self) -> dict` method | `hooks/NN_<ClassName>/{hook.py, config.yaml}`; class source is preserved, kwargs come from `to_config()` |

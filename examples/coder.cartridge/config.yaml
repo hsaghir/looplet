@@ -1,12 +1,9 @@
+# Cartridge contract — what the agent does.
+# Runtime knobs (sampling, context window, compaction) live in the
+# sibling ``runtime.yaml`` so this file stays runtime-agnostic.
+
 max_steps: 20
-max_tokens: 2000
-temperature: 0.2
 done_tool: done
-context_window: 128000
-use_native_tools: false
-concurrent_dispatch: false
-reactive_recovery: true
-compact_service: "@compact_service"
 memory_sources:
   - "@instructions_memory"
   - "@project_memory"

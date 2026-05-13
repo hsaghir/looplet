@@ -277,6 +277,24 @@ def _resolve_extends(root: Path, *, _seen: set[Path] | None = None) -> Path:
     merged_cfg = _shallow_merge_config(parent_cfg, child_cfg)
     merged_cfg_path = merged / CartridgeLayout.CONFIG_YAML
     merged_cfg_path.write_text(_dump_yaml(merged_cfg) + "\n", encoding="utf-8")
+
+    # ── Cartridge spec v2 prep: also merge ``runtime.yaml`` ─────
+    # The parent's runtime defaults inherit into the child the same
+    # way contract keys do; the child can override any individual
+    # field in its own ``runtime.yaml``. Without this, splitting
+    # runtime knobs out of the parent's config.yaml would silently
+    # drop them from every child cartridge.
+    parent_rt_path = parent_root / "runtime.yaml"
+    child_rt_path = root / "runtime.yaml"
+    parent_rt = (
+        _load_yaml(parent_rt_path.read_text(encoding="utf-8")) if parent_rt_path.is_file() else None
+    ) or {}
+    child_rt = (
+        _load_yaml(child_rt_path.read_text(encoding="utf-8")) if child_rt_path.is_file() else None
+    ) or {}
+    if parent_rt or child_rt:
+        merged_rt = _shallow_merge_config(parent_rt, child_rt)
+        (merged / "runtime.yaml").write_text(_dump_yaml(merged_rt) + "\n", encoding="utf-8")
     return merged
 
 
@@ -327,6 +345,86 @@ def _workspace_to_preset_inner(
         # a setup.py for the common cases.
         raw_cfg_text = _apply_runtime_substitutions(raw_cfg_text, runtime_dict)
         cfg_kwargs.update(_load_yaml(raw_cfg_text, source_path=cfg_path) or {})
+
+    # ── Cartridge spec v2 prep: sibling ``runtime.yaml`` ────────
+    # ``runtime.yaml`` is the new home for runtime-tier knobs
+    # (sampling, context window sizing, compaction strategy,
+    # caching, telemetry). The cartridge spec v2 will require
+    # those keys to live there; v1.x accepts both shapes.
+    #
+    # Precedence: ``config.yaml`` < ``runtime.yaml``. The host's
+    # runtime file overrides whatever defaults the cartridge author
+    # baked into ``config.yaml`` so a single cartridge can be
+    # operated under different runtime profiles without forking.
+    runtime_yaml_path = root / "runtime.yaml"
+    if runtime_yaml_path.is_file():
+        raw_runtime_text = runtime_yaml_path.read_text(encoding="utf-8")
+        raw_runtime_text = _apply_runtime_substitutions(raw_runtime_text, runtime_dict)
+        runtime_yaml_kwargs = _load_yaml(raw_runtime_text, source_path=runtime_yaml_path) or {}
+        # Validate: only RUNTIME-tier keys are allowed in runtime.yaml.
+        _bad = sorted(
+            k
+            for k in runtime_yaml_kwargs
+            if k not in CartridgeLayout.RUNTIME_TIER_FIELDS
+            and k not in CartridgeLayout.HOST_TIER_FIELDS
+        )
+        if _bad:
+            msg = (
+                f"runtime.yaml at {runtime_yaml_path} contains non-runtime "
+                f"key(s): {_bad}. runtime.yaml may only declare runtime-tier "
+                f"fields (sampling, context windows, compaction, caching, "
+                f"telemetry); contract-tier keys (max_steps, system_prompt, "
+                f"done_tool, model, permissions, memory) belong in "
+                f"config.yaml. See SPEC.md 'Runtime configuration'."
+            )
+            if strict:
+                raise CartridgeSerializationError(msg)
+            logger.warning("%s; dropping the non-runtime keys", msg)
+            for k in _bad:
+                runtime_yaml_kwargs.pop(k, None)
+        cfg_kwargs.update(runtime_yaml_kwargs)
+
+    # ── Cartridge spec v2 prep: warn on runtime keys in config.yaml ──
+    # If the cartridge author placed runtime knobs in ``config.yaml``,
+    # emit a DeprecationWarning naming each one and pointing at the
+    # new home. The keys still load (back-compat); v2.0 will hard-fail.
+    _stray_runtime_keys = sorted(
+        k
+        for k in cfg_kwargs
+        if k in CartridgeLayout.RUNTIME_TIER_FIELDS and runtime_yaml_path.is_file() is False
+        # Subtle: when runtime.yaml exists, we already merged its keys
+        # over config.yaml's, so a stray key in config.yaml that's also
+        # in runtime.yaml has been overridden — no need to warn. But
+        # the more common case is no runtime.yaml yet, in which case
+        # every runtime key in config.yaml is a migration candidate.
+    )
+    # When runtime.yaml exists, only warn about config.yaml keys NOT
+    # also declared in runtime.yaml (those are stragglers the author
+    # forgot to move).
+    if runtime_yaml_path.is_file():
+        runtime_yaml_keys_set = set(
+            _load_yaml(runtime_yaml_path.read_text(encoding="utf-8"), source_path=runtime_yaml_path)
+            or {}
+        )
+        _stray_runtime_keys = sorted(
+            k
+            for k in cfg_kwargs
+            if k in CartridgeLayout.RUNTIME_TIER_FIELDS and k not in runtime_yaml_keys_set
+        )
+    if _stray_runtime_keys:
+        import warnings  # noqa: PLC0415
+
+        warnings.warn(
+            f"config.yaml at {cfg_path} declares runtime-tier key(s) "
+            f"{_stray_runtime_keys}. Cartridge spec v2 moves runtime "
+            f"configuration into a sibling ``runtime.yaml`` so the "
+            f"cartridge stays runtime-agnostic. Move these keys to "
+            f"``{runtime_yaml_path}`` to silence this warning. v1.x "
+            f"continues to accept them in config.yaml; v2.0 will "
+            f"hard-fail. See SPEC.md 'Runtime configuration'.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
 
     sys_prompt_path = root / CartridgeLayout.SYSTEM_PROMPT_MD
     if sys_prompt_path.is_file():

@@ -1,8 +1,6 @@
+# Cartridge contract — what the agent does. Runtime knobs in runtime.yaml.
 max_steps: 25
-max_tokens: 2000
-temperature: 0.2
 done_tool: done
-compact_service: "@compact_service"
 
 # Generic guard hooks via the looplet-shipped registry.
 # Use JSON syntax for flow-style kwargs (also valid YAML, and what the

@@ -1,0 +1,27 @@
+# Runtime configuration — sibling to config.yaml.
+#
+# Cartridge spec v2 separates "what the agent does" (config.yaml,
+# the contract) from "how this host runs it" (runtime.yaml, the
+# runtime knobs). Two cartridges with identical config.yaml are
+# the same agent; two cartridges with identical config.yaml but
+# different runtime.yaml are the same agent operated differently.
+#
+# Only RUNTIME_TIER_FIELDS are valid here. See
+# ``looplet.cartridge.CartridgeLayout.RUNTIME_TIER_FIELDS``.
+
+# Sampling / token budget
+max_tokens: 2000
+temperature: 0.2
+
+# Engine knobs
+use_native_tools: false
+concurrent_dispatch: false
+reactive_recovery: true
+
+# Context window — provider-specific. Override per-deployment to
+# match the bound model (200k for Claude, 128k for GPT-4o, etc.).
+context_window: 128000
+
+# Compaction strategy — wired declaratively from
+# ``resources/compact_service.py``.
+compact_service: "@compact_service"

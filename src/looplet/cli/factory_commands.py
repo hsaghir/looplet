@@ -160,15 +160,17 @@ def cmd_new(args: argparse.Namespace) -> int:
 
     target_dir.parent.mkdir(parents=True, exist_ok=True)
 
-    # The factory's setup.py honours scaffold_to + scaffold_tools at
-    # load time. When the user passed --tool flags, pre-scaffold the
-    # skeleton so the agent skips the boilerplate; otherwise the agent
-    # picks the tool list itself from the brief.
+    # When the user passed --tool flags, pre-scaffold the skeleton
+    # host-side so the agent's first ``scaffold_workspace`` call is a
+    # no-op (idempotent — existing files are preserved). This used to
+    # live in agent_factory.cartridge/setup.py; v2 cartridges can't
+    # ship executable Python at the root, so the scaffolding moves to
+    # the host CLI where filesystem side effects belong.
     runtime: dict = {"workspace": str(target_dir.parent)}
     if tools:
-        runtime["scaffold_to"] = target_dir.name
-        runtime["scaffold_name"] = name
-        runtime["scaffold_tools"] = tools
+        from looplet.scaffold import scaffold_cartridge  # noqa: PLC0415
+
+        scaffold_cartridge(target_dir, name=name, tools=list(tools), overwrite=True)
 
     try:
         backend = _build_backend()

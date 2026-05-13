@@ -90,18 +90,17 @@ def test_scaffold_rejects_invalid_tool_names(tmp_path: Path) -> None:
 
 
 def test_scaffold_workspace_loads_with_factory_setup(tmp_path: Path) -> None:
-    """Loading the agent_factory with scaffold runtime kwargs auto-creates the target."""
+    """v2 factory: host pre-scaffolds the target, then loads the cartridge.
+
+    The factory cartridge no longer ships a ``setup.py``; pre-loop
+    scaffolding moved to the host CLI (``looplet new``). This test
+    mirrors what the CLI does: scaffold first, then load.
+    """
     repo_root = Path(__file__).resolve().parents[1]
     factory = repo_root / "examples" / "agent_factory.cartridge"
-    cartridge_to_preset(
-        str(factory),
-        runtime={
-            "workspace": str(tmp_path),
-            "scaffold_to": "auto.workspace",
-            "scaffold_tools": ["alpha", "beta"],
-        },
-    )
     target = tmp_path / "auto.workspace"
+    scaffold_cartridge(target, name="auto", tools=["alpha", "beta"], overwrite=True)
+    cartridge_to_preset(str(factory), runtime={"workspace": str(tmp_path)})
     assert (target / "cartridge.json").is_file()
     assert (target / "config.yaml").is_file()
     assert (target / "tools" / "alpha").is_dir()
@@ -280,15 +279,9 @@ def test_validate_workspace_warns_on_unfilled_scaffold(tmp_path: Path) -> None:
     warnings so the agent doesn't ``done`` on an empty agent."""
     repo_root = Path(__file__).resolve().parents[1]
     factory = repo_root / "examples" / "agent_factory.cartridge"
-    # Pre-scaffold a child via the factory's setup.py.
-    cartridge_to_preset(
-        str(factory),
-        runtime={
-            "workspace": str(tmp_path),
-            "scaffold_to": "auto.workspace",
-            "scaffold_tools": ["alpha"],
-        },
-    )
+    # Pre-scaffold a child host-side (mirrors what ``looplet new`` does
+    # now that the factory's setup.py escape hatch is gone in v2).
+    scaffold_cartridge(tmp_path / "auto.workspace", name="auto", tools=["alpha"], overwrite=True)
     p = cartridge_to_preset(str(factory), runtime={"workspace": str(tmp_path)})
     from looplet.types import ToolCall as _TC
 

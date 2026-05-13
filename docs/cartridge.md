@@ -30,6 +30,39 @@ Python. Diff-friendly. Git-friendly. Editor-friendly. Agent-friendly.
 
 ---
 
+## Principled exclusions — what cartridges deliberately don't do
+
+The cartridge format is intentionally narrow. Every feature in the
+table below was considered and *deliberately left out* of the format,
+because it can be expressed cleanly as a composition of existing
+primitives (subagent, hook, tool, builtin). Adding it to the format
+would force every cartridge author to pay the complexity tax whether
+they use it or not, and would foreclose the alternative compositions
+each user might prefer.
+
+This table is the **canonical** version. `AGENTS.md` ("Anti-features")
+and `SPEC.md` reference it; the paper (`paper/boundary.tex`,
+`paper/principled_cartridge_v2.md`) builds on it. If you change the
+exclusion stance, update this table first and propagate.
+
+| Excluded feature | Principle | Use this instead | Working example |
+|---|---|---|---|
+| Built-in **plan mode** (loop-level plan/execute split) | Planning is one composition of `subagent + done`, not a loop phase. | Parent cartridge calls `subagent` against a child planner cartridge, then executes the returned plan. | [`examples/planner.cartridge/`](../examples/planner.cartridge/) |
+| Built-in **mid-edit linting** (run linters after every `write`) | Transient errors during edits waste budget. Run gates *at the boundary*. | A `check_done` hook that runs pytest/ruff/etc. exactly when the agent calls `done()`; failure blocks `done()` with an actionable message. | [`examples/snippets/11_quality_gate/quality_gate.py`](../examples/snippets/11_quality_gate/quality_gate.py) |
+| Built-in **to-do list** (loop-tracked task ledger) | They confuse models and duplicate the session log. | Have the agent read/write a plain `TODO.md` file with the same tools it uses for everything else, OR compose a `Todo` tool. | (any tool with `read`/`write` over `TODO.md`) |
+| Built-in **approval popups** by default | Approval fatigue degrades into security theatre. The right boundary is a sandbox. | Run inside a container/worktree (default). Opt in to `PermissionHook(engine)` + `ApprovalHook` only when there is a real human supervising. | [`src/looplet/permissions.py`](../src/looplet/permissions.py) |
+| Built-in **TUI / chat shell** | looplet is a library that yields `Step`s. Shells and TUIs are downstream. | Build any TUI on top of the `Step` stream, or use the separate `looplet new` shell. | (consumer code) |
+| Built-in **background daemons** (long-running shell tasks) | Lifecycle, signals, and cleanup are not loop concerns. | tmux, systemd, a job queue — anything that already solves daemon supervision. | (out of scope) |
+| Built-in **DSL / magic globals** | Cartridges should be plain Python data + plain functions. | YAML for declarative slots; importable Python for code. No DSL. | (every shipped cartridge) |
+| Built-in **mandatory inheritance** | Hooks/backends/states are `@runtime_checkable` Protocols. | Any object with the right methods works — no base class to import. | [`src/looplet/loop.py` `LoopHook`](../src/looplet/loop.py) |
+
+If a feature in this table turns out to be wrong, the bar to add it
+to the format is: (a) it cannot be expressed as a hook / tool /
+preset / subagent, AND (b) every cartridge author pays for it whether
+they want it or not. **Both** must hold.
+
+---
+
 ## Layout
 
 ```

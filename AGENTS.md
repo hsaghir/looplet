@@ -71,6 +71,11 @@ If a feature in this list turns out to be wrong, the bar to add it is:
 (a) it cannot be expressed as a hook/tool/preset, AND (b) every loop
 user pays for it whether they want it or not. Both must hold.
 
+> **Canonical table:** the principle/alternative/working-example
+> mapping for each excluded feature lives in
+> [`docs/cartridge.md` → "Principled exclusions"](docs/cartridge.md#principled-exclusions--what-cartridges-deliberately-dont-do).
+> Update that table first; this section is the agent-facing summary.
+
 ## Security stance: container, not popup
 
 looplet's default permission posture is **allow-all**. This is

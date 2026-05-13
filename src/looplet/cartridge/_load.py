@@ -1246,7 +1246,7 @@ def _workspace_to_preset_inner(
                     raise CartridgeSerializationError(
                         f"runtime['ask_handler'] must be callable, got {type(ask_handler).__name__}"
                     )
-                permission_hook.engine.ask_handler = ask_handler
+                permission_hook.engine.ask_handler = ask_handler  # type: ignore[assignment]
             preset.hooks.append(permission_hook)
 
     # Long-term memory: explicit ``memory: { long_term: <path> }`` wins;

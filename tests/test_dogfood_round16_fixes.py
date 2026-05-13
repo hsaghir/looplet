@@ -133,6 +133,7 @@ def test_loopconfig_context_window_total_chars_override() -> None:
     assert captured == [12345]
 
 
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
 def test_context_window_steps_round_trips_via_config_yaml(tmp_path: Path) -> None:
     """A cartridge declaring ``context_window_steps`` in ``config.yaml``
     must produce a ``LoopConfig`` with the override set."""

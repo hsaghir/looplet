@@ -88,19 +88,19 @@ LoopConfig fields fall into three tiers:
 
 - **CONTRACT** — *what the agent does.* Lives in `config.yaml`.
   `max_steps`, `system_prompt`, `done_tool`, `done_tools`,
-  `acceptance_criteria`, `tool_metadata`, `permissions`, `memory`,
-  `model`, `extends`, `builtin_tools`, `builtin_hooks`, etc. These
-  travel with the cartridge across hosts and SHOULD round-trip
-  identically.
+  `permissions`, `memory`, `model`, `extends`, `builtin_tools`,
+  `builtin_hooks`, etc. These travel with the cartridge across hosts
+  and SHOULD round-trip identically. (`tool_metadata` rides along
+  but is auto-populated by the loader — not authored by hand.)
 - **RUNTIME** — *how this host runs it.* Lives in the sibling
   `runtime.yaml`. `max_tokens`, `temperature`, `recovery_temperature`,
-  `max_turn_continuations`, `use_native_tools`, `concurrent_dispatch`,
-  `reactive_recovery`, `context_window`, `context_window_steps`,
-  `context_inline_per_step_chars`, `context_window_total_chars`,
-  `max_briefing_tokens`, `router`, `tracer`, `recovery_registry`,
-  `compact_service`, `cache_policy`, `checkpoint_dir`,
-  `initial_checkpoint`, `tool_result_persist_dir`. Different hosts
-  MAY override freely.
+  `max_turn_continuations`, `generate_kwargs`, `use_native_tools`,
+  `concurrent_dispatch`, `reactive_recovery`, `context_window`,
+  `context_window_steps`, `context_inline_per_step_chars`,
+  `context_window_total_chars`, `max_briefing_tokens`, `router`,
+  `tracer`, `recovery_registry`, `compact_service`, `cache_policy`,
+  `checkpoint_dir`, `initial_checkpoint`, `tool_result_persist_dir`.
+  Different hosts MAY override freely.
 - **HOST** — *runtime-supplied callables.* Never serialised:
   `approval_handler`, `cancel_token`, `render_messages_override`.
 

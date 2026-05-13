@@ -37,6 +37,14 @@ class CartridgeLayout:
     SETUP_PY = "setup.py"
 
     # ``LoopConfig`` field names that round-trip via ``config.yaml``.
+    # NOTE: ``acceptance_criteria`` is intentionally NOT here — it's
+    # declared on ``LoopConfig`` but never consumed by the loop or any
+    # shipped hook (pure documentation field). If you want acceptance
+    # gates, write a hook under ``hooks/<name>/`` that reads its
+    # criteria from ``hook.config.yaml`` — same as any other policy.
+    # ``tool_metadata`` IS here but is auto-populated by the loader
+    # (e.g. with the resolved model identity for cost tracking); user
+    # cartridges should not author it directly.
     SERIALIZABLE_CONFIG_FIELDS: tuple[str, ...] = (
         "max_steps",
         "max_tokens",
@@ -51,7 +59,6 @@ class CartridgeLayout:
         "context_window",
         "max_briefing_tokens",
         "checkpoint_dir",
-        "acceptance_criteria",
         "tool_metadata",
         "generate_kwargs",
         "context_window_steps",
@@ -98,6 +105,10 @@ class CartridgeLayout:
             "temperature",
             "recovery_temperature",
             "max_turn_continuations",
+            # Backend kwargs passthrough — same family as the sampling
+            # knobs above (``top_p``, ``frequency_penalty``, etc.); pure
+            # "how to sample", not "what the agent does".
+            "generate_kwargs",
             # Engine knobs.
             "use_native_tools",
             "concurrent_dispatch",

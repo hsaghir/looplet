@@ -192,12 +192,14 @@ compact_service: "@compact_service"   # resolves to resources/compact_service.py
 Field tiers (spec v2):
 
 - **CONTRACT** (`config.yaml`): `max_steps`, `system_prompt`, `done_tool`,
-  `done_tools`, `acceptance_criteria`, `tool_metadata`, `permissions`,
-  `memory`, `model`, `extends`, `builtin_tools`, `builtin_hooks`.
+  `done_tools`, `permissions`, `memory`, `model`, `extends`,
+  `builtin_tools`, `builtin_hooks`. (`tool_metadata` rides along but
+  is auto-populated by the loader — do not author.)
 - **RUNTIME** (`runtime.yaml`): `max_tokens`, `temperature`,
-  `recovery_temperature`, `max_turn_continuations`, `use_native_tools`,
-  `concurrent_dispatch`, `reactive_recovery`, `context_window` (and
-  related), `max_briefing_tokens`, `router`, `tracer`,
+  `recovery_temperature`, `max_turn_continuations`, `generate_kwargs`,
+  `use_native_tools`, `concurrent_dispatch`, `reactive_recovery`,
+  `context_window` (and related), `max_briefing_tokens`, `router`,
+  `tracer`,
   `recovery_registry`, `compact_service`, `cache_policy`,
   `checkpoint_dir`, `initial_checkpoint`, `tool_result_persist_dir`.
 - **HOST** (never serialised; runtime-supplied): `approval_handler`,
@@ -883,7 +885,7 @@ only touch the first group.
 **Behavior tuning (usually fine as-is):**
 `max_tokens`, `recovery_temperature`, `max_turn_continuations`,
 `concurrent_dispatch`, `reactive_recovery`, `use_native_tools`,
-`context_window`, `max_briefing_tokens`, `acceptance_criteria`
+`context_window`, `max_briefing_tokens`
 
 **Domain hooks (bundle into `DomainAdapter` or set individually):**
 `build_briefing`, `build_prompt`, `extract_entities`,

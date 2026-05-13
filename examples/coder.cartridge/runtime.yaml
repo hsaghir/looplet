@@ -1,6 +1,6 @@
 max_tokens: 2000
 temperature: 0.2
-use_native_tools: false
+# use_native_tools defaults to true (auto-falls-back if the backend lacks it).
 concurrent_dispatch: false
 reactive_recovery: true
 context_window: 128000

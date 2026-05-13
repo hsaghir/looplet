@@ -139,7 +139,7 @@ max_tokens: 2000               # max tokens per LLM call
 recovery_temperature: 0.1
 context_window: 128000
 max_briefing_tokens: 4000      # null = unbounded
-use_native_tools: false
+use_native_tools: true         # default true; auto-falls-back when backend lacks support
 concurrent_dispatch: false
 reactive_recovery: true
 done_tool: done                # name of the completion sentinel tool

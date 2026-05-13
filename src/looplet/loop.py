@@ -535,9 +535,12 @@ class LoopConfig:
     when composing a reusable agent package — pass one adapter instead
     of threading five callables through config kwargs."""
 
-    use_native_tools: bool = False
+    use_native_tools: bool = True
     """If True, pass tool schemas to the LLM and parse tool_use blocks
-    instead of JSON text. Requires LLM backend support."""
+    instead of JSON text. Default True — the loop probes the backend
+    for ``generate_with_tools`` and silently falls back to JSON-text
+    parsing when the backend does not implement it. Set to False to
+    force the JSON-text path even on backends that support native tools."""
 
     concurrent_dispatch: bool = False
     """If True, dispatch non-dependent tool calls in parallel via

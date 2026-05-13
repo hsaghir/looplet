@@ -1124,6 +1124,7 @@ def _workspace_to_preset_inner(
 
     if _permissions_block is not None:
         from looplet.cartridge.spec_slots import compile_permissions_block  # noqa: PLC0415
+        from looplet.permissions import PermissionDecision  # noqa: PLC0415
 
         try:
             permission_hook = compile_permissions_block(_permissions_block)
@@ -1133,6 +1134,40 @@ def _workspace_to_preset_inner(
                 raise CartridgeSerializationError(msg) from exc
             logger.warning("%s; ignoring permissions block", msg)
         else:
+            # Fail loud (cartridge spec v2): a cartridge that declares
+            # ``ask:`` rules MUST have an ``ask_handler`` wired by the
+            # host, otherwise ASK silently falls back to the engine's
+            # ``default`` (typically ALLOW) and the human-in-the-loop
+            # contract is broken without warning. The host supplies the
+            # handler via ``runtime={"ask_handler": <callable>}``; the
+            # callable receives ``(ToolCall, PermissionRule)`` and must
+            # return ``PermissionDecision.ALLOW`` or ``DENY``.
+            asking_tools = sorted(
+                {
+                    rule.tool
+                    for rule in permission_hook.engine.rules
+                    if rule.decision == PermissionDecision.ASK
+                }
+            )
+            if asking_tools:
+                ask_handler = (runtime_dict or {}).get("ask_handler")
+                if ask_handler is None:
+                    msg = (
+                        f"cartridge {cfg_path} declares permissions.ask rules for "
+                        f"{asking_tools!r} but no ``ask_handler`` was supplied. "
+                        f"Pass one via ``cartridge_to_preset(path, runtime="
+                        f"{{'ask_handler': callable}})``. The handler receives "
+                        f"``(ToolCall, PermissionRule)`` and must return "
+                        f"``PermissionDecision.ALLOW`` or ``DENY``. Without it, "
+                        f"ASK rules silently fall back to the engine default "
+                        f"(typically ALLOW), defeating the intent of asking."
+                    )
+                    raise CartridgeSerializationError(msg)
+                if not callable(ask_handler):
+                    raise CartridgeSerializationError(
+                        f"runtime['ask_handler'] must be callable, got {type(ask_handler).__name__}"
+                    )
+                permission_hook.engine.ask_handler = ask_handler
             preset.hooks.append(permission_hook)
 
     # Long-term memory: explicit ``memory: { long_term: <path> }`` wins;

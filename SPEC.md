@@ -214,6 +214,16 @@ permissions:
 
 A bare string entry (e.g. `- read`) is shorthand for `{ tool: read }`.
 
+**`ask:` rules require a host-supplied handler.** A cartridge that
+declares any `ask:` rule is announcing a human-in-the-loop contract.
+Loaders MUST refuse to load such a cartridge unless the host supplies
+an `ask_handler` callable (passed as `runtime={"ask_handler": fn}` to
+`cartridge_to_preset`). The handler receives `(ToolCall,
+PermissionRule)` and MUST return `PermissionDecision.ALLOW` or
+`PermissionDecision.DENY`. Without this fail-loud check, ASK rules
+silently fall back to the engine's `default` (typically `allow`),
+defeating the intent of asking.
+
 ### Memory (v1.0 slot)
 
 ```yaml

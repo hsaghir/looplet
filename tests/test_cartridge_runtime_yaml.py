@@ -146,3 +146,84 @@ def test_extends_inherits_parent_runtime_yaml(tmp_path: Path) -> None:
     assert preset.config.max_steps == 20  # child overrides parent
     assert preset.config.max_tokens == 7777  # inherited from parent runtime.yaml
     assert preset.config.temperature == 0.42
+
+
+# ── Phase 2: approval handler contract ─────────────────────────────
+
+
+def test_ask_rules_without_handler_raise_at_load(tmp_path: Path) -> None:
+    """Cartridge spec v2 fail-loud: ``permissions: ask:`` rules require
+    a host-supplied ``ask_handler``; without one, loading must raise so
+    the human-in-the-loop contract isn't silently broken by ASK falling
+    back to the engine default (typically ALLOW)."""
+    from looplet import CartridgeSerializationError
+
+    _write_minimal_cartridge(
+        tmp_path,
+        config_text=(
+            "max_steps: 5\n"
+            "done_tool: done\n"
+            "permissions:\n"
+            "  default: allow\n"
+            "  ask:\n"
+            "    - tool: done\n"
+        ),
+    )
+
+    with pytest.raises(CartridgeSerializationError, match=r"permissions\.ask"):
+        cartridge_to_preset(tmp_path)
+
+
+def test_ask_rules_with_handler_load_cleanly(tmp_path: Path) -> None:
+    """Supplying ``runtime={'ask_handler': callable}`` satisfies the
+    contract; the handler is wired onto the compiled engine."""
+    from looplet.permissions import PermissionDecision, PermissionHook
+
+    _write_minimal_cartridge(
+        tmp_path,
+        config_text=(
+            "max_steps: 5\n"
+            "done_tool: done\n"
+            "permissions:\n"
+            "  default: allow\n"
+            "  ask:\n"
+            "    - tool: done\n"
+        ),
+    )
+
+    sentinel = lambda _call, _rule: PermissionDecision.DENY  # noqa: E731
+    preset = cartridge_to_preset(tmp_path, runtime={"ask_handler": sentinel})
+
+    perm_hooks = [h for h in preset.hooks if isinstance(h, PermissionHook)]
+    assert len(perm_hooks) == 1
+    assert perm_hooks[0].engine.ask_handler is sentinel
+
+
+def test_non_callable_ask_handler_raises(tmp_path: Path) -> None:
+    """Defensive: loader rejects a non-callable ``ask_handler``."""
+    from looplet import CartridgeSerializationError
+
+    _write_minimal_cartridge(
+        tmp_path,
+        config_text=("max_steps: 5\ndone_tool: done\npermissions:\n  ask:\n    - tool: done\n"),
+    )
+
+    with pytest.raises(CartridgeSerializationError, match=r"must be callable"):
+        cartridge_to_preset(tmp_path, runtime={"ask_handler": "not a function"})
+
+
+def test_no_ask_rules_means_no_handler_required(tmp_path: Path) -> None:
+    """Cartridges without ``ask:`` rules don't need an ``ask_handler``."""
+    _write_minimal_cartridge(
+        tmp_path,
+        config_text=(
+            "max_steps: 5\n"
+            "done_tool: done\n"
+            "permissions:\n"
+            "  default: allow\n"
+            "  deny:\n"
+            "    - tool: done\n"
+        ),
+    )
+    # Should not raise.
+    cartridge_to_preset(tmp_path)

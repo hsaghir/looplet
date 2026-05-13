@@ -27,6 +27,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TINYLOOP_PATH = REPO_ROOT / "examples" / "alt_runtime" / "tinyloop.py"
 FIXTURE = REPO_ROOT / "tests" / "conformance" / "fixtures" / "01_minimal"
+V2_FIXTURE = REPO_ROOT / "tests" / "conformance" / "fixtures" / "04_v2_tier_split"
 
 
 @pytest.fixture(scope="module")
@@ -97,3 +98,62 @@ def test_tinyloop_accepts_workspace_json_legacy_alias(tinyloop_module, tmp_path)
     (dst / "cartridge.json").rename(dst / "workspace.json")
     cart = tinyloop_module.load_cartridge(dst)
     assert cart.name == "minimal"
+
+
+# ── v2 cross-runtime portability ───────────────────────────────────
+
+
+def test_tinyloop_loads_v2_tier_split_fixture(tinyloop_module) -> None:
+    """A v2 cartridge with config.yaml + runtime.yaml loads on tinyloop.
+
+    Proves the spec-v2 tier split is genuinely cross-runtime: tinyloop
+    (a different loader written from scratch) merges runtime.yaml on
+    top of config.yaml and produces the same flat conformance summary
+    as the reference loader does for the equivalent v1 cartridge.
+    """
+    cart = tinyloop_module.load_cartridge(V2_FIXTURE / "cartridge")
+    assert cart.name == "v2_tier_split"
+    assert cart.schema_version == 2
+    summary = tinyloop_module.conformance_summary(cart)
+    expected = json.loads((V2_FIXTURE / "expected.json").read_text())
+    assert summary == expected, (
+        "tinyloop produced a different conformance summary than the "
+        "v2 reference loader. Either tinyloop has not honoured the "
+        "config.yaml + runtime.yaml tier split, or the spec-pinned "
+        "summary has widened without updating tinyloop."
+    )
+    # The runtime knobs came from runtime.yaml, not config.yaml.
+    assert cart.config.get("max_tokens") == 2000
+    assert cart.config.get("temperature") == 0.2
+
+
+# ── Minimal-conforming: all v1.0 declarative slots ─────────────────
+
+
+@pytest.mark.parametrize(
+    "fixture_name",
+    [
+        "02_permissions",
+        "03_model_and_output_schema",
+        "04_long_term_memory",
+    ],
+)
+def test_tinyloop_summary_matches_for_declarative_slot_fixtures(
+    tinyloop_module, fixture_name: str
+) -> None:
+    """tinyloop is now minimal-conforming for all v1.0 declarative slots.
+
+    Cross-runtime evidence that ``permissions``, ``model``,
+    ``output_schema`` and ``memory_sources`` are part of the
+    cartridge contract — not loader-specific decoration. If a fixture
+    is added or its expected.json widens, tinyloop must keep up.
+    """
+    fixture_dir = REPO_ROOT / "tests" / "conformance" / "fixtures" / fixture_name
+    cart = tinyloop_module.load_cartridge(fixture_dir / "cartridge")
+    summary = tinyloop_module.conformance_summary(cart)
+    expected = json.loads((fixture_dir / "expected.json").read_text())
+    assert summary == expected, (
+        f"tinyloop summary for fixture {fixture_name!r} drifted from the "
+        f"reference loader. Expected:\n{json.dumps(expected, indent=2)}\n"
+        f"Actual:\n{json.dumps(summary, indent=2)}"
+    )

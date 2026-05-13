@@ -6,6 +6,35 @@ and provides a clean code-escape hatch for the rest. It is the missing
 inverse of :class:`looplet.bundles.SkillBundle`, which can be loaded
 from disk but not written back from a live preset.
 
+Extraction contract (loader independence)
+-----------------------------------------
+
+``looplet.cartridge`` is structured so it can be extracted into a
+standalone ``looplet-cartridge`` package without touching the rest
+of looplet. To preserve that property, this package's TOP-LEVEL
+(import-time) dependencies on the looplet umbrella are pinned to
+the following allowlist; everything else MUST be imported lazily
+inside function bodies. The list is locked by
+``tests/test_cartridge_extraction_contract.py`` — if it grows,
+update both places intentionally.
+
+Allowlisted top-level looplet imports inside cartridge/**.py:
+
+* ``looplet.refs``           — tiny shared registry (~117 LOC);
+                               designed as the cross-package bridge.
+* ``looplet.hook_decision``  — small leaf module used by
+                               ``prompt_files.py``.
+* ``looplet.permissions``    — used by ``spec_slots.py`` to compile
+                               the declarative ``permissions:`` block.
+* ``looplet.validation``     — used by ``spec_slots.py`` to compile
+                               the declarative ``output_schema:`` block.
+
+Everything else — ``loop``, ``presets``, ``tools``, ``types``,
+``memory``, ``compact``, ``builtin_*``, ``backends`` — is imported
+lazily (function-local), so a future split package can replace
+those imports with Protocol-typed runtime hooks without any
+ripple in the cartridge code itself.
+
 Design goal
 -----------
 
@@ -43,8 +72,13 @@ What is round-trippable
   ``max_tokens``, ``temperature``, ``recovery_temperature``,
   ``done_tool``, ``max_turn_continuations``, ``use_native_tools``,
   ``concurrent_dispatch``, ``reactive_recovery``, ``context_window``,
-  ``max_briefing_tokens``, ``checkpoint_dir``); ``acceptance_criteria``;
-  ``tool_metadata`` and ``generate_kwargs`` (JSON-able dicts).
+  ``max_briefing_tokens``, ``checkpoint_dir``); ``generate_kwargs``
+  (JSON-able dict, RUNTIME-tier sampling overrides). ``tool_metadata``
+  is auto-populated by the loader (e.g. with the resolved model
+  identity for cost tracking) and should not be authored by hand.
+  ``acceptance_criteria`` is intentionally NOT serialised \u2014 if you
+  need acceptance gates, declare them in the ``config.yaml`` of a
+  ``hooks/<name>/`` hook that enforces them.
 * Every :class:`ToolSpec` whose ``execute`` is a top-level function
   (closures cannot be re-imported from disk).
 * Every hook that either: (a) implements an opt-in

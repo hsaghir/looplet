@@ -649,6 +649,7 @@ def test_git_detective_workspace_loads() -> None:
 # ── runtime= kwarg + ${runtime.x} substitution ────────────────
 
 
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
 def test_runtime_substitution_in_config_yaml(tmp_path):
     """${runtime.<key>} placeholders in config.yaml get replaced with
     the host-supplied runtime value before LoopConfig is constructed."""
@@ -1052,6 +1053,7 @@ def test_workspace_extends_other_workspace(tmp_path) -> None:
 # ── @ref resolution in config.yaml (declarative LoopConfig services) ──
 
 
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
 def test_compact_service_via_at_ref_in_config(tmp_path) -> None:
     """A workspace can wire ``LoopConfig.compact_service`` declaratively
     via ``compact_service: "@compact_service"`` in config.yaml plus a
@@ -1074,6 +1076,7 @@ def test_compact_service_via_at_ref_in_config(tmp_path) -> None:
     assert type(preset.config.compact_service).__module__ == "looplet.compact"
 
 
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
 def test_tracer_via_at_ref_in_config(tmp_path) -> None:
     """``tracer`` callable wired declaratively via @ref."""
     import json as _json
@@ -1095,6 +1098,7 @@ def test_tracer_via_at_ref_in_config(tmp_path) -> None:
     assert callable(preset.config.tracer)
 
 
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
 def test_unresolved_at_ref_in_config_raises_in_strict(tmp_path) -> None:
     """A typo'd @ref in config.yaml fails loud at load time, same as
     hook kwargs — no silent string-into-LoopConfig leakage."""
@@ -1123,8 +1127,13 @@ def test_callable_loop_config_field_auto_emits_resource(tmp_path: Path) -> None:
     )
     ws = preset_to_cartridge(preset, tmp_path / "ws")
 
-    cfg_text = (tmp_path / "ws" / "config.yaml").read_text()
-    assert '"@compact_service"' in cfg_text or "@compact_service" in cfg_text
+    # ``compact_service`` is a runtime-tier field (cartridge spec v2),
+    # so the writer emits it into ``runtime.yaml`` rather than
+    # ``config.yaml``. Either filename satisfies the round-trip; the
+    # important invariant is that the @ref + the builder file both
+    # exist somewhere the loader will find them.
+    rt_text = (tmp_path / "ws" / "runtime.yaml").read_text()
+    assert '"@compact_service"' in rt_text or "@compact_service" in rt_text
     assert (tmp_path / "ws" / "resources" / "compact_service.py").is_file()
 
     # Reload — compact_service should come back via the @ref machinery.

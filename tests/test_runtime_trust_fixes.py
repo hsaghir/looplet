@@ -335,6 +335,7 @@ def test_output_schema_rejection_populates_tool_result_error(tmp_path: Path) -> 
 # ── fix 5: extends does key-level config merge, not file-level ────
 
 
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
 def test_extends_carries_grandparent_config_keys(tmp_path: Path) -> None:
     """A child extending a parent extending a grandparent inherits keys
     from every level. Before the fix, the child's config.yaml overlay

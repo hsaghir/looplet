@@ -32,6 +32,14 @@ Currently shipped built-ins:
 * ``threshold_compact`` — :class:`looplet.budget.ThresholdCompactHook`
   with an inline ``budget:`` dict (parsed into
   :class:`looplet.budget.ContextBudget`).
+* ``static_briefing`` — :class:`looplet.cartridge.prompt_files.StaticBriefingHook`.
+  Inline replacement for the v1.x magic ``prompts/briefing.md`` file:
+  declare ``text:`` (inline body) xor ``path:`` (relative to cartridge
+  root). Spec v2 prefers this declarative form so the briefing source
+  is visible in ``config.yaml`` rather than auto-discovered by filename.
+* ``recovery_hint`` — :class:`looplet.cartridge.prompt_files.RecoveryHintHook`.
+  Inline replacement for the v1.x magic ``prompts/recovery.md`` file;
+  same ``text:`` / ``path:`` kwargs as ``static_briefing``.
 
 Adding a new built-in: write a small builder ``def build(*,
 resources, **kwargs) -> LoopHook`` and register its name in
@@ -91,11 +99,83 @@ def _build_threshold_compact(*, resources: dict[str, Any], **kwargs: Any) -> Any
     return ThresholdCompactHook(budget=budget, **kwargs)
 
 
+def _read_text_or_path(
+    *,
+    name: str,
+    text: str | None,
+    path: str | None,
+    cartridge_root: Any,
+) -> str:
+    """Resolve a hook's body from inline ``text:`` or a ``path:`` on disk.
+
+    ``path:`` is resolved relative to the cartridge root supplied via
+    the ``cartridge_root`` resource (auto-injected by the loader).
+    Exactly one of ``text:`` / ``path:`` must be set.
+    """
+    from pathlib import Path  # noqa: PLC0415
+
+    if text is not None and path is not None:
+        raise ValueError(f"builtin hook {name!r}: pass either ``text:`` or ``path:``, not both")
+    if text is not None:
+        return str(text)
+    if path is None:
+        raise ValueError(f"builtin hook {name!r}: requires either ``text:`` or ``path:``")
+    if cartridge_root is None:
+        raise ValueError(
+            f"builtin hook {name!r}: ``path:`` resolution requires the loader to provide "
+            f"a ``cartridge_root`` resource (this should be automatic)"
+        )
+    body = (Path(cartridge_root) / str(path)).read_text(encoding="utf-8")
+    return body
+
+
+def _build_static_briefing(*, resources: dict[str, Any], **kwargs: Any) -> Any:
+    """Inline replacement for the magic ``prompts/briefing.md`` file.
+
+    Declarative usage::
+
+        builtin_hooks:
+          - static_briefing:
+              text: |-
+                Be concise.
+          # OR
+          - static_briefing:
+              path: prompts/briefing.md
+    """
+    from looplet.cartridge.prompt_files import StaticBriefingHook  # noqa: PLC0415
+
+    body = _read_text_or_path(
+        name="static_briefing",
+        text=kwargs.pop("text", None),
+        path=kwargs.pop("path", None),
+        cartridge_root=resources.get("cartridge_root"),
+    )
+    return StaticBriefingHook(text=body, **kwargs)
+
+
+def _build_recovery_hint(*, resources: dict[str, Any], **kwargs: Any) -> Any:
+    """Inline replacement for the magic ``prompts/recovery.md`` file.
+
+    Same kwargs as :func:`_build_static_briefing` (``text:`` xor ``path:``).
+    """
+    from looplet.cartridge.prompt_files import RecoveryHintHook  # noqa: PLC0415
+
+    body = _read_text_or_path(
+        name="recovery_hint",
+        text=kwargs.pop("text", None),
+        path=kwargs.pop("path", None),
+        cartridge_root=resources.get("cartridge_root"),
+    )
+    return RecoveryHintHook(text=body, **kwargs)
+
+
 AVAILABLE: dict[str, Callable[..., Any]] = {
     "skill_activation": _build_skill_activation,
     "stagnation": _build_stagnation,
     "per_tool_limit": _build_per_tool_limit,
     "threshold_compact": _build_threshold_compact,
+    "static_briefing": _build_static_briefing,
+    "recovery_hint": _build_recovery_hint,
 }
 
 

@@ -94,7 +94,15 @@ def test_conformance_fixture(fixture_dir: Path) -> None:
     cartridge = fixture_dir / "cartridge"
     assert cartridge.is_dir(), f"fixture {fixture_dir.name} missing cartridge/"
     expected = json.loads(expected_path.read_text())
-    preset = cartridge_to_preset(str(cartridge), strict=True)
+    # Cartridge spec v2: any fixture that declares ``ask:`` rules must
+    # supply an ``ask_handler`` to the loader, otherwise loading
+    # fail-louds. Fixtures don't carry executable Python, so wire in a
+    # deterministic stub here that always denies — conformance is
+    # about loader behaviour, not runtime decisions.
+    runtime_kwargs: dict[str, Any] = {
+        "ask_handler": lambda _call, _rule: PermissionDecision.DENY,
+    }
+    preset = cartridge_to_preset(str(cartridge), strict=True, runtime=runtime_kwargs)
     summary = _summarise_preset(preset)
     assert summary == expected, (
         f"conformance fixture {fixture_dir.name!r} mismatch.\n"

@@ -1,8 +1,13 @@
 {
-  "schema_version": 1,
-  "name": "skillful_analyst",
   "description": "Workspace that loads agentskills.io-format SKILL.md files at runtime and gives the agent search_skills + activate_skill tools so it can pull in just-in-time capability. Demonstrates SKILL.md interop with looplet workspaces.",
   "metadata": {
-    "tags": ["skills", "agentskills", "interop", "demo"]
-  }
+    "tags": [
+      "skills",
+      "agentskills",
+      "interop",
+      "demo"
+    ]
+  },
+  "name": "skillful_analyst",
+  "schema_version": 2
 }

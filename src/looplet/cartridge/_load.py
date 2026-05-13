@@ -34,7 +34,7 @@ from looplet.cartridge._layout import (
     CartridgeSerializationError,
     _stamp_preset_origin,
 )
-from looplet.cartridge._manifest import _manifest_present
+from looplet.cartridge._manifest import _manifest_present, _read_schema_version
 from looplet.cartridge._render import _apply_runtime_substitutions
 from looplet.cartridge._resources import (
     _load_resources,
@@ -277,6 +277,24 @@ def _resolve_extends(root: Path, *, _seen: set[Path] | None = None) -> Path:
     merged_cfg = _shallow_merge_config(parent_cfg, child_cfg)
     merged_cfg_path = merged / CartridgeLayout.CONFIG_YAML
     merged_cfg_path.write_text(_dump_yaml(merged_cfg) + "\n", encoding="utf-8")
+
+    # ── Cartridge spec v2 prep: also merge ``runtime.yaml`` ─────
+    # The parent's runtime defaults inherit into the child the same
+    # way contract keys do; the child can override any individual
+    # field in its own ``runtime.yaml``. Without this, splitting
+    # runtime knobs out of the parent's config.yaml would silently
+    # drop them from every child cartridge.
+    parent_rt_path = parent_root / "runtime.yaml"
+    child_rt_path = root / "runtime.yaml"
+    parent_rt = (
+        _load_yaml(parent_rt_path.read_text(encoding="utf-8")) if parent_rt_path.is_file() else None
+    ) or {}
+    child_rt = (
+        _load_yaml(child_rt_path.read_text(encoding="utf-8")) if child_rt_path.is_file() else None
+    ) or {}
+    if parent_rt or child_rt:
+        merged_rt = _shallow_merge_config(parent_rt, child_rt)
+        (merged / "runtime.yaml").write_text(_dump_yaml(merged_rt) + "\n", encoding="utf-8")
     return merged
 
 
@@ -315,7 +333,21 @@ def _workspace_to_preset_inner(
     from looplet.tools import BaseToolRegistry, ToolSpec  # noqa: PLC0415
     from looplet.types import DefaultState  # noqa: PLC0415
 
+    # ── Spec version gate ──────────────────────────────────────
+    # ``schema_version >= 2`` flips the v1.x deprecation warnings
+    # (runtime keys in config.yaml, magic ``prompts/briefing.md``
+    # auto-load, ``setup.py`` escape hatch) into hard
+    # CartridgeSerializationError. v1 cartridges keep loading with
+    # deprecation warnings. Use ``looplet migrate`` to upgrade.
+    schema_version = _read_schema_version(root)
+    is_v2 = schema_version >= 2
+
     resources = _load_resources(root, runtime_dict)
+    # Loader-injected resource: built-in hooks (and any user resource
+    # builder that wants it) can resolve cartridge-root-relative paths
+    # via ``resources["cartridge_root"]``. Used by ``static_briefing``
+    # / ``recovery_hint`` to load ``path:`` kwargs declaratively.
+    resources.setdefault("cartridge_root", root)
 
     # Config
     cfg_kwargs: dict[str, Any] = {}
@@ -327,6 +359,93 @@ def _workspace_to_preset_inner(
         # a setup.py for the common cases.
         raw_cfg_text = _apply_runtime_substitutions(raw_cfg_text, runtime_dict)
         cfg_kwargs.update(_load_yaml(raw_cfg_text, source_path=cfg_path) or {})
+
+    # ── Cartridge spec v2 prep: sibling ``runtime.yaml`` ────────
+    # ``runtime.yaml`` is the new home for runtime-tier knobs
+    # (sampling, context window sizing, compaction strategy,
+    # caching, telemetry). The cartridge spec v2 will require
+    # those keys to live there; v1.x accepts both shapes.
+    #
+    # Precedence: ``config.yaml`` < ``runtime.yaml``. The host's
+    # runtime file overrides whatever defaults the cartridge author
+    # baked into ``config.yaml`` so a single cartridge can be
+    # operated under different runtime profiles without forking.
+    runtime_yaml_path = root / "runtime.yaml"
+    if runtime_yaml_path.is_file():
+        raw_runtime_text = runtime_yaml_path.read_text(encoding="utf-8")
+        raw_runtime_text = _apply_runtime_substitutions(raw_runtime_text, runtime_dict)
+        runtime_yaml_kwargs = _load_yaml(raw_runtime_text, source_path=runtime_yaml_path) or {}
+        # Validate: only RUNTIME-tier keys are allowed in runtime.yaml.
+        _bad = sorted(
+            k
+            for k in runtime_yaml_kwargs
+            if k not in CartridgeLayout.RUNTIME_TIER_FIELDS
+            and k not in CartridgeLayout.HOST_TIER_FIELDS
+        )
+        if _bad:
+            msg = (
+                f"runtime.yaml at {runtime_yaml_path} contains non-runtime "
+                f"key(s): {_bad}. runtime.yaml may only declare runtime-tier "
+                f"fields (sampling, context windows, compaction, caching, "
+                f"telemetry); contract-tier keys (max_steps, system_prompt, "
+                f"done_tool, model, permissions, memory) belong in "
+                f"config.yaml. See SPEC.md 'Runtime configuration'."
+            )
+            if strict:
+                raise CartridgeSerializationError(msg)
+            logger.warning("%s; dropping the non-runtime keys", msg)
+            for k in _bad:
+                runtime_yaml_kwargs.pop(k, None)
+        cfg_kwargs.update(runtime_yaml_kwargs)
+
+    # ── Cartridge spec v2 prep: warn on runtime keys in config.yaml ──
+    # If the cartridge author placed runtime knobs in ``config.yaml``,
+    # emit a DeprecationWarning naming each one and pointing at the
+    # new home. The keys still load (back-compat); v2.0 will hard-fail.
+    _stray_runtime_keys = sorted(
+        k
+        for k in cfg_kwargs
+        if k in CartridgeLayout.RUNTIME_TIER_FIELDS and runtime_yaml_path.is_file() is False
+        # Subtle: when runtime.yaml exists, we already merged its keys
+        # over config.yaml's, so a stray key in config.yaml that's also
+        # in runtime.yaml has been overridden — no need to warn. But
+        # the more common case is no runtime.yaml yet, in which case
+        # every runtime key in config.yaml is a migration candidate.
+    )
+    # When runtime.yaml exists, only warn about config.yaml keys NOT
+    # also declared in runtime.yaml (those are stragglers the author
+    # forgot to move).
+    if runtime_yaml_path.is_file():
+        runtime_yaml_keys_set = set(
+            _load_yaml(runtime_yaml_path.read_text(encoding="utf-8"), source_path=runtime_yaml_path)
+            or {}
+        )
+        _stray_runtime_keys = sorted(
+            k
+            for k in cfg_kwargs
+            if k in CartridgeLayout.RUNTIME_TIER_FIELDS and k not in runtime_yaml_keys_set
+        )
+    if _stray_runtime_keys:
+        import warnings  # noqa: PLC0415
+
+        msg = (
+            f"config.yaml at {cfg_path} declares runtime-tier key(s) "
+            f"{_stray_runtime_keys}. Cartridge spec v2 moves runtime "
+            f"configuration into a sibling ``runtime.yaml`` so the "
+            f"cartridge stays runtime-agnostic. Move these keys to "
+            f"``{runtime_yaml_path}``. See SPEC.md 'Runtime configuration'."
+        )
+        if is_v2:
+            raise CartridgeSerializationError(
+                f"{msg} (schema_version=2 forbids runtime keys in config.yaml; "
+                f"run ``looplet migrate <cartridge>`` to upgrade automatically)"
+            )
+        warnings.warn(
+            f"{msg} v1.x continues to accept them in config.yaml; v2.0 will "
+            f"hard-fail. Run ``looplet migrate <cartridge>`` to upgrade.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
 
     sys_prompt_path = root / CartridgeLayout.SYSTEM_PROMPT_MD
     if sys_prompt_path.is_file():
@@ -988,21 +1107,79 @@ def _workspace_to_preset_inner(
     # StaticBriefingHook / RecoveryHintHook and prepends them so
     # they fire BEFORE any user hooks. Absent files mean no hook is
     # attached (zero overhead).
+    #
+    # Cartridge spec v2 deprecation: the magic-filename auto-load
+    # is being replaced by the explicit ``builtin_hooks: -
+    # static_briefing: { path: ... }`` form, which keeps the source
+    # of every hook declared in config.yaml rather than discovered
+    # by filename. v1.x continues to honour the auto-load with a
+    # ``DeprecationWarning``; v2.0 will drop it.
     briefing_path = root / CartridgeLayout.BRIEFING_MD
     recovery_path = root / CartridgeLayout.RECOVERY_MD
-    if briefing_path.is_file() or recovery_path.is_file():
+
+    def _builtin_hook_declared(name: str) -> bool:
+        """True if ``builtin_hooks:`` already declares ``name`` explicitly."""
+        for entry in _builtin_hook_specs:
+            if isinstance(entry, str) and entry == name:
+                return True
+            if isinstance(entry, dict) and name in entry:
+                return True
+        return False
+
+    # If the v2 cartridge already wired the hook explicitly to the same
+    # magic path, the file's presence is intentional — don't treat it
+    # as a forbidden magic auto-load.
+    _briefing_is_magic = briefing_path.is_file() and not _builtin_hook_declared("static_briefing")
+    _recovery_is_magic = recovery_path.is_file() and not _builtin_hook_declared("recovery_hint")
+    if _briefing_is_magic or _recovery_is_magic:
+        import warnings as _warnings  # noqa: PLC0415
+
         from looplet.cartridge.prompt_files import (  # noqa: PLC0415
             RecoveryHintHook,
             StaticBriefingHook,
         )
 
         prompt_hooks: list[Any] = []
-        if briefing_path.is_file():
+        if _briefing_is_magic:
+            if is_v2:
+                raise CartridgeSerializationError(
+                    f"Cartridge {root} (schema_version=2): magic "
+                    f"``prompts/briefing.md`` auto-load is removed. Declare it "
+                    f"explicitly via ``builtin_hooks: - static_briefing: "
+                    f"{{ path: prompts/briefing.md }}`` in config.yaml, or run "
+                    f"``looplet migrate <cartridge>`` to upgrade automatically."
+                )
             text = briefing_path.read_text(encoding="utf-8")
             prompt_hooks.append(StaticBriefingHook(text=text))
-        if recovery_path.is_file():
+            _warnings.warn(
+                f"Cartridge {root}: magic ``prompts/briefing.md`` auto-load is "
+                f"deprecated (cartridge spec v2). Declare it explicitly via "
+                f"``builtin_hooks: - static_briefing: {{ path: prompts/briefing.md }}`` "
+                f"in config.yaml. v1.x continues to auto-load; v2.0 will drop "
+                f"the magic-filename behaviour.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        if _recovery_is_magic:
+            if is_v2:
+                raise CartridgeSerializationError(
+                    f"Cartridge {root} (schema_version=2): magic "
+                    f"``prompts/recovery.md`` auto-load is removed. Declare it "
+                    f"explicitly via ``builtin_hooks: - recovery_hint: "
+                    f"{{ path: prompts/recovery.md }}`` in config.yaml, or run "
+                    f"``looplet migrate <cartridge>`` to upgrade automatically."
+                )
             text = recovery_path.read_text(encoding="utf-8")
             prompt_hooks.append(RecoveryHintHook(text=text))
+            _warnings.warn(
+                f"Cartridge {root}: magic ``prompts/recovery.md`` auto-load is "
+                f"deprecated (cartridge spec v2). Declare it explicitly via "
+                f"``builtin_hooks: - recovery_hint: {{ path: prompts/recovery.md }}`` "
+                f"in config.yaml. v1.x continues to auto-load; v2.0 will drop "
+                f"the magic-filename behaviour.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
         # Prepend so these fire before user-declared hooks (which may
         # build on the briefing) and ahead of permission/built-in hooks
         # (which fire on dispatch boundaries; relative order doesn't
@@ -1026,6 +1203,7 @@ def _workspace_to_preset_inner(
 
     if _permissions_block is not None:
         from looplet.cartridge.spec_slots import compile_permissions_block  # noqa: PLC0415
+        from looplet.permissions import PermissionDecision  # noqa: PLC0415
 
         try:
             permission_hook = compile_permissions_block(_permissions_block)
@@ -1035,6 +1213,40 @@ def _workspace_to_preset_inner(
                 raise CartridgeSerializationError(msg) from exc
             logger.warning("%s; ignoring permissions block", msg)
         else:
+            # Fail loud (cartridge spec v2): a cartridge that declares
+            # ``ask:`` rules MUST have an ``ask_handler`` wired by the
+            # host, otherwise ASK silently falls back to the engine's
+            # ``default`` (typically ALLOW) and the human-in-the-loop
+            # contract is broken without warning. The host supplies the
+            # handler via ``runtime={"ask_handler": <callable>}``; the
+            # callable receives ``(ToolCall, PermissionRule)`` and must
+            # return ``PermissionDecision.ALLOW`` or ``DENY``.
+            asking_tools = sorted(
+                {
+                    rule.tool
+                    for rule in permission_hook.engine.rules
+                    if rule.decision == PermissionDecision.ASK
+                }
+            )
+            if asking_tools:
+                ask_handler = (runtime_dict or {}).get("ask_handler")
+                if ask_handler is None:
+                    msg = (
+                        f"cartridge {cfg_path} declares permissions.ask rules for "
+                        f"{asking_tools!r} but no ``ask_handler`` was supplied. "
+                        f"Pass one via ``cartridge_to_preset(path, runtime="
+                        f"{{'ask_handler': callable}})``. The handler receives "
+                        f"``(ToolCall, PermissionRule)`` and must return "
+                        f"``PermissionDecision.ALLOW`` or ``DENY``. Without it, "
+                        f"ASK rules silently fall back to the engine default "
+                        f"(typically ALLOW), defeating the intent of asking."
+                    )
+                    raise CartridgeSerializationError(msg)
+                if not callable(ask_handler):
+                    raise CartridgeSerializationError(
+                        f"runtime['ask_handler'] must be callable, got {type(ask_handler).__name__}"
+                    )
+                permission_hook.engine.ask_handler = ask_handler  # type: ignore[assignment]
             preset.hooks.append(permission_hook)
 
     # Long-term memory: explicit ``memory: { long_term: <path> }`` wins;
@@ -1070,6 +1282,14 @@ def _workspace_to_preset_inner(
     # inject shared resources into top-level tool/hook modules.
     setup_path = root / CartridgeLayout.SETUP_PY
     if setup_path.is_file():
+        if is_v2:
+            raise CartridgeSerializationError(
+                f"Cartridge {root} (schema_version=2): ``setup.py`` escape "
+                f"hatch is removed. Express the same wiring declaratively "
+                f"via ``resources/`` + ``builtin_hooks:`` + ``hooks/`` + "
+                f"``@ref`` strings in config.yaml. v1.x continues to accept "
+                f"setup.py; v2.0 does not."
+            )
         # Module name is derived from the workspace directory so two
         # workspaces loaded in the same process don't collide in
         # ``sys.modules`` (the legacy ``_chw_setup`` constant did).

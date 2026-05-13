@@ -193,8 +193,7 @@ class TestLoopConfig:
         assert c.temperature == 0.2
         assert c.recovery_temperature == 0.1
         assert c.done_tool == "done"
-        assert c.use_native_tools is False
-        assert c.acceptance_criteria is None
+        assert c.use_native_tools is True
         assert c.max_briefing_tokens is None
         assert c.build_briefing is None
         assert c.build_trace is None

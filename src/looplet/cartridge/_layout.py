@@ -37,6 +37,14 @@ class CartridgeLayout:
     SETUP_PY = "setup.py"
 
     # ``LoopConfig`` field names that round-trip via ``config.yaml``.
+    # NOTE: ``acceptance_criteria`` is intentionally NOT here — it's
+    # declared on ``LoopConfig`` but never consumed by the loop or any
+    # shipped hook (pure documentation field). If you want acceptance
+    # gates, write a hook under ``hooks/<name>/`` that reads its
+    # criteria from ``hook.config.yaml`` — same as any other policy.
+    # ``tool_metadata`` IS here but is auto-populated by the loader
+    # (e.g. with the resolved model identity for cost tracking); user
+    # cartridges should not author it directly.
     SERIALIZABLE_CONFIG_FIELDS: tuple[str, ...] = (
         "max_steps",
         "max_tokens",
@@ -51,7 +59,6 @@ class CartridgeLayout:
         "context_window",
         "max_briefing_tokens",
         "checkpoint_dir",
-        "acceptance_criteria",
         "tool_metadata",
         "generate_kwargs",
         "context_window_steps",
@@ -78,6 +85,70 @@ class CartridgeLayout:
         "approval_handler",
         "render_messages_override",
     )
+
+    # ── Field tiering (cartridge spec v2 prep) ──────────────────
+    # Three tiers carve ``LoopConfig`` into "what the agent does"
+    # (CONTRACT), "how the runtime executes it" (RUNTIME), and
+    # "what the host application provides" (HOST). The cartridge
+    # spec v2 will move RUNTIME and HOST keys out of
+    # ``config.yaml`` into a sibling ``runtime.yaml`` (RUNTIME)
+    # and host-supplied :class:`LoopConfig` patches (HOST). v1.x
+    # accepts both shapes; runtime keys placed in ``config.yaml``
+    # raise a :class:`DeprecationWarning` pointing at the new home.
+    #
+    # See ``paper/principled_cartridge_v2.md`` for the rationale.
+
+    RUNTIME_TIER_FIELDS: frozenset[str] = frozenset(
+        {
+            # Sampling — host-tunable defaults.
+            "max_tokens",
+            "temperature",
+            "recovery_temperature",
+            "max_turn_continuations",
+            # Backend kwargs passthrough — same family as the sampling
+            # knobs above (``top_p``, ``frequency_penalty``, etc.); pure
+            # "how to sample", not "what the agent does".
+            "generate_kwargs",
+            # Engine knobs.
+            "use_native_tools",
+            "concurrent_dispatch",
+            "reactive_recovery",
+            # Context / window management.
+            "context_window",
+            "context_window_steps",
+            "context_inline_per_step_chars",
+            "context_window_total_chars",
+            "max_briefing_tokens",
+            # Wired capabilities — runtime-specific implementations.
+            "router",
+            "tracer",
+            "recovery_registry",
+            "compact_service",
+            "cache_policy",
+            # Persistence — operational, not behavioural.
+            "checkpoint_dir",
+            "initial_checkpoint",
+            "tool_result_persist_dir",
+        }
+    )
+
+    HOST_TIER_FIELDS: frozenset[str] = frozenset(
+        {
+            "approval_handler",
+            "cancel_token",
+            "render_messages_override",
+        }
+    )
+
+    @classmethod
+    def contract_tier_fields(cls) -> frozenset[str]:
+        """Fields that legitimately live in ``config.yaml``.
+
+        Computed as everything serialisable that isn't tagged
+        RUNTIME, plus the v1.0 declarative slots and the system
+        prompt that the loader populates from ``prompts/system.md``.
+        """
+        return frozenset(cls.SERIALIZABLE_CONFIG_FIELDS) - cls.RUNTIME_TIER_FIELDS
 
 
 # ── Errors ──────────────────────────────────────────────────────

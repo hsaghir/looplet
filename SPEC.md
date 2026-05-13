@@ -34,7 +34,8 @@ each file means, and what a conformant loader must do with them.
 ```
 my_agent.cartridge/                # or my_agent.cartridge/
 ├── cartridge.json              # required: name, schema_version (alias: cartridge.json)
-├── config.yaml                 # required: loop config + declarative slots
+├── config.yaml                 # required: contract — what the agent does
+├── runtime.yaml                # optional: runtime knobs — how this host runs it
 ├── prompts/
 │   └── system.md               # required: the system prompt, alone
 ├── tools/
@@ -81,6 +82,55 @@ references, and inheritance. All fields are optional except as
 noted. Loaders MUST accept any v1.0 cartridge with an empty
 `config.yaml` (defaults apply).
 
+### Field tiers (spec v2 preview)
+
+LoopConfig fields fall into three tiers:
+
+- **CONTRACT** — *what the agent does.* Lives in `config.yaml`.
+  `max_steps`, `system_prompt`, `done_tool`, `done_tools`,
+  `permissions`, `memory`, `model`, `extends`, `builtin_tools`,
+  `builtin_hooks`, etc. These travel with the cartridge across hosts
+  and SHOULD round-trip identically. (`tool_metadata` rides along
+  but is auto-populated by the loader — not authored by hand.)
+- **RUNTIME** — *how this host runs it.* Lives in the sibling
+  `runtime.yaml`. `max_tokens`, `temperature`, `recovery_temperature`,
+  `max_turn_continuations`, `generate_kwargs`, `use_native_tools`,
+  `concurrent_dispatch`, `reactive_recovery`, `context_window`,
+  `context_window_steps`, `context_inline_per_step_chars`,
+  `context_window_total_chars`, `max_briefing_tokens`, `router`,
+  `tracer`, `recovery_registry`, `compact_service`, `cache_policy`,
+  `checkpoint_dir`, `initial_checkpoint`, `tool_result_persist_dir`.
+  Different hosts MAY override freely.
+- **HOST** — *runtime-supplied callables.* Never serialised:
+  `approval_handler`, `cancel_token`, `render_messages_override`.
+
+**Backwards compatibility (v1.x).** Loaders MUST still accept
+RUNTIME-tier keys in `config.yaml` and SHOULD emit a deprecation
+warning naming the offending keys and the target `runtime.yaml`
+path. **v2.0 will hard-fail** on RUNTIME keys appearing in
+`config.yaml`.
+
+### Runtime configuration — `runtime.yaml`
+
+`runtime.yaml` is an optional sibling of `config.yaml` containing
+only RUNTIME-tier fields. Same YAML shape and reference grammar as
+`config.yaml` (`@<name>`, `${ref:name}`, `${py:module:symbol}`,
+`${runtime.field}`).
+
+```yaml
+# runtime.yaml
+max_tokens: 2000
+temperature: 0.2
+context_window: 128000
+compact_service: "@compact_service"
+```
+
+Merge order under `extends:`: parent `runtime.yaml` is loaded
+first, then child overrides via shallow merge (top-level scalars
+and lists replaced wholesale; mappings recursively merged) — same
+rules as `config.yaml`. Keys outside the RUNTIME or HOST tier
+appearing in `runtime.yaml` MUST raise a load-time error.
+
 ### Loop budgets
 
 ```yaml
@@ -89,7 +139,7 @@ max_tokens: 2000               # max tokens per LLM call
 recovery_temperature: 0.1
 context_window: 128000
 max_briefing_tokens: 4000      # null = unbounded
-use_native_tools: false
+use_native_tools: true         # default true; auto-falls-back when backend lacks support
 concurrent_dispatch: false
 reactive_recovery: true
 done_tool: done                # name of the completion sentinel tool
@@ -164,6 +214,16 @@ permissions:
 
 A bare string entry (e.g. `- read`) is shorthand for `{ tool: read }`.
 
+**`ask:` rules require a host-supplied handler.** A cartridge that
+declares any `ask:` rule is announcing a human-in-the-loop contract.
+Loaders MUST refuse to load such a cartridge unless the host supplies
+an `ask_handler` callable (passed as `runtime={"ask_handler": fn}` to
+`cartridge_to_preset`). The handler receives `(ToolCall,
+PermissionRule)` and MUST return `PermissionDecision.ALLOW` or
+`PermissionDecision.DENY`. Without this fail-loud check, ASK rules
+silently fall back to the engine's `default` (typically `allow`),
+defeating the intent of asking.
+
 ### Memory (v1.0 slot)
 
 ```yaml
@@ -222,7 +282,7 @@ The legacy `@name` form is an alias for `${ref:name}`.
 A single Markdown file containing the agent's system prompt verbatim.
 No templating. The whole file is the prompt.
 
-### Optional prompt files (v1.1)
+### Optional prompt files (v1.1, deprecated in v2)
 
 Two additional optional files in `prompts/` get auto-attached as
 hooks when present:
@@ -240,6 +300,25 @@ Both are absent by default. Loaders MUST attach the corresponding
 hook (e.g. `StaticBriefingHook`, `RecoveryHintHook` in the reference
 implementation) when the file is present, and skip silently when it
 isn't.
+
+**Cartridge spec v2 deprecation.** The magic-filename auto-load is
+being replaced by an explicit declarative form via `builtin_hooks:`:
+
+```yaml
+builtin_hooks:
+  - static_briefing:
+      path: prompts/briefing.md   # or text: |- inline body
+  - recovery_hint:
+      path: prompts/recovery.md
+```
+
+Each hook accepts `text:` (inline body) xor `path:` (resolved
+relative to the cartridge root via the loader-injected
+`cartridge_root` resource). v1.x loaders MUST continue to honour
+the magic-filename auto-load with a `DeprecationWarning`; v2.0 MUST
+drop the auto-load. The benefit of the explicit form is that every
+hook a cartridge installs is visible in `config.yaml` rather than
+discovered by filename.
 
 No other prompt files are recognised in v1.1. Cartridges that need
 more elaborate prompt templating use plain Python in a hook or
@@ -486,3 +565,185 @@ exercise the suite against the reference loader.
   `done`. Conformance fixture seed introduced.
 - **v0.x** — implementation-defined; everything was already
   declarative but slots were not numbered.
+
+## Cartridge identity (v2 prep)
+
+A cartridge has a deterministic content hash computed by hashing each
+content-bearing file's contents and folding them into a single
+SHA-256 digest in canonical order:
+
+1. Walk the cartridge directory recursively.
+2. Skip files whose path contains any of `__pycache__/`, `.git/`,
+   `.venv/`, `seed/`, `.pytest_cache/`, `.mypy_cache/`.
+3. Skip files with suffix `.pyc` or `.pyo`.
+4. For every remaining file, compute its SHA-256.
+5. Sort the `(relative_posix_path, file_sha256)` pairs by path.
+6. Fold into the overall digest by writing
+   `<rel_path>\0<file_sha256>\n` for each pair into a SHA-256
+   accumulator.
+
+The reference loader exposes this as `looplet hash <cartridge>` and
+as `looplet.cli.spec_commands.cartridge_hash(root)`. The exclusion
+list is part of the spec; changing it is a versioned change.
+
+`seed/` is excluded so a cartridge that ships starter data the agent
+may overwrite at runtime keeps a stable identity across runs. Hosts
+that want runtime data to count against identity should write it
+elsewhere.
+
+## Resource concurrency declaration (v2 prep)
+
+A `resources/<name>.py` module MAY declare a module-level
+`THREAD_SAFE = True` or `THREAD_SAFE = False` constant. Loaders MUST
+record this in a parallel registry keyed under the reserved name
+`_resource_thread_safety` so the runtime can refuse
+`concurrent_dispatch` of tools whose `requires:` includes an unsafe
+resource. Resources that omit the declaration are treated as
+"unknown" — the default runtime behaviour is to allow with a
+warning; stricter hosts may choose to fail.
+
+`THREAD_SAFE` MUST be a Python `bool`. Any other value is a
+load-time error.
+
+## Deferred design decisions
+
+These were considered for v2 and explicitly deferred. Each entry
+records the option, why it was deferred, and the workaround in v1.x.
+
+### Multi-extends (`extends: [a, b]`)
+
+**Status.** Deferred. Single-parent `extends:` is the canonical
+form; lists are not accepted.
+
+**Rationale.** Diamond-inheritance resolution (C3 linearisation,
+MRO) adds complexity without a corresponding capability gain in
+practice. Cartridges that "extend two parents" are nearly always
+composing two independent concerns (e.g. a coding base + a security
+profile), which is better expressed as composition (`builtin_hooks:`
++ shared `resources/`) than as inheritance.
+
+**Workaround.** Chain single-parent extends (A extends B extends C)
+or compose via `builtin_hooks:` + a shared resource module.
+
+### Sub-agent resource isolation by default
+
+**Status.** Deferred to v2.0. Today, sub-agents (`run_sub_loop`)
+share the parent's resource registry; tools, state, conversation,
+and session log are already isolated per sub-loop.
+
+**Rationale.** Forking the resource registry by default would break
+the common case of a sub-agent reusing the parent's expensive
+clients (DB connections, vector stores). The right default is
+sharing; opt-in forking can be added without a breaking change.
+
+**Workaround.** Pass `sub_tools=` with a tool registry whose
+`ctx.resources` reference fresh instances, or wrap the parent's
+resources in a copy-on-write dict.
+
+### Discriminated-union `output_schema` on a single `done`
+
+**Status.** Deferred. The current model (`done_tool: report` +
+`done_tools: [escalate, ...]`, each with its own `tool.yaml` and
+optional `output_schema:`) is retained.
+
+**Rationale.** Multiple sentinel tools give the LLM a clearer
+contract (each tool name has a distinct shape) than a single tool
+whose payload depends on a discriminator field. The LLM picks an
+outcome by calling the right tool; collapsing into one `done` would
+require it to embed the discriminator and inflate prompt complexity
+for no gain.
+
+**Workaround.** Use `done_tools:` (v1.1+) when an agent has multiple
+distinct terminal outcomes.
+
+### Compaction tier (`compact_service`)
+
+**Status.** Resolved (v2). `compact_service` stays in the RUNTIME
+tier (`runtime.yaml`), not the CONTRACT tier (`config.yaml`).
+
+**Rationale.** Compaction is a *runtime concern*: it depends on the
+host's context window, the chosen LLM's cost/latency profile, and
+the operator's preference for losslessness vs. recall. The cartridge
+contract should describe *what the agent does* (its tools, memory,
+permissions, system prompt), not *how aggressively a particular host
+recycles tokens*. The same cartridge ought to run with no compaction
+in a 1M-token-window deployment and with `DefaultCompactService` in
+a 32k-token one — without editing `config.yaml`.
+
+If a cartridge requires compaction for correctness (e.g. it expects
+its conversation to fit inside a fixed budget), document that in
+`prompts/system.md` and add a smoke test, not in CONTRACT. Hosts
+that ignore the runtime-tier `compact_service` setting are
+responsible for ensuring the conversation fits their window.
+
+## v2.0 — hard removals (this release)
+
+Setting `schema_version: 2` in `cartridge.json` opts the cartridge
+into the v2 contract. The loader hard-fails (instead of emitting a
+`DeprecationWarning`) when:
+
+1. `config.yaml` declares any runtime-tier key (`max_tokens`,
+   `temperature`, `context_window`, `compact_service`, etc.).
+   Move them to `runtime.yaml`.
+2. `prompts/briefing.md` exists without a matching
+   `builtin_hooks: - static_briefing: { path: prompts/briefing.md }`
+   entry. Same for `prompts/recovery.md` / `recovery_hint`.
+3. `setup.py` is present. Express the wiring via `resources/` +
+   `builtin_hooks:` + `@ref` strings instead.
+
+`schema_version: 1` (the implicit default) continues to load with
+deprecation warnings.
+
+### Migration
+
+`looplet migrate <cartridge>` mechanically performs the rewrite:
+
+* splits runtime-tier keys out of `config.yaml` into `runtime.yaml`,
+* converts magic `prompts/briefing.md` / `prompts/recovery.md`
+  into explicit `builtin_hooks:` entries (the file content stays
+  on disk; only the declaration moves),
+* bumps `schema_version` to 2 in `cartridge.json`.
+
+The tool refuses to run when `setup.py` is present, since there is
+no general mechanical rewrite for opaque Python wiring; port that
+manually, delete `setup.py`, then re-run `looplet migrate`.
+
+`looplet migrate --dry-run` previews the changes without writing.
+The migration is idempotent: running it on an already-v2 cartridge
+is a no-op.
+
+## Language-agnostic loader
+
+`looplet`'s Python loader is one implementation. A conforming loader
+in any language MUST honour the following clauses, in order:
+
+1. **Manifest probe.** Find `cartridge.json` (or the legacy
+   `workspace.json`) at the cartridge root. Read `schema_version`,
+   `name`, `description`, `metadata`. Reject `schema_version`
+   greater than the loader's max supported version.
+2. **Extends.** If `config.yaml` declares `extends: <path>`,
+   recursively load the parent cartridge first; layer the child's
+   `tools/`, `hooks/`, `resources/`, `prompts/`, and `memory/`
+   files over the parent's (child wins on filename collision).
+3. **Config split.** Read `config.yaml` (CONTRACT tier) and the
+   sibling `runtime.yaml` (RUNTIME tier). For `schema_version >= 2`,
+   reject any RUNTIME key found in `config.yaml`. For
+   `schema_version == 1`, accept with a deprecation diagnostic.
+4. **Resources.** Build the resource registry: for each
+   `resources/<name>.py` (or equivalent in the host language),
+   call its `build()` factory. Expose the registry as a mapping
+   that tools / hooks can index into via the `@<name>` or
+   `${ref:name}` reference grammar.
+5. **Tools, hooks, memory.** Materialise `tools/<name>/`,
+   `hooks/<name>/`, and `memory/*.{md,py}` into the host's loop
+   primitives. Resolve `requires:` against the resource registry;
+   missing entries are load-time errors.
+6. **Prompts.** Read `prompts/system.md` as the system prompt.
+   For `schema_version == 1`, attach `prompts/briefing.md` and
+   `prompts/recovery.md` as auto-loaded hooks with a deprecation
+   diagnostic; for `schema_version >= 2`, reject their presence
+   unless a matching `builtin_hooks:` entry exists.
+
+The reference grammar (`@name`, `${ref:name}`, `${py:module:symbol}`,
+`${runtime.field}`) is part of the spec; loaders MUST resolve all
+four forms.

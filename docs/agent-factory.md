@@ -205,26 +205,34 @@ These rules make the produced agents reliable enough to ship.
 
 If you already know what tools the agent should have (e.g. when
 calling the factory programmatically from a CLI you're building on
-top of looplet), you can pre-scaffold the skeleton via runtime
-kwargs. The factory's setup.py honours these:
+top of looplet), pre-scaffold the skeleton **host-side**, then load
+the factory cartridge as normal. The agent's first
+`scaffold_workspace` call is idempotent and will treat the existing
+skeleton as a no-op.
 
 ```python
 from looplet import cartridge_to_preset, composable_loop
+from looplet.scaffold import scaffold_cartridge
 from looplet.types import DefaultState
+
+target = "/path/to/your/project/my_agent.cartridge"
+scaffold_cartridge(
+    target,
+    name="my_agent",
+    tools=["fetch_url", "extract_title", "summarize_text"],
+    overwrite=True,  # idempotent: existing files preserved
+)
 
 preset = cartridge_to_preset(
     "examples/agent_factory.cartridge",
-    runtime={
-        "workspace": "/path/to/your/project",
-        "scaffold_to": "my_agent.cartridge",
-        "scaffold_name": "my_agent",
-        "scaffold_tools": ["fetch_url", "extract_title", "summarize_text"],
-    },
+    runtime={"workspace": "/path/to/your/project"},
 )
 ```
 
 This is exactly what `looplet new --tool fetch_url --tool extract_title …`
-does under the hood.
+does under the hood. The factory cartridge itself is fully
+declarative (`schema_version: 2`, no `setup.py`); filesystem side
+effects belong in the host that invokes it, not in the cartridge.
 
 ---
 

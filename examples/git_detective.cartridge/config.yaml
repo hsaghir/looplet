@@ -1,9 +1,7 @@
 max_steps: 12
-max_tokens: 2000
-temperature: 0.2
 done_tool: done
-compact_service: "@compact_service"
-
 builtin_hooks:
   - stagnation
-  - per_tool_limit: {"default_limit": 5}
+  -
+    per_tool_limit:
+      default_limit: 5

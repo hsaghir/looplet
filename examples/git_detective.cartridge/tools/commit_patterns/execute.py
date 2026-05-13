@@ -22,4 +22,4 @@ def execute(ctx: ToolContext, **kwargs):
     if registry is None:
         registry = make_tools(repo_path)
         _REGISTRY_CACHE[repo_path] = registry
-    return registry._tools["commit_patterns"].execute(**kwargs)
+    return registry._tools["commit_patterns"].execute(ctx=ctx, **kwargs)

@@ -1,8 +1,12 @@
 {
-  "schema_version": 1,
-  "name": "hello",
   "description": "Workspace-native hello-world agent. Demonstrates the workspace format: every component is a file you can edit, diff, and version-control. Mirrors looplet.examples.hello_world.",
   "metadata": {
-    "tags": ["hello-world", "workspace-native", "demo"]
-  }
+    "tags": [
+      "hello-world",
+      "workspace-native",
+      "demo"
+    ]
+  },
+  "name": "hello",
+  "schema_version": 2
 }

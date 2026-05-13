@@ -1,6 +1,6 @@
 name: done
 description: Signal that the greeting task is complete. Provide a brief summary of who you greeted.
 parameters:
-  answer:
+  summary:
     type: string
     description: One-line summary of who was greeted.

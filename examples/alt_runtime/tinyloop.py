@@ -92,45 +92,171 @@ def _parse_scalar(text: str) -> Any:
         return text[1:-1]
     if text.startswith("'") and text.endswith("'"):
         return text[1:-1]
+    # Inline flow-style mapping: { k: v, k2: v2 }
+    if text.startswith("{") and text.endswith("}"):
+        inner = text[1:-1].strip()
+        sub: dict[str, Any] = {}
+        if inner:
+            for pair in _split_flow_commas(inner):
+                if ":" not in pair:
+                    continue
+                k, _, v = pair.partition(":")
+                sub[k.strip()] = _parse_scalar(v.strip())
+        return sub
+    # Inline flow-style list: [a, b, c]
+    if text.startswith("[") and text.endswith("]"):
+        inner = text[1:-1].strip()
+        if not inner:
+            return []
+        return [_parse_scalar(p.strip()) for p in _split_flow_commas(inner)]
     return text
 
 
-def _parse_tiny_yaml(source: str) -> dict[str, Any]:
-    """Parse the subset of YAML the conformance fixtures use.
-
-    Supports:
-        key: value
-        key: { subkey: value, ... }   # inline flow style only
-        # comments, blank lines
-
-    Does NOT support: nested block-style mappings, lists, anchors,
-    multi-line strings. Sufficient for ``config.yaml`` and
-    ``tool.yaml`` in the bundled fixtures; insufficient for the
-    full looplet workspace format.
-    """
-    out: dict[str, Any] = {}
-    for line in source.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        if ":" not in stripped:
-            continue
-        key, _, value = stripped.partition(":")
-        key = key.strip()
-        value = value.strip()
-        if value.startswith("{") and value.endswith("}"):
-            inner = value[1:-1]
-            sub: dict[str, Any] = {}
-            for pair in inner.split(","):
-                pair = pair.strip()
-                if not pair or ":" not in pair:
-                    continue
-                k, _, v = pair.partition(":")
-                sub[k.strip()] = _parse_scalar(v)
-            out[key] = sub
+def _split_flow_commas(text: str) -> list[str]:
+    """Split a comma-separated flow-style payload, respecting nested {} / []."""
+    parts: list[str] = []
+    depth = 0
+    buf: list[str] = []
+    for ch in text:
+        if ch in "{[":
+            depth += 1
+            buf.append(ch)
+        elif ch in "}]":
+            depth -= 1
+            buf.append(ch)
+        elif ch == "," and depth == 0:
+            parts.append("".join(buf).strip())
+            buf = []
         else:
-            out[key] = _parse_scalar(value)
-    return out
+            buf.append(ch)
+    if buf:
+        parts.append("".join(buf).strip())
+    return parts
+
+
+def _parse_tiny_yaml(source: str) -> dict[str, Any]:
+    """Parse the subset of YAML needed by the conformance fixtures.
+
+    Supports (sufficient for v1.0 ``config.yaml`` + ``tool.yaml``):
+
+    * Block-style nested mappings (indent-based).
+    * Block-style lists (``- item`` or ``- key: value`` rows).
+    * Inline flow style for both mappings (``{ k: v, ... }``) and
+      lists (``[a, b]``), with proper bracket balancing.
+    * ``#`` comments and blank lines.
+
+    Does NOT support: anchors / aliases, multi-line scalars, complex
+    keys. If a fixture grows past this, we either extend the parser
+    or split the fixture.
+    """
+    # Strip comments + trailing whitespace, drop empty lines, but keep
+    # indent for structural parsing.
+    raw_lines = source.splitlines()
+    lines: list[tuple[int, str]] = []  # (indent, body)
+    for ln in raw_lines:
+        # Drop trailing inline comments — but only ones that aren't
+        # inside a string or flow expression. The fixtures keep things
+        # simple enough that the conservative "strip everything after
+        # an unquoted ``#``" approach works.
+        stripped = ln.rstrip()
+        if not stripped.strip() or stripped.strip().startswith("#"):
+            continue
+        # Conservatively strip inline comments only when there's a space
+        # before the ``#`` (avoids breaking ``"rm -rf #"``-style values).
+        m = re.search(r"\s+#", stripped)
+        if m:
+            stripped = stripped[: m.start()].rstrip()
+        indent = len(stripped) - len(stripped.lstrip(" "))
+        body = stripped.strip()
+        lines.append((indent, body))
+
+    def _parse_block(start: int, base_indent: int) -> tuple[Any, int]:
+        """Parse a block (mapping or list) and return (value, next_index)."""
+        if start >= len(lines):
+            return {}, start
+        first_indent, first_body = lines[start]
+        if first_indent < base_indent:
+            return {}, start
+
+        # List: starts with ``- ``.
+        if first_body.startswith("- "):
+            items: list[Any] = []
+            i = start
+            while i < len(lines):
+                indent, body = lines[i]
+                if indent < base_indent or not body.startswith("- "):
+                    break
+                rest = body[2:].strip()
+                # Is this a "- key: value" with possibly more keys
+                # indented under it? Detect by ``:`` outside flow.
+                if ":" in rest and not (rest.startswith("{") or rest.startswith("[")):
+                    key, _, value = rest.partition(":")
+                    key = key.strip()
+                    value = value.strip()
+                    item_map: dict[str, Any] = {}
+                    if value:
+                        item_map[key] = _parse_scalar(value)
+                    else:
+                        # Nested mapping under this key.
+                        sub, j = _parse_block(i + 1, indent + 2)
+                        item_map[key] = sub
+                        i = j - 1
+                    # Pick up additional keys at the same indent as
+                    # the "- " marker's body (indent + 2).
+                    j = i + 1
+                    while j < len(lines) and lines[j][0] == indent + 2:
+                        k_indent, k_body = lines[j]
+                        if k_body.startswith("- "):
+                            break
+                        k, _, v = k_body.partition(":")
+                        v = v.strip()
+                        if v:
+                            item_map[k.strip()] = _parse_scalar(v)
+                        else:
+                            sub, next_j = _parse_block(j + 1, k_indent + 2)
+                            item_map[k.strip()] = sub
+                            j = next_j - 1
+                        j += 1
+                    items.append(item_map)
+                    i = j
+                    continue
+                # Plain scalar list item.
+                items.append(_parse_scalar(rest))
+                i += 1
+            return items, i
+
+        # Mapping: a sequence of ``key:`` or ``key: value`` lines at
+        # this indent.
+        out: dict[str, Any] = {}
+        i = start
+        while i < len(lines):
+            indent, body = lines[i]
+            if indent < base_indent or body.startswith("- "):
+                break
+            if indent > base_indent:
+                # Should not happen — we always descend explicitly.
+                i += 1
+                continue
+            if ":" not in body:
+                i += 1
+                continue
+            key, _, value = body.partition(":")
+            key = key.strip()
+            value = value.strip()
+            if value:
+                out[key] = _parse_scalar(value)
+                i += 1
+            else:
+                sub, j = _parse_block(i + 1, base_indent + 2)
+                out[key] = sub
+                i = j
+        return out, i
+
+    result, _ = _parse_block(0, 0)
+    if isinstance(result, dict):
+        return result
+    # Top-level list is unusual for the fixtures but harmless to wrap.
+    return {"__list__": result} if isinstance(result, list) else {}
 
 
 # ── Cartridge model ─────────────────────────────────────────────
@@ -142,6 +268,11 @@ class TinyTool:
     description: str
     parameters: dict[str, Any]
     body: Callable[..., dict]
+    # v1.0 output_schema: per-tool required-fields + types contract.
+    # ``None`` means "no schema declared"; a dict carries the parsed
+    # ``output_schema:`` from the tool's tool.yaml. tinyloop validates
+    # ``done`` calls against this in :func:`run_scripted`.
+    output_schema: dict[str, Any] | None = None
 
 
 @dataclass
@@ -151,6 +282,10 @@ class TinyCartridge:
     system_prompt: str
     config: dict[str, Any]
     tools: dict[str, TinyTool] = field(default_factory=dict)
+    # v1.0 declarative slots, surfaced for ``conformance_summary``.
+    permissions: dict[str, Any] | None = None  # normalised: {"default", "rules": [...]}
+    model: dict[str, Any] | None = None
+    memory_sources: list[str] = field(default_factory=list)  # paths under memory/
 
 
 # ── Loader ──────────────────────────────────────────────────────
@@ -185,6 +320,18 @@ def load_cartridge(root: Path) -> TinyCartridge:
         _parse_tiny_yaml(config_path.read_text(encoding="utf-8")) if config_path.is_file() else {}
     )
 
+    # Cartridge Spec v2: runtime-tier knobs live in a sibling
+    # ``runtime.yaml``. Load it (if present) and merge under
+    # ``config`` — the resulting flat dict matches v1.x callers'
+    # expectations, while v2 cartridges keep the contract / runtime
+    # separation on disk.
+    runtime_path = root / "runtime.yaml"
+    if runtime_path.is_file():
+        runtime_kwargs = _parse_tiny_yaml(runtime_path.read_text(encoding="utf-8"))
+        # runtime.yaml wins on conflict (it's the host-side override).
+        for k, v in runtime_kwargs.items():
+            config[k] = v
+
     system_prompt_path = root / "prompts" / "system.md"
     system_prompt = (
         system_prompt_path.read_text(encoding="utf-8") if system_prompt_path.is_file() else ""
@@ -201,12 +348,47 @@ def load_cartridge(root: Path) -> TinyCartridge:
             meta = _parse_tiny_yaml(yaml_path.read_text(encoding="utf-8"))
             body = _import_execute(exec_path)
             name = str(meta.get("name", tool_dir.name))
+            schema = meta.get("output_schema")
             tools[name] = TinyTool(
                 name=name,
                 description=str(meta.get("description", "")),
                 parameters=meta.get("parameters", {}) or {},
                 body=body,
+                output_schema=schema if isinstance(schema, dict) else None,
             )
+
+    # ── v1.0 declarative slots ──────────────────────────────────
+    permissions = _normalise_permissions(config.get("permissions"))
+    model = config.get("model") if isinstance(config.get("model"), dict) else None
+    # Hoist model.{max_tokens,temperature} into the flat config so
+    # legacy summary code keeps finding them.
+    if model:
+        for hoist in ("max_tokens", "temperature"):
+            if hoist in model and hoist not in config:
+                config[hoist] = model[hoist]
+    memory_sources: list[str] = []
+    memory_dir = root / "memory"
+    if memory_dir.is_dir():
+        for p in sorted(memory_dir.iterdir()):
+            if p.is_file() and p.suffix in (".md", ".txt", ".py"):
+                memory_sources.append(p.name)
+    # Mirror the reference loader's long-term-memory auto-load:
+    # an explicit ``memory: { long_term: <path> }`` in config OR an
+    # auto-discovered ``memory/long_term.md`` appends one ADDITIONAL
+    # source on top of the file scan above. This matches the count
+    # produced by ``cartridge_to_preset`` for conformance fixture 04.
+    mem_block = config.get("memory") if isinstance(config.get("memory"), dict) else None
+    long_term_extra: Path | None = None
+    if mem_block and isinstance(mem_block.get("long_term"), str):
+        cand = (root / mem_block["long_term"]).resolve()
+        if cand.is_file():
+            long_term_extra = cand
+    if long_term_extra is None:
+        cand = root / "memory" / "long_term.md"
+        if cand.is_file():
+            long_term_extra = cand
+    if long_term_extra is not None:
+        memory_sources.append(f"@long_term:{long_term_extra.name}")
 
     return TinyCartridge(
         name=str(manifest.get("name", root.name)),
@@ -214,7 +396,44 @@ def load_cartridge(root: Path) -> TinyCartridge:
         system_prompt=system_prompt,
         config=config,
         tools=tools,
+        permissions=permissions,
+        model=model,
+        memory_sources=memory_sources,
     )
+
+
+def _normalise_permissions(raw: Any) -> dict[str, Any] | None:
+    """Flatten a ``permissions:`` block into ``{default, rules}``.
+
+    The on-disk shape splits rules across ``deny:``, ``ask:`` and
+    optional ``allow:`` lists. The conformance summary wants a
+    single ordered ``rules`` list with ``{tool, decision, reason}``
+    entries — matching what the reference looplet ``PermissionEngine``
+    serialises. We preserve declaration order: ``deny`` then ``ask``
+    then ``allow``, since v1.0 callers describe rules in that order
+    of safety. The ``contains:`` matcher is intentionally dropped
+    from the summary — it's an enforcement detail, not part of the
+    declarative contract surface.
+    """
+    if not isinstance(raw, dict):
+        return None
+    default = raw.get("default", "allow")
+    rules: list[dict[str, Any]] = []
+    for decision in ("deny", "ask", "allow"):
+        items = raw.get(decision)
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            rules.append(
+                {
+                    "tool": item.get("tool", ""),
+                    "decision": decision,
+                    "reason": item.get("reason", "") or "",
+                }
+            )
+    return {"default": default, "rules": rules}
 
 
 def _import_execute(path: Path) -> Callable[..., dict]:
@@ -243,24 +462,42 @@ def conformance_summary(cart: TinyCartridge) -> dict[str, Any]:
 
     Mirrors :func:`tests.conformance.test_conformance._summarise_preset`
     so a v1.0 cartridge produces the same summary on both runtimes.
-    Fields ``tinyloop`` does not implement (permissions, output schema,
-    model binding, memory) are emitted as ``null`` / ``0`` to match
-    the spec's "slot is empty, never ambiguous" stance.
+    tinyloop is now **minimal-conforming**: it surfaces all v1.0
+    declarative slots (permissions, output schema, model binding,
+    memory). Slots a cartridge does not declare stay ``null`` / ``0``.
     """
     cfg = cart.config
+    done_tool = str(cfg.get("done_tool", "done"))
+    done = cart.tools.get(done_tool)
+    output_schema_fields: list[str] | None = None
+    if done is not None and isinstance(done.output_schema, dict):
+        props = done.output_schema.get("properties")
+        if isinstance(props, dict):
+            output_schema_fields = sorted(props.keys())
+    model_summary: dict[str, Any] | None = None
+    if isinstance(cart.model, dict):
+        # The conformance summary intentionally exposes only the
+        # binding identity (provider, name, reasoning_effort) — not
+        # generation knobs like max_tokens/temperature, which live in
+        # the flat config and are already surfaced above.
+        model_summary = {
+            k: cart.model[k] for k in ("provider", "name", "reasoning_effort") if k in cart.model
+        }
+        if not model_summary:
+            model_summary = None
     return {
         "max_steps": int(cfg.get("max_steps", 15)),
         "max_tokens": int(cfg.get("max_tokens", 2000)),
         "temperature": float(cfg.get("temperature", 0.2)),
-        "done_tool": str(cfg.get("done_tool", "done")),
+        "done_tool": done_tool,
         "tools": sorted(
             ({"name": name, "requires": []} for name in cart.tools),
             key=lambda d: d["name"],
         ),
-        "permissions": None,
-        "output_schema_fields": None,
-        "model": None,
-        "memory_source_count": 0,
+        "permissions": cart.permissions,
+        "output_schema_fields": output_schema_fields,
+        "model": model_summary,
+        "memory_source_count": len(cart.memory_sources),
     }
 
 

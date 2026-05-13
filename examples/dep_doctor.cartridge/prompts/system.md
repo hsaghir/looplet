@@ -6,6 +6,6 @@ Steps:
 3. check_package(package_name=...) for each dependency
 4. find_alternatives(package_name=...) for any flagged risky package
 5. check_license_compat(project_license=..., dep_license=...) for compatibility
-6. done(report=...) with a clear audit summary
+6. done(summary=...) with a clear audit summary
 
 Be thorough but efficient. Don't re-check packages you've already analyzed.

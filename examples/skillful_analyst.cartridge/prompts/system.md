@@ -10,7 +10,7 @@ Operating contract:
    that loads the skill's full instructions into the next prompt.
 3. Use `read_text(path=...)` and `write_text(path=..., content=...)`
    to read inputs and write outputs.
-4. When the task is complete, call `done(answer="<short summary>")`.
+4. When the task is complete, call `done(summary="<short summary>")`.
 
 Style:
 
@@ -19,4 +19,4 @@ Style:
 - Keep tool calls focused — one file per `read_text`, one section per
   `write_text`.
 - The user cannot see your internal reasoning. Anything they need to
-  see goes into a written file or the `done` answer.
+  see goes into a written file or the `done` summary.

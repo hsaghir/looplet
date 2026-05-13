@@ -260,6 +260,7 @@ def test_done_tools_plural_default_empty(tmp_path: Path) -> None:
 # ── 5. prompts/briefing.md + recovery.md auto-attach ─────────────
 
 
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
 def test_briefing_md_attaches_static_briefing_hook(tmp_path: Path) -> None:
     root = tmp_path / "x.cartridge"
     _write_minimal(root)
@@ -279,6 +280,7 @@ def test_briefing_md_attaches_static_briefing_hook(tmp_path: Path) -> None:
     assert sb.text == "Always be polite."
 
 
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
 def test_recovery_md_attaches_recovery_hint_hook(tmp_path: Path) -> None:
     root = tmp_path / "x.cartridge"
     _write_minimal(root)

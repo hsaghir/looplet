@@ -474,7 +474,6 @@ def _config_blueprint(preset: AgentPreset) -> dict[str, Any]:
         "use_native_tools",
         "concurrent_dispatch",
         "reactive_recovery",
-        "acceptance_criteria",
         "max_briefing_tokens",
         "checkpoint_dir",
         "context_window",

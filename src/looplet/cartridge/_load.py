@@ -34,7 +34,7 @@ from looplet.cartridge._layout import (
     CartridgeSerializationError,
     _stamp_preset_origin,
 )
-from looplet.cartridge._manifest import _manifest_present
+from looplet.cartridge._manifest import _manifest_present, _read_schema_version
 from looplet.cartridge._render import _apply_runtime_substitutions
 from looplet.cartridge._resources import (
     _load_resources,
@@ -333,6 +333,15 @@ def _workspace_to_preset_inner(
     from looplet.tools import BaseToolRegistry, ToolSpec  # noqa: PLC0415
     from looplet.types import DefaultState  # noqa: PLC0415
 
+    # ── Spec version gate ──────────────────────────────────────
+    # ``schema_version >= 2`` flips the v1.x deprecation warnings
+    # (runtime keys in config.yaml, magic ``prompts/briefing.md``
+    # auto-load, ``setup.py`` escape hatch) into hard
+    # CartridgeSerializationError. v1 cartridges keep loading with
+    # deprecation warnings. Use ``looplet migrate`` to upgrade.
+    schema_version = _read_schema_version(root)
+    is_v2 = schema_version >= 2
+
     resources = _load_resources(root, runtime_dict)
     # Loader-injected resource: built-in hooks (and any user resource
     # builder that wants it) can resolve cartridge-root-relative paths
@@ -419,14 +428,21 @@ def _workspace_to_preset_inner(
     if _stray_runtime_keys:
         import warnings  # noqa: PLC0415
 
-        warnings.warn(
+        msg = (
             f"config.yaml at {cfg_path} declares runtime-tier key(s) "
             f"{_stray_runtime_keys}. Cartridge spec v2 moves runtime "
             f"configuration into a sibling ``runtime.yaml`` so the "
             f"cartridge stays runtime-agnostic. Move these keys to "
-            f"``{runtime_yaml_path}`` to silence this warning. v1.x "
-            f"continues to accept them in config.yaml; v2.0 will "
-            f"hard-fail. See SPEC.md 'Runtime configuration'.",
+            f"``{runtime_yaml_path}``. See SPEC.md 'Runtime configuration'."
+        )
+        if is_v2:
+            raise CartridgeSerializationError(
+                f"{msg} (schema_version=2 forbids runtime keys in config.yaml; "
+                f"run ``looplet migrate <cartridge>`` to upgrade automatically)"
+            )
+        warnings.warn(
+            f"{msg} v1.x continues to accept them in config.yaml; v2.0 will "
+            f"hard-fail. Run ``looplet migrate <cartridge>`` to upgrade.",
             DeprecationWarning,
             stacklevel=3,
         )
@@ -1100,7 +1116,22 @@ def _workspace_to_preset_inner(
     # ``DeprecationWarning``; v2.0 will drop it.
     briefing_path = root / CartridgeLayout.BRIEFING_MD
     recovery_path = root / CartridgeLayout.RECOVERY_MD
-    if briefing_path.is_file() or recovery_path.is_file():
+
+    def _builtin_hook_declared(name: str) -> bool:
+        """True if ``builtin_hooks:`` already declares ``name`` explicitly."""
+        for entry in _builtin_hook_specs:
+            if isinstance(entry, str) and entry == name:
+                return True
+            if isinstance(entry, dict) and name in entry:
+                return True
+        return False
+
+    # If the v2 cartridge already wired the hook explicitly to the same
+    # magic path, the file's presence is intentional — don't treat it
+    # as a forbidden magic auto-load.
+    _briefing_is_magic = briefing_path.is_file() and not _builtin_hook_declared("static_briefing")
+    _recovery_is_magic = recovery_path.is_file() and not _builtin_hook_declared("recovery_hint")
+    if _briefing_is_magic or _recovery_is_magic:
         import warnings as _warnings  # noqa: PLC0415
 
         from looplet.cartridge.prompt_files import (  # noqa: PLC0415
@@ -1109,7 +1140,15 @@ def _workspace_to_preset_inner(
         )
 
         prompt_hooks: list[Any] = []
-        if briefing_path.is_file():
+        if _briefing_is_magic:
+            if is_v2:
+                raise CartridgeSerializationError(
+                    f"Cartridge {root} (schema_version=2): magic "
+                    f"``prompts/briefing.md`` auto-load is removed. Declare it "
+                    f"explicitly via ``builtin_hooks: - static_briefing: "
+                    f"{{ path: prompts/briefing.md }}`` in config.yaml, or run "
+                    f"``looplet migrate <cartridge>`` to upgrade automatically."
+                )
             text = briefing_path.read_text(encoding="utf-8")
             prompt_hooks.append(StaticBriefingHook(text=text))
             _warnings.warn(
@@ -1121,7 +1160,15 @@ def _workspace_to_preset_inner(
                 DeprecationWarning,
                 stacklevel=2,
             )
-        if recovery_path.is_file():
+        if _recovery_is_magic:
+            if is_v2:
+                raise CartridgeSerializationError(
+                    f"Cartridge {root} (schema_version=2): magic "
+                    f"``prompts/recovery.md`` auto-load is removed. Declare it "
+                    f"explicitly via ``builtin_hooks: - recovery_hint: "
+                    f"{{ path: prompts/recovery.md }}`` in config.yaml, or run "
+                    f"``looplet migrate <cartridge>`` to upgrade automatically."
+                )
             text = recovery_path.read_text(encoding="utf-8")
             prompt_hooks.append(RecoveryHintHook(text=text))
             _warnings.warn(
@@ -1235,6 +1282,14 @@ def _workspace_to_preset_inner(
     # inject shared resources into top-level tool/hook modules.
     setup_path = root / CartridgeLayout.SETUP_PY
     if setup_path.is_file():
+        if is_v2:
+            raise CartridgeSerializationError(
+                f"Cartridge {root} (schema_version=2): ``setup.py`` escape "
+                f"hatch is removed. Express the same wiring declaratively "
+                f"via ``resources/`` + ``builtin_hooks:`` + ``hooks/`` + "
+                f"``@ref`` strings in config.yaml. v1.x continues to accept "
+                f"setup.py; v2.0 does not."
+            )
         # Module name is derived from the workspace directory so two
         # workspaces loaded in the same process don't collide in
         # ``sys.modules`` (the legacy ``_chw_setup`` constant did).

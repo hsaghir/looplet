@@ -655,3 +655,95 @@ for no gain.
 
 **Workaround.** Use `done_tools:` (v1.1+) when an agent has multiple
 distinct terminal outcomes.
+
+### Compaction tier (`compact_service`)
+
+**Status.** Resolved (v2). `compact_service` stays in the RUNTIME
+tier (`runtime.yaml`), not the CONTRACT tier (`config.yaml`).
+
+**Rationale.** Compaction is a *runtime concern*: it depends on the
+host's context window, the chosen LLM's cost/latency profile, and
+the operator's preference for losslessness vs. recall. The cartridge
+contract should describe *what the agent does* (its tools, memory,
+permissions, system prompt), not *how aggressively a particular host
+recycles tokens*. The same cartridge ought to run with no compaction
+in a 1M-token-window deployment and with `DefaultCompactService` in
+a 32k-token one — without editing `config.yaml`.
+
+If a cartridge requires compaction for correctness (e.g. it expects
+its conversation to fit inside a fixed budget), document that in
+`prompts/system.md` and add a smoke test, not in CONTRACT. Hosts
+that ignore the runtime-tier `compact_service` setting are
+responsible for ensuring the conversation fits their window.
+
+## v2.0 — hard removals (this release)
+
+Setting `schema_version: 2` in `cartridge.json` opts the cartridge
+into the v2 contract. The loader hard-fails (instead of emitting a
+`DeprecationWarning`) when:
+
+1. `config.yaml` declares any runtime-tier key (`max_tokens`,
+   `temperature`, `context_window`, `compact_service`, etc.).
+   Move them to `runtime.yaml`.
+2. `prompts/briefing.md` exists without a matching
+   `builtin_hooks: - static_briefing: { path: prompts/briefing.md }`
+   entry. Same for `prompts/recovery.md` / `recovery_hint`.
+3. `setup.py` is present. Express the wiring via `resources/` +
+   `builtin_hooks:` + `@ref` strings instead.
+
+`schema_version: 1` (the implicit default) continues to load with
+deprecation warnings.
+
+### Migration
+
+`looplet migrate <cartridge>` mechanically performs the rewrite:
+
+* splits runtime-tier keys out of `config.yaml` into `runtime.yaml`,
+* converts magic `prompts/briefing.md` / `prompts/recovery.md`
+  into explicit `builtin_hooks:` entries (the file content stays
+  on disk; only the declaration moves),
+* bumps `schema_version` to 2 in `cartridge.json`.
+
+The tool refuses to run when `setup.py` is present, since there is
+no general mechanical rewrite for opaque Python wiring; port that
+manually, delete `setup.py`, then re-run `looplet migrate`.
+
+`looplet migrate --dry-run` previews the changes without writing.
+The migration is idempotent: running it on an already-v2 cartridge
+is a no-op.
+
+## Language-agnostic loader
+
+`looplet`'s Python loader is one implementation. A conforming loader
+in any language MUST honour the following clauses, in order:
+
+1. **Manifest probe.** Find `cartridge.json` (or the legacy
+   `workspace.json`) at the cartridge root. Read `schema_version`,
+   `name`, `description`, `metadata`. Reject `schema_version`
+   greater than the loader's max supported version.
+2. **Extends.** If `config.yaml` declares `extends: <path>`,
+   recursively load the parent cartridge first; layer the child's
+   `tools/`, `hooks/`, `resources/`, `prompts/`, and `memory/`
+   files over the parent's (child wins on filename collision).
+3. **Config split.** Read `config.yaml` (CONTRACT tier) and the
+   sibling `runtime.yaml` (RUNTIME tier). For `schema_version >= 2`,
+   reject any RUNTIME key found in `config.yaml`. For
+   `schema_version == 1`, accept with a deprecation diagnostic.
+4. **Resources.** Build the resource registry: for each
+   `resources/<name>.py` (or equivalent in the host language),
+   call its `build()` factory. Expose the registry as a mapping
+   that tools / hooks can index into via the `@<name>` or
+   `${ref:name}` reference grammar.
+5. **Tools, hooks, memory.** Materialise `tools/<name>/`,
+   `hooks/<name>/`, and `memory/*.{md,py}` into the host's loop
+   primitives. Resolve `requires:` against the resource registry;
+   missing entries are load-time errors.
+6. **Prompts.** Read `prompts/system.md` as the system prompt.
+   For `schema_version == 1`, attach `prompts/briefing.md` and
+   `prompts/recovery.md` as auto-loaded hooks with a deprecation
+   diagnostic; for `schema_version >= 2`, reject their presence
+   unless a matching `builtin_hooks:` entry exists.
+
+The reference grammar (`@name`, `${ref:name}`, `${py:module:symbol}`,
+`${runtime.field}`) is part of the spec; loaders MUST resolve all
+four forms.

@@ -54,6 +54,29 @@ def _manifest_present(root: Path) -> bool:
     return _manifest_path(root) is not None
 
 
+def _read_schema_version(root: Path) -> int:
+    """Read the cartridge's ``schema_version`` from its manifest.
+
+    Returns ``SCHEMA_VERSION`` (the latest known version) when the
+    manifest is missing or unparseable; callers that have already
+    verified the manifest exists will get the actual value. Used by
+    the loader to gate spec-v2 hard-errors so v1 cartridges keep
+    loading with deprecation warnings while ``schema_version: 2``
+    cartridges hard-fail on deprecated shapes.
+    """
+    meta_path = _manifest_path(root)
+    if meta_path is None:
+        return SCHEMA_VERSION
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return SCHEMA_VERSION
+    try:
+        return int(meta.get("schema_version", SCHEMA_VERSION))
+    except (TypeError, ValueError):
+        return SCHEMA_VERSION
+
+
 @dataclass
 class Cartridge:
     """A loaded Workspace.

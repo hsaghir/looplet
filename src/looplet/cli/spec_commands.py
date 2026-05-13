@@ -485,6 +485,148 @@ def cmd_hash(args: argparse.Namespace) -> int:
     return 0
 
 
+# ── migrate: v1.x → v2.0 ─────────────────────────────────────────
+
+
+def cartridge_migrate(root: Path, *, dry_run: bool = False) -> dict[str, Any]:
+    """Upgrade a v1.x cartridge to schema_version 2.
+
+    Performs (idempotently):
+
+      1. Split runtime-tier keys out of ``config.yaml`` into a sibling
+         ``runtime.yaml`` (merged with any existing runtime.yaml).
+      2. Convert magic ``prompts/briefing.md`` / ``prompts/recovery.md``
+         filenames into explicit ``builtin_hooks: - static_briefing /
+         recovery_hint: { path: ... }`` entries in ``config.yaml``.
+      3. Bump ``schema_version`` to 2 in the manifest.
+
+    Refuses to migrate if ``setup.py`` is present (no automatic
+    rewrite path exists; the caller must port the wiring to
+    ``resources/`` + ``builtin_hooks:`` by hand).
+
+    Returns a ``dict`` describing the changes (empty list values mean
+    nothing changed for that step). When ``dry_run=True``, no files
+    are written.
+    """
+    from looplet.cartridge._layout import CartridgeLayout  # noqa: PLC0415
+    from looplet.cartridge._manifest import _manifest_path  # noqa: PLC0415
+    from looplet.cartridge._yaml import _dump_yaml, _load_yaml  # noqa: PLC0415
+
+    if not root.is_dir():
+        raise FileNotFoundError(f"not a directory: {root}")
+    meta_path = _manifest_path(root)
+    if meta_path is None:
+        raise FileNotFoundError(f"no cartridge manifest at {root}; is this a cartridge directory?")
+    if (root / CartridgeLayout.SETUP_PY).is_file():
+        raise RuntimeError(
+            f"{root}/setup.py exists. v2 removes the setup.py escape hatch; "
+            f"port its wiring to resources/ + builtin_hooks: + @ref strings "
+            f"in config.yaml manually, delete setup.py, then re-run migrate."
+        )
+
+    report: dict[str, Any] = {
+        "schema_version_before": None,
+        "schema_version_after": 2,
+        "moved_runtime_keys": [],
+        "added_builtin_hooks": [],
+        "wrote_files": [],
+    }
+
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    report["schema_version_before"] = int(meta.get("schema_version", 1))
+
+    cfg_path = root / CartridgeLayout.CONFIG_YAML
+    cfg: dict[str, Any] = {}
+    if cfg_path.is_file():
+        cfg = _load_yaml(cfg_path.read_text(encoding="utf-8"), source_path=cfg_path) or {}
+        if not isinstance(cfg, dict):
+            raise RuntimeError(f"{cfg_path}: top-level must be a mapping")
+
+    # Step 1: split runtime-tier keys.
+    moved: dict[str, Any] = {}
+    for key in list(cfg):
+        if key in CartridgeLayout.RUNTIME_TIER_FIELDS:
+            moved[key] = cfg.pop(key)
+    report["moved_runtime_keys"] = sorted(moved)
+
+    rt_path = root / "runtime.yaml"
+    rt: dict[str, Any] = {}
+    if rt_path.is_file():
+        rt = _load_yaml(rt_path.read_text(encoding="utf-8"), source_path=rt_path) or {}
+        if not isinstance(rt, dict):
+            raise RuntimeError(f"{rt_path}: top-level must be a mapping")
+    # runtime.yaml wins on conflict (it already overrides config.yaml at load time).
+    for k, v in moved.items():
+        rt.setdefault(k, v)
+
+    # Step 2: magic prompt files → explicit builtin_hooks.
+    added_hooks: list[str] = []
+    builtin_hooks = cfg.get("builtin_hooks") or []
+    if not isinstance(builtin_hooks, list):
+        raise RuntimeError(f"{cfg_path}: 'builtin_hooks' must be a list")
+
+    def _already_declared(name: str) -> bool:
+        for entry in builtin_hooks:
+            if entry == name:
+                return True
+            if isinstance(entry, dict) and name in entry:
+                return True
+        return False
+
+    if (root / CartridgeLayout.BRIEFING_MD).is_file() and not _already_declared("static_briefing"):
+        builtin_hooks.append({"static_briefing": {"path": "prompts/briefing.md"}})
+        added_hooks.append("static_briefing")
+    if (root / CartridgeLayout.RECOVERY_MD).is_file() and not _already_declared("recovery_hint"):
+        builtin_hooks.append({"recovery_hint": {"path": "prompts/recovery.md"}})
+        added_hooks.append("recovery_hint")
+    if added_hooks:
+        cfg["builtin_hooks"] = builtin_hooks
+    report["added_builtin_hooks"] = added_hooks
+
+    # Step 3: bump schema_version.
+    meta["schema_version"] = 2
+
+    if dry_run:
+        return report
+
+    # Write everything.
+    if cfg_path.is_file() or cfg:
+        cfg_path.write_text(_dump_yaml(cfg), encoding="utf-8")
+        report["wrote_files"].append(str(cfg_path.relative_to(root)))
+    if rt:
+        rt_path.write_text(_dump_yaml(rt), encoding="utf-8")
+        report["wrote_files"].append(str(rt_path.relative_to(root)))
+    meta_path.write_text(
+        json.dumps(meta, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    report["wrote_files"].append(str(meta_path.relative_to(root)))
+    return report
+
+
+def cmd_migrate(args: argparse.Namespace) -> int:
+    root = Path(args.cartridge)
+    try:
+        report = cartridge_migrate(root, dry_run=args.dry_run)
+    except (FileNotFoundError, RuntimeError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    label = _bold("would migrate") if args.dry_run else _bold("migrated")
+    print(f"{label}: {root}")
+    print(f"  schema_version: {report['schema_version_before']} → {report['schema_version_after']}")
+    if report["moved_runtime_keys"]:
+        print(f"  moved to runtime.yaml: {', '.join(report['moved_runtime_keys'])}")
+    else:
+        print("  moved to runtime.yaml: (none)")
+    if report["added_builtin_hooks"]:
+        print(f"  added builtin_hooks: {', '.join(report['added_builtin_hooks'])}")
+    else:
+        print("  added builtin_hooks: (none)")
+    if not args.dry_run and report["wrote_files"]:
+        print(f"  wrote: {', '.join(report['wrote_files'])}")
+    return 0
+
+
 # ── argparse wiring (called from looplet.__main__) ───────────────
 
 
@@ -564,5 +706,35 @@ def add_subparsers(sub: "argparse._SubParsersAction") -> None:
     )
     hash_p.set_defaults(_handler=cmd_hash)
 
+    migrate_p = sub.add_parser(
+        "migrate",
+        help="Upgrade a v1.x cartridge to schema_version 2",
+        description=(
+            "Mechanically upgrade a cartridge from spec v1.x to v2:\n"
+            "  1. Move runtime-tier keys from config.yaml into runtime.yaml.\n"
+            "  2. Convert magic prompts/briefing.md and prompts/recovery.md\n"
+            "     into explicit builtin_hooks: entries.\n"
+            "  3. Bump schema_version to 2 in cartridge.json.\n\n"
+            "Refuses to migrate cartridges with setup.py (v2 removes that\n"
+            "escape hatch; port the wiring manually). Idempotent — running\n"
+            "a second time is a no-op."
+        ),
+    )
+    migrate_p.add_argument("cartridge", type=str, help="Path to a cartridge directory")
+    migrate_p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the planned changes without writing files",
+    )
+    migrate_p.set_defaults(_handler=cmd_migrate)
 
-__all__ = ["add_subparsers", "cmd_conform", "cmd_describe", "cmd_diff", "cmd_hash"]
+
+__all__ = [
+    "add_subparsers",
+    "cartridge_migrate",
+    "cmd_conform",
+    "cmd_describe",
+    "cmd_diff",
+    "cmd_hash",
+    "cmd_migrate",
+]

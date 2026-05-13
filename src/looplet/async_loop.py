@@ -529,6 +529,12 @@ async def async_composable_loop(
         # ── Parse response ──────────────────────────────────────
         if config.use_native_tools and isinstance(raw_response, list):
             tool_calls = parse_native_tool_use(raw_response)
+            # Graceful fallback: model may return text-only content (no
+            # tool_use blocks) even when native tools are enabled. Re-parse
+            # the flattened text via the JSON-text parser, which strips
+            # markdown fences and tolerates surrounding prose.
+            if not tool_calls:
+                tool_calls = parse_multi_tool_calls(raw_response)
         else:
             tool_calls = parse_multi_tool_calls(raw_response)
 

@@ -185,6 +185,18 @@ def load_cartridge(root: Path) -> TinyCartridge:
         _parse_tiny_yaml(config_path.read_text(encoding="utf-8")) if config_path.is_file() else {}
     )
 
+    # Cartridge Spec v2: runtime-tier knobs live in a sibling
+    # ``runtime.yaml``. Load it (if present) and merge under
+    # ``config`` — the resulting flat dict matches v1.x callers'
+    # expectations, while v2 cartridges keep the contract / runtime
+    # separation on disk.
+    runtime_path = root / "runtime.yaml"
+    if runtime_path.is_file():
+        runtime_kwargs = _parse_tiny_yaml(runtime_path.read_text(encoding="utf-8"))
+        # runtime.yaml wins on conflict (it's the host-side override).
+        for k, v in runtime_kwargs.items():
+            config[k] = v
+
     system_prompt_path = root / "prompts" / "system.md"
     system_prompt = (
         system_prompt_path.read_text(encoding="utf-8") if system_prompt_path.is_file() else ""

@@ -1,2 +1,2 @@
-def execute(*, briefing: str) -> dict:
-    return {"status": "completed", "briefing": briefing}
+def execute(*, summary: str) -> dict:
+    return {"status": "completed", "summary": summary}

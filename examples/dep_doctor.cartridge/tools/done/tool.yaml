@@ -1,6 +1,6 @@
 name: done
 description: Signal that the audit is complete.
 parameters:
-  report:
+  summary:
     type: string
     description: Audit summary.

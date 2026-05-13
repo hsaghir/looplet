@@ -181,3 +181,113 @@ def test_to_dict_includes_estimates() -> None:
     assert d["estimated_input_tokens"] == 100
     assert d["estimated_output_tokens"] == 50
     assert d["has_token_data"] is False
+
+
+# ---------------------------------------------------------------------------
+# Native-tool path: raw_response is a list of content blocks, not a string.
+# Without coercion, char-based fallback under-reports response_chars to 0
+# whenever native tools are used (the default since spec-v2).
+# ---------------------------------------------------------------------------
+def test_char_fallback_with_native_tool_block_list_dict_shape() -> None:
+    """Anthropic-style serialized blocks: list of dicts with type/text/name/input."""
+    t = CostTracker(model="claude-sonnet-4-5", prices=MODEL_PRICES)
+    hook = CostHook(t)
+    blocks = [
+        {"type": "text", "text": "I'll search for that."},
+        {
+            "type": "tool_use",
+            "name": "search",
+            "input": {"query": "python decorators", "limit": 10},
+        },
+    ]
+    hook.on_event(
+        EventPayload(
+            event=LifecycleEvent.POST_LLM_RESPONSE,
+            prompt="x" * 1000,
+            raw_response=blocks,
+        )
+    )
+    # Response chars must NOT be zero — native-tool blocks have measurable
+    # length (text + tool name + JSON-serialized args).
+    assert t.response_chars > 0
+    expected = (
+        len("I'll search for that.")
+        + len("search")
+        + len('{"query":"python decorators","limit":10}')
+    )
+    assert t.response_chars == expected
+
+
+def test_char_fallback_with_native_tool_block_list_object_shape() -> None:
+    """Provider SDK objects: blocks expose .text or .name + .input attrs."""
+
+    class _TextBlock:
+        type = "text"
+        text = "Looking up that file."
+
+    class _ToolUseBlock:
+        type = "tool_use"
+        name = "read"
+        input = {"file_path": "src/main.py"}
+
+    t = CostTracker(model="claude-sonnet-4-5", prices=MODEL_PRICES)
+    hook = CostHook(t)
+    hook.on_event(
+        EventPayload(
+            event=LifecycleEvent.POST_LLM_RESPONSE,
+            prompt="p" * 500,
+            raw_response=[_TextBlock(), _ToolUseBlock()],
+        )
+    )
+    assert t.response_chars > 0
+    expected = len("Looking up that file.") + len("read") + len('{"file_path":"src/main.py"}')
+    assert t.response_chars == expected
+
+
+def test_char_fallback_block_list_text_only() -> None:
+    """All-text block list (no tool calls) still extracts cleanly."""
+    t = CostTracker(model="claude-sonnet-4-5", prices=MODEL_PRICES)
+    hook = CostHook(t)
+    hook.on_event(
+        EventPayload(
+            event=LifecycleEvent.POST_LLM_RESPONSE,
+            prompt="",
+            raw_response=[{"type": "text", "text": "hello world"}],
+        )
+    )
+    assert t.response_chars == len("hello world")
+
+
+def test_char_fallback_block_list_handles_unserializable_input() -> None:
+    """tool_use.input that can't be JSON-encoded falls back to str()."""
+
+    class _Weird:
+        def __repr__(self) -> str:
+            return "<weird>"
+
+    t = CostTracker(model="claude-sonnet-4-5", prices=MODEL_PRICES)
+    hook = CostHook(t)
+    hook.on_event(
+        EventPayload(
+            event=LifecycleEvent.POST_LLM_RESPONSE,
+            prompt="",
+            raw_response=[{"type": "tool_use", "name": "x", "input": _Weird()}],
+        )
+    )
+    # No exception; some chars recorded for name + str(input).
+    assert t.response_chars >= len("x")
+
+
+def test_char_fallback_unknown_shape_returns_zero() -> None:
+    """Plain-string path still works; arbitrary objects yield 0 chars (no crash)."""
+    t = CostTracker(model="claude-sonnet-4-5", prices=MODEL_PRICES)
+    hook = CostHook(t)
+    hook.on_event(
+        EventPayload(
+            event=LifecycleEvent.POST_LLM_RESPONSE,
+            prompt="prompt",
+            raw_response=object(),  # not str, not list
+        )
+    )
+    assert t.prompt_chars == len("prompt")
+    assert t.response_chars == 0

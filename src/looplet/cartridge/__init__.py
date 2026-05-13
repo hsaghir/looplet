@@ -6,6 +6,35 @@ and provides a clean code-escape hatch for the rest. It is the missing
 inverse of :class:`looplet.bundles.SkillBundle`, which can be loaded
 from disk but not written back from a live preset.
 
+Extraction contract (loader independence)
+-----------------------------------------
+
+``looplet.cartridge`` is structured so it can be extracted into a
+standalone ``looplet-cartridge`` package without touching the rest
+of looplet. To preserve that property, this package's TOP-LEVEL
+(import-time) dependencies on the looplet umbrella are pinned to
+the following allowlist; everything else MUST be imported lazily
+inside function bodies. The list is locked by
+``tests/test_cartridge_extraction_contract.py`` — if it grows,
+update both places intentionally.
+
+Allowlisted top-level looplet imports inside cartridge/**.py:
+
+* ``looplet.refs``           — tiny shared registry (~117 LOC);
+                               designed as the cross-package bridge.
+* ``looplet.hook_decision``  — small leaf module used by
+                               ``prompt_files.py``.
+* ``looplet.permissions``    — used by ``spec_slots.py`` to compile
+                               the declarative ``permissions:`` block.
+* ``looplet.validation``     — used by ``spec_slots.py`` to compile
+                               the declarative ``output_schema:`` block.
+
+Everything else — ``loop``, ``presets``, ``tools``, ``types``,
+``memory``, ``compact``, ``builtin_*``, ``backends`` — is imported
+lazily (function-local), so a future split package can replace
+those imports with Protocol-typed runtime hooks without any
+ripple in the cartridge code itself.
+
 Design goal
 -----------
 

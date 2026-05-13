@@ -125,3 +125,35 @@ def test_tinyloop_loads_v2_tier_split_fixture(tinyloop_module) -> None:
     # The runtime knobs came from runtime.yaml, not config.yaml.
     assert cart.config.get("max_tokens") == 2000
     assert cart.config.get("temperature") == 0.2
+
+
+# ── Minimal-conforming: all v1.0 declarative slots ─────────────────
+
+
+@pytest.mark.parametrize(
+    "fixture_name",
+    [
+        "02_permissions",
+        "03_model_and_output_schema",
+        "04_long_term_memory",
+    ],
+)
+def test_tinyloop_summary_matches_for_declarative_slot_fixtures(
+    tinyloop_module, fixture_name: str
+) -> None:
+    """tinyloop is now minimal-conforming for all v1.0 declarative slots.
+
+    Cross-runtime evidence that ``permissions``, ``model``,
+    ``output_schema`` and ``memory_sources`` are part of the
+    cartridge contract — not loader-specific decoration. If a fixture
+    is added or its expected.json widens, tinyloop must keep up.
+    """
+    fixture_dir = REPO_ROOT / "tests" / "conformance" / "fixtures" / fixture_name
+    cart = tinyloop_module.load_cartridge(fixture_dir / "cartridge")
+    summary = tinyloop_module.conformance_summary(cart)
+    expected = json.loads((fixture_dir / "expected.json").read_text())
+    assert summary == expected, (
+        f"tinyloop summary for fixture {fixture_name!r} drifted from the "
+        f"reference loader. Expected:\n{json.dumps(expected, indent=2)}\n"
+        f"Actual:\n{json.dumps(summary, indent=2)}"
+    )

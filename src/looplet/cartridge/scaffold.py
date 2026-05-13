@@ -25,7 +25,8 @@ The agent only needs to fill in the TODO markers.
 Files created:
 
 * ``cartridge.json`` — required metadata (one line of JSON)
-* ``config.yaml`` — sensible defaults: max_steps=20, temperature=0.7
+* ``config.yaml`` — cartridge contract: max_steps=20, done_tool
+* ``runtime.yaml`` — runtime knobs: max_tokens=2000, temperature=0.7
 * ``prompts/system.md`` — stub with TODO markers
 * ``tools/<name>/{tool.yaml,execute.py}`` for each tool requested
 * ``tools/done/{tool.yaml,execute.py}`` — the standard finalizer
@@ -46,10 +47,17 @@ from pathlib import Path
 _WORKSPACE_JSON = '{{"name": {name_json}, "schema_version": 1}}\n'
 
 _CONFIG_YAML = """\
+# Cartridge contract — what the agent does. Runtime knobs (sampling,
+# context window, compaction) live in the sibling ``runtime.yaml``.
 max_steps: 20
+done_tool: done
+"""
+
+_RUNTIME_YAML = """\
+# Runtime configuration — how this host runs the agent. Move any
+# of these knobs to a per-deployment override file as needed.
 max_tokens: 2000
 temperature: 0.7
-done_tool: done
 """
 
 _SYSTEM_MD = """\
@@ -169,6 +177,7 @@ def scaffold_cartridge(
         _WORKSPACE_JSON.format(name_json=json.dumps(name)),
     )
     _write_if_absent(root / "config.yaml", _CONFIG_YAML)
+    _write_if_absent(root / "runtime.yaml", _RUNTIME_YAML)
 
     prompts_dir = root / "prompts"
     prompts_dir.mkdir(exist_ok=True)

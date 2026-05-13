@@ -93,6 +93,7 @@ def preset_to_cartridge(
             CartridgeLayout.CARTRIDGE_JSON,
             CartridgeLayout.WORKSPACE_JSON,
             CartridgeLayout.CONFIG_YAML,
+            "runtime.yaml",
         ):
             stale_path = root / stale
             if stale_path.is_file():
@@ -149,10 +150,25 @@ def preset_to_cartridge(
         config_field_refs[fname] = value
 
     if serialized_cfg:
-        (root / CartridgeLayout.CONFIG_YAML).write_text(
-            _dump_yaml(serialized_cfg) + "\n",
-            encoding="utf-8",
-        )
+        # ── Cartridge spec v2 split: contract → config.yaml,
+        # runtime knobs → runtime.yaml. Field tiering lives on
+        # CartridgeLayout (RUNTIME_TIER_FIELDS / contract_tier_fields).
+        # The split is purely about file destination; both files
+        # round-trip via the loader's merge in _load.py.
+        runtime_keys = CartridgeLayout.RUNTIME_TIER_FIELDS
+        runtime_payload = {k: v for k, v in serialized_cfg.items() if k in runtime_keys}
+        contract_payload = {k: v for k, v in serialized_cfg.items() if k not in runtime_keys}
+
+        if contract_payload:
+            (root / CartridgeLayout.CONFIG_YAML).write_text(
+                _dump_yaml(contract_payload) + "\n",
+                encoding="utf-8",
+            )
+        if runtime_payload:
+            (root / "runtime.yaml").write_text(
+                _dump_yaml(runtime_payload) + "\n",
+                encoding="utf-8",
+            )
 
     # 2. system prompt
     prompts_dir = root / CartridgeLayout.PROMPTS_DIR
@@ -214,8 +230,12 @@ def preset_to_cartridge(
         existing = serialized_cfg.get("memory_sources") or []
         serialized_cfg["memory_sources"] = list(existing) + memory_ref_entries
         # Re-write config.yaml to include the new memory_sources entries.
+        # Apply the same contract/runtime split as the initial write so
+        # we don't accidentally re-introduce runtime keys into config.yaml.
+        runtime_keys = CartridgeLayout.RUNTIME_TIER_FIELDS
+        contract_payload = {k: v for k, v in serialized_cfg.items() if k not in runtime_keys}
         (root / CartridgeLayout.CONFIG_YAML).write_text(
-            _dump_yaml(serialized_cfg) + "\n",
+            _dump_yaml(contract_payload) + "\n",
             encoding="utf-8",
         )
 

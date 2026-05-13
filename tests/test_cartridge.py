@@ -1123,8 +1123,13 @@ def test_callable_loop_config_field_auto_emits_resource(tmp_path: Path) -> None:
     )
     ws = preset_to_cartridge(preset, tmp_path / "ws")
 
-    cfg_text = (tmp_path / "ws" / "config.yaml").read_text()
-    assert '"@compact_service"' in cfg_text or "@compact_service" in cfg_text
+    # ``compact_service`` is a runtime-tier field (cartridge spec v2),
+    # so the writer emits it into ``runtime.yaml`` rather than
+    # ``config.yaml``. Either filename satisfies the round-trip; the
+    # important invariant is that the @ref + the builder file both
+    # exist somewhere the loader will find them.
+    rt_text = (tmp_path / "ws" / "runtime.yaml").read_text()
+    assert '"@compact_service"' in rt_text or "@compact_service" in rt_text
     assert (tmp_path / "ws" / "resources" / "compact_service.py").is_file()
 
     # Reload — compact_service should come back via the @ref machinery.

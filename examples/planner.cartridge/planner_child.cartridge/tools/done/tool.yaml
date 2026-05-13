@@ -1,0 +1,6 @@
+name: done
+description: Return the finished plan. Pass the numbered list as `summary`.
+parameters:
+  summary:
+    type: string
+    description: Numbered plan, 3-7 short steps.

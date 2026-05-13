@@ -1,0 +1,6 @@
+name: done
+description: Signal the planner finished. Pass the final cleaned-up plan as a numbered list in `summary`.
+parameters:
+  summary:
+    type: string
+    description: Final plan as a numbered list of steps.

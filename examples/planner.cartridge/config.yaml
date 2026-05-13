@@ -1,0 +1,4 @@
+max_steps: 8
+done_tool: done
+builtin_tools:
+  - subagent

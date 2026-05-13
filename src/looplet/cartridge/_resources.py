@@ -92,6 +92,22 @@ def _load_resources(root: Path, runtime: dict[str, Any] | None = None) -> dict[s
         instance = builder(runtime=runtime_dict) if accepts_runtime else builder()
         resources[name] = instance
         _register_resource_origin(instance, name)
+        # Cartridge spec v2: resources may declare ``THREAD_SAFE = True``
+        # / ``False`` at module level. The loader stashes this in a
+        # parallel registry keyed under the reserved name
+        # ``_resource_thread_safety`` so the runtime can refuse
+        # ``concurrent_dispatch`` of tools whose ``requires:`` includes
+        # an unsafe resource. Resources that don't declare a value are
+        # treated as "unknown" (stricter hosts can choose to fail; the
+        # default runtime behaviour is to allow with a warning).
+        thread_safe = getattr(module, "THREAD_SAFE", None)
+        if thread_safe is not None:
+            if not isinstance(thread_safe, bool):
+                raise CartridgeSerializationError(
+                    f"resource {name!r} ({resource_file}) declares "
+                    f"THREAD_SAFE={thread_safe!r}; must be ``True`` or ``False``"
+                )
+            resources.setdefault("_resource_thread_safety", {})[name] = thread_safe
     return resources
 
 

@@ -282,7 +282,7 @@ The legacy `@name` form is an alias for `${ref:name}`.
 A single Markdown file containing the agent's system prompt verbatim.
 No templating. The whole file is the prompt.
 
-### Optional prompt files (v1.1)
+### Optional prompt files (v1.1, deprecated in v2)
 
 Two additional optional files in `prompts/` get auto-attached as
 hooks when present:
@@ -300,6 +300,25 @@ Both are absent by default. Loaders MUST attach the corresponding
 hook (e.g. `StaticBriefingHook`, `RecoveryHintHook` in the reference
 implementation) when the file is present, and skip silently when it
 isn't.
+
+**Cartridge spec v2 deprecation.** The magic-filename auto-load is
+being replaced by an explicit declarative form via `builtin_hooks:`:
+
+```yaml
+builtin_hooks:
+  - static_briefing:
+      path: prompts/briefing.md   # or text: |- inline body
+  - recovery_hint:
+      path: prompts/recovery.md
+```
+
+Each hook accepts `text:` (inline body) xor `path:` (resolved
+relative to the cartridge root via the loader-injected
+`cartridge_root` resource). v1.x loaders MUST continue to honour
+the magic-filename auto-load with a `DeprecationWarning`; v2.0 MUST
+drop the auto-load. The benefit of the explicit form is that every
+hook a cartridge installs is visible in `config.yaml` rather than
+discovered by filename.
 
 No other prompt files are recognised in v1.1. Cartridges that need
 more elaborate prompt templating use plain Python in a hook or
@@ -546,3 +565,93 @@ exercise the suite against the reference loader.
   `done`. Conformance fixture seed introduced.
 - **v0.x** — implementation-defined; everything was already
   declarative but slots were not numbered.
+
+## Cartridge identity (v2 prep)
+
+A cartridge has a deterministic content hash computed by hashing each
+content-bearing file's contents and folding them into a single
+SHA-256 digest in canonical order:
+
+1. Walk the cartridge directory recursively.
+2. Skip files whose path contains any of `__pycache__/`, `.git/`,
+   `.venv/`, `seed/`, `.pytest_cache/`, `.mypy_cache/`.
+3. Skip files with suffix `.pyc` or `.pyo`.
+4. For every remaining file, compute its SHA-256.
+5. Sort the `(relative_posix_path, file_sha256)` pairs by path.
+6. Fold into the overall digest by writing
+   `<rel_path>\0<file_sha256>\n` for each pair into a SHA-256
+   accumulator.
+
+The reference loader exposes this as `looplet hash <cartridge>` and
+as `looplet.cli.spec_commands.cartridge_hash(root)`. The exclusion
+list is part of the spec; changing it is a versioned change.
+
+`seed/` is excluded so a cartridge that ships starter data the agent
+may overwrite at runtime keeps a stable identity across runs. Hosts
+that want runtime data to count against identity should write it
+elsewhere.
+
+## Resource concurrency declaration (v2 prep)
+
+A `resources/<name>.py` module MAY declare a module-level
+`THREAD_SAFE = True` or `THREAD_SAFE = False` constant. Loaders MUST
+record this in a parallel registry keyed under the reserved name
+`_resource_thread_safety` so the runtime can refuse
+`concurrent_dispatch` of tools whose `requires:` includes an unsafe
+resource. Resources that omit the declaration are treated as
+"unknown" — the default runtime behaviour is to allow with a
+warning; stricter hosts may choose to fail.
+
+`THREAD_SAFE` MUST be a Python `bool`. Any other value is a
+load-time error.
+
+## Deferred design decisions
+
+These were considered for v2 and explicitly deferred. Each entry
+records the option, why it was deferred, and the workaround in v1.x.
+
+### Multi-extends (`extends: [a, b]`)
+
+**Status.** Deferred. Single-parent `extends:` is the canonical
+form; lists are not accepted.
+
+**Rationale.** Diamond-inheritance resolution (C3 linearisation,
+MRO) adds complexity without a corresponding capability gain in
+practice. Cartridges that "extend two parents" are nearly always
+composing two independent concerns (e.g. a coding base + a security
+profile), which is better expressed as composition (`builtin_hooks:`
++ shared `resources/`) than as inheritance.
+
+**Workaround.** Chain single-parent extends (A extends B extends C)
+or compose via `builtin_hooks:` + a shared resource module.
+
+### Sub-agent resource isolation by default
+
+**Status.** Deferred to v2.0. Today, sub-agents (`run_sub_loop`)
+share the parent's resource registry; tools, state, conversation,
+and session log are already isolated per sub-loop.
+
+**Rationale.** Forking the resource registry by default would break
+the common case of a sub-agent reusing the parent's expensive
+clients (DB connections, vector stores). The right default is
+sharing; opt-in forking can be added without a breaking change.
+
+**Workaround.** Pass `sub_tools=` with a tool registry whose
+`ctx.resources` reference fresh instances, or wrap the parent's
+resources in a copy-on-write dict.
+
+### Discriminated-union `output_schema` on a single `done`
+
+**Status.** Deferred. The current model (`done_tool: report` +
+`done_tools: [escalate, ...]`, each with its own `tool.yaml` and
+optional `output_schema:`) is retained.
+
+**Rationale.** Multiple sentinel tools give the LLM a clearer
+contract (each tool name has a distinct shape) than a single tool
+whose payload depends on a discriminator field. The LLM picks an
+outcome by calling the right tool; collapsing into one `done` would
+require it to embed the discriminator and inflate prompt complexity
+for no gain.
+
+**Workaround.** Use `done_tools:` (v1.1+) when an agent has multiple
+distinct terminal outcomes.

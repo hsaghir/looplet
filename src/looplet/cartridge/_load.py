@@ -334,6 +334,11 @@ def _workspace_to_preset_inner(
     from looplet.types import DefaultState  # noqa: PLC0415
 
     resources = _load_resources(root, runtime_dict)
+    # Loader-injected resource: built-in hooks (and any user resource
+    # builder that wants it) can resolve cartridge-root-relative paths
+    # via ``resources["cartridge_root"]``. Used by ``static_briefing``
+    # / ``recovery_hint`` to load ``path:`` kwargs declaratively.
+    resources.setdefault("cartridge_root", root)
 
     # Config
     cfg_kwargs: dict[str, Any] = {}
@@ -1086,9 +1091,18 @@ def _workspace_to_preset_inner(
     # StaticBriefingHook / RecoveryHintHook and prepends them so
     # they fire BEFORE any user hooks. Absent files mean no hook is
     # attached (zero overhead).
+    #
+    # Cartridge spec v2 deprecation: the magic-filename auto-load
+    # is being replaced by the explicit ``builtin_hooks: -
+    # static_briefing: { path: ... }`` form, which keeps the source
+    # of every hook declared in config.yaml rather than discovered
+    # by filename. v1.x continues to honour the auto-load with a
+    # ``DeprecationWarning``; v2.0 will drop it.
     briefing_path = root / CartridgeLayout.BRIEFING_MD
     recovery_path = root / CartridgeLayout.RECOVERY_MD
     if briefing_path.is_file() or recovery_path.is_file():
+        import warnings as _warnings  # noqa: PLC0415
+
         from looplet.cartridge.prompt_files import (  # noqa: PLC0415
             RecoveryHintHook,
             StaticBriefingHook,
@@ -1098,9 +1112,27 @@ def _workspace_to_preset_inner(
         if briefing_path.is_file():
             text = briefing_path.read_text(encoding="utf-8")
             prompt_hooks.append(StaticBriefingHook(text=text))
+            _warnings.warn(
+                f"Cartridge {root}: magic ``prompts/briefing.md`` auto-load is "
+                f"deprecated (cartridge spec v2). Declare it explicitly via "
+                f"``builtin_hooks: - static_briefing: {{ path: prompts/briefing.md }}`` "
+                f"in config.yaml. v1.x continues to auto-load; v2.0 will drop "
+                f"the magic-filename behaviour.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
         if recovery_path.is_file():
             text = recovery_path.read_text(encoding="utf-8")
             prompt_hooks.append(RecoveryHintHook(text=text))
+            _warnings.warn(
+                f"Cartridge {root}: magic ``prompts/recovery.md`` auto-load is "
+                f"deprecated (cartridge spec v2). Declare it explicitly via "
+                f"``builtin_hooks: - recovery_hint: {{ path: prompts/recovery.md }}`` "
+                f"in config.yaml. v1.x continues to auto-load; v2.0 will drop "
+                f"the magic-filename behaviour.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
         # Prepend so these fire before user-declared hooks (which may
         # build on the briefing) and ahead of permission/built-in hooks
         # (which fire on dispatch boundaries; relative order doesn't

@@ -1,8 +1,13 @@
 {
-  "schema_version": 1,
-  "name": "coder",
   "description": "Workspace-native coder agent. Every component (config, prompt, tools, hooks, shared resources) is a file you can edit, diff, and version-control. Behaves identically to the previous library example.",
   "metadata": {
-    "tags": ["coding", "software-engineering", "testing", "workspace-native"]
-  }
+    "tags": [
+      "coding",
+      "software-engineering",
+      "testing",
+      "workspace-native"
+    ]
+  },
+  "name": "coder",
+  "schema_version": 2
 }

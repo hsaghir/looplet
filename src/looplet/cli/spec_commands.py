@@ -591,10 +591,10 @@ def cartridge_migrate(root: Path, *, dry_run: bool = False) -> dict[str, Any]:
 
     # Write everything.
     if cfg_path.is_file() or cfg:
-        cfg_path.write_text(_dump_yaml(cfg), encoding="utf-8")
+        cfg_path.write_text(_dump_yaml(cfg) + "\n", encoding="utf-8")
         report["wrote_files"].append(str(cfg_path.relative_to(root)))
     if rt:
-        rt_path.write_text(_dump_yaml(rt), encoding="utf-8")
+        rt_path.write_text(_dump_yaml(rt) + "\n", encoding="utf-8")
         report["wrote_files"].append(str(rt_path.relative_to(root)))
     meta_path.write_text(
         json.dumps(meta, indent=2, sort_keys=True) + "\n",

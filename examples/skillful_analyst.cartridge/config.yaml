@@ -1,12 +1,5 @@
-# Cartridge contract — what the agent does. Runtime knobs in runtime.yaml.
 max_steps: 25
 done_tool: done
-
-# Pi-style skill flow, fully declarative.
-# - search_skills + activate_skill: looplet-shipped tools
-# - skill_activation: looplet-shipped hook (auto-binds the SkillManager
-#   resource, so activated skill bodies land in subsequent prompts)
-# - resources/skill_manager.py supplies the SkillManager itself
 builtin_tools:
   - search_skills
   - activate_skill

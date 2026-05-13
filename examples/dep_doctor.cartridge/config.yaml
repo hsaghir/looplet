@@ -1,10 +1,10 @@
-# Cartridge contract — what the agent does. Runtime knobs in runtime.yaml.
 max_steps: 25
 done_tool: done
-
-# Generic guard hooks via the looplet-shipped registry.
-# Use JSON syntax for flow-style kwargs (also valid YAML, and what the
-# tiny built-in loader understands).
 builtin_hooks:
   - stagnation
-  - per_tool_limit: {"default_limit": 15, "limits": {"check_package": 12, "find_alternatives": 4}}
+  -
+    per_tool_limit:
+      default_limit: 15
+      limits:
+        check_package: 12
+        find_alternatives: 4

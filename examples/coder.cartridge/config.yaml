@@ -1,48 +1,52 @@
-# Cartridge contract — what the agent does.
-# Runtime knobs (sampling, context window, compaction) live in the
-# sibling ``runtime.yaml`` so this file stays runtime-agnostic.
-
 max_steps: 20
 done_tool: done
 memory_sources:
-  - "@instructions_memory"
-  - "@project_memory"
-
-# v1.0 model binding. Provider/name/effort live in tool_metadata so
-# downstream tooling (cost, routing, governance) can read them; the
-# loop continues to read the flat fields above for back-compat.
+  - @instructions_memory
+  - @project_memory
 model:
   provider: anthropic
   name: claude-sonnet-4.6
   reasoning_effort: high
-
-# v1.0 declarative permissions. Compiled into a PermissionHook by
-# the loader. Replaces the previous hand-written BashPermissionHook
-# class — the same rules, expressed in the schema.
 permissions:
   default: allow
   deny:
-    - tool: bash
+    -
+      tool: bash
       contains:
-        command: "rm -rf"
-      reason: "destructive recursive delete"
-    - tool: bash
+        command: rm -rf
+      reason: destructive recursive delete
+    -
+      tool: bash
       contains:
         command: "sudo "
-      reason: "escalated privileges"
-    - tool: bash
+      reason: escalated privileges
+    -
+      tool: bash
       contains:
-        command: "> /dev/"
-      reason: "raw device write"
-    - tool: write_file
+        command: > /dev/
+      reason: raw device write
+    -
+      tool: write_file
       contains:
-        file_path: "/etc/"
-      reason: "system path"
-
-# Generic guard / budget hooks via the looplet-shipped registry.
-# Coder-specific hooks (TestGuardHook, FileCacheHook, StaleFileHook,
-# LinterHook, EvalHook) live under hooks/ alongside this file.
+        file_path: /etc/
+      reason: system path
 builtin_hooks:
-  - stagnation: {"threshold": 6, "nudge": "[stagnation] Re-read the file, try a different approach, or think().", "reset_after_nudge": true, "ignore_tools": ["think", "done"]}
-  - threshold_compact: {"budget": {"context_window": 128000, "warning_at": 80000, "error_at": 100000, "compact_buffer": 13000}, "fire_tier": "warning"}
-  - per_tool_limit: {"default_limit": 100}
+  -
+    stagnation:
+      threshold: 6
+      nudge: [stagnation] Re-read the file, try a different approach, or think().
+      reset_after_nudge: true
+      ignore_tools:
+        - think
+        - done
+  -
+    threshold_compact:
+      budget:
+        context_window: 128000
+        warning_at: 80000
+        error_at: 100000
+        compact_buffer: 13000
+      fire_tier: warning
+  -
+    per_tool_limit:
+      default_limit: 100

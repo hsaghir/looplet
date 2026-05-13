@@ -1,3 +1,2 @@
-# Cartridge contract — what the agent does. Runtime knobs in runtime.yaml.
 max_steps: 5
 done_tool: done

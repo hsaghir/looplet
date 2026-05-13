@@ -1,7 +1,10 @@
-# Cartridge contract — what the agent does. Runtime knobs in runtime.yaml.
 max_steps: 15
 done_tool: done
-
 builtin_hooks:
   - stagnation
-  - per_tool_limit: {"default_limit": 8, "limits": {"fetch_feed": 3, "search_cve": 5}}
+  -
+    per_tool_limit:
+      default_limit: 8
+      limits:
+        fetch_feed: 3
+        search_cve: 5

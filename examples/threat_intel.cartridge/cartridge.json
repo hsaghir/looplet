@@ -1,8 +1,12 @@
 {
-  "schema_version": 1,
-  "name": "threat-intel",
   "description": "Workspace-native threat-intelligence briefing agent. Fetches feeds, extracts IOCs, maps MITRE techniques, assesses risk. v2 of examples/threat_intel.",
   "metadata": {
-    "tags": ["security", "threat-intel", "workspace-native"]
-  }
+    "tags": [
+      "security",
+      "threat-intel",
+      "workspace-native"
+    ]
+  },
+  "name": "threat-intel",
+  "schema_version": 2
 }

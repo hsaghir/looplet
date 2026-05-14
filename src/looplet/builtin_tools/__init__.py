@@ -45,8 +45,8 @@ AVAILABLE: dict[str, ToolSpec] = {
     _SUBAGENT_SPEC.name: _SUBAGENT_SPEC,
     _SCAFFOLD_SPEC.name: _SCAFFOLD_SPEC,
     # Back-compat: cartridges that opt in via the historical
-    # ``builtin_tools: [scaffold_workspace]`` line keep working.
-    "scaffold_workspace": _SCAFFOLD_SPEC,
+    # ``builtin_tools: [scaffold_cartridge]`` line keep working.
+    "scaffold_cartridge": _SCAFFOLD_SPEC,
     _SEARCH_SKILLS_SPEC.name: _SEARCH_SKILLS_SPEC,
     _ACTIVATE_SKILL_SPEC.name: _ACTIVATE_SKILL_SPEC,
 }

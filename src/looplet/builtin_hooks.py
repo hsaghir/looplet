@@ -71,7 +71,7 @@ def _build_skill_activation(*, resources: dict[str, Any], **kwargs: Any) -> Any:
 def _build_stagnation(*, resources: dict[str, Any], **kwargs: Any) -> Any:  # noqa: ARG001
     from looplet.stagnation import StagnationHook  # noqa: PLC0415
 
-    # Workspace-author-friendly defaults. Any field is overridable.
+    # Cartridge-author-friendly defaults. Any field is overridable.
     kwargs.setdefault("threshold", 3)
     kwargs.setdefault("ignore_tools", ["think", "done"])
     return StagnationHook(**kwargs)

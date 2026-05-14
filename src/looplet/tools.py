@@ -356,7 +356,7 @@ class ToolSpec:
     requires: list[str] = field(default_factory=list)
     """Names of shared resources the tool needs at dispatch time.
 
-    Workspace mechanism for tool dependency injection: ``tool.yaml``
+    Cartridge mechanism for tool dependency injection: ``tool.yaml``
     can declare ``requires: [workspace_config, file_cache]`` and the
     workspace loader populates this list. The
     :class:`BaseToolRegistry` dispatcher then resolves each name
@@ -428,7 +428,7 @@ class ToolSpec:
             return list(self.parameters.get("required", []))
         required: list[str] = []
         for name, desc in self.parameters.items():
-            # Workspace ``tool.yaml`` form: dict descriptor.
+            # Cartridge ``tool.yaml`` form: dict descriptor.
             if isinstance(desc, dict):
                 if "default" not in desc:
                     required.append(name)
@@ -619,7 +619,7 @@ class BaseToolRegistry:
 
         Tools whose ``ToolSpec.requires`` lists a resource name receive
         the resolved instance through ``ctx.resources[name]`` at
-        dispatch time. Workspace's ``cartridge_to_preset`` calls
+        dispatch time. Cartridge's ``cartridge_to_preset`` calls
         this with the loaded ``resources/<name>.py`` builders' output;
         in-process callers can call it directly to wire a registry.
         """

@@ -262,7 +262,7 @@ class PermissionHook:
         self.engine = engine
 
     def to_config(self) -> dict:
-        """Workspace round-trip: emit ``engine`` as an ``@ref`` so the
+        """Cartridge round-trip: emit ``engine`` as an ``@ref`` so the
         workspace writer auto-generates ``resources/<name>.py``.
 
         When ``self.engine`` was produced by a workspace resource

@@ -73,7 +73,7 @@ def preset_to_cartridge(
             returned workspace and skip the offending field.
 
     Returns:
-        The :class:`Workspace` describing the newly-written directory.
+        The :class:`Cartridge` describing the newly-written directory.
     """
     root = Path(out_dir)
     if root.exists() and any(root.iterdir()) and not overwrite:
@@ -753,7 +753,7 @@ def _write_tool(spec: Any, tools_root: Path, warnings: list[str], strict: bool) 
     fn_name = getattr(fn, "__name__", "")
     module_name = getattr(fn, "__module__", "") or ""
 
-    # Workspace-loaded tools live in dynamic ``_chw_tool_<name>`` modules
+    # Cartridge-loaded tools live in dynamic ``_chw_tool_<name>`` modules
     # registered in ``sys.modules``. Re-importing by that synthetic name
     # would silently fail at reload (the new process has no entry under
     # that key). Copy the original on-disk ``execute.py`` verbatim — it
@@ -921,7 +921,7 @@ def _render_hook_source(cls: type, warnings: list[str], strict: bool) -> str:
     cls_name = cls.__name__
     module_name = cls.__module__ or ""
 
-    # 0. Workspace ``_chw_hook_*`` source on disk → copy verbatim. This
+    # 0. Cartridge ``_chw_hook_*`` source on disk → copy verbatim. This
     #    is essential for byte-identity round-trip and for preserving
     #    any methods (commonly ``to_config()``) the workspace-local
     #    subclass adds beyond an installed base class.

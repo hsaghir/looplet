@@ -71,7 +71,7 @@ class AgentPreset:
     """Agent state with budget tracking."""
 
     resources: dict[str, Any] = field(default_factory=dict)
-    """Workspace-built resources, exposed by name.
+    """Cartridge-built resources, exposed by name.
 
     When a preset is loaded from a workspace, every resource declared
     in ``resources/<name>.py`` is published here under its declared

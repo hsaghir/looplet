@@ -100,7 +100,7 @@ SPEC = ToolSpec(
             "path": {"type": "string", "description": "Directory to create."},
             "name": {
                 "type": "string",
-                "description": "Workspace name (becomes workspace.json.name).",
+                "description": "Cartridge name (becomes workspace.json.name).",
             },
             "tools": {
                 "type": "array",

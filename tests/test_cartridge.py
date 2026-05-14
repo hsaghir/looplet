@@ -1,4 +1,4 @@
-"""Tests for the Workspace round-trip.
+"""Tests for the Cartridge round-trip.
 
 Verifies:
 
@@ -10,7 +10,7 @@ Verifies:
 * warnings are recorded for non-round-trippable config callables
   (``strict=False``) and raised under ``strict=True``
 * layout discovery: the workspace.json metadata file is required
-* ``Workspace.to_preset()`` materialises a runnable preset that the
+* ``Cartridge.to_preset()`` materialises a runnable preset that the
   composable loop can execute end-to-end with a scripted MockLLM
 """
 
@@ -24,11 +24,11 @@ import pytest
 
 from looplet import (
     BaseToolRegistry,
+    Cartridge,
     CartridgeLayout,
     CartridgeSerializationError,
     DefaultState,
     LoopConfig,
-    Workspace,
     cartridge_to_preset,
     composable_loop,
     preset_to_cartridge,
@@ -142,10 +142,10 @@ def test_workspace_metadata_round_trips(tmp_path: Path) -> None:
         name="demo",
         description="just a test",
     )
-    loaded = Workspace.from_directory(tmp_path / "ws")
+    loaded = Cartridge.from_directory(tmp_path / "ws")
     assert loaded.name == "demo"
     assert loaded.description == "just a test"
-    assert loaded.schema_version == 1
+    assert loaded.schema_version == 2
 
 
 def test_missing_metadata_raises(tmp_path: Path) -> None:
@@ -153,7 +153,7 @@ def test_missing_metadata_raises(tmp_path: Path) -> None:
     out.mkdir()
     (out / "config.yaml").write_text("max_steps: 5\n")
     with pytest.raises(FileNotFoundError):
-        Workspace.from_directory(out)
+        Cartridge.from_directory(out)
     with pytest.raises(FileNotFoundError):
         cartridge_to_preset(out)
 
@@ -264,7 +264,7 @@ def test_warnings_are_empty_for_clean_preset(tmp_path: Path) -> None:
 def test_workspace_json_is_stable(tmp_path: Path) -> None:
     preset_to_cartridge(_build_demo_preset(), tmp_path / "ws", name="demo")
     payload = json.loads((tmp_path / "ws" / "cartridge.json").read_text())
-    assert payload["schema_version"] == 1
+    assert payload["schema_version"] == 2
     assert payload["name"] == "demo"
     assert "metadata" in payload
 
@@ -310,7 +310,7 @@ def test_strict_load_raises_on_unconstructable_hook(tmp_path: Path) -> None:
     instead of silently dropping. Loose mode still drops + warns."""
     out = tmp_path / "broken.workspace"
     out.mkdir()
-    (out / "cartridge.json").write_text(json.dumps({"name": "x", "schema_version": 1}))
+    (out / "cartridge.json").write_text(json.dumps({"name": "x", "schema_version": 2}))
     hook_dir = out / "hooks" / "00_NeedsArgs"
     hook_dir.mkdir(parents=True)
     (hook_dir / "hook.py").write_text(
@@ -335,7 +335,7 @@ def test_resources_dir_builds_shared_objects(tmp_path: Path) -> None:
     registry that ``@<name>`` references resolve against."""
     out = tmp_path / "ws"
     out.mkdir()
-    (out / "cartridge.json").write_text(json.dumps({"name": "x", "schema_version": 1}))
+    (out / "cartridge.json").write_text(json.dumps({"name": "x", "schema_version": 2}))
     (out / "resources").mkdir()
     (out / "resources" / "shared_cache.py").write_text(
         "def build():\n    return {'cache_id': 'singleton', 'items': []}\n"
@@ -362,7 +362,7 @@ def test_two_hooks_share_same_resource_object(tmp_path: Path) -> None:
     pattern: shared mutable state must survive workspace round-trip."""
     out = tmp_path / "ws"
     out.mkdir()
-    (out / "cartridge.json").write_text(json.dumps({"name": "x", "schema_version": 1}))
+    (out / "cartridge.json").write_text(json.dumps({"name": "x", "schema_version": 2}))
     (out / "resources").mkdir()
     (out / "resources" / "cache.py").write_text("def build():\n    return {'shared': True}\n")
 
@@ -385,7 +385,7 @@ def test_unresolved_ref_raises_in_strict(tmp_path: Path) -> None:
     sees the typo immediately."""
     out = tmp_path / "ws"
     out.mkdir()
-    (out / "cartridge.json").write_text(json.dumps({"name": "x", "schema_version": 1}))
+    (out / "cartridge.json").write_text(json.dumps({"name": "x", "schema_version": 2}))
     hook_dir = out / "hooks" / "00_NeedsRef"
     hook_dir.mkdir(parents=True)
     (hook_dir / "hook.py").write_text(
@@ -395,35 +395,6 @@ def test_unresolved_ref_raises_in_strict(tmp_path: Path) -> None:
 
     with pytest.raises(CartridgeSerializationError, match="unresolved resource reference"):
         cartridge_to_preset(out, strict=True)
-
-
-def test_setup_py_escape_hatch_runs_after_load(tmp_path: Path) -> None:
-    """setup.py's `setup(preset, resources)` runs after the declarative
-    load and can attach callable / opaque LoopConfig fields. Used for
-    the rare case where a workspace genuinely needs load-time Python."""
-    out = tmp_path / "ws"
-    out.mkdir()
-    (out / "cartridge.json").write_text(json.dumps({"name": "x", "schema_version": 1}))
-    (out / "config.yaml").write_text("max_steps: 7\n")
-    (out / "setup.py").write_text(
-        "def setup(preset, resources):\n    preset.config.max_steps = 99\n    return preset\n"
-    )
-
-    preset = cartridge_to_preset(out, strict=True)
-    assert preset.config.max_steps == 99, "setup.py mutation lost"
-
-
-def test_setup_py_invalid_signature_raises(tmp_path: Path) -> None:
-    out = tmp_path / "ws"
-    out.mkdir()
-    (out / "cartridge.json").write_text(json.dumps({"name": "x", "schema_version": 1}))
-    (out / "setup.py").write_text("# no setup function defined\n")
-
-    with pytest.raises(CartridgeSerializationError, match="must define"):
-        cartridge_to_preset(out, strict=True)
-
-
-# ── examples/hello.cartridge end-to-end (proof-of-concept workspace) ───
 
 
 def test_hello_workspace_loads_and_runs_end_to_end() -> None:
@@ -655,8 +626,9 @@ def test_runtime_substitution_in_config_yaml(tmp_path):
     the host-supplied runtime value before LoopConfig is constructed."""
     out = tmp_path / "ws"
     out.mkdir()
-    (out / "cartridge.json").write_text(json.dumps({"name": "x", "schema_version": 1}))
-    (out / "config.yaml").write_text("max_steps: 5\ncheckpoint_dir: ${runtime.cp_dir}\n")
+    (out / "cartridge.json").write_text(json.dumps({"name": "x", "schema_version": 2}))
+    (out / "config.yaml").write_text("max_steps: 5\n")
+    (out / "runtime.yaml").write_text("checkpoint_dir: ${runtime.cp_dir}\n")
 
     preset = cartridge_to_preset(out, strict=True, runtime={"cp_dir": "/tmp/my-cp"})
     assert preset.config.max_steps == 5
@@ -667,7 +639,7 @@ def test_runtime_substitution_unknown_key_raises(tmp_path):
     """Typos in ${runtime.<key>} fail loudly at load time, not silently."""
     out = tmp_path / "ws"
     out.mkdir()
-    (out / "cartridge.json").write_text(json.dumps({"name": "x", "schema_version": 1}))
+    (out / "cartridge.json").write_text(json.dumps({"name": "x", "schema_version": 2}))
     (out / "config.yaml").write_text("max_steps: ${runtime.nonexistent}\n")
 
     with pytest.raises(CartridgeSerializationError, match="unresolved"):
@@ -680,7 +652,7 @@ def test_resource_builder_receives_runtime(tmp_path):
     keeps working."""
     out = tmp_path / "ws"
     out.mkdir()
-    (out / "cartridge.json").write_text(json.dumps({"name": "x", "schema_version": 1}))
+    (out / "cartridge.json").write_text(json.dumps({"name": "x", "schema_version": 2}))
     (out / "resources").mkdir()
     (out / "resources" / "tagged.py").write_text(
         "def build(runtime=None):\n"
@@ -697,22 +669,6 @@ def test_resource_builder_receives_runtime(tmp_path):
 
     preset = cartridge_to_preset(out, strict=True, runtime={"tag": "from-runtime"})
     assert preset.hooks[0].source == {"tag": "from-runtime"}
-
-
-def test_setup_py_receives_runtime_kwarg(tmp_path):
-    """setup.py's setup() gets runtime= when its signature accepts it."""
-    out = tmp_path / "ws"
-    out.mkdir()
-    (out / "cartridge.json").write_text(json.dumps({"name": "x", "schema_version": 1}))
-    (out / "setup.py").write_text(
-        "def setup(preset, resources, runtime=None):\n"
-        "    runtime = runtime or {}\n"
-        "    preset.config.system_prompt = runtime.get('prompt', 'default')\n"
-        "    return preset\n"
-    )
-
-    preset = cartridge_to_preset(out, strict=True, runtime={"prompt": "from-runtime"})
-    assert preset.config.system_prompt == "from-runtime"
 
 
 def test_coder_workspace_runtime_kwarg_routes_files(tmp_path):
@@ -868,7 +824,7 @@ def test_runtime_substitution_in_hook_config(tmp_path) -> None:
     LinterHook to receive the runtime workspace path declaratively."""
     out = tmp_path / "ws"
     out.mkdir()
-    (out / "cartridge.json").write_text(json.dumps({"name": "x", "schema_version": 1}))
+    (out / "cartridge.json").write_text(json.dumps({"name": "x", "schema_version": 2}))
     hook_dir = out / "hooks" / "00_PathReader"
     hook_dir.mkdir(parents=True)
     (hook_dir / "hook.py").write_text(
@@ -893,7 +849,7 @@ def test_permission_engine_via_at_ref(tmp_path) -> None:
     from pathlib import Path as _P
 
     ws = tmp_path
-    (ws / "cartridge.json").write_text(_json.dumps({"name": "x", "schema_version": 1}))
+    (ws / "cartridge.json").write_text(_json.dumps({"name": "x", "schema_version": 2}))
     (ws / "config.yaml").write_text("max_steps: 5\n")
     (ws / "tools/echo").mkdir(parents=True)
     (ws / "tools/echo/tool.yaml").write_text("name: echo\nparameters:\n  msg:\n    type: string\n")
@@ -955,7 +911,7 @@ def test_eval_hook_declarative_via_at_ref(tmp_path) -> None:
     import json as _json
 
     ws = tmp_path
-    (ws / "cartridge.json").write_text(_json.dumps({"name": "x", "schema_version": 1}))
+    (ws / "cartridge.json").write_text(_json.dumps({"name": "x", "schema_version": 2}))
     (ws / "config.yaml").write_text("max_steps: 3\n")
     (ws / "tools/done").mkdir(parents=True)
     (ws / "tools/done/tool.yaml").write_text("name: done\nparameters:\n  s:\n    type: string\n")
@@ -988,7 +944,7 @@ def test_streaming_hook_declarative_via_at_ref(tmp_path) -> None:
     import json as _json
 
     ws = tmp_path
-    (ws / "cartridge.json").write_text(_json.dumps({"name": "x", "schema_version": 1}))
+    (ws / "cartridge.json").write_text(_json.dumps({"name": "x", "schema_version": 2}))
     (ws / "config.yaml").write_text("max_steps: 3\n")
     (ws / "tools/done").mkdir(parents=True)
     (ws / "tools/done/tool.yaml").write_text("name: done\nparameters:\n  s:\n    type: string\n")
@@ -1017,39 +973,6 @@ def test_streaming_hook_declarative_via_at_ref(tmp_path) -> None:
     assert emitter is not None
 
 
-def test_workspace_extends_other_workspace(tmp_path) -> None:
-    """A workspace's setup.py can load another workspace and merge
-    its tools/hooks. Demonstrates inheritance/composition between
-    bundles without forking the loop."""
-    import json as _json
-
-    base = tmp_path / "base"
-    ext = tmp_path / "ext"
-    (base / "tools/done").mkdir(parents=True)
-    (base / "cartridge.json").write_text(_json.dumps({"name": "base", "schema_version": 1}))
-    (base / "config.yaml").write_text("max_steps: 5\n")
-    (base / "tools/done/tool.yaml").write_text("name: done\nparameters:\n  s:\n    type: string\n")
-    (base / "tools/done/execute.py").write_text(
-        "def execute(*, s): return {'status': 'completed', 's': s}\n"
-    )
-
-    (ext / "tools").mkdir(parents=True)
-    (ext / "cartridge.json").write_text(_json.dumps({"name": "ext", "schema_version": 1}))
-    (ext / "config.yaml").write_text("max_steps: 10\n")
-    (ext / "setup.py").write_text(
-        "from looplet import cartridge_to_preset\n"
-        f"BASE = {str(base)!r}\n"
-        "def setup(preset, resources, runtime=None):\n"
-        "    base = cartridge_to_preset(BASE)\n"
-        "    for name, spec in base.tools._tools.items():\n"
-        "        if name not in preset.tools._tools:\n"
-        "            preset.tools.register(spec)\n"
-        "    return preset\n"
-    )
-    preset = cartridge_to_preset(ext, strict=True)
-    assert "done" in preset.tools._tools
-
-
 # ── @ref resolution in config.yaml (declarative LoopConfig services) ──
 
 
@@ -1061,8 +984,9 @@ def test_compact_service_via_at_ref_in_config(tmp_path) -> None:
     import json as _json
 
     ws = tmp_path
-    (ws / "cartridge.json").write_text(_json.dumps({"name": "x", "schema_version": 1}))
-    (ws / "config.yaml").write_text('max_steps: 3\ncompact_service: "@compact_service"\n')
+    (ws / "cartridge.json").write_text(_json.dumps({"name": "x", "schema_version": 2}))
+    (ws / "config.yaml").write_text("max_steps: 3\n")
+    (ws / "runtime.yaml").write_text('compact_service: "@compact_service"\n')
     (ws / "resources").mkdir()
     (ws / "resources/compact_service.py").write_text(
         "from looplet.compact import PruneToolResults, TruncateCompact, compact_chain\n"
@@ -1082,8 +1006,9 @@ def test_tracer_via_at_ref_in_config(tmp_path) -> None:
     import json as _json
 
     ws = tmp_path
-    (ws / "cartridge.json").write_text(_json.dumps({"name": "x", "schema_version": 1}))
-    (ws / "config.yaml").write_text('max_steps: 3\ntracer: "@tracer"\n')
+    (ws / "cartridge.json").write_text(_json.dumps({"name": "x", "schema_version": 2}))
+    (ws / "config.yaml").write_text("max_steps: 3\n")
+    (ws / "runtime.yaml").write_text('tracer: "@tracer"\n')
     (ws / "resources").mkdir()
     (ws / "resources/tracer.py").write_text(
         "EVENTS = []\n"
@@ -1107,8 +1032,9 @@ def test_unresolved_at_ref_in_config_raises_in_strict(tmp_path) -> None:
     import pytest
 
     ws = tmp_path
-    (ws / "cartridge.json").write_text(_json.dumps({"name": "x", "schema_version": 1}))
-    (ws / "config.yaml").write_text('max_steps: 3\ntracer: "@nonexistent_resource"\n')
+    (ws / "cartridge.json").write_text(_json.dumps({"name": "x", "schema_version": 2}))
+    (ws / "config.yaml").write_text("max_steps: 3\n")
+    (ws / "runtime.yaml").write_text('tracer: "@nonexistent_resource"\n')
 
     with pytest.raises(CartridgeSerializationError, match="unresolved resource reference"):
         cartridge_to_preset(ws, strict=True)
@@ -1999,11 +1925,11 @@ def test_resource_origin_drops_unhashable_to_prevent_id_reuse_collision(
     synthetic ``_chw_resource_<name>`` module name on closures
     defined inside the resource builder.
     """
-    from looplet import workspace as _ws
+    from looplet import refs as _ws
 
     src = tmp_path / "ws"
     src.mkdir()
-    (src / "cartridge.json").write_text('{"name": "w"}')
+    (src / "cartridge.json").write_text('{"name": "w", "schema_version": 2}')
     (src / "config.yaml").write_text("max_steps: 3\ndone_tool: done\n")
     (src / "tools" / "done").mkdir(parents=True)
     (src / "tools/done/tool.yaml").write_text(
@@ -2021,7 +1947,7 @@ def test_resource_origin_drops_unhashable_to_prevent_id_reuse_collision(
 
     before = len(_ws._resource_origin)
     cartridge_to_preset(src)
-    after = len(_ws._resource_origin)
+    after = len(_ws._resource_origin)  # noqa: SLF001
     # The list returned by build() must NOT have been registered (would
     # leak a stale id → name mapping across loads / tests).
     assert after == before, (
@@ -2147,7 +2073,7 @@ class TestUnifiedReferenceGrammar:
         ws = tmp_path / "rsrc.workspace"
         ws.mkdir()
         (ws / "cartridge.json").write_text(
-            '{"schema_version": 1, "name": "rsrc", "description": "test"}'
+            '{"schema_version": 2, "name": "rsrc", "description": "test"}'
         )
         (ws / "config.yaml").write_text("max_steps: 10\n")
         (ws / "prompts").mkdir()
@@ -2179,7 +2105,7 @@ class TestDeclarativeStateField:
         """Build a minimal workspace with the given ``config.yaml`` extras."""
         root.mkdir()
         (root / "cartridge.json").write_text(
-            '{"schema_version": 1, "name": "s", "description": "test"}'
+            '{"schema_version": 2, "name": "s", "description": "test"}'
         )
         (root / "config.yaml").write_text(f"max_steps: 10\n{config_extra}\n")
         (root / "prompts").mkdir()
@@ -2192,18 +2118,6 @@ class TestDeclarativeStateField:
         (root / "tools" / "done" / "execute.py").write_text(
             "def execute(*, summary):\n    return {'summary': summary}\n"
         )
-
-    def test_state_via_py_class_ref(self, tmp_path: Path) -> None:
-        """state: ${py:looplet.types:DefaultState} → DefaultState(max_steps=...)"""
-        ws = tmp_path / "s.workspace"
-        self._scaffold(ws, 'state: "${py:looplet.types:DefaultState}"')
-        from looplet.cartridge import cartridge_to_preset
-
-        preset = cartridge_to_preset(ws)
-        from looplet.types import DefaultState
-
-        assert isinstance(preset.state, DefaultState)
-        assert preset.state.max_steps == 10
 
     def test_state_via_resource_ref(self, tmp_path: Path) -> None:
         """state: ${ref:my_state} pulls a resource."""
@@ -2222,22 +2136,6 @@ class TestDeclarativeStateField:
         preset = cartridge_to_preset(ws)
         assert preset.state.max_steps == 99
         assert preset.state.custom_field == "set"
-
-    def test_state_directive_overrides_state_factory(self, tmp_path: Path) -> None:
-        """state: directive wins over the state_factory constructor arg."""
-        ws = tmp_path / "s.workspace"
-        self._scaffold(ws, 'state: "${py:looplet.types:DefaultState}"')
-        from looplet.cartridge import cartridge_to_preset
-
-        called_factory = []
-
-        def factory(max_steps):
-            called_factory.append(True)
-            raise AssertionError("state_factory should not be called when state: is present")
-
-        preset = cartridge_to_preset(ws, state_factory=factory)
-        assert called_factory == []
-        assert preset.state.max_steps == 10
 
     def test_no_state_directive_falls_back_to_state_factory(self, tmp_path: Path) -> None:
         """When config.yaml has no ``state:`` field, state_factory takes effect."""
@@ -2277,7 +2175,7 @@ class TestHookOrderDirective:
         """
         root.mkdir()
         (root / "cartridge.json").write_text(
-            '{"schema_version": 1, "name": "h", "description": "test"}'
+            '{"schema_version": 2, "name": "h", "description": "test"}'
         )
         (root / "config.yaml").write_text("max_steps: 5\n")
         (root / "prompts").mkdir()

@@ -161,14 +161,14 @@ def cmd_new(args: argparse.Namespace) -> int:
     target_dir.parent.mkdir(parents=True, exist_ok=True)
 
     # When the user passed --tool flags, pre-scaffold the skeleton
-    # host-side so the agent's first ``scaffold_workspace`` call is a
+    # host-side so the agent's first ``scaffold_cartridge`` call is a
     # no-op (idempotent — existing files are preserved). This used to
     # live in agent_factory.cartridge/setup.py; v2 cartridges can't
     # ship executable Python at the root, so the scaffolding moves to
     # the host CLI where filesystem side effects belong.
     runtime: dict = {"workspace": str(target_dir.parent)}
     if tools:
-        from looplet.scaffold import scaffold_cartridge  # noqa: PLC0415
+        from looplet.cartridge.scaffold import scaffold_cartridge  # noqa: PLC0415
 
         scaffold_cartridge(target_dir, name=name, tools=list(tools), overwrite=True)
 
@@ -185,7 +185,7 @@ def cmd_new(args: argparse.Namespace) -> int:
         brief_for_factory = (
             f"Build a workspace at ./{target_dir.name}/ for the following agent:\n\n"
             f"{description}\n\n"
-            f"Workspace name should be: {name}"
+            f"Cartridge name should be: {name}"
         )
 
     pretty = None
@@ -408,7 +408,7 @@ def add_subparsers(sub: "argparse._SubParsersAction") -> None:
     )
     new_p.add_argument(
         "--name",
-        help="Workspace name (default: derived from target directory)",
+        help="Cartridge name (default: derived from target directory)",
     )
     new_p.add_argument(
         "--tool",

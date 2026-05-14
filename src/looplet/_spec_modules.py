@@ -26,8 +26,6 @@ from __future__ import annotations
 # Keep this set deliberately small.
 SPEC_MODULES: frozenset[str] = frozenset(
     {
-        "workspace",  # the loader + schema parsing
-        "spec_slots",  # v1.0 declarative slots: model, permissions, memory
         "memory",  # PersistentMemorySource protocol + impls
         "validation",  # OutputSchema, DoneValidator
         "permissions",  # PermissionEngine + rule semantics
@@ -76,15 +74,13 @@ SPEC_FORBIDDEN_TOP_LEVEL_IMPORTS: frozenset[str] = frozenset(
         "bundles",
         "cost",
         "steering",
-        "hot_reload",
+        "events",
         "rpc",
         "harness_snapshot",
         "done_steps",
-        "events",
         "flags",
         "parse",
         "native_tools",
-        "scaffold",
         "testing",
         "builtin_tools",
         "builtin_hooks",

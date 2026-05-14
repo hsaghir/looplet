@@ -178,20 +178,6 @@ from looplet.types import (
     ToolValidationError,
 )
 
-# ── Workspace aliases (back-compat) ──────────────────────────────
-# The Cartridge Spec v1.0 (SPEC.md) names the artifact a "cartridge"
-# and is the canonical surface. The reference implementation has
-# historically called it a "workspace"; the aliases below keep the
-# old names importable so existing code (``from looplet import
-# Workspace, workspace_to_preset``) continues to work unchanged.
-# Both forms are the same objects (``is``-equal).
-Workspace = Cartridge
-WorkspaceLayout = CartridgeLayout
-WorkspaceSerializationError = CartridgeSerializationError
-workspace_to_preset = cartridge_to_preset
-preset_to_workspace = preset_to_cartridge
-scaffold_workspace = scaffold_cartridge
-
 __all__ = [
     # ── ESSENTIALS (what you need for your first agent) ──────────
     "__version__",
@@ -293,13 +279,6 @@ __all__ = [
     "preset_to_cartridge",
     "scaffold_cartridge",
     "resource_ref_for",
-    # ── WORKSPACE ALIASES (back-compat; same objects) ───────────
-    "Workspace",
-    "WorkspaceLayout",
-    "WorkspaceSerializationError",
-    "workspace_to_preset",
-    "preset_to_workspace",
-    "scaffold_workspace",
     "StreamingHook",
     "Tracer",
     "TracingHook",

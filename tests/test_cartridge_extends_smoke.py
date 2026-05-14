@@ -20,7 +20,7 @@ from looplet.cartridge import CartridgeSerializationError
 from looplet.types import ToolCall
 
 PARENT_FILES = {
-    "cartridge.json": '{"name":"parent","schema_version":1}\n',
+    "cartridge.json": '{"name":"parent","schema_version":2}\n',
     "config.yaml": "max_steps: 10\n",
     "tools/greet/tool.yaml": (
         "name: greet\ndescription: say hello\nparameters:\n  who:\n    type: string\n"
@@ -49,7 +49,7 @@ def test_extends_inherits_parent_tools(tmp_path: Path) -> None:
         tmp_path,
         "child.workspace",
         {
-            "cartridge.json": '{"name":"child","schema_version":1}\n',
+            "cartridge.json": '{"name":"child","schema_version":2}\n',
             "config.yaml": f"extends: {parent}\nmax_steps: 25\n",
             "tools/shout/tool.yaml": (
                 "name: shout\ndescription: yell\nparameters:\n  msg:\n    type: string\n"
@@ -69,7 +69,7 @@ def test_extends_child_can_override_parent_tool(tmp_path: Path) -> None:
         tmp_path,
         "child.workspace",
         {
-            "cartridge.json": '{"name":"child","schema_version":1}\n',
+            "cartridge.json": '{"name":"child","schema_version":2}\n',
             "config.yaml": f"extends: {parent}\n",
             # Override greet with a different implementation.
             "tools/greet/tool.yaml": (
@@ -91,7 +91,7 @@ def test_extends_cycle_detection(tmp_path: Path) -> None:
         tmp_path,
         "a.workspace",
         {
-            "cartridge.json": '{"name":"a","schema_version":1}\n',
+            "cartridge.json": '{"name":"a","schema_version":2}\n',
             "config.yaml": "extends: ../b.workspace\n",
         },
     )
@@ -99,7 +99,7 @@ def test_extends_cycle_detection(tmp_path: Path) -> None:
         tmp_path,
         "b.workspace",
         {
-            "cartridge.json": '{"name":"b","schema_version":1}\n',
+            "cartridge.json": '{"name":"b","schema_version":2}\n',
             "config.yaml": "extends: ../a.workspace\n",
         },
     )
@@ -113,7 +113,7 @@ def test_extends_recursive_three_levels(tmp_path: Path) -> None:
         tmp_path,
         "mid.workspace",
         {
-            "cartridge.json": '{"name":"mid","schema_version":1}\n',
+            "cartridge.json": '{"name":"mid","schema_version":2}\n',
             "config.yaml": f"extends: {grand}\n",
             "tools/middle/tool.yaml": ("name: middle\ndescription: middle layer\nparameters: {}\n"),
             "tools/middle/execute.py": ("def execute():\n    return {'level': 'mid'}\n"),
@@ -123,7 +123,7 @@ def test_extends_recursive_three_levels(tmp_path: Path) -> None:
         tmp_path,
         "child.workspace",
         {
-            "cartridge.json": '{"name":"child","schema_version":1}\n',
+            "cartridge.json": '{"name":"child","schema_version":2}\n',
             "config.yaml": f"extends: {mid}\n",
             "tools/child_only/tool.yaml": (
                 "name: child_only\ndescription: child layer\nparameters: {}\n"
@@ -141,7 +141,7 @@ def test_extends_missing_parent_raises(tmp_path: Path) -> None:
         tmp_path,
         "child.workspace",
         {
-            "cartridge.json": '{"name":"child","schema_version":1}\n',
+            "cartridge.json": '{"name":"child","schema_version":2}\n',
             "config.yaml": "extends: ./nonexistent.workspace\n",
         },
     )

@@ -9,7 +9,7 @@ import pytest
 from looplet import cartridge_to_preset
 from looplet.builtin_hooks import AVAILABLE, build_builtin_hook
 from looplet.cartridge import CartridgeSerializationError
-from looplet.scaffold import scaffold_cartridge
+from looplet.cartridge.scaffold import scaffold_cartridge
 from looplet.skills import SkillActivationHook
 
 

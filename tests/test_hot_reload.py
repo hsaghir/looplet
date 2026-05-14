@@ -5,8 +5,8 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from looplet.hot_reload import WorkspaceWatcher, fingerprint_workspace
-from looplet.scaffold import scaffold_cartridge
+from looplet.cartridge.hot_reload import WorkspaceWatcher, fingerprint_workspace
+from looplet.cartridge.scaffold import scaffold_cartridge
 
 
 def _scaffold(root: Path, name: str) -> Path:

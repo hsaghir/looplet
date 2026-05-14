@@ -1,9 +1,9 @@
-# Cartridge Spec v1.0
+# Cartridge Spec v2.0
 
 > **Status.** Reference implementation in this repository (Looplet).
 > Companion artifact: [`cartridge.schema.json`](cartridge.schema.json).
 > **Audience.** Loader implementers in any language; agent builders.
-> **Versioning.** Semantic. v1.x is additive. Slot renames or breaking
+> **Versioning.** Semantic. v2.x is additive. Slot renames or breaking
 > shape changes require a v2 RFC.
 
 A **cartridge** (a.k.a. *workspace*) is a small directory of files
@@ -82,15 +82,15 @@ equivalent. If both are present, `cartridge.json` wins.
 ```json
 {
   "name": "my_agent",
-  "schema_version": 1,
+  "schema_version": 2,
   "description": "what the agent does",
   "language": "python",
   "version": "1.0.0"
 }
 ```
 
-Required fields: `name`, `schema_version`. v1.0 cartridges set
-`schema_version: 1`. `description` and `version` are optional and
+Required fields: `name`, `schema_version`. v2.0 cartridges set
+`schema_version: 2`. `description` and `version` are optional and
 declarative.
 
 `language` (optional, default `"python"`) declares the body language
@@ -131,11 +131,9 @@ LoopConfig fields fall into three tiers:
 - **HOST** — *runtime-supplied callables.* Never serialised:
   `approval_handler`, `cancel_token`, `render_messages_override`.
 
-**Backwards compatibility (v1.x).** Loaders MUST still accept
-RUNTIME-tier keys in `config.yaml` and SHOULD emit a deprecation
-warning naming the offending keys and the target `runtime.yaml`
-path. **v2.0 will hard-fail** on RUNTIME keys appearing in
-`config.yaml`.
+**Spec v2.** RUNTIME-tier keys MUST live in `runtime.yaml`.
+A loader MUST reject `config.yaml` containing any RUNTIME-tier key.
+There is no v1 grace period.
 
 ### Runtime configuration — `runtime.yaml`
 
@@ -352,13 +350,10 @@ builtin_hooks:
       path: prompts/recovery.md
 ```
 
-Each hook accepts `text:` (inline body) xor `path:` (resolved
-relative to the cartridge root via the loader-injected
-`cartridge_root` resource). v1.x loaders MUST continue to honour
-the magic-filename auto-load with a `DeprecationWarning`; v2.0 MUST
-drop the auto-load. The benefit of the explicit form is that every
-hook a cartridge installs is visible in `config.yaml` rather than
-discovered by filename.
+**Spec v2.** The magic-filename auto-load is removed. Cartridges
+MUST declare prompt-injecting hooks explicitly via `builtin_hooks:`.
+A loader MUST NOT auto-load `prompts/briefing.md` or
+`prompts/recovery.md` based on filename alone.
 
 No other prompt files are recognised in v1.1. Cartridges that need
 more elaborate prompt templating use plain Python in a hook or

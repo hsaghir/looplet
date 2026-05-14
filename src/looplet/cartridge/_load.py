@@ -460,13 +460,19 @@ def _workspace_to_preset_inner(
     from looplet.types import DefaultState  # noqa: PLC0415
 
     # ── Spec version gate ──────────────────────────────────────
-    # ``schema_version >= 2`` flips the v1.x deprecation warnings
-    # (runtime keys in config.yaml, magic ``prompts/briefing.md``
-    # auto-load, ``setup.py`` escape hatch) into hard
-    # CartridgeSerializationError. v1 cartridges keep loading with
-    # deprecation warnings. Use ``looplet migrate`` to upgrade.
+    # Cartridge spec v2 is the only supported version. v1 cartridges
+    # are rejected at load time; upgrade with ``looplet migrate``.
+    # The variable is kept (and pinned True) so internal helpers that
+    # accept ``is_v2: bool`` keep their explicit-call-site form.
     schema_version = _read_schema_version(root)
-    is_v2 = schema_version >= 2
+    if schema_version != 2:
+        raise CartridgeSerializationError(
+            f"Cartridge {root} declares schema_version={schema_version}; "
+            f"this loader only supports schema_version=2. v1 support was "
+            f"removed; run ``looplet migrate <cartridge>`` to upgrade or "
+            f'set ``"schema_version": 2`` in cartridge.json.'
+        )
+    is_v2 = True
 
     # ── Body-language gate ────────────────────────────────────
     # ``cartridge.json: language:`` declares the body language of
@@ -544,19 +550,8 @@ def _workspace_to_preset_inner(
         cfg_kwargs.update(runtime_yaml_kwargs)
 
     # ── Stray runtime keys in config.yaml ──────────────────────
-    # v2 hard-fails (delegated to :func:`_check_v2_runtime_tier_keys`);
-    # v1 emits a DeprecationWarning (delegated to
-    # :mod:`looplet.cartridge._v1_compat`).
-    if is_v2:
-        _check_v2_runtime_tier_keys(cfg_kwargs, cfg_path, runtime_yaml_path)
-    else:
-        from looplet.cartridge._v1_compat import warn_v1_stray_runtime_keys  # noqa: PLC0415
-
-        warn_v1_stray_runtime_keys(
-            cfg_kwargs=cfg_kwargs,
-            cfg_path=cfg_path,
-            runtime_yaml_path=runtime_yaml_path,
-        )
+    # v2 hard-fails (delegated to :func:`_check_v2_runtime_tier_keys`).
+    _check_v2_runtime_tier_keys(cfg_kwargs, cfg_path, runtime_yaml_path)
 
     sys_prompt_path = root / CartridgeLayout.SYSTEM_PROMPT_MD
     if sys_prompt_path.is_file():
@@ -918,7 +913,7 @@ def _workspace_to_preset_inner(
                     logger.warning("%s; tool will receive None for missing resources", msg)
             # Surface ``parameters: {}`` mismatches with the execute.py
             # signature. The most common scaffold-then-edit friction:
-            # ``scaffold_workspace`` writes ``parameters: {}`` and
+            # ``scaffold_cartridge`` writes ``parameters: {}`` and
             # ``def execute(ctx, **kwargs)`` together. Users replace
             # ``**kwargs`` with explicit keyword params (``*, name: str``)
             # but forget to also fill in ``parameters:``. The dispatcher
@@ -1272,11 +1267,9 @@ def _workspace_to_preset_inner(
             )
 
     # ── Magic prompt files: briefing + recovery ────────────────────
-    # ``prompts/briefing.md`` and ``prompts/recovery.md`` were auto-
-    # loaded in v1.x. v2 requires explicit declaration via
-    # ``builtin_hooks: - static_briefing: { path: ... }``. v2 raises
-    # on the magic files; v1 auto-loads with a DeprecationWarning
-    # (delegated to :mod:`looplet.cartridge._v1_compat`).
+    # ``prompts/briefing.md`` and ``prompts/recovery.md`` are not
+    # auto-loaded. The cartridge must declare them explicitly via
+    # ``builtin_hooks: - static_briefing: { path: ... }``.
     briefing_path = root / CartridgeLayout.BRIEFING_MD
     recovery_path = root / CartridgeLayout.RECOVERY_MD
 
@@ -1288,32 +1281,20 @@ def _workspace_to_preset_inner(
                 return True
         return False
 
-    if is_v2:
-        if briefing_path.is_file() and not _builtin_hook_declared("static_briefing"):
-            raise CartridgeSerializationError(
-                f"Cartridge {root} (schema_version=2): magic "
-                f"``prompts/briefing.md`` auto-load is removed. Declare it "
-                f"explicitly via ``builtin_hooks: - static_briefing: "
-                f"{{ path: prompts/briefing.md }}`` in config.yaml, or run "
-                f"``looplet migrate <cartridge>`` to upgrade automatically."
-            )
-        if recovery_path.is_file() and not _builtin_hook_declared("recovery_hint"):
-            raise CartridgeSerializationError(
-                f"Cartridge {root} (schema_version=2): magic "
-                f"``prompts/recovery.md`` auto-load is removed. Declare it "
-                f"explicitly via ``builtin_hooks: - recovery_hint: "
-                f"{{ path: prompts/recovery.md }}`` in config.yaml, or run "
-                f"``looplet migrate <cartridge>`` to upgrade automatically."
-            )
-    else:
-        from looplet.cartridge._v1_compat import load_v1_magic_prompt_hooks  # noqa: PLC0415
-
-        # Prepend so these fire before user-declared hooks (which may
-        # build on the briefing).
-        hooks = [
-            *load_v1_magic_prompt_hooks(root=root, builtin_hook_specs=_builtin_hook_specs),
-            *hooks,
-        ]
+    if briefing_path.is_file() and not _builtin_hook_declared("static_briefing"):
+        raise CartridgeSerializationError(
+            f"Cartridge {root}: magic ``prompts/briefing.md`` auto-load "
+            f"is not supported. Declare it explicitly via "
+            f"``builtin_hooks: - static_briefing: "
+            f"{{ path: prompts/briefing.md }}`` in config.yaml."
+        )
+    if recovery_path.is_file() and not _builtin_hook_declared("recovery_hint"):
+        raise CartridgeSerializationError(
+            f"Cartridge {root}: magic ``prompts/recovery.md`` auto-load "
+            f"is not supported. Declare it explicitly via "
+            f"``builtin_hooks: - recovery_hint: "
+            f"{{ path: prompts/recovery.md }}`` in config.yaml."
+        )
 
     preset = AgentPreset(
         config=config,

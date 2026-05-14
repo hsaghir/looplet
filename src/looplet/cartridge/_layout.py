@@ -11,7 +11,7 @@ import weakref
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 # ── Layout constants ────────────────────────────────────────────
@@ -170,7 +170,7 @@ class CartridgeSerializationError(RuntimeError):
     """Raised when a workspace component cannot be round-tripped.
 
     Use ``strict=False`` on :func:`preset_to_cartridge` to demote these
-    into recorded warnings on the resulting :class:`Workspace`.
+    into recorded warnings on the resulting :class:`Cartridge`.
     """
 
 

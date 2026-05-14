@@ -834,7 +834,7 @@ class EvalHook:
         self._artifacts: dict[str, Any] = {}
 
     def to_config(self) -> dict:
-        """Workspace round-trip: emit ``evaluators`` (and ``collectors``
+        """Cartridge round-trip: emit ``evaluators`` (and ``collectors``
         when present) as ``@ref`` strings.
 
         Original resource ref names are preserved when the evaluator /

@@ -108,7 +108,7 @@ def _read_manifest_language(root: Path) -> str:
 
 @dataclass
 class Cartridge:
-    """A loaded Workspace.
+    """A loaded Cartridge.
 
     Serves both as the in-memory representation of an on-disk workspace
     and as the structured target of :func:`preset_to_cartridge`.

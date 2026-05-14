@@ -44,7 +44,7 @@ from pathlib import Path
 # ``{name_json}`` is filled with ``json.dumps(name)`` — produces
 # valid JSON (double-quoted), unlike ``{name!r}`` which emits Python
 # repr (single-quoted) and breaks ``json.loads(workspace.json)``.
-_WORKSPACE_JSON = '{{"name": {name_json}, "schema_version": 1}}\n'
+_WORKSPACE_JSON = '{{"name": {name_json}, "schema_version": 2}}\n'
 
 _CONFIG_YAML = """\
 # Cartridge contract — what the agent does. Runtime knobs (sampling,
@@ -131,7 +131,7 @@ def scaffold_cartridge(
         path: Directory to create (created if missing). Refuses to
             overwrite an existing non-empty directory unless
             ``overwrite=True``.
-        name: Workspace name (becomes ``cartridge.json`` "name" field
+        name: Cartridge name (becomes ``cartridge.json`` "name" field
             and the title of the system prompt).
         tools: Tool names to scaffold under ``tools/<name>/``. The
             ``done`` tool is always added even if not listed; if you
@@ -217,15 +217,15 @@ def scaffold_cartridge(
 def _write_if_absent(path: Path, content: str) -> None:
     """Write ``content`` to ``path`` only if the file does not yet exist.
 
-    Idempotent: re-running ``scaffold_workspace`` against an existing
+    Idempotent: re-running ``scaffold_cartridge`` against an existing
     directory preserves any edits the agent (or user) has already made.
     """
     if not path.exists():
         path.write_text(content)
 
 
-__all__ = ["scaffold_workspace"]
+__all__ = ["scaffold_cartridge"]
 
 
-# Back-compat alias — see SPEC.md "Workspace aliases" section.
-scaffold_workspace = scaffold_cartridge
+# Back-compat alias — see SPEC.md "Cartridge aliases" section.
+scaffold_cartridge = scaffold_cartridge

@@ -17,7 +17,7 @@ from looplet import cartridge_to_preset
 
 
 def _write_minimal_cartridge(root: Path, *, config_text: str) -> None:
-    (root / "cartridge.json").write_text('{"name": "x", "schema_version": 1}\n')
+    (root / "cartridge.json").write_text('{"name": "x", "schema_version": 2}\n')
     (root / "config.yaml").write_text(config_text)
     (root / "prompts").mkdir()
     (root / "prompts" / "system.md").write_text("you are a tester")
@@ -93,23 +93,6 @@ def test_static_briefing_rejects_text_and_path_together(tmp_path: Path) -> None:
 
     with pytest.raises(CartridgeSerializationError, match=r"either ``text:``"):
         cartridge_to_preset(tmp_path, strict=True)
-
-
-def test_magic_briefing_md_emits_deprecation_warning(tmp_path: Path) -> None:
-    """v1.x magic auto-load still works but warns; v2.0 will drop it."""
-    _write_minimal_cartridge(
-        tmp_path,
-        config_text="max_steps: 3\ndone_tool: done\n",
-    )
-    (tmp_path / "prompts" / "briefing.md").write_text("legacy briefing")
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        cartridge_to_preset(tmp_path)
-    msgs = [str(w.message) for w in caught if issubclass(w.category, DeprecationWarning)]
-    assert any("prompts/briefing.md" in m and "static_briefing" in m for m in msgs)
-
-
-# ── resource thread_safe declaration ────────────────────────────────
 
 
 def test_thread_safe_resource_declaration_recorded(tmp_path: Path) -> None:

@@ -37,7 +37,7 @@ from looplet.types import ToolCall
 def _write_basic_workspace(root: Path) -> Path:
     ws = root / "rt.workspace"
     ws.mkdir()
-    (ws / "cartridge.json").write_text(json.dumps({"name": "rt", "schema_version": 1}) + "\n")
+    (ws / "cartridge.json").write_text(json.dumps({"name": "rt", "schema_version": 2}) + "\n")
     (ws / "config.yaml").write_text("max_steps: 4\ndone_tool: done\n")
     (ws / "prompts").mkdir()
     (ws / "prompts" / "system.md").write_text("test agent\n")
@@ -221,7 +221,7 @@ def test_loader_does_not_warn_when_parameters_filled(
 
 def test_fingerprint_detects_content_edit_with_same_mtime(tmp_path: Path) -> None:
     """fingerprint changes when content changes even if mtime_ns collides."""
-    from looplet.hot_reload import fingerprint_workspace  # noqa: PLC0415
+    from looplet.cartridge.hot_reload import fingerprint_workspace  # noqa: PLC0415
 
     ws = _write_basic_workspace(tmp_path)
     src = ws / "tools" / "done" / "execute.py"
@@ -240,7 +240,7 @@ def test_fingerprint_detects_content_edit_with_same_mtime(tmp_path: Path) -> Non
 
 def test_watcher_detects_change_after_edit(tmp_path: Path) -> None:
     """WorkspaceWatcher.changed() returns True after a content edit."""
-    from looplet.hot_reload import WorkspaceWatcher  # noqa: PLC0415
+    from looplet.cartridge.hot_reload import WorkspaceWatcher  # noqa: PLC0415
 
     ws = _write_basic_workspace(tmp_path)
     src = ws / "tools" / "done" / "execute.py"
@@ -277,7 +277,7 @@ def test_output_schema_rejection_populates_tool_result_error(tmp_path: Path) -> 
 
     ws = tmp_path / "se.workspace"
     ws.mkdir()
-    (ws / "cartridge.json").write_text(_json.dumps({"name": "se", "schema_version": 1}) + "\n")
+    (ws / "cartridge.json").write_text(_json.dumps({"name": "se", "schema_version": 2}) + "\n")
     (ws / "config.yaml").write_text("max_steps: 3\ndone_tool: done\n")
     (ws / "prompts").mkdir()
     (ws / "prompts" / "system.md").write_text("go\n")
@@ -345,10 +345,9 @@ def test_extends_carries_grandparent_config_keys(tmp_path: Path) -> None:
 
     gp = tmp_path / "gp.workspace"
     gp.mkdir()
-    (gp / "cartridge.json").write_text(_json.dumps({"name": "gp", "schema_version": 1}))
-    (gp / "config.yaml").write_text(
-        "max_steps: 9\nmax_tokens: 1500\ntemperature: 0.5\ndone_tool: done\n"
-    )
+    (gp / "cartridge.json").write_text(_json.dumps({"name": "gp", "schema_version": 2}))
+    (gp / "config.yaml").write_text("max_steps: 9\ndone_tool: done\n")
+    (gp / "runtime.yaml").write_text("max_tokens: 1500\ntemperature: 0.5\n")
     (gp / "prompts").mkdir()
     (gp / "prompts" / "system.md").write_text("gp\n")
     (gp / "tools" / "done").mkdir(parents=True)
@@ -361,15 +360,17 @@ def test_extends_carries_grandparent_config_keys(tmp_path: Path) -> None:
 
     p = tmp_path / "p.workspace"
     p.mkdir()
-    (p / "cartridge.json").write_text(_json.dumps({"name": "p", "schema_version": 1}))
-    (p / "config.yaml").write_text("extends: ../gp.workspace\ntemperature: 0.3\n")
+    (p / "cartridge.json").write_text(_json.dumps({"name": "p", "schema_version": 2}))
+    (p / "config.yaml").write_text("extends: ../gp.workspace\n")
+    (p / "runtime.yaml").write_text("temperature: 0.3\n")
     (p / "prompts").mkdir()
     (p / "prompts" / "system.md").write_text("p\n")
 
     c = tmp_path / "c.workspace"
     c.mkdir()
-    (c / "cartridge.json").write_text(_json.dumps({"name": "c", "schema_version": 1}))
-    (c / "config.yaml").write_text("extends: ../p.workspace\ntemperature: 0.0\n")
+    (c / "cartridge.json").write_text(_json.dumps({"name": "c", "schema_version": 2}))
+    (c / "config.yaml").write_text("extends: ../p.workspace\n")
+    (c / "runtime.yaml").write_text("temperature: 0.0\n")
     (c / "prompts").mkdir()
     (c / "prompts" / "system.md").write_text("c\n")
 
@@ -392,7 +393,7 @@ def test_extends_block_merge_preserves_unset_subkeys(tmp_path: Path) -> None:
 
     parent = tmp_path / "p.workspace"
     parent.mkdir()
-    (parent / "cartridge.json").write_text(_json.dumps({"name": "p", "schema_version": 1}))
+    (parent / "cartridge.json").write_text(_json.dumps({"name": "p", "schema_version": 2}))
     (parent / "config.yaml").write_text(
         "model:\n  provider: anthropic\n  name: claude-sonnet-4.6\n  reasoning_effort: medium\n"
     )
@@ -401,7 +402,7 @@ def test_extends_block_merge_preserves_unset_subkeys(tmp_path: Path) -> None:
 
     child = tmp_path / "c.workspace"
     child.mkdir()
-    (child / "cartridge.json").write_text(_json.dumps({"name": "c", "schema_version": 1}))
+    (child / "cartridge.json").write_text(_json.dumps({"name": "c", "schema_version": 2}))
     (child / "config.yaml").write_text(
         "extends: ../p.workspace\nmodel:\n  reasoning_effort: high\n"
     )
@@ -427,7 +428,7 @@ def test_loader_warns_when_done_tool_unregistered(
 
     ws = tmp_path / "no_done.workspace"
     ws.mkdir()
-    (ws / "cartridge.json").write_text(_json.dumps({"name": "x", "schema_version": 1}))
+    (ws / "cartridge.json").write_text(_json.dumps({"name": "x", "schema_version": 2}))
     # done_tool refers to a tool that doesn't exist.
     (ws / "config.yaml").write_text("max_steps: 4\ndone_tool: dont\n")
     (ws / "prompts").mkdir()
@@ -460,7 +461,7 @@ def test_loader_clean_error_when_tool_parameters_is_a_list(tmp_path: Path) -> No
 
     ws = tmp_path / "bad.workspace"
     ws.mkdir()
-    (ws / "cartridge.json").write_text(_json.dumps({"name": "bad", "schema_version": 1}))
+    (ws / "cartridge.json").write_text(_json.dumps({"name": "bad", "schema_version": 2}))
     (ws / "config.yaml").write_text("max_steps: 4\ndone_tool: done\n")
     (ws / "prompts").mkdir()
     (ws / "prompts" / "system.md").write_text("test\n")
@@ -500,7 +501,7 @@ def test_loop_isolates_check_done_returning_garbage(tmp_path: Path) -> None:
 
     ws = tmp_path / "weird_hook.workspace"
     ws.mkdir()
-    (ws / "cartridge.json").write_text(_json.dumps({"name": "wh", "schema_version": 1}))
+    (ws / "cartridge.json").write_text(_json.dumps({"name": "wh", "schema_version": 2}))
     (ws / "config.yaml").write_text("max_steps: 4\ndone_tool: done\n")
     (ws / "prompts").mkdir()
     (ws / "prompts" / "system.md").write_text("test\n")
@@ -586,7 +587,7 @@ def test_provenance_sink_redact_scrubs_trace_file(tmp_path: Path) -> None:
 
     ws = tmp_path / "redact.workspace"
     ws.mkdir()
-    (ws / "cartridge.json").write_text(_json.dumps({"name": "rd", "schema_version": 1}))
+    (ws / "cartridge.json").write_text(_json.dumps({"name": "rd", "schema_version": 2}))
     (ws / "config.yaml").write_text("max_steps: 3\ndone_tool: done\n")
     (ws / "prompts").mkdir()
     (ws / "prompts" / "system.md").write_text("test\n")
@@ -728,7 +729,7 @@ def test_permission_deny_message_includes_canonical_prefix(tmp_path: Path) -> No
 
     ws = tmp_path / "p.workspace"
     ws.mkdir()
-    (ws / "cartridge.json").write_text(_json.dumps({"name": "p", "schema_version": 1}))
+    (ws / "cartridge.json").write_text(_json.dumps({"name": "p", "schema_version": 2}))
     (ws / "config.yaml").write_text(
         textwrap.dedent("""\
             max_steps: 4

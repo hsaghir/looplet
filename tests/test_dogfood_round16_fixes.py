@@ -141,9 +141,10 @@ def test_context_window_steps_round_trips_via_config_yaml(tmp_path: Path) -> Non
 
     root = tmp_path / "x.cartridge"
     root.mkdir()
-    (root / "cartridge.json").write_text('{"name": "x", "schema_version": 1}\n')
-    (root / "config.yaml").write_text(
-        "max_steps: 5\ncontext_window_steps: 25\ncontext_window_total_chars: 50000\n"
+    (root / "cartridge.json").write_text('{"name": "x", "schema_version": 2}\n')
+    (root / "config.yaml").write_text("max_steps: 5\n")
+    (root / "runtime.yaml").write_text(
+        "context_window_steps: 25\ncontext_window_total_chars: 50000\n"
     )
     (root / "prompts").mkdir()
     (root / "prompts" / "system.md").write_text("test")

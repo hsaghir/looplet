@@ -1,4 +1,4 @@
-"""Workspace — bidirectional ``AgentPreset`` ↔ directory round-trip.
+"""Cartridge — bidirectional ``AgentPreset`` ↔ directory round-trip.
 
 A *workspace* is a directory layout that round-trips with an
 :class:`AgentPreset` losslessly for the JSON-able subset of the harness
@@ -99,7 +99,7 @@ Callable / opaque ``LoopConfig`` fields (``build_briefing``,
 ``cancel_token``, ``approval_handler``, ``render_messages_override``,
 ``domain``). When ``strict=False`` (default), they are silently
 omitted from the serialized config and a list of skipped fields is
-returned in the resulting :class:`Workspace.serialization_warnings`.
+returned in the resulting :class:`Cartridge.serialization_warnings`.
 
 These fields can still be wired **declaratively on load** by
 hand-authoring ``config.yaml`` with the workspace reference grammar.
@@ -137,7 +137,7 @@ dispatcher hands the resolved instances to the tool's
 ``execute(ctx, ...)`` via ``ctx.resources[name]``. Memory sources
 accept the same references (``memory_sources: ['${ref:project_memory}']``).
 
-Workspace authors retrieve loaded resources from
+Cartridge authors retrieve loaded resources from
 :attr:`AgentPreset.resources` after calling
 :func:`cartridge_to_preset` — useful for callers (benchmarks,
 evidence-bundle writers) that need post-load access to live objects
@@ -155,7 +155,7 @@ workspace editing, agent diffing, code review, packaging, or
 between-round harness search. The research-specific layer
 (manifests with ``predicted_fixes``/``predicted_regressions``,
 the evolve agent, the search loop) lives in downstream packages
-that consume :class:`Workspace`.
+that consume :class:`Cartridge`.
 """
 
 from __future__ import annotations
@@ -216,17 +216,3 @@ from looplet.cartridge._yaml import _dump_yaml, _load_yaml  # noqa: E402, F401
 # (``_REF_PREFIX``, ``_register_resource_origin``, ``_resource_origin``)
 # is private to :mod:`looplet.refs` and not re-exported here.
 from looplet.refs import resource_ref_for  # noqa: E402, F401
-
-# ── Back-compat aliases ────────────────────────────────────────
-#
-# The Cartridge Spec v1.0 renamed the artifact from "workspace" to
-# "cartridge". The canonical names above are the ones exposed in
-# SPEC.md and recommended for new code. The aliases below preserve
-# the historical ``looplet.workspace.*`` API — same objects,
-# different names — so existing imports continue to work.
-
-Workspace = Cartridge
-WorkspaceLayout = CartridgeLayout
-WorkspaceSerializationError = CartridgeSerializationError
-workspace_to_preset = cartridge_to_preset
-preset_to_workspace = preset_to_cartridge

@@ -65,7 +65,7 @@ def _load_resources(root: Path, runtime: dict[str, Any] | None = None) -> dict[s
     """
 
     runtime_dict = dict(runtime or {})
-    # Pre-seed the reserved ``runtime`` resource. Workspace-defined
+    # Pre-seed the reserved ``runtime`` resource. Cartridge-defined
     # ``resources/runtime.py`` (if any) overwrites this below.
     resources: dict[str, Any] = {"runtime": runtime_dict}
 
@@ -329,7 +329,7 @@ def _coerce_default(text: str | None) -> Any:
     """Best-effort coerce a default string from ``${runtime.x:-default}``.
 
     Tries int → float → bool → string in that order. Bare ``null``
-    becomes ``None``. Workspace authors who need richer defaults
+    becomes ``None``. Cartridge authors who need richer defaults
     should set them in the factory function signature instead.
     """
     if text is None:

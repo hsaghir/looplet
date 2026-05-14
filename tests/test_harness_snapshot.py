@@ -10,7 +10,7 @@ from looplet.provenance import TrajectoryRecorder
 
 
 def test_serialize_harness_defaults_to_schema_and_empty_extra():
-    assert serialize_harness() == {"schema_version": 1, "extra": {}}
+    assert serialize_harness() == {"schema_version": 2, "extra": {}}
 
 
 def test_serialize_harness_captures_config_and_component_names():
@@ -53,7 +53,7 @@ def test_serialize_harness_captures_config_and_component_names():
     )
 
     assert snap == {
-        "schema_version": 1,
+        "schema_version": 2,
         "extra": {"variant": "a"},
         "system_prompt": "You are careful.",
         "max_steps": 5,
@@ -84,7 +84,7 @@ def test_serialize_harness_truncates_long_system_prompt():
 
 
 def test_trajectory_recorder_stores_harness_snapshot_on_loop_end():
-    snap = {"schema_version": 1, "extra": {"variant": "baseline"}}
+    snap = {"schema_version": 2, "extra": {"variant": "baseline"}}
     recorder = TrajectoryRecorder(harness_snapshot=snap)
 
     recorder.on_loop_end(None, None, None, None)

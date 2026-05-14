@@ -107,6 +107,7 @@ ALLOWED_LOOPLET_DEPS = frozenset(
         "looplet.hook_decision",  # public HookDecision factories
         "looplet.loop",  # public LoopConfig / hook protocol
         "looplet.memory",  # public MemorySource types
+        "looplet.mcp",  # public MCPToolAdapter (mcp_servers: in config.yaml)
         "looplet.permissions",  # public PermissionEngine etc.
         "looplet.presets",  # public AgentPreset
         "looplet.refs",  # resource ref registry

@@ -116,7 +116,7 @@ LoopConfig fields fall into three tiers:
 - **CONTRACT** — *what the agent does.* Lives in `config.yaml`.
   `max_steps`, `system_prompt`, `done_tool`, `done_tools`,
   `permissions`, `memory`, `model`, `extends`, `builtin_tools`,
-  `builtin_hooks`, etc. These travel with the cartridge across hosts
+  `builtin_hooks`, `mcp_servers`, etc. These travel with the cartridge across hosts
   and SHOULD round-trip identically. (`tool_metadata` rides along
   but is auto-populated by the loader — not authored by hand.)
 - **RUNTIME** — *how this host runs it.* Lives in the sibling
@@ -301,6 +301,38 @@ builtin_hooks:
 A loader MAY ship a built-in registry of tools and hooks. The
 contents of the registry are not part of v1.0 (they are
 implementation-defined). The directives themselves are part of v1.0.
+
+### MCP servers (v2.0 slot)
+
+```yaml
+mcp_servers:
+  fs:
+    command: "npx @modelcontextprotocol/server-filesystem /tmp"
+    env: {}                          # optional
+    timeout_s: 30                    # optional, default 30
+    tools: [read_file, write_file]   # optional allow-list; absent = all
+  gh:
+    command: "gh-mcp-server"
+```
+
+Each entry declares an out-of-process [Model Context
+Protocol](https://modelcontextprotocol.io/) server whose tools the
+loader registers alongside the cartridge's in-process Python tools.
+The cartridge needs only `command:`; the loader spawns the
+subprocess, runs `initialize` + `tools/list`, and exposes each
+discovered tool as a `ToolSpec` whose `execute` calls back into the
+adapter via `tools/call`. `tools:` allow-lists which discovered
+tools to register (absent → all).
+
+This is the **CONTRACT-tier** transport for tools whose body is not
+in-process Python: the agent's identity depends on which MCP
+servers it speaks to, and a different runtime (Rust, Go, TypeScript)
+can implement the same JSON-RPC and run the same cartridge.
+
+The reference loader stashes the live adapter on
+`AgentPreset.mcp_adapters`; callers SHOULD use the preset as a
+context manager (`with cartridge_to_preset(...) as preset:`) so the
+subprocesses are terminated on exit.
 
 ### Reference grammar
 

@@ -613,6 +613,24 @@ def _workspace_to_preset_inner(
     # syntax in kwargs are resolved against the live resource registry.
     _builtin_hook_specs: list[Any] = list(cfg_kwargs.pop("builtin_hooks", None) or [])
 
+    # ``mcp_servers:`` declares external MCP (Model Context Protocol)
+    # servers whose tools are registered alongside the cartridge's
+    # in-process Python tools. CONTRACT-tier (the agent's identity
+    # depends on which servers it speaks to). Schema:
+    #
+    #   mcp_servers:
+    #     fs:
+    #       command: "npx @modelcontextprotocol/server-filesystem /tmp"
+    #       env: {EXTRA: "value"}        # optional
+    #       timeout_s: 30                 # optional, default 30
+    #       tools: [read_file, write_file]  # optional allow-list;
+    #                                        # absent = register all
+    #
+    # Adapters are spawned eagerly and stashed on ``preset.mcp_adapters``
+    # so the caller can ``preset.close()`` (or use the preset as a
+    # context manager) to terminate the subprocesses cleanly.
+    _mcp_servers_block: dict[str, Any] = dict(cfg_kwargs.pop("mcp_servers", None) or {})
+
     # ``state:`` is a workspace-loader directive that lets a workspace
     # describe the state object declaratively (any reference: a
     # ``${ref:...}`` resource, a ``${py:...}`` factory callable, or a
@@ -681,7 +699,7 @@ def _workspace_to_preset_inner(
     _allowed_cfg_keys = (
         set(CartridgeLayout.SERIALIZABLE_CONFIG_FIELDS)
         | set(CartridgeLayout.NON_SERIALIZABLE_CONFIG_FIELDS)
-        | {"system_prompt", "memory_sources", "extends"}
+        | {"system_prompt", "memory_sources", "extends", "mcp_servers"}
     )
     _unknown = sorted(
         k
@@ -998,6 +1016,61 @@ def _workspace_to_preset_inner(
                 logger.warning("%s; skipping", msg)
                 continue
             registry.register(spec)
+
+    # MCP servers — opt-in via ``mcp_servers:`` in config.yaml. Each
+    # entry spawns an :class:`MCPToolAdapter` that discovers the
+    # server's tools and registers them as ``ToolSpec`` instances. The
+    # adapters are stashed on ``preset.mcp_adapters`` for caller-side
+    # cleanup (``preset.close()`` or ``with preset: ...``).
+    _mcp_adapters: list[Any] = []
+    if _mcp_servers_block:
+        from looplet.mcp import MCPToolAdapter  # noqa: PLC0415
+
+        for _srv_name, _srv_cfg in _mcp_servers_block.items():
+            if not isinstance(_srv_cfg, dict):
+                msg = (
+                    f"mcp_servers.{_srv_name} must be a mapping with "
+                    f"``command:`` (and optional ``env:``, ``timeout_s:``, "
+                    f"``tools:``); got {type(_srv_cfg).__name__}"
+                )
+                if strict:
+                    raise CartridgeSerializationError(msg)
+                logger.warning("%s; skipping", msg)
+                continue
+            _cmd = _srv_cfg.get("command")
+            if not _cmd or not isinstance(_cmd, str):
+                msg = f"mcp_servers.{_srv_name}: ``command:`` is required and must be a string"
+                if strict:
+                    raise CartridgeSerializationError(msg)
+                logger.warning("%s; skipping", msg)
+                continue
+            _allow = _srv_cfg.get("tools")
+            _allow_set: set[str] | None = (
+                {str(t) for t in _allow} if isinstance(_allow, list) and _allow else None
+            )
+            try:
+                _adapter = MCPToolAdapter(
+                    _cmd,
+                    env=_srv_cfg.get("env"),
+                    timeout=float(_srv_cfg.get("timeout_s", 30.0)),
+                )
+                for _spec in _adapter.tools():
+                    if _allow_set is not None and _spec.name not in _allow_set:
+                        continue
+                    registry.register(_spec)
+                _mcp_adapters.append(_adapter)
+            except Exception as exc:
+                # Clean up any adapters started before this one failed.
+                for _a in _mcp_adapters:
+                    try:
+                        _a.close()
+                    except Exception:
+                        pass
+                msg = f"mcp_servers.{_srv_name}: failed to start MCP server ({_cmd!r}): {exc}"
+                if strict:
+                    raise CartridgeSerializationError(msg) from exc
+                logger.warning("%s; skipping server", msg)
+
     # Hand the resource registry to the tool registry so any tool whose
     # ``ToolSpec.requires`` lists a resource name receives the live
     # instance via ``ctx.resources[name]`` at dispatch time.
@@ -1303,6 +1376,8 @@ def _workspace_to_preset_inner(
         state=state,
         resources=dict(resources),
     )
+    if _mcp_adapters:
+        preset.mcp_adapters = list(_mcp_adapters)
 
     # ── v1.0 declarative slots: permissions, memory.long_term ───────
     # Both are processed AFTER hooks/state/preset are built so the

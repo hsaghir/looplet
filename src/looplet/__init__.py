@@ -10,7 +10,7 @@ else, import from the relevant submodule::
     from looplet.cache import CacheBreakDetector, compute_breakpoints
 """
 
-__version__ = "0.1.8"
+__version__ = "0.2.0"
 
 # ── Public re-exports (one import per submodule, alphabetical) ──────────
 # ruff: noqa: F401 — __init__.py intentionally re-exports for `from looplet import X`

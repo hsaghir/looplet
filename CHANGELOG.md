@@ -6,6 +6,50 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-05-14
+
+### Added
+- **`mcp_servers:` slot in `config.yaml`** — declarative MCP
+  (Model Context Protocol) transport for cross-language tools. Loader
+  spawns one stdio subprocess per entry, runs MCP discovery, and
+  registers every discovered tool into the agent’s registry alongside
+  in-process Python tools. Optional per-server `tools:` allow-list.
+  `AgentPreset` is now a context manager (`__exit__` terminates spawned
+  MCP subprocesses cleanly).
+- **`examples/mcp_demo.cartridge/`** — fully self-contained demo. The
+  MCP server is a ~60-line Python stdio process bundled at
+  `_server/calc.py` (no Node, no npm, no external deps).
+- **`cartridge_root` auto-injected into the runtime dict**, so YAML
+  fields can reference `${runtime.cartridge_root}` (most importantly in
+  `mcp_servers.<name>.command`).
+- **`language:` field** in cartridge metadata + per-tool
+  `description.md` files (closes paper gaps).
+
+### Changed
+- **Cartridge spec v2 is now the only supported shape.** Loader
+  hard-fails on `schema_version != 2`. RUNTIME-tier keys must live in
+  `runtime.yaml`, not `config.yaml`.
+- Round-2 cleanup: extracted three pure helpers from `_load.py`,
+  trimmed re-exports, tightened render→runtime boundary.
+- Four v2 cuts: `tags`, single-file constraints, `${py:}` references,
+  `done_tools` plural.
+
+### Fixed
+- **`MCPToolAdapter` now uses newline-delimited JSON framing** per the
+  MCP stdio spec. Previous LSP-style `Content-Length:` framing silently
+  failed against every real MCP server. Init-failure errors now include
+  exit code and stderr tail.
+
+### Removed
+- **All v1 back-compat.** Public surface trimmed: `Workspace`,
+  `WorkspaceLayout`, `WorkspaceSerializationError`, `workspace_to_preset`,
+  `preset_to_workspace`, `scaffold_workspace`, `ContextManagerHook`.
+  Use `Cartridge*` equivalents.
+- Magic `prompts/briefing.md` / `prompts/recovery.md` auto-load and
+  `setup.py` escape hatch.
+- Alias modules: `scaffold.py`, `prompt_files.py`, `hot_reload.py`,
+  `spec_slots.py`, `workspace.py`.
+
 ### Added
 - **Unified workspace reference grammar.** Three forms, one resolver,
   applied uniformly to every string value the cartridge loader

@@ -20,7 +20,7 @@ from typing import Any
 
 import pytest
 
-from looplet.cartridge import cartridge_to_preset
+from looplet.cartridge import CartridgeSerializationError, cartridge_to_preset
 from looplet.permissions import PermissionDecision, PermissionHook
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
@@ -89,19 +89,42 @@ def _summarise_preset(preset: Any) -> dict[str, Any]:
 def test_conformance_fixture(fixture_dir: Path) -> None:
     """Load the fixture and compare the spec-pinned subset of the preset."""
     expected_path = fixture_dir / "expected.json"
-    if not expected_path.is_file():
+    expected_error_path = fixture_dir / "expected_error.json"
+    if not expected_path.is_file() and not expected_error_path.is_file():
         pytest.skip(f"fixture {fixture_dir.name} has no expected.json")
     cartridge = fixture_dir / "cartridge"
     assert cartridge.is_dir(), f"fixture {fixture_dir.name} missing cartridge/"
+    runtime_kwargs: dict[str, Any] = {
+        "ask_handler": lambda _call, _rule: PermissionDecision.DENY,
+    }
+
+    # Rejection fixtures: assert the loader raises the named error class
+    # with a message that names the offending file. The spec pins the
+    # error class + message substring; everything else is implementation
+    # detail.
+    if expected_error_path.is_file():
+        spec = json.loads(expected_error_path.read_text())
+        error_class_name = spec["error_class"]
+        message_substr = spec["message_contains"]
+        # Currently the only spec-pinned rejection class is
+        # CartridgeSerializationError; keep the lookup simple.
+        assert error_class_name == "CartridgeSerializationError", (
+            f"fixture {fixture_dir.name}: unsupported error_class {error_class_name!r}"
+        )
+        with pytest.raises(CartridgeSerializationError) as excinfo:
+            cartridge_to_preset(str(cartridge), strict=True, runtime=runtime_kwargs)
+        assert message_substr in str(excinfo.value), (
+            f"fixture {fixture_dir.name}: error message did not contain "
+            f"{message_substr!r}.\n  actual: {excinfo.value}"
+        )
+        return
+
     expected = json.loads(expected_path.read_text())
     # Cartridge spec v2: any fixture that declares ``ask:`` rules must
     # supply an ``ask_handler`` to the loader, otherwise loading
     # fail-louds. Fixtures don't carry executable Python, so wire in a
     # deterministic stub here that always denies — conformance is
     # about loader behaviour, not runtime decisions.
-    runtime_kwargs: dict[str, Any] = {
-        "ask_handler": lambda _call, _rule: PermissionDecision.DENY,
-    }
     preset = cartridge_to_preset(str(cartridge), strict=True, runtime=runtime_kwargs)
     summary = _summarise_preset(preset)
     assert summary == expected, (

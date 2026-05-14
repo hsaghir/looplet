@@ -1,0 +1,4 @@
+{
+  "error_class": "CartridgeSerializationError",
+  "message_contains": "prompts/briefing.md"
+}

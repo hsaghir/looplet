@@ -27,6 +27,7 @@ Usage::
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -335,8 +336,65 @@ class CostHook:
         # Always record char counts too — cheap, and the only stat we
         # have when the provider strips ``usage`` from responses.
         prompt_text = payload.prompt or ""
-        response_text = payload.raw_response if isinstance(payload.raw_response, str) else ""
+        response_text = _coerce_response_text(payload.raw_response)
         self.tracker.record_chars(
             prompt_chars=len(prompt_text),
             response_chars=len(response_text),
         )
+
+
+def _coerce_response_text(raw: Any) -> str:
+    """Best-effort text length proxy for char-based cost estimation.
+
+    The loop hands hooks ``raw_response`` in two shapes:
+    - JSON-text path (legacy): a plain ``str`` (the model's text output).
+    - Native-tool path: a ``list`` of content blocks, each either a dict
+      (``{"type": "text"|"tool_use", ...}``) or a provider-shaped object
+      with ``.text`` / ``.input``. With ``use_native_tools=True`` (now
+      the default), this list shape is what every call surfaces.
+
+    Without coercion, char-based cost estimation under-reports the
+    response side to zero whenever native tools are used — which is
+    the common case post-spec-v2.
+    """
+    if isinstance(raw, str):
+        return raw
+    if not isinstance(raw, (list, tuple)):
+        return ""
+    parts: list[str] = []
+    for block in raw:
+        # Dict-shaped block (Anthropic-style serialization).
+        if isinstance(block, dict):
+            btype = block.get("type")
+            if btype == "text":
+                t = block.get("text")
+                if isinstance(t, str):
+                    parts.append(t)
+            elif btype == "tool_use":
+                # Tool name + arg JSON travel back over the wire and ARE
+                # billed as response tokens. Approximate length as
+                # ``name + json(input)``.
+                name = block.get("name") or ""
+                args = block.get("input")
+                try:
+                    args_str = json.dumps(args, separators=(",", ":")) if args else ""
+                except (TypeError, ValueError):
+                    args_str = str(args or "")
+                parts.append(str(name))
+                parts.append(args_str)
+            continue
+        # Object-shaped block (provider SDK objects).
+        text_attr = getattr(block, "text", None)
+        if isinstance(text_attr, str):
+            parts.append(text_attr)
+            continue
+        name_attr = getattr(block, "name", None)
+        input_attr = getattr(block, "input", None)
+        if name_attr or input_attr is not None:
+            try:
+                args_str = json.dumps(input_attr, separators=(",", ":")) if input_attr else ""
+            except (TypeError, ValueError):
+                args_str = str(input_attr or "")
+            parts.append(str(name_attr or ""))
+            parts.append(args_str)
+    return "".join(parts)

@@ -76,6 +76,50 @@ class TestCostTrackerSignature:
         with pytest.raises(TypeError, match="backend"):
             CostTracker()  # type: ignore[call-arg]
 
+    def test_generate_with_tools_counts_tool_schemas(self):
+        """Tool schemas ARE billed by every major provider; CostTracker must
+        count them. Regression for: agentguard audit found a 24% cost
+        under-report on a 5-tool native call when schemas were ignored."""
+
+        class _CapturingBackend:
+            def generate(self, prompt, **kwargs):
+                return "x"
+
+            def generate_with_tools(self, prompt, tools, **kwargs):
+                return [{"type": "text", "text": "ok"}]
+
+        tracker = CostTracker(
+            _CapturingBackend(),
+            cost_per_1k_input=1.0,  # $1 / 1k tokens to make math easy
+            cost_per_1k_output=0.0,
+        )
+
+        # Same prompt, two scenarios: with vs without tool schemas.
+        bare = CostTracker(_CapturingBackend(), cost_per_1k_input=1.0, cost_per_1k_output=0.0)
+        bare.generate_with_tools("hello world", tools=[], system_prompt="sys")  # type: ignore[attr-defined]
+        bare_in = bare.total_input_tokens
+
+        with_tools = CostTracker(_CapturingBackend(), cost_per_1k_input=1.0, cost_per_1k_output=0.0)
+        big_schema = [
+            {
+                "name": f"tool_{i}",
+                "description": "lorem ipsum dolor sit amet consectetur adipiscing elit",
+                "parameters": {"x": "int", "y": "str", "z": "bool"},
+            }
+            for i in range(5)
+        ]
+        with_tools.generate_with_tools(  # type: ignore[attr-defined]
+            "hello world", tools=big_schema, system_prompt="sys"
+        )
+        with_tools_in = with_tools.total_input_tokens
+
+        # Schemas should add a meaningful number of input tokens.
+        assert with_tools_in > bare_in, (
+            f"tool schemas not counted: bare={bare_in} with_tools={with_tools_in}"
+        )
+        # Sanity: at least 10 extra input tokens for 5 tools with descriptions.
+        assert with_tools_in - bare_in >= 10
+
 
 class TestPostDispatchOnDone:
     def test_metrics_hook_counts_done_step(self):

@@ -185,9 +185,18 @@ class FallbackRouter:
 class CostTracker:
     """Wraps an ``LLMBackend`` and accumulates estimated token costs.
 
+    .. note::
+       Prefer :class:`looplet.cost.CostTracker` + :class:`looplet.cost.CostHook`
+       for new code. That pair reads **real** provider token counts from
+       ``backend.last_usage`` (Anthropic ``input_tokens``, OpenAI
+       ``prompt_tokens``) and supports cache-read pricing. This wrapper-
+       based tracker remains for backwards compatibility with code that
+       cannot install a hook, but its word-count heuristic systematically
+       under-reports token usage by 15-25% versus a real BPE tokenizer.
+
     Token estimates use a simple word-count heuristic (words ≈ tokens).
     This is intentionally approximate; production deployments should use
-    a proper tokenizer.
+    a proper tokenizer or migrate to :mod:`looplet.cost`.
 
     Args:
         backend: The ``LLMBackend`` to wrap.
@@ -296,6 +305,14 @@ class CostTracker:
         input_tokens = self._estimate_tokens(prompt)
         if system_prompt:
             input_tokens += self._estimate_tokens(system_prompt)
+        # Tool schemas ARE serialized into the request body and ARE
+        # billed as input tokens by every major provider. Count them.
+        # Use compact JSON so the heuristic isn't inflated by
+        # whitespace formatting choices.
+        if tools:
+            import json as _json
+
+            input_tokens += self._estimate_tokens(_json.dumps(tools, separators=(",", ":")))
         # Native tool responses are lists of blocks; estimate from str repr
         output_tokens = self._estimate_tokens(str(response))
         self._total_input_tokens += input_tokens

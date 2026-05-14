@@ -84,6 +84,7 @@ equivalent. If both are present, `cartridge.json` wins.
   "name": "my_agent",
   "schema_version": 1,
   "description": "what the agent does",
+  "language": "python",
   "version": "1.0.0"
 }
 ```
@@ -91,6 +92,15 @@ equivalent. If both are present, `cartridge.json` wins.
 Required fields: `name`, `schema_version`. v1.0 cartridges set
 `schema_version: 1`. `description` and `version` are optional and
 declarative.
+
+`language` (optional, default `"python"`) declares the body language
+of `tools/<n>/execute.py` and `hooks/<n>/hook.py`. Conformant
+runtimes MUST refuse cartridges whose declared `language` they
+cannot execute, with a clear error pointing at the alternative
+runtime — they MUST NOT attempt to import bodies in an unsupported
+language. The shipped Python loader rejects any value other than
+`"python"`. Absent or empty `language` is treated as `"python"` for
+v1 back-compat.
 
 ## Configuration — `config.yaml`
 
@@ -381,6 +391,17 @@ render:                                # v1.1: prompt-rendering hints (advisory)
   preview: 5                           #   if data is a list, show first 5 items
   max_chars: 4000                      #   per-step cap for THIS tool's results
 ```
+
+For prose-heavy descriptions (multi-paragraph capability specs,
+Usage / Examples sections, cited limitations), the multi-file form
+also accepts an optional sibling file `tools/<name>/description.md`.
+When present, its content is the tool description and overrides the
+`description:` field in `tool.yaml`. This keeps long-form prose out
+of YAML block scalars and in a file ordinary diff tools render
+nicely. Absent `description.md` falls back to `tool.yaml:
+description:`. Serialisers SHOULD promote multi-line descriptions to
+`description.md` and leave only the first line in `tool.yaml` as a
+short fallback.
 
 ```python
 # tools/bash/execute.py

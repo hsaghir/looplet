@@ -34,7 +34,11 @@ from looplet.cartridge._layout import (
     CartridgeSerializationError,
     _stamp_preset_origin,
 )
-from looplet.cartridge._manifest import _manifest_present, _read_schema_version
+from looplet.cartridge._manifest import (
+    _manifest_present,
+    _read_manifest_language,
+    _read_schema_version,
+)
 from looplet.cartridge._render import _apply_runtime_substitutions
 from looplet.cartridge._resources import (
     _load_resources,
@@ -464,6 +468,24 @@ def _workspace_to_preset_inner(
     schema_version = _read_schema_version(root)
     is_v2 = schema_version >= 2
 
+    # ── Body-language gate ────────────────────────────────────
+    # ``cartridge.json: language:`` declares the body language of
+    # ``tools/`` and ``hooks/`` (default "python"). Any conformant
+    # runtime refuses cartridges whose declared language it cannot
+    # execute, *before* trying to import the bodies. This is the
+    # paper's "decidable" property in code form: a future TS/Go/etc.
+    # loader can read the same field and reject cleanly. Today the
+    # only shipped runtime is Python.
+    declared_language = _read_manifest_language(root)
+    if declared_language != "python":
+        raise CartridgeSerializationError(
+            f"Cartridge {root} declares ``language: {declared_language!r}`` "
+            f"in cartridge.json but this runtime (looplet's Python loader) "
+            f"only executes ``language: python`` cartridges. Use a runtime "
+            f"that ships a {declared_language!r} loader, or change the "
+            f"manifest if the bodies are actually Python."
+        )
+
     resources = _load_resources(root, runtime_dict)
     # Loader-injected resource: built-in hooks (and any user resource
     # builder that wants it) can resolve cartridge-root-relative paths
@@ -832,9 +854,21 @@ def _workspace_to_preset_inner(
                     f"the hook owns the policy, the tool stays decoupled. "
                     f'See docs/cartridge.md "Principled exclusions".'
                 )
+            # ── Optional ``description.md`` for prose descriptions ─
+            # When ``tools/<n>/description.md`` exists it WINS over
+            # ``tool.yaml: description:`` so authors can write a
+            # multi-paragraph capability spec (with Usage / Examples
+            # sections) without YAML block-scalar gymnastics. The
+            # YAML field stays as the short fallback used by tools
+            # that don't ship a description.md.
+            description_md = tool_dir / "description.md"
+            if description_md.is_file():
+                description_text = description_md.read_text(encoding="utf-8").rstrip()
+            else:
+                description_text = str(yaml_payload.get("description", ""))
             spec = ToolSpec(
                 name=str(yaml_payload.get("name", tool_dir.name)),
-                description=str(yaml_payload.get("description", "")),
+                description=description_text,
                 parameters=dict(raw_parameters),
                 execute=execute_fn,
                 concurrent_safe=bool(yaml_payload.get("concurrent_safe", False)),

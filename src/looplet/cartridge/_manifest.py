@@ -77,6 +77,35 @@ def _read_schema_version(root: Path) -> int:
         return SCHEMA_VERSION
 
 
+def _read_manifest_language(root: Path) -> str:
+    """Read the cartridge's declared ``language`` from its manifest.
+
+    Cartridge spec v2 adds an optional ``language:`` field to
+    ``cartridge.json`` that names the body language of the cartridge's
+    ``tools/`` and ``hooks/`` (Python today; future runtimes may add
+    others). Defaults to ``"python"`` when missing for back-compat
+    with v1.x cartridges authored before the field existed. Always
+    returns a normalised lowercase string.
+
+    Conformant runtimes use this field to refuse cartridges they
+    cannot execute *before* trying to import the bodies, closing the
+    paper's "decidable" property gap: a TypeScript runtime can read
+    ``language: python`` and reject cleanly instead of crashing on
+    ``import``.
+    """
+    meta_path = _manifest_path(root)
+    if meta_path is None:
+        return "python"
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return "python"
+    val = meta.get("language", "python")
+    if not isinstance(val, str) or not val.strip():
+        return "python"
+    return val.strip().lower()
+
+
 @dataclass
 class Cartridge:
     """A loaded Workspace.
@@ -89,6 +118,7 @@ class Cartridge:
     name: str = ""
     description: str = ""
     schema_version: int = SCHEMA_VERSION
+    language: str = "python"
     metadata: dict[str, Any] = field(default_factory=dict)
     serialization_warnings: list[str] = field(default_factory=list)
 
@@ -117,6 +147,7 @@ class Cartridge:
             name=str(meta.get("name", root.name)),
             description=str(meta.get("description", "")),
             schema_version=int(meta.get("schema_version", SCHEMA_VERSION)),
+            language=_read_manifest_language(root),
             metadata=dict(meta.get("metadata", {})),
         )
 
@@ -130,6 +161,7 @@ class Cartridge:
                     "schema_version": self.schema_version,
                     "name": self.name,
                     "description": self.description,
+                    "language": self.language,
                     "metadata": dict(self.metadata),
                 },
                 indent=2,

@@ -690,6 +690,15 @@ def _write_tool(spec: Any, tools_root: Path, warnings: list[str], strict: bool) 
         "description": spec.description,
         "parameters": dict(spec.parameters or {}),
     }
+    # Promote multi-paragraph descriptions to ``description.md`` so
+    # the on-disk artefact stays legible and yaml-block-scalar-free
+    # (paper §"Promoted to first-class"). Single-line descriptions
+    # stay in ``tool.yaml``. The loader prefers ``description.md``
+    # when both exist.
+    description_text = str(spec.description or "")
+    if "\n" in description_text.strip():
+        (tool_dir / "description.md").write_text(description_text.rstrip() + "\n", encoding="utf-8")
+        yaml_payload["description"] = description_text.splitlines()[0]
     for opt in ("concurrent_safe", "free", "timeout_s"):
         if hasattr(spec, opt):
             val = getattr(spec, opt)

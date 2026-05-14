@@ -569,3 +569,120 @@ def test_inline_comment_inside_flow_collection_not_stripped() -> None:
     # Empty list with a real trailing comment.
     parsed = _load_yaml("done_tools: []          # nothing here\n")
     assert parsed["done_tools"] == []
+
+
+# ── 7. cartridge.json: language: field ───────────────────────────
+
+
+def test_language_defaults_to_python_when_missing(tmp_path: Path) -> None:
+    """Manifest without ``language:`` loads (back-compat default)."""
+    root = tmp_path / "x.cartridge"
+    _write_minimal(root)
+    done = root / "tools" / "done"
+    done.mkdir(parents=True)
+    (done / "tool.yaml").write_text(
+        "name: done\ndescription: d\nparameters:\n  summary: { type: string }\n"
+    )
+    (done / "execute.py").write_text(
+        "def execute(ctx, *, summary):\n    return {'summary': summary}\n"
+    )
+    preset = cartridge_to_preset(str(root), strict=True)
+    assert preset is not None
+
+
+def test_v2_rejects_non_python_language(tmp_path: Path) -> None:
+    """Loader refuses cleanly when ``language:`` is not python."""
+    from looplet.cartridge import CartridgeSerializationError
+
+    root = tmp_path / "x.cartridge"
+    root.mkdir()
+    (root / "cartridge.json").write_text(
+        '{"name": "x", "schema_version": 2, "language": "typescript"}\n'
+    )
+    (root / "config.yaml").write_text("max_steps: 3\n")
+    (root / "prompts").mkdir()
+    (root / "prompts" / "system.md").write_text("x")
+    with pytest.raises(CartridgeSerializationError, match="typescript"):
+        cartridge_to_preset(str(root), strict=True)
+
+
+def test_language_round_trips_via_preset_to_cartridge(tmp_path: Path) -> None:
+    """``preset_to_cartridge`` writes ``language: python`` into manifest."""
+    from looplet import preset_to_cartridge
+
+    root = tmp_path / "src.cartridge"
+    _write_minimal(root)
+    done = root / "tools" / "done"
+    done.mkdir(parents=True)
+    (done / "tool.yaml").write_text(
+        "name: done\ndescription: d\nparameters:\n  summary: { type: string }\n"
+    )
+    (done / "execute.py").write_text(
+        "def execute(ctx, *, summary):\n    return {'summary': summary}\n"
+    )
+    preset = cartridge_to_preset(str(root), strict=True)
+    out = tmp_path / "out.cartridge"
+    preset_to_cartridge(preset, str(out))
+    meta = json.loads((out / "cartridge.json").read_text())
+    assert meta["language"] == "python"
+
+
+# ── 8. tools/<n>/description.md promotion ────────────────────────
+
+
+def test_tool_description_md_overrides_yaml(tmp_path: Path) -> None:
+    """When ``description.md`` is present, its content wins."""
+    root = tmp_path / "x.cartridge"
+    _write_minimal(root)
+    done = root / "tools" / "done"
+    done.mkdir(parents=True)
+    (done / "tool.yaml").write_text(
+        "name: done\ndescription: short yaml\nparameters:\n  summary: { type: string }\n"
+    )
+    (done / "description.md").write_text("Long-form description.\n\nWith multiple paragraphs.\n")
+    (done / "execute.py").write_text(
+        "def execute(ctx, *, summary):\n    return {'summary': summary}\n"
+    )
+    preset = cartridge_to_preset(str(root), strict=True)
+    spec = preset.tools._tools["done"]
+    assert "Long-form description" in spec.description
+    assert "multiple paragraphs" in spec.description
+    assert "short yaml" not in spec.description
+
+
+def test_tool_description_md_absent_falls_back_to_yaml(tmp_path: Path) -> None:
+    root = tmp_path / "x.cartridge"
+    _write_minimal(root)
+    done = root / "tools" / "done"
+    done.mkdir(parents=True)
+    (done / "tool.yaml").write_text(
+        "name: done\ndescription: yaml-only desc\nparameters:\n  summary: { type: string }\n"
+    )
+    (done / "execute.py").write_text(
+        "def execute(ctx, *, summary):\n    return {'summary': summary}\n"
+    )
+    preset = cartridge_to_preset(str(root), strict=True)
+    assert preset.tools._tools["done"].description == "yaml-only desc"
+
+
+def test_serialiser_promotes_multiline_description_to_md(tmp_path: Path) -> None:
+    """Multi-line tool descriptions get written to description.md on round-trip."""
+    from looplet import preset_to_cartridge
+
+    root = tmp_path / "src.cartridge"
+    _write_minimal(root)
+    done = root / "tools" / "done"
+    done.mkdir(parents=True)
+    (done / "tool.yaml").write_text(
+        "name: done\ndescription: short\nparameters:\n  summary: { type: string }\n"
+    )
+    (done / "description.md").write_text("Headline.\n\nSecond paragraph here.\n")
+    (done / "execute.py").write_text(
+        "def execute(ctx, *, summary):\n    return {'summary': summary}\n"
+    )
+    preset = cartridge_to_preset(str(root), strict=True)
+    out = tmp_path / "out.cartridge"
+    preset_to_cartridge(preset, str(out))
+    desc_md = out / "tools" / "done" / "description.md"
+    assert desc_md.is_file()
+    assert "Second paragraph" in desc_md.read_text()

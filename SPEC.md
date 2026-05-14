@@ -14,6 +14,23 @@ cartridge is the artifact; the runtime is the engine.
 This document specifies what files a v1 cartridge contains, what
 each file means, and what a conformant loader must do with them.
 
+### Cartridge vs. skill
+
+A **cartridge is the agent**: a self-contained behavioural contract
+(identity, system prompt, tools, hooks, permissions, memory). A
+**skill is procedural knowledge that any agent may load on demand**
+(a snippet of instructions plus optional helper tools that the agent
+discovers and activates mid-run via `search_skills` / `activate_skill`).
+A cartridge composes skills by declaring `builtin_tools:
+[search_skills, activate_skill]` and a `skill_manager` resource;
+skills do not stand alone as agents.
+
+When in doubt: if it has a system prompt and a `done` sentinel, it is
+a cartridge. If it adds tools/instructions to *another* agent's loop,
+it is a skill. The two are complementary, not competing — see
+[`examples/skillful_analyst.cartridge/`](examples/skillful_analyst.cartridge/)
+for a cartridge that loads skills at runtime.
+
 ## Core principles
 
 1. **The cartridge is complete.** Loading the cartridge is sufficient
@@ -123,7 +140,20 @@ max_tokens: 2000
 temperature: 0.2
 context_window: 128000
 compact_service: "@compact_service"
+
+# Per-tool render overrides (cartridge spec v2). Shallow-merged onto
+# each tool's ``render:`` block from tool.yaml; runtime keys win.
+# This is the principled-exclusion answer for "I want render hints":
+# the cartridge declares the agent's default; the host shifts the
+# truncation policy without editing tools/<name>/tool.yaml.
+tool_render_hints:
+  bash:
+    preview: 5
+    max_chars: 4000
 ```
+
+Unknown tool names in `tool_render_hints:` are a load-time error
+(under `strict=True`) or a logged warning otherwise.
 
 Merge order under `extends:`: parent `runtime.yaml` is loaded
 first, then child overrides via shallow merge (top-level scalars
@@ -533,6 +563,29 @@ tools, hooks, and config a v1.0 loader MUST produce. The
 pass/fail. Run `python -m looplet conform` from this repository to
 exercise the suite against the reference loader.
 
+### Observable-behavior conformance (trajectory parity)
+
+Loader-shape parity (above) is necessary but not sufficient for
+portability. A second, stronger claim — **observable-behavior
+conformance** — is exercised by trajectory-fixture pairs:
+
+- **Fixture.** A cartridge plus a scripted sequence of tool calls
+  plus an `expected_trajectory.json` listing the
+  `{step, tool, args, result, error}` sequence the loop MUST emit.
+- **Driver.** Both the reference loader (looplet's
+  `composable_loop`) and a from-scratch second runtime
+  (`examples/alt_runtime/tinyloop.py`) execute the same script and
+  must produce the same trajectory modulo timing and call-id
+  formatting.
+- **Tier semantics.** MUST = same tool, same args, same result, same
+  error, same order. SHOULD = same step number / step count
+  (loaders that compress retries are non-conforming for trajectory
+  fixtures but may still be loader-conformant). MAY = anything not
+  in the spec-pinned subset (durations, request IDs, tracing spans).
+
+Reference fixture: `tests/conformance/fixtures/08_trajectory_two_tools/`.
+Reference test: `tests/conformance/test_trajectory_conformance.py`.
+
 ## Versioning policy
 
 - **`schema_version`** in `cartridge.json` is the cartridge's
@@ -625,6 +678,35 @@ profile), which is better expressed as composition (`builtin_hooks:`
 **Workaround.** Chain single-parent extends (A extends B extends C)
 or compose via `builtin_hooks:` + a shared resource module.
 
+### Sub-agent isolation rules (v1.x today)
+
+The composition primitive for "agent calls another agent" is
+`run_sub_loop()` (in code) and the `subagent` builtin tool (in
+cartridges). The isolation contract today:
+
+| Concern | Default | Rationale |
+|---|---|---|
+| **State** | Isolated. Sub-loop gets a fresh `_MinimalState` keyed on its own `task`. | The sub-agent's step counter, query budget, and entities are its own. |
+| **Tool registry** | Isolated by clone. Parent's tools are cloned, with `state_mutating_tools` (default `["done"]`) excluded so the sub-agent can't end the parent's loop. | The sub-agent sees the same tools as the parent except for sentinels. |
+| **Conversation / session log** | Isolated. Sub-loop forks a new `SessionLog`; if a `conversation` is passed it's also forked. | The parent's history is not perturbed by the sub-agent's intermediate calls. |
+| **Hooks** | Isolated by default. Pass `parent_hooks=ctx.hooks` to forward `on_event` to the parent's observability stack (MetricsHook, StreamingHook, TrajectoryRecorder). Full hook protocol (`check_done`, `should_stop`) stays sub-only. | Observability composes; control does not. |
+| **Resources** | **Shared.** Sub-agent sees the parent's `ctx.resources`. | Forking would break the common case of reusing expensive clients (DB, vector store, SIEM). |
+| **Budget (`max_steps`, `max_tokens`)** | Per sub-agent. The sub-loop has its own budget; the parent's `max_steps` does NOT decrement on sub-loop steps. | Sub-budgets must be sized at the call site, not inherited. |
+| **`done` sentinel** | Sub-agent must end via its own `done` (or fall through `max_steps`). The parent's terminal sentinels are excluded from the sub's tool registry. | Each loop owns its own completion. |
+
+**Working example.** [`examples/planner.cartridge/`](examples/planner.cartridge/)
+demonstrates the principled-exclusion answer for "I want plan mode":
+the parent has only two tools (`subagent`, `done`), delegates to a
+child cartridge (`planner_child.cartridge/`), then summarises the
+returned plan via `done`. No phase, no state machine, no special
+loop feature.
+
+**Workaround for resource isolation.** Pass `sub_tools=` with a
+registry whose tools reference fresh resource instances, or wrap
+the parent's resources in a copy-on-write dict. v2 will likely add
+an opt-in `subagent: { resources: fork }` argument; until then,
+shared is the default.
+
 ### Sub-agent resource isolation by default
 
 **Status.** Deferred to v2.0. Today, sub-agents (`run_sub_loop`)
@@ -644,7 +726,12 @@ resources in a copy-on-write dict.
 
 **Status.** Deferred. The current model (`done_tool: report` +
 `done_tools: [escalate, ...]`, each with its own `tool.yaml` and
-optional `output_schema:`) is retained.
+optional `output_schema:`) is retained — and as of cartridge spec v2
+**every sentinel listed in `done_tools:` whose `tool.yaml` declares
+`output_schema:` is validated** by the loop, just like the primary
+`done_tool`. The loader records secondary-sentinel schemas in
+`LoopConfig.done_tool_schemas[<name>]`; a sentinel without an
+`output_schema:` block is unvalidated (preserves v1.1 behaviour).
 
 **Rationale.** Multiple sentinel tools give the LLM a clearer
 contract (each tool name has a distinct shape) than a single tool
@@ -654,7 +741,8 @@ require it to embed the discriminator and inflate prompt complexity
 for no gain.
 
 **Workaround.** Use `done_tools:` (v1.1+) when an agent has multiple
-distinct terminal outcomes.
+distinct terminal outcomes; declare an `output_schema:` on each
+sentinel's `tool.yaml` to validate every branch.
 
 ### Compaction tier (`compact_service`)
 

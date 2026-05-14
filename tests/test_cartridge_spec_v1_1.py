@@ -102,6 +102,46 @@ def test_tool_render_hints_round_trip(tmp_path: Path) -> None:
     assert spec.render == {"preview": 5, "max_chars": 800}
 
 
+def test_tool_render_hints_runtime_yaml_overrides(tmp_path: Path) -> None:
+    """Runtime overrides for render hints belong in ``runtime.yaml``.
+
+    Cartridge spec v2 principled exclusion: ``render:`` in tool.yaml
+    declares the agent's default; the host shifts the policy via
+    ``runtime.yaml: tool_render_hints: { <tool>: {...} }`` without
+    editing the cartridge body. Shallow-merge: runtime keys win,
+    tool.yaml keys not overridden survive.
+    """
+    root = tmp_path / "x.cartridge"
+    _write_minimal(root)
+    done = root / "tools" / "done"
+    done.mkdir(parents=True)
+    (done / "tool.yaml").write_text(
+        "name: done\n"
+        "description: done\n"
+        "parameters:\n  summary: { type: string }\n"
+        "render:\n  preview: 5\n  max_chars: 800\n"
+    )
+    (done / "execute.py").write_text(
+        "def execute(ctx, *, summary):\n    return {'summary': summary}\n"
+    )
+    (root / "runtime.yaml").write_text("tool_render_hints:\n  done:\n    preview: 25\n")
+    preset = cartridge_to_preset(str(root), strict=True)
+    spec = preset.tools._tools["done"]
+    # ``preview`` overridden by runtime; ``max_chars`` survives from tool.yaml.
+    assert spec.render == {"preview": 25, "max_chars": 800}
+
+
+def test_tool_render_hints_unknown_tool_strict_rejects(tmp_path: Path) -> None:
+    """Typo in ``tool_render_hints:`` is a load-time error under strict."""
+    root = tmp_path / "x.cartridge"
+    _write_minimal(root)
+    (root / "runtime.yaml").write_text("tool_render_hints:\n  no_such_tool:\n    preview: 1\n")
+    import pytest  # noqa: PLC0415
+
+    with pytest.raises(looplet.CartridgeSerializationError, match="unknown tool"):
+        cartridge_to_preset(str(root), strict=True)
+
+
 # ── 3. single-file tool form ─────────────────────────────────────
 
 
@@ -255,6 +295,91 @@ def test_done_tools_plural_default_empty(tmp_path: Path) -> None:
     """Default ``done_tools`` is empty list (back-compat)."""
     cfg = LoopConfig(max_steps=5)
     assert cfg.done_tools == []
+
+
+def test_done_tools_per_sentinel_output_schema_validates(tmp_path: Path) -> None:
+    """Each ``done_tools`` sentinel with an ``output_schema:`` is validated.
+
+    Cartridge spec v2: the loader records secondary-sentinel schemas in
+    ``LoopConfig.done_tool_schemas``; the loop validates the call's
+    args against the matching schema (mirrors primary ``done_tool``
+    behaviour). Closes the v1.1 gap where only the primary sentinel
+    was validated.
+    """
+    root = tmp_path / "v2.cartridge"
+    _write_minimal(root)
+    (root / "config.yaml").write_text("max_steps: 5\ndone_tool: report\ndone_tools: [escalate]\n")
+    tools = root / "tools"
+    tools.mkdir(exist_ok=True)
+    # ``escalate`` requires both ``reason`` and ``blocked_on``; the
+    # agent is going to forget ``blocked_on`` so the loop must reject
+    # the call with a structured gate-warning.
+    (tools / "escalate").mkdir()
+    (tools / "escalate" / "tool.yaml").write_text(
+        "name: escalate\n"
+        "description: alternative terminal sentinel\n"
+        "parameters:\n"
+        "  reason: { type: string }\n"
+        "  blocked_on: { type: string }\n"
+        "output_schema:\n"
+        "  type: object\n"
+        "  required: [reason, blocked_on]\n"
+        "  properties:\n"
+        "    reason: { type: string, minLength: 1 }\n"
+        "    blocked_on: { type: string, minLength: 1 }\n"
+    )
+    (tools / "escalate" / "execute.py").write_text(
+        "def execute(ctx, *, reason, blocked_on=''):\n"
+        "    return {'reason': reason, 'blocked_on': blocked_on}\n"
+    )
+    (tools / "report.py").write_text(
+        '__name__ = "report"\n__description__ = "report"\n'
+        '__parameters__ = {"summary": {"type": "string"}}\n\n'
+        "def execute(ctx, *, summary):\n    return {'summary': summary}\n"
+    )
+
+    preset = cartridge_to_preset(str(root), strict=True)
+    assert "escalate" in preset.config.done_tool_schemas, (
+        "loader must record per-sentinel output_schema for v1.1 done_tools"
+    )
+
+    # Agent calls escalate without ``blocked_on`` — must be rejected
+    # by the schema gate, then succeeds when it adds the missing field.
+    llm = MockLLMBackend(
+        responses=[
+            json.dumps(
+                {
+                    "tool": "escalate",
+                    "args": {"reason": "stuck"},
+                    "reasoning": "",
+                    "call_id": "1",
+                }
+            ),
+            json.dumps(
+                {
+                    "tool": "escalate",
+                    "args": {"reason": "stuck", "blocked_on": "missing creds"},
+                    "reasoning": "",
+                    "call_id": "2",
+                }
+            ),
+        ]
+    )
+    steps = list(
+        composable_loop(
+            llm=llm,
+            tools=preset.tools,
+            state=preset.state,
+            config=preset.config,
+            hooks=preset.hooks,
+            task={"goal": "test"},
+        )
+    )
+    # First call rejected by schema, second call accepted → loop ends.
+    assert len(steps) == 2
+    assert steps[0].tool_result.error and "Output schema" in steps[0].tool_result.error
+    assert steps[1].tool_call.tool == "escalate"
+    assert steps[1].tool_result.error is None
 
 
 # ── 5. prompts/briefing.md + recovery.md auto-attach ─────────────

@@ -473,6 +473,21 @@ class LoopConfig:
     pre-v1.1 single-sentinel behaviour exactly.
     """
 
+    done_tool_schemas: dict[str, OutputSchema] = field(default_factory=dict)
+    """Per-sentinel ``OutputSchema`` map for plural-sentinel cartridges
+    (cartridge-spec v2). Keyed by sentinel tool name.
+
+    When a secondary sentinel from :attr:`done_tools` is invoked and an
+    entry exists here, the loop validates the call's args against the
+    matching schema with the same quality-gate behaviour as
+    :attr:`output_schema` on the primary :attr:`done_tool`. Sentinels
+    without an entry are unvalidated (behaviour preserved from v1.1).
+
+    Populated by the cartridge loader from each sentinel's
+    ``tool.yaml: output_schema:`` block; can also be set directly on
+    ``LoopConfig`` for hand-built loops.
+    """
+
     tool_result_persist_dir: str | None = None
     """Optional directory for Layer-1 persist-and-preview of large
     tool results. When set, tool results whose serialized size exceeds
@@ -2458,18 +2473,21 @@ def composable_loop(
                         break
 
             # Output schema validation — reject done() if payload is invalid.
-            # Per Cartridge Spec v1.1: output_schema attaches only to the
-            # PRIMARY ``done_tool``. Secondary ``done_tools`` (the v1.1
-            # plural sentinels) have their own (different) payloads and
-            # are not validated by the loop. Without this guard, the
-            # loop would reject a perfectly valid ``escalate`` payload
-            # because it doesn't match the schema authored for ``resolve``.
-            if (
-                gate_warning is None
-                and config.output_schema is not None
-                and tool_call.tool == config.done_tool
-            ):
-                validation = _validate_args(config.output_schema, tool_call.args)
+            # Cartridge Spec v1.1 attached ``output_schema`` only to the
+            # PRIMARY ``done_tool``. v2 extends this to *every* sentinel
+            # via :attr:`LoopConfig.done_tool_schemas` (populated by the
+            # cartridge loader from each sentinel's ``tool.yaml:
+            # output_schema:`` block). The primary sentinel's schema
+            # remains :attr:`output_schema` for backwards compatibility;
+            # ``done_tool_schemas`` covers the secondary sentinels.
+            _schema_for_call: OutputSchema | None = None
+            if gate_warning is None:
+                if tool_call.tool == config.done_tool and config.output_schema is not None:
+                    _schema_for_call = config.output_schema
+                elif tool_call.tool in config.done_tool_schemas:
+                    _schema_for_call = config.done_tool_schemas[tool_call.tool]
+            if _schema_for_call is not None:
+                validation = _validate_args(_schema_for_call, tool_call.args)
                 if not validation.valid:
                     gate_warning = (
                         f"Output schema validation failed: {'; '.join(validation.errors)}"

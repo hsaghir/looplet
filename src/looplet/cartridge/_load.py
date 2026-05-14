@@ -381,6 +381,7 @@ def _workspace_to_preset_inner(
             for k in runtime_yaml_kwargs
             if k not in CartridgeLayout.RUNTIME_TIER_FIELDS
             and k not in CartridgeLayout.HOST_TIER_FIELDS
+            and k not in CartridgeLayout.RUNTIME_TIER_OVERRIDES
         )
         if _bad:
             msg = (
@@ -599,7 +600,11 @@ def _workspace_to_preset_inner(
         | set(CartridgeLayout.NON_SERIALIZABLE_CONFIG_FIELDS)
         | {"system_prompt", "memory_sources", "extends"}
     )
-    _unknown = sorted(k for k in cfg_kwargs if k not in _allowed_cfg_keys)
+    _unknown = sorted(
+        k
+        for k in cfg_kwargs
+        if k not in _allowed_cfg_keys and k not in CartridgeLayout.RUNTIME_TIER_OVERRIDES
+    )
     if _unknown:
         msg = (
             f"unknown top-level key(s) in {cfg_path}: {_unknown}. "
@@ -614,6 +619,15 @@ def _workspace_to_preset_inner(
         logger.warning("%s; dropping the unknown keys", msg)
         for k in _unknown:
             cfg_kwargs.pop(k, None)
+
+    # Pop runtime-yaml-only overrides before LoopConfig construction
+    # so unknown-kwarg checks downstream don't trip. Each one is
+    # consumed by the loader after tools/hooks are registered.
+    _runtime_overrides: dict[str, Any] = {
+        k: cfg_kwargs.pop(k)
+        for k in list(cfg_kwargs)
+        if k in CartridgeLayout.RUNTIME_TIER_OVERRIDES
+    }
 
     config = LoopConfig(**cfg_kwargs)
 
@@ -826,30 +840,29 @@ def _workspace_to_preset_inner(
             # v1.0: ``output_schema:`` on the done tool installs an
             # OutputSchema validator on the LoopConfig so the loop
             # validates the agent's done() args before terminating.
-            # Only the configured *primary* ``done_tool`` is treated
-            # specially; output_schema on other tools (including
-            # additional v1.1 ``done_tools``) is recorded in tool
-            # metadata. Multi-sentinel cartridges where each sentinel
-            # has a different schema should put a schema on each
-            # tool.yaml and add a hook for cross-sentinel cross-checks
-            # — there is no v1.0/v1.1 loader feature for a per-sentinel
-            # schema map (deliberate: keeps the loader contract small).
-            if (
-                spec.name == config.done_tool
-                and config.output_schema is None
-                and isinstance(yaml_payload.get("output_schema"), dict)
-            ):
+            # The primary ``done_tool`` populates ``config.output_schema``;
+            # secondary v1.1 ``done_tools`` populate
+            # ``config.done_tool_schemas[<sentinel>]`` so the loop can
+            # validate each sentinel's payload against its own schema
+            # (per principled-cartridge-v2 §"Per-sentinel output schema").
+            if isinstance(yaml_payload.get("output_schema"), dict):
                 from looplet.cartridge.spec_slots import compile_output_schema  # noqa: PLC0415
 
-                try:
-                    config.output_schema = compile_output_schema(
-                        dict(yaml_payload["output_schema"])
-                    )
-                except (ValueError, TypeError) as exc:
-                    msg = f"invalid output_schema in {spec_path}: {exc}"
-                    if strict:
-                        raise CartridgeSerializationError(msg) from exc
-                    logger.warning("%s; ignoring output_schema", msg)
+                _is_primary = spec.name == config.done_tool and config.output_schema is None
+                _is_secondary = spec.name in (config.done_tools or [])
+                if _is_primary or _is_secondary:
+                    try:
+                        compiled = compile_output_schema(dict(yaml_payload["output_schema"]))
+                    except (ValueError, TypeError) as exc:
+                        msg = f"invalid output_schema in {spec_path}: {exc}"
+                        if strict:
+                            raise CartridgeSerializationError(msg) from exc
+                        logger.warning("%s; ignoring output_schema", msg)
+                    else:
+                        if _is_primary:
+                            config.output_schema = compiled
+                        if _is_secondary:
+                            config.done_tool_schemas[spec.name] = compiled
 
     # Built-in tools — opt-in via ``builtin_tools:`` in config.yaml.
     # These are looplet-shipped tools (``subagent``, future helpers)
@@ -875,6 +888,42 @@ def _workspace_to_preset_inner(
     # instance via ``ctx.resources[name]`` at dispatch time.
     if resources:
         registry.set_resources(resources)
+
+    # ── Apply runtime.yaml ``tool_render_hints:`` overrides ───────
+    # Per cartridge spec v2's principled-exclusion answer for "I want
+    # render hints": the cartridge declares the agent's behaviour
+    # (``tool.yaml``); the host overrides preview/truncation policy
+    # via ``runtime.yaml: tool_render_hints: { <tool>: {preview: N,
+    # max_chars: M} }`` without editing the cartridge. The runtime
+    # mapping is shallow-merged onto each ``ToolSpec.render``; runtime
+    # keys win.
+    _render_overrides = _runtime_overrides.get("tool_render_hints") or {}
+    if _render_overrides:
+        if not isinstance(_render_overrides, dict):
+            msg = (
+                f"runtime.yaml ``tool_render_hints:`` must be a mapping "
+                f"of tool name → render dict; got {type(_render_overrides).__name__}"
+            )
+            if strict:
+                raise CartridgeSerializationError(msg)
+            logger.warning("%s; ignoring", msg)
+        else:
+            _unknown_tools = sorted(t for t in _render_overrides if t not in registry.tool_names)
+            if _unknown_tools:
+                msg = (
+                    f"runtime.yaml ``tool_render_hints:`` references unknown "
+                    f"tool(s) {_unknown_tools}; known tools: {registry.tool_names}"
+                )
+                if strict:
+                    raise CartridgeSerializationError(msg)
+                logger.warning("%s; ignoring those entries", msg)
+            for _tool_name, _hints in _render_overrides.items():
+                if _tool_name not in registry.tool_names or not isinstance(_hints, dict):
+                    continue
+                spec = registry._tools[_tool_name]  # noqa: SLF001
+                merged = dict(spec.render or {})
+                merged.update(_hints)
+                spec.render = merged
 
     # Hooks (explicit ``order:`` in config.yaml wins; ties + missing
     # values fall back to alphabetical-by-dirname).

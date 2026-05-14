@@ -1,0 +1,5 @@
+[
+  {"step": 1, "tool": "echo", "args": {"message": "hi"}, "result": {"echoed": "hi"}, "error": null},
+  {"step": 2, "tool": "double", "args": {"n": 4}, "result": {"result": 8}, "error": null},
+  {"step": 3, "tool": "done", "args": {"summary": "ok"}, "result": {"summary": "ok"}, "error": null}
+]

@@ -399,53 +399,41 @@ def _workspace_to_preset_inner(
                 runtime_yaml_kwargs.pop(k, None)
         cfg_kwargs.update(runtime_yaml_kwargs)
 
-    # ── Cartridge spec v2 prep: warn on runtime keys in config.yaml ──
-    # If the cartridge author placed runtime knobs in ``config.yaml``,
-    # emit a DeprecationWarning naming each one and pointing at the
-    # new home. The keys still load (back-compat); v2.0 will hard-fail.
-    _stray_runtime_keys = sorted(
-        k
-        for k in cfg_kwargs
-        if k in CartridgeLayout.RUNTIME_TIER_FIELDS and runtime_yaml_path.is_file() is False
-        # Subtle: when runtime.yaml exists, we already merged its keys
-        # over config.yaml's, so a stray key in config.yaml that's also
-        # in runtime.yaml has been overridden — no need to warn. But
-        # the more common case is no runtime.yaml yet, in which case
-        # every runtime key in config.yaml is a migration candidate.
-    )
-    # When runtime.yaml exists, only warn about config.yaml keys NOT
-    # also declared in runtime.yaml (those are stragglers the author
-    # forgot to move).
-    if runtime_yaml_path.is_file():
-        runtime_yaml_keys_set = set(
-            _load_yaml(runtime_yaml_path.read_text(encoding="utf-8"), source_path=runtime_yaml_path)
-            or {}
-        )
-        _stray_runtime_keys = sorted(
-            k
-            for k in cfg_kwargs
-            if k in CartridgeLayout.RUNTIME_TIER_FIELDS and k not in runtime_yaml_keys_set
-        )
-    if _stray_runtime_keys:
-        import warnings  # noqa: PLC0415
-
-        msg = (
-            f"config.yaml at {cfg_path} declares runtime-tier key(s) "
-            f"{_stray_runtime_keys}. Cartridge spec v2 moves runtime "
-            f"configuration into a sibling ``runtime.yaml`` so the "
-            f"cartridge stays runtime-agnostic. Move these keys to "
-            f"``{runtime_yaml_path}``. See SPEC.md 'Runtime configuration'."
-        )
-        if is_v2:
-            raise CartridgeSerializationError(
-                f"{msg} (schema_version=2 forbids runtime keys in config.yaml; "
-                f"run ``looplet migrate <cartridge>`` to upgrade automatically)"
+    # ── Stray runtime keys in config.yaml ──────────────────────
+    # v2 hard-fails; v1 emits a DeprecationWarning (delegated to
+    # :mod:`looplet.cartridge._v1_compat`).
+    if is_v2:
+        if runtime_yaml_path.is_file():
+            _runtime_yaml_keys = set(
+                _load_yaml(
+                    runtime_yaml_path.read_text(encoding="utf-8"),
+                    source_path=runtime_yaml_path,
+                )
+                or {}
             )
-        warnings.warn(
-            f"{msg} v1.x continues to accept them in config.yaml; v2.0 will "
-            f"hard-fail. Run ``looplet migrate <cartridge>`` to upgrade.",
-            DeprecationWarning,
-            stacklevel=3,
+            _stray = sorted(
+                k
+                for k in cfg_kwargs
+                if k in CartridgeLayout.RUNTIME_TIER_FIELDS and k not in _runtime_yaml_keys
+            )
+        else:
+            _stray = sorted(k for k in cfg_kwargs if k in CartridgeLayout.RUNTIME_TIER_FIELDS)
+        if _stray:
+            raise CartridgeSerializationError(
+                f"config.yaml at {cfg_path} declares runtime-tier key(s) "
+                f"{_stray}. Cartridge spec v2 moves runtime configuration "
+                f"into a sibling ``runtime.yaml``. Move these keys to "
+                f"``{runtime_yaml_path}`` (schema_version=2 forbids runtime "
+                f"keys in config.yaml; run ``looplet migrate <cartridge>`` "
+                f"to upgrade automatically)."
+            )
+    else:
+        from looplet.cartridge._v1_compat import warn_v1_stray_runtime_keys  # noqa: PLC0415
+
+        warn_v1_stray_runtime_keys(
+            cfg_kwargs=cfg_kwargs,
+            cfg_path=cfg_path,
+            runtime_yaml_path=runtime_yaml_path,
         )
 
     sys_prompt_path = root / CartridgeLayout.SYSTEM_PROMPT_MD
@@ -1149,25 +1137,16 @@ def _workspace_to_preset_inner(
                 sorted(registry.tool_names),
             )
 
-    # ── v1.1 prompt files: briefing + recovery ──────────────────────
-    # ``prompts/briefing.md`` (auto-prepended every step) and
-    # ``prompts/recovery.md`` (injected after a tool error) are
-    # opt-in: when present, the loader auto-instantiates a
-    # StaticBriefingHook / RecoveryHintHook and prepends them so
-    # they fire BEFORE any user hooks. Absent files mean no hook is
-    # attached (zero overhead).
-    #
-    # Cartridge spec v2 deprecation: the magic-filename auto-load
-    # is being replaced by the explicit ``builtin_hooks: -
-    # static_briefing: { path: ... }`` form, which keeps the source
-    # of every hook declared in config.yaml rather than discovered
-    # by filename. v1.x continues to honour the auto-load with a
-    # ``DeprecationWarning``; v2.0 will drop it.
+    # ── Magic prompt files: briefing + recovery ────────────────────
+    # ``prompts/briefing.md`` and ``prompts/recovery.md`` were auto-
+    # loaded in v1.x. v2 requires explicit declaration via
+    # ``builtin_hooks: - static_briefing: { path: ... }``. v2 raises
+    # on the magic files; v1 auto-loads with a DeprecationWarning
+    # (delegated to :mod:`looplet.cartridge._v1_compat`).
     briefing_path = root / CartridgeLayout.BRIEFING_MD
     recovery_path = root / CartridgeLayout.RECOVERY_MD
 
     def _builtin_hook_declared(name: str) -> bool:
-        """True if ``builtin_hooks:`` already declares ``name`` explicitly."""
         for entry in _builtin_hook_specs:
             if isinstance(entry, str) and entry == name:
                 return True
@@ -1175,65 +1154,32 @@ def _workspace_to_preset_inner(
                 return True
         return False
 
-    # If the v2 cartridge already wired the hook explicitly to the same
-    # magic path, the file's presence is intentional — don't treat it
-    # as a forbidden magic auto-load.
-    _briefing_is_magic = briefing_path.is_file() and not _builtin_hook_declared("static_briefing")
-    _recovery_is_magic = recovery_path.is_file() and not _builtin_hook_declared("recovery_hint")
-    if _briefing_is_magic or _recovery_is_magic:
-        import warnings as _warnings  # noqa: PLC0415
-
-        from looplet.cartridge.prompt_files import (  # noqa: PLC0415
-            RecoveryHintHook,
-            StaticBriefingHook,
-        )
-
-        prompt_hooks: list[Any] = []
-        if _briefing_is_magic:
-            if is_v2:
-                raise CartridgeSerializationError(
-                    f"Cartridge {root} (schema_version=2): magic "
-                    f"``prompts/briefing.md`` auto-load is removed. Declare it "
-                    f"explicitly via ``builtin_hooks: - static_briefing: "
-                    f"{{ path: prompts/briefing.md }}`` in config.yaml, or run "
-                    f"``looplet migrate <cartridge>`` to upgrade automatically."
-                )
-            text = briefing_path.read_text(encoding="utf-8")
-            prompt_hooks.append(StaticBriefingHook(text=text))
-            _warnings.warn(
-                f"Cartridge {root}: magic ``prompts/briefing.md`` auto-load is "
-                f"deprecated (cartridge spec v2). Declare it explicitly via "
-                f"``builtin_hooks: - static_briefing: {{ path: prompts/briefing.md }}`` "
-                f"in config.yaml. v1.x continues to auto-load; v2.0 will drop "
-                f"the magic-filename behaviour.",
-                DeprecationWarning,
-                stacklevel=2,
+    if is_v2:
+        if briefing_path.is_file() and not _builtin_hook_declared("static_briefing"):
+            raise CartridgeSerializationError(
+                f"Cartridge {root} (schema_version=2): magic "
+                f"``prompts/briefing.md`` auto-load is removed. Declare it "
+                f"explicitly via ``builtin_hooks: - static_briefing: "
+                f"{{ path: prompts/briefing.md }}`` in config.yaml, or run "
+                f"``looplet migrate <cartridge>`` to upgrade automatically."
             )
-        if _recovery_is_magic:
-            if is_v2:
-                raise CartridgeSerializationError(
-                    f"Cartridge {root} (schema_version=2): magic "
-                    f"``prompts/recovery.md`` auto-load is removed. Declare it "
-                    f"explicitly via ``builtin_hooks: - recovery_hint: "
-                    f"{{ path: prompts/recovery.md }}`` in config.yaml, or run "
-                    f"``looplet migrate <cartridge>`` to upgrade automatically."
-                )
-            text = recovery_path.read_text(encoding="utf-8")
-            prompt_hooks.append(RecoveryHintHook(text=text))
-            _warnings.warn(
-                f"Cartridge {root}: magic ``prompts/recovery.md`` auto-load is "
-                f"deprecated (cartridge spec v2). Declare it explicitly via "
-                f"``builtin_hooks: - recovery_hint: {{ path: prompts/recovery.md }}`` "
-                f"in config.yaml. v1.x continues to auto-load; v2.0 will drop "
-                f"the magic-filename behaviour.",
-                DeprecationWarning,
-                stacklevel=2,
+        if recovery_path.is_file() and not _builtin_hook_declared("recovery_hint"):
+            raise CartridgeSerializationError(
+                f"Cartridge {root} (schema_version=2): magic "
+                f"``prompts/recovery.md`` auto-load is removed. Declare it "
+                f"explicitly via ``builtin_hooks: - recovery_hint: "
+                f"{{ path: prompts/recovery.md }}`` in config.yaml, or run "
+                f"``looplet migrate <cartridge>`` to upgrade automatically."
             )
+    else:
+        from looplet.cartridge._v1_compat import load_v1_magic_prompt_hooks  # noqa: PLC0415
+
         # Prepend so these fire before user-declared hooks (which may
-        # build on the briefing) and ahead of permission/built-in hooks
-        # (which fire on dispatch boundaries; relative order doesn't
-        # matter there).
-        hooks = [*prompt_hooks, *hooks]
+        # build on the briefing).
+        hooks = [
+            *load_v1_magic_prompt_hooks(root=root, builtin_hook_specs=_builtin_hook_specs),
+            *hooks,
+        ]
 
     preset = AgentPreset(
         config=config,

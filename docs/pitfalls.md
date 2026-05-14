@@ -294,3 +294,55 @@ the env defaults for the run.
 *was* in the prompt at the call where it first appeared correctly
 but *isn't* in the prompt at the call where it appears wrong, your
 window is too narrow.
+
+
+## 15. `ctx.metadata` is per-dispatch — use a resource for cross-tool state
+
+Every tool dispatch builds a fresh `ToolContext` and copies
+`metadata` from `state.metadata` (and `LoopConfig.tool_metadata`).
+Mutations a tool makes to `ctx.metadata` are local to that one call
+and do **not** survive to the next tool call. Cartridges that try to
+hand state from `accumulator_tool` to `flush_tool` via
+`ctx.metadata.setdefault(...)` will silently see an empty buffer
+when `flush_tool` runs.
+
+The right pattern is a **resource**, which is constructed once per
+cartridge load and passed by reference to every dispatch:
+
+```python
+# resources/ioc_buffer.py
+def build():
+    return {"iocs": []}        # mutable, shared by reference
+```
+
+```yaml
+# tools/normalize/tool.yaml
+requires:
+  - ioc_buffer
+```
+
+```python
+# tools/normalize/execute.py
+def execute(ctx, *, iocs):
+    ctx.resources["ioc_buffer"]["iocs"].extend(iocs)   # persists across calls
+```
+
+```python
+# tools/publish/execute.py
+def execute(ctx):
+    return {"count": len(ctx.resources["ioc_buffer"]["iocs"])}   # sees them all
+```
+
+Why the loop is built this way: `ctx.metadata` is meant for **inputs
+to the call** that the loop or caller wants to pin (task IDs,
+permission mode, request-scoped tags). Anything mutable a tool
+generates and a sibling tool needs to read is, by definition,
+*shared agent state*, and shared state belongs in the resource
+registry where it has an explicit name and an explicit `requires:`
+declaration. This makes it visible in `cartridge_to_preset` strict
+validation and impossible to accidentally lose to a fresh dispatch.
+
+**How to spot it:** a "buffer" tool that reports `total_buffered: 8`
+across three calls, followed by a "publish" tool that writes
+`ioc_count: 0` to disk. The dispatcher is doing what it's supposed
+to; you used the wrong storage.

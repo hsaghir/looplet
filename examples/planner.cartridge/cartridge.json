@@ -1,0 +1,8 @@
+{
+  "description": "Planner cartridge — demonstrates the looplet alternative to a built-in 'plan mode'. Instead of hard-coding a plan/execute split into the loop, the parent delegates planning to a child cartridge via the `subagent` builtin tool, then executes the returned plan itself. This composes cleanly out of looplet primitives (subagent, done) — no special phase, no monolith.",
+  "metadata": {
+    "tags": ["planner", "subagent", "principled-alternative", "demo"]
+  },
+  "name": "planner",
+  "schema_version": 2
+}

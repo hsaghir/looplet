@@ -116,8 +116,6 @@ def preset_to_cartridge(
         if not hasattr(cfg, fname):
             continue
         value = getattr(cfg, fname)
-        if value is None and fname in ("acceptance_criteria",):
-            continue
         try:
             json.dumps(value)
         except TypeError:

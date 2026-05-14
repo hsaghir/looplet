@@ -72,8 +72,13 @@ What is round-trippable
   ``max_tokens``, ``temperature``, ``recovery_temperature``,
   ``done_tool``, ``max_turn_continuations``, ``use_native_tools``,
   ``concurrent_dispatch``, ``reactive_recovery``, ``context_window``,
-  ``max_briefing_tokens``, ``checkpoint_dir``); ``acceptance_criteria``;
-  ``tool_metadata`` and ``generate_kwargs`` (JSON-able dicts).
+  ``max_briefing_tokens``, ``checkpoint_dir``); ``generate_kwargs``
+  (JSON-able dict, RUNTIME-tier sampling overrides). ``tool_metadata``
+  is auto-populated by the loader (e.g. with the resolved model
+  identity for cost tracking) and should not be authored by hand.
+  ``acceptance_criteria`` is intentionally NOT serialised \u2014 if you
+  need acceptance gates, declare them in the ``config.yaml`` of a
+  ``hooks/<name>/`` hook that enforces them.
 * Every :class:`ToolSpec` whose ``execute`` is a top-level function
   (closures cannot be re-imported from disk).
 * Every hook that either: (a) implements an opt-in

@@ -553,8 +553,12 @@ class LoopConfig:
     for reliability in long sessions."""
 
     acceptance_criteria: list[str] | None = None
-    """Optional acceptance criteria checked by quality gate hooks.
-    Domain-specific: e.g. ['check at least 3 data sources'].
+    """Optional acceptance criteria. Free-form strings describing what
+    "done" should look like; consumed only by hooks that opt to read
+    them. The loop itself never inspects this field. Not serialised
+    into cartridges — cartridges that need acceptance gates should
+    declare them in a ``hooks/<name>/config.yaml`` block belonging to
+    a hook that enforces them.
     """
 
     max_briefing_tokens: int | None = None
@@ -2172,6 +2176,13 @@ def composable_loop(
         # ── Parse response (native tool_use or JSON text) ────
         if (config.use_native_tools) and isinstance(raw_response, list):
             tool_calls = parse_native_tool_use(raw_response)
+            # Graceful fallback: model may return text-only content (no
+            # tool_use blocks) even when native tools are enabled — e.g.
+            # when it emits a JSON tool call inside a markdown code fence.
+            # Re-parse the flattened text via the JSON-text parser, which
+            # already handles fences, extra prose, and escape repair.
+            if not tool_calls:
+                tool_calls = parse_multi_tool_calls(raw_response)
         else:
             tool_calls = parse_multi_tool_calls(raw_response)
         if not tool_calls:

@@ -827,6 +827,7 @@ examples/
   git_detective.cartridge/     # Investigates repo health from git history
   threat_intel.cartridge/      # Local-first security briefings
   agent_factory.cartridge/     # The factory itself (extends coder.cartridge)
+  mcp_demo.cartridge/          # MCP transport demo: declares mcp_servers: with a self-contained Python stdio server bundled at _server/calc.py (no Node/npm)
 ```
 
 ## Type contracts

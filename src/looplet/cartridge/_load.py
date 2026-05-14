@@ -121,6 +121,14 @@ def cartridge_to_preset(
     # silently splitting into two independent instances.
     runtime_dict = dict(runtime or {})
 
+    # Inject ``cartridge_root`` (absolute path) into the runtime dict
+    # so ``${runtime.cartridge_root}`` substitutes correctly in any
+    # YAML field — most importantly ``mcp_servers.<name>.command``,
+    # which often needs to point at a server bundled alongside the
+    # cartridge (``${runtime.cartridge_root}/_server/foo.py``). The
+    # caller's value (if any) wins so test harnesses can override.
+    runtime_dict.setdefault("cartridge_root", str(root))
+
     # Workspaces are self-contained — their tools / hooks / resources
     # may reference co-located helper modules (conventionally
     # ``<workspace>/<wsname>_lib.py`` or similar; pick a name unique to

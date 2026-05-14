@@ -36,51 +36,13 @@ from looplet import (
 def _write_minimal(root: Path) -> None:
     """Write a minimal valid cartridge to ``root``."""
     root.mkdir(parents=True, exist_ok=True)
-    (root / "cartridge.json").write_text('{"name": "x", "schema_version": 1}\n')
+    (root / "cartridge.json").write_text('{"name": "x", "schema_version": 2}\n')
     (root / "config.yaml").write_text("max_steps: 3\n")
     (root / "prompts").mkdir(exist_ok=True)
     (root / "prompts" / "system.md").write_text("test agent")
 
 
 # ── 1. tool tags ─────────────────────────────────────────────────
-
-
-def test_tool_tags_round_trip_via_tool_yaml(tmp_path: Path) -> None:
-    root = tmp_path / "x.cartridge"
-    _write_minimal(root)
-    done = root / "tools" / "done"
-    done.mkdir(parents=True)
-    (done / "tool.yaml").write_text(
-        "name: done\n"
-        "description: done\n"
-        "parameters:\n  summary: { type: string }\n"
-        "tags: [terminal, normal-path]\n"
-    )
-    (done / "execute.py").write_text(
-        "def execute(ctx, *, summary):\n    return {'summary': summary}\n"
-    )
-    preset = cartridge_to_preset(str(root), strict=True)
-    spec = preset.tools._tools["done"]
-    assert spec.tags == ["terminal", "normal-path"]
-
-
-def test_tool_tags_default_to_empty_list(tmp_path: Path) -> None:
-    root = tmp_path / "x.cartridge"
-    _write_minimal(root)
-    done = root / "tools" / "done"
-    done.mkdir(parents=True)
-    (done / "tool.yaml").write_text(
-        "name: done\ndescription: done\nparameters:\n  summary: { type: string }\n"
-    )
-    (done / "execute.py").write_text(
-        "def execute(ctx, *, summary):\n    return {'summary': summary}\n"
-    )
-    preset = cartridge_to_preset(str(root), strict=True)
-    spec = preset.tools._tools["done"]
-    assert spec.tags == []
-
-
-# ── 2. tool render hints ─────────────────────────────────────────
 
 
 def test_tool_render_hints_round_trip(tmp_path: Path) -> None:
@@ -102,6 +64,46 @@ def test_tool_render_hints_round_trip(tmp_path: Path) -> None:
     assert spec.render == {"preview": 5, "max_chars": 800}
 
 
+def test_tool_render_hints_runtime_yaml_overrides(tmp_path: Path) -> None:
+    """Runtime overrides for render hints belong in ``runtime.yaml``.
+
+    Cartridge spec v2 principled exclusion: ``render:`` in tool.yaml
+    declares the agent's default; the host shifts the policy via
+    ``runtime.yaml: tool_render_hints: { <tool>: {...} }`` without
+    editing the cartridge body. Shallow-merge: runtime keys win,
+    tool.yaml keys not overridden survive.
+    """
+    root = tmp_path / "x.cartridge"
+    _write_minimal(root)
+    done = root / "tools" / "done"
+    done.mkdir(parents=True)
+    (done / "tool.yaml").write_text(
+        "name: done\n"
+        "description: done\n"
+        "parameters:\n  summary: { type: string }\n"
+        "render:\n  preview: 5\n  max_chars: 800\n"
+    )
+    (done / "execute.py").write_text(
+        "def execute(ctx, *, summary):\n    return {'summary': summary}\n"
+    )
+    (root / "runtime.yaml").write_text("tool_render_hints:\n  done:\n    preview: 25\n")
+    preset = cartridge_to_preset(str(root), strict=True)
+    spec = preset.tools._tools["done"]
+    # ``preview`` overridden by runtime; ``max_chars`` survives from tool.yaml.
+    assert spec.render == {"preview": 25, "max_chars": 800}
+
+
+def test_tool_render_hints_unknown_tool_strict_rejects(tmp_path: Path) -> None:
+    """Typo in ``tool_render_hints:`` is a load-time error under strict."""
+    root = tmp_path / "x.cartridge"
+    _write_minimal(root)
+    (root / "runtime.yaml").write_text("tool_render_hints:\n  no_such_tool:\n    preview: 1\n")
+    import pytest  # noqa: PLC0415
+
+    with pytest.raises(looplet.CartridgeSerializationError, match="unknown tool"):
+        cartridge_to_preset(str(root), strict=True)
+
+
 # ── 3. single-file tool form ─────────────────────────────────────
 
 
@@ -116,8 +118,6 @@ def test_single_file_tool_form_loads(tmp_path: Path) -> None:
         '__name__ = "echo"\n'
         '__description__ = "Echo back what you got."\n'
         '__parameters__ = {"text": {"type": "string"}}\n'
-        '__tags__ = ["test"]\n'
-        '__render__ = {"preview": 3}\n'
         "\n"
         "def execute(ctx, *, text):\n"
         "    return {'echoed': text}\n"
@@ -136,8 +136,6 @@ def test_single_file_tool_form_loads(tmp_path: Path) -> None:
     spec = preset.tools._tools["echo"]
     assert spec.name == "echo"
     assert spec.description == "Echo back what you got."
-    assert spec.tags == ["test"]
-    assert spec.render == {"preview": 3}
     assert "text" in spec.parameter_names()
 
 
@@ -208,96 +206,179 @@ def test_single_file_tool_missing_execute_raises_strict(tmp_path: Path) -> None:
 # ── 4. done_tools plural ─────────────────────────────────────────
 
 
-def test_done_tools_plural_terminates_on_either(tmp_path: Path) -> None:
-    """Agent that calls EITHER ``report`` or ``escalate`` ends the loop."""
-    root = tmp_path / "x.cartridge"
-    _write_minimal(root)
-    (root / "config.yaml").write_text("max_steps: 5\ndone_tool: report\ndone_tools: [escalate]\n")
-    tools = root / "tools"
-    tools.mkdir(exist_ok=True)
-    (tools / "report.py").write_text(
-        '__name__ = "report"\n__description__ = "report"\n'
-        '__parameters__ = {"summary": {"type": "string"}}\n\n'
-        "def execute(ctx, *, summary):\n    return {'summary': summary}\n"
-    )
-    (tools / "escalate.py").write_text(
-        '__name__ = "escalate"\n__description__ = "escalate"\n'
-        '__parameters__ = {"reason": {"type": "string"}}\n\n'
-        "def execute(ctx, *, reason):\n    return {'reason': reason}\n"
-    )
-    preset = cartridge_to_preset(str(root), strict=True)
-    assert preset.config.done_tool == "report"
-    assert preset.config.done_tools == ["escalate"]
-
-    # Path 1: agent finishes via ``escalate`` (the secondary sentinel).
-    llm = MockLLMBackend(
-        responses=[
-            json.dumps(
-                {"tool": "escalate", "args": {"reason": "x"}, "reasoning": "", "call_id": "1"}
-            ),
-        ]
-    )
-    steps = list(
-        composable_loop(
-            llm=llm,
-            tools=preset.tools,
-            state=preset.state,
-            config=preset.config,
-            hooks=preset.hooks,
-            task={"goal": "test"},
-        )
-    )
-    assert len(steps) == 1
-    assert steps[0].tool_call.tool == "escalate"
-
-
 def test_done_tools_plural_default_empty(tmp_path: Path) -> None:
     """Default ``done_tools`` is empty list (back-compat)."""
     cfg = LoopConfig(max_steps=5)
     assert cfg.done_tools == []
 
 
+def test_v2_rejects_done_tools_in_cartridge(tmp_path: Path) -> None:
+    """Cartridge spec v2 cut: ``done_tools:`` plural sentinels removed.
+
+    Principled alternative: one ``done`` tool with an
+    ``output_schema:`` whose payload carries an ``outcome:`` enum
+    discriminating the branches. The error message must point the
+    user at the alternative pattern.
+    """
+    root = tmp_path / "v2.cartridge"
+    _write_minimal(root)
+    (root / "cartridge.json").write_text('{"name": "x", "schema_version": 2}\n')
+    (root / "config.yaml").write_text("max_steps: 5\ndone_tool: report\ndone_tools: [escalate]\n")
+    done = root / "tools" / "report"
+    done.mkdir(parents=True)
+    (done / "tool.yaml").write_text(
+        "name: report\ndescription: r\nparameters:\n  summary: { type: string }\n"
+    )
+    (done / "execute.py").write_text(
+        "def execute(ctx, *, summary):\n    return {'summary': summary}\n"
+    )
+    with pytest.raises(
+        looplet.CartridgeSerializationError,
+        match=r"done_tools.*spec v2|payload-discriminated",
+    ):
+        cartridge_to_preset(str(root), strict=True)
+
+
+def test_v2_payload_discriminated_outcome_validates(tmp_path: Path) -> None:
+    """v2 worked example: one ``done``, one ``output_schema``, payload-discriminated outcome.
+
+    The single done's schema branches on an ``outcome:`` enum; the
+    loop validates the args against that schema. Replaces the v1
+    ``done_tools:`` per-sentinel pattern.
+    """
+    root = tmp_path / "v2.cartridge"
+    _write_minimal(root)
+    (root / "cartridge.json").write_text('{"name": "x", "schema_version": 2}\n')
+    (root / "config.yaml").write_text("max_steps: 5\ndone_tool: done\n")
+    done = root / "tools" / "done"
+    done.mkdir(parents=True)
+    (done / "tool.yaml").write_text(
+        "name: done\n"
+        "description: report or escalate\n"
+        "parameters:\n"
+        "  outcome: { type: string, enum: [report, escalate] }\n"
+        "  summary: { type: string, default: '' }\n"
+        "  blocked_on: { type: string, default: '' }\n"
+        "output_schema:\n"
+        "  type: object\n"
+        "  required: [outcome]\n"
+        "  oneOf:\n"
+        "    - properties: { outcome: { const: report }, summary: { type: string, minLength: 1 } }\n"
+        "      required: [outcome, summary]\n"
+        "    - properties: { outcome: { const: escalate }, blocked_on: { type: string, minLength: 1 } }\n"
+        "      required: [outcome, blocked_on]\n"
+    )
+    (done / "execute.py").write_text(
+        "def execute(ctx, *, outcome, summary='', blocked_on=''):\n"
+        "    return {'outcome': outcome}\n"
+    )
+    preset = cartridge_to_preset(str(root), strict=True)
+    # The single done's schema is recorded for primary-sentinel validation
+    # via ``LoopConfig.output_schema``. Verify both branches load cleanly
+    # by exercising one valid call from each.
+    for outcome_args in (
+        {"outcome": "report", "summary": "ok"},
+        {"outcome": "escalate", "blocked_on": "missing creds"},
+    ):
+        llm = MockLLMBackend(
+            responses=[
+                json.dumps({"tool": "done", "args": outcome_args, "reasoning": "", "call_id": "1"}),
+            ]
+        )
+        # Fresh state per run (state is mutable across loop invocations).
+        state = DefaultState(max_steps=preset.config.max_steps)
+        steps = list(
+            composable_loop(
+                llm=llm,
+                tools=preset.tools,
+                state=state,
+                config=preset.config,
+                hooks=preset.hooks,
+                task={"goal": "test"},
+            )
+        )
+        assert len(steps) == 1
+        assert steps[0].tool_call.tool == "done"
+        assert steps[0].tool_result.error is None
+
+
+def test_v2_rejects_tags_on_multi_file_tool(tmp_path: Path) -> None:
+    """v2 cut: ``tags:`` on tool.yaml — categorisation is a hook concern."""
+    root = tmp_path / "v2.cartridge"
+    _write_minimal(root)
+    (root / "cartridge.json").write_text('{"name": "x", "schema_version": 2}\n')
+    (root / "config.yaml").write_text("max_steps: 3\ndone_tool: done\n")
+    done = root / "tools" / "done"
+    done.mkdir(parents=True)
+    (done / "tool.yaml").write_text(
+        "name: done\ndescription: done\n"
+        "parameters:\n  summary: { type: string }\n"
+        "tags: [terminal]\n"
+    )
+    (done / "execute.py").write_text(
+        "def execute(ctx, *, summary):\n    return {'summary': summary}\n"
+    )
+    with pytest.raises(looplet.CartridgeSerializationError, match=r"tags:.*spec v2"):
+        cartridge_to_preset(str(root), strict=True)
+
+
+def test_v2_rejects_dunders_on_single_file_tool(tmp_path: Path) -> None:
+    """v2 cut: single-file tools must stay trivial — no resources/render/tags."""
+    root = tmp_path / "v2.cartridge"
+    _write_minimal(root)
+    (root / "cartridge.json").write_text('{"name": "x", "schema_version": 2}\n')
+    (root / "config.yaml").write_text("max_steps: 3\ndone_tool: done\n")
+    tools = root / "tools"
+    tools.mkdir(exist_ok=True)
+    (tools / "done.py").write_text(
+        '__name__ = "done"\n__description__ = "d"\n'
+        '__parameters__ = {"summary": {"type": "string"}}\n'
+        '__requires__ = ["siem"]\n\n'
+        "def execute(ctx, *, summary):\n    return {'summary': summary}\n"
+    )
+    with pytest.raises(
+        looplet.CartridgeSerializationError, match=r"single-file tool.*__requires__"
+    ):
+        cartridge_to_preset(str(root), strict=True)
+
+
+def test_v2_rejects_py_ref_grammar(tmp_path: Path) -> None:
+    """v2 cut: ``${py:module:symbol}`` — wrap in resources/<name>.py builder."""
+    root = tmp_path / "v2.cartridge"
+    _write_minimal(root)
+    (root / "cartridge.json").write_text('{"name": "x", "schema_version": 2}\n')
+    (root / "config.yaml").write_text("max_steps: 3\ndone_tool: done\n")
+    # ``compact_service`` is a runtime-tier field; it must live in
+    # runtime.yaml under v2. Use it to plant a ${py:...} ref so the
+    # ref-resolution pass sees and rejects the legacy grammar.
+    (root / "runtime.yaml").write_text(
+        "compact_service: ${py:looplet.compact:DefaultCompactService}\n"
+    )
+    done = root / "tools" / "done"
+    done.mkdir(parents=True)
+    (done / "tool.yaml").write_text(
+        "name: done\ndescription: d\nparameters:\n  summary: { type: string }\n"
+    )
+    (done / "execute.py").write_text(
+        "def execute(ctx, *, summary):\n    return {'summary': summary}\n"
+    )
+    with pytest.raises(
+        looplet.CartridgeSerializationError,
+        match=r"\$\{py:.*\} reference grammar is removed",
+    ):
+        cartridge_to_preset(str(root), strict=True)
+
+
+# Legacy v1.1 ``done_tools:`` per-sentinel validation removed in v2.
+# The previous test fixture lived here; see
+# ``test_v2_payload_discriminated_outcome_validates`` above for the
+# replacement pattern (one done, one schema, payload-discriminated outcome).
+
+
 # ── 5. prompts/briefing.md + recovery.md auto-attach ─────────────
 
 
 @pytest.mark.filterwarnings("ignore::DeprecationWarning")
-def test_briefing_md_attaches_static_briefing_hook(tmp_path: Path) -> None:
-    root = tmp_path / "x.cartridge"
-    _write_minimal(root)
-    (root / "prompts" / "briefing.md").write_text("Always be polite.")
-    done = root / "tools" / "done"
-    done.mkdir(parents=True)
-    (done / "tool.yaml").write_text(
-        "name: done\ndescription: done\nparameters:\n  summary: { type: string }\n"
-    )
-    (done / "execute.py").write_text(
-        "def execute(ctx, *, summary):\n    return {'summary': summary}\n"
-    )
-    preset = cartridge_to_preset(str(root), strict=True)
-    hook_names = [type(h).__name__ for h in preset.hooks]
-    assert "StaticBriefingHook" in hook_names
-    sb = next(h for h in preset.hooks if type(h).__name__ == "StaticBriefingHook")
-    assert sb.text == "Always be polite."
-
-
-@pytest.mark.filterwarnings("ignore::DeprecationWarning")
-def test_recovery_md_attaches_recovery_hint_hook(tmp_path: Path) -> None:
-    root = tmp_path / "x.cartridge"
-    _write_minimal(root)
-    (root / "prompts" / "recovery.md").write_text("Try again with smaller args.")
-    done = root / "tools" / "done"
-    done.mkdir(parents=True)
-    (done / "tool.yaml").write_text(
-        "name: done\ndescription: done\nparameters:\n  summary: { type: string }\n"
-    )
-    (done / "execute.py").write_text(
-        "def execute(ctx, *, summary):\n    return {'summary': summary}\n"
-    )
-    preset = cartridge_to_preset(str(root), strict=True)
-    hook_names = [type(h).__name__ for h in preset.hooks]
-    assert "RecoveryHintHook" in hook_names
-
-
 def test_no_prompt_files_means_no_extra_hooks(tmp_path: Path) -> None:
     root = tmp_path / "x.cartridge"
     _write_minimal(root)
@@ -325,9 +406,7 @@ def test_inline_comment_stripped_from_scalar_value(tmp_path: Path) -> None:
     root = tmp_path / "x.cartridge"
     _write_minimal(root)
     (root / "config.yaml").write_text(
-        "max_steps: 3\n"
-        "done_tool: done                   # this is the terminal sentinel\n"
-        "done_tools: [escalate]            # alternate path\n"
+        "max_steps: 3\ndone_tool: done                   # this is the terminal sentinel\n"
     )
     tools = root / "tools"
     tools.mkdir(exist_ok=True)
@@ -339,16 +418,8 @@ def test_inline_comment_stripped_from_scalar_value(tmp_path: Path) -> None:
     (done / "execute.py").write_text(
         "def execute(ctx, *, summary):\n    return {'summary': summary}\n"
     )
-    (tools / "escalate.py").write_text(
-        '__name__ = "escalate"\n__description__ = "escalate"\n'
-        '__parameters__ = {"reason": {"type": "string"}}\n\n'
-        "def execute(ctx, *, reason):\n    return {'reason': reason}\n"
-    )
     preset = cartridge_to_preset(str(root), strict=True)
     assert preset.config.done_tool == "done", f"inline comment leaked: {preset.config.done_tool!r}"
-    assert preset.config.done_tools == ["escalate"], (
-        f"inline comment leaked or flow list mis-parsed: {preset.config.done_tools!r}"
-    )
 
 
 def test_inline_comment_does_not_eat_url_anchor() -> None:
@@ -366,3 +437,120 @@ def test_inline_comment_inside_flow_collection_not_stripped() -> None:
     # Empty list with a real trailing comment.
     parsed = _load_yaml("done_tools: []          # nothing here\n")
     assert parsed["done_tools"] == []
+
+
+# ── 7. cartridge.json: language: field ───────────────────────────
+
+
+def test_language_defaults_to_python_when_missing(tmp_path: Path) -> None:
+    """Manifest without ``language:`` loads (back-compat default)."""
+    root = tmp_path / "x.cartridge"
+    _write_minimal(root)
+    done = root / "tools" / "done"
+    done.mkdir(parents=True)
+    (done / "tool.yaml").write_text(
+        "name: done\ndescription: d\nparameters:\n  summary: { type: string }\n"
+    )
+    (done / "execute.py").write_text(
+        "def execute(ctx, *, summary):\n    return {'summary': summary}\n"
+    )
+    preset = cartridge_to_preset(str(root), strict=True)
+    assert preset is not None
+
+
+def test_v2_rejects_non_python_language(tmp_path: Path) -> None:
+    """Loader refuses cleanly when ``language:`` is not python."""
+    from looplet.cartridge import CartridgeSerializationError
+
+    root = tmp_path / "x.cartridge"
+    root.mkdir()
+    (root / "cartridge.json").write_text(
+        '{"name": "x", "schema_version": 2, "language": "typescript"}\n'
+    )
+    (root / "config.yaml").write_text("max_steps: 3\n")
+    (root / "prompts").mkdir()
+    (root / "prompts" / "system.md").write_text("x")
+    with pytest.raises(CartridgeSerializationError, match="typescript"):
+        cartridge_to_preset(str(root), strict=True)
+
+
+def test_language_round_trips_via_preset_to_cartridge(tmp_path: Path) -> None:
+    """``preset_to_cartridge`` writes ``language: python`` into manifest."""
+    from looplet import preset_to_cartridge
+
+    root = tmp_path / "src.cartridge"
+    _write_minimal(root)
+    done = root / "tools" / "done"
+    done.mkdir(parents=True)
+    (done / "tool.yaml").write_text(
+        "name: done\ndescription: d\nparameters:\n  summary: { type: string }\n"
+    )
+    (done / "execute.py").write_text(
+        "def execute(ctx, *, summary):\n    return {'summary': summary}\n"
+    )
+    preset = cartridge_to_preset(str(root), strict=True)
+    out = tmp_path / "out.cartridge"
+    preset_to_cartridge(preset, str(out))
+    meta = json.loads((out / "cartridge.json").read_text())
+    assert meta["language"] == "python"
+
+
+# ── 8. tools/<n>/description.md promotion ────────────────────────
+
+
+def test_tool_description_md_overrides_yaml(tmp_path: Path) -> None:
+    """When ``description.md`` is present, its content wins."""
+    root = tmp_path / "x.cartridge"
+    _write_minimal(root)
+    done = root / "tools" / "done"
+    done.mkdir(parents=True)
+    (done / "tool.yaml").write_text(
+        "name: done\ndescription: short yaml\nparameters:\n  summary: { type: string }\n"
+    )
+    (done / "description.md").write_text("Long-form description.\n\nWith multiple paragraphs.\n")
+    (done / "execute.py").write_text(
+        "def execute(ctx, *, summary):\n    return {'summary': summary}\n"
+    )
+    preset = cartridge_to_preset(str(root), strict=True)
+    spec = preset.tools._tools["done"]
+    assert "Long-form description" in spec.description
+    assert "multiple paragraphs" in spec.description
+    assert "short yaml" not in spec.description
+
+
+def test_tool_description_md_absent_falls_back_to_yaml(tmp_path: Path) -> None:
+    root = tmp_path / "x.cartridge"
+    _write_minimal(root)
+    done = root / "tools" / "done"
+    done.mkdir(parents=True)
+    (done / "tool.yaml").write_text(
+        "name: done\ndescription: yaml-only desc\nparameters:\n  summary: { type: string }\n"
+    )
+    (done / "execute.py").write_text(
+        "def execute(ctx, *, summary):\n    return {'summary': summary}\n"
+    )
+    preset = cartridge_to_preset(str(root), strict=True)
+    assert preset.tools._tools["done"].description == "yaml-only desc"
+
+
+def test_serialiser_promotes_multiline_description_to_md(tmp_path: Path) -> None:
+    """Multi-line tool descriptions get written to description.md on round-trip."""
+    from looplet import preset_to_cartridge
+
+    root = tmp_path / "src.cartridge"
+    _write_minimal(root)
+    done = root / "tools" / "done"
+    done.mkdir(parents=True)
+    (done / "tool.yaml").write_text(
+        "name: done\ndescription: short\nparameters:\n  summary: { type: string }\n"
+    )
+    (done / "description.md").write_text("Headline.\n\nSecond paragraph here.\n")
+    (done / "execute.py").write_text(
+        "def execute(ctx, *, summary):\n    return {'summary': summary}\n"
+    )
+    preset = cartridge_to_preset(str(root), strict=True)
+    out = tmp_path / "out.cartridge"
+    preset_to_cartridge(preset, str(out))
+    desc_md = out / "tools" / "done" / "description.md"
+    assert desc_md.is_file()
+    assert "Second paragraph" in desc_md.read_text()

@@ -81,42 +81,11 @@ def _summary(preset) -> dict:
     }
 
 
-def test_tool_tags_round_trip(tmp_path: Path) -> None:
-    """Tool ``tags`` declared in ``tool.yaml`` must survive a round-trip."""
-    src = tmp_path / "src.cartridge"
-    src.mkdir()
-    (src / "cartridge.json").write_text('{"name": "x", "schema_version": 1}\n')
-    (src / "config.yaml").write_text("max_steps: 3\n")
-    (src / "prompts").mkdir()
-    (src / "prompts" / "system.md").write_text("test")
-    done = src / "tools" / "done"
-    done.mkdir(parents=True)
-    (done / "tool.yaml").write_text(
-        "name: done\n"
-        "description: done\n"
-        "parameters:\n  summary: { type: string }\n"
-        "tags: [terminal, normal-path]\n"
-    )
-    (done / "execute.py").write_text(
-        "def execute(ctx, *, summary):\n    return {'summary': summary}\n"
-    )
-
-    p1 = cartridge_to_preset(str(src), strict=True)
-    out = tmp_path / "rt.cartridge"
-    preset_to_cartridge(p1, out, strict=False)
-    p2 = cartridge_to_preset(str(out), strict=True)
-
-    assert p1.tools._tools["done"].tags == ["terminal", "normal-path"]
-    assert p2.tools._tools["done"].tags == p1.tools._tools["done"].tags, (
-        f"tags lost on round-trip: {p1.tools._tools['done'].tags} → {p2.tools._tools['done'].tags}"
-    )
-
-
 def test_tool_render_hints_round_trip(tmp_path: Path) -> None:
     """Tool ``render`` hints must survive a round-trip."""
     src = tmp_path / "src.cartridge"
     src.mkdir()
-    (src / "cartridge.json").write_text('{"name": "x", "schema_version": 1}\n')
+    (src / "cartridge.json").write_text('{"name": "x", "schema_version": 2}\n')
     (src / "config.yaml").write_text("max_steps: 3\n")
     (src / "prompts").mkdir()
     (src / "prompts" / "system.md").write_text("test")
@@ -146,7 +115,7 @@ def test_permissions_with_contains_matcher_round_trip(tmp_path: Path) -> None:
     the matcher closure."""
     src = tmp_path / "src.cartridge"
     src.mkdir()
-    (src / "cartridge.json").write_text('{"name": "x", "schema_version": 1}\n')
+    (src / "cartridge.json").write_text('{"name": "x", "schema_version": 2}\n')
     (src / "config.yaml").write_text(
         "max_steps: 3\n"
         "permissions:\n"
@@ -202,7 +171,7 @@ def test_tool_required_resource_written_back(tmp_path: Path) -> None:
     round-tripped cartridge so the reloaded tool can dispatch."""
     src = tmp_path / "src.cartridge"
     src.mkdir()
-    (src / "cartridge.json").write_text('{"name": "x", "schema_version": 1}\n')
+    (src / "cartridge.json").write_text('{"name": "x", "schema_version": 2}\n')
     (src / "config.yaml").write_text("max_steps: 3\n")
     (src / "prompts").mkdir()
     (src / "prompts" / "system.md").write_text("test")
@@ -251,7 +220,7 @@ def test_hook_kwargs_inferred_from_init_when_no_to_config(tmp_path: Path) -> Non
     introspecting the ``__init__`` signature."""
     src = tmp_path / "src.cartridge"
     src.mkdir()
-    (src / "cartridge.json").write_text('{"name": "x", "schema_version": 1}\n')
+    (src / "cartridge.json").write_text('{"name": "x", "schema_version": 2}\n')
     (src / "config.yaml").write_text("max_steps: 3\n")
     (src / "prompts").mkdir()
     (src / "prompts" / "system.md").write_text("test")

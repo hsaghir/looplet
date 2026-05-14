@@ -621,7 +621,7 @@ def run_coding_agent(
     tools = build_tools(ws)
     state = DefaultState(max_steps=max_steps)
 
-    print(f"[harness] Workspace: {ws}")
+    print(f"[harness] Cartridge: {ws}")
     print(f"[harness] Task: {task}")
     print(f"[harness] Max steps: {max_steps}")
     print()

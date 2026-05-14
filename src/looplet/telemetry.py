@@ -350,7 +350,7 @@ class MetricsHook:
         self._classify = classify  # optional Callable[[Step, Any], str]
 
     def to_config(self) -> dict:
-        """Workspace round-trip: emit ``collector`` as an ``@ref``.
+        """Cartridge round-trip: emit ``collector`` as an ``@ref``.
 
         When ``self._collector`` was produced by a workspace resource
         builder, the original ref name is preserved. Otherwise the

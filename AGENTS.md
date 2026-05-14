@@ -182,6 +182,15 @@ extends: ../coder.cartridge
 # Built-in tools to wire in. Currently shipped: subagent, scaffold_cartridge.
 builtin_tools:
   - subagent
+
+# External tools served by MCP (Model Context Protocol) subprocesses.
+# Each entry's `command:` is spawned at load; discovered tools are
+# registered alongside in-process Python tools. CONTRACT-tier:
+# the agent's identity depends on which servers it speaks to.
+mcp_servers:
+  fs:
+    command: "npx @modelcontextprotocol/server-filesystem /tmp"
+    tools: [read_file, write_file]   # optional allow-list; absent = all
 ```
 
 `runtime.yaml` (RUNTIME tier) — host-specific knobs that travel
@@ -198,7 +207,7 @@ Field tiers (spec v2):
 
 - **CONTRACT** (`config.yaml`): `max_steps`, `system_prompt`, `done_tool`,
   `done_tools`, `permissions`, `memory`, `model`, `extends`,
-  `builtin_tools`, `builtin_hooks`. (`tool_metadata` rides along but
+  `builtin_tools`, `builtin_hooks`, `mcp_servers`. (`tool_metadata` rides along but
   is auto-populated by the loader — do not author.)
 - **RUNTIME** (`runtime.yaml`): `max_tokens`, `temperature`,
   `recovery_temperature`, `max_turn_continuations`, `generate_kwargs`,
@@ -262,6 +271,7 @@ def build():
 - **`extends:` is resolved before this cartridge's overrides apply.** Tools/hooks defined locally override inherited ones with the same name.
 - **`setup.py` runs at load time** with `(preset, resources, *, runtime=None, **kwargs)`. Use it to mutate the preset (e.g. add a hook only when `runtime["debug"]` is set). Most cartridges don't need one.
 - **`builtin_tools:` resolves to looplet-shipped tools.** Today: `subagent` (run a sub-loop), `scaffold_cartridge` (the agent-facing scaffolder).
+- **`mcp_servers:` spawns one subprocess per entry at load.** Discovered tools are registered into the cartridge's tool registry. The live adapters are stashed on `preset.mcp_adapters`; use `with cartridge_to_preset(...) as preset:` so the subprocesses are terminated cleanly on exit.
 
 ### Round-trip API
 
@@ -817,6 +827,7 @@ examples/
   git_detective.cartridge/     # Investigates repo health from git history
   threat_intel.cartridge/      # Local-first security briefings
   agent_factory.cartridge/     # The factory itself (extends coder.cartridge)
+  mcp_demo.cartridge/          # MCP transport demo: declares mcp_servers: with a self-contained Python stdio server bundled at _server/calc.py (no Node/npm)
 ```
 
 ## Type contracts

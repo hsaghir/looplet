@@ -6,7 +6,7 @@ A looplet workspace is a directory of files that defines an agent **as data** �
 
 ```
 my_agent.workspace/
-├── workspace.json          # {"name": "...", "schema_version": 1}
+├── workspace.json          # {"name": "...", "schema_version": 2}
 ├── config.yaml             # max_steps, max_tokens, etc. (LoopConfig fields)
 ├── prompts/system.md       # the agent's system prompt (REQUIRED for it to be useful)
 ├── tools/<name>/

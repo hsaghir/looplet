@@ -25,7 +25,6 @@ if TYPE_CHECKING:
 
 __all__ = [
     "ContextPressureHook",
-    "ContextManagerHook",
 ]
 
 logger = logging.getLogger(__name__)
@@ -391,7 +390,3 @@ def _compact_data(data: Any, result_key: str | None) -> dict:
         "summary": str(data)[:500],
         **({"recall_key": result_key} if result_key else {}),
     }
-
-
-# Back-compat alias — consumer code imports ``ContextManagerHook``.
-ContextManagerHook = ContextPressureHook

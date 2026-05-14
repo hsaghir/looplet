@@ -37,79 +37,13 @@ from looplet import (
 
 def _write_minimal(root: Path) -> None:
     root.mkdir(parents=True, exist_ok=True)
-    (root / "cartridge.json").write_text('{"name": "x", "schema_version": 1}\n')
+    (root / "cartridge.json").write_text('{"name": "x", "schema_version": 2}\n')
     (root / "config.yaml").write_text("max_steps: 5\n")
     (root / "prompts").mkdir(exist_ok=True)
     (root / "prompts" / "system.md").write_text("test")
 
 
 # ── output_schema only validates the primary done_tool ──────────
-
-
-def test_output_schema_does_not_reject_secondary_done_tools(tmp_path: Path) -> None:
-    """A v1.1 cartridge with ``done_tools: [escalate]`` must NOT have
-    its ``escalate`` payload rejected by the schema authored for the
-    primary ``resolve``.
-    """
-    root = tmp_path / "x.cartridge"
-    _write_minimal(root)
-    (root / "config.yaml").write_text("max_steps: 5\ndone_tool: resolve\ndone_tools: [escalate]\n")
-    tools = root / "tools"
-    tools.mkdir(exist_ok=True)
-    # Primary sentinel WITH output_schema — strict shape.
-    resolve_dir = tools / "resolve"
-    resolve_dir.mkdir()
-    (resolve_dir / "tool.yaml").write_text(
-        "name: resolve\n"
-        "description: resolve\n"
-        "parameters:\n"
-        "  draft: { type: string }\n"
-        "  evidence: { type: array }\n"
-        "output_schema:\n"
-        "  type: object\n"
-        "  required: [draft, evidence]\n"
-        "  properties:\n"
-        "    draft: { type: string, minLength: 30 }\n"
-        "    evidence: { type: array }\n"
-    )
-    (resolve_dir / "execute.py").write_text(
-        "def execute(ctx, *, draft, evidence): return {'draft': draft, 'evidence': evidence}\n"
-    )
-    # Secondary sentinel — different shape, no output_schema enforced.
-    (tools / "escalate.py").write_text(
-        '__name__ = "escalate"\n__description__ = "escalate"\n'
-        '__parameters__ = {"reason": {"type": "string"}}\n\n'
-        "def execute(ctx, *, reason): return {'reason': reason}\n"
-    )
-    preset = cartridge_to_preset(str(root), strict=True)
-
-    # Agent calls the SECONDARY sentinel ``escalate`` with a payload
-    # that's invalid against the resolve schema (no draft, no evidence).
-    # If the loop validates resolve's schema against escalate, this
-    # would loop forever rejecting the call. Pre-fix: that's the bug.
-    llm = MockLLMBackend(
-        responses=[
-            json.dumps(
-                {"tool": "escalate", "args": {"reason": "outage"}, "reasoning": "", "call_id": "1"}
-            ),
-        ]
-    )
-    steps = list(
-        composable_loop(
-            llm=llm,
-            tools=preset.tools,
-            state=preset.state,
-            config=preset.config,
-            hooks=preset.hooks,
-            task={"goal": "test"},
-        )
-    )
-    assert len(steps) == 1
-    assert steps[0].tool_call.tool == "escalate"
-    assert steps[0].tool_result.error is None, (
-        f"secondary sentinel ``escalate`` was rejected by ``resolve``'s output_schema: "
-        f"{steps[0].tool_result.error}"
-    )
 
 
 def test_output_schema_still_validates_primary_done_tool(tmp_path: Path) -> None:

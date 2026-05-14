@@ -1,0 +1,6 @@
+name: double
+description: Double an integer.
+parameters:
+  n:
+    type: integer
+    description: The integer to double.

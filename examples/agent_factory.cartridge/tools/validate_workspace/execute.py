@@ -48,7 +48,7 @@ def execute(
             "missing": "cartridge.json",
             "recovery": (
                 f"Create {workspace_path}/cartridge.json with content "
-                '`{"name": "<agent-name>", "schema_version": 1}`.'
+                '`{"name": "<agent-name>", "schema_version": 2}`.'
             ),
         }
     except CartridgeSerializationError as exc:

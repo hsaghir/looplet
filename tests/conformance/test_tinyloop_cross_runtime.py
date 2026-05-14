@@ -45,7 +45,7 @@ def tinyloop_module():
 def test_tinyloop_loads_minimal_fixture(tinyloop_module) -> None:
     cart = tinyloop_module.load_cartridge(FIXTURE / "cartridge")
     assert cart.name == "minimal"
-    assert cart.schema_version == 1
+    assert cart.schema_version == 2
     assert "done" in cart.tools
 
 

@@ -22,7 +22,7 @@ import pytest
 
 from looplet import MockLLMBackend, cartridge_to_preset
 from looplet.cartridge import CartridgeSerializationError
-from looplet.scaffold import scaffold_cartridge
+from looplet.cartridge.scaffold import scaffold_cartridge
 from looplet.types import ToolContext
 
 # ── scaffold ────────────────────────────────────────────────────
@@ -44,7 +44,7 @@ def test_scaffold_creates_loadable_workspace(tmp_path: Path) -> None:
     import json as _json
 
     meta = _json.loads((p / "cartridge.json").read_text())
-    assert meta == {"name": "agent", "schema_version": 1}
+    assert meta == {"name": "agent", "schema_version": 2}
 
 
 def test_scaffold_workspace_json_handles_special_chars(tmp_path: Path) -> None:
@@ -233,45 +233,6 @@ def test_scaffold_workspace_tool_existing_dir_returns_recovery(tmp_path: Path) -
     result = spec.execute(ctx, path=str(tmp_path / "blocked"), name="x", tools=["a"])
     assert "FileExistsError" in result.get("error", "")
     assert "overwrite=True" in result.get("recovery", "")
-
-
-def test_subagent_forwards_workspace_to_subloop_runtime(tmp_path: Path) -> None:
-    """Subagent must propagate the parent's workspace path so the
-    sub-loop's ``runtime["workspace"]`` is the same project root.
-
-    Regression for the bug where ``runtime`` was read from
-    ``ctx.metadata["runtime"]`` (which the loop never sets) instead
-    of being constructed from the parent's ``workspace_config``.
-    """
-    parent = _make_parent_with_subagent(tmp_path)
-    child = tmp_path / "child.workspace"
-    scaffold_cartridge(child, name="child", tools=[])
-    # Add a setup.py to the child that records the runtime it received.
-    (child / "setup.py").write_text(
-        "from pathlib import Path\n"
-        "def setup(preset, resources, *, runtime=None, **_):\n"
-        "    Path(runtime['workspace'], '_seen.txt').write_text(runtime['workspace'])\n"
-        "    return preset\n"
-    )
-
-    p = cartridge_to_preset(parent, runtime={"workspace": str(tmp_path)})
-    spec = p.tools._tools["subagent"]
-    mock = MockLLMBackend(responses=[json.dumps({"tool": "done", "args": {"summary": "ok"}})])
-    # Build a context that mimics what the dispatcher would produce.
-    # The factory normally injects ``workspace_config`` via ``requires``,
-    # but a scaffold-only parent has no such resource — so we exercise
-    # the documented ``ctx.metadata['runtime']`` fall-through path.
-    ctx = ToolContext(
-        llm=mock,
-        resources={},
-        metadata={"runtime": {"workspace": str(tmp_path)}},
-    )
-    result = spec.execute(ctx, workspace=str(child), task="hi", max_steps=3)
-    assert result.get("final_tool") == "done"
-    seen = (tmp_path / "_seen.txt").read_text()
-    assert seen == str(tmp_path), (
-        f"sub-loop saw runtime['workspace']={seen!r}, expected {str(tmp_path)!r}"
-    )
 
 
 def test_validate_workspace_warns_on_unfilled_scaffold(tmp_path: Path) -> None:

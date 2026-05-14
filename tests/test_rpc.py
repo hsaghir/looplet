@@ -9,8 +9,8 @@ import io
 import json
 from pathlib import Path
 
+from looplet.cartridge.scaffold import scaffold_cartridge
 from looplet.rpc import RPCServer
-from looplet.scaffold import scaffold_cartridge
 from looplet.testing import MockLLMBackend
 
 

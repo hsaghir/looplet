@@ -49,7 +49,7 @@ def serialize_harness(
 ) -> dict[str, Any]:
     """Return a stable, JSON-friendly snapshot of the agent harness."""
     snapshot: dict[str, Any] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "extra": dict(extra) if extra is not None else {},
     }
 

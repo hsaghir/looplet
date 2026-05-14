@@ -73,7 +73,7 @@ def preset_to_cartridge(
             returned workspace and skip the offending field.
 
     Returns:
-        The :class:`Workspace` describing the newly-written directory.
+        The :class:`Cartridge` describing the newly-written directory.
     """
     root = Path(out_dir)
     if root.exists() and any(root.iterdir()) and not overwrite:
@@ -690,6 +690,15 @@ def _write_tool(spec: Any, tools_root: Path, warnings: list[str], strict: bool) 
         "description": spec.description,
         "parameters": dict(spec.parameters or {}),
     }
+    # Promote multi-paragraph descriptions to ``description.md`` so
+    # the on-disk artefact stays legible and yaml-block-scalar-free
+    # (paper §"Promoted to first-class"). Single-line descriptions
+    # stay in ``tool.yaml``. The loader prefers ``description.md``
+    # when both exist.
+    description_text = str(spec.description or "")
+    if "\n" in description_text.strip():
+        (tool_dir / "description.md").write_text(description_text.rstrip() + "\n", encoding="utf-8")
+        yaml_payload["description"] = description_text.splitlines()[0]
     for opt in ("concurrent_safe", "free", "timeout_s"):
         if hasattr(spec, opt):
             val = getattr(spec, opt)
@@ -744,7 +753,7 @@ def _write_tool(spec: Any, tools_root: Path, warnings: list[str], strict: bool) 
     fn_name = getattr(fn, "__name__", "")
     module_name = getattr(fn, "__module__", "") or ""
 
-    # Workspace-loaded tools live in dynamic ``_chw_tool_<name>`` modules
+    # Cartridge-loaded tools live in dynamic ``_chw_tool_<name>`` modules
     # registered in ``sys.modules``. Re-importing by that synthetic name
     # would silently fail at reload (the new process has no entry under
     # that key). Copy the original on-disk ``execute.py`` verbatim — it
@@ -912,7 +921,7 @@ def _render_hook_source(cls: type, warnings: list[str], strict: bool) -> str:
     cls_name = cls.__name__
     module_name = cls.__module__ or ""
 
-    # 0. Workspace ``_chw_hook_*`` source on disk → copy verbatim. This
+    # 0. Cartridge ``_chw_hook_*`` source on disk → copy verbatim. This
     #    is essential for byte-identity round-trip and for preserving
     #    any methods (commonly ``to_config()``) the workspace-local
     #    subclass adds beyond an installed base class.

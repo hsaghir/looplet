@@ -152,7 +152,19 @@ class MCPToolAdapter:
                 },
             )
             if init_resp is None:
-                raise RuntimeError(f"MCP server failed to initialize: {self._command}")
+                stderr_tail = ""
+                if self._proc is not None and self._proc.stderr is not None:
+                    try:
+                        stderr_tail = (
+                            self._proc.stderr.read(4096).decode("utf-8", errors="replace").strip()
+                        )
+                    except Exception:
+                        pass
+                rc = self._proc.poll() if self._proc is not None else None
+                raise RuntimeError(
+                    f"MCP server failed to initialize: {self._command!r} "
+                    f"(exit_code={rc}); stderr: {stderr_tail!r}"
+                )
             # Send initialized notification
             self._send_notification("notifications/initialized", {})
             # List tools
@@ -197,33 +209,34 @@ class MCPToolAdapter:
         return self._read_message()
 
     def _write_message(self, msg: dict) -> None:
-        """Write a JSON-RPC message with Content-Length header."""
+        """Write a JSON-RPC message as a single newline-delimited line.
+
+        MCP stdio transport uses newline-delimited JSON (NDJSON), per the
+        spec: "Messages are delimited by newlines, and MUST NOT contain
+        embedded newlines." The line MUST be UTF-8.
+        """
         if self._proc is None or self._proc.stdin is None:
             return
-        body = json.dumps(msg).encode("utf-8")
-        header = f"Content-Length: {len(body)}\r\n\r\n".encode("ascii")
-        self._proc.stdin.write(header + body)
+        line = (json.dumps(msg, separators=(",", ":")) + "\n").encode("utf-8")
+        self._proc.stdin.write(line)
         self._proc.stdin.flush()
 
     def _read_message(self) -> dict | None:
-        """Read a JSON-RPC message with Content-Length header."""
+        """Read one newline-delimited JSON-RPC message from the server.
+
+        Returns the parsed ``result`` payload, or ``None`` on EOF / a
+        JSON-RPC error response (errors are logged at WARNING).
+        """
         if self._proc is None or self._proc.stdout is None:
             return None
-        # Read headers
-        content_length = 0
-        while True:
-            line = self._proc.stdout.readline()
-            if not line:
-                return None
-            line_str = line.decode("utf-8").strip()
-            if not line_str:
-                break  # Empty line = end of headers
-            if line_str.startswith("Content-Length:"):
-                content_length = int(line_str.split(":")[1].strip())
-        if content_length == 0:
+        line = self._proc.stdout.readline()
+        if not line:
             return None
-        body = self._proc.stdout.read(content_length)
-        data = json.loads(body.decode("utf-8"))
+        try:
+            data = json.loads(line.decode("utf-8"))
+        except json.JSONDecodeError as exc:
+            logger.warning("MCP non-JSON line on stdout (%s): %r", exc, line[:200])
+            return None
         if "error" in data:
             logger.warning("MCP error: %s", data["error"])
             return None

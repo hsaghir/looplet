@@ -1,0 +1,6 @@
+name: done
+description: Report the computed total and finish.
+parameters:
+  total:
+    type: integer
+    description: The sum returned by the `add` tool.

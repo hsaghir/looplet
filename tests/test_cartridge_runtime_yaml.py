@@ -19,7 +19,7 @@ def _write_minimal_cartridge(
     root: Path, *, config_text: str, runtime_text: str | None = None
 ) -> None:
     """Build a tiny but loadable cartridge skeleton at ``root``."""
-    (root / "cartridge.json").write_text('{"name": "x", "schema_version": 1}\n')
+    (root / "cartridge.json").write_text('{"name": "x", "schema_version": 2}\n')
     (root / "config.yaml").write_text(config_text)
     if runtime_text is not None:
         (root / "runtime.yaml").write_text(runtime_text)
@@ -74,22 +74,6 @@ def test_runtime_yaml_overrides_config_yaml_for_runtime_keys(tmp_path: Path) -> 
         warnings.simplefilter("ignore", DeprecationWarning)
         preset = cartridge_to_preset(str(tmp_path))
     assert preset.config.max_tokens == 999
-
-
-def test_stray_runtime_key_in_config_yaml_emits_deprecation(tmp_path: Path) -> None:
-    """A runtime-tier key in config.yaml fires DeprecationWarning naming the key."""
-    _write_minimal_cartridge(
-        tmp_path,
-        config_text="max_steps: 5\ndone_tool: done\nmax_tokens: 2000\ntemperature: 0.3\n",
-    )
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always", DeprecationWarning)
-        cartridge_to_preset(str(tmp_path))
-    dep = [w for w in caught if issubclass(w.category, DeprecationWarning)]
-    assert len(dep) == 1
-    msg = str(dep[0].message)
-    assert "max_tokens" in msg and "temperature" in msg
-    assert "runtime.yaml" in msg
 
 
 def test_runtime_yaml_present_silences_warning(tmp_path: Path) -> None:

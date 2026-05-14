@@ -43,11 +43,11 @@ def test_cartridge_package_exports_canonical_names() -> None:
         "resource_ref_for",
         "SCHEMA_VERSION",
         # back-compat aliases
-        "Workspace",
-        "WorkspaceLayout",
-        "WorkspaceSerializationError",
-        "workspace_to_preset",
-        "preset_to_workspace",
+        "Cartridge",
+        "CartridgeLayout",
+        "CartridgeSerializationError",
+        "cartridge_to_preset",
+        "preset_to_cartridge",
     ):
         assert hasattr(looplet.cartridge, name), f"looplet.cartridge no longer exports {name!r}"
 
@@ -70,26 +70,26 @@ def test_cartridge_subpackages_importable() -> None:
 
 
 def test_back_compat_shim_paths_still_work() -> None:
-    """The historical ``looplet.scaffold`` etc. paths must keep
-    re-exporting their public symbols so existing user code doesn't
-    break."""
-    import looplet.hot_reload
-    import looplet.prompt_files
-    import looplet.scaffold
-    import looplet.spec_slots
+    """The historical ``looplet.scaffold`` etc. shim modules were removed.
 
-    # Same objects (``is``-equal), not different copies.
-    from looplet.cartridge.hot_reload import WorkspaceWatcher as canonical_ww
-    from looplet.cartridge.prompt_files import StaticBriefingHook as canonical_sb
-    from looplet.cartridge.scaffold import scaffold_cartridge as canonical_scaffold
-    from looplet.cartridge.spec_slots import (
-        compile_model_block as canonical_compile_model,
-    )
+    They were back-compat aliases for the canonical
+    ``looplet.cartridge.<name>`` paths. With the v1→v2 cut, the
+    aliases are gone; importing them must now fail.
+    """
+    import importlib
 
-    assert looplet.scaffold.scaffold_cartridge is canonical_scaffold
-    assert looplet.spec_slots.compile_model_block is canonical_compile_model
-    assert looplet.prompt_files.StaticBriefingHook is canonical_sb
-    assert looplet.hot_reload.WorkspaceWatcher is canonical_ww
+    for legacy in (
+        "looplet.scaffold",
+        "looplet.prompt_files",
+        "looplet.hot_reload",
+        "looplet.spec_slots",
+    ):
+        try:
+            importlib.import_module(legacy)
+        except ImportError:
+            continue
+        else:  # pragma: no cover
+            raise AssertionError(f"{legacy} must not be importable any more")
 
 
 # ── Dependency direction: cartridge → public types only ──────────
@@ -107,6 +107,7 @@ ALLOWED_LOOPLET_DEPS = frozenset(
         "looplet.hook_decision",  # public HookDecision factories
         "looplet.loop",  # public LoopConfig / hook protocol
         "looplet.memory",  # public MemorySource types
+        "looplet.mcp",  # public MCPToolAdapter (mcp_servers: in config.yaml)
         "looplet.permissions",  # public PermissionEngine etc.
         "looplet.presets",  # public AgentPreset
         "looplet.refs",  # resource ref registry

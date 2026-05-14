@@ -71,7 +71,7 @@ class AgentPreset:
     """Agent state with budget tracking."""
 
     resources: dict[str, Any] = field(default_factory=dict)
-    """Workspace-built resources, exposed by name.
+    """Cartridge-built resources, exposed by name.
 
     When a preset is loaded from a workspace, every resource declared
     in ``resources/<name>.py`` is published here under its declared
@@ -83,6 +83,37 @@ class AgentPreset:
     Empty for presets constructed directly in code (no workspace).
     Mutable: callers may inject test doubles by direct assignment.
     """
+
+    mcp_adapters: list[Any] = field(default_factory=list)
+    """Live :class:`looplet.mcp.MCPToolAdapter` instances spawned by the
+    cartridge loader, one per ``mcp_servers:`` entry in ``config.yaml``.
+
+    Each adapter owns a subprocess. Call :meth:`close` (or use the
+    preset as a context manager) to terminate them cleanly when the
+    agent finishes. Empty for cartridges that declare no MCP servers
+    and for presets constructed directly in code.
+    """
+
+    def close(self) -> None:
+        """Terminate all MCP server subprocesses owned by this preset.
+
+        Safe to call multiple times. Exceptions during close are logged
+        and swallowed so one misbehaving server cannot block the rest.
+        """
+        for adapter in self.mcp_adapters:
+            try:
+                adapter.close()
+            except Exception:  # pragma: no cover - defensive
+                import logging  # noqa: PLC0415
+
+                logging.getLogger(__name__).warning("error closing MCP adapter", exc_info=True)
+        self.mcp_adapters = []
+
+    def __enter__(self) -> "AgentPreset":
+        return self
+
+    def __exit__(self, *exc_info: Any) -> None:
+        self.close()
 
     def run(
         self,

@@ -9,7 +9,7 @@ import pytest
 from looplet import cartridge_to_preset
 from looplet.builtin_hooks import AVAILABLE, build_builtin_hook
 from looplet.cartridge import CartridgeSerializationError
-from looplet.scaffold import scaffold_cartridge
+from looplet.cartridge.scaffold import scaffold_cartridge
 from looplet.skills import SkillActivationHook
 
 
@@ -17,13 +17,19 @@ def test_runtime_is_autoinjected_as_resource(tmp_path: Path) -> None:
     ws = scaffold_cartridge(tmp_path / "w.workspace", name="w", tools=["greet"])
     preset = cartridge_to_preset(ws, runtime={"project_root": "/tmp", "k": "v"})
     assert "runtime" in preset.resources
-    assert preset.resources["runtime"] == {"project_root": "/tmp", "k": "v"}
+    runtime_res = preset.resources["runtime"]
+    # cartridge_root is auto-injected by the loader so ${runtime.cartridge_root}
+    # substitutions (e.g. in mcp_servers.<name>.command) resolve correctly.
+    assert runtime_res["project_root"] == "/tmp"
+    assert runtime_res["k"] == "v"
+    assert runtime_res["cartridge_root"] == str(ws)
 
 
 def test_runtime_resource_with_no_runtime_dict(tmp_path: Path) -> None:
     ws = scaffold_cartridge(tmp_path / "w.workspace", name="w", tools=["greet"])
     preset = cartridge_to_preset(ws)  # no runtime kwarg
-    assert preset.resources["runtime"] == {}
+    # cartridge_root is auto-injected even when no runtime dict is supplied.
+    assert preset.resources["runtime"] == {"cartridge_root": str(ws)}
 
 
 def test_explicit_runtime_resource_file_wins_over_autoinject(tmp_path: Path) -> None:

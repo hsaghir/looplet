@@ -1,9 +1,9 @@
-# Cartridge Spec v1.0
+# Cartridge Spec v2.0
 
 > **Status.** Reference implementation in this repository (Looplet).
 > Companion artifact: [`cartridge.schema.json`](cartridge.schema.json).
 > **Audience.** Loader implementers in any language; agent builders.
-> **Versioning.** Semantic. v1.x is additive. Slot renames or breaking
+> **Versioning.** Semantic. v2.x is additive. Slot renames or breaking
 > shape changes require a v2 RFC.
 
 A **cartridge** (a.k.a. *workspace*) is a small directory of files
@@ -13,6 +13,23 @@ cartridge is the artifact; the runtime is the engine.
 
 This document specifies what files a v1 cartridge contains, what
 each file means, and what a conformant loader must do with them.
+
+### Cartridge vs. skill
+
+A **cartridge is the agent**: a self-contained behavioural contract
+(identity, system prompt, tools, hooks, permissions, memory). A
+**skill is procedural knowledge that any agent may load on demand**
+(a snippet of instructions plus optional helper tools that the agent
+discovers and activates mid-run via `search_skills` / `activate_skill`).
+A cartridge composes skills by declaring `builtin_tools:
+[search_skills, activate_skill]` and a `skill_manager` resource;
+skills do not stand alone as agents.
+
+When in doubt: if it has a system prompt and a `done` sentinel, it is
+a cartridge. If it adds tools/instructions to *another* agent's loop,
+it is a skill. The two are complementary, not competing — see
+[`examples/skillful_analyst.cartridge/`](examples/skillful_analyst.cartridge/)
+for a cartridge that loads skills at runtime.
 
 ## Core principles
 
@@ -65,15 +82,25 @@ equivalent. If both are present, `cartridge.json` wins.
 ```json
 {
   "name": "my_agent",
-  "schema_version": 1,
+  "schema_version": 2,
   "description": "what the agent does",
+  "language": "python",
   "version": "1.0.0"
 }
 ```
 
-Required fields: `name`, `schema_version`. v1.0 cartridges set
-`schema_version: 1`. `description` and `version` are optional and
+Required fields: `name`, `schema_version`. v2.0 cartridges set
+`schema_version: 2`. `description` and `version` are optional and
 declarative.
+
+`language` (optional, default `"python"`) declares the body language
+of `tools/<n>/execute.py` and `hooks/<n>/hook.py`. Conformant
+runtimes MUST refuse cartridges whose declared `language` they
+cannot execute, with a clear error pointing at the alternative
+runtime — they MUST NOT attempt to import bodies in an unsupported
+language. The shipped Python loader rejects any value other than
+`"python"`. Absent or empty `language` is treated as `"python"` for
+v1 back-compat.
 
 ## Configuration — `config.yaml`
 
@@ -89,7 +116,7 @@ LoopConfig fields fall into three tiers:
 - **CONTRACT** — *what the agent does.* Lives in `config.yaml`.
   `max_steps`, `system_prompt`, `done_tool`, `done_tools`,
   `permissions`, `memory`, `model`, `extends`, `builtin_tools`,
-  `builtin_hooks`, etc. These travel with the cartridge across hosts
+  `builtin_hooks`, `mcp_servers`, etc. These travel with the cartridge across hosts
   and SHOULD round-trip identically. (`tool_metadata` rides along
   but is auto-populated by the loader — not authored by hand.)
 - **RUNTIME** — *how this host runs it.* Lives in the sibling
@@ -104,11 +131,9 @@ LoopConfig fields fall into three tiers:
 - **HOST** — *runtime-supplied callables.* Never serialised:
   `approval_handler`, `cancel_token`, `render_messages_override`.
 
-**Backwards compatibility (v1.x).** Loaders MUST still accept
-RUNTIME-tier keys in `config.yaml` and SHOULD emit a deprecation
-warning naming the offending keys and the target `runtime.yaml`
-path. **v2.0 will hard-fail** on RUNTIME keys appearing in
-`config.yaml`.
+**Spec v2.** RUNTIME-tier keys MUST live in `runtime.yaml`.
+A loader MUST reject `config.yaml` containing any RUNTIME-tier key.
+There is no v1 grace period.
 
 ### Runtime configuration — `runtime.yaml`
 
@@ -123,7 +148,20 @@ max_tokens: 2000
 temperature: 0.2
 context_window: 128000
 compact_service: "@compact_service"
+
+# Per-tool render overrides (cartridge spec v2). Shallow-merged onto
+# each tool's ``render:`` block from tool.yaml; runtime keys win.
+# This is the principled-exclusion answer for "I want render hints":
+# the cartridge declares the agent's default; the host shifts the
+# truncation policy without editing tools/<name>/tool.yaml.
+tool_render_hints:
+  bash:
+    preview: 5
+    max_chars: 4000
 ```
+
+Unknown tool names in `tool_render_hints:` are a load-time error
+(under `strict=True`) or a logged warning otherwise.
 
 Merge order under `extends:`: parent `runtime.yaml` is loaded
 first, then child overrides via shallow merge (top-level scalars
@@ -264,6 +302,38 @@ A loader MAY ship a built-in registry of tools and hooks. The
 contents of the registry are not part of v1.0 (they are
 implementation-defined). The directives themselves are part of v1.0.
 
+### MCP servers (v2.0 slot)
+
+```yaml
+mcp_servers:
+  fs:
+    command: "npx @modelcontextprotocol/server-filesystem /tmp"
+    env: {}                          # optional
+    timeout_s: 30                    # optional, default 30
+    tools: [read_file, write_file]   # optional allow-list; absent = all
+  gh:
+    command: "gh-mcp-server"
+```
+
+Each entry declares an out-of-process [Model Context
+Protocol](https://modelcontextprotocol.io/) server whose tools the
+loader registers alongside the cartridge's in-process Python tools.
+The cartridge needs only `command:`; the loader spawns the
+subprocess, runs `initialize` + `tools/list`, and exposes each
+discovered tool as a `ToolSpec` whose `execute` calls back into the
+adapter via `tools/call`. `tools:` allow-lists which discovered
+tools to register (absent → all).
+
+This is the **CONTRACT-tier** transport for tools whose body is not
+in-process Python: the agent's identity depends on which MCP
+servers it speaks to, and a different runtime (Rust, Go, TypeScript)
+can implement the same JSON-RPC and run the same cartridge.
+
+The reference loader stashes the live adapter on
+`AgentPreset.mcp_adapters`; callers SHOULD use the preset as a
+context manager (`with cartridge_to_preset(...) as preset:`) so the
+subprocesses are terminated on exit.
+
 ### Reference grammar
 
 Three forms work in any string-valued YAML field:
@@ -312,13 +382,10 @@ builtin_hooks:
       path: prompts/recovery.md
 ```
 
-Each hook accepts `text:` (inline body) xor `path:` (resolved
-relative to the cartridge root via the loader-injected
-`cartridge_root` resource). v1.x loaders MUST continue to honour
-the magic-filename auto-load with a `DeprecationWarning`; v2.0 MUST
-drop the auto-load. The benefit of the explicit form is that every
-hook a cartridge installs is visible in `config.yaml` rather than
-discovered by filename.
+**Spec v2.** The magic-filename auto-load is removed. Cartridges
+MUST declare prompt-injecting hooks explicitly via `builtin_hooks:`.
+A loader MUST NOT auto-load `prompts/briefing.md` or
+`prompts/recovery.md` based on filename alone.
 
 No other prompt files are recognised in v1.1. Cartridges that need
 more elaborate prompt templating use plain Python in a hook or
@@ -351,6 +418,17 @@ render:                                # v1.1: prompt-rendering hints (advisory)
   preview: 5                           #   if data is a list, show first 5 items
   max_chars: 4000                      #   per-step cap for THIS tool's results
 ```
+
+For prose-heavy descriptions (multi-paragraph capability specs,
+Usage / Examples sections, cited limitations), the multi-file form
+also accepts an optional sibling file `tools/<name>/description.md`.
+When present, its content is the tool description and overrides the
+`description:` field in `tool.yaml`. This keeps long-form prose out
+of YAML block scalars and in a file ordinary diff tools render
+nicely. Absent `description.md` falls back to `tool.yaml:
+description:`. Serialisers SHOULD promote multi-line descriptions to
+`description.md` and leave only the first line in `tool.yaml` as a
+short fallback.
 
 ```python
 # tools/bash/execute.py
@@ -533,6 +611,29 @@ tools, hooks, and config a v1.0 loader MUST produce. The
 pass/fail. Run `python -m looplet conform` from this repository to
 exercise the suite against the reference loader.
 
+### Observable-behavior conformance (trajectory parity)
+
+Loader-shape parity (above) is necessary but not sufficient for
+portability. A second, stronger claim — **observable-behavior
+conformance** — is exercised by trajectory-fixture pairs:
+
+- **Fixture.** A cartridge plus a scripted sequence of tool calls
+  plus an `expected_trajectory.json` listing the
+  `{step, tool, args, result, error}` sequence the loop MUST emit.
+- **Driver.** Both the reference loader (looplet's
+  `composable_loop`) and a from-scratch second runtime
+  (`examples/alt_runtime/tinyloop.py`) execute the same script and
+  must produce the same trajectory modulo timing and call-id
+  formatting.
+- **Tier semantics.** MUST = same tool, same args, same result, same
+  error, same order. SHOULD = same step number / step count
+  (loaders that compress retries are non-conforming for trajectory
+  fixtures but may still be loader-conformant). MAY = anything not
+  in the spec-pinned subset (durations, request IDs, tracing spans).
+
+Reference fixture: `tests/conformance/fixtures/08_trajectory_two_tools/`.
+Reference test: `tests/conformance/test_trajectory_conformance.py`.
+
 ## Versioning policy
 
 - **`schema_version`** in `cartridge.json` is the cartridge's
@@ -625,6 +726,35 @@ profile), which is better expressed as composition (`builtin_hooks:`
 **Workaround.** Chain single-parent extends (A extends B extends C)
 or compose via `builtin_hooks:` + a shared resource module.
 
+### Sub-agent isolation rules (v1.x today)
+
+The composition primitive for "agent calls another agent" is
+`run_sub_loop()` (in code) and the `subagent` builtin tool (in
+cartridges). The isolation contract today:
+
+| Concern | Default | Rationale |
+|---|---|---|
+| **State** | Isolated. Sub-loop gets a fresh `_MinimalState` keyed on its own `task`. | The sub-agent's step counter, query budget, and entities are its own. |
+| **Tool registry** | Isolated by clone. Parent's tools are cloned, with `state_mutating_tools` (default `["done"]`) excluded so the sub-agent can't end the parent's loop. | The sub-agent sees the same tools as the parent except for sentinels. |
+| **Conversation / session log** | Isolated. Sub-loop forks a new `SessionLog`; if a `conversation` is passed it's also forked. | The parent's history is not perturbed by the sub-agent's intermediate calls. |
+| **Hooks** | Isolated by default. Pass `parent_hooks=ctx.hooks` to forward `on_event` to the parent's observability stack (MetricsHook, StreamingHook, TrajectoryRecorder). Full hook protocol (`check_done`, `should_stop`) stays sub-only. | Observability composes; control does not. |
+| **Resources** | **Shared.** Sub-agent sees the parent's `ctx.resources`. | Forking would break the common case of reusing expensive clients (DB, vector store, SIEM). |
+| **Budget (`max_steps`, `max_tokens`)** | Per sub-agent. The sub-loop has its own budget; the parent's `max_steps` does NOT decrement on sub-loop steps. | Sub-budgets must be sized at the call site, not inherited. |
+| **`done` sentinel** | Sub-agent must end via its own `done` (or fall through `max_steps`). The parent's terminal sentinels are excluded from the sub's tool registry. | Each loop owns its own completion. |
+
+**Working example.** [`examples/planner.cartridge/`](examples/planner.cartridge/)
+demonstrates the principled-exclusion answer for "I want plan mode":
+the parent has only two tools (`subagent`, `done`), delegates to a
+child cartridge (`planner_child.cartridge/`), then summarises the
+returned plan via `done`. No phase, no state machine, no special
+loop feature.
+
+**Workaround for resource isolation.** Pass `sub_tools=` with a
+registry whose tools reference fresh resource instances, or wrap
+the parent's resources in a copy-on-write dict. v2 will likely add
+an opt-in `subagent: { resources: fork }` argument; until then,
+shared is the default.
+
 ### Sub-agent resource isolation by default
 
 **Status.** Deferred to v2.0. Today, sub-agents (`run_sub_loop`)
@@ -644,7 +774,12 @@ resources in a copy-on-write dict.
 
 **Status.** Deferred. The current model (`done_tool: report` +
 `done_tools: [escalate, ...]`, each with its own `tool.yaml` and
-optional `output_schema:`) is retained.
+optional `output_schema:`) is retained — and as of cartridge spec v2
+**every sentinel listed in `done_tools:` whose `tool.yaml` declares
+`output_schema:` is validated** by the loop, just like the primary
+`done_tool`. The loader records secondary-sentinel schemas in
+`LoopConfig.done_tool_schemas[<name>]`; a sentinel without an
+`output_schema:` block is unvalidated (preserves v1.1 behaviour).
 
 **Rationale.** Multiple sentinel tools give the LLM a clearer
 contract (each tool name has a distinct shape) than a single tool
@@ -654,7 +789,8 @@ require it to embed the discriminator and inflate prompt complexity
 for no gain.
 
 **Workaround.** Use `done_tools:` (v1.1+) when an agent has multiple
-distinct terminal outcomes.
+distinct terminal outcomes; declare an `output_schema:` on each
+sentinel's `tool.yaml` to validate every branch.
 
 ### Compaction tier (`compact_service`)
 
@@ -690,6 +826,53 @@ into the v2 contract. The loader hard-fails (instead of emitting a
    entry. Same for `prompts/recovery.md` / `recovery_hint`.
 3. `setup.py` is present. Express the wiring via `resources/` +
    `builtin_hooks:` + `@ref` strings instead.
+4. **`tags:` on a tool.** A tool's catalog membership is the
+   *consuming hook's* concern, not part of the tool's contract.
+   Declare the categorisation in the hook's `config.yaml` (e.g.
+   `kwargs.enrichment_tools: [enrich, geoip]`); the hook owns the
+   policy, the tool stays decoupled.
+5. **`__requires__` / `__render__` / `__tags__` on a single-file
+   tool.** The single-file form (`tools/<name>.py`) is reserved
+   for *trivial* tools — no shared resources, no rendering hints,
+   no catalog tags. Any tool that needs those must use the
+   multi-file form (`tools/<name>/{tool.yaml, execute.py}`).
+   Render hints belong in `runtime.yaml: tool_render_hints:`.
+6. **`${py:module:symbol}` reference grammar.** A cartridge must
+   not reach into arbitrary Python at load time. Wrap the symbol
+   in a one-line `resources/<name>.py` builder and reference it
+   as `${ref:<name>}`. v2 reference grammar is `${ref:...}` /
+   `${runtime.x}` only.
+7. **`done_tools:` plural sentinels in `config.yaml`.** Declare a
+   single `done_tool:` with one `output_schema:` whose payload
+   carries an `outcome:` enum discriminating the branches (see
+   "One done, one schema" below). The field stays on `LoopConfig`
+   for host-side programmatic use; cartridges declare a single
+   done.
+
+### One done, one schema, payload-discriminated outcome
+
+```yaml
+# tools/done/tool.yaml
+name: done
+description: report or escalate
+parameters:
+  outcome:    { type: string, enum: [report, escalate] }
+  summary:    { type: string }
+  blocked_on: { type: string }
+output_schema:
+  type: object
+  required: [outcome]
+  oneOf:
+    - properties: { outcome: { const: report   }, summary:    { type: string, minLength: 1 } }
+      required: [outcome, summary]
+    - properties: { outcome: { const: escalate }, blocked_on: { type: string, minLength: 1 } }
+      required: [outcome, blocked_on]
+```
+
+The loop validates the `done` call's args against this schema; the
+`outcome` enum makes the branch explicit in the trajectory and in
+any downstream evaluator. One sentinel, one schema, no
+plural-sentinel coordination problem.
 
 `schema_version: 1` (the implicit default) continues to load with
 deprecation warnings.

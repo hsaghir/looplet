@@ -36,7 +36,7 @@ REPO = Path(__file__).resolve().parents[1]
 def _write_minimal_cartridge(root: Path, *, extra_config: str = "") -> Path:
     """Write a minimal valid cartridge plus optional extra config.yaml lines."""
     root.mkdir(parents=True, exist_ok=True)
-    (root / "cartridge.json").write_text('{"name": "x", "schema_version": 1}\n')
+    (root / "cartridge.json").write_text('{"name": "x", "schema_version": 2}\n')
     (root / "config.yaml").write_text(f"max_steps: 5\n{extra_config}")
     (root / "prompts").mkdir(exist_ok=True)
     (root / "prompts" / "system.md").write_text("you are a tester.")

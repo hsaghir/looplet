@@ -459,7 +459,7 @@ class TestEvalContextArtifacts:
                         "termination_reason": "done",
                         "metadata": {
                             "harness_snapshot": {
-                                "schema_version": 1,
+                                "schema_version": 2,
                                 "extra": {"trial": "x"},
                             },
                             "user_field": "hello",
@@ -469,7 +469,7 @@ class TestEvalContextArtifacts:
             )
             ctx = EvalContext.from_trajectory_dir(d)
             # harness_snapshot must round-trip
-            assert ctx.metadata["harness_snapshot"]["schema_version"] == 1
+            assert ctx.metadata["harness_snapshot"]["schema_version"] == 2
             assert ctx.metadata["harness_snapshot"]["extra"] == {"trial": "x"}
             # User-attached fields must round-trip
             assert ctx.metadata["user_field"] == "hello"

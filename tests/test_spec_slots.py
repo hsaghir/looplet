@@ -13,13 +13,13 @@ from pathlib import Path
 import pytest
 
 from looplet.cartridge import cartridge_to_preset
-from looplet.permissions import PermissionDecision, PermissionEngine, PermissionHook
-from looplet.spec_slots import (
+from looplet.cartridge.spec_slots import (
     compile_model_block,
     compile_output_schema,
     compile_permissions_block,
     default_long_term_memory_path,
 )
+from looplet.permissions import PermissionDecision, PermissionEngine, PermissionHook
 from looplet.validation import OutputSchema, validate_args
 
 # ── unit tests: compile_permissions_block ──────────────────────────
@@ -209,7 +209,7 @@ def test_default_long_term_memory_path() -> None:
 
 def _write_minimal_workspace(root: Path, *, config_yaml: str, done_yaml: str | None = None) -> None:
     (root / "workspace.json").write_text(
-        json.dumps({"name": "test_agent", "schema_version": 1}) + "\n"
+        json.dumps({"name": "test_agent", "schema_version": 2}) + "\n"
     )
     (root / "config.yaml").write_text(config_yaml)
     (root / "prompts").mkdir(parents=True, exist_ok=True)

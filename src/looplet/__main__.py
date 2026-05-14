@@ -487,7 +487,7 @@ def _render_run(
 
     print(f"looplet run {bundle.skill.name}")
     print(f"  Task: {task}")
-    print(f"  Workspace: {workspace}")
+    print(f"  Cartridge: {workspace}")
     print(f"  Model: {model_label} | Budget: {max_steps} steps")
     print(f"  Tool protocol: {'native' if uses_native_protocol else 'json-text'}")
     print(f"  Probe: {protocol_probe.reason}")
@@ -676,7 +676,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     run.add_argument("bundle", type=Path, help="Path to a runnable skill bundle")
     run.add_argument("task", help="Task description to pass to the bundle")
-    run.add_argument("--workspace", "-w", type=Path, default=Path.cwd(), help="Workspace path")
+    run.add_argument("--workspace", "-w", type=Path, default=Path.cwd(), help="Cartridge path")
     run.add_argument("--max-steps", type=int, default=20, help="Maximum tool calls")
     run.add_argument(
         "--scripted",
@@ -703,7 +703,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     blueprint.add_argument("bundle", type=Path, help="Path to a runnable skill bundle")
     blueprint.add_argument(
-        "--workspace", "-w", type=Path, default=Path.cwd(), help="Workspace path"
+        "--workspace", "-w", type=Path, default=Path.cwd(), help="Cartridge path"
     )
     blueprint.add_argument("--max-steps", type=int, default=20, help="Maximum tool calls")
 

@@ -11,7 +11,7 @@ import weakref
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 # ── Layout constants ────────────────────────────────────────────
@@ -138,6 +138,20 @@ class CartridgeLayout:
         }
     )
 
+    # ── Runtime-yaml-only overrides that aren't LoopConfig fields ──
+    # These keys are accepted in ``runtime.yaml`` but NEVER make it
+    # into ``LoopConfig`` — they configure the loader's wiring of
+    # something else (e.g. per-tool render overlays merged onto
+    # ``ToolSpec.render`` after registration). Cartridge spec v2's
+    # principled-exclusion answer for "I want render hints" routes
+    # them through here so two hosts can disagree about truncation
+    # without editing ``tools/<n>/tool.yaml``.
+    RUNTIME_TIER_OVERRIDES: frozenset[str] = frozenset(
+        {
+            "tool_render_hints",
+        }
+    )
+
     @classmethod
     def contract_tier_fields(cls) -> frozenset[str]:
         """Fields that legitimately live in ``config.yaml``.
@@ -156,7 +170,7 @@ class CartridgeSerializationError(RuntimeError):
     """Raised when a workspace component cannot be round-tripped.
 
     Use ``strict=False`` on :func:`preset_to_cartridge` to demote these
-    into recorded warnings on the resulting :class:`Workspace`.
+    into recorded warnings on the resulting :class:`Cartridge`.
     """
 
 

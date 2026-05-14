@@ -1,4 +1,4 @@
-"""Workspace — bidirectional ``AgentPreset`` ↔ directory round-trip.
+"""Cartridge — bidirectional ``AgentPreset`` ↔ directory round-trip.
 
 A *workspace* is a directory layout that round-trips with an
 :class:`AgentPreset` losslessly for the JSON-able subset of the harness
@@ -99,7 +99,7 @@ Callable / opaque ``LoopConfig`` fields (``build_briefing``,
 ``cancel_token``, ``approval_handler``, ``render_messages_override``,
 ``domain``). When ``strict=False`` (default), they are silently
 omitted from the serialized config and a list of skipped fields is
-returned in the resulting :class:`Workspace.serialization_warnings`.
+returned in the resulting :class:`Cartridge.serialization_warnings`.
 
 These fields can still be wired **declaratively on load** by
 hand-authoring ``config.yaml`` with the workspace reference grammar.
@@ -137,7 +137,7 @@ dispatcher hands the resolved instances to the tool's
 ``execute(ctx, ...)`` via ``ctx.resources[name]``. Memory sources
 accept the same references (``memory_sources: ['${ref:project_memory}']``).
 
-Workspace authors retrieve loaded resources from
+Cartridge authors retrieve loaded resources from
 :attr:`AgentPreset.resources` after calling
 :func:`cartridge_to_preset` — useful for callers (benchmarks,
 evidence-bundle writers) that need post-load access to live objects
@@ -155,7 +155,7 @@ workspace editing, agent diffing, code review, packaging, or
 between-round harness search. The research-specific layer
 (manifests with ``predicted_fixes``/``predicted_regressions``,
 the evolve agent, the search loop) lives in downstream packages
-that consume :class:`Workspace`.
+that consume :class:`Cartridge`.
 """
 
 from __future__ import annotations
@@ -172,17 +172,18 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
-# Layout constants, errors, and the preset-origin tracker live in
-# :mod:`looplet.cartridge._layout` so the rest of the package can
-# import them without bringing in the heavy serialiser / loader.
-# Re-exported here so ``looplet.cartridge.X`` keeps resolving.
-# Hook + tool + resource source loading lives in :mod:`looplet.cartridge._imports`.
+# Layout constants and errors live in :mod:`looplet.cartridge._layout`.
+# Re-exported here so ``looplet.cartridge.X`` keeps resolving for the
+# public surface only. Other internal helpers (``_load_resources``,
+# ``_load_single_file_tool``, ``_stamp_preset_origin``, ...) used to
+# be re-exported here for back-compat; they had zero out-of-package
+# callers as of round-2 cleanup and are now imported from their
+# defining module directly when needed.
 from looplet.cartridge._imports import _import_module_from_path  # noqa: E402, F401
 from looplet.cartridge._layout import (  # noqa: E402, F401
     SCHEMA_VERSION,
     CartridgeLayout,
     CartridgeSerializationError,
-    _stamp_preset_origin,
 )
 
 # Loader (directory → :class:`AgentPreset`) lives in :mod:`looplet.cartridge._load`.
@@ -198,15 +199,9 @@ from looplet.cartridge._manifest import (  # noqa: E402, F401
 )
 from looplet.cartridge._render import _apply_runtime_substitutions  # noqa: E402, F401
 
-# Resource registry, ref resolution, and the v1.1 single-file tool
-# loader live in :mod:`looplet.cartridge._resources`. Re-imported here
-# so external callers reaching into ``looplet.cartridge.X`` keep
-# resolving.
-from looplet.cartridge._resources import (  # noqa: E402, F401
-    _load_resources,
-    _load_single_file_tool,
-    _resolve_refs,
-)
+# Resource registry helpers — ``_resolve_refs`` is the only one with
+# out-of-package callers (see ``test_cartridge_extraction_contract``).
+from looplet.cartridge._resources import _resolve_refs  # noqa: E402, F401
 
 # Serialiser (preset → directory) lives in :mod:`looplet.cartridge._serialise`.
 from looplet.cartridge._serialise import preset_to_cartridge  # noqa: E402
@@ -217,28 +212,7 @@ from looplet.cartridge._serialise import preset_to_cartridge  # noqa: E402
 # use ``looplet.cartridge._load_yaml``.
 from looplet.cartridge._yaml import _dump_yaml, _load_yaml  # noqa: E402, F401
 
-# Resource ref registry — the small standalone module that lets
-# core hooks (permissions / streaming / evals / telemetry) call
-# resource_ref_for without importing the full cartridge loader.
-# Re-imported here for back-compat; consumers that historically
-# reached ``looplet.cartridge.resource_ref_for`` keep working.
-from looplet.refs import (  # noqa: E402, F401
-    _REF_PREFIX,
-    _register_resource_origin,
-    _resource_origin,
-    resource_ref_for,
-)
-
-# ── Back-compat aliases ────────────────────────────────────────
-#
-# The Cartridge Spec v1.0 renamed the artifact from "workspace" to
-# "cartridge". The canonical names above are the ones exposed in
-# SPEC.md and recommended for new code. The aliases below preserve
-# the historical ``looplet.workspace.*`` API — same objects,
-# different names — so existing imports continue to work.
-
-Workspace = Cartridge
-WorkspaceLayout = CartridgeLayout
-WorkspaceSerializationError = CartridgeSerializationError
-workspace_to_preset = cartridge_to_preset
-preset_to_workspace = preset_to_cartridge
+# ``resource_ref_for`` is the public entry; the underlying registry
+# (``_REF_PREFIX``, ``_register_resource_origin``, ``_resource_origin``)
+# is private to :mod:`looplet.refs` and not re-exported here.
+from looplet.refs import resource_ref_for  # noqa: E402, F401

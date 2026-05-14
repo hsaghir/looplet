@@ -305,7 +305,7 @@ class StreamingHook:
         self._step_llm_calls: int = 0
 
     def to_config(self) -> dict:
-        """Workspace round-trip: emit ``emitter`` as an ``@ref``.
+        """Cartridge round-trip: emit ``emitter`` as an ``@ref``.
 
         When ``self._emitter`` was produced by a workspace resource
         builder, the original ref name is preserved (e.g.

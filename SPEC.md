@@ -778,6 +778,53 @@ into the v2 contract. The loader hard-fails (instead of emitting a
    entry. Same for `prompts/recovery.md` / `recovery_hint`.
 3. `setup.py` is present. Express the wiring via `resources/` +
    `builtin_hooks:` + `@ref` strings instead.
+4. **`tags:` on a tool.** A tool's catalog membership is the
+   *consuming hook's* concern, not part of the tool's contract.
+   Declare the categorisation in the hook's `config.yaml` (e.g.
+   `kwargs.enrichment_tools: [enrich, geoip]`); the hook owns the
+   policy, the tool stays decoupled.
+5. **`__requires__` / `__render__` / `__tags__` on a single-file
+   tool.** The single-file form (`tools/<name>.py`) is reserved
+   for *trivial* tools — no shared resources, no rendering hints,
+   no catalog tags. Any tool that needs those must use the
+   multi-file form (`tools/<name>/{tool.yaml, execute.py}`).
+   Render hints belong in `runtime.yaml: tool_render_hints:`.
+6. **`${py:module:symbol}` reference grammar.** A cartridge must
+   not reach into arbitrary Python at load time. Wrap the symbol
+   in a one-line `resources/<name>.py` builder and reference it
+   as `${ref:<name>}`. v2 reference grammar is `${ref:...}` /
+   `${runtime.x}` only.
+7. **`done_tools:` plural sentinels in `config.yaml`.** Declare a
+   single `done_tool:` with one `output_schema:` whose payload
+   carries an `outcome:` enum discriminating the branches (see
+   "One done, one schema" below). The field stays on `LoopConfig`
+   for host-side programmatic use; cartridges declare a single
+   done.
+
+### One done, one schema, payload-discriminated outcome
+
+```yaml
+# tools/done/tool.yaml
+name: done
+description: report or escalate
+parameters:
+  outcome:    { type: string, enum: [report, escalate] }
+  summary:    { type: string }
+  blocked_on: { type: string }
+output_schema:
+  type: object
+  required: [outcome]
+  oneOf:
+    - properties: { outcome: { const: report   }, summary:    { type: string, minLength: 1 } }
+      required: [outcome, summary]
+    - properties: { outcome: { const: escalate }, blocked_on: { type: string, minLength: 1 } }
+      required: [outcome, blocked_on]
+```
+
+The loop validates the `done` call's args against this schema; the
+`outcome` enum makes the branch explicit in the trajectory and in
+any downstream evaluator. One sentinel, one schema, no
+plural-sentinel coordination problem.
 
 `schema_version: 1` (the implicit default) continues to load with
 deprecation warnings.

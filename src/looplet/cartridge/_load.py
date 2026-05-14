@@ -502,7 +502,25 @@ def _workspace_to_preset_inner(
         resources,
         runtime=runtime_dict,
         source_path=str(cfg_path) if cfg_path.is_file() else "config.yaml",
+        is_v2=is_v2,
     )
+
+    # ── v2 cut: ``done_tools:`` plural sentinels are removed. ────
+    # The principled alternative (one ``done`` tool with a single
+    # ``output_schema`` whose payload carries an ``outcome:`` enum) is
+    # documented in SPEC.md "One done, one schema". The field stays
+    # on ``LoopConfig`` so a host can still set it programmatically
+    # for niche cases; the cartridge format does not declare it.
+    if is_v2 and cfg_kwargs.get("done_tools"):
+        raise CartridgeSerializationError(
+            f"config.yaml at {cfg_path} declares ``done_tools: "
+            f"{cfg_kwargs['done_tools']!r}`` but cartridge spec v2 removes "
+            f"plural terminal sentinels. Use one ``done_tool`` with an "
+            f"``output_schema:`` whose payload carries an ``outcome:`` enum "
+            f'discriminating the branches (see SPEC.md "One done, one '
+            f'schema, payload-discriminated outcome"). v1.x continues to '
+            f"accept ``done_tools:``; v2.0 does not."
+        )
 
     # ``builtin_tools:`` is a workspace-loader directive, not a
     # ``LoopConfig`` field — pop it before constructing the config so
@@ -677,7 +695,9 @@ def _workspace_to_preset_inner(
             for p in tools_dir.iterdir()
             if p.is_file() and p.suffix == ".py" and not p.name.startswith("_")
         ):
-            spec = _load_single_file_tool(tool_file, strict=strict, tool_modules=tool_modules)
+            spec = _load_single_file_tool(
+                tool_file, strict=strict, tool_modules=tool_modules, is_v2=is_v2
+            )
             if spec is not None:
                 registry.register(spec)
 
@@ -734,6 +754,24 @@ def _workspace_to_preset_inner(
                     raise CartridgeSerializationError(msg)
                 logger.warning("%s; skipping tool", msg)
                 continue
+            # ── v2 cut: ``tags:`` on tools is a hook concern ─────
+            # Categorising tools so a hook can filter the catalog is a
+            # cross-cutting policy concern, not part of any tool's
+            # contract. Putting ``tags:`` on every tool.yaml couples
+            # tools to the policy that consumes them. v2 rejects the
+            # field; the principled alternative is to declare the
+            # categorisation in the consuming hook's config.yaml (see
+            # docs/cartridge.md exclusion table).
+            if is_v2 and yaml_payload.get("tags"):
+                raise CartridgeSerializationError(
+                    f"tool {yaml_payload.get('name', tool_dir.name)!r} "
+                    f"(in {spec_path}) declares ``tags: {yaml_payload['tags']!r}`` "
+                    f"but cartridge spec v2 removes the per-tool ``tags:`` "
+                    f"slot. Move the categorisation into the consuming hook's "
+                    f"config.yaml (e.g. ``kwargs.enrichment_tools: [...]``); "
+                    f"the hook owns the policy, the tool stays decoupled. "
+                    f'See docs/cartridge.md "Principled exclusions".'
+                )
             spec = ToolSpec(
                 name=str(yaml_payload.get("name", tool_dir.name)),
                 description=str(yaml_payload.get("description", "")),
@@ -1022,6 +1060,7 @@ def _workspace_to_preset_inner(
                 resources,
                 runtime=runtime_dict,
                 source_path=str(cfg_yaml),
+                is_v2=is_v2,
             )
             try:
                 hooks.append(cls(**kwargs))
@@ -1058,6 +1097,7 @@ def _workspace_to_preset_inner(
                 resources,
                 runtime=runtime_dict,
                 source_path="config.yaml:builtin_hooks",
+                is_v2=is_v2,
             )
             try:
                 hook = build_builtin_hook(hname, resources=resources, kwargs=kwargs)

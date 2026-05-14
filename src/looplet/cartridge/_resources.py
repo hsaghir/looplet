@@ -216,7 +216,13 @@ def _resolve_runtime_ref(field: str, runtime: dict[str, Any] | None) -> Any:
     return val
 
 
-def _load_single_file_tool(tool_file: Path, *, strict: bool, tool_modules: dict[str, Any]) -> Any:
+def _load_single_file_tool(
+    tool_file: Path,
+    *,
+    strict: bool,
+    tool_modules: dict[str, Any],
+    is_v2: bool = False,
+) -> Any:
     """Load a single-file tool (``tools/<name>.py``) into a ToolSpec.
 
     The module declares its metadata via dunders:
@@ -224,12 +230,17 @@ def _load_single_file_tool(tool_file: Path, *, strict: bool, tool_modules: dict[
     * ``__name__`` (defaults to file stem)
     * ``__description__`` (defaults to first docstring line)
     * ``__parameters__`` (dict; defaults to ``{}``)
-    * ``__tags__`` (list[str]; v1.1 metadata; optional)
-    * ``__render__`` (dict; v1.1 render hints; optional)
-    * ``__requires__`` (list[str]; resource DI; optional)
     * ``__concurrent_safe__`` / ``__free__`` / ``__timeout_s__`` (optional)
 
     Required: an ``execute`` callable.
+
+    **Cartridge spec v2 constraint.** The single-file form is for
+    *trivial* tools only — a v2 cartridge that declares
+    ``__requires__``, ``__render__``, or ``__tags__`` on a single-file
+    tool is rejected at load time. Use the multi-file form
+    (``tools/<name>/{tool.yaml, execute.py}``) for any tool that needs
+    a shared resource. Two ways to express the same thing was a
+    legibility failure of v1.1.
 
     Returns ``None`` (with a warning) when ``strict=False`` and the
     module is malformed; raises ``CartridgeSerializationError`` under
@@ -276,6 +287,30 @@ def _load_single_file_tool(tool_file: Path, *, strict: bool, tool_modules: dict[
         logger.warning("%s; skipping", msg)
         return None
 
+    requires_dunder = list(getattr(module, "__requires__", []) or [])
+    tags_dunder = list(getattr(module, "__tags__", []) or [])
+    render_dunder = dict(getattr(module, "__render__", {}) or {})
+
+    if is_v2:
+        offenders: list[str] = []
+        if requires_dunder:
+            offenders.append("__requires__")
+        if tags_dunder:
+            offenders.append("__tags__")
+        if render_dunder:
+            offenders.append("__render__")
+        if offenders:
+            raise CartridgeSerializationError(
+                f"single-file tool {tool_file} declares {offenders} but "
+                f"cartridge spec v2 restricts the single-file form to trivial "
+                f"tools (no shared resources, no rendering hints, no catalog "
+                f"tags). Convert to the multi-file form: move the body to "
+                f"``tools/{name_stem}/execute.py`` and put the metadata in "
+                f"``tools/{name_stem}/tool.yaml``. Render hints belong in "
+                f"``runtime.yaml: tool_render_hints:``; tags are a hook "
+                f"concern (see docs/cartridge.md exclusion table)."
+            )
+
     return ToolSpec(
         name=declared_name,
         description=str(description),
@@ -284,9 +319,9 @@ def _load_single_file_tool(tool_file: Path, *, strict: bool, tool_modules: dict[
         concurrent_safe=bool(getattr(module, "__concurrent_safe__", False)),
         free=bool(getattr(module, "__free__", False)),
         timeout_s=getattr(module, "__timeout_s__", None),
-        requires=list(getattr(module, "__requires__", []) or []),
-        tags=list(getattr(module, "__tags__", []) or []),
-        render=dict(getattr(module, "__render__", {}) or {}),
+        requires=requires_dunder,
+        tags=tags_dunder,
+        render=render_dunder,
     )
 
 
@@ -328,6 +363,7 @@ def _resolve_refs(
     *,
     runtime: dict[str, Any] | None = None,
     source_path: str | Path | None = None,
+    is_v2: bool = False,
 ) -> Any:
     """Replace structured references in ``value`` with resolved objects.
 
@@ -363,6 +399,18 @@ def _resolve_refs(
                     )
                 return resources[spec]
             if kind == "py":
+                if is_v2:
+                    raise CartridgeSerializationError(
+                        f"${{py:{spec}}} reference grammar is removed in "
+                        f"cartridge spec v2{src}. The cartridge must not "
+                        f"reach into arbitrary Python at load time. Wrap "
+                        f"the symbol in a one-line ``resources/<name>.py`` "
+                        f"builder (``def build(): from {spec.split(':')[0]} "
+                        f"import {spec.split(':')[-1]}; return "
+                        f"{spec.split(':')[-1]}``) and reference it as "
+                        f"``${{ref:<name>}}``. Reference grammar in v2 is "
+                        f"``${{ref:...}}`` / ``${{runtime.x}}`` only."
+                    )
                 try:
                     return _resolve_py_ref(spec)
                 except CartridgeSerializationError as exc:
@@ -388,12 +436,12 @@ def _resolve_refs(
         return value
     if isinstance(value, dict):
         return {
-            k: _resolve_refs(v, resources, runtime=runtime, source_path=source_path)
+            k: _resolve_refs(v, resources, runtime=runtime, source_path=source_path, is_v2=is_v2)
             for k, v in value.items()
         }
     if isinstance(value, list):
         return [
-            _resolve_refs(item, resources, runtime=runtime, source_path=source_path)
+            _resolve_refs(item, resources, runtime=runtime, source_path=source_path, is_v2=is_v2)
             for item in value
         ]
     return value

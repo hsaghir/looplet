@@ -297,89 +297,167 @@ def test_done_tools_plural_default_empty(tmp_path: Path) -> None:
     assert cfg.done_tools == []
 
 
-def test_done_tools_per_sentinel_output_schema_validates(tmp_path: Path) -> None:
-    """Each ``done_tools`` sentinel with an ``output_schema:`` is validated.
+def test_v2_rejects_done_tools_in_cartridge(tmp_path: Path) -> None:
+    """Cartridge spec v2 cut: ``done_tools:`` plural sentinels removed.
 
-    Cartridge spec v2: the loader records secondary-sentinel schemas in
-    ``LoopConfig.done_tool_schemas``; the loop validates the call's
-    args against the matching schema (mirrors primary ``done_tool``
-    behaviour). Closes the v1.1 gap where only the primary sentinel
-    was validated.
+    Principled alternative: one ``done`` tool with an
+    ``output_schema:`` whose payload carries an ``outcome:`` enum
+    discriminating the branches. The error message must point the
+    user at the alternative pattern.
     """
     root = tmp_path / "v2.cartridge"
     _write_minimal(root)
+    (root / "cartridge.json").write_text('{"name": "x", "schema_version": 2}\n')
     (root / "config.yaml").write_text("max_steps: 5\ndone_tool: report\ndone_tools: [escalate]\n")
-    tools = root / "tools"
-    tools.mkdir(exist_ok=True)
-    # ``escalate`` requires both ``reason`` and ``blocked_on``; the
-    # agent is going to forget ``blocked_on`` so the loop must reject
-    # the call with a structured gate-warning.
-    (tools / "escalate").mkdir()
-    (tools / "escalate" / "tool.yaml").write_text(
-        "name: escalate\n"
-        "description: alternative terminal sentinel\n"
-        "parameters:\n"
-        "  reason: { type: string }\n"
-        "  blocked_on: { type: string }\n"
-        "output_schema:\n"
-        "  type: object\n"
-        "  required: [reason, blocked_on]\n"
-        "  properties:\n"
-        "    reason: { type: string, minLength: 1 }\n"
-        "    blocked_on: { type: string, minLength: 1 }\n"
+    done = root / "tools" / "report"
+    done.mkdir(parents=True)
+    (done / "tool.yaml").write_text(
+        "name: report\ndescription: r\nparameters:\n  summary: { type: string }\n"
     )
-    (tools / "escalate" / "execute.py").write_text(
-        "def execute(ctx, *, reason, blocked_on=''):\n"
-        "    return {'reason': reason, 'blocked_on': blocked_on}\n"
-    )
-    (tools / "report.py").write_text(
-        '__name__ = "report"\n__description__ = "report"\n'
-        '__parameters__ = {"summary": {"type": "string"}}\n\n'
+    (done / "execute.py").write_text(
         "def execute(ctx, *, summary):\n    return {'summary': summary}\n"
     )
+    with pytest.raises(
+        looplet.CartridgeSerializationError,
+        match=r"done_tools.*spec v2|payload-discriminated",
+    ):
+        cartridge_to_preset(str(root), strict=True)
 
+
+def test_v2_payload_discriminated_outcome_validates(tmp_path: Path) -> None:
+    """v2 worked example: one ``done``, one ``output_schema``, payload-discriminated outcome.
+
+    The single done's schema branches on an ``outcome:`` enum; the
+    loop validates the args against that schema. Replaces the v1
+    ``done_tools:`` per-sentinel pattern.
+    """
+    root = tmp_path / "v2.cartridge"
+    _write_minimal(root)
+    (root / "cartridge.json").write_text('{"name": "x", "schema_version": 2}\n')
+    (root / "config.yaml").write_text("max_steps: 5\ndone_tool: done\n")
+    done = root / "tools" / "done"
+    done.mkdir(parents=True)
+    (done / "tool.yaml").write_text(
+        "name: done\n"
+        "description: report or escalate\n"
+        "parameters:\n"
+        "  outcome: { type: string, enum: [report, escalate] }\n"
+        "  summary: { type: string, default: '' }\n"
+        "  blocked_on: { type: string, default: '' }\n"
+        "output_schema:\n"
+        "  type: object\n"
+        "  required: [outcome]\n"
+        "  oneOf:\n"
+        "    - properties: { outcome: { const: report }, summary: { type: string, minLength: 1 } }\n"
+        "      required: [outcome, summary]\n"
+        "    - properties: { outcome: { const: escalate }, blocked_on: { type: string, minLength: 1 } }\n"
+        "      required: [outcome, blocked_on]\n"
+    )
+    (done / "execute.py").write_text(
+        "def execute(ctx, *, outcome, summary='', blocked_on=''):\n"
+        "    return {'outcome': outcome}\n"
+    )
     preset = cartridge_to_preset(str(root), strict=True)
-    assert "escalate" in preset.config.done_tool_schemas, (
-        "loader must record per-sentinel output_schema for v1.1 done_tools"
-    )
-
-    # Agent calls escalate without ``blocked_on`` — must be rejected
-    # by the schema gate, then succeeds when it adds the missing field.
-    llm = MockLLMBackend(
-        responses=[
-            json.dumps(
-                {
-                    "tool": "escalate",
-                    "args": {"reason": "stuck"},
-                    "reasoning": "",
-                    "call_id": "1",
-                }
-            ),
-            json.dumps(
-                {
-                    "tool": "escalate",
-                    "args": {"reason": "stuck", "blocked_on": "missing creds"},
-                    "reasoning": "",
-                    "call_id": "2",
-                }
-            ),
-        ]
-    )
-    steps = list(
-        composable_loop(
-            llm=llm,
-            tools=preset.tools,
-            state=preset.state,
-            config=preset.config,
-            hooks=preset.hooks,
-            task={"goal": "test"},
+    # The single done's schema is recorded for primary-sentinel validation
+    # via ``LoopConfig.output_schema``. Verify both branches load cleanly
+    # by exercising one valid call from each.
+    for outcome_args in (
+        {"outcome": "report", "summary": "ok"},
+        {"outcome": "escalate", "blocked_on": "missing creds"},
+    ):
+        llm = MockLLMBackend(
+            responses=[
+                json.dumps({"tool": "done", "args": outcome_args, "reasoning": "", "call_id": "1"}),
+            ]
         )
+        # Fresh state per run (state is mutable across loop invocations).
+        state = DefaultState(max_steps=preset.config.max_steps)
+        steps = list(
+            composable_loop(
+                llm=llm,
+                tools=preset.tools,
+                state=state,
+                config=preset.config,
+                hooks=preset.hooks,
+                task={"goal": "test"},
+            )
+        )
+        assert len(steps) == 1
+        assert steps[0].tool_call.tool == "done"
+        assert steps[0].tool_result.error is None
+
+
+def test_v2_rejects_tags_on_multi_file_tool(tmp_path: Path) -> None:
+    """v2 cut: ``tags:`` on tool.yaml — categorisation is a hook concern."""
+    root = tmp_path / "v2.cartridge"
+    _write_minimal(root)
+    (root / "cartridge.json").write_text('{"name": "x", "schema_version": 2}\n')
+    (root / "config.yaml").write_text("max_steps: 3\ndone_tool: done\n")
+    done = root / "tools" / "done"
+    done.mkdir(parents=True)
+    (done / "tool.yaml").write_text(
+        "name: done\ndescription: done\n"
+        "parameters:\n  summary: { type: string }\n"
+        "tags: [terminal]\n"
     )
-    # First call rejected by schema, second call accepted → loop ends.
-    assert len(steps) == 2
-    assert steps[0].tool_result.error and "Output schema" in steps[0].tool_result.error
-    assert steps[1].tool_call.tool == "escalate"
-    assert steps[1].tool_result.error is None
+    (done / "execute.py").write_text(
+        "def execute(ctx, *, summary):\n    return {'summary': summary}\n"
+    )
+    with pytest.raises(looplet.CartridgeSerializationError, match=r"tags:.*spec v2"):
+        cartridge_to_preset(str(root), strict=True)
+
+
+def test_v2_rejects_dunders_on_single_file_tool(tmp_path: Path) -> None:
+    """v2 cut: single-file tools must stay trivial — no resources/render/tags."""
+    root = tmp_path / "v2.cartridge"
+    _write_minimal(root)
+    (root / "cartridge.json").write_text('{"name": "x", "schema_version": 2}\n')
+    (root / "config.yaml").write_text("max_steps: 3\ndone_tool: done\n")
+    tools = root / "tools"
+    tools.mkdir(exist_ok=True)
+    (tools / "done.py").write_text(
+        '__name__ = "done"\n__description__ = "d"\n'
+        '__parameters__ = {"summary": {"type": "string"}}\n'
+        '__requires__ = ["siem"]\n\n'
+        "def execute(ctx, *, summary):\n    return {'summary': summary}\n"
+    )
+    with pytest.raises(
+        looplet.CartridgeSerializationError, match=r"single-file tool.*__requires__"
+    ):
+        cartridge_to_preset(str(root), strict=True)
+
+
+def test_v2_rejects_py_ref_grammar(tmp_path: Path) -> None:
+    """v2 cut: ``${py:module:symbol}`` — wrap in resources/<name>.py builder."""
+    root = tmp_path / "v2.cartridge"
+    _write_minimal(root)
+    (root / "cartridge.json").write_text('{"name": "x", "schema_version": 2}\n')
+    (root / "config.yaml").write_text("max_steps: 3\ndone_tool: done\n")
+    # ``compact_service`` is a runtime-tier field; it must live in
+    # runtime.yaml under v2. Use it to plant a ${py:...} ref so the
+    # ref-resolution pass sees and rejects the legacy grammar.
+    (root / "runtime.yaml").write_text(
+        "compact_service: ${py:looplet.compact:DefaultCompactService}\n"
+    )
+    done = root / "tools" / "done"
+    done.mkdir(parents=True)
+    (done / "tool.yaml").write_text(
+        "name: done\ndescription: d\nparameters:\n  summary: { type: string }\n"
+    )
+    (done / "execute.py").write_text(
+        "def execute(ctx, *, summary):\n    return {'summary': summary}\n"
+    )
+    with pytest.raises(
+        looplet.CartridgeSerializationError,
+        match=r"\$\{py:.*\} reference grammar is removed",
+    ):
+        cartridge_to_preset(str(root), strict=True)
+
+
+# Legacy v1.1 ``done_tools:`` per-sentinel validation removed in v2.
+# The previous test fixture lived here; see
+# ``test_v2_payload_discriminated_outcome_validates`` above for the
+# replacement pattern (one done, one schema, payload-discriminated outcome).
 
 
 # ── 5. prompts/briefing.md + recovery.md auto-attach ─────────────

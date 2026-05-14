@@ -316,6 +316,128 @@ def _shallow_merge_config(parent: dict[str, Any], child: dict[str, Any]) -> dict
     return out
 
 
+def _check_v2_runtime_tier_keys(
+    cfg_kwargs: dict[str, Any],
+    cfg_path: Path,
+    runtime_yaml_path: Path,
+) -> None:
+    """Hard-fail when v2 ``config.yaml`` declares runtime-tier keys.
+
+    Runtime-tier keys (``max_tokens``, ``temperature``, ``compact_service``,
+    ...) belong in a sibling ``runtime.yaml``. Keys also present in
+    ``runtime.yaml`` are tolerated as overrides; only stray declarations
+    in ``config.yaml`` are rejected. Mirrors the v1 ``DeprecationWarning``
+    in :mod:`looplet.cartridge._v1_compat`.
+    """
+    if runtime_yaml_path.is_file():
+        runtime_yaml_keys = set(
+            _load_yaml(
+                runtime_yaml_path.read_text(encoding="utf-8"),
+                source_path=runtime_yaml_path,
+            )
+            or {}
+        )
+        stray = sorted(
+            k
+            for k in cfg_kwargs
+            if k in CartridgeLayout.RUNTIME_TIER_FIELDS and k not in runtime_yaml_keys
+        )
+    else:
+        stray = sorted(k for k in cfg_kwargs if k in CartridgeLayout.RUNTIME_TIER_FIELDS)
+    if stray:
+        raise CartridgeSerializationError(
+            f"config.yaml at {cfg_path} declares runtime-tier key(s) "
+            f"{stray}. Cartridge spec v2 moves runtime configuration "
+            f"into a sibling ``runtime.yaml``. Move these keys to "
+            f"``{runtime_yaml_path}`` (schema_version=2 forbids runtime "
+            f"keys in config.yaml; run ``looplet migrate <cartridge>`` "
+            f"to upgrade automatically)."
+        )
+
+
+def _load_file_memory_sources(
+    root: Path,
+    *,
+    strict: bool,
+) -> list["PersistentMemorySource"]:
+    """Load ``memory/*.md`` and ``memory/*.py`` into memory sources.
+
+    Sorted alphabetically. ``.md`` files become :class:`StaticMemorySource`;
+    ``.py`` files must export a ``load(state)`` callable wrapped by
+    :class:`CallableMemorySource`. Returns the file-based sources only;
+    yaml-declared ``memory_sources: ['${ref:...}']`` entries are merged
+    by the caller.
+    """
+    file_memory_sources: list[PersistentMemorySource] = []
+    memory_dir = root / CartridgeLayout.MEMORY_DIR
+    if not memory_dir.is_dir():
+        return file_memory_sources
+    from looplet.memory import (  # noqa: PLC0415
+        CallableMemorySource,
+        StaticMemorySource,
+    )
+
+    memory_files = sorted(
+        p for p in memory_dir.iterdir() if p.is_file() and p.suffix in (".md", ".py")
+    )
+    for memory_file in memory_files:
+        if memory_file.suffix == ".md":
+            file_memory_sources.append(
+                StaticMemorySource(text=memory_file.read_text(encoding="utf-8"))
+            )
+            continue
+        module = _import_module_from_path(memory_file, f"_chw_memory_{memory_file.stem}")
+        load_fn = getattr(module, "load", None)
+        if not callable(load_fn):
+            msg = f"memory module {memory_file.name!r} must export a ``load(state)`` callable"
+            if strict:
+                raise CartridgeSerializationError(msg)
+            logger.warning("%s; skipping", msg)
+            continue
+        file_memory_sources.append(CallableMemorySource(fn=load_fn))  # type: ignore[arg-type]
+    return file_memory_sources
+
+
+def _check_v2_briefing_recovery_declared(
+    root: Path,
+    builtin_hook_specs: list[Any],
+) -> None:
+    """Hard-fail when v2 cartridge ships a magic prompt file but does
+    not declare the matching ``builtin_hooks:`` entry.
+
+    v1.x auto-attached ``prompts/briefing.md`` and ``prompts/recovery.md``
+    via :mod:`looplet.cartridge._v1_compat`; v2 requires explicit
+    declaration so the hook list is fully visible in ``config.yaml``.
+    """
+
+    def _declared(name: str) -> bool:
+        for entry in builtin_hook_specs:
+            if isinstance(entry, str) and entry == name:
+                return True
+            if isinstance(entry, dict) and name in entry:
+                return True
+        return False
+
+    briefing_path = root / CartridgeLayout.BRIEFING_MD
+    if briefing_path.is_file() and not _declared("static_briefing"):
+        raise CartridgeSerializationError(
+            f"Cartridge {root} (schema_version=2): magic "
+            f"``prompts/briefing.md`` auto-load is removed. Declare it "
+            f"explicitly via ``builtin_hooks: - static_briefing: "
+            f"{{ path: prompts/briefing.md }}`` in config.yaml, or run "
+            f"``looplet migrate <cartridge>`` to upgrade automatically."
+        )
+    recovery_path = root / CartridgeLayout.RECOVERY_MD
+    if recovery_path.is_file() and not _declared("recovery_hint"):
+        raise CartridgeSerializationError(
+            f"Cartridge {root} (schema_version=2): magic "
+            f"``prompts/recovery.md`` auto-load is removed. Declare it "
+            f"explicitly via ``builtin_hooks: - recovery_hint: "
+            f"{{ path: prompts/recovery.md }}`` in config.yaml, or run "
+            f"``looplet migrate <cartridge>`` to upgrade automatically."
+        )
+
+
 def _workspace_to_preset_inner(
     root: Path,
     runtime_dict: dict[str, Any],
@@ -400,33 +522,11 @@ def _workspace_to_preset_inner(
         cfg_kwargs.update(runtime_yaml_kwargs)
 
     # ── Stray runtime keys in config.yaml ──────────────────────
-    # v2 hard-fails; v1 emits a DeprecationWarning (delegated to
+    # v2 hard-fails (delegated to :func:`_check_v2_runtime_tier_keys`);
+    # v1 emits a DeprecationWarning (delegated to
     # :mod:`looplet.cartridge._v1_compat`).
     if is_v2:
-        if runtime_yaml_path.is_file():
-            _runtime_yaml_keys = set(
-                _load_yaml(
-                    runtime_yaml_path.read_text(encoding="utf-8"),
-                    source_path=runtime_yaml_path,
-                )
-                or {}
-            )
-            _stray = sorted(
-                k
-                for k in cfg_kwargs
-                if k in CartridgeLayout.RUNTIME_TIER_FIELDS and k not in _runtime_yaml_keys
-            )
-        else:
-            _stray = sorted(k for k in cfg_kwargs if k in CartridgeLayout.RUNTIME_TIER_FIELDS)
-        if _stray:
-            raise CartridgeSerializationError(
-                f"config.yaml at {cfg_path} declares runtime-tier key(s) "
-                f"{_stray}. Cartridge spec v2 moves runtime configuration "
-                f"into a sibling ``runtime.yaml``. Move these keys to "
-                f"``{runtime_yaml_path}`` (schema_version=2 forbids runtime "
-                f"keys in config.yaml; run ``looplet migrate <cartridge>`` "
-                f"to upgrade automatically)."
-            )
+        _check_v2_runtime_tier_keys(cfg_kwargs, cfg_path, runtime_yaml_path)
     else:
         from looplet.cartridge._v1_compat import warn_v1_stray_runtime_keys  # noqa: PLC0415
 
@@ -440,52 +540,12 @@ def _workspace_to_preset_inner(
     if sys_prompt_path.is_file():
         cfg_kwargs["system_prompt"] = sys_prompt_path.read_text(encoding="utf-8")
 
-    # Memory sources — three sources, combined in the following order:
-    #   1. File-based ``memory/*.md`` → StaticMemorySource (sorted)
-    #   2. File-based ``memory/*.py`` → CallableMemorySource around the
-    #      module's ``load`` attr (sorted alongside .md files)
-    #   3. Any ``memory_sources: ["@x", ...]`` list declared in
-    #      ``config.yaml`` — each ``@ref`` is resolved against the
-    #      resource registry and must return a ``PersistentMemorySource``
-    #      (typically a ``CallableMemorySource`` whose builder closes
-    #      over ``runtime`` values like ``workspace`` / ``max_steps``).
-    # The yaml-declared list runs through the existing
-    # ``_resolve_refs(cfg_kwargs, resources)`` pass below; here we just
-    # ensure file-based entries are appended on top of whatever the
-    # yaml declared, preserving any explicit ordering the author chose.
-    file_memory_sources: list[PersistentMemorySource] = []
-    memory_dir = root / CartridgeLayout.MEMORY_DIR
-    if memory_dir.is_dir():
-        from looplet.memory import (  # noqa: PLC0415
-            CallableMemorySource,
-            StaticMemorySource,
-        )
-
-        memory_files = sorted(
-            p for p in memory_dir.iterdir() if p.is_file() and p.suffix in (".md", ".py")
-        )
-        for memory_file in memory_files:
-            if memory_file.suffix == ".md":
-                file_memory_sources.append(
-                    StaticMemorySource(text=memory_file.read_text(encoding="utf-8"))
-                )
-            else:
-                module = _import_module_from_path(memory_file, f"_chw_memory_{memory_file.stem}")
-                load_fn = getattr(module, "load", None)
-                if not callable(load_fn):
-                    msg = (
-                        f"memory module {memory_file.name!r} must export a ``load(state)`` callable"
-                    )
-                    if strict:
-                        raise CartridgeSerializationError(msg)
-                    logger.warning("%s; skipping", msg)
-                    continue
-                file_memory_sources.append(CallableMemorySource(fn=load_fn))  # type: ignore[arg-type]
-
-    # Merge file-based memory with any yaml-declared @ref list. The
-    # yaml entries (still ``@ref`` strings at this point) get appended
-    # after the file-based ones; ``_resolve_refs`` below converts each
-    # ``@ref`` string in the list into the live resource instance.
+    # Memory sources — file-based (``memory/*.md`` + ``memory/*.py``)
+    # come first; yaml-declared ``memory_sources: ['${ref:...}']``
+    # entries (still as ref strings here) get appended after, then
+    # both pass through ``_resolve_refs`` below which converts the
+    # refs into live :class:`PersistentMemorySource` instances.
+    file_memory_sources = _load_file_memory_sources(root, strict=strict)
     yaml_declared_memory = cfg_kwargs.get("memory_sources") or []
     if yaml_declared_memory or file_memory_sources:
         cfg_kwargs["memory_sources"] = list(file_memory_sources) + list(yaml_declared_memory)

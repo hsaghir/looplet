@@ -20,14 +20,17 @@ from looplet.cartridge import *  # noqa: F401, F403
 # Re-export private symbols that existing tests reach into directly.
 # Names beginning with ``_`` are NOT re-exported by ``import *``,
 # so they need to be named explicitly.
-from looplet.cartridge import (  # noqa: F401  # noqa: F401
+from looplet.cartridge import (  # noqa: F401
     SCHEMA_VERSION,
     Workspace,
     WorkspaceLayout,
     WorkspaceSerializationError,
-    _register_resource_origin,
-    _resource_origin,
     preset_to_workspace,
     resource_ref_for,
     workspace_to_preset,
 )
+
+# These private registry helpers live in :mod:`looplet.refs`; the
+# ``looplet.cartridge`` package no longer re-exports them after the
+# round-2 cleanup. Import directly from the source module.
+from looplet.refs import _register_resource_origin, _resource_origin  # noqa: F401

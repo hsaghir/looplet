@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "name": "pytest-refactorer",
   "description": "Two-hop child of coder. Inherits coder's tools and resources; inherits the python-only refactoring stance from refactorer.cartridge; adds a stricter test-discipline prompt."
 }

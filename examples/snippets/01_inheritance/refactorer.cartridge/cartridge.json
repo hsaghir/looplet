@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "name": "refactorer",
   "description": "Python-only refactoring agent. Inherits tools, hooks, resources, and config from coder.cartridge; overrides the system prompt and disables bash."
 }

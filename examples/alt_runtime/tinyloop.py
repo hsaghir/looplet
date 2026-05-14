@@ -30,6 +30,10 @@ What it implements
   required) and dispatches tool calls to the loaded bodies.
 * A ``conformance_summary()`` matching the v1.0 spec-pinned subset
   produced by :file:`tests/conformance/test_conformance.py`.
+* Cartridge Spec v2 hard-rejections: refuses to load a v2 cartridge
+  containing ``setup.py`` or magic ``prompts/briefing.md`` /
+  ``prompts/recovery.md`` files. Demonstrates the rejection
+  contract is portable, not a quirk of the reference loader.
 
 What it does NOT implement
 --------------------------
@@ -294,6 +298,15 @@ class TinyCartridge:
 _MANIFEST_NAMES = ("workspace.json", "cartridge.json")
 
 
+class CartridgeSerializationError(Exception):
+    """Raised on a malformed or spec-rejected cartridge.
+
+    Mirrors the reference loader's ``looplet.cartridge.CartridgeSerializationError``
+    so callers (and conformance tests) can catch the same kind of
+    failure regardless of which runtime loaded the cartridge.
+    """
+
+
 def load_cartridge(root: Path) -> TinyCartridge:
     """Load a cartridge from ``root`` using only stdlib.
 
@@ -314,6 +327,26 @@ def load_cartridge(root: Path) -> TinyCartridge:
             f"cartridge manifest not found at {root / _MANIFEST_NAMES[0]} (or {_MANIFEST_NAMES[1]})"
         )
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    schema_version = int(manifest.get("schema_version", 1))
+
+    # Cartridge Spec v2 hard-rejections (see SPEC.md "Backwards
+    # compatibility"). v1.x accepted these with a deprecation warning;
+    # v2 fail-louds. Implementing them here demonstrates the v2
+    # rejection contract is portable across runtimes, not a quirk of
+    # the reference loader.
+    if schema_version >= 2:
+        forbidden = [
+            (root / "setup.py", "setup.py"),
+            (root / "prompts" / "briefing.md", "prompts/briefing.md"),
+            (root / "prompts" / "recovery.md", "prompts/recovery.md"),
+        ]
+        for path, label in forbidden:
+            if path.is_file():
+                raise CartridgeSerializationError(
+                    f"Cartridge {root}: {label} is forbidden in spec v2 "
+                    f"(was a v1.x escape hatch). Declare an explicit "
+                    f"hook or builtin_hook instead."
+                )
 
     config_path = root / "config.yaml"
     config = (
@@ -392,7 +425,7 @@ def load_cartridge(root: Path) -> TinyCartridge:
 
     return TinyCartridge(
         name=str(manifest.get("name", root.name)),
-        schema_version=int(manifest.get("schema_version", 1)),
+        schema_version=schema_version,
         system_prompt=system_prompt,
         config=config,
         tools=tools,

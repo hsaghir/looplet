@@ -157,3 +157,32 @@ def test_tinyloop_summary_matches_for_declarative_slot_fixtures(
         f"reference loader. Expected:\n{json.dumps(expected, indent=2)}\n"
         f"Actual:\n{json.dumps(summary, indent=2)}"
     )
+
+
+# ── Spec v2 hard-rejections (cross-runtime) ────────────────────────
+
+
+@pytest.mark.parametrize(
+    "fixture_name, expected_substr",
+    [
+        ("06_v2_setup_py_rejected", "setup.py"),
+        ("07_v2_magic_files_rejected", "prompts/briefing.md"),
+    ],
+)
+def test_tinyloop_rejects_v2_forbidden_files(
+    tinyloop_module, fixture_name: str, expected_substr: str
+) -> None:
+    """tinyloop also fails-loud on v2 forbidden files.
+
+    Locks the v2 hard-rejection contract as cross-runtime, not a
+    quirk of the reference loader. Both runtimes raise their own
+    ``CartridgeSerializationError`` with a message naming the
+    offending file.
+    """
+    fixture_dir = REPO_ROOT / "tests" / "conformance" / "fixtures" / fixture_name
+    with pytest.raises(tinyloop_module.CartridgeSerializationError) as excinfo:
+        tinyloop_module.load_cartridge(fixture_dir / "cartridge")
+    assert expected_substr in str(excinfo.value), (
+        f"tinyloop rejection message for {fixture_name!r} did not contain "
+        f"{expected_substr!r}; got: {excinfo.value}"
+    )

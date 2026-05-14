@@ -1,0 +1,4 @@
+name: done
+description: Done sentinel.
+parameters:
+  summary: {type: string, description: summary}

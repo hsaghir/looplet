@@ -1,0 +1,5 @@
+{
+  "schema_version": 2,
+  "name": "v2_magic_files_rejected",
+  "description": "Spec v2 hard-rejects magic prompts/briefing.md auto-load. The author must opt in via builtin_hooks: - static_briefing."
+}

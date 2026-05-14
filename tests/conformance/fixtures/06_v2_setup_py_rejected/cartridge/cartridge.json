@@ -1,0 +1,5 @@
+{
+  "schema_version": 2,
+  "name": "v2_setup_py_rejected",
+  "description": "Spec v2 hard-rejects setup.py. Loading must fail with a structured error naming the offending file."
+}

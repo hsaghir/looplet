@@ -127,6 +127,72 @@ shims) can reach live objects without going through `setup.py`.
 
 ---
 
+## Built-in registries
+
+`builtin_tools:` and `builtin_hooks:` are spec-portable directives
+(part of v1.0) but the **contents** of each registry are
+runtime-defined. The looplet runtime ships the following.
+
+### `builtin_tools:` (looplet)
+
+| Name | Purpose |
+|---|---|
+| `subagent` | Spawn a sub-loop with its own tools/system_prompt and return the structured result; used to compose agents-as-tools without manual orchestration. |
+| `scaffold_cartridge` | Write a fresh cartridge skeleton (`cartridge.json` + `config.yaml` + `prompts/system.md` + `tools/done/`) into a target directory; used by `agent_factory.cartridge` to let an agent bootstrap another agent. |
+| `scaffold_workspace` | Back-compat alias for `scaffold_cartridge` (older cartridges that opted in under the historical name keep working). |
+| `search_skills` | Query the active `SkillManager` for skills matching a description; returns ranked candidates. |
+| `activate_skill` | Activate a discovered skill into the current loop, registering its tools and adding its instructions to the briefing. |
+
+Opt in from a cartridge:
+
+```yaml
+# config.yaml
+builtin_tools:
+  - subagent
+  - scaffold_cartridge
+```
+
+Unknown names raise `CartridgeSerializationError` at load time;
+canonical list lives at `looplet.builtin_tools.AVAILABLE`.
+
+### `builtin_hooks:` (looplet)
+
+| Name | Purpose |
+|---|---|
+| `skill_activation` | Pairs with `search_skills` / `activate_skill`: tracks active skills across steps and threads their instructions into the briefing. Requires the `skill_manager` resource. |
+| `stagnation` | Stops the loop with a structured reason when the same `(tool, args)` pair repeats N times in a row (`threshold:`, `ignore_tools:`). The principled alternative to baking "are we stuck?" detection into the loop. |
+| `per_tool_limit` | Blocks further calls to a named tool once a per-tool budget is exhausted (`limits: { write: 50 }`); returns `Block(...)` with the limit in the reason so the model can self-correct. |
+| `threshold_compact` | Triggers compaction when prompt tokens cross a fraction of the context window. Pairs with `compact_service:` in `runtime.yaml`. |
+| `static_briefing` | Loads a fixed file (e.g. `prompts/briefing.md`) and prepends it to every step's prompt. The explicit replacement for the v1.x magic `prompts/briefing.md` auto-load (which is hard-rejected in v2). |
+| `recovery_hint` | Loads a fixed file (e.g. `prompts/recovery.md`) and injects it after a tool error. The explicit replacement for the v1.x magic `prompts/recovery.md` auto-load (hard-rejected in v2). |
+
+Opt in with optional kwargs:
+
+```yaml
+# config.yaml
+builtin_hooks:
+  - stagnation: { threshold: 6, ignore_tools: [think, done] }
+  - per_tool_limit: { limits: { write: 50, bash: 200 } }
+  - threshold_compact: { fraction: 0.85 }
+  - static_briefing: { path: prompts/briefing.md }
+```
+
+Each entry is either a bare string (no kwargs) or a single-key
+dict (`name: kwargs`). Unknown names raise
+`CartridgeSerializationError`; canonical list lives at
+`looplet.builtin_hooks.AVAILABLE`.
+
+**Working examples in the repo:**
+
+- `examples/coder.cartridge/` — `subagent`, `stagnation`,
+  `per_tool_limit`, `threshold_compact`.
+- `examples/agent_factory.cartridge/` — `scaffold_cartridge` (extends
+  `coder.cartridge`).
+- `examples/skillful_analyst.cartridge/` — `search_skills`,
+  `activate_skill`, `skill_activation`.
+
+---
+
 ## Round-trip guarantees
 
 ### What round-trips losslessly

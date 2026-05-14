@@ -76,9 +76,9 @@ What is round-trippable
   (JSON-able dict, RUNTIME-tier sampling overrides). ``tool_metadata``
   is auto-populated by the loader (e.g. with the resolved model
   identity for cost tracking) and should not be authored by hand.
-  ``acceptance_criteria`` is intentionally NOT serialised \u2014 if you
-  need acceptance gates, declare them in the ``config.yaml`` of a
-  ``hooks/<name>/`` hook that enforces them.
+  Acceptance gates are not a config field \u2014 declare them in the
+  ``config.yaml`` of a ``hooks/<name>/`` ``check_done`` hook that
+  enforces them (see ``examples/snippets/11_quality_gate/``).
 * Every :class:`ToolSpec` whose ``execute`` is a top-level function
   (closures cannot be re-imported from disk).
 * Every hook that either: (a) implements an opt-in

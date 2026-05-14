@@ -37,14 +37,12 @@ class CartridgeLayout:
     SETUP_PY = "setup.py"
 
     # ``LoopConfig`` field names that round-trip via ``config.yaml``.
-    # NOTE: ``acceptance_criteria`` is intentionally NOT here — it's
-    # declared on ``LoopConfig`` but never consumed by the loop or any
-    # shipped hook (pure documentation field). If you want acceptance
-    # gates, write a hook under ``hooks/<name>/`` that reads its
-    # criteria from ``hook.config.yaml`` — same as any other policy.
-    # ``tool_metadata`` IS here but is auto-populated by the loader
+    # NOTE: ``tool_metadata`` IS here but is auto-populated by the loader
     # (e.g. with the resolved model identity for cost tracking); user
-    # cartridges should not author it directly.
+    # cartridges should not author it directly. If you want acceptance
+    # gates, write a ``check_done`` hook under ``hooks/<name>/`` that
+    # reads its criteria from ``hook.config.yaml`` — same as any other
+    # policy. See ``examples/snippets/11_quality_gate/``.
     SERIALIZABLE_CONFIG_FIELDS: tuple[str, ...] = (
         "max_steps",
         "max_tokens",

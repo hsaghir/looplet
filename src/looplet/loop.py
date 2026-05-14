@@ -552,15 +552,6 @@ class LoopConfig:
     the context window (prompt-too-long error). Default True — essential
     for reliability in long sessions."""
 
-    acceptance_criteria: list[str] | None = None
-    """Optional acceptance criteria. Free-form strings describing what
-    "done" should look like; consumed only by hooks that opt to read
-    them. The loop itself never inspects this field. Not serialised
-    into cartridges — cartridges that need acceptance gates should
-    declare them in a ``hooks/<name>/config.yaml`` block belonging to
-    a hook that enforces them.
-    """
-
     max_briefing_tokens: int | None = None
     """Max estimated tokens for the briefing section (all hook pre_prompt
     outputs combined).  When exceeded, later hook outputs are dropped with

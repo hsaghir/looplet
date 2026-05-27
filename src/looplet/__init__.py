@@ -197,6 +197,7 @@ __all__ = [
     "SkillCard",
     "SkillBundle",
     "SkillRuntime",
+    "QuestionSpec",
     "BundleCard",
     "BundleValidation",
     "AgentBlueprint",

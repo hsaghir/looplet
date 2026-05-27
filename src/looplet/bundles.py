@@ -100,15 +100,18 @@ class SkillRuntime:
             return self.ask_handler(question, choices)
 
         if choices:
-            print(question)
-            for index, option in enumerate(choices, start=1):
-                print(f"  {index}. {option}")
-            answer = input("> ").strip()
-            if answer.isdigit():
-                selected = int(answer)
-                if 1 <= selected <= len(choices):
-                    return choices[selected - 1]
-            return answer
+            while True:
+                print(question)
+                for index, option in enumerate(choices, start=1):
+                    print(f"  {index}. {option}")
+                answer = input("> ").strip()
+                if answer in choices:
+                    return answer
+                if answer.isdigit():
+                    selected = int(answer)
+                    if 1 <= selected <= len(choices):
+                        return choices[selected - 1]
+                print(f"Please choose 1-{len(choices)} or enter one of the listed options.")
         return input(f"{question}\n> ").strip()
 
     def batch_ask_user(self, *, prelude: str, questions: list[QuestionSpec]) -> dict[str, str]:
@@ -132,7 +135,7 @@ class SkillRuntime:
             if question_id in seen:
                 raise ValueError(f"duplicate batch question id: {question_id!r}")
             seen.add(question_id)
-            answers[question_id] = self.ask_user(spec["question"], list(spec.get("options", [])))
+            answers[question_id] = self.ask_user(spec["question"], spec.get("options"))
         return answers
 
 

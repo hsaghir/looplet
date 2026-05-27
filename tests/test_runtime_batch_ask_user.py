@@ -45,6 +45,16 @@ def test_batch_ask_user_rejects_duplicate_question_ids() -> None:
         raise AssertionError("duplicate ids should raise")
 
 
+def test_ask_user_reprompts_for_invalid_fixed_choice(monkeypatch, capsys) -> None:
+    responses = iter(["9", "high"])
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(responses))
+
+    answer = SkillRuntime().ask_user("Severity?", ["low", "high"])
+
+    assert answer == "high"
+    assert "Please choose 1-2" in capsys.readouterr().out
+
+
 def test_runtime_adapter_can_override_batch_ask_user() -> None:
     class NativeBatchRuntime(SkillRuntime):
         def batch_ask_user(self, *, prelude: str, questions: list[QuestionSpec]) -> dict[str, str]:

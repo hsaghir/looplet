@@ -37,6 +37,7 @@ from looplet.budget import ContextBudget, ThresholdCompactHook
 from looplet.bundles import (
     BundleCard,
     BundleValidation,
+    QuestionSpec,
     SkillBundle,
     SkillRuntime,
     discover_skill_bundles,
@@ -196,6 +197,7 @@ __all__ = [
     "SkillCard",
     "SkillBundle",
     "SkillRuntime",
+    "QuestionSpec",
     "BundleCard",
     "BundleValidation",
     "AgentBlueprint",

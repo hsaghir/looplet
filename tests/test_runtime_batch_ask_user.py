@@ -9,6 +9,8 @@ def test_batch_ask_user_defaults_to_sequential_ask_user_calls(capsys) -> None:
 
     def ask_handler(question: str, options: list[str]) -> str:
         calls.append((question, options))
+        if options:
+            return options[0]
         return f"answer-{len(calls)}"
 
     runtime = SkillRuntime(ask_handler=ask_handler)
@@ -21,12 +23,23 @@ def test_batch_ask_user_defaults_to_sequential_ask_user_calls(capsys) -> None:
         ],
     )
 
-    assert answers == {"scope": "answer-1", "format": "answer-2"}
+    assert answers == {"scope": "diff", "format": "answer-2"}
     assert calls == [
         ("Which scope?", ["diff", "all"]),
         ("Which output format?", []),
     ]
     assert "Please answer these setup questions." in capsys.readouterr().out
+
+
+def test_ask_user_rejects_invalid_handler_response_for_fixed_choices() -> None:
+    runtime = SkillRuntime(ask_handler=lambda _question, _options: "bogus")
+
+    try:
+        runtime.ask_user("Severity?", ["low", "high"])
+    except ValueError as exc:
+        assert "'low'" in str(exc) and "'high'" in str(exc)
+    else:
+        raise AssertionError("invalid handler response should raise")
 
 
 def test_batch_ask_user_rejects_duplicate_question_ids() -> None:

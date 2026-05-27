@@ -6,6 +6,17 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **`SkillRuntime.batch_ask_user(prelude=, questions=)`** runtime
+  primitive for asking a batch of structured clarifying questions in
+  one round, returning a `{question_id: answer}` dict. The default
+  implementation falls back to sequential `ask_user(...)` calls so
+  runtime adapters that haven't adopted form rendering keep working;
+  adapters that want native form rendering override the method.
+  Companion additions: `QuestionSpec` `TypedDict`, single-question
+  `SkillRuntime.ask_user(...)` with fixed-choice validation, and an
+  optional `SkillRuntime.ask_handler` for host-supplied input.
+
 ## [0.2.0] - 2026-05-14
 
 ### Added

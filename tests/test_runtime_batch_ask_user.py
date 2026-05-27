@@ -60,7 +60,9 @@ def test_runtime_adapter_can_override_batch_ask_user() -> None:
     class NativeBatchRuntime(SkillRuntime):
         def batch_ask_user(self, *, prelude: str, questions: list[QuestionSpec]) -> dict[str, str]:
             assert prelude == "One form, please."
-            return {question["id"]: f"native-{index}" for index, question in enumerate(questions, 1)}
+            return {
+                question["id"]: f"native-{index}" for index, question in enumerate(questions, 1)
+            }
 
     def fail_if_called(_question: str, _options: list[str]) -> str:
         raise AssertionError("overridden batch_ask_user should bypass ask_user")

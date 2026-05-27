@@ -100,9 +100,7 @@ class SkillRuntime:
             answer = self.ask_handler(question, choices)
             if choices and answer not in choices:
                 allowed = ", ".join(repr(choice) for choice in choices)
-                raise ValueError(
-                    f"Invalid answer {answer!r}; expected one of: {allowed}"
-                )
+                raise ValueError(f"Invalid answer {answer!r}; expected one of: {allowed}")
             return answer
 
         if choices:

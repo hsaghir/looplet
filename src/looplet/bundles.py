@@ -118,6 +118,12 @@ class SkillRuntime:
         back to sequential ``ask_user`` calls. Runtime adapters can
         override this method to render a native form and return the same
         ``{question_id: answer}`` mapping.
+
+        Args:
+            prelude: Introductory text for native batched renderers. The
+                sequential fallback delegates only individual questions to
+                ``ask_user``.
+            questions: Question specifications keyed by stable caller IDs.
         """
         answers: dict[str, str] = {}
         seen: set[str] = set()

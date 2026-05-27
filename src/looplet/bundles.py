@@ -97,7 +97,13 @@ class SkillRuntime:
         """Ask the user one question and return their answer."""
         choices = list(options or [])
         if self.ask_handler is not None:
-            return self.ask_handler(question, choices)
+            answer = self.ask_handler(question, choices)
+            if choices and answer not in choices:
+                allowed = ", ".join(repr(choice) for choice in choices)
+                raise ValueError(
+                    f"Invalid answer {answer!r}; expected one of: {allowed}"
+                )
+            return answer
 
         if choices:
             while True:

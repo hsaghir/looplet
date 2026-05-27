@@ -4,7 +4,7 @@ from looplet import SkillRuntime
 from looplet.bundles import QuestionSpec
 
 
-def test_batch_ask_user_defaults_to_sequential_ask_user_calls() -> None:
+def test_batch_ask_user_defaults_to_sequential_ask_user_calls(capsys) -> None:
     calls: list[tuple[str, list[str]]] = []
 
     def ask_handler(question: str, options: list[str]) -> str:
@@ -26,6 +26,7 @@ def test_batch_ask_user_defaults_to_sequential_ask_user_calls() -> None:
         ("Which scope?", ["diff", "all"]),
         ("Which output format?", []),
     ]
+    assert "Please answer these setup questions." in capsys.readouterr().out
 
 
 def test_batch_ask_user_rejects_duplicate_question_ids() -> None:

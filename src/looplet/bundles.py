@@ -123,13 +123,15 @@ class SkillRuntime:
         ``{question_id: answer}`` mapping.
 
         Args:
-            prelude: Introductory text for native batched renderers. The
-                sequential fallback delegates only individual questions to
+            prelude: Introductory text for the interview. The sequential
+                fallback prints it before asking individual questions with
                 ``ask_user``.
             questions: Question specifications keyed by stable caller IDs.
         """
         answers: dict[str, str] = {}
         seen: dict[str, int] = {}
+        if questions and prelude:
+            print(prelude)
         for index, spec in enumerate(questions, start=1):
             question_id = spec["id"]
             if question_id in seen:

@@ -45,7 +45,7 @@ def test_batch_ask_user_rejects_duplicate_question_ids() -> None:
         raise AssertionError("duplicate ids should raise")
 
 
-def test_ask_user_reprompts_for_invalid_fixed_choice(monkeypatch, capsys) -> None:
+def test_ask_user_validates_fixed_choice_and_shows_error(monkeypatch, capsys) -> None:
     responses = iter(["9", "high"])
     monkeypatch.setattr("builtins.input", lambda _prompt: next(responses))
 

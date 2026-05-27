@@ -129,12 +129,15 @@ class SkillRuntime:
             questions: Question specifications keyed by stable caller IDs.
         """
         answers: dict[str, str] = {}
-        seen: set[str] = set()
-        for spec in questions:
+        seen: dict[str, int] = {}
+        for index, spec in enumerate(questions, start=1):
             question_id = spec["id"]
             if question_id in seen:
-                raise ValueError(f"duplicate batch question id: {question_id!r}")
-            seen.add(question_id)
+                raise ValueError(
+                    f"duplicate batch question id: {question_id!r} "
+                    f"(appears at positions {seen[question_id]} and {index})"
+                )
+            seen[question_id] = index
             answers[question_id] = self.ask_user(spec["question"], spec.get("options"))
         return answers
 

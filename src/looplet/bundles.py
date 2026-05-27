@@ -19,7 +19,7 @@ from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import ModuleType
-from typing import Any, cast
+from typing import Any, NotRequired, TypedDict, cast
 
 from looplet.loop import composable_loop
 from looplet.presets import AgentPreset
@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "BundleCard",
     "BundleValidation",
+    "QuestionSpec",
     "SkillBundle",
     "SkillRuntime",
     "discover_skill_bundles",
@@ -40,6 +41,15 @@ __all__ = [
 ]
 
 BuildSkillBundle = Callable[["SkillRuntime"], AgentPreset]
+AskUserHandler = Callable[[str, list[str]], str]
+
+
+class QuestionSpec(TypedDict):
+    """One question in a batched runtime interview."""
+
+    id: str
+    question: str
+    options: NotRequired[list[str]]
 
 
 @dataclass(frozen=True)
@@ -77,10 +87,47 @@ class SkillRuntime:
     max_steps: int = 20
     options: Mapping[str, Any] = field(default_factory=dict)
     output_dir: str | Path | None = None
+    ask_handler: AskUserHandler | None = None
 
     def option(self, name: str, default: Any = None) -> Any:
         """Return a bundle-specific option value."""
         return self.options.get(name, default)
+
+    def ask_user(self, question: str, options: list[str] | None = None) -> str:
+        """Ask the user one question and return their answer."""
+        choices = list(options or [])
+        if self.ask_handler is not None:
+            return self.ask_handler(question, choices)
+
+        if choices:
+            print(question)
+            for index, option in enumerate(choices, start=1):
+                print(f"  {index}. {option}")
+            answer = input("> ").strip()
+            if answer.isdigit():
+                selected = int(answer)
+                if 1 <= selected <= len(choices):
+                    return choices[selected - 1]
+            return answer
+        return input(f"{question}\n> ").strip()
+
+    def batch_ask_user(self, *, prelude: str, questions: list[QuestionSpec]) -> dict[str, str]:
+        """Ask several questions as one runtime interview.
+
+        The default implementation preserves compatibility by falling
+        back to sequential ``ask_user`` calls. Runtime adapters can
+        override this method to render a native form and return the same
+        ``{question_id: answer}`` mapping.
+        """
+        answers: dict[str, str] = {}
+        seen: set[str] = set()
+        for spec in questions:
+            question_id = spec["id"]
+            if question_id in seen:
+                raise ValueError(f"duplicate batch question id: {question_id!r}")
+            seen.add(question_id)
+            answers[question_id] = self.ask_user(spec["question"], list(spec.get("options", [])))
+        return answers
 
 
 @dataclass(frozen=True)

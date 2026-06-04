@@ -105,6 +105,7 @@ nav:
   - Build:
       - Hooks: hooks.md
       - Skills: skills.md
+      - Portability: portability.md
       - Evals: evals.md
       - Provenance: provenance.md
       - Pitfalls: pitfalls.md

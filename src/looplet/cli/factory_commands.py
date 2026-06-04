@@ -306,15 +306,20 @@ def cmd_run_workspace(args: argparse.Namespace) -> int:
         print(_dim(f"  model: {os.environ['OPENAI_MODEL']}"))
         print()
 
+    project_root = getattr(args, "project_root", None)
+    runtime: dict | None = None
+    if project_root is not None:
+        runtime = {"project_root": str(project_root.expanduser().resolve())}
+
     try:
         backend = _build_backend()
-        preset = cartridge_to_preset(
-            str(workspace_path), runtime={"workspace": str(workspace_path.parent)}
-        )
+        preset = cartridge_to_preset(str(workspace_path), runtime=runtime)
     except Exception as exc:
         print(_red(f"error: workspace load failed: {exc}"), file=sys.stderr)
         return 1
 
+    if args.max_steps:
+        preset.config.max_steps = args.max_steps
     state = DefaultState(max_steps=args.max_steps or preset.config.max_steps)
     pretty = None
     if getattr(args, "pretty", False) and not args.quiet:
@@ -377,6 +382,40 @@ def cmd_run_workspace(args: argparse.Namespace) -> int:
     elif final_data:
         print(_bold("result:"))
         print(json.dumps(final_data, indent=2, default=str)[:2000])
+    return 0
+
+
+def cmd_portability(args: argparse.Namespace) -> int:
+    """Statically report a cartridge's cross-runtime portability."""
+    cartridge_path: Path = args.cartridge.resolve()
+    if not cartridge_path.is_dir():
+        print(
+            _red(f"error: cartridge not found at {cartridge_path}"),
+            file=sys.stderr,
+        )
+        return 1
+
+    try:
+        from looplet.cartridge import analyse_cartridge  # noqa: PLC0415
+    except Exception as exc:  # noqa: BLE001
+        print(_red(f"error: {exc}"), file=sys.stderr)
+        return 1
+
+    try:
+        report = analyse_cartridge(cartridge_path)
+    except Exception as exc:  # noqa: BLE001
+        print(_red(f"error: analysis failed: {exc}"), file=sys.stderr)
+        return 1
+
+    if getattr(args, "json", False):
+        print(json.dumps(report.to_dict(), indent=2))
+    else:
+        print(report.render())
+
+    # Non-zero exit when the cartridge is NOT fully portable and the
+    # caller asked us to enforce it (useful in CI conformance gates).
+    if getattr(args, "require_portable", False) and report.profile != "portable":
+        return 2
     return 0
 
 
@@ -446,6 +485,16 @@ def add_subparsers(sub: "argparse._SubParsersAction") -> None:
         type=int,
         help="Override the cartridge's default max_steps",
     )
+    run_p.add_argument(
+        "--project-root",
+        type=Path,
+        default=None,
+        help=(
+            "Directory the agent operates on (its tools' working directory). "
+            "Defaults to $LOOPLET_PROJECT_ROOT, then the current git repo, "
+            "then the current working directory."
+        ),
+    )
     run_p.add_argument("--quiet", action="store_true", help="Suppress per-step output")
     run_p.add_argument(
         "--pretty",
@@ -454,5 +503,27 @@ def add_subparsers(sub: "argparse._SubParsersAction") -> None:
     )
     run_p.set_defaults(_handler=cmd_run_workspace)
 
+    portab_p = sub.add_parser(
+        "portability",
+        help="Report a cartridge's cross-runtime portability (static analysis)",
+        description=(
+            "Statically classify every component of a cartridge as "
+            "protocol-portable (config/prompts/MCP tools/LEP hooks), "
+            "stdlib-declarative (builtin_tools/builtin_hooks), or "
+            "Python-pinned (Python tool bodies, class hooks, resources). "
+            "Prints an overall portable / python-host profile verdict and "
+            "names the exact components that pin the cartridge to a Python "
+            "host. No env vars required — reads the cartridge directory only."
+        ),
+    )
+    portab_p.add_argument("cartridge", type=Path, help="Path to a cartridge directory")
+    portab_p.add_argument("--json", action="store_true", help="Emit the report as JSON")
+    portab_p.add_argument(
+        "--require-portable",
+        action="store_true",
+        help="Exit non-zero (2) if the cartridge is not in the portable profile (CI gate).",
+    )
+    portab_p.set_defaults(_handler=cmd_portability)
 
-__all__ = ["add_subparsers", "cmd_new", "cmd_run_workspace"]
+
+__all__ = ["add_subparsers", "cmd_new", "cmd_portability", "cmd_run_workspace"]

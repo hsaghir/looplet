@@ -413,10 +413,15 @@ def test_hello_workspace_loads_and_runs_end_to_end() -> None:
 
     assert preset.config.max_steps == 5
     assert "polite assistant" in preset.config.system_prompt.lower()
-    assert {type(h).__name__ for h in preset.hooks} == {"PolitenessGate"}
+    # PolitenessGate is the in-process @ref hook; NameGuard is the
+    # portable ``kind: lep`` out-of-process permission policy.
+    assert {type(h).__name__ for h in preset.hooks} == {
+        "PolitenessGate",
+        "LEPHookAdapter",
+    }
     assert sorted(preset.tools._tools.keys()) == ["done", "greet"]
 
-    hook = preset.hooks[0]
+    hook = next(h for h in preset.hooks if type(h).__name__ == "PolitenessGate")
     assert hasattr(hook, "log") and hasattr(hook.log, "entries")
     assert hook.log.entries == []
 
@@ -483,12 +488,15 @@ def test_coder_workspace_loads_with_shared_filecache(tmp_path) -> None:
     # Order: directory hooks (sorted by ``order:``) first, then
     # ``builtin_hooks:`` entries in declaration order, then the
     # auto-installed ``permissions:`` PermissionHook (v1.0 spec slot).
+    # ``08_ShellSafetyGate`` is the portable ``kind: lep`` guardrail and
+    # lands last among the directory hooks (after EvalHook).
     assert hook_names == [
         "TestGuardHook",
         "FileCacheHook",
         "StaleFileHook",
         "LinterHook",
         "EvalHook",
+        "LEPHookAdapter",
         "StagnationHook",
         "ThresholdCompactHook",
         "PerToolLimitHook",
@@ -563,6 +571,7 @@ def test_threat_intel_workspace_loads() -> None:
         "think",
     ]
     assert [type(h).__name__ for h in preset.hooks] == [
+        "LEPHookAdapter",
         "StagnationHook",
         "PerToolLimitHook",
     ]
@@ -586,6 +595,7 @@ def test_dep_doctor_workspace_loads() -> None:
         "think",
     ]
     assert [type(h).__name__ for h in preset.hooks] == [
+        "LEPHookAdapter",
         "StagnationHook",
         "PerToolLimitHook",
     ]
@@ -612,6 +622,7 @@ def test_git_detective_workspace_loads() -> None:
         "think",
     ]
     assert [type(h).__name__ for h in preset.hooks] == [
+        "LEPHookAdapter",
         "StagnationHook",
         "PerToolLimitHook",
     ]
@@ -754,12 +765,15 @@ def test_coder_workspace_bidirectional_round_trip(tmp_path) -> None:
     # The 3 generic guards (Stagnation, ThresholdCompact, PerToolLimit)
     # are wired via ``builtin_hooks:`` and land at the end of the list.
     reloaded_names = [type(h).__name__ for h in reloaded.hooks]
+    # The portable ``kind: lep`` ShellSafetyGate round-trips too and
+    # keeps its position after EvalHook among the directory hooks.
     assert reloaded_names == [
         "TestGuardHook",
         "FileCacheHook",
         "StaleFileHook",
         "LinterHook",
         "EvalHook",
+        "LEPHookAdapter",
         "StagnationHook",
         "ThresholdCompactHook",
         "PerToolLimitHook",

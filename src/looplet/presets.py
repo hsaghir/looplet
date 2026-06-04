@@ -94,11 +94,69 @@ class AgentPreset:
     and for presets constructed directly in code.
     """
 
-    def close(self) -> None:
-        """Terminate all MCP server subprocesses owned by this preset.
+    builtin_tool_names: list[str] = field(default_factory=list)
+    """Names of looplet-shipped tools enabled via ``builtin_tools:`` in
+    ``config.yaml`` (e.g. ``subagent``).
 
-        Safe to call multiple times. Exceptions during close are logged
-        and swallowed so one misbehaving server cannot block the rest.
+    Recorded so :func:`looplet.cartridge.preset_to_cartridge` can
+    re-emit the ``builtin_tools:`` directive instead of trying to
+    serialise the builtin's source (which would lose its loader-provided
+    resources like ``workspace_config``). Empty for presets built in
+    code or cartridges that declare no builtin tools.
+    """
+
+    mcp_servers: dict[str, Any] = field(default_factory=dict)
+    """The ``mcp_servers:`` block (server name → config) from
+    ``config.yaml``, with ``${runtime.*}`` placeholders already resolved.
+
+    Recorded so :func:`looplet.cartridge.preset_to_cartridge` can
+    re-emit the directive (and skip the MCP-discovered tools, whose
+    executors are closures that cannot round-trip to disk). Empty for
+    presets built in code or cartridges that declare no MCP servers.
+    """
+
+    state_service_handles: list[Any] = field(default_factory=list)
+    """Live :class:`looplet.state_service.StateServiceHandle` instances
+    spawned by the cartridge loader, one per ``state_services:`` entry in
+    ``config.yaml``.
+
+    Each handle owns a shared-mutable-state server subprocess (behind a
+    Unix socket). Call :meth:`close` (or use the preset as a context
+    manager) to terminate them cleanly. Empty for cartridges that declare
+    no state services and for presets constructed directly in code.
+    """
+
+    state_services: dict[str, Any] = field(default_factory=dict)
+    """The ``state_services:`` block (service name → config) from
+    ``config.yaml``, with ``${runtime.*}`` placeholders already resolved.
+
+    Recorded so :func:`looplet.cartridge.preset_to_cartridge` can re-emit
+    the directive (the injected :class:`StateServiceClient` is a live
+    socket proxy that cannot round-trip to disk). Empty for presets built
+    in code or cartridges that declare no state services.
+    """
+
+    model_gateway: Any = None
+    """Live :class:`looplet.model_gateway.ModelGatewayHandle` started by
+    the cartridge loader when the cartridge declares out-of-process tool
+    servers (``mcp_servers:``) and ``llm_gateway`` is not disabled.
+
+    The gateway exposes the loop's LLM backend to those out-of-process
+    tools (and LEP hooks) over a Unix socket so they can call
+    ``ctx.llm.generate(...)`` instead of degrading. The backend is bound
+    at run time by :meth:`run` (``set_backend(llm)``); until then the
+    gateway reports "no backend" and tools fall back gracefully. ``None``
+    for cartridges with no out-of-process tools, presets built in code,
+    or when ``llm_gateway: false`` is set.
+    """
+
+    def close(self) -> None:
+        """Terminate all subprocesses owned by this preset.
+
+        Covers both ``mcp_servers:`` adapters and ``state_services:``
+        handles. Safe to call multiple times. Exceptions during close are
+        logged and swallowed so one misbehaving server cannot block the
+        rest.
         """
         for adapter in self.mcp_adapters:
             try:
@@ -108,6 +166,24 @@ class AgentPreset:
 
                 logging.getLogger(__name__).warning("error closing MCP adapter", exc_info=True)
         self.mcp_adapters = []
+        for handle in self.state_service_handles:
+            try:
+                handle.close()
+            except Exception:  # pragma: no cover - defensive
+                import logging  # noqa: PLC0415
+
+                logging.getLogger(__name__).warning(
+                    "error closing state service handle", exc_info=True
+                )
+        self.state_service_handles = []
+        if self.model_gateway is not None:
+            try:
+                self.model_gateway.close()
+            except Exception:  # pragma: no cover - defensive
+                import logging  # noqa: PLC0415
+
+                logging.getLogger(__name__).warning("error closing model gateway", exc_info=True)
+            self.model_gateway = None
 
     def __enter__(self) -> "AgentPreset":
         return self
@@ -137,6 +213,19 @@ class AgentPreset:
         Returns the loop generator — iterate to drive the agent.
         """
         from looplet.loop import composable_loop  # noqa: PLC0415
+
+        # Bind the live LLM backend to the model gateway (if any) so
+        # out-of-process MCP tools / LEP hooks can reach the same model
+        # this run is driving, instead of degrading ``ctx.llm`` to None.
+        if self.model_gateway is not None:
+            try:
+                self.model_gateway.set_backend(llm)
+            except Exception:  # pragma: no cover - defensive
+                import logging  # noqa: PLC0415
+
+                logging.getLogger(__name__).warning(
+                    "error binding LLM backend to model gateway", exc_info=True
+                )
 
         return composable_loop(
             llm=llm,

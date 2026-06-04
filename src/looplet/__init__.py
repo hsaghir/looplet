@@ -118,6 +118,11 @@ from looplet.memory import (
     CallableMemorySource,
     StaticMemorySource,
 )
+from looplet.model_gateway import (
+    ModelGatewayClient,
+    ModelGatewayHandle,
+    ModelGatewayServer,
+)
 from looplet.native_tools import (
     NativeToolProbeResult,
     probe_native_tool_support,
@@ -152,6 +157,11 @@ from looplet.stagnation import (
     StagnationHook,
     result_size_fingerprint,
     tool_call_fingerprint,
+)
+from looplet.state_service import (
+    StateServiceBase,
+    StateServiceClient,
+    StateServiceHandle,
 )
 from looplet.streaming import StreamingHook
 from looplet.subagent import run_sub_loop
@@ -243,6 +253,12 @@ __all__ = [
     "AnthropicBackend",
     "NativeToolBackend",
     "MCPToolAdapter",
+    "StateServiceBase",
+    "StateServiceClient",
+    "StateServiceHandle",
+    "ModelGatewayServer",
+    "ModelGatewayClient",
+    "ModelGatewayHandle",
     "NativeToolProbeResult",
     "probe_native_tool_support",
     "supports_native_tools",

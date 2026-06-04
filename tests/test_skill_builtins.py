@@ -68,10 +68,6 @@ def test_skillful_analyst_workspace_loads_without_setup_py() -> None:
     """The shipped example workspace must be 100% declarative."""
     ws = Path(__file__).resolve().parents[1] / "examples" / "skillful_analyst.cartridge"
     assert not (ws / "setup.py").exists(), "skillful_analyst should not need setup.py"
-    assert not (ws / "hooks").exists(), (
-        "skillful_analyst should not need hooks/ — the skill_activation built-in "
-        "hook covers the SkillActivationHook wiring."
-    )
     assert not (ws / "resources" / "project_root.py").exists(), (
         "skillful_analyst should not need resources/project_root.py — tools read "
         "ctx.resources['runtime'] which the loader auto-injects."

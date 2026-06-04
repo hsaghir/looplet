@@ -18,6 +18,7 @@ import importlib
 import inspect
 import json
 import logging
+import re
 import shutil
 from collections.abc import Iterable
 from pathlib import Path
@@ -147,6 +148,19 @@ def preset_to_cartridge(
         serialized_cfg[fname] = f"{_REF_PREFIX}{fname}"
         config_field_refs[fname] = value
 
+    # Re-emit declarative tool directives so the round-tripped cartridge
+    # re-derives these tools from the loader instead of carrying inlined
+    # specs. ``builtin_tools`` re-registers looplet-shipped tools (which
+    # need loader-provided resources like ``workspace_config``);
+    # ``mcp_servers`` re-spawns the MCP subprocess (whose tool executors
+    # are closures that cannot serialise to disk).
+    builtin_tool_names = list(getattr(preset, "builtin_tool_names", None) or [])
+    if builtin_tool_names:
+        serialized_cfg["builtin_tools"] = builtin_tool_names
+    mcp_servers = dict(getattr(preset, "mcp_servers", None) or {})
+    if mcp_servers:
+        serialized_cfg["mcp_servers"] = _relativise_mcp_servers(mcp_servers, preset, root, warnings)
+
     if serialized_cfg:
         # ── Cartridge spec v2 split: contract → config.yaml,
         # runtime knobs → runtime.yaml. Field tiering lives on
@@ -179,7 +193,15 @@ def preset_to_cartridge(
     # 3. tools — one subdir per tool with tool.yaml + execute.py
     tools_root = root / CartridgeLayout.TOOLS_DIR
     tools_root.mkdir(exist_ok=True)
+    _builtin_names = set(builtin_tool_names)
     for spec in _iter_tool_specs(preset.tools):
+        # Skip tools that are re-derived from declarative directives:
+        # builtin tools come back via ``builtin_tools:`` and MCP tools via
+        # ``mcp_servers:`` (their closure executors cannot round-trip).
+        if getattr(spec, "name", None) in _builtin_names:
+            continue
+        if _is_mcp_tool(spec):
+            continue
         _write_tool(spec, tools_root, warnings, strict)
 
     # 4. hooks — one subdir per hook, ordered by index for deterministic load
@@ -288,6 +310,85 @@ def preset_to_cartridge(
     workspace.serialization_warnings = warnings
     workspace.write_metadata()
     return workspace
+
+
+def _is_mcp_tool(spec: Any) -> bool:
+    """True when ``spec``'s executor is an MCP adapter closure.
+
+    MCP tool specs are produced by
+    :meth:`looplet.mcp.MCPToolAdapter.tools`, whose ``execute`` is a
+    per-tool closure (``MCPToolAdapter._make_executor.<locals>...``).
+    Such closures cannot serialise to disk, so the serialiser skips them
+    and relies on the re-emitted ``mcp_servers:`` directive to recreate
+    the tools on reload.
+    """
+    fn = getattr(spec, "execute", None)
+    qualname = getattr(fn, "__qualname__", "") or ""
+    return "MCPToolAdapter" in qualname and "_make_executor" in qualname
+
+
+def _relativise_mcp_servers(
+    mcp_servers: dict[str, Any],
+    preset: Any,
+    dest_root: Path,
+    warnings: list[str],
+) -> dict[str, Any]:
+    """Re-template resolved ``mcp_servers`` commands back to
+    ``${runtime.cartridge_root}`` and vendor any bundled server files.
+
+    The loader resolves ``${runtime.cartridge_root}`` to the source
+    cartridge's absolute path before storing the block on the preset. To
+    make the round-tripped cartridge relocatable, we copy the referenced
+    bundle directory (e.g. ``_server/``) into ``dest_root`` and rewrite
+    the absolute origin path back to the ``${runtime.cartridge_root}``
+    placeholder. When the preset has no recorded origin (built in-process
+    from an absolute path), the command is emitted verbatim so reload
+    still re-spawns the server from its original location.
+    """
+    src_root = _preset_origin_root(preset)
+    out: dict[str, Any] = {}
+    for name, cfg in mcp_servers.items():
+        if not isinstance(cfg, dict) or src_root is None:
+            out[name] = cfg
+            continue
+        cfg = dict(cfg)
+        src_str = str(Path(src_root).resolve())
+        command = cfg.get("command")
+        if isinstance(command, str) and src_str in command:
+            _copy_mcp_bundle(command, src_str, Path(src_root), dest_root, warnings)
+            cfg["command"] = command.replace(src_str, "${runtime.cartridge_root}")
+        out[name] = cfg
+    return out
+
+
+def _copy_mcp_bundle(
+    command: str,
+    src_str: str,
+    src_root: Path,
+    dest_root: Path,
+    warnings: list[str],
+) -> None:
+    """Copy the top-level bundle component referenced by an MCP server
+    command (e.g. the ``_server/`` directory holding ``calc.py``) from
+    the source cartridge into ``dest_root``."""
+    for token in command.split():
+        if not token.startswith(src_str):
+            continue
+        rel = Path(token[len(src_str) :].lstrip("/\\"))
+        if not rel.parts:
+            continue
+        top = rel.parts[0]
+        src_path = src_root / top
+        dest_path = dest_root / top
+        if not src_path.exists() or dest_path.exists():
+            continue
+        try:
+            if src_path.is_dir():
+                shutil.copytree(src_path, dest_path)
+            else:
+                dest_path.write_bytes(src_path.read_bytes())
+        except OSError as exc:  # noqa: BLE001
+            warnings.append(f"mcp bundle copy: could not copy {top!r}: {exc}")
 
 
 def _copy_workspace_helpers(preset: Any, dest_root: Path, warnings: list[str]) -> None:
@@ -795,6 +896,52 @@ def _write_tool(spec: Any, tools_root: Path, warnings: list[str], strict: bool) 
 
 
 def _write_hook(hook: Any, hooks_root: Path, index: int, warnings: list[str], strict: bool) -> None:
+    # ── kind: lep — out-of-process hook serialises to declarative data ──
+    # An LEPHookAdapter carries no Python decision logic; its faithful
+    # cartridge form is the launch command + declared view + failure
+    # policy. Emitting that (instead of trying to pickle the adapter as a
+    # class hook) is what makes the library→cartridge direction lossless
+    # for out-of-process hooks (HOOK_CARTRIDGE_DESIGN.md §5.1).
+    from looplet.lep import LEPHookAdapter  # noqa: PLC0415
+
+    if isinstance(hook, LEPHookAdapter):
+        # The loader sets ``_cartridge_id`` to the source hook dir name,
+        # which already carries an ``NN_`` index prefix. Strip it before
+        # re-prefixing so the dir name does not compound (``01_NameGuard``
+        # → ``01_01_NameGuard`` → …) across successive round-trips.
+        base_id = re.sub(r"^\d+_", "", hook._cartridge_id or "lep") or "lep"
+        dir_name = f"{index:02d}_{_safe_filename(base_id)}"
+        hook_dir = hooks_root / dir_name
+        hook_dir.mkdir(parents=True, exist_ok=True)
+        # Make the snapshot self-contained: any argv token *after* the
+        # program/interpreter (argv[0]) that is an existing file (the
+        # server script + its local helpers) is copied into the hook dir
+        # and rewritten to a bare filename, which the loader resolves
+        # relative to the hook dir. argv[0] (the interpreter/executable)
+        # and non-file tokens (flags) pass through verbatim — copying the
+        # interpreter binary would break it outside its install tree.
+        emitted_cmd: list[str] = []
+        for idx, tok in enumerate(hook._argv):
+            src_path = Path(str(tok))
+            if idx > 0 and src_path.is_file():
+                dest = hook_dir / src_path.name
+                try:
+                    shutil.copy2(src_path, dest)
+                    emitted_cmd.append(src_path.name)
+                    continue
+                except OSError as exc:  # pragma: no cover - defensive
+                    warnings.append(f"lep hook server copy failed for {tok}: {exc}")
+            emitted_cmd.append(str(tok))
+        lep_cfg: dict[str, Any] = {
+            "kind": "lep",
+            "command": emitted_cmd,
+            "view": hook._view.to_dict(),
+            "on_failure": hook._on_failure,
+            "run_id": hook._run_id,
+        }
+        (hook_dir / "config.yaml").write_text(_dump_yaml(lep_cfg) + "\n", encoding="utf-8")
+        return
+
     cls = _hook_class(hook)
     cls_name = cls.__name__
     dir_name = f"{index:02d}_{_safe_filename(cls_name)}"

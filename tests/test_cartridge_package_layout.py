@@ -106,12 +106,16 @@ ALLOWED_LOOPLET_DEPS = frozenset(
         "looplet.compact",  # public CompactService types
         "looplet.hook_decision",  # public HookDecision factories
         "looplet.hook_view",  # public ViewSpec (capability-scoped hook views)
+        "looplet.hook_contract",  # public portability classifier
+        "looplet.lep",  # public LEPHookAdapter (out-of-process hooks)
         "looplet.loop",  # public LoopConfig / hook protocol
         "looplet.memory",  # public MemorySource types
         "looplet.mcp",  # public MCPToolAdapter (mcp_servers: in config.yaml)
         "looplet.permissions",  # public PermissionEngine etc.
         "looplet.presets",  # public AgentPreset
         "looplet.refs",  # resource ref registry
+        "looplet.state_service",  # public StateServiceHandle (state_services: in config.yaml)
+        "looplet.model_gateway",  # public ModelGatewayHandle (host-LLM bridge for out-of-process tools)
         "looplet.tools",  # public ToolSpec / BaseToolRegistry
         "looplet.types",  # public DefaultState etc.
         "looplet.validation",  # public OutputSchema / FieldSpec

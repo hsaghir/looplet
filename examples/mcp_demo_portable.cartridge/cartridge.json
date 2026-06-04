@@ -1,0 +1,13 @@
+{
+  "description": "Fully-portable twin of mcp_demo: BOTH the add tool and the done completion sentinel come from the bundled MCP stdio server (_server/calc.py), and the CalcGuard permission policy is a kind: lep hook. Zero Python-pinned components — runs on any conforming loader (Rust/Go/TS).",
+  "metadata": {
+    "tags": [
+      "mcp",
+      "transport",
+      "portable",
+      "demo"
+    ]
+  },
+  "name": "mcp_demo_portable",
+  "schema_version": 2
+}

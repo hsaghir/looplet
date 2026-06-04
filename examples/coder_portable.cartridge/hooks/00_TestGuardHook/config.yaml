@@ -1,0 +1,6 @@
+kind: lep
+server: server.py
+view:
+  fields: [tool, args, tool_result, step]
+  fidelity: full
+on_failure: fail_open

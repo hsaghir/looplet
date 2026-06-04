@@ -1,0 +1,30 @@
+name: bash
+description: |-
+  Execute a bash command in the project directory and return stdout, stderr, and exit code.
+
+  Usage:
+  - Use this for system commands and terminal operations that don't have a dedicated tool.
+  - Prefer the dedicated tools (read_file, write_file, edit_file, grep, glob, list_dir) over equivalent shell commands so the user / observers can review your work consistently. Only fall back on bash when no dedicated tool fits.
+  - All commands run with cwd = the project root. Use relative paths.
+  - Each call is independent: state set by `cd`, `export`, etc. does NOT carry across calls. Chain with `&&`, `;`, or `|` if you need shared state inside one call.
+  - Output is captured into the result. Long output may be truncated; for very large outputs prefer grep/head/tail to filter at source.
+  - Default timeout: 600s. Long-running commands that exceed it are terminated.
+
+  Refusals (model-actionable, fail-loud):
+  - **Destructive commands** are refused: `rm -rf`, `git push --force`, `git reset --hard`, `dd`, `mkfs`, `kill`, `shutdown`. The error names the matched pattern; pick a safer alternative (delete specific files, create a NEW commit, etc.) or ask the user to authorize the action.
+  - **`sed -i`** is refused: in-place sed bypasses the file_cache so the next read_file would return stale content. Use `edit_file` for in-place file edits.
+  - **`cat` / `cat -n` / `head` / `tail` / `less` / `more` on a single source file** is refused: viewing files through bash bypasses the file_cache, which then refuses your next `edit_file` because the file "wasn't read" in this session. Use `read_file` to view file contents. (`cat`/`head`/`tail` are still allowed when piping output of another command, e.g. `grep ... | head`.)
+  - **`cd` outside the project root** is allowed but produces a warning so you don't lose track of where commands run.
+
+  Examples:
+  - `pytest -xvs` (stop on first failure, verbose)
+  - `git status && git diff --stat`
+  - `ls -la src/ | head -20`
+parameters:
+  command:
+    type: string
+    description: Shell command to execute. Single string, may contain pipes / && / ;.
+timeout_s: 600
+requires:
+  - workspace_config
+  - file_cache

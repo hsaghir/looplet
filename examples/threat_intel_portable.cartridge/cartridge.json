@@ -1,0 +1,12 @@
+{
+  "description": "Fully-portable twin of threat_intel: all 7 tools (fetch_feed, search_cve, extract_iocs, map_mitre, assess_risk, think, done) are served by the bundled MCP stdio server (_mcp/tools_server.py), the FeedAllowlistGuard egress policy is a kind: lep hook, and compaction is the host-provided runtime service. Zero Python-pinned components — runs on any conforming loader (Rust/Go/TS). The LLM-backed parts (extract_iocs severity classification, assess_risk reasoning) reach the host LLM through the Model Gateway (MGP: the loader exports LOOPLET_LLM_SOCKET and the MCP server connects to it), giving full parity with the in-process originals; if no gateway/backend is reachable they degrade gracefully (same fallback the originals take when ctx.llm is None), and the deterministic regex IOC extraction is preserved in full regardless.",
+  "metadata": {
+    "tags": [
+      "security",
+      "threat-intel",
+      "portable"
+    ]
+  },
+  "name": "threat_intel_portable",
+  "schema_version": 2
+}

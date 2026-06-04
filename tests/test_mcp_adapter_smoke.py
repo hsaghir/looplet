@@ -53,6 +53,46 @@ class TestMCPToolAdapter:
 
         assert MCP is MCPToolAdapter
 
+    def test_coerce_structured_args_parses_json_string_array(self):
+        """A double-encoded JSON-string array arg is parsed when the
+        param's declared type is ``array`` (the multi_edit ``edits`` gap)."""
+        param_types = {"edits": "array", "file_path": "string"}
+        kwargs = {
+            "file_path": "a.py",
+            "edits": '[{"old_string": "x", "new_string": "y"}]',
+        }
+        out = MCPToolAdapter._coerce_structured_args(kwargs, param_types)
+        assert out["edits"] == [{"old_string": "x", "new_string": "y"}]
+        assert out["file_path"] == "a.py"  # plain string untouched
+
+    def test_coerce_structured_args_object_and_optional(self):
+        param_types = {"opts": "(optional) object", "tags": "(optional) array"}
+        kwargs = {"opts": '{"a": 1}', "tags": '["x", "y"]'}
+        out = MCPToolAdapter._coerce_structured_args(kwargs, param_types)
+        assert out["opts"] == {"a": 1}
+        assert out["tags"] == ["x", "y"]
+
+    def test_coerce_structured_args_passes_through_non_matching(self):
+        param_types = {"edits": "array", "count": "integer", "name": "string"}
+        kwargs = {
+            "edits": [{"old_string": "x", "new_string": "y"}],  # already a list
+            "count": 3,  # not a str
+            "name": "not json",  # string param, leave alone
+            "missing": "[1,2]",  # unknown param, no declared type
+        }
+        out = MCPToolAdapter._coerce_structured_args(kwargs, param_types)
+        assert out["edits"] == [{"old_string": "x", "new_string": "y"}]
+        assert out["count"] == 3
+        assert out["name"] == "not json"
+        assert out["missing"] == "[1,2]"
+
+    def test_coerce_structured_args_type_mismatch_passthrough(self):
+        """A JSON string that parses to the wrong shape is left as-is."""
+        param_types = {"edits": "array"}
+        kwargs = {"edits": '{"not": "a list"}'}
+        out = MCPToolAdapter._coerce_structured_args(kwargs, param_types)
+        assert out["edits"] == '{"not": "a list"}'
+
 
 # ── Real-subprocess regression test for NDJSON framing ──────────
 #

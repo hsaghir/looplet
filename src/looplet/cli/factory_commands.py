@@ -353,13 +353,14 @@ def cmd_run_workspace(args: argparse.Namespace) -> int:
             if pretty is not None:
                 pretty.step(step)
             elif not args.quiet:
+                _data = tool_result.data if tool_result else None
                 err = (tool_result and tool_result.error) or (
-                    tool_result.data.get("error") if tool_result and tool_result.data else None
+                    _data.get("error") if isinstance(_data, dict) else None
                 )
                 tag = _red("✗") if err else _green("✓")
                 short = json.dumps(tool_call.args, default=str)[:80]
                 print(f"  {tag} step {n_steps:>2}: {tool_call.tool}({short})")
-            if tool_call.tool == "done" and tool_result and tool_result.data:
+            if tool_call.tool == "done" and tool_result and isinstance(tool_result.data, dict):
                 final_data = dict(tool_result.data)
                 final_summary = str(tool_result.data.get("summary", ""))
     except KeyboardInterrupt:

@@ -1,0 +1,12 @@
+{
+  "description": "Fully-portable twin of git_detective: all 10 tools (repo_overview, contributor_stats, recent_activity, file_hotspots, coupled_files, commit_patterns, directory_structure, file_age_analysis, think, done) are served by the bundled MCP stdio server (_mcp/tools_server.py), the CouplingGuard threshold policy is a kind: lep hook, and compaction is the host-provided runtime service. The original's INPROCESS repo_config resource is replaced by reading the target repo from $LOOPLET_PROJECT_ROOT (falling back to the server's working directory), so there are zero Python-pinned components — it runs on any conforming loader (Rust/Go/TS) that can shell out to git. The commit_patterns LLM quality assessment reaches the host LLM through the Model Gateway (MGP: the loader exports LOOPLET_LLM_SOCKET and the MCP server connects to it), giving full parity with the in-process original; if no gateway/backend is reachable it degrades to the deterministic stats, the same fallback the original takes when ctx.llm is None.",
+  "metadata": {
+    "tags": [
+      "git",
+      "analysis",
+      "portable"
+    ]
+  },
+  "name": "git_detective_portable",
+  "schema_version": 2
+}

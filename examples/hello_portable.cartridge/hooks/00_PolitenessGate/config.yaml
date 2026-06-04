@@ -1,0 +1,6 @@
+kind: lep
+server: server.py
+view:
+  fields: [tool, args]
+  fidelity: digest
+on_failure: fail_closed

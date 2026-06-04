@@ -1,0 +1,76 @@
+name: grep
+description: |-
+  Recursively search file contents using `rg` when available, with a `grep -rn` fallback. Returns paginated, workspace-relative matches.
+
+  Usage:
+  - Use this to find files by CONTENT (e.g. "where is function foo defined?", "which files import X?"). Use `glob` to find files by NAME pattern.
+  - The pattern is passed to ripgrep/grep directly so you get regex syntax. Quote or escape special chars when needed.
+  - `path` defaults to the project root; pass a subdir to narrow the search.
+  - Use `glob` or legacy `include` to scope by file pattern (e.g. `glob="*.py"` or `glob="*.{js,ts}"`).
+  - `output_mode="content"` returns matching lines; `files_with_matches` returns only file paths; `count` returns per-file counts.
+  - Use `context`, `before`, or `after` to include neighboring lines in content mode.
+  - Use `head_limit` and `offset` to page through large results. Default cap is 250 results.
+
+  Examples:
+  - `grep(pattern="def authenticate", glob="*.py", output_mode="content")` — find Python defs of authenticate
+  - `grep(pattern="TODO|FIXME", path="src/", output_mode="files_with_matches")` — find files with TODOs in src/
+  - `grep(pattern="class User", type="py", context=2)` — show matches with two lines of context
+parameters:
+  pattern:
+    type: string
+    description: Regex pattern to search for.
+  path:
+    type: string
+    description: Directory to search in, relative to project root.
+    default: "."
+  include:
+    type: string
+    description: Legacy file glob filter. Prefer `glob` for new calls.
+    default: ""
+  glob:
+    type: string
+    description: File glob filter (e.g. "*.py", "*.{js,ts}").
+    default: ""
+  output_mode:
+    type: string
+    description: One of content, files_with_matches, count.
+    default: content
+  type:
+    type: string
+    description: Ripgrep file type filter such as py, js, rust, go. Ignored by grep fallback.
+    default: ""
+  context:
+    type: integer
+    description: Lines before and after each match in content mode.
+    default: 0
+  before:
+    type: integer
+    description: Lines before each match in content mode.
+    default: 0
+  after:
+    type: integer
+    description: Lines after each match in content mode.
+    default: 0
+  case_insensitive:
+    type: boolean
+    description: Case-insensitive search.
+    default: false
+  head_limit:
+    type: integer
+    description: Maximum result lines/items to return. Use 0 for unlimited.
+    default: 250
+  offset:
+    type: integer
+    description: Number of result lines/items to skip before applying head_limit.
+    default: 0
+  multiline:
+    type: boolean
+    description: Enable ripgrep multiline mode when rg is available.
+    default: false
+  max_count:
+    type: integer
+    description: Stop after this many matches per file when rg is available. 0 means no per-file cap.
+    default: 0
+concurrent_safe: true
+requires:
+  - workspace_config

@@ -1,0 +1,34 @@
+# dep_doctor — FULLY PORTABLE twin.
+#
+# Unlike dep_doctor (which loads the 7 audit tools as in-process
+# tools/*/execute.py bodies re-importing dep_doctor_lib.py), this twin
+# serves every tool from the bundled out-of-process MCP stdio server
+# (_mcp/tools_server.py). There is no tools/ directory and no Python
+# tool body anywhere, so the cartridge is classified `portable`: it can
+# run on any future loader (Rust, Go, TypeScript) that implements the
+# MCP stdio transport and the LEP hook transport — no Python required.
+#
+# Still-portable companions carried over verbatim:
+#   - hooks/00_RegistryGuard  → kind: lep permission policy (PROTOCOL)
+#   - resources/compact_service → host runtime service (RUNTIME, non-blocker)
+
+max_steps: 25
+done_tool: done
+
+builtin_hooks:
+  - stagnation
+  -
+    per_tool_limit:
+      default_limit: 15
+      limits:
+        check_package: 12
+        find_alternatives: 4
+
+mcp_servers:
+  dep_tools:
+    # Self-contained stdio MCP server — no npm/Node/PyPI access required.
+    # ${runtime.cartridge_root} is injected by the loader so the spawned
+    # command finds the bundled server regardless of checkout location.
+    command: "python3 ${runtime.cartridge_root}/_mcp/tools_server.py"
+    timeout_s: 10
+    # No `tools:` allow-list → register every tool the server exposes.

@@ -1,0 +1,38 @@
+name: notebook_edit
+description: |-
+  Structurally edit Jupyter notebook cells in `.ipynb` files.
+
+  Usage:
+  - Use this instead of `edit_file` for notebooks so cell JSON stays valid.
+  - Requires `read_file` on the notebook first, and refuses if the notebook changed since that read.
+  - `edit_mode="replace"` replaces an existing cell's source by `cell_id`.
+  - `edit_mode="insert"` inserts a new cell after `cell_id`, or appends when `cell_id` is empty.
+  - `edit_mode="delete"` deletes an existing cell by `cell_id`.
+  - `cell_type` is `code` or `markdown`; for replace it defaults to the current cell type.
+
+  Examples:
+  - `notebook_edit(notebook_path="analysis.ipynb", cell_id="abc123", new_source="print(result)", edit_mode="replace")`
+  - `notebook_edit(notebook_path="analysis.ipynb", new_source="# Notes", cell_type="markdown", edit_mode="insert")`
+parameters:
+  notebook_path:
+    type: string
+    description: Notebook path relative to the project root.
+  cell_id:
+    type: string
+    description: Target cell id. Required for replace/delete; optional insertion anchor for insert.
+    default: ""
+  new_source:
+    type: string
+    description: New source text for replace/insert. Ignored for delete.
+    default: ""
+  cell_type:
+    type: string
+    description: code or markdown. Required for insert; optional for replace.
+    default: ""
+  edit_mode:
+    type: string
+    description: replace, insert, or delete.
+    default: replace
+requires:
+  - workspace_config
+  - file_cache

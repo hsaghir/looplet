@@ -1,0 +1,39 @@
+# Fully-portable hello-world cartridge.
+#
+# This is the cross-runtime twin of ../hello.cartridge. Where the
+# original pins three components to a Python host (the greet/done tool
+# bodies, the in-process PolitenessGate hook class, and the @ref
+# greeting-log resource), THIS cartridge moves every one of them out of
+# process behind a protocol:
+#
+#   * greet + done .......... MCP stdio server  (_mcp/tools_server.py)
+#   * shared greeting log .... State Service     (_state/greeting_log.py)
+#   * PolitenessGate ......... kind: lep hook    (hooks/00_PolitenessGate)
+#   * NameGuard .............. kind: lep hook    (hooks/01_NameGuard)
+#
+# The State Service is the missing primitive that makes the in-process
+# @ref pattern portable: it holds the shared mutable greeting log in its
+# OWN process behind a Unix socket, and the loader injects a
+# StateServiceClient proxy so the MCP greet tool and the LEP
+# PolitenessGate hook — two SEPARATE processes — both read and write the
+# SAME state, exactly as the original @ref demo did in one address space.
+#
+# Run `looplet portability examples/hello_portable.cartridge` → PORTABLE.
+
+max_steps: 5
+done_tool: done
+
+# Out-of-process shared mutable state (State Service Protocol). The
+# loader spawns this server, then exports its socket path as
+# LOOPLET_STATE_GREETING_LOG so the sibling MCP tool server and LEP hook
+# servers (all separate processes) can connect to the same state.
+state_services:
+  greeting_log:
+    command: "python3 ${runtime.cartridge_root}/_state/greeting_log.py"
+    timeout_s: 10
+
+# Out-of-process tools (MCP stdio transport). Exposes greet + done.
+mcp_servers:
+  tools:
+    command: "python3 ${runtime.cartridge_root}/_mcp/tools_server.py"
+    timeout_s: 10

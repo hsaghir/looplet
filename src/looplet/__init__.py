@@ -100,6 +100,7 @@ from looplet.hook_decision import (
     Deny,
     HookDecision,
     InjectContext,
+    RewriteThread,
     Stop,
 )
 from looplet.limits import BudgetWarningHook, PerToolLimitHook
@@ -231,6 +232,7 @@ __all__ = [
     "Deny",
     "Stop",
     "InjectContext",
+    "RewriteThread",
     "preview_prompt",
     "last_accepted_done",
     "last_rejected_done",

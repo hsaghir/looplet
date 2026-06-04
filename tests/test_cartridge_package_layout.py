@@ -105,6 +105,7 @@ ALLOWED_LOOPLET_DEPS = frozenset(
         "looplet.builtin_tools",
         "looplet.compact",  # public CompactService types
         "looplet.hook_decision",  # public HookDecision factories
+        "looplet.hook_view",  # public ViewSpec (capability-scoped hook views)
         "looplet.loop",  # public LoopConfig / hook protocol
         "looplet.memory",  # public MemorySource types
         "looplet.mcp",  # public MCPToolAdapter (mcp_servers: in config.yaml)

@@ -39,6 +39,7 @@ __all__ = [
     "Stop",
     "Continue",
     "InjectContext",
+    "RewriteThread",
     "normalize_hook_return",
 ]
 
@@ -92,6 +93,7 @@ class HookDecision:
     updated_result: ToolResult | None = None
     permission: str | None = None  # "allow" | "deny" | None
     additional_context: str | None = None
+    rewrite_thread: dict[str, Any] | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     # ── Convenience predicates ───────────────────────────────────
@@ -113,8 +115,138 @@ class HookDecision:
             and self.updated_result is None
             and self.permission is None
             and self.additional_context is None
+            and self.rewrite_thread is None
             and not self.metadata
         )
+
+    # ── Wire round-trip (Loop Effect Protocol §3) ───────────────
+    #
+    # ``to_wire`` / ``from_wire`` are the executable fidelity map: an
+    # out-of-process hook returns an *effect* as JSON, and the host
+    # reconstructs the identical :class:`HookDecision` it would have
+    # gotten from an in-process hook. The form is loss-free for every
+    # field a hook can set, which is what makes cartridge⇄library
+    # translation behaviourally lossless for pure hooks (§5).
+
+    def to_wire(self) -> dict[str, Any]:
+        """Serialise to a JSON-safe effect dict (all fields preserved)."""
+        return {
+            "kind": "HookDecision",
+            "block": self.block,
+            "stop": self.stop,
+            "updated_args": self.updated_args,
+            "updated_result": _toolresult_to_wire(self.updated_result),
+            "permission": self.permission,
+            "additional_context": self.additional_context,
+            "rewrite_thread": dict(self.rewrite_thread) if self.rewrite_thread else None,
+            "metadata": dict(self.metadata),
+        }
+
+    @classmethod
+    def from_wire(cls, raw: Any) -> "HookDecision | None":
+        """Reconstruct a :class:`HookDecision` from an effect dict.
+
+        Accepts two shapes:
+
+        * the canonical generic form emitted by :meth:`to_wire`
+          (``{"kind": "HookDecision", ...}``), and
+        * the *ergonomic* algebra forms a hand-written or non-Python
+          policy server is likely to emit, keyed by effect constructor
+          name (``Allow``/``Deny``/``Block``/``Stop``/``Continue``/
+          ``InjectContext``/``UpdateArgs``/``UpdateResult``).
+
+        ``None`` or an explicit ``{"kind": "Continue"}`` with no payload
+        yields ``None`` (no-opinion), matching legacy hook semantics.
+        """
+        if raw is None:
+            return None
+        if not isinstance(raw, dict):
+            raise TypeError(f"effect must be a dict, got {type(raw).__name__}")
+        kind = raw.get("kind")
+
+        if kind == "HookDecision":
+            return cls(
+                block=raw.get("block"),
+                stop=raw.get("stop"),
+                updated_args=raw.get("updated_args"),
+                updated_result=_toolresult_from_wire(raw.get("updated_result")),
+                permission=raw.get("permission"),
+                additional_context=raw.get("additional_context"),
+                rewrite_thread=(
+                    dict(raw["rewrite_thread"])
+                    if isinstance(raw.get("rewrite_thread"), dict)
+                    else None
+                ),
+                metadata=dict(raw.get("metadata") or {}),
+            )
+
+        # Ergonomic algebra forms (the §3 constructors).
+        if kind in (None, "Continue", "Allow") and not any(
+            raw.get(k) for k in ("text", "block", "reason", "args", "result")
+        ):
+            if kind == "Allow":
+                return Allow()
+            ctx = raw.get("additional_context") or raw.get("text")
+            return Continue(ctx) if ctx else None
+        if kind == "Allow":
+            return Allow(updated_args=raw.get("args") or raw.get("updated_args"))
+        if kind == "Deny":
+            return Deny(raw.get("block") or raw.get("reason") or "permission denied")
+        if kind == "Block":
+            return Block(raw.get("reason") or raw.get("block") or "blocked")
+        if kind == "Stop":
+            return Stop(raw.get("reason") or raw.get("stop") or "hook_requested_stop")
+        if kind == "InjectContext":
+            return InjectContext(raw.get("text") or raw.get("additional_context") or "")
+        if kind == "UpdateArgs":
+            return HookDecision(updated_args=raw.get("args") or raw.get("updated_args"))
+        if kind == "UpdateResult":
+            return HookDecision(
+                updated_result=_toolresult_from_wire(raw.get("result") or raw.get("updated_result"))
+            )
+        if kind == "RewriteThread":
+            spec = raw.get("rewrite_thread") or raw.get("spec")
+            return HookDecision(rewrite_thread=dict(spec) if isinstance(spec, dict) else {})
+        raise ValueError(f"unrecognised effect kind {kind!r}")
+
+
+# ── ToolResult wire helpers ─────────────────────────────────────
+
+
+def _toolresult_to_wire(result: "ToolResult | None") -> dict[str, Any] | None:
+    if result is None:
+        return None
+    return {
+        "tool": result.tool,
+        "args_summary": result.args_summary,
+        "data": result.data,
+        "error": result.error,
+        "duration_ms": result.duration_ms,
+        "result_key": result.result_key,
+        "call_id": result.call_id,
+        "warnings": list(result.warnings),
+        "metadata": dict(result.metadata),
+    }
+
+
+def _toolresult_from_wire(raw: Any) -> "ToolResult | None":
+    if raw is None:
+        return None
+    if isinstance(raw, ToolResult):
+        return raw
+    if not isinstance(raw, dict):
+        raise TypeError(f"updated_result must be a dict, got {type(raw).__name__}")
+    return ToolResult(
+        tool=raw.get("tool", ""),
+        args_summary=raw.get("args_summary", ""),
+        data=raw.get("data"),
+        error=raw.get("error"),
+        duration_ms=raw.get("duration_ms", 0.0),
+        result_key=raw.get("result_key"),
+        call_id=raw.get("call_id"),
+        warnings=list(raw.get("warnings") or []),
+        metadata=dict(raw.get("metadata") or {}),
+    )
 
 
 # ── Ergonomic constructors ──────────────────────────────────────
@@ -170,6 +302,28 @@ def InjectContext(text: str) -> HookDecision:
     plain string from the legacy ``pre_prompt`` / ``post_dispatch``
     hook signatures."""
     return HookDecision(additional_context=text)
+
+
+def RewriteThread(
+    *,
+    reset_metadata_keys: list[str] | None = None,
+    metadata_updates: dict[str, Any] | None = None,
+) -> HookDecision:
+    """Declaratively rewrite run state after compaction.
+
+    This is the portable, JSON-safe replacement for the imperative
+    ``CompactOutcome.cleanup`` closure: instead of a Python callback
+    (which an out-of-process / cross-runtime compactor cannot ship),
+    a hook or compactor declares *which* metadata keys to clear and
+    *what* to set. The host applies the spec via
+    :func:`looplet.compact.apply_thread_rewrite`.
+    """
+    spec: dict[str, Any] = {}
+    if reset_metadata_keys:
+        spec["reset_metadata_keys"] = list(reset_metadata_keys)
+    if metadata_updates:
+        spec["metadata_updates"] = dict(metadata_updates)
+    return HookDecision(rewrite_thread=spec)
 
 
 # ── Legacy → HookDecision coercion ─────────────────────────────

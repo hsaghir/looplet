@@ -100,6 +100,7 @@ class EventPayload:
     # juggling at every call site.
     prompt: str | None = None
     raw_response: Any | None = None
+    usage: Any | None = None
     tool_call: Any | None = None
     tool_result: Any | None = None
     termination_reason: str | None = None

@@ -2137,6 +2137,25 @@ def composable_loop(
         # ── Record LLM turn in conversation thread via unified recorder ──
         _history.record_llm_turn(prompt=prompt, response=raw_response)
 
+        # Surface provider token usage / cost onto state so budget hooks
+        # read it from the declared view instead of a backend side-channel
+        # (keeps cost/budget hooks portable across runtimes — §9 T9).
+        _step_usage = getattr(effective_llm, "last_usage", None) or None
+        if _step_usage:
+            try:
+                _meta = getattr(state, "metadata", None)
+                if isinstance(_meta, dict):
+                    _meta["last_usage"] = dict(_step_usage)
+                    _totals = _meta.get("usage_total")
+                    if not isinstance(_totals, dict):
+                        _totals = {}
+                    for _k, _v in _step_usage.items():
+                        if isinstance(_v, (int, float)):
+                            _totals[_k] = _totals.get(_k, 0) + _v
+                    _meta["usage_total"] = _totals
+            except Exception:  # pragma: no cover - defensive
+                logger.debug("usage surfacing failed", exc_info=True)
+
         # Fire POST_LLM_RESPONSE — hooks can observe raw text before
         # it hits the parser. Stop requests are honored at end-of-step.
         _post_llm_decisions = emit_event(
@@ -2148,6 +2167,7 @@ def composable_loop(
             context=context,
             prompt=prompt,
             raw_response=raw_response,
+            usage=_step_usage,
         )
         for _d in _post_llm_decisions:
             if _d.stop is not None:

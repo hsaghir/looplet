@@ -1,0 +1,27 @@
+name: subagent
+description: |-
+  Run a focused looplet coder sub-agent with isolated context and return its concise result.
+
+  Usage:
+  - Use this for bounded investigations, code review passes, or parallelizable research where raw intermediate output would distract the parent agent.
+  - Requires the host loop to provide `ctx.llm`; direct tool dispatch without an active LLM returns an actionable error.
+  - The sub-agent loads this same coder workspace against the current project root and excludes `done` and `subagent` from its cloned tool set.
+  - Keep prompts narrow and concrete. The sub-agent has its own max step budget.
+
+  Examples:
+  - `subagent(prompt="Review src/auth.py for missing tests and summarize findings", max_steps=4)`
+  - `subagent(prompt="Find where config is loaded and return the key files", system_prompt="You are a codebase cartographer.")`
+parameters:
+  prompt:
+    type: string
+    description: Focused task for the sub-agent.
+  max_steps:
+    type: integer
+    description: Maximum tool calls available to the sub-agent.
+    default: 5
+  system_prompt:
+    type: string
+    description: Optional system prompt override for the sub-agent.
+    default: ""
+requires:
+  - workspace_config

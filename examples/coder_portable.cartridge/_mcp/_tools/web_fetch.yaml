@@ -1,0 +1,27 @@
+name: web_fetch
+description: |-
+  Fetch an HTTP(S) URL and return readable text. Optionally ask the active LLM to answer a prompt using the fetched content.
+
+  Usage:
+  - Use this for public documentation, changelogs, issue pages, specs, or other web pages that inform a coding task.
+  - Only `http` and `https` URLs are allowed.
+  - HTML is converted to plain readable text; non-HTML text is returned as-is.
+  - Large pages are truncated to `max_chars` to avoid filling the context.
+  - If `prompt` is provided and the host loop supplies `ctx.llm`, the tool returns `answer` generated from the fetched text.
+
+  Examples:
+  - `web_fetch(url="https://docs.python.org/3/library/pathlib.html")`
+  - `web_fetch(url="https://example.com/release-notes", prompt="Summarize breaking API changes relevant to this repo")`
+parameters:
+  url:
+    type: string
+    description: HTTP or HTTPS URL to fetch.
+  prompt:
+    type: string
+    description: Optional question or extraction prompt to run against the fetched text using ctx.llm.
+    default: ""
+  max_chars:
+    type: integer
+    description: Maximum characters of extracted text to return or pass to the prompt.
+    default: 12000
+concurrent_safe: true

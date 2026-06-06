@@ -1,0 +1,8 @@
+{
+  "description": "Fully-portable twin of planner — demonstrates the looplet alternative to a built-in 'plan mode' with ZERO Python-pinned components. The parent delegates planning to a portable child cartridge via the subagent builtin, then executes the returned plan. Both the parent and child serve done() from an out-of-process MCP server, and the SubagentTaskGuard is a kind: lep hook. Runs on any conforming loader (Rust/Go/TS).",
+  "metadata": {
+    "tags": ["planner", "subagent", "portable", "principled-alternative", "demo"]
+  },
+  "name": "planner_portable",
+  "schema_version": 2
+}

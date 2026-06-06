@@ -168,6 +168,9 @@ __all__ = [
     "CartridgeSerializationError",
     "preset_to_cartridge",
     "cartridge_to_preset",
+    "CartridgePortabilityReport",
+    "ComponentReport",
+    "analyse_cartridge",
 ]
 
 logger = logging.getLogger(__name__)
@@ -211,6 +214,13 @@ from looplet.cartridge._serialise import preset_to_cartridge  # noqa: E402
 # would be overkill. Re-imported here so existing callers can still
 # use ``looplet.cartridge._load_yaml``.
 from looplet.cartridge._yaml import _dump_yaml, _load_yaml  # noqa: E402, F401
+
+# Whole-cartridge portability report (static analyser).
+from looplet.cartridge.portability import (  # noqa: E402, F401
+    CartridgePortabilityReport,
+    ComponentReport,
+    analyse_cartridge,
+)
 
 # ``resource_ref_for`` is the public entry; the underlying registry
 # (``_REF_PREFIX``, ``_register_resource_origin``, ``_resource_origin``)

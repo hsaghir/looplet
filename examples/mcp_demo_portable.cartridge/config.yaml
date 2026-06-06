@@ -1,0 +1,23 @@
+# MCP-transport demo cartridge — FULLY PORTABLE twin of mcp_demo.
+#
+# Unlike mcp_demo (which keeps `done` as an in-process tools/done/
+# execute.py to show in-process + MCP coexistence), this twin serves
+# BOTH `add` and `done` from the bundled out-of-process MCP server.
+# There is no tools/ directory and no Python tool body anywhere, so
+# the cartridge is classified `portable`: it can run on any future
+# loader (Rust, Go, TypeScript) that implements the MCP stdio
+# transport and the LEP hook transport — no Python required.
+
+max_steps: 5
+done_tool: done
+
+mcp_servers:
+  calc:
+    # Self-contained stdio MCP server — no npm/Node required.
+    # ${runtime.cartridge_root} is injected by the loader so the
+    # spawned command finds the bundled server regardless of where the
+    # cartridge was checked out.
+    command: "python3 ${runtime.cartridge_root}/_server/calc.py"
+    timeout_s: 10
+    # No `tools:` allow-list → register every tool the server exposes
+    # (add + done).

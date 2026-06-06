@@ -1,0 +1,8 @@
+name: think
+description: Record a brief plan or hypothesis. No side effects — pure reasoning checkpoint.
+parameters:
+  thought:
+    type: string
+    description: One or two sentences capturing the current plan or hypothesis.
+free: true
+concurrent_safe: true

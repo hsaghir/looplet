@@ -1,0 +1,15 @@
+{
+  "description": "Fully-portable twin of the `hello` cartridge. Every component is out-of-process: the greet/done tools are an MCP stdio server (_mcp/tools_server.py), the shared greeting log is a State Service Protocol server (_state/greeting_log.py), and both hooks are kind: lep. No Python body is pinned to the host, so `looplet portability` reports the PORTABLE profile — it runs on any conforming loader (Rust/Go/TS).",
+  "metadata": {
+    "tags": [
+      "hello-world",
+      "portable",
+      "mcp",
+      "lep",
+      "ssp",
+      "demo"
+    ]
+  },
+  "name": "hello_portable",
+  "schema_version": 2
+}

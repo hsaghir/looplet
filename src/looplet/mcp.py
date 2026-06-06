@@ -102,7 +102,7 @@ class MCPToolAdapter:
                     name=name,
                     description=desc,
                     parameters=params,
-                    execute=self._make_executor(name),
+                    execute=self._make_executor(name, params),
                 )
             )
         return specs
@@ -242,15 +242,23 @@ class MCPToolAdapter:
             return None
         return data.get("result", data)
 
-    def _make_executor(self, tool_name: str) -> Any:
-        """Create an execute function that calls the MCP server."""
+    def _make_executor(self, tool_name: str, param_types: dict[str, str] | None = None) -> Any:
+        """Create an execute function that calls the MCP server.
+
+        ``param_types`` maps each declared parameter to its flattened
+        JSON-Schema type string (e.g. ``"array"``, ``"object"``,
+        ``"(optional) array"``). It is used to coerce structured
+        arguments that arrive double-encoded as JSON strings.
+        """
+        param_types = param_types or {}
 
         def execute(**kwargs: Any) -> dict:
+            arguments = self._coerce_structured_args(kwargs, param_types)
             resp = self._send_request(
                 "tools/call",
                 {
                     "name": tool_name,
-                    "arguments": kwargs,
+                    "arguments": arguments,
                 },
             )
             if resp is None:
@@ -269,6 +277,44 @@ class MCPToolAdapter:
             return {"content": content}
 
         return execute
+
+    @staticmethod
+    def _coerce_structured_args(
+        kwargs: dict[str, Any], param_types: dict[str, str]
+    ) -> dict[str, Any]:
+        """Parse JSON-string args for params declared as array/object.
+
+        A model driving the loop via JSON-text tool calls sometimes
+        double-encodes a structured argument — e.g. it emits
+        ``"edits": "[{\\"old_string\\": ...}]"`` (a JSON string) instead
+        of a real list. In-process dispatch tolerates this loosely, but
+        an MCP server validating against its inputSchema rejects the
+        stringified value. When a parameter's declared type is
+        ``array``/``object`` and its value arrived as a ``str`` that
+        parses to the matching Python type, substitute the parsed value.
+        Anything that doesn't cleanly match is passed through untouched.
+        """
+        coerced = dict(kwargs)
+        for key, value in kwargs.items():
+            if not isinstance(value, str):
+                continue
+            type_str = param_types.get(key, "")
+            wants_array = "array" in type_str
+            wants_object = "object" in type_str
+            if not (wants_array or wants_object):
+                continue
+            stripped = value.strip()
+            if not stripped:
+                continue
+            try:
+                parsed = json.loads(stripped)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if wants_array and isinstance(parsed, list):
+                coerced[key] = parsed
+            elif wants_object and isinstance(parsed, dict):
+                coerced[key] = parsed
+        return coerced
 
     @staticmethod
     def _extract_params(schema: dict) -> dict[str, str]:

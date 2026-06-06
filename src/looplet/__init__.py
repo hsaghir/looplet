@@ -100,6 +100,7 @@ from looplet.hook_decision import (
     Deny,
     HookDecision,
     InjectContext,
+    RewriteThread,
     Stop,
 )
 from looplet.limits import BudgetWarningHook, PerToolLimitHook
@@ -116,6 +117,11 @@ from looplet.memory import (
     AgentsMdMemorySource,
     CallableMemorySource,
     StaticMemorySource,
+)
+from looplet.model_gateway import (
+    ModelGatewayClient,
+    ModelGatewayHandle,
+    ModelGatewayServer,
 )
 from looplet.native_tools import (
     NativeToolProbeResult,
@@ -151,6 +157,11 @@ from looplet.stagnation import (
     StagnationHook,
     result_size_fingerprint,
     tool_call_fingerprint,
+)
+from looplet.state_service import (
+    StateServiceBase,
+    StateServiceClient,
+    StateServiceHandle,
 )
 from looplet.streaming import StreamingHook
 from looplet.subagent import run_sub_loop
@@ -231,6 +242,7 @@ __all__ = [
     "Deny",
     "Stop",
     "InjectContext",
+    "RewriteThread",
     "preview_prompt",
     "last_accepted_done",
     "last_rejected_done",
@@ -241,6 +253,12 @@ __all__ = [
     "AnthropicBackend",
     "NativeToolBackend",
     "MCPToolAdapter",
+    "StateServiceBase",
+    "StateServiceClient",
+    "StateServiceHandle",
+    "ModelGatewayServer",
+    "ModelGatewayClient",
+    "ModelGatewayHandle",
     "NativeToolProbeResult",
     "probe_native_tool_support",
     "supports_native_tools",

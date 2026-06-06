@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import inspect
 import logging
+import os
 import re
 import shutil
 from pathlib import Path
@@ -50,6 +51,77 @@ from looplet.cartridge._yaml import _dump_yaml, _load_yaml
 logger = logging.getLogger(__name__)
 
 # ── Deserialise: directory → AgentPreset ───────────────────────
+
+
+def _build_lep_hook(
+    hook_dir: Path,
+    hook_cfg: dict[str, Any],
+    *,
+    strict: bool,
+) -> Any | None:
+    """Build an :class:`~looplet.lep.LEPHookAdapter` from a ``kind: lep`` dir.
+
+    Recognised ``config.yaml`` keys:
+
+        kind: lep            (required marker)
+        command: [...]       argv to launch the server, or
+        server: server.py    shorthand → ``[python, <hook_dir>/server.py]``
+        view:                {fields: [...], fidelity: digest|full}
+        on_failure:          fail_closed|fail_open|continue
+        run_id:              optional correlation id
+
+    Relative path tokens that resolve to a file under ``hook_dir`` are
+    rewritten to absolute paths so the server launches regardless of cwd.
+    """
+    import sys  # noqa: PLC0415
+
+    from looplet.hook_view import ViewSpec  # noqa: PLC0415
+    from looplet.lep import LEPHookAdapter  # noqa: PLC0415
+
+    def _abs_token(tok: str) -> str:
+        candidate = hook_dir / tok
+        return str(candidate.resolve()) if candidate.is_file() else tok
+
+    command = hook_cfg.get("command")
+    if command is None and hook_cfg.get("server"):
+        command = [sys.executable, str((hook_dir / str(hook_cfg["server"])).resolve())]
+    if isinstance(command, str):
+        command = [command]
+    if not isinstance(command, list) or not command:
+        msg = (
+            f"lep hook {hook_dir.name!r} needs a non-empty 'command' list or "
+            f"'server' path in config.yaml"
+        )
+        if strict:
+            raise CartridgeSerializationError(msg)
+        logger.warning("%s; skipping", msg)
+        return None
+    argv = [_abs_token(str(tok)) for tok in command]
+
+    try:
+        view = ViewSpec.from_dict(hook_cfg.get("view"))
+    except ValueError as exc:
+        msg = f"lep hook {hook_dir.name!r} has an invalid view: {exc}"
+        if strict:
+            raise CartridgeSerializationError(msg) from exc
+        logger.warning("%s; skipping", msg)
+        return None
+
+    on_failure = str(hook_cfg.get("on_failure", "fail_closed"))
+    try:
+        return LEPHookAdapter(
+            argv,
+            view=view,
+            run_id=str(hook_cfg.get("run_id", f"lep-{hook_dir.name}")),
+            on_failure=on_failure,
+            cartridge_id=hook_dir.name,
+        )
+    except ValueError as exc:
+        msg = f"lep hook {hook_dir.name!r} could not be built: {exc}"
+        if strict:
+            raise CartridgeSerializationError(msg) from exc
+        logger.warning("%s; skipping", msg)
+        return None
 
 
 def cartridge_to_preset(
@@ -639,7 +711,103 @@ def _workspace_to_preset_inner(
     # context manager) to terminate the subprocesses cleanly.
     _mcp_servers_block: dict[str, Any] = dict(cfg_kwargs.pop("mcp_servers", None) or {})
 
-    # ``state:`` is a workspace-loader directive that lets a workspace
+    # ``state_services:`` declares out-of-process shared-mutable-state
+    # servers (State Service Protocol). Sibling of ``mcp_servers:``: each
+    # entry spawns a server that owns a piece of state behind a Unix
+    # socket; the loader injects a :class:`StateServiceClient` into the
+    # resource registry under the service name, so existing ``@ref`` /
+    # ``requires:`` wiring resolves to the (now portable) out-of-process
+    # state unchanged. Handles are stashed on ``preset.state_service_handles``
+    # for caller-side cleanup. Spawned below, after the resource registry
+    # exists.
+    _state_services_block: dict[str, Any] = dict(cfg_kwargs.pop("state_services", None) or {})
+
+    # ``llm_gateway:`` (default on whenever there are out-of-process tool
+    # servers) starts a host-resident Model Gateway (MGP): a 1:N socket
+    # server that exposes the loop's LLM backend to out-of-process MCP
+    # tool / LEP hook servers. Without it, a portable tool that wants
+    # ``ctx.llm`` (summarise/classify/extract) has no host LLM and
+    # silently degrades. The gateway must be started *before* any child
+    # is spawned so the ``LOOPLET_LLM_SOCKET`` env var is inherited; the
+    # backend is bound later at run time (``AgentPreset.run(llm)``). Set
+    # ``llm_gateway: false`` to opt out.
+    _llm_gateway_enabled = bool(cfg_kwargs.pop("llm_gateway", True))
+    _model_gateway: Any = None
+    if _llm_gateway_enabled and _mcp_servers_block:
+        from looplet.model_gateway import (  # noqa: PLC0415
+            ModelGatewayError,
+            ModelGatewayHandle,
+        )
+
+        try:
+            _model_gateway = ModelGatewayHandle.start()
+        except (ModelGatewayError, OSError) as exc:
+            logger.warning(
+                "could not start model gateway (out-of-process tools will "
+                "degrade ctx.llm to None): %s",
+                exc,
+            )
+            _model_gateway = None
+
+    # Spawn declared state services now, before hook ``@ref`` kwargs and
+    # tool ``requires:`` resolve against the resource registry, so a
+    # ``@<service>`` ref or a ``requires: [<service>]`` resolves to the
+    # live :class:`StateServiceClient`. ``${runtime.*}`` placeholders in
+    # the ``command:`` are already substituted (config text was rendered
+    # before YAML parse). The per-service socket path is also exported as
+    # ``LOOPLET_STATE_<NAME>`` so out-of-process MCP tool / LEP hook
+    # servers spawned afterwards can connect to the same state.
+    _state_service_handles: list[Any] = []
+    if _state_services_block:
+        from looplet.state_service import (  # noqa: PLC0415
+            PER_SERVICE_ENV_PREFIX,
+            StateServiceError,
+            StateServiceHandle,
+        )
+
+        for _svc_name, _svc_cfg in _state_services_block.items():
+            if not isinstance(_svc_cfg, dict):
+                msg = (
+                    f"state_services.{_svc_name} must be a mapping with "
+                    f"``command:`` (and optional ``timeout_s:``, ``env:``); "
+                    f"got {type(_svc_cfg).__name__}"
+                )
+                if strict:
+                    raise CartridgeSerializationError(msg)
+                logger.warning("%s; skipping", msg)
+                continue
+            _svc_cmd = _svc_cfg.get("command")
+            if not _svc_cmd or not isinstance(_svc_cmd, str):
+                msg = f"state_services.{_svc_name}: ``command:`` is required and must be a string"
+                if strict:
+                    raise CartridgeSerializationError(msg)
+                logger.warning("%s; skipping", msg)
+                continue
+            try:
+                _handle = StateServiceHandle.spawn(
+                    _svc_cmd,
+                    name=_svc_name,
+                    timeout_s=float(_svc_cfg.get("timeout_s", 10.0)),
+                    env=_svc_cfg.get("env"),
+                )
+            except (StateServiceError, OSError) as exc:
+                for _h in _state_service_handles:
+                    try:
+                        _h.close()
+                    except Exception:
+                        pass
+                msg = f"state_services.{_svc_name}: failed to start ({_svc_cmd!r}): {exc}"
+                if strict:
+                    raise CartridgeSerializationError(msg) from exc
+                logger.warning("%s; skipping service", msg)
+                continue
+            # Inject the client so ``@<name>`` / ``requires: [<name>]``
+            # resolve to it, and export the socket path for sibling
+            # out-of-process servers.
+            resources[_svc_name] = _handle.client
+            os.environ[f"{PER_SERVICE_ENV_PREFIX}{_svc_name.upper()}"] = _handle.socket_path
+            _state_service_handles.append(_handle)
+
     # describe the state object declaratively (any reference: a
     # ``${ref:...}`` resource, a ``${py:...}`` factory callable, or a
     # pre-resolved instance from ``_resolve_refs``). Falls back to the
@@ -1178,14 +1346,6 @@ def _workspace_to_preset_inner(
         for _key, hook_dir in hook_entries:
             hook_py = hook_dir / "hook.py"
             cfg_yaml = hook_dir / "config.yaml"
-            if not hook_py.is_file():
-                msg = f"malformed hook dir {hook_dir} (missing hook.py)"
-                if strict:
-                    raise CartridgeSerializationError(msg)
-                logger.warning("skipping %s", msg)
-                continue
-            module = _import_module_from_path(hook_py, f"_chw_hook_{hook_dir.name}")
-            hook_modules[hook_dir.name] = module
             hook_cfg = (
                 _load_yaml(
                     _apply_runtime_substitutions(
@@ -1196,6 +1356,25 @@ def _workspace_to_preset_inner(
                 if cfg_yaml.is_file()
                 else {}
             ) or {}
+            # ── kind: lep — an out-of-process hook (no hook.py) ──────
+            # A ``kind: lep`` hook ships only declarative data: a command
+            # to launch a policy server, the capability view it subscribes
+            # to, and a failure policy. The host bridges it via
+            # ``LEPHookAdapter`` so it is behaviourally identical to an
+            # in-process hook (HOOK_CARTRIDGE_DESIGN.md §3/§5).
+            if str(hook_cfg.get("kind") or "").lower() == "lep":
+                lep_hook = _build_lep_hook(hook_dir, hook_cfg, strict=strict)
+                if lep_hook is not None:
+                    hooks.append(lep_hook)
+                continue
+            if not hook_py.is_file():
+                msg = f"malformed hook dir {hook_dir} (missing hook.py)"
+                if strict:
+                    raise CartridgeSerializationError(msg)
+                logger.warning("skipping %s", msg)
+                continue
+            module = _import_module_from_path(hook_py, f"_chw_hook_{hook_dir.name}")
+            hook_modules[hook_dir.name] = module
             class_name = str(hook_cfg.get("class_name") or "")
             if not class_name:
                 # Pick the first class defined in the module.
@@ -1253,6 +1432,13 @@ def _workspace_to_preset_inner(
         for entry in _builtin_hook_specs:
             if isinstance(entry, str):
                 hname, raw_kwargs = entry, {}
+            elif isinstance(entry, dict) and "use" in entry:
+                # ``use: stdlib/<name>`` alias form — a portable, explicit
+                # spelling that names a looplet-shipped (standard-library)
+                # hook archetype. Any other keys are its kwargs.
+                use_val = str(entry.get("use") or "")
+                hname = use_val.split("/", 1)[1] if "/" in use_val else use_val
+                raw_kwargs = {k: v for k, v in entry.items() if k != "use"}
             elif isinstance(entry, dict) and len(entry) == 1:
                 hname, raw_kwargs = next(iter(entry.items()))
                 raw_kwargs = dict(raw_kwargs or {})
@@ -1386,6 +1572,21 @@ def _workspace_to_preset_inner(
     )
     if _mcp_adapters:
         preset.mcp_adapters = list(_mcp_adapters)
+    if _state_service_handles:
+        preset.state_service_handles = list(_state_service_handles)
+    if _model_gateway is not None:
+        preset.model_gateway = _model_gateway
+    # Record declarative tool provenance so ``preset_to_cartridge`` can
+    # re-emit the ``builtin_tools:`` / ``mcp_servers:`` directives rather
+    # than trying to serialise loader-built specs (builtin tools need
+    # loader-provided resources like ``workspace_config``; MCP tools have
+    # closure executors that cannot round-trip to disk).
+    if _builtin_tool_names:
+        preset.builtin_tool_names = list(_builtin_tool_names)
+    if _mcp_servers_block:
+        preset.mcp_servers = dict(_mcp_servers_block)
+    if _state_services_block:
+        preset.state_services = dict(_state_services_block)
 
     # ── v1.0 declarative slots: permissions, memory.long_term ───────
     # Both are processed AFTER hooks/state/preset are built so the
@@ -1510,5 +1711,25 @@ def _workspace_to_preset_inner(
         result = setup_fn(preset, resources, **kwargs)
         if isinstance(result, AgentPreset):
             preset = result
+
+    # Portability classification (advisory, non-mutating): label every
+    # assembled hook ``portable`` (faithfully reproducible across runtimes)
+    # or ``inprocess`` (faithful, but Python-pinned) and log a one-line
+    # summary. This is purely diagnostic — it never changes preset shape,
+    # so cartridge round-trip/serialise behaviour is unaffected.
+    try:
+        from looplet.hook_contract import classify  # noqa: PLC0415
+
+        labels = [classify(h).kind for h in preset.hooks]
+        if labels:
+            portable_n = sum(1 for k in labels if k == "portable")
+            logger.info(
+                "cartridge hooks portability: %d/%d portable (%s)",
+                portable_n,
+                len(labels),
+                ", ".join(f"{type(h).__name__}={k}" for h, k in zip(preset.hooks, labels)),
+            )
+    except Exception:  # noqa: BLE001 - diagnostics must never break load
+        logger.debug("hook portability classification skipped", exc_info=True)
 
     return preset

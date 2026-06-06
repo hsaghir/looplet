@@ -1,0 +1,6 @@
+{
+  "description": "Portable child planner cartridge — produces a numbered plan for a single goal, then calls done. Invoked by ../planner_portable.cartridge via the subagent builtin. done() is served over MCP so no Python tool body is required.",
+  "metadata": {"tags": ["planner-child", "portable", "demo"]},
+  "name": "planner_child",
+  "schema_version": 2
+}

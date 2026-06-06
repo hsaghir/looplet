@@ -37,6 +37,7 @@ __all__ = [
     "compact_chain",
     "default_compact_service",
     "run_compact",
+    "apply_thread_rewrite",
 ]
 
 
@@ -63,7 +64,19 @@ class CompactOutcome:
     invokes it after firing the ``POST_COMPACT`` event. Use for
     domain-specific state resets (clear caches, re-inject file
     context, reset token baselines) that the loop shouldn't know
-    about."""
+    about.
+
+    Prefer the declarative :attr:`follow_up` for anything an
+    out-of-process / cross-runtime compactor must express, since a
+    Python closure cannot cross a process boundary."""
+
+    follow_up: dict[str, Any] | None = None
+    """Declarative, JSON-safe post-compact thread rewrite — the portable
+    reification of :attr:`cleanup`. Same schema as
+    :class:`~looplet.hook_decision.HookDecision.rewrite_thread`
+    (``reset_metadata_keys`` / ``metadata_updates``); applied by
+    :func:`run_compact` via :func:`apply_thread_rewrite` after the
+    ``POST_COMPACT`` event."""
 
     @property
     def compacted(self) -> bool:
@@ -105,6 +118,7 @@ class CompactOutcome:
             "llm_calls_spent": self.llm_calls_spent,
             "compacted": self.compacted,
             "extra": dict(self.extra or {}),
+            "follow_up": dict(self.follow_up) if self.follow_up else None,
         }
 
 
@@ -378,7 +392,7 @@ def run_compact(
         reason=reason,
     )
 
-    _emit_compact_event(
+    post_decisions = _emit_compact_event(
         hooks,
         LifecycleEvent.POST_COMPACT,
         state=state,
@@ -389,6 +403,14 @@ def run_compact(
         reason=reason,
         outcome=outcome,
     )
+
+    # Declarative post-compact rewrites (portable replacement for the
+    # imperative ``cleanup`` closure). Apply the outcome's own follow-up
+    # first, then any ``rewrite_thread`` a POST_COMPACT hook requested.
+    apply_thread_rewrite(state, outcome.follow_up)
+    for d in post_decisions:
+        if getattr(d, "rewrite_thread", None):
+            apply_thread_rewrite(state, d.rewrite_thread)
 
     # Post-compact cleanup callback — domain-specific state resets.
     if outcome.cleanup is not None:
@@ -402,6 +424,34 @@ def run_compact(
             )
 
     return outcome
+
+
+def apply_thread_rewrite(state: Any, spec: "dict[str, Any] | None") -> None:
+    """Apply a declarative, JSON-safe thread rewrite to ``state``.
+
+    This is the portable counterpart to :attr:`CompactOutcome.cleanup`
+    and the executor for
+    :attr:`~looplet.hook_decision.HookDecision.rewrite_thread`. An
+    out-of-process / cross-runtime compactor cannot ship a Python
+    closure, so it declares its post-compact state resets as data:
+
+    * ``reset_metadata_keys``: list of ``state.metadata`` keys to delete
+      (e.g. clear a cache, reset a token baseline).
+    * ``metadata_updates``: dict merged into ``state.metadata``.
+
+    Unknown keys are ignored. Missing ``state`` / non-dict ``metadata``
+    is tolerated so the call is always safe.
+    """
+    if not isinstance(spec, dict) or state is None:
+        return
+    meta = getattr(state, "metadata", None)
+    if not isinstance(meta, dict):
+        return
+    for key in spec.get("reset_metadata_keys") or []:
+        meta.pop(key, None)
+    updates = spec.get("metadata_updates")
+    if isinstance(updates, dict):
+        meta.update(updates)
 
 
 def _emit_compact_event(

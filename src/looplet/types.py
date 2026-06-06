@@ -528,12 +528,12 @@ class DefaultState:
     def snapshot(self) -> dict[str, Any]:
         """Return a JSON-serialisable dict snapshot of the current run state.
 
-           Always includes step_count, queries_used, and budget_remaining.
-           Any entries in metadata are merged in at the top level.
+        Always includes step_count, queries_used, and budget_remaining.
+        Any entries in metadata are merged in at the top level.
 
-           Returns:
-               A plain dict suitable for json.dumps or checkpoint storage.
-           """
+        Returns:
+            A plain dict suitable for json.dumps or checkpoint storage.
+        """
         return {
             "step_count": self.step_count,
             "queries_used": self.queries_used,

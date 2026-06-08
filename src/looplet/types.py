@@ -413,10 +413,12 @@ class DefaultState:
 
     @property
     def step_count(self) -> int:
+        """Return the total number of steps completed so far in this run."""
         return len(self.steps)
 
     @property
     def budget_remaining(self) -> int:
+        """Return how many more steps the agent may take before the loop stops."""
         return max(0, self.max_steps - len(self.steps))
 
     def context_summary(self) -> str:
@@ -524,6 +526,14 @@ class DefaultState:
         return "\n\n".join(b for _, b in rendered)
 
     def snapshot(self) -> dict[str, Any]:
+        """Return a JSON-serialisable dict snapshot of the current run state.
+
+        Always includes step_count, queries_used, and budget_remaining.
+        Any entries in metadata are merged in at the top level.
+
+        Returns:
+            A plain dict suitable for json.dumps or checkpoint storage.
+        """
         return {
             "step_count": self.step_count,
             "queries_used": self.queries_used,

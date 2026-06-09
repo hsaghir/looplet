@@ -65,10 +65,11 @@ import inspect
 import json
 import logging
 import sys
+import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, NamedTuple
 
 if TYPE_CHECKING:
     from looplet.session import SessionLog
@@ -90,9 +91,69 @@ __all__ = [
     "save_case",
     "save_cases",
     "pytest_param_cases",
+    "CARTRIDGE_CASES_SUBPATH",
+    "load_cartridge_cases",
+    "save_cartridge_cases",
+    "CARTRIDGE_EVALS_SUBPATH",
+    "CartridgeEvals",
+    "discover_collectors",
+    "load_cartridge_evals",
+    "EvalRunRecord",
+    "save_eval_run",
+    "load_eval_run",
+    "seed_case_workspace",
+    "promote_to_offline",
+    "run_cartridge_evals",
 ]
 
 logger = logging.getLogger(__name__)
+
+# Where a cartridge's eval corpus lives, relative to the cartridge root.
+# Evals are an *adjacent artifact* (per the "Agents Are Files" design):
+# the case files travel *inside* the cartridge directory so they are
+# version-controlled with the agent, but the cartridge *package* stays
+# evals-agnostic. The convention (this subpath) is owned here, in
+# ``looplet.evals`` — not in ``looplet.cartridge`` — so the dependency
+# points evals → (a path string), never cartridge → evals.
+CARTRIDGE_CASES_SUBPATH = "evals/cases"
+
+# The cartridge's eval *bundle* root. Cases live in ``evals/cases/``
+# (data); graders (``eval_*.py``) and outcome collectors
+# (``collect_*.py``) live directly under ``evals/`` (code). One slot,
+# everything an agent version needs to grade itself.
+CARTRIDGE_EVALS_SUBPATH = "evals"
+
+
+class CartridgeEvals(NamedTuple):
+    """The complete eval bundle discovered inside a cartridge's ``evals/``.
+
+    Unpacks as ``cases, graders, collectors`` and also offers named
+    access. ``graders`` are case-agnostic ``eval_*`` predicates run N×M
+    over every case; ``collectors`` are ``collect_*`` callables that
+    populate :attr:`EvalContext.artifacts` for outcome-grounded grading.
+    """
+
+    cases: list["EvalCase"]
+    graders: list[Callable]
+    collectors: list[Callable]
+
+
+class EvalRunRecord(NamedTuple):
+    """One persisted eval-case run: case + trajectory/artifacts + scores.
+
+    Returned by :func:`load_eval_run`. ``context`` is an
+    :class:`EvalContext` carrying the full step trajectory AND the
+    outcome ``artifacts``, so the same graders that scored the run live
+    can re-score it offline. ``results`` are the persisted grader
+    scores; ``case`` is the originating :class:`EvalCase` when the run
+    dir recorded it.
+    """
+
+    case: "EvalCase | None"
+    context: "EvalContext"
+    results: list["EvalResult"]
+    directory: Path
+
 
 # ── Core data types ──────────────────────────────────────────────
 
@@ -560,6 +621,487 @@ def save_cases(cases: list["EvalCase"], directory: str | Path) -> list[Path]:
     return [save_case(c, target_dir) for c in cases]
 
 
+def load_cartridge_cases(cartridge_dir: str | Path) -> list["EvalCase"]:
+    """Load the eval corpus shipped inside a cartridge directory.
+
+    Reads ``<cartridge_dir>/evals/cases/`` (see
+    :data:`CARTRIDGE_CASES_SUBPATH`). This is how "evals ship with the
+    agent version" is realised: the cases live in the cartridge
+    directory and are version-controlled alongside the prompt / tools /
+    hooks they protect, while the cartridge *loader* stays evals-
+    agnostic. Pair the returned cases with a preset built by
+    :func:`looplet.cartridge.cartridge_to_preset` to run an agent
+    version against its own evals.
+
+    Unlike :func:`load_cases`, a missing ``evals/cases/`` directory is
+    not an error — it returns ``[]`` (a cartridge need not ship evals).
+    Malformed case files still raise :class:`ValueError` (loud, never
+    silently partial).
+    """
+    cases_dir = Path(cartridge_dir) / CARTRIDGE_CASES_SUBPATH
+    if not cases_dir.is_dir():
+        return []
+    return load_cases(cases_dir)
+
+
+def save_cartridge_cases(cartridge_dir: str | Path, cases: list["EvalCase"]) -> list[Path]:
+    """Write an eval corpus into a cartridge directory's eval slot.
+
+    Writes each case to ``<cartridge_dir>/evals/cases/<id>.json`` (see
+    :data:`CARTRIDGE_CASES_SUBPATH`), creating the directory if needed.
+    Symmetric counterpart to :func:`load_cartridge_cases`. Returns the
+    written paths.
+
+    Note this writes *only* the eval slot and never touches the rest of
+    the cartridge — the eval corpus is managed independently of
+    :func:`looplet.cartridge.preset_to_cartridge`, which by design does
+    not serialise (or clobber) evals.
+    """
+    return save_cases(cases, Path(cartridge_dir) / CARTRIDGE_CASES_SUBPATH)
+
+
+def discover_collectors(
+    path: str | Path,
+    *,
+    runtime: dict[str, Any] | None = None,
+) -> list[Callable]:
+    """Discover outcome collectors (``collect_*`` functions) under ``path``.
+
+    The sibling of :func:`eval_discover` for the *collector* role: where
+    a grader reads ``EvalContext`` and returns a score, a collector runs
+    once at end-of-loop and returns a ``dict`` merged into
+    :attr:`EvalContext.artifacts` (so graders can grade *outcomes* —
+    tests passing, files changed — instead of grepping the trajectory).
+
+    A collector is a top-level function named ``collect_*`` whose
+    signature is either ``(state) -> dict`` or ``(state, runtime) ->
+    dict``. When the signature declares ``runtime``, the supplied
+    ``runtime`` dict is bound here via :func:`functools.partial`, so the
+    returned callables are uniformly ``(state) -> dict`` and drop
+    straight into ``EvalHook(collectors=…)``. This mirrors how
+    :func:`eval_run` passes ``llm`` only to evaluators whose signature
+    asks for it — runtime is injected by introspection, not convention
+    soup. Runtime-parameterised collectors are what let a collector
+    re-run a test suite in the agent's sandbox without hard-coding the
+    path.
+    """
+    raw = eval_discover(path, pattern="collect_*.py", prefix="collect_")
+    bound: list[Callable] = []
+    for fn in raw:
+        try:
+            needs_runtime = "runtime" in inspect.signature(fn).parameters
+        except (TypeError, ValueError):
+            needs_runtime = False
+        if needs_runtime:
+            bound.append(functools.partial(fn, runtime=dict(runtime or {})))
+        else:
+            bound.append(fn)
+    return bound
+
+
+def load_cartridge_evals(
+    cartridge_dir: str | Path,
+    *,
+    runtime: dict[str, Any] | None = None,
+) -> "CartridgeEvals":
+    """Discover the full eval bundle shipped inside a cartridge.
+
+    Returns a :class:`CartridgeEvals` (``cases, graders, collectors``)
+    read from ``<cartridge_dir>/evals/``:
+
+    * ``cases``      — ``evals/cases/*.json`` / ``*.jsonl`` (data).
+    * ``graders``    — ``eval_*`` functions in ``evals/eval_*.py``.
+    * ``collectors`` — ``collect_*`` functions in ``evals/collect_*.py``
+      (runtime-bound via :func:`discover_collectors`).
+
+    This is the single call that makes "evals ship with the agent
+    version" complete: one slot, one lookup, everything an agent
+    version needs to grade itself travels with it. Pair the result with
+    a preset from :func:`looplet.cartridge.cartridge_to_preset` and an
+    :class:`EvalHook` to run a version against its own evals::
+
+        evals = load_cartridge_evals(cdir, runtime={"workspace_dir": sb})
+        preset = cartridge_to_preset(cdir, runtime={"workspace_dir": sb})
+        hook = EvalHook(evaluators=evals.graders, collectors=evals.collectors)
+        preset.hooks.append(hook)
+        for _ in preset.run(llm, task=case.task):
+            pass
+
+    A cartridge with no ``evals/`` directory yields empty lists (never an
+    error); malformed case files still raise loudly (see
+    :func:`load_cartridge_cases`).
+    """
+    evals_root = Path(cartridge_dir) / CARTRIDGE_EVALS_SUBPATH
+    if not evals_root.is_dir():
+        return CartridgeEvals(cases=[], graders=[], collectors=[])
+    cases = load_cartridge_cases(cartridge_dir)
+    graders = eval_discover(evals_root, pattern="eval_*.py", prefix="eval_")
+    collectors = discover_collectors(evals_root, runtime=runtime)
+    return CartridgeEvals(cases=cases, graders=graders, collectors=collectors)
+
+
+def _eval_context_to_trajectory(ctx: "EvalContext") -> dict[str, Any]:
+    """Serialise an :class:`EvalContext` into the ``trajectory.json`` shape
+    that :meth:`EvalContext.from_trajectory_dir` reads back.
+
+    Works for BOTH a live context (real ``Step`` objects, captured by an
+    online :class:`EvalHook`) and a reloaded context (``_DictStep``),
+    using attribute access both support. This is what lets an online run
+    be *promoted* to the offline on-disk format without a separate
+    :class:`looplet.provenance.TrajectoryRecorder`.
+    """
+    steps_out: list[dict[str, Any]] = []
+    for i, s in enumerate(ctx.steps):
+        tc = getattr(s, "tool_call", None)
+        tr = getattr(s, "tool_result", None)
+        tool = getattr(tc, "tool", None) if tc is not None else None
+        args = (getattr(tc, "args", None) if tc is not None else None) or {}
+        data = getattr(tr, "data", None) if tr is not None else None
+        error = getattr(tr, "error", None) if tr is not None else None
+        steps_out.append(
+            {
+                "step_num": getattr(s, "number", i),
+                "tool_call": {"tool": tool, "args": args},
+                "tool_result": {"data": data, "error": error},
+            }
+        )
+    return {
+        "run_id": (ctx.metadata or {}).get("run_id"),
+        "task": ctx.task,
+        "termination_reason": ctx.stop_reason,
+        "step_count": len(ctx.steps),
+        "steps": steps_out,
+    }
+
+
+def save_eval_run(
+    directory: str | Path,
+    *,
+    recorder: Any = None,
+    context: "EvalContext | None" = None,
+    eval_hook: Any = None,
+    case: "EvalCase | None" = None,
+    results: list["EvalResult"] | None = None,
+) -> Path:
+    """Persist ONE eval case's run into a directory the reader understands.
+
+    This is the write side that closes the gap the dogfood exposed:
+    :meth:`looplet.provenance.TrajectoryRecorder.save` writes
+    ``trajectory.json`` + ``steps/`` but never the ``artifacts.json``
+    that outcome-grounded grading depends on, and
+    :meth:`EvalHook.save` bundles artifacts into a different shape.
+    ``save_eval_run`` writes the per-case layout that
+    :meth:`EvalContext.from_trajectory_dir` (hence :func:`load_eval_run`)
+    reads — so **online** grading (the live :class:`EvalHook`) and
+    **offline** inspection (reload + re-grade) share one on-disk format.
+
+    Layout written under ``directory``::
+
+        <dir>/
+          trajectory.json   # full trajectory
+          steps/step_NN.json
+          artifacts.json    # outcome data (eval_hook.artifacts)  ← the gap
+          evals.json        # grader scores (results / eval_hook.results)
+          case.json         # the EvalCase that produced this run
+
+    Trajectory source — exactly one is used, in this priority:
+
+    * ``recorder`` — a :class:`looplet.provenance.TrajectoryRecorder`
+      (full fidelity incl. LLM calls). Preferred for a freshly captured
+      run.
+    * ``context`` — an :class:`EvalContext` serialised to the trajectory
+      shape. Use when promoting an online run.
+    * ``eval_hook.context`` — falls back to the hook's captured context
+      (this is what :func:`promote_to_offline` rides on).
+
+    Args:
+        recorder: trajectory source (see above).
+        context: trajectory source (see above).
+        eval_hook: optional :class:`EvalHook` whose ``artifacts``,
+            ``results`` (and, as a last resort, ``context``) are used.
+        case: optional :class:`EvalCase` — written as ``case.json`` so
+            the run directory is self-describing.
+        results: optional explicit grader results, overriding
+            ``eval_hook.results`` (e.g. when graders were run offline).
+
+    Returns the run directory path. Raises :class:`ValueError` when no
+    trajectory source is available.
+    """
+    root = Path(directory)
+    root.mkdir(parents=True, exist_ok=True)
+
+    # Resolve the trajectory source.
+    src_context = context
+    if src_context is None and eval_hook is not None:
+        src_context = getattr(eval_hook, "context", None)
+
+    if recorder is not None:
+        # Full-fidelity record (trajectory.json + steps/ + LLM calls).
+        recorder.save(root)
+    elif src_context is not None:
+        traj = _eval_context_to_trajectory(src_context)
+        (root / "trajectory.json").write_text(
+            json.dumps(traj, indent=2, default=str), encoding="utf-8"
+        )
+        steps_dir = root / "steps"
+        steps_dir.mkdir(exist_ok=True)
+        for i, step in enumerate(traj["steps"]):
+            (steps_dir / f"step_{i:02d}.json").write_text(
+                json.dumps(step, indent=2, default=str), encoding="utf-8"
+            )
+    else:
+        raise ValueError(
+            "save_eval_run needs a trajectory source: pass recorder=, context=, "
+            "or an eval_hook with a captured .context (run the loop first)."
+        )
+
+    # Outcome artifacts — the piece TrajectoryRecorder never wrote.
+    artifacts = dict(getattr(eval_hook, "artifacts", {}) or {}) if eval_hook is not None else {}
+    (root / "artifacts.json").write_text(
+        json.dumps(artifacts, indent=2, default=str), encoding="utf-8"
+    )
+
+    # Grader scores.
+    score_objs: list[Any] = (
+        results
+        if results is not None
+        else (list(getattr(eval_hook, "results", []) or []) if eval_hook is not None else [])
+    )
+    (root / "evals.json").write_text(
+        json.dumps([r.to_dict() for r in score_objs], indent=2, default=str),
+        encoding="utf-8",
+    )
+
+    # The case itself, so the directory is self-describing.
+    if case is not None:
+        (root / "case.json").write_text(
+            json.dumps(case.to_dict(), indent=2, default=str), encoding="utf-8"
+        )
+
+    return root
+
+
+def promote_to_offline(
+    directory: str | Path,
+    *,
+    eval_hook: Any,
+    case: "EvalCase | None" = None,
+    results: list["EvalResult"] | None = None,
+) -> Path:
+    """Promote a live (ONLINE) eval run into a durable OFFLINE fixture.
+
+    The headline workflow: you run an agent with an online
+    :class:`EvalHook`, spot an interesting case (a regression, a slow
+    path, an edge case), and want to keep it forever as an offline eval
+    you can replay and re-grade. This writes the hook's captured run —
+    trajectory, tool calls, outcome ``artifacts``, and scores — to
+    ``directory`` in the same layout :func:`load_eval_run` reads, so the
+    promoted run is indistinguishable from one captured offline.
+
+    Equivalent to ``save_eval_run(directory, eval_hook=eval_hook, …)``
+    but named for intent and loud when the hook never ran::
+
+        hook = EvalHook(evaluators=graders, collectors=collectors)
+        for _ in preset.run(llm, task=case.task, ... hooks=[hook]):
+            ...
+        promote_to_offline("evals/runs/regression_42", eval_hook=hook, case=case)
+
+    Raises :class:`ValueError` if ``eval_hook`` has no captured context
+    (i.e. the loop has not run yet).
+    """
+    if getattr(eval_hook, "context", None) is None:
+        raise ValueError(
+            "eval_hook has no captured context to promote; run the loop with this "
+            "EvalHook attached before calling promote_to_offline()."
+        )
+    return save_eval_run(directory, eval_hook=eval_hook, case=case, results=results)
+
+
+def seed_case_workspace(
+    case: "EvalCase",
+    directory: str | Path,
+    *,
+    files_key: str = "files",
+) -> Path:
+    """Materialise a case's seed files into a workspace directory.
+
+    Closes the last host-glue gap the coder dogfood exposed: a case can
+    carry its starting files as data under ``case.task[files_key]`` (a
+    ``{relative_path: file_contents}`` dict), and this helper writes them
+    into ``directory`` (creating parent dirs) so a runner no longer
+    hand-rolls the seeding. Formalises ``task["files"]`` as the seed
+    convention. Returns the directory.
+
+    Missing / empty ``files`` is a no-op (the directory is still
+    created), so cases that operate on a pre-existing repo work too.
+    """
+    root = Path(directory)
+    root.mkdir(parents=True, exist_ok=True)
+    files = (getattr(case, "task", {}) or {}).get(files_key) or {}
+    if not isinstance(files, dict):
+        raise ValueError(
+            f"case {getattr(case, 'id', '?')!r}: task[{files_key!r}] must be a "
+            f"{{path: contents}} dict, got {type(files).__name__}"
+        )
+    for relpath, contents in files.items():
+        target = root / relpath
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(contents if isinstance(contents, str) else str(contents))
+    return root
+
+
+def load_eval_run(directory: str | Path) -> "EvalRunRecord":
+    """Read back one persisted eval-case run — trajectory + artifacts + scores.
+
+    The READ mechanism for inspecting *exactly what happened* on each
+    eval case. Returns an :class:`EvalRunRecord` bundling:
+
+    * ``context`` — an :class:`EvalContext` (full step trajectory +
+      outcome ``artifacts``), built via
+      :meth:`EvalContext.from_trajectory_dir`, so the **same** graders
+      that scored the run live can re-score it offline.
+    * ``results`` — the grader scores persisted in ``evals.json``.
+    * ``case`` — the :class:`EvalCase` from ``case.json`` when present.
+
+    Pair with :func:`save_eval_run`. A directory missing
+    ``trajectory.json`` raises :class:`FileNotFoundError` (loud).
+    """
+    root = Path(directory)
+    context = EvalContext.from_trajectory_dir(root)
+
+    results: list[EvalResult] = []
+    evals_path = root / "evals.json"
+    if evals_path.exists():
+        try:
+            raw = json.loads(evals_path.read_text())
+        except (ValueError, OSError):
+            raw = []
+        if isinstance(raw, list):
+            for d in raw:
+                if isinstance(d, dict):
+                    fields = {k: v for k, v in d.items() if k in EvalResult.__dataclass_fields__}
+                    results.append(EvalResult(**fields))
+
+    case: EvalCase | None = None
+    case_path = root / "case.json"
+    if case_path.exists():
+        try:
+            cd = json.loads(case_path.read_text())
+            if isinstance(cd, dict):
+                case = EvalCase.from_dict(cd)
+        except (ValueError, OSError):
+            case = None
+
+    return EvalRunRecord(case=case, context=context, results=results, directory=root)
+
+
+def run_cartridge_evals(
+    cartridge_dir: str | Path,
+    *,
+    llm: Any,
+    output_dir: str | Path | None = None,
+    runtime: dict[str, Any] | None = None,
+    max_steps: int | None = None,
+    judge_llm: "LLMBackend | None" = None,
+    workspace_key: str = "project_root",
+    cases: list[str] | None = None,
+) -> list["EvalRunRecord"]:
+    """Run a cartridge against its shipped eval cases, end to end.
+
+    The one call that ties the whole "evals ship with the agent
+    version" story together: for each case shipped under
+    ``<cartridge>/evals/`` it seeds a sandbox from the case's
+    ``task["files"]``, loads the cartridge as a live agent, runs it with
+    an online :class:`EvalHook` (graders + collectors discovered from the
+    same ``evals/`` slot), and returns one :class:`EvalRunRecord` per
+    case. When ``output_dir`` is given, each run is also persisted
+    (trajectory + artifacts + scores + case) via :func:`save_eval_run`
+    so it doubles as an offline fixture.
+
+    Args:
+        cartridge_dir: the cartridge to evaluate (must contain ``evals/``).
+        llm: the backend driving the agent (any object with the
+            :class:`looplet.types.LLMBackend` surface).
+        output_dir: when set, persist ``<output_dir>/<case_id>/`` per
+            case; the seeded sandbox lives at ``…/<case_id>/workspace``.
+            When ``None``, sandboxes are throwaway tempdirs.
+        runtime: base runtime dict merged into every case's load
+            (the per-case sandbox path is injected under
+            ``workspace_key``, defaulting to the canonical
+            ``project_root``).
+        max_steps: optional per-case override of the cartridge's
+            ``max_steps``.
+        judge_llm: optional LLM for LLM-as-judge graders.
+        workspace_key: runtime key the cartridge reads for its working
+            directory (``project_root`` by convention).
+        cases: optional list of case ids to run (default: all).
+
+    Returns one :class:`EvalRunRecord` per executed case (``context`` is
+    the online run's :class:`EvalContext`, ``directory`` is the persisted
+    dir when ``output_dir`` is set, else the sandbox).
+    """
+    from looplet.cartridge import cartridge_to_preset  # noqa: PLC0415 — evals→cartridge is allowed
+
+    cdir = Path(cartridge_dir)
+    base_runtime = dict(runtime or {})
+    overview = load_cartridge_evals(cdir, runtime=base_runtime)
+    wanted = set(cases) if cases is not None else None
+    selected = [c for c in overview.cases if wanted is None or c.id in wanted]
+
+    records: list[EvalRunRecord] = []
+    for case in selected:
+        if output_dir is not None:
+            run_dir: Path | None = Path(output_dir) / case.id
+            sandbox = run_dir / "workspace"
+        else:
+            run_dir = None
+            sandbox = Path(tempfile.mkdtemp(prefix=f"evalcase_{case.id}_"))
+        seed_case_workspace(case, sandbox)
+
+        case_runtime = dict(base_runtime)
+        case_runtime.setdefault(workspace_key, str(sandbox))
+
+        bundle = load_cartridge_evals(cdir, runtime=case_runtime)
+        preset = cartridge_to_preset(cdir, runtime=case_runtime)
+        if max_steps is not None:
+            preset.config.max_steps = max_steps
+            if hasattr(preset.state, "max_steps"):
+                preset.state.max_steps = max_steps
+
+        hook = EvalHook(
+            evaluators=bundle.graders,
+            collectors=bundle.collectors,
+            judge_llm=judge_llm,
+        )
+        preset.hooks = list(preset.hooks) + [hook]
+
+        task = {k: v for k, v in (case.task or {}).items() if k != "files"}
+        try:
+            for _ in preset.run(llm, task=task):
+                pass
+        finally:
+            preset.close()
+
+        if run_dir is not None:
+            save_eval_run(run_dir, eval_hook=hook, case=case)
+            directory = run_dir
+        else:
+            directory = sandbox
+
+        # ``on_loop_end`` always sets the context once the loop runs; fall
+        # back to an empty context defensively so the record type stays clean.
+        ctx = hook.context if hook.context is not None else EvalContext(steps=[])
+        records.append(
+            EvalRunRecord(
+                case=case,
+                context=ctx,
+                results=list(hook.results),
+                directory=directory,
+            )
+        )
+    return records
+
+
 def pytest_param_cases(cases: list["EvalCase"]) -> list[Any]:
     """Wrap cases for ``@pytest.mark.parametrize``.
 
@@ -832,6 +1374,7 @@ class EvalHook:
         self._results: list[EvalResult] = []
         self._task: dict[str, Any] = {}
         self._artifacts: dict[str, Any] = {}
+        self._context: EvalContext | None = None
 
     def to_config(self) -> dict:
         """Cartridge round-trip: emit ``evaluators`` (and ``collectors``
@@ -863,6 +1406,22 @@ class EvalHook:
     def artifacts(self) -> dict[str, Any]:
         """Outcome data gathered by collectors during the most recent run."""
         return dict(self._artifacts)
+
+    @property
+    def context(self) -> "EvalContext | None":
+        """The :class:`EvalContext` built at the end of the most recent run.
+
+        This is the ONLINE counterpart of
+        :attr:`EvalRunRecord.context` (the offline read side): it carries
+        the full step trajectory, tool sequence, final output, and
+        outcome ``artifacts`` of the live run, so you can inspect tool
+        calls and re-grade an online run with the *same* surface used
+        for persisted offline runs. ``None`` until the loop ends.
+
+        Promote it to a durable offline fixture with
+        :func:`promote_to_offline` (or :func:`save_eval_run`).
+        """
+        return self._context
 
     def summary(self) -> str:
         """One-line summary of eval results."""
@@ -957,6 +1516,7 @@ class EvalHook:
             artifacts=artifacts,
             stop_reason=getattr(state, "_stop_reason", None),
         )
+        self._context = ctx
 
         self._results = eval_run(
             self.evaluators,
@@ -1117,6 +1677,10 @@ def eval_cli(args: list[str] | None = None) -> int:
         looplet eval traces/ --include accuracy       # only accuracy evals
         looplet eval traces/ --exclude slow           # skip slow evals
 
+        looplet eval run <cartridge>                  # run a cartridge's shipped evals
+        looplet eval run <cartridge> --out runs/      # …and persist each run
+        looplet eval run <cartridge> --judge          # …with LLM-as-judge graders
+
         looplet eval cases ls evals/cases/            # list cases
         looplet eval cases show evals/cases/foo.json  # full case dump
 
@@ -1129,16 +1693,19 @@ def eval_cli(args: list[str] | None = None) -> int:
     raw = list(args) if args is not None else sys.argv[1:]
     if raw and raw[0] == "cases":
         return _cases_cli(raw[1:])
+    if raw and raw[0] == "run":
+        return _run_cartridge_cli(raw[1:])
 
     parser = argparse.ArgumentParser(
         prog="looplet eval",
         description="Run evals against saved agent trajectories.",
         epilog=(
             "subcommands:\n"
+            "  run <cartridge>          run a cartridge against its shipped eval cases\n"
             "  cases ls <path>          list eval cases (one line per case)\n"
             "  cases show <path>        show a single case in full\n"
             "\n"
-            "Run `looplet eval cases -h` for case-browser flags."
+            "Run `looplet eval run -h` / `looplet eval cases -h` for their flags."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -1232,6 +1799,143 @@ def eval_cli(args: list[str] | None = None) -> int:
             status = "PASS" if not below_threshold else "FAIL"
             print(f"  threshold: {parsed.threshold:.2f}  → {status}")
 
+    return 1 if below_threshold else 0
+
+
+def _run_cartridge_cli(args: list[str]) -> int:
+    """``looplet eval run <cartridge> [--out DIR] [--model M] ...``.
+
+    Run a cartridge against its own shipped eval cases (seed → run →
+    grade), printing a cases × graders matrix and optionally persisting
+    each run for offline inspection.
+    """
+    import argparse
+    import os
+
+    parser = argparse.ArgumentParser(
+        prog="looplet eval run",
+        description="Run a cartridge against its shipped eval cases.",
+    )
+    parser.add_argument("cartridge", help="Cartridge directory (must contain evals/).")
+    parser.add_argument(
+        "--out",
+        default=None,
+        help="Persist each run under <out>/<case_id>/ (trajectory + artifacts + scores).",
+    )
+    parser.add_argument("--model", default=None, help="Model name (else $OPENAI_MODEL).")
+    parser.add_argument(
+        "--base-url", default=None, help="OpenAI-compatible base URL (else $OPENAI_BASE_URL)."
+    )
+    parser.add_argument("--max-steps", type=int, default=None, help="Override max_steps per case.")
+    parser.add_argument(
+        "--case", action="append", default=None, help="Run only this case id (repeatable)."
+    )
+    parser.add_argument(
+        "--judge",
+        action="store_true",
+        help="Enable LLM-as-judge graders (those with an ``llm`` parameter). "
+        "Reuses the agent backend unless --judge-model is given.",
+    )
+    parser.add_argument(
+        "--judge-model",
+        default=None,
+        help="Model for LLM-as-judge graders (implies --judge; else the agent model).",
+    )
+    parser.add_argument(
+        "--threshold",
+        type=float,
+        default=0.0,
+        help="Fail (exit 1) if any scored grader is below this on any case.",
+    )
+    parsed = parser.parse_args(args)
+
+    cdir = Path(parsed.cartridge)
+    if not cdir.is_dir():
+        print(f"error: cartridge not found: {cdir}", file=sys.stderr)
+        return 1
+
+    overview = load_cartridge_evals(cdir)
+    if not overview.cases:
+        print(f"error: no eval cases under {cdir / CARTRIDGE_CASES_SUBPATH}", file=sys.stderr)
+        return 1
+    if not overview.graders:
+        print(f"error: no graders (evals/eval_*.py) under {cdir / 'evals'}", file=sys.stderr)
+        return 1
+
+    base_url = parsed.base_url or os.environ.get("OPENAI_BASE_URL")
+    model = parsed.model or os.environ.get("OPENAI_MODEL")
+    if not base_url and not os.environ.get("OPENAI_API_KEY"):
+        print(
+            "error: no LLM configured. Set OPENAI_BASE_URL (local proxy) or "
+            "OPENAI_API_KEY (cloud), or pass --base-url / --model.",
+            file=sys.stderr,
+        )
+        return 1
+
+    from looplet.backends import OpenAIBackend  # noqa: PLC0415
+
+    llm = OpenAIBackend(
+        base_url=base_url,
+        api_key=os.environ.get("OPENAI_API_KEY", "x"),
+        model=model or "gpt-4o",
+    )
+
+    # LLM-as-judge: graders whose signature has an ``llm`` param are only
+    # run when a judge backend is supplied. --judge reuses the agent
+    # backend; --judge-model builds a separate one (and implies --judge).
+    judge_llm = None
+    if parsed.judge or parsed.judge_model:
+        if parsed.judge_model:
+            judge_llm = OpenAIBackend(
+                base_url=base_url,
+                api_key=os.environ.get("OPENAI_API_KEY", "x"),
+                model=parsed.judge_model,
+            )
+        else:
+            judge_llm = llm
+
+    print(
+        f"running {cdir.name}: {len(overview.cases)} case(s), "
+        f"{len(overview.graders)} grader(s), {len(overview.collectors)} collector(s)"
+        f"{'  [judge on]' if judge_llm is not None else ''}\n"
+    )
+    records = run_cartridge_evals(
+        cdir,
+        llm=llm,
+        output_dir=parsed.out,
+        max_steps=parsed.max_steps,
+        cases=parsed.case,
+        judge_llm=judge_llm,
+    )
+
+    grader_names = sorted(g.__name__ for g in overview.graders)
+    header = f"{'case':22}" + "".join(f"{n:22}" for n in grader_names)
+    print(header)
+    print("-" * len(header))
+    below_threshold = False
+    for rec in records:
+        scores = {r.name: r for r in rec.results}
+        cells = ""
+        for n in grader_names:
+            r = scores.get(n)
+            if r is None:
+                cells += f"{'-':22}"
+            elif r.score is not None:
+                cells += f"{r.score:<22.2f}"
+                if r.score < parsed.threshold:
+                    below_threshold = True
+            elif r.metrics:
+                # Metric grader (no pass/fail score) — show the numbers.
+                cells += f"{('; '.join(f'{k}={v:g}' for k, v in r.metrics.items())):22}"
+            else:
+                cells += f"{(r.label or '-'):22}"
+        case_id = rec.case.id if rec.case is not None else "?"
+        print(f"{case_id:22}{cells}")
+
+    if parsed.out:
+        print(f"\npersisted {len(records)} run(s) under {parsed.out}/")
+    if parsed.threshold > 0:
+        print(f"threshold {parsed.threshold:.2f} → {'FAIL' if below_threshold else 'PASS'}")
     return 1 if below_threshold else 0
 
 

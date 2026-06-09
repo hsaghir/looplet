@@ -1,0 +1,12 @@
+{
+  "id": "fix_off_by_one",
+  "task": {
+    "goal": "There is a bug in chunk() in chunk.py: test_chunk.py fails. Read the failing test, find and fix the bug, and run `python -m pytest -q test_chunk.py` until it passes. Call done when the tests pass.",
+    "files": {
+      "chunk.py": "def chunk(items, size):\n    \"\"\"Split items into consecutive sublists of length `size`.\n\n    The final chunk may be shorter. chunk([1,2,3,4,5], 2) -> [[1,2],[3,4],[5]].\n    \"\"\"\n    out = []\n    i = 0\n    # BUG: the step is wrong, so chunks overlap and the tail is dropped.\n    while i < len(items):\n        out.append(items[i:i + size])\n        i += 1\n    return out\n",
+      "test_chunk.py": "from chunk import chunk\n\n\ndef test_even_split():\n    assert chunk([1, 2, 3, 4], 2) == [[1, 2], [3, 4]]\n\n\ndef test_remainder_tail():\n    assert chunk([1, 2, 3, 4, 5], 2) == [[1, 2], [3, 4], [5]]\n\n\ndef test_size_one():\n    assert chunk([1, 2, 3], 1) == [[1], [2], [3]]\n\n\ndef test_empty():\n    assert chunk([], 3) == []\n"
+    }
+  },
+  "expected": {"tests_passing": true},
+  "notes": "Bug-fix: the while-loop increments by 1 instead of `size`, so chunks overlap. Fix is `i += size`."
+}

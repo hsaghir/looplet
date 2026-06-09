@@ -1,0 +1,12 @@
+{
+  "id": "implement_stack",
+  "task": {
+    "goal": "Implement the Stack class in stack.py so that test_stack.py passes. Use the bash tool to read the files, write the implementation, and run `python -m pytest -q test_stack.py`. Call done when the tests pass.",
+    "files": {
+      "stack.py": "class Stack:\n    \"\"\"A LIFO stack. Implement every method.\"\"\"\n\n    def __init__(self):\n        raise NotImplementedError\n\n    def push(self, x):\n        \"\"\"Push x onto the top.\"\"\"\n        raise NotImplementedError\n\n    def pop(self):\n        \"\"\"Remove and return the top item. Raise IndexError if empty.\"\"\"\n        raise NotImplementedError\n\n    def peek(self):\n        \"\"\"Return (without removing) the top item. Raise IndexError if empty.\"\"\"\n        raise NotImplementedError\n\n    def is_empty(self):\n        \"\"\"Return True iff the stack has no items.\"\"\"\n        raise NotImplementedError\n\n    def __len__(self):\n        raise NotImplementedError\n",
+      "test_stack.py": "import pytest\nfrom stack import Stack\n\n\ndef test_push_pop_lifo():\n    s = Stack()\n    s.push(1); s.push(2); s.push(3)\n    assert s.pop() == 3\n    assert s.pop() == 2\n    assert s.pop() == 1\n\n\ndef test_peek_does_not_remove():\n    s = Stack()\n    s.push(42)\n    assert s.peek() == 42\n    assert len(s) == 1\n\n\ndef test_is_empty():\n    s = Stack()\n    assert s.is_empty()\n    s.push(1)\n    assert not s.is_empty()\n\n\ndef test_pop_empty_raises():\n    s = Stack()\n    with pytest.raises(IndexError):\n        s.pop()\n\n\ndef test_len():\n    s = Stack()\n    assert len(s) == 0\n    s.push(1); s.push(2)\n    assert len(s) == 2\n"
+    }
+  },
+  "expected": {"tests_passing": true},
+  "notes": "Greenfield implementation: a Stack with LIFO semantics, empty-error handling, and __len__."
+}

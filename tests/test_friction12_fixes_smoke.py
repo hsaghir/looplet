@@ -45,6 +45,7 @@ class TestRegisterDoneTool:
 class TestBackendConvenienceKwargs:
     def test_openai_backend_no_args_delegates_to_openai_client(self):
         """Previously raised; now defers to ``openai.OpenAI()`` which reads env vars."""
+        pytest.importorskip("openai")  # optional extra; CI installs it
         from unittest.mock import patch
 
         from looplet.backends import OpenAIBackend
@@ -54,6 +55,7 @@ class TestBackendConvenienceKwargs:
             fake.assert_called_once_with()
 
     def test_openai_backend_base_url_creates_client(self):
+        pytest.importorskip("openai")  # optional extra; CI installs it
         from looplet.backends import OpenAIBackend
 
         # This should NOT raise — it auto-creates the client
@@ -72,6 +74,7 @@ class TestBackendConvenienceKwargs:
         assert llm._model == "gpt-4o-mini"
 
     def test_async_openai_backend_no_args_delegates_to_async_client(self):
+        pytest.importorskip("openai")  # optional extra; CI installs it
         from unittest.mock import patch
 
         from looplet.backends import AsyncOpenAIBackend

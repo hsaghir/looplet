@@ -242,6 +242,7 @@ class TestFromEnvErrors:
     def test_openai_from_env_local_server_with_base_url_only(self, monkeypatch):
         """OPENAI_BASE_URL set without a key (local Ollama / vLLM
         convention) should succeed by defaulting api_key to a sentinel."""
+        pytest.importorskip("openai")  # optional extra; CI installs it
         from looplet import OpenAIBackend
 
         self._clear_env(monkeypatch, ("OPENAI_",))

@@ -19,7 +19,11 @@ without FFI. The protocol is the smallest thing that works:
 
 * **Outbound events** (server → stdout):
 
-  - ``{"event": "ready"}`` after each successful command.
+  - ``{"event": "ready"}`` after each successful command. The ``ready``
+    emitted after ``load_workspace`` additionally carries a
+    ``capabilities`` dict (``{events, cancel, checkpoint, cost,
+    permission_authority, stop_reasons[]}``) describing what the loaded
+    agent supports, so an orchestrator can degrade gracefully.
   - ``{"event": "step", "step": <Step.to_dict>, "step_num": N}``
   - ``{"event": "done", "stop_reason": "...", "steps": N}``
   - ``{"event": "error", "message": "..."}`` on any error; the
@@ -79,6 +83,74 @@ def _import_factory(spec: str) -> Callable[..., Any]:
     return fn
 
 
+#: The frozen set of loop termination reasons advertised in the capability
+#: handshake. Formalised as a ``StopReason`` enum in §1.3; kept here as the
+#: single source of truth the ``done`` event maps onto.
+STOP_REASONS: tuple[str, ...] = (
+    "done",
+    "max_steps",
+    "budget",
+    "stagnated",
+    "cancelled",
+    "error",
+)
+
+
+def _has_permission_authority(hooks: Iterable[Any]) -> bool:
+    """True iff any hook can gate tool dispatch on a permission decision.
+
+    Covers the PermissionEngine-backed
+    :class:`~looplet.permissions.PermissionHook`, the out-of-process
+    :class:`~looplet.lep.LEPHookAdapter` policy server, and any back-compat
+    hook exposing ``check_permission`` — all of which advertise that surface.
+    """
+    return any(hasattr(hook, "check_permission") for hook in hooks)
+
+
+def _has_cost_sink(preset: Any) -> bool:
+    """True iff a cost sink is wired — a :class:`~looplet.cost.CostHook`
+    feeding a tracker, or a bare :class:`~looplet.cost.CostTracker` published
+    as a resource."""
+    try:
+        from looplet.cost import CostHook, CostTracker  # noqa: PLC0415
+    except Exception:  # pragma: no cover - cost module is always importable
+        return False
+    hooks = getattr(preset, "hooks", None) or []
+    if any(isinstance(h, CostHook) for h in hooks):
+        return True
+    resources = getattr(preset, "resources", None) or {}
+    return any(isinstance(v, CostTracker) for v in resources.values())
+
+
+def _capabilities(preset: Any) -> dict[str, Any]:
+    """Describe what the loaded preset supports, for the handshake.
+
+    An orchestrator reads this to degrade gracefully across heterogeneous
+    agents:
+
+    * ``events`` / ``cancel`` — always offered by the RPC server itself
+      (every loop emits :class:`~looplet.events.LifecycleEvent`\\ s and
+      accepts a cancel token), so they are unconditionally true.
+    * ``checkpoint`` — true when the preset persists checkpoints
+      (``config.checkpoint_dir`` is set).
+    * ``cost`` — true when a cost sink is wired.
+    * ``permission_authority`` — true when a permission hook (a
+      ``PermissionEngine``-backed or LEP hook) is present.
+    * ``stop_reasons`` — the frozen termination enum the ``done`` event
+      reports.
+    """
+    config = getattr(preset, "config", None)
+    hooks = getattr(preset, "hooks", None) or []
+    return {
+        "events": True,
+        "cancel": True,
+        "checkpoint": bool(getattr(config, "checkpoint_dir", None)),
+        "cost": _has_cost_sink(preset),
+        "permission_authority": _has_permission_authority(hooks),
+        "stop_reasons": list(STOP_REASONS),
+    }
+
+
 @dataclass
 class RPCServer:
     """Stateful stdio RPC server. One instance per process.
@@ -103,7 +175,12 @@ class RPCServer:
         self.preset = cartridge_to_preset(Path(path), runtime=runtime)
         _emit(
             self.out_stream,
-            {"event": "ready", "loaded": str(path), "tools": list(self.preset.tools.tool_names)},
+            {
+                "event": "ready",
+                "loaded": str(path),
+                "tools": list(self.preset.tools.tool_names),
+                "capabilities": _capabilities(self.preset),
+            },
         )
 
     def cmd_set_backend(self, msg: dict[str, Any]) -> None:

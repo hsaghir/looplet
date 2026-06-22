@@ -11,10 +11,12 @@ pytestmark = pytest.mark.smoke
 
 class TestToolChoice:
     def test_default_tool_choice_is_auto(self):
+        pytest.importorskip("openai")  # optional extra; CI installs it
         llm = OpenAIBackend(base_url="http://localhost:9999/v1", api_key="x")
         assert llm._tool_choice == "auto"
 
     def test_custom_tool_choice(self):
+        pytest.importorskip("openai")  # optional extra; CI installs it
         llm = OpenAIBackend(
             base_url="http://localhost:9999/v1",
             api_key="x",

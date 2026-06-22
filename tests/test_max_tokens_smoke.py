@@ -28,10 +28,12 @@ class TestResolveMaxTokens:
 
 class TestDefaultMaxTokensNone:
     def test_default_is_none(self):
+        pytest.importorskip("openai")  # optional extra; CI installs it
         llm = OpenAIBackend(base_url="http://localhost:9999/v1", api_key="x")
         assert llm._default_max_tokens is None
 
     def test_explicit_default(self):
+        pytest.importorskip("openai")  # optional extra; CI installs it
         llm = OpenAIBackend(
             base_url="http://localhost:9999/v1",
             api_key="x",

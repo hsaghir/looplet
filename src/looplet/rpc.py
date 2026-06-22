@@ -12,9 +12,19 @@ without FFI. The protocol is the smallest thing that works:
   - ``{"cmd": "set_backend", "factory": "pkg.module:fn"}``
     Import a callable that returns an :class:`LLMBackend`. Required
     before ``run``.
-  - ``{"cmd": "run", "task": {...}, "max_steps": 30}``
+  - ``{"cmd": "run", "task": {...}, "max_steps": 30,
+    "checkpoint_dir": "..."}``
     Execute one loop. Streams ``step`` events back, then a ``done``
-    event with the stop reason.
+    event with the stop reason. When ``checkpoint_dir`` is given, the
+    loop saves a :class:`~looplet.checkpoint.Checkpoint` after every step
+    and the server emits a ``checkpoint`` frame for each write.
+  - ``{"cmd": "resume", "checkpoint": "<id|path>", "task": {...},
+    "max_steps": 30, "checkpoint_dir": "..."}``
+    Start a run from a previously saved checkpoint. ``checkpoint`` is
+    either an absolute path to a ``step_N.json`` file (e.g. the ``path``
+    from a ``checkpoint`` frame) or a bare id (``"step_N"``) resolved
+    against ``checkpoint_dir``. The loop restores the saved session log
+    and continues at step ``N+1`` — even in a brand-new process.
   - ``{"cmd": "quit"}`` — terminate cleanly.
 
 * **Outbound events** (server → stdout):
@@ -25,6 +35,11 @@ without FFI. The protocol is the smallest thing that works:
     permission_authority, stop_reasons[]}``) describing what the loaded
     agent supports, so an orchestrator can degrade gracefully.
   - ``{"event": "step", "step": <Step.to_dict>, "step_num": N}``
+  - ``{"event": "checkpoint", "id": "step_N", "step_num": N,
+    "path": "..."}`` — emitted for each checkpoint the loop writes during
+    a ``run``/``resume`` with ``checkpoint_dir`` set. ``id`` is the
+    checkpoint key, ``path`` the on-disk JSON file (pass it back as a
+    ``resume`` ``checkpoint`` to restart from that point).
   - ``{"event": "event", "kind": <LifecycleEvent>, "step_num": N,
     "payload": {...}}`` for every in-process lifecycle event emitted
     during a ``run`` (the white-box feed and a fine-grained liveness
@@ -59,7 +74,7 @@ import importlib
 import json
 import sys
 import traceback
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Iterable, TextIO
@@ -349,15 +364,129 @@ class RPCServer:
             raise ValueError("call set_backend before run")
         task = msg.get("task") or {}
         max_steps = int(msg.get("max_steps") or self.preset.config.max_steps or 30)
+        self._execute_run(
+            task=task,
+            max_steps=max_steps,
+            checkpoint_dir=msg.get("checkpoint_dir"),
+        )
 
-        # Build a fresh state each run so RPC clients can re-use the
-        # same loaded preset across many invocations.
+    def cmd_resume(self, msg: dict[str, Any]) -> None:
+        """Resume a run from a previously saved checkpoint.
+
+        ``msg["checkpoint"]`` is either an absolute path to a checkpoint
+        JSON file (e.g. the ``path`` from a ``checkpoint`` frame) or a bare
+        id (``"step_N"``) resolved against ``msg["checkpoint_dir"]``. The
+        loaded :class:`~looplet.checkpoint.Checkpoint` is handed to the loop
+        as ``initial_checkpoint`` so the continuation restores the saved
+        session log and resumes at step ``N+1``.
+        """
+        if self.preset is None:
+            raise ValueError("call load_workspace before resume")
+        if self.backend is None:
+            raise ValueError("call set_backend before resume")
+        ref = msg.get("checkpoint")
+        if not ref:
+            raise ValueError("resume requires 'checkpoint' (an id or a path)")
+        checkpoint_dir = msg.get("checkpoint_dir")
+        checkpoint = self._load_checkpoint(str(ref), checkpoint_dir)
+        task = msg.get("task") or {}
+        max_steps = int(msg.get("max_steps") or self.preset.config.max_steps or 30)
+        self._execute_run(
+            task=task,
+            max_steps=max_steps,
+            checkpoint_dir=checkpoint_dir,
+            initial_checkpoint=checkpoint,
+        )
+
+    # ── shared run engine ────────────────────────────────────────
+
+    def _load_checkpoint(self, ref: str, checkpoint_dir: str | None) -> Any:
+        """Resolve a checkpoint reference to a :class:`Checkpoint`.
+
+        ``ref`` is tried first as a filesystem path (an absolute
+        ``step_N.json``), then as a bare key resolved against
+        ``checkpoint_dir`` via :class:`FileCheckpointStore` — both reuse
+        ``checkpoint.py``'s serialisation verbatim.
+        """
+        from looplet.checkpoint import Checkpoint, FileCheckpointStore
+
+        path = Path(ref)
+        if path.is_file():
+            try:
+                return Checkpoint.from_dict(json.loads(path.read_text()))
+            except (OSError, json.JSONDecodeError, KeyError) as exc:
+                raise ValueError(f"could not load checkpoint file {ref!r}: {exc}") from exc
+        if checkpoint_dir:
+            cp = FileCheckpointStore(checkpoint_dir).load(Path(ref).name)
+            if cp is not None:
+                return cp
+        raise ValueError(
+            f"checkpoint not found: {ref!r} "
+            "(pass an existing checkpoint path, or a 'checkpoint_dir' plus its id)"
+        )
+
+    def _execute_run(
+        self,
+        *,
+        task: dict[str, Any],
+        max_steps: int,
+        checkpoint_dir: str | None = None,
+        initial_checkpoint: Any = None,
+    ) -> None:
+        """Run one loop and stream its frames; shared by ``run`` and ``resume``.
+
+        Builds a fresh state each call so a loaded preset can back many runs.
+        When ``checkpoint_dir`` is set the loop persists a checkpoint after
+        every step (``checkpoint.py`` verbatim); we observe that directory and
+        surface each new file as a ``checkpoint`` frame. When
+        ``initial_checkpoint`` is set the loop restores it and continues at the
+        saved step + 1.
+        """
         config = self.preset.config
+        changes: dict[str, Any] = {}
         if config.max_steps != max_steps:
-            from dataclasses import replace
+            changes["max_steps"] = max_steps
+        if checkpoint_dir is not None:
+            changes["checkpoint_dir"] = checkpoint_dir
+        if initial_checkpoint is not None:
+            changes["initial_checkpoint"] = initial_checkpoint
+        if changes:
+            config = replace(config, **changes)
 
-            config = replace(config, max_steps=max_steps)
         state = DefaultState(max_steps=max_steps)
+
+        # Checkpoint-frame emission. The loop writes a JSON checkpoint after
+        # every step when ``checkpoint_dir`` is set (keyed ``step_N``). We never
+        # touch the loop or the on-disk format — we observe the directory and
+        # announce each NEW file. Stems present before this run started are
+        # skipped so a resume that reuses the same directory does not re-announce
+        # the checkpoints the original run already reported.
+        ckpt_path = Path(config.checkpoint_dir) if getattr(config, "checkpoint_dir", None) else None
+        pre_existing: set[str] = set()
+        emitted: set[str] = set()
+        if ckpt_path is not None and ckpt_path.exists():
+            pre_existing = {p.stem for p in ckpt_path.glob("*.json")}
+
+        def _drain_checkpoints() -> None:
+            if ckpt_path is None or not ckpt_path.exists():
+                return
+            for p in sorted(ckpt_path.glob("*.json")):
+                if p.stem in pre_existing or p.stem in emitted:
+                    continue
+                try:
+                    data = json.loads(p.read_text())
+                except (OSError, json.JSONDecodeError):
+                    continue  # partial write mid-save; picked up on a later drain
+                emitted.add(p.stem)
+                _emit(
+                    self.out_stream,
+                    {
+                        "event": "checkpoint",
+                        "id": p.stem,
+                        "step_num": data.get("step_number"),
+                        "path": str(p),
+                    },
+                )
 
         steps_emitted = 0
         errored = False
@@ -378,6 +507,7 @@ class RPCServer:
                     self.out_stream,
                     {"event": "step", "step_num": step.number, "step": step.to_dict()},
                 )
+                _drain_checkpoints()
         except Exception as exc:  # noqa: BLE001
             # Emit the diagnostic error frame, then fall through to the
             # terminal ``done`` frame with ``stop_reason="error"`` so every
@@ -391,6 +521,10 @@ class RPCServer:
                 },
             )
             errored = True
+
+        # The final checkpoint is written during loop teardown, after the last
+        # step is yielded — drain once more so it is never missed.
+        _drain_checkpoints()
 
         # Map the loop's internal termination signal onto the frozen
         # StopReason enum. The loop stashes it as ``state._stop_reason``
@@ -440,6 +574,7 @@ class RPCServer:
             "load_workspace": "cmd_load_workspace",
             "set_backend": "cmd_set_backend",
             "run": "cmd_run",
+            "resume": "cmd_resume",
         }
         for line in self._iter_lines():
             line = line.strip()

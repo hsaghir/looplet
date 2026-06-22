@@ -25,6 +25,13 @@ without FFI. The protocol is the smallest thing that works:
     permission_authority, stop_reasons[]}``) describing what the loaded
     agent supports, so an orchestrator can degrade gracefully.
   - ``{"event": "step", "step": <Step.to_dict>, "step_num": N}``
+  - ``{"event": "event", "kind": <LifecycleEvent>, "step_num": N,
+    "payload": {...}}`` for every in-process lifecycle event emitted
+    during a ``run`` (the white-box feed and a fine-grained liveness
+    signal — each event is a lease renewal for an orchestrator). The
+    ``payload`` is a best-effort JSON-safe view
+    (:meth:`looplet.events.EventPayload.to_jsonable`); non-JSON values
+    are dropped, never raised on.
   - ``{"event": "done", "stop_reason": "...", "steps": N}``
   - ``{"event": "error", "message": "..."}`` on any error; the
     server then continues accepting commands.
@@ -151,6 +158,45 @@ def _capabilities(preset: Any) -> dict[str, Any]:
     }
 
 
+class _RPCEventForwarder:
+    """Pure ``on_event`` observer that streams lifecycle events to the wire.
+
+    Appended to the run's hook list so it subscribes through the loop's
+    existing ``on_event`` bus — ``composable_loop``'s core is untouched.
+    It implements *only* ``on_event`` (no per-method slots) so the loop's
+    on-event/per-method deduplication (``PRE_TOOL_USE``→``pre_dispatch``,
+    ``POST_TOOL_USE``→``post_dispatch``) never skips it: a pure observer
+    receives every lifecycle event, including those with a per-method
+    equivalent.
+
+    Each event becomes a ``{"event": "event", "kind": <name>, "step_num":
+    N, "payload": {...}}`` frame. Serialisation is best-effort and
+    self-contained: a malformed payload is dropped, never raised into the
+    loop (the loop's ``emit_event`` also guards — this is belt-and-suspenders).
+    """
+
+    def __init__(self, out_stream: TextIO) -> None:
+        self._out = out_stream
+
+    def on_event(self, payload: Any) -> None:
+        try:
+            event = getattr(payload, "event", None)
+            kind = getattr(event, "value", None) or str(event)
+            to_jsonable = getattr(payload, "to_jsonable", None)
+            body = to_jsonable() if callable(to_jsonable) else {}
+            _emit(
+                self._out,
+                {
+                    "event": "event",
+                    "kind": kind,
+                    "step_num": int(getattr(payload, "step_num", 0) or 0),
+                    "payload": body,
+                },
+            )
+        except Exception:  # noqa: BLE001 - event forwarding must never break the run
+            return
+
+
 @dataclass
 class RPCServer:
     """Stateful stdio RPC server. One instance per process.
@@ -211,13 +257,16 @@ class RPCServer:
 
         steps_emitted = 0
         stop_reason: str | None = None
+        # Subscribe to the lifecycle-event bus by appending a pure observer
+        # hook (do NOT mutate preset.hooks — it is reused across runs).
+        run_hooks = [*self.preset.hooks, _RPCEventForwarder(self.out_stream)]
         try:
             for step in composable_loop(
                 llm=self.backend,
                 tools=self.preset.tools,
                 state=state,
                 config=config,
-                hooks=self.preset.hooks,
+                hooks=run_hooks,
                 task=task,
             ):
                 steps_emitted += 1

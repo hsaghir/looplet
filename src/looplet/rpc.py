@@ -32,9 +32,17 @@ without FFI. The protocol is the smallest thing that works:
     ``payload`` is a best-effort JSON-safe view
     (:meth:`looplet.events.EventPayload.to_jsonable`); non-JSON values
     are dropped, never raised on.
-  - ``{"event": "done", "stop_reason": "...", "steps": N}``
+  - ``{"event": "done", "stop_reason": "<StopReason>", "steps": N,
+    "output": <obj|null>}`` — the terminal frame of every ``run``.
+    ``stop_reason`` is a value from the frozen :class:`StopReason` enum
+    (``done|max_steps|budget|stagnated|cancelled|error``); ``steps`` is the
+    number of step frames emitted (retained for back-compat); ``output`` is
+    the structured payload of the accepted ``done()`` sentinel
+    (:func:`looplet.done_steps.done_output`) or ``null``.
   - ``{"event": "error", "message": "..."}`` on any error; the
-    server then continues accepting commands.
+    server emits this diagnostic frame and then still emits a terminal
+    ``done`` frame with ``stop_reason="error"`` before continuing to
+    accept commands.
 
 The default entrypoint is::
 
@@ -52,15 +60,20 @@ import json
 import sys
 import traceback
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Iterable, TextIO
 
 from looplet.cartridge import cartridge_to_preset
+from looplet.done_steps import done_output
 from looplet.loop import composable_loop
 from looplet.types import DefaultState
 
 __all__ = [
     "RPCServer",
+    "StopReason",
+    "STOP_REASONS",
+    "map_stop_reason",
     "main",
 ]
 
@@ -90,17 +103,84 @@ def _import_factory(spec: str) -> Callable[..., Any]:
     return fn
 
 
-#: The frozen set of loop termination reasons advertised in the capability
-#: handshake. Formalised as a ``StopReason`` enum in §1.3; kept here as the
+class StopReason(str, Enum):
+    """Frozen enum of loop termination reasons reported by the ``done`` event.
+
+    The six values are the complete contract surface an orchestrator can
+    branch on; they are also advertised verbatim in the capability
+    handshake's ``stop_reasons``. ``StopReason`` subclasses ``str`` so a
+    member compares equal to (and JSON-serialises as) its wire value.
+
+    * ``DONE`` — the agent called the accepted ``done()`` sentinel.
+    * ``MAX_STEPS`` — the step budget was exhausted (the loop ran to its
+      ``max_steps`` limit without an explicit stop).
+    * ``BUDGET`` — a resource/cost budget hook stopped the loop.
+    * ``STAGNATED`` — a stagnation guard stopped the loop (no new progress).
+    * ``CANCELLED`` — a cancel token was observed between turns.
+    * ``ERROR`` — the run raised before terminating normally.
+    """
+
+    DONE = "done"
+    MAX_STEPS = "max_steps"
+    BUDGET = "budget"
+    STAGNATED = "stagnated"
+    CANCELLED = "cancelled"
+    ERROR = "error"
+
+
+#: The frozen tuple of termination-reason wire values, derived from
+#: :class:`StopReason`. Advertised in the capability handshake and the
 #: single source of truth the ``done`` event maps onto.
-STOP_REASONS: tuple[str, ...] = (
-    "done",
-    "max_steps",
-    "budget",
-    "stagnated",
-    "cancelled",
-    "error",
-)
+STOP_REASONS: tuple[str, ...] = tuple(r.value for r in StopReason)
+
+# Loop-internal ``stop_reason`` strings that denote step-budget exhaustion
+# (the contract's ``max_steps``) rather than a resource budget. The loop seeds
+# ``stop_reason = "budget_exhausted"`` and leaves it untouched when the
+# ``while budget_remaining > 0`` guard trips, so this exact token must map to
+# ``MAX_STEPS`` — NOT ``BUDGET`` — even though it contains the word "budget".
+_MAX_STEPS_TOKENS = frozenset({"budget_exhausted", "max_steps", "exhausted", "step_budget"})
+
+
+def map_stop_reason(raw: Any, *, errored: bool = False) -> StopReason:
+    """Classify a loop-internal ``stop_reason`` into the frozen enum.
+
+    Args:
+        raw: The loop's internal ``state._stop_reason`` (e.g. ``"done"``,
+            ``"cancelled"``, ``"budget_exhausted"``, or a hook-supplied
+            ``HookDecision.stop`` string such as ``"budget_exceeded"`` /
+            ``"stagnated"``). ``None``/empty means the loop fell out of its
+            ``while budget_remaining > 0`` guard without an explicit reason.
+        errored: When the run raised, short-circuits to :attr:`StopReason.ERROR`
+            regardless of ``raw``.
+
+    The mapping is order-sensitive: the explicit step-exhaustion tokens
+    (:data:`_MAX_STEPS_TOKENS`) are checked *before* the generic ``"budget"``
+    substring so the loop's ``"budget_exhausted"`` sentinel resolves to
+    ``MAX_STEPS``, while a true resource-budget hook (``"budget_exceeded"``)
+    resolves to ``BUDGET``. An unrecognised but intentional hook stop is
+    treated as a policy/resource guard (``BUDGET``) — the dominant real use
+    case (see the budget-hook recipe).
+    """
+    if errored:
+        return StopReason.ERROR
+    if raw is None or not str(raw).strip():
+        return StopReason.MAX_STEPS
+    text = str(raw).strip().lower()
+    if text == StopReason.DONE.value:
+        return StopReason.DONE
+    if text in _MAX_STEPS_TOKENS:
+        return StopReason.MAX_STEPS
+    if "cancel" in text:
+        return StopReason.CANCELLED
+    if "stagn" in text:
+        return StopReason.STAGNATED
+    if "error" in text or "exception" in text or "fail" in text:
+        return StopReason.ERROR
+    if "budget" in text or "token" in text or "cost" in text or "quota" in text:
+        return StopReason.BUDGET
+    # An intentional hook stop we can't categorise (e.g. a bare ``should_stop``
+    # → True with no reason). Treat as a policy/resource guard.
+    return StopReason.BUDGET
 
 
 def _has_permission_authority(hooks: Iterable[Any]) -> bool:
@@ -156,6 +236,30 @@ def _capabilities(preset: Any) -> dict[str, Any]:
         "permission_authority": _has_permission_authority(hooks),
         "stop_reasons": list(STOP_REASONS),
     }
+
+
+# Terminal LLM-failure sentinel the loop yields when ``llm_call_with_retry``
+# is exhausted (``loop.py`` / ``async_loop.py`` ``ToolCall(tool="__llm_error__")``).
+# The loop ``break``s right after yielding it but leaves ``stop_reason`` at its
+# seeded ``"budget_exhausted"``, so the RPC layer detects this sentinel to map
+# the error-termination path onto :attr:`StopReason.ERROR`.
+_LLM_ERROR_TOOL = "__llm_error__"
+
+
+def _terminal_llm_error_step(state: Any) -> Any:
+    """Return the trailing ``__llm_error__`` sentinel step, or ``None``.
+
+    The loop swallows LLM failures (retried, then a terminal
+    ``__llm_error__`` step) without setting an error ``stop_reason``; this
+    lets the RPC layer recognise an error termination without changing the
+    loop core.
+    """
+    steps = getattr(state, "steps", None) or []
+    if not steps:
+        return None
+    last = steps[-1]
+    tool = getattr(getattr(last, "tool_call", None), "tool", "")
+    return last if tool == _LLM_ERROR_TOOL else None
 
 
 class _RPCEventForwarder:
@@ -256,7 +360,7 @@ class RPCServer:
         state = DefaultState(max_steps=max_steps)
 
         steps_emitted = 0
-        stop_reason: str | None = None
+        errored = False
         # Subscribe to the lifecycle-event bus by appending a pure observer
         # hook (do NOT mutate preset.hooks — it is reused across runs).
         run_hooks = [*self.preset.hooks, _RPCEventForwarder(self.out_stream)]
@@ -274,8 +378,10 @@ class RPCServer:
                     self.out_stream,
                     {"event": "step", "step_num": step.number, "step": step.to_dict()},
                 )
-            stop_reason = getattr(state, "stop_reason", None) or "exhausted"
         except Exception as exc:  # noqa: BLE001
+            # Emit the diagnostic error frame, then fall through to the
+            # terminal ``done`` frame with ``stop_reason="error"`` so every
+            # run ends with exactly one ``done`` an orchestrator can await.
             _emit(
                 self.out_stream,
                 {
@@ -284,10 +390,46 @@ class RPCServer:
                     "trace": traceback.format_exc(),
                 },
             )
-            return
+            errored = True
+
+        # Map the loop's internal termination signal onto the frozen
+        # StopReason enum. The loop stashes it as ``state._stop_reason``
+        # (also read by StreamingHook); fall back to a public ``stop_reason``
+        # if a custom state exposes one.
+        raw_reason = getattr(state, "_stop_reason", None)
+        if raw_reason is None:
+            raw_reason = getattr(state, "stop_reason", None)
+
+        # The loop swallows LLM failures (retried, then a terminal
+        # ``__llm_error__`` step) without raising or setting an error
+        # ``stop_reason``. Surface that as an error termination too: emit the
+        # diagnostic ``error`` frame (parity with the hard-exception path) and
+        # map to StopReason.ERROR.
+        if not errored:
+            _err_step = _terminal_llm_error_step(state)
+            if _err_step is not None:
+                _emit(
+                    self.out_stream,
+                    {
+                        "event": "error",
+                        "message": getattr(_err_step.tool_result, "error", None)
+                        or "LLM call failed after all retry attempts",
+                    },
+                )
+                errored = True
+
+        reason = map_stop_reason(raw_reason, errored=errored)
+        # ``output`` is the structured payload of the accepted done() sentinel
+        # (None when the loop stopped without an accepted done()).
+        output = done_output(state, tool_name=config.done_tool)
         _emit(
             self.out_stream,
-            {"event": "done", "stop_reason": stop_reason, "steps": steps_emitted},
+            {
+                "event": "done",
+                "stop_reason": reason.value,
+                "steps": steps_emitted,
+                "output": output,
+            },
         )
 
     # ── dispatch loop ────────────────────────────────────────────

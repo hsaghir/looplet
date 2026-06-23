@@ -15,7 +15,6 @@ without FFI. The protocol is the smallest thing that works:
   - ``{"cmd": "run", "task": {...}, "max_steps": 30,
     "checkpoint_dir": "..."}``
     Execute one loop. Streams ``step`` events back, then a ``done``
-<<<<<<< HEAD
     event with the stop reason. When ``checkpoint_dir`` is given, the
     loop saves a :class:`~looplet.checkpoint.Checkpoint` after every step
     and the server emits a ``checkpoint`` frame for each write.
@@ -26,15 +25,12 @@ without FFI. The protocol is the smallest thing that works:
     from a ``checkpoint`` frame) or a bare id (``"step_N"``) resolved
     against ``checkpoint_dir``. The loop restores the saved session log
     and continues at step ``N+1`` — even in a brand-new process.
-=======
-    event with the stop reason.
   - ``{"cmd": "cancel"}`` — cooperatively cancel the *in-flight* ``run``.
     May arrive while a ``run`` is streaming: a small reader thread reads
     stdin during the run and trips the loop's
     :class:`~looplet.types.CancelToken`, so the loop stops between turns
     and ends with ``done`` carrying ``stop_reason="cancelled"``. A
     ``cancel`` received when no run is active is a harmless no-op.
->>>>>>> b0a871a (RPC: cooperative mid-run cancel command (task 1.4))
   - ``{"cmd": "quit"}`` — terminate cleanly.
 
 * **Outbound events** (server → stdout):
@@ -475,16 +471,41 @@ class RPCServer:
         config = self.preset.config
         changes: dict[str, Any] = {}
         if config.max_steps != max_steps:
-<<<<<<< HEAD
             changes["max_steps"] = max_steps
         if checkpoint_dir is not None:
             changes["checkpoint_dir"] = checkpoint_dir
         if initial_checkpoint is not None:
             changes["initial_checkpoint"] = initial_checkpoint
+
+        # Install the cancel token the in-flight run will observe. Reuse a
+        # preset-supplied token (so a token handed in via the preset is the one
+        # we trip) and otherwise mint a fresh one, folding it into the same
+        # ``replace`` as the other run overrides. The loop polls
+        # ``config.cancel_token.is_cancelled`` between turns, so flipping this
+        # token from the reader thread stops the run cooperatively without
+        # touching ``composable_loop``.
+        token = config.cancel_token
+        if token is None:
+            token = CancelToken()
+            changes["cancel_token"] = token
         if changes:
             config = replace(config, **changes)
 
         state = DefaultState(max_steps=max_steps)
+
+        # Start the stdin reader (idempotent) and a per-run watcher that trips
+        # the token when a ``{"cmd":"cancel"}`` frame arrives mid-run.
+        self._ensure_reader()
+        self._active_cancel_token = token
+        self._deferred = []
+        stop_watcher = threading.Event()
+        watcher = threading.Thread(
+            target=self._cancel_watcher,
+            args=(token, stop_watcher),
+            name="rpc-cancel-watcher",
+            daemon=True,
+        )
+        watcher.start()
 
         # Checkpoint-frame emission. The loop writes a JSON checkpoint after
         # every step when ``checkpoint_dir`` is set (keyed ``step_N``). We never
@@ -518,35 +539,6 @@ class RPCServer:
                         "path": str(p),
                     },
                 )
-=======
-            config = replace(config, max_steps=max_steps)
-
-        # Install the cancel token the in-flight run will observe. Reuse an
-        # orchestrator-pre-installed token (so a token handed in via the
-        # preset is the one we trip) and otherwise mint a fresh one. The loop
-        # polls ``config.cancel_token.is_cancelled`` between turns, so flipping
-        # this token from the reader thread stops the run cooperatively without
-        # touching ``composable_loop``.
-        token = config.cancel_token
-        if token is None:
-            token = CancelToken()
-            config = replace(config, cancel_token=token)
-        state = DefaultState(max_steps=max_steps)
-
-        # Start the stdin reader (idempotent) and a per-run watcher that trips
-        # the token when a ``{"cmd":"cancel"}`` frame arrives mid-run.
-        self._ensure_reader()
-        self._active_cancel_token = token
-        self._deferred = []
-        stop_watcher = threading.Event()
-        watcher = threading.Thread(
-            target=self._cancel_watcher,
-            args=(token, stop_watcher),
-            name="rpc-cancel-watcher",
-            daemon=True,
-        )
-        watcher.start()
->>>>>>> b0a871a (RPC: cooperative mid-run cancel command (task 1.4))
 
         steps_emitted = 0
         errored = False

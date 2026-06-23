@@ -98,6 +98,7 @@ class TestOpenAIBackendFromEnv:
     def test_api_key_only_no_longer_requires_base_url(self) -> None:
         # Previously raised TypeError; should now construct successfully
         # by handing api_key to the OpenAI client.
+        pytest.importorskip("openai")  # optional extra; CI installs it
         with mock.patch("openai.OpenAI", _FakeOpenAIClient):
             llm = OpenAIBackend(api_key="sk-test", model="gpt-4o-mini")
             assert _FakeOpenAIClient.last_kwargs == {"api_key": "sk-test"}
@@ -106,12 +107,14 @@ class TestOpenAIBackendFromEnv:
     def test_no_args_delegates_env_to_openai_client(self) -> None:
         # When neither base_url nor api_key are passed, OpenAIBackend should
         # construct the client with no kwargs and let it read OPENAI_API_KEY itself.
+        pytest.importorskip("openai")  # optional extra; CI installs it
         with mock.patch("openai.OpenAI", _FakeOpenAIClient):
             llm = OpenAIBackend(model="gpt-4o")
             assert _FakeOpenAIClient.last_kwargs == {}
             assert llm._model == "gpt-4o"
 
     def test_from_env_reads_all_three_vars(self) -> None:
+        pytest.importorskip("openai")  # optional extra; CI installs it
         env = {
             "OPENAI_API_KEY": "sk-env",
             "OPENAI_BASE_URL": "http://proxy/v1",
@@ -129,6 +132,7 @@ class TestOpenAIBackendFromEnv:
         assert llm._model == "llama3"
 
     def test_from_env_explicit_model_wins(self) -> None:
+        pytest.importorskip("openai")  # optional extra; CI installs it
         env = {
             "OPENAI_API_KEY": "sk-test",
             "OPENAI_MODEL": "from-env",
@@ -143,6 +147,7 @@ class TestOpenAIBackendFromEnv:
 
 class TestAnthropicBackendFromEnv:
     def test_from_env_reads_key_and_model(self) -> None:
+        pytest.importorskip("anthropic")  # optional extra; CI installs it
         env = {
             "ANTHROPIC_API_KEY": "sk-ant-env",
             "ANTHROPIC_MODEL": "claude-test-2",

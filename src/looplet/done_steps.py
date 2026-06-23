@@ -39,7 +39,7 @@ about ``done()``'s arg shape.
 
 from __future__ import annotations
 
-from typing import Iterator
+from typing import Any, Iterator
 
 from looplet.types import Step
 
@@ -48,6 +48,7 @@ __all__ = [
     "last_accepted_done",
     "last_rejected_done",
     "is_rejected_done",
+    "done_output",
 ]
 
 
@@ -120,3 +121,26 @@ def last_rejected_done(
         if is_rejected_done(step, tool_name=tool_name):
             return step
     return None
+
+
+def done_output(
+    state: object,
+    *,
+    tool_name: str = _DEFAULT_DONE_TOOL,
+) -> Any | None:
+    """Return the structured output of the accepted ``done()`` sentinel.
+
+    This is the payload an out-of-process consumer (e.g. the RPC ``done``
+    event) reports as the run's final ``output``: the
+    :attr:`~looplet.types.ToolResult.data` of the most recent *accepted*
+    ``done()`` step.  Returns ``None`` when the loop stopped without an
+    accepted ``done()`` (budget/stagnation/cancel/error, or a ``done()``
+    that a quality gate rejected).
+
+    Thin wrapper over :func:`last_accepted_done` so callers don't have to
+    reach through ``step.tool_result.data`` themselves.
+    """
+    step = last_accepted_done(state, tool_name=tool_name)
+    if step is None:
+        return None
+    return step.tool_result.data

@@ -15,6 +15,7 @@ without FFI. The protocol is the smallest thing that works:
   - ``{"cmd": "run", "task": {...}, "max_steps": 30,
     "checkpoint_dir": "..."}``
     Execute one loop. Streams ``step`` events back, then a ``done``
+<<<<<<< HEAD
     event with the stop reason. When ``checkpoint_dir`` is given, the
     loop saves a :class:`~looplet.checkpoint.Checkpoint` after every step
     and the server emits a ``checkpoint`` frame for each write.
@@ -25,6 +26,15 @@ without FFI. The protocol is the smallest thing that works:
     from a ``checkpoint`` frame) or a bare id (``"step_N"``) resolved
     against ``checkpoint_dir``. The loop restores the saved session log
     and continues at step ``N+1`` — even in a brand-new process.
+=======
+    event with the stop reason.
+  - ``{"cmd": "cancel"}`` — cooperatively cancel the *in-flight* ``run``.
+    May arrive while a ``run`` is streaming: a small reader thread reads
+    stdin during the run and trips the loop's
+    :class:`~looplet.types.CancelToken`, so the loop stops between turns
+    and ends with ``done`` carrying ``stop_reason="cancelled"``. A
+    ``cancel`` received when no run is active is a harmless no-op.
+>>>>>>> b0a871a (RPC: cooperative mid-run cancel command (task 1.4))
   - ``{"cmd": "quit"}`` — terminate cleanly.
 
 * **Outbound events** (server → stdout):
@@ -72,7 +82,9 @@ from __future__ import annotations
 
 import importlib
 import json
+import queue
 import sys
+import threading
 import traceback
 from dataclasses import dataclass, field, replace
 from enum import Enum
@@ -82,7 +94,7 @@ from typing import Any, Callable, Iterable, TextIO
 from looplet.cartridge import cartridge_to_preset
 from looplet.done_steps import done_output
 from looplet.loop import composable_loop
-from looplet.types import DefaultState
+from looplet.types import CancelToken, DefaultState
 
 __all__ = [
     "RPCServer",
@@ -91,6 +103,11 @@ __all__ = [
     "map_stop_reason",
     "main",
 ]
+
+#: Sentinel pushed onto the inbound queue when stdin reaches EOF, so both the
+#: command dispatcher and a run's cancel watcher can recognise end-of-stream
+#: without confusing it with an empty line.
+_EOF = object()
 
 
 def _emit(out: TextIO, payload: dict[str, Any]) -> None:
@@ -330,6 +347,19 @@ class RPCServer:
     preset: Any = None
     backend: Any = None
 
+    # ── stdin reader machinery (single source of truth for inbound lines) ──
+    # A single daemon thread reads ``in_stream`` line-by-line into ``_inbox``.
+    # Outside a run, :meth:`serve_forever` consumes the queue to dispatch
+    # commands. *During* a run, a per-run cancel watcher consumes it to trip
+    # the in-flight :class:`~looplet.types.CancelToken` on ``{"cmd":"cancel"}``;
+    # any non-cancel line it pulls is deferred back for the dispatcher. Only
+    # one consumer is ever active at a time (the run executes synchronously on
+    # the dispatcher thread), so there is no read race on stdin.
+    _inbox: "queue.Queue[Any] | None" = field(default=None, init=False, repr=False)
+    _reader_thread: "threading.Thread | None" = field(default=None, init=False, repr=False)
+    _active_cancel_token: Any = field(default=None, init=False, repr=False)
+    _deferred: list[str] = field(default_factory=list, init=False, repr=False)
+
     # ── command handlers ─────────────────────────────────────────
 
     def cmd_load_workspace(self, msg: dict[str, Any]) -> None:
@@ -445,6 +475,7 @@ class RPCServer:
         config = self.preset.config
         changes: dict[str, Any] = {}
         if config.max_steps != max_steps:
+<<<<<<< HEAD
             changes["max_steps"] = max_steps
         if checkpoint_dir is not None:
             changes["checkpoint_dir"] = checkpoint_dir
@@ -487,6 +518,35 @@ class RPCServer:
                         "path": str(p),
                     },
                 )
+=======
+            config = replace(config, max_steps=max_steps)
+
+        # Install the cancel token the in-flight run will observe. Reuse an
+        # orchestrator-pre-installed token (so a token handed in via the
+        # preset is the one we trip) and otherwise mint a fresh one. The loop
+        # polls ``config.cancel_token.is_cancelled`` between turns, so flipping
+        # this token from the reader thread stops the run cooperatively without
+        # touching ``composable_loop``.
+        token = config.cancel_token
+        if token is None:
+            token = CancelToken()
+            config = replace(config, cancel_token=token)
+        state = DefaultState(max_steps=max_steps)
+
+        # Start the stdin reader (idempotent) and a per-run watcher that trips
+        # the token when a ``{"cmd":"cancel"}`` frame arrives mid-run.
+        self._ensure_reader()
+        self._active_cancel_token = token
+        self._deferred = []
+        stop_watcher = threading.Event()
+        watcher = threading.Thread(
+            target=self._cancel_watcher,
+            args=(token, stop_watcher),
+            name="rpc-cancel-watcher",
+            daemon=True,
+        )
+        watcher.start()
+>>>>>>> b0a871a (RPC: cooperative mid-run cancel command (task 1.4))
 
         steps_emitted = 0
         errored = False
@@ -521,6 +581,14 @@ class RPCServer:
                 },
             )
             errored = True
+        finally:
+            # Wind the watcher down before emitting ``done`` so no late frame
+            # can follow the terminal one. The watcher only ever blocks on a
+            # short queue poll, so the join returns promptly (no hang/leak).
+            stop_watcher.set()
+            watcher.join(timeout=2.0)
+            self._requeue_deferred()
+            self._active_cancel_token = None
 
         # The final checkpoint is written during loop teardown, after the last
         # step is yielded — drain once more so it is never missed.
@@ -566,18 +634,109 @@ class RPCServer:
             },
         )
 
+    # ── stdin reader + mid-run cancel watcher ────────────────────
+
+    def _ensure_reader(self) -> None:
+        """Start the single stdin reader thread once, lazily.
+
+        The reader pushes each inbound line onto :attr:`_inbox` and an
+        :data:`_EOF` sentinel at end-of-stream, then exits. It is a daemon so a
+        process blocked on stdin never wedges interpreter shutdown.
+        """
+        if self._reader_thread is not None:
+            return
+        self._inbox = queue.Queue()
+        self._reader_thread = threading.Thread(
+            target=self._pump_stdin, name="rpc-stdin-reader", daemon=True
+        )
+        self._reader_thread.start()
+
+    def _pump_stdin(self) -> None:
+        inbox = self._inbox
+        assert inbox is not None  # set by _ensure_reader before the thread starts
+        try:
+            for line in self._iter_lines():
+                inbox.put(line)
+        finally:
+            inbox.put(_EOF)
+
+    def _cancel_watcher(self, token: Any, stop_event: threading.Event) -> None:
+        """Consume :attr:`_inbox` during a run, tripping ``token`` on a
+        ``{"cmd":"cancel"}`` frame.
+
+        Blocks only on a short queue poll, so :meth:`cmd_run` can stop it
+        promptly via ``stop_event``. Any non-cancel line pulled here is set
+        aside in :attr:`_deferred` and handed back to :meth:`serve_forever`
+        after the run; an :data:`_EOF` sentinel is put back so the dispatcher
+        still observes end-of-stream.
+        """
+        inbox = self._inbox
+        if inbox is None:
+            return
+        while not stop_event.is_set():
+            try:
+                item = inbox.get(timeout=0.05)
+            except queue.Empty:
+                continue
+            if item is _EOF:
+                inbox.put(_EOF)  # leave EOF for the dispatcher
+                return
+            line = item.strip() if isinstance(item, str) else ""
+            if not line:
+                continue
+            try:
+                parsed = json.loads(line)
+            except json.JSONDecodeError:
+                self._deferred.append(item)
+                continue
+            if isinstance(parsed, dict) and parsed.get("cmd") == "cancel":
+                token.cancel()
+                # Keep draining (cancel is idempotent) until the run ends.
+            else:
+                self._deferred.append(item)
+
+    def _requeue_deferred(self) -> None:
+        """Return watcher-pulled non-cancel lines to the inbox, preserving
+        order ahead of anything the reader queued after them."""
+        if not self._deferred or self._inbox is None:
+            self._deferred = []
+            return
+        remaining: list[Any] = []
+        while True:
+            try:
+                remaining.append(self._inbox.get_nowait())
+            except queue.Empty:
+                break
+        for item in self._deferred:
+            self._inbox.put(item)
+        for item in remaining:
+            self._inbox.put(item)
+        self._deferred = []
+
     # ── dispatch loop ────────────────────────────────────────────
 
     def serve_forever(self) -> int:
-        """Block reading commands until ``quit`` or EOF."""
+        """Block reading commands until ``quit`` or EOF.
+
+        Commands are consumed from :attr:`_inbox`, fed by the single stdin
+        reader thread (:meth:`_ensure_reader`). During a ``run`` the reader
+        keeps filling the inbox and the run's cancel watcher consumes it; any
+        non-cancel line the watcher pulls is handed back here afterwards, so
+        command ordering is preserved.
+        """
         handlers: dict[str, str] = {
             "load_workspace": "cmd_load_workspace",
             "set_backend": "cmd_set_backend",
             "run": "cmd_run",
             "resume": "cmd_resume",
         }
-        for line in self._iter_lines():
-            line = line.strip()
+        self._ensure_reader()
+        assert self._inbox is not None
+        while True:
+            item = self._inbox.get()
+            if item is _EOF:
+                break
+            line = item.strip() if isinstance(item, str) else ""
             if not line:
                 continue
             try:
@@ -589,6 +748,10 @@ class RPCServer:
             if cmd == "quit":
                 _emit(self.out_stream, {"event": "ready", "quit": True})
                 return 0
+            if cmd == "cancel":
+                # A cancel observed here has no in-flight run to stop (a run's
+                # watcher consumes cancels while one is active). No-op.
+                continue
             handler_name = handlers.get(cmd or "")
             if handler_name is None:
                 _emit(self.out_stream, {"event": "error", "message": f"unknown cmd: {cmd!r}"})

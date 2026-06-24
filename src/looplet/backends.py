@@ -802,3 +802,43 @@ class AsyncAnthropicBackend:
         async with self._client.messages.stream(**kwargs) as stream:
             async for text in stream.text_stream:
                 yield text
+
+
+# ── Turnkey factory for the RPC `set_backend` wire ───────────────────
+
+
+def make_backend(*, provider: str | None = None, model: str | None = None) -> Any:
+    """Build an :class:`LLMBackend` from the environment.
+
+    A module-level factory so a non-Python orchestrator can wire a real
+    backend over the RPC ``set_backend`` command without writing glue::
+
+        {"cmd": "set_backend", "factory": "looplet.backends:make_backend",
+         "kwargs": {"model": "claude-sonnet-4-20250514"}}
+
+    ``provider`` selects the adapter; when omitted it is read from
+    ``LOOPLET_PROVIDER`` and finally auto-detected from whichever API key is
+    present (``ANTHROPIC_API_KEY`` → anthropic, ``OPENAI_API_KEY`` → openai).
+    ``model`` overrides the provider's env/default model.
+
+    Raises ``ValueError`` with an actionable message when no provider can be
+    resolved, so the orchestrator gets a clear ``error`` frame instead of an
+    opaque import failure.
+    """
+    import os
+
+    prov = (
+        provider
+        or os.environ.get("LOOPLET_PROVIDER")
+        or ("anthropic" if os.environ.get("ANTHROPIC_API_KEY") else "")
+        or ("openai" if os.environ.get("OPENAI_API_KEY") or os.environ.get("OPENAI_BASE_URL") else "")
+    ).lower()
+    if prov in ("anthropic", "claude"):
+        return AnthropicBackend.from_env(model=model)
+    if prov in ("openai", "oai"):
+        return OpenAIBackend.from_env(model=model)
+    raise ValueError(
+        "make_backend(): could not resolve a provider. Pass provider='anthropic'|'openai' "
+        "(or kwargs.provider over RPC), set LOOPLET_PROVIDER, or export ANTHROPIC_API_KEY / "
+        "OPENAI_API_KEY (or OPENAI_BASE_URL for a local proxy)."
+    )

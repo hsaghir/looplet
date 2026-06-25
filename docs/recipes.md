@@ -31,6 +31,42 @@ llm = OpenAIBackend(
 )
 ```
 
+## Local LLM via llama-cpp-python
+
+Install the OpenAI-compatible server extra and start it with a local GGUF
+model:
+
+```bash
+python -m pip install "llama-cpp-python[server]"
+python -m llama_cpp.server \
+  --model ./models/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf \
+  --host 127.0.0.1 \
+  --port 8080
+```
+
+Point `looplet` at the server's `/v1` endpoint:
+
+```bash
+export OPENAI_BASE_URL=http://127.0.0.1:8080/v1
+export OPENAI_API_KEY=local
+export OPENAI_MODEL=local-model
+```
+
+```python
+import os
+from looplet.backends import OpenAIBackend
+
+llm = OpenAIBackend(
+    base_url=os.environ["OPENAI_BASE_URL"],
+    api_key=os.environ["OPENAI_API_KEY"],
+    model=os.environ["OPENAI_MODEL"],
+)
+```
+
+If tool calls are returned as plain text instead of native tool-use blocks,
+run `looplet doctor` against the same environment to confirm whether the
+server/model chat template supports the OpenAI-compatible tool schema.
+
 ## Diagnose your local setup
 
 ```bash

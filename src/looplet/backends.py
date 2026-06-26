@@ -831,7 +831,11 @@ def make_backend(*, provider: str | None = None, model: str | None = None) -> An
         provider
         or os.environ.get("LOOPLET_PROVIDER")
         or ("anthropic" if os.environ.get("ANTHROPIC_API_KEY") else "")
-        or ("openai" if os.environ.get("OPENAI_API_KEY") or os.environ.get("OPENAI_BASE_URL") else "")
+        or (
+            "openai"
+            if os.environ.get("OPENAI_API_KEY") or os.environ.get("OPENAI_BASE_URL")
+            else ""
+        )
     ).lower()
     if prov in ("anthropic", "claude"):
         return AnthropicBackend.from_env(model=model)

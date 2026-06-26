@@ -246,20 +246,26 @@ def _capabilities(preset: Any) -> dict[str, Any]:
     * ``events`` / ``cancel`` — always offered by the RPC server itself
       (every loop emits :class:`~looplet.events.LifecycleEvent`\\ s and
       accepts a cancel token), so they are unconditionally true.
-    * ``checkpoint`` — true when the preset persists checkpoints
-      (``config.checkpoint_dir`` is set).
+    * ``checkpoint`` — always true: like events/cancel it is offered by the
+      RPC server itself. The loop checkpoints *any* run when the caller passes
+      a per-call ``checkpoint_dir`` to ``run``/``resume`` (``config.checkpoint_dir``
+      only sets the auto-default), so an orchestrator must not gate crash-recovery
+      on whether a cartridge happened to set ``checkpoint_dir``.
     * ``cost`` — true when a cost sink is wired.
     * ``permission_authority`` — true when a permission hook (a
       ``PermissionEngine``-backed or LEP hook) is present.
     * ``stop_reasons`` — the frozen termination enum the ``done`` event
       reports.
     """
-    config = getattr(preset, "config", None)
     hooks = getattr(preset, "hooks", None) or []
     return {
         "events": True,
         "cancel": True,
-        "checkpoint": bool(getattr(config, "checkpoint_dir", None)),
+        # A server capability like events/cancel: the loop checkpoints ANY run
+        # given a per-call ``checkpoint_dir`` on run/resume (config.checkpoint_dir
+        # is only the auto-default), so advertise it unconditionally. Gating it on
+        # the cartridge config made orchestrators wrongly skip crash-recovery.
+        "checkpoint": True,
         "cost": _has_cost_sink(preset),
         "permission_authority": _has_permission_authority(hooks),
         "stop_reasons": list(STOP_REASONS),

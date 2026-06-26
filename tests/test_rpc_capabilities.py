@@ -113,14 +113,14 @@ def test_capabilities_stop_reasons_enum(tmp_path: Path) -> None:
 
 
 def test_plain_cartridge_capability_defaults(tmp_path: Path) -> None:
-    """A vanilla scaffolded cartridge has no permission hook, cost sink,
-    or checkpoint dir — but the server always offers events + cancel."""
+    """A vanilla scaffolded cartridge has no permission hook or cost sink,
+    but the server always offers events + cancel + checkpoint."""
     ws = _scaffold(tmp_path)
     preset = cartridge_to_preset(str(ws), runtime={"workspace": str(tmp_path)})
     caps = _capabilities(preset)
     assert caps["permission_authority"] is False
     assert caps["cost"] is False
-    assert caps["checkpoint"] is False
+    assert caps["checkpoint"] is True
     assert caps["events"] is True
     assert caps["cancel"] is True
 
@@ -160,8 +160,11 @@ def test_cost_true_with_cost_tracker_resource() -> None:
     assert caps["cost"] is True
 
 
-def test_checkpoint_reflects_checkpoint_dir(tmp_path: Path) -> None:
-    assert _capabilities(_FakePreset())["checkpoint"] is False
+def test_checkpoint_is_a_server_capability(tmp_path: Path) -> None:
+    # checkpoint is offered by the RPC server for ANY run (via a per-call
+    # checkpoint_dir on run/resume), so it is advertised unconditionally —
+    # whether or not the cartridge sets config.checkpoint_dir.
+    assert _capabilities(_FakePreset())["checkpoint"] is True
     cfg = LoopConfig(max_steps=5, checkpoint_dir=str(tmp_path))
     assert _capabilities(_FakePreset(config=cfg))["checkpoint"] is True
 

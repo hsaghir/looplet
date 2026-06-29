@@ -841,8 +841,30 @@ def make_backend(*, provider: str | None = None, model: str | None = None) -> An
         return AnthropicBackend.from_env(model=model)
     if prov in ("openai", "oai"):
         return OpenAIBackend.from_env(model=model)
+    # OpenAI-compatible proxy (Copilot proxy / local endpoint) — the path the
+    # looplet-tax README documents. Any host with these set drives over RPC
+    # with no glue, no provider= needed.
+    base = os.environ.get("COPILOT_PROXY_URL") or os.environ.get("LOOPLET_TAX_LLM_BASE_URL")
+    key = os.environ.get("COPILOT_PROXY_KEY") or os.environ.get("LOOPLET_TAX_LLM_API_KEY")
+    if prov in ("copilot", "proxy") or base or key:
+        return OpenAIBackend(
+            base_url=base, api_key=key,
+            model=model or os.environ.get("LOOPLET_TAX_LLM_MODEL") or "gpt-4o",
+        )
+    # Keyless fallback (opt-in): a deterministic mock so the RPC path is runnable
+    # on ANY repo/CI without secrets. Off by default so prod fails loud.
+    if os.environ.get("LOOPLET_ALLOW_MOCK", "").lower() in ("1", "true", "yes"):
+        import json  # noqa: PLC0415
+
+        from looplet.testing import MockLLMBackend  # noqa: PLC0415
+
+        return MockLLMBackend(
+            responses=[json.dumps({"tool": "done", "args": {"summary": "keyless mock"}, "reasoning": "mock"})],
+            cycle=True,
+        )
     raise ValueError(
         "make_backend(): could not resolve a provider. Pass provider='anthropic'|'openai' "
-        "(or kwargs.provider over RPC), set LOOPLET_PROVIDER, or export ANTHROPIC_API_KEY / "
-        "OPENAI_API_KEY (or OPENAI_BASE_URL for a local proxy)."
+        "(or kwargs.provider over RPC), set LOOPLET_PROVIDER, export ANTHROPIC_API_KEY / "
+        "OPENAI_API_KEY (or OPENAI_BASE_URL / COPILOT_PROXY_URL for a proxy), or set "
+        "LOOPLET_ALLOW_MOCK=1 for a keyless deterministic mock."
     )

@@ -841,8 +841,8 @@ def make_backend(*, provider: str | None = None, model: str | None = None) -> An
         return AnthropicBackend.from_env(model=model)
     if prov in ("openai", "oai"):
         return OpenAIBackend.from_env(model=model)
-    # OpenAI-compatible proxy (Copilot proxy / local endpoint) — the path the
-    # looplet-tax README documents. Any host with these set drives over RPC
+    # OpenAI-compatible proxy (Copilot proxy / local endpoint)
+    # Any host with these set drives over RPC
     # with no glue, no provider= needed.
     base = os.environ.get("COPILOT_PROXY_URL") or os.environ.get("LOOPLET_TAX_LLM_BASE_URL")
     key = os.environ.get("COPILOT_PROXY_KEY") or os.environ.get("LOOPLET_TAX_LLM_API_KEY")

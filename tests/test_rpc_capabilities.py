@@ -30,6 +30,7 @@ EXPECTED_KEYS = {
     "cost",
     "permission_authority",
     "stop_reasons",
+    "protocol",
 }
 
 # The frozen stop-reason enum (formalised as a StopReason enum in §1.3).

@@ -161,6 +161,12 @@ class StopReason(str, Enum):
 #: single source of truth the ``done`` event maps onto.
 STOP_REASONS: tuple[str, ...] = tuple(r.value for r in StopReason)
 
+#: RPC contract version, surfaced in the handshake ``capabilities.protocol`` so
+#: an orchestrator can detect a stale/mismatched checkout instead of mis-reading
+#: the API (the dogfood F1: pre-/post-#90 rpc.py differed silently). Bump on any
+#: wire-incompatible change.
+RPC_PROTOCOL_VERSION = "1.0"
+
 # Loop-internal ``stop_reason`` strings that denote step-budget exhaustion
 # (the contract's ``max_steps``) rather than a resource budget. The loop seeds
 # ``stop_reason = "budget_exhausted"`` and leaves it untouched when the
@@ -261,6 +267,9 @@ def _capabilities(preset: Any) -> dict[str, Any]:
     return {
         "events": True,
         "cancel": True,
+        # Contract/version stamp: lets an orchestrator detect a stale checkout
+        # or protocol mismatch from the handshake instead of mis-reading the API.
+        "protocol": RPC_PROTOCOL_VERSION,
         # A server capability like events/cancel: the loop checkpoints ANY run
         # given a per-call ``checkpoint_dir`` on run/resume (config.checkpoint_dir
         # is only the auto-default), so advertise it unconditionally. Gating it on

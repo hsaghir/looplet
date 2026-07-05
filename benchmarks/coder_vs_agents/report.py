@@ -51,8 +51,8 @@ def main() -> int:
         cp_flag = "✅" if cp.get("passed") else "❌"
         out.append(
             f"| {t} | {kinds[t]} "
-            f"| {lp_flag} | {_fmt(lp.get('wall_s'),'s')} | {_fmt(lp.get('steps'))} "
-            f"| {cp_flag} | {_fmt(cp.get('wall_s'),'s')} | {_fmt(cp.get('credits'))} "
+            f"| {lp_flag} | {_fmt(lp.get('wall_s'), 's')} | {_fmt(lp.get('steps'))} "
+            f"| {cp_flag} | {_fmt(cp.get('wall_s'), 's')} | {_fmt(cp.get('credits'))} "
             f"| {_fmt(cp.get('in_tokens'))}/{_fmt(cp.get('out_tokens'))} |"
         )
 
@@ -76,7 +76,7 @@ def main() -> int:
         nk = sum(1 for t in tasks if kinds[t] == kind)
         out.append(f"| — {kind} | {lpk}/{nk} | {cpk}/{nk} |")
     out.append(f"| Total wall time | {lwall:.1f}s | {cwall:.1f}s |")
-    out.append(f"| Avg wall / task | {lwall/max(ln,1):.1f}s | {cwall/max(cn,1):.1f}s |")
+    out.append(f"| Avg wall / task | {lwall / max(ln, 1):.1f}s | {cwall / max(cn, 1):.1f}s |")
     ccred = sum(r["credits"] or 0 for r in crecs)
     out.append(f"| Total AI credits (copilot self-report) | — | {ccred:.1f} |")
     cin = sum(r["in_tokens"] or 0 for r in crecs)
@@ -93,8 +93,10 @@ def main() -> int:
     if fails:
         out.append("\n## Failures\n")
         for r in fails:
-            out.append(f"- **{r['tool']} / {r['task']}**: {r['detail']}"
-                       + (" (timeout)" if r["timed_out"] else ""))
+            out.append(
+                f"- **{r['tool']} / {r['task']}**: {r['detail']}"
+                + (" (timeout)" if r["timed_out"] else "")
+            )
     else:
         out.append("\n_All tasks passed for both tools._\n")
 

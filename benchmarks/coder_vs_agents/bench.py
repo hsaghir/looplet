@@ -92,7 +92,7 @@ def run_looplet(task: dict, ws: Path) -> dict:
     for line in raw.splitlines():
         if line.startswith("LOOPLET_RESULT "):
             try:
-                metrics = json.loads(line[len("LOOPLET_RESULT "):])
+                metrics = json.loads(line[len("LOOPLET_RESULT ") :])
             except Exception:  # noqa: BLE001
                 pass
     return {
@@ -120,9 +120,15 @@ def run_copilot(task: dict, ws: Path) -> dict:
     for k in ("AI_AGENT", "COPILOT_AGENT", "COPILOT_DEBUG_NONCE"):
         env.pop(k, None)
     cmd = [
-        "copilot", "-p", task["prompt"],
-        "--allow-all", "--model", MODEL,
-        "--log-level", "none", "--no-color",
+        "copilot",
+        "-p",
+        task["prompt"],
+        "--allow-all",
+        "--model",
+        MODEL,
+        "--log-level",
+        "none",
+        "--no-color",
     ]
     t0 = time.time()
     timed_out = False
@@ -177,7 +183,7 @@ def main(argv: list[str]) -> int:
     started = datetime.now(timezone.utc).isoformat()
 
     for task in tasks:
-        print(f"\n{'='*70}\n[{task['id']}] {task['title']}  ({task['kind']})")
+        print(f"\n{'=' * 70}\n[{task['id']}] {task['title']}  ({task['kind']})")
         for tool in TOOLS:
             ws = _fresh_ws(task["id"], tool)
             _seed(ws, task)
@@ -187,12 +193,16 @@ def main(argv: list[str]) -> int:
                 passed, detail = task["verify"](ws, LOOPLET_PY)
             except Exception as exc:  # noqa: BLE001
                 passed, detail = False, f"verifier crashed: {type(exc).__name__}: {exc}"
-            rec.update({"task": task["id"], "kind": task["kind"], "passed": bool(passed), "detail": detail})
+            rec.update(
+                {"task": task["id"], "kind": task["kind"], "passed": bool(passed), "detail": detail}
+            )
             results.append(rec)
             flag = "PASS" if passed else "FAIL"
             extra = f"{rec['steps']} steps" if rec.get("steps") else ""
             to = " TIMEOUT" if rec["timed_out"] else ""
-            print(f"\r  → {tool:8s} {flag}  {rec['wall_s']:6.1f}s  {extra:10s}{to}  — {detail[:80]}")
+            print(
+                f"\r  → {tool:8s} {flag}  {rec['wall_s']:6.1f}s  {extra:10s}{to}  — {detail[:80]}"
+            )
 
     # Merge with any existing results so incremental runs accumulate
     # (a re-run of a (task, tool) pair replaces the old record).
@@ -227,13 +237,15 @@ def _summary(results: list[dict]) -> None:
     by_tool: dict[str, list[dict]] = {}
     for r in results:
         by_tool.setdefault(r["tool"], []).append(r)
-    print(f"\n{'='*70}\nSUMMARY")
+    print(f"\n{'=' * 70}\nSUMMARY")
     for tool, recs in by_tool.items():
         n = len(recs)
         passed = sum(r["passed"] for r in recs)
         wall = sum(r["wall_s"] for r in recs)
-        print(f"  {tool:8s}  {passed}/{n} passed   total wall {wall:6.1f}s   "
-              f"avg {wall/max(n,1):5.1f}s")
+        print(
+            f"  {tool:8s}  {passed}/{n} passed   total wall {wall:6.1f}s   "
+            f"avg {wall / max(n, 1):5.1f}s"
+        )
 
 
 if __name__ == "__main__":

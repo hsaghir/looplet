@@ -124,10 +124,16 @@ print("OK")
     # CLI persistence (bonus, must not crash the gate)
     cli_ok = False
     try:
-        subprocess.run([py, "kvstore.py", "set", "foo", "bar"], cwd=ws,
-                       capture_output=True, text=True, timeout=30)
-        g = subprocess.run([py, "kvstore.py", "get", "foo"], cwd=ws,
-                           capture_output=True, text=True, timeout=30)
+        subprocess.run(
+            [py, "kvstore.py", "set", "foo", "bar"],
+            cwd=ws,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        g = subprocess.run(
+            [py, "kvstore.py", "get", "foo"], cwd=ws, capture_output=True, text=True, timeout=30
+        )
         cli_ok = "bar" in (g.stdout or "")
     except Exception:  # noqa: BLE001
         cli_ok = False
@@ -138,7 +144,7 @@ print("OK")
 
 
 # ── H3: refactor a monolith, keep tests green, add a feature ───────
-_APP = '''# messy monolithic account ledger
+_APP = """# messy monolithic account ledger
 accounts = {}
 
 def create_account(name):
@@ -168,9 +174,9 @@ def transfer(src, dst, amount):
     withdraw(src, amount)
     deposit(dst, amount)
     return (accounts[src], accounts[dst])
-'''
+"""
 
-_TEST_APP = '''import pytest
+_TEST_APP = """import pytest
 import app
 
 def setup_function(fn):
@@ -195,14 +201,19 @@ def test_insufficient():
     app.create_account("c")
     with pytest.raises(ValueError):
         app.withdraw("c", 10)
-'''
+"""
 
 
 def v_h3(ws: Path, py: str):
     # 1) restore the pristine provided suite (agent must not weaken it) and run it
     (ws / "test_app.py").write_text(_TEST_APP)
-    r1 = subprocess.run([py, "-m", "pytest", "-q", "test_app.py"], cwd=ws,
-                        capture_output=True, text=True, timeout=120)
+    r1 = subprocess.run(
+        [py, "-m", "pytest", "-q", "test_app.py"],
+        cwd=ws,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
     provided_ok = r1.returncode == 0
     # 2) hidden feature test: history + undo_last
     code = r"""
@@ -221,15 +232,21 @@ print("OK")
     rc, out, err = _run(py, ws, code)
     feature_ok = rc == 0 and "OK" in out
     # 3) structural: did they actually split into modules?
-    modules = [p.name for p in ws.rglob("*.py")
-               if p.name not in ("test_app.py",) and not p.name.startswith("_")
-               and "__pycache__" not in str(p)]
+    modules = [
+        p.name
+        for p in ws.rglob("*.py")
+        if p.name not in ("test_app.py",)
+        and not p.name.startswith("_")
+        and "__pycache__" not in str(p)
+    ]
     refactored = len([m for m in modules if m != "app.py"]) >= 1
     ok = provided_ok and feature_ok
-    return ok, (f"provided_tests={'pass' if provided_ok else 'FAIL'} "
-                f"feature={'pass' if feature_ok else 'FAIL'} "
-                f"refactored={'yes' if refactored else 'no'}"
-                + ("" if feature_ok else f" :: {(err or out).strip()[-140:]}"))
+    return ok, (
+        f"provided_tests={'pass' if provided_ok else 'FAIL'} "
+        f"feature={'pass' if feature_ok else 'FAIL'} "
+        f"refactored={'yes' if refactored else 'no'}"
+        + ("" if feature_ok else f" :: {(err or out).strip()[-140:]}")
+    )
 
 
 # ── H4: mini regex engine (hard algorithm, no `re`) ────────────────

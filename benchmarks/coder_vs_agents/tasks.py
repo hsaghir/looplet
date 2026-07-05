@@ -91,7 +91,10 @@ def v_tests(ws: Path, py: str):
         return False, "no pytest.raises for divide-by-zero"
     p = subprocess.run(
         [py, "-m", "pytest", "-q", "test_calc.py"],
-        cwd=ws, capture_output=True, text=True, timeout=90,
+        cwd=ws,
+        capture_output=True,
+        text=True,
+        timeout=90,
     )
     out = p.stdout + p.stderr
     m = re.search(r"(\d+) passed", out)
@@ -267,7 +270,10 @@ TASKS = [
                     "orders": [
                         {"id": 1, "items": [{"qty": 2, "price": 9.99}, {"qty": 1, "price": 4.50}]},
                         {"id": 2, "items": [{"qty": 3, "price": 2.00}]},
-                        {"id": 3, "items": [{"qty": 1, "price": 100.00}, {"qty": 2, "price": 0.99}]},
+                        {
+                            "id": 3,
+                            "items": [{"qty": 1, "price": 100.00}, {"qty": 2, "price": 0.99}],
+                        },
                     ]
                 },
                 indent=2,
@@ -287,13 +293,7 @@ TASKS = [
         ),
         "seed": {
             "sales.csv": (
-                "region,amount\n"
-                "north,100\n"
-                "south,250\n"
-                "north,300\n"
-                "east,50\n"
-                "south,100\n"
-                "west,420\n"
+                "region,amount\nnorth,100\nsouth,250\nnorth,300\neast,50\nsouth,100\nwest,420\n"
             )
         },
         "verify": v_csv_region,

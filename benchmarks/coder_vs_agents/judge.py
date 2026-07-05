@@ -38,14 +38,17 @@ def _read_answer(task_id: str, tool: str) -> str:
 
 
 def _call(model: str, prompt: str) -> str:
-    body = json.dumps({
-        "model": model,
-        "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 600,
-        "temperature": 0,
-    }).encode()
+    body = json.dumps(
+        {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 600,
+            "temperature": 0,
+        }
+    ).encode()
     req = urllib.request.Request(
-        PROXY, data=body,
+        PROXY,
+        data=body,
         headers={"Content-Type": "application/json", "Authorization": "Bearer x"},
     )
     with urllib.request.urlopen(req, timeout=120) as r:
@@ -108,28 +111,47 @@ def main() -> int:
                 try:
                     raw = _call(judge, prompt)
                 except Exception as exc:  # noqa: BLE001
-                    judgments.append({"task": tid, "judge": judge, "order": order,
-                                      "error": f"{type(exc).__name__}: {exc}"})
+                    judgments.append(
+                        {
+                            "task": tid,
+                            "judge": judge,
+                            "order": order,
+                            "error": f"{type(exc).__name__}: {exc}",
+                        }
+                    )
                     continue
                 parsed = _parse(raw)
                 if not parsed:
-                    judgments.append({"task": tid, "judge": judge, "order": order,
-                                      "error": "unparseable", "raw": raw[:200]})
+                    judgments.append(
+                        {
+                            "task": tid,
+                            "judge": judge,
+                            "order": order,
+                            "error": "unparseable",
+                            "raw": raw[:200],
+                        }
+                    )
                     continue
                 a_total = _total(parsed.get("A", {}))
                 b_total = _total(parsed.get("B", {}))
                 w = parsed.get("winner", "tie")
                 win_tool = a_tool if w == "A" else b_tool if w == "B" else "tie"
-                judgments.append({
-                    "task": tid, "judge": judge, "order": order,
-                    "scores": {a_tool: a_total, b_tool: b_total},
-                    "criteria": {a_tool: parsed.get("A", {}), b_tool: parsed.get("B", {})},
-                    "winner": win_tool,
-                    "reason": parsed.get("reason", "")[:200],
-                })
-                print(f"  {tid:18s} {judge:22s} order{order}  "
-                      f"looplet={parsed.get('A' if a_tool=='looplet' else 'B',{})}"
-                      f" -> win={win_tool}")
+                judgments.append(
+                    {
+                        "task": tid,
+                        "judge": judge,
+                        "order": order,
+                        "scores": {a_tool: a_total, b_tool: b_total},
+                        "criteria": {a_tool: parsed.get("A", {}), b_tool: parsed.get("B", {})},
+                        "winner": win_tool,
+                        "reason": parsed.get("reason", "")[:200],
+                    }
+                )
+                print(
+                    f"  {tid:18s} {judge:22s} order{order}  "
+                    f"looplet={parsed.get('A' if a_tool == 'looplet' else 'B', {})}"
+                    f" -> win={win_tool}"
+                )
 
     (HERE / "results_judge.json").write_text(json.dumps({"judgments": judgments}, indent=2))
     _summary(judgments)
@@ -143,8 +165,10 @@ def _summary(judgments: list[dict]) -> None:
         if j["task"] not in tasks:
             tasks.append(j["task"])
 
-    print(f"\n{'='*74}\nBLIND JUDGE SUMMARY  ({len(valid)} valid judgments, "
-          f"{len(valid)//max(len(tasks),1)}/task)\n")
+    print(
+        f"\n{'=' * 74}\nBLIND JUDGE SUMMARY  ({len(valid)} valid judgments, "
+        f"{len(valid) // max(len(tasks), 1)}/task)\n"
+    )
     print(f"{'task':20s} {'looplet':>9s} {'copilot':>9s}  winner")
     tot = {"looplet": [], "copilot": []}
     wins = {"looplet": 0, "copilot": 0, "tie": 0}
@@ -158,13 +182,15 @@ def _summary(judgments: list[dict]) -> None:
         wins[w] += 1
         print(f"{t:20s} {lp:9.1f} {cp:9.1f}  {w}")
     n = max(len(tasks), 1)
-    print(f"\n{'AVG /20':20s} {sum(tot['looplet'])/n:9.1f} {sum(tot['copilot'])/n:9.1f}")
+    print(f"\n{'AVG /20':20s} {sum(tot['looplet']) / n:9.1f} {sum(tot['copilot']) / n:9.1f}")
     # judgment-level win tally (each judgment = one vote)
     votes = {"looplet": 0, "copilot": 0, "tie": 0}
     for j in valid:
         votes[j["winner"]] += 1
     print(f"per-task wins   looplet={wins['looplet']} copilot={wins['copilot']} tie={wins['tie']}")
-    print(f"judgment votes  looplet={votes['looplet']} copilot={votes['copilot']} tie={votes['tie']}")
+    print(
+        f"judgment votes  looplet={votes['looplet']} copilot={votes['copilot']} tie={votes['tie']}"
+    )
 
 
 if __name__ == "__main__":

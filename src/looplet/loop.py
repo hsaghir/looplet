@@ -655,11 +655,12 @@ class LoopConfig:
     cache_policy: "CachePolicy | None" = None
     """Optional :class:`looplet.cache.CachePolicy` declaring which
     stable prompt sections (system prompt, tool schemas, memory) should
-    carry ``cache_control`` markers. When set and the backend exposes
-    ``generate_with_cache(..., cache_breakpoints=[...])``, the loop
-    computes per-turn :class:`CacheBreakpoint` lists and passes them
-    through. Backends without the method keep working unchanged;
-    caching is strictly opt-in and additive.
+    carry ``cache_control`` markers. When set and the backend's
+    ``generate`` / ``generate_with_tools`` accepts a ``cache_breakpoints``
+    keyword, the loop computes per-turn :class:`CacheBreakpoint` lists
+    and passes them through. The shipped OpenAI/Anthropic backends
+    honour it; backends without the keyword keep working unchanged.
+    Caching is strictly opt-in and additive.
     """
 
     cancel_token: CancelToken | None = None

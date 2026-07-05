@@ -20,9 +20,11 @@ module adds the plumbing:
   records hashes per turn and logs / emits events when any stable
   section's hash changes (i.e. a cache break has occurred).
 
-Backend integration is opt-in: backends that expose
-``generate_with_cache(prompt, *, cache_breakpoints=[...], ...)`` get
-invoked with the computed breakpoints; backends without that method
+Backend integration is opt-in: any backend whose ``generate`` /
+``generate_with_tools`` accepts a ``cache_breakpoints=[...]`` keyword
+receives the computed breakpoints and translates them into provider
+``cache_control`` markers. The shipped ``OpenAIBackend`` and
+``AnthropicBackend`` do exactly this; backends without the keyword
 keep working unchanged. The loop never forces caching.
 """
 
@@ -95,9 +97,10 @@ class CachePolicy:
 
     Caller specifies which sections are stable enough to cache and
     the TTL for each. The loop computes hashes per turn and hands
-    the resulting :class:`CacheBreakpoint` list to the backend via
-    ``generate_with_cache`` (opt-in). Unknown backends see nothing —
-    caching is strictly additive.
+    the resulting :class:`CacheBreakpoint` list to any backend whose
+    ``generate`` / ``generate_with_tools`` accepts a
+    ``cache_breakpoints`` keyword (opt-in). Unknown backends see
+    nothing — caching is strictly additive.
 
     Sections default to ``None`` (= not cached). Enable only what's
     actually stable — e.g. don't cache memory if you rewrite it

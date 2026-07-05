@@ -50,6 +50,10 @@ def build(runtime=None) -> CallableMemorySource:
     # ``__module__`` is ``_chw_resource_project_memory`` on workspace
     # load — so the round-trip writer recognises it and copies THIS
     # file verbatim instead of warning about a non-importable lambda.
-    return CallableMemorySource(
-        lambda state: f"[{project_ctx}] step {getattr(state, 'step_count', 0)}/{max_steps}"
-    )
+    #
+    # Keep this line STATIC across turns: it sits in the cached prompt
+    # prefix, so rendering a per-turn ``step {step_count}`` counter here
+    # would change the prefix on every call and cap prompt-cache reuse at
+    # roughly the system prompt. Surface the total budget instead (static);
+    # the loop still enforces max_steps as the hard stop.
+    return CallableMemorySource(lambda _state: f"[{project_ctx}] budget {max_steps} steps")

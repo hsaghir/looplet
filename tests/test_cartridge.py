@@ -517,6 +517,7 @@ def test_coder_workspace_loads_with_shared_filecache(tmp_path) -> None:
         "think",
         "todo",
         "web_fetch",
+        "web_search",
         "worktree",
         "write_file",
     ]
@@ -794,6 +795,7 @@ def test_coder_workspace_bidirectional_round_trip(tmp_path) -> None:
         "think",
         "todo",
         "web_fetch",
+        "web_search",
         "worktree",
         "write_file",
     ]

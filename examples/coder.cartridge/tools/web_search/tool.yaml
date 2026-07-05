@@ -1,0 +1,22 @@
+name: web_search
+description: |-
+  Search the web and return a ranked list of results (title, URL, snippet). Dependency-free; uses DuckDuckGo by default (no API key required).
+
+  Usage:
+  - Use this to FIND the right page before `web_fetch` reads it: search, pick the best result, then `web_fetch` its URL.
+  - Good for locating documentation, changelogs, issue threads, error messages, or specs when you don't already have the URL.
+  - Returns a ranked list only; it does NOT return full page contents (use `web_fetch` for that).
+  - Backend is auto-selected: DuckDuckGo (default, no key). If set in the environment, `BRAVE_API_KEY`, `TAVILY_API_KEY`, or `SEARXNG_URL` is used instead for higher-quality results.
+
+  Examples:
+  - `web_search(query="python pathlib read_text encoding argument")`
+  - `web_search(query="fastapi background tasks documentation", max_results=8)`
+parameters:
+  query:
+    type: string
+    description: The search query.
+  max_results:
+    type: integer
+    description: Maximum number of results to return.
+    default: 5
+concurrent_safe: true

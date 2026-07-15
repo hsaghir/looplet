@@ -152,6 +152,102 @@ def _anthropic_response_to_blocks(response: Any) -> list[dict[str, Any]]:
     return blocks
 
 
+# ── Prompt-cache translation ─────────────────────────────────────
+
+
+def _anthropic_cache_control(ttl: str) -> dict[str, Any]:
+    """Map a looplet ``CacheControl.ttl`` onto an Anthropic ``cache_control`` block.
+
+    Anthropic marks a cacheable prefix with ``{"type": "ephemeral"}`` (5-min) or
+    ``{"type": "ephemeral", "ttl": "1h"}`` (1-hour). Unknown ttl values fall back
+    to the 5-min default.
+    """
+    block: dict[str, Any] = {"type": "ephemeral"}
+    if ttl == "1h":
+        block["ttl"] = "1h"
+    return block
+
+
+def _apply_anthropic_cache(
+    kwargs: dict[str, Any],
+    *,
+    prompt: str,
+    tools: list[dict[str, Any]] | None,
+    cache_breakpoints: list[Any] | None,
+) -> None:
+    """Translate looplet cache breakpoints into Anthropic ``cache_control`` markers.
+
+    Mutates ``kwargs`` in place, marking whichever stable sections the policy
+    enabled:
+
+    * ``system_prompt`` -> the ``system`` field becomes a single text block
+      carrying ``cache_control`` (caches the tools + system prefix).
+    * ``tool_schemas`` -> the **last** tool gains ``cache_control`` (Anthropic
+      caches the whole tools array up to that marker).
+    * ``memory`` -> the persistent memory prefix of the user message is split
+      into its own ``cache_control``-marked text block.
+
+    Sections absent from the policy, empty, or not locatable in the prompt are
+    skipped so the request still succeeds -- caching is strictly additive.
+    """
+    if not cache_breakpoints:
+        return
+    by_label = {getattr(bp, "label", None): bp for bp in cache_breakpoints}
+
+    def _ttl(label: str) -> str:
+        return getattr(getattr(by_label.get(label), "control", None), "ttl", "ephemeral")
+
+    # system_prompt -> cache_control on the system block
+    system = kwargs.get("system")
+    if "system_prompt" in by_label and isinstance(system, str) and system:
+        kwargs["system"] = [
+            {
+                "type": "text",
+                "text": system,
+                "cache_control": _anthropic_cache_control(_ttl("system_prompt")),
+            }
+        ]
+
+    # tool_schemas -> cache_control on the last tool (caches the whole array)
+    if "tool_schemas" in by_label and tools:
+        marked = [dict(t) for t in tools]
+        marked[-1] = {
+            **marked[-1],
+            "cache_control": _anthropic_cache_control(_ttl("tool_schemas")),
+        }
+        kwargs["tools"] = marked
+
+    # memory -> split the user message so its persistent prefix is cached
+    mem_bp = by_label.get("memory")
+    mem_content = getattr(mem_bp, "content", "") if mem_bp is not None else ""
+    split_at = prompt.find(mem_content) if mem_content else -1
+    if split_at != -1:
+        end = split_at + len(mem_content)
+        head, tail = prompt[:end], prompt[end:]
+        content_blocks: list[dict[str, Any]] = [
+            {
+                "type": "text",
+                "text": head,
+                "cache_control": _anthropic_cache_control(_ttl("memory")),
+            }
+        ]
+        if tail:
+            content_blocks.append({"type": "text", "text": tail})
+        kwargs["messages"] = [{"role": "user", "content": content_blocks}]
+
+
+def _openai_prompt_cache_key(cache_breakpoints: list[Any]) -> str:
+    """Derive a stable OpenAI ``prompt_cache_key`` from looplet cache breakpoints.
+
+    OpenAI caches prompt prefixes automatically; ``prompt_cache_key`` only steers
+    routing so repeat requests that share the same stable prefix land on the same
+    cache. The per-section fingerprints are already stable across turns, so we
+    concatenate them into one deterministic key.
+    """
+    parts = [h for h in (getattr(bp, "hash", "") for bp in cache_breakpoints) if h]
+    return "looplet-" + "-".join(parts)
+
+
 # ── OpenAI Backend ───────────────────────────────────────────────
 
 
@@ -192,6 +288,7 @@ class OpenAIBackend:
         base_url: str | None = None,
         api_key: str | None = None,
         tool_choice: str = "auto",
+        use_prompt_cache_key: bool = False,
     ) -> None:
         if client is None:
             from openai import OpenAI  # noqa: PLC0415
@@ -209,6 +306,7 @@ class OpenAIBackend:
         self._model = model
         self._default_max_tokens = default_max_tokens
         self._tool_choice = tool_choice
+        self._use_prompt_cache_key = use_prompt_cache_key
 
     @classmethod
     def from_env(
@@ -260,6 +358,7 @@ class OpenAIBackend:
         max_tokens: int = 2000,
         system_prompt: str = "",
         temperature: float = 0.2,
+        cache_breakpoints: list[Any] | None = None,
     ) -> str:
         messages: list[dict[str, str]] = []
         if system_prompt:
@@ -274,6 +373,8 @@ class OpenAIBackend:
         _mt = _resolve_max_tokens(max_tokens, self._default_max_tokens)
         if _mt is not None:
             kwargs["max_tokens"] = _mt
+        if self._use_prompt_cache_key and cache_breakpoints:
+            kwargs["extra_body"] = {"prompt_cache_key": _openai_prompt_cache_key(cache_breakpoints)}
 
         response = self._client.chat.completions.create(**kwargs)
         self._record_usage(response)
@@ -287,6 +388,7 @@ class OpenAIBackend:
         max_tokens: int = 2000,
         system_prompt: str = "",
         temperature: float = 0.2,
+        cache_breakpoints: list[Any] | None = None,
     ) -> list[dict[str, Any]]:
         """Native tool calling via OpenAI ``tools`` parameter.
 
@@ -308,6 +410,8 @@ class OpenAIBackend:
         _mt = _resolve_max_tokens(max_tokens, self._default_max_tokens)
         if _mt is not None:
             kwargs["max_tokens"] = _mt
+        if self._use_prompt_cache_key and cache_breakpoints:
+            kwargs["extra_body"] = {"prompt_cache_key": _openai_prompt_cache_key(cache_breakpoints)}
 
         response = self._client.chat.completions.create(**kwargs)
         self._record_usage(response)
@@ -469,6 +573,7 @@ class AnthropicBackend:
         max_tokens: int = 2000,
         system_prompt: str = "",
         temperature: float = 0.2,
+        cache_breakpoints: list[Any] | None = None,
     ) -> str:
         kwargs: dict[str, Any] = {
             "model": self._model,
@@ -478,6 +583,9 @@ class AnthropicBackend:
         }
         if system_prompt:
             kwargs["system"] = system_prompt
+        _apply_anthropic_cache(
+            kwargs, prompt=prompt, tools=None, cache_breakpoints=cache_breakpoints
+        )
 
         response = self._client.messages.create(**kwargs)
         self._record_usage(response)
@@ -496,6 +604,7 @@ class AnthropicBackend:
         max_tokens: int = 2000,
         system_prompt: str = "",
         temperature: float = 0.2,
+        cache_breakpoints: list[Any] | None = None,
     ) -> list[dict[str, Any]]:
         """Native tool calling via Anthropic ``tools`` parameter."""
         kwargs: dict[str, Any] = {
@@ -507,6 +616,9 @@ class AnthropicBackend:
         }
         if system_prompt:
             kwargs["system"] = system_prompt
+        _apply_anthropic_cache(
+            kwargs, prompt=prompt, tools=tools, cache_breakpoints=cache_breakpoints
+        )
 
         response = self._client.messages.create(**kwargs)
         self._record_usage(response)
@@ -569,6 +681,7 @@ class AsyncOpenAIBackend:
         base_url: str | None = None,
         api_key: str | None = None,
         tool_choice: str = "auto",
+        use_prompt_cache_key: bool = False,
     ) -> None:
         if client is None:
             from openai import AsyncOpenAI  # noqa: PLC0415
@@ -583,6 +696,7 @@ class AsyncOpenAIBackend:
         self._model = model
         self._default_max_tokens = default_max_tokens
         self._tool_choice = tool_choice
+        self._use_prompt_cache_key = use_prompt_cache_key
         # See ``OpenAIBackend.last_usage``; same contract.
         self.last_usage: dict[str, int] = {}
 
@@ -632,6 +746,7 @@ class AsyncOpenAIBackend:
         max_tokens: int = 2000,
         system_prompt: str = "",
         temperature: float = 0.2,
+        cache_breakpoints: list[Any] | None = None,
     ) -> str:
         messages: list[dict[str, str]] = []
         if system_prompt:
@@ -646,6 +761,8 @@ class AsyncOpenAIBackend:
         _mt = _resolve_max_tokens(max_tokens, self._default_max_tokens)
         if _mt is not None:
             kwargs["max_tokens"] = _mt
+        if self._use_prompt_cache_key and cache_breakpoints:
+            kwargs["extra_body"] = {"prompt_cache_key": _openai_prompt_cache_key(cache_breakpoints)}
 
         response = await self._client.chat.completions.create(**kwargs)
         self._record_usage(response)
@@ -659,6 +776,7 @@ class AsyncOpenAIBackend:
         max_tokens: int = 2000,
         system_prompt: str = "",
         temperature: float = 0.2,
+        cache_breakpoints: list[Any] | None = None,
     ) -> list[dict[str, Any]]:
         """Async native tool calling via OpenAI ``tools`` parameter."""
         messages: list[dict[str, str]] = []
@@ -676,6 +794,8 @@ class AsyncOpenAIBackend:
         _mt = _resolve_max_tokens(max_tokens, self._default_max_tokens)
         if _mt is not None:
             kwargs["max_tokens"] = _mt
+        if self._use_prompt_cache_key and cache_breakpoints:
+            kwargs["extra_body"] = {"prompt_cache_key": _openai_prompt_cache_key(cache_breakpoints)}
 
         response = await self._client.chat.completions.create(**kwargs)
         self._record_usage(response)
@@ -741,6 +861,7 @@ class AsyncAnthropicBackend:
         max_tokens: int = 2000,
         system_prompt: str = "",
         temperature: float = 0.2,
+        cache_breakpoints: list[Any] | None = None,
     ) -> str:
         kwargs: dict[str, Any] = {
             "model": self._model,
@@ -750,6 +871,9 @@ class AsyncAnthropicBackend:
         }
         if system_prompt:
             kwargs["system"] = system_prompt
+        _apply_anthropic_cache(
+            kwargs, prompt=prompt, tools=None, cache_breakpoints=cache_breakpoints
+        )
 
         response = await self._client.messages.create(**kwargs)
         parts = []
@@ -766,6 +890,7 @@ class AsyncAnthropicBackend:
         max_tokens: int = 2000,
         system_prompt: str = "",
         temperature: float = 0.2,
+        cache_breakpoints: list[Any] | None = None,
     ) -> list[dict[str, Any]]:
         """Async native tool calling via Anthropic ``tools`` parameter."""
         kwargs: dict[str, Any] = {
@@ -777,6 +902,9 @@ class AsyncAnthropicBackend:
         }
         if system_prompt:
             kwargs["system"] = system_prompt
+        _apply_anthropic_cache(
+            kwargs, prompt=prompt, tools=tools, cache_breakpoints=cache_breakpoints
+        )
 
         response = await self._client.messages.create(**kwargs)
         return _anthropic_response_to_blocks(response)

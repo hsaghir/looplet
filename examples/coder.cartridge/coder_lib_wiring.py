@@ -217,11 +217,10 @@ def build_default_memory_sources(workspace: str, max_steps: int) -> list:
     sources: list = []
     if instructions:
         sources.append(StaticMemorySource(instructions))
-    sources.append(
-        CallableMemorySource(
-            lambda state: f"[{project_ctx}] step {getattr(state, 'step_count', 0)}/{max_steps}"
-        )
-    )
+    # Keep this line STATIC across turns: it sits in the cached prompt prefix,
+    # so a per-turn ``step {step_count}`` counter would change the prefix every
+    # call and cap prompt-cache reuse. Surface the total budget (static).
+    sources.append(CallableMemorySource(lambda _state: f"[{project_ctx}] budget {max_steps} steps"))
     return sources
 
 

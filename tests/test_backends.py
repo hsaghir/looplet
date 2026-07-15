@@ -12,6 +12,7 @@ from looplet.backends import (
     OpenAIBackend,
     OpenAIStreamingBackend,
 )
+from looplet.cache import CacheControl, CachePolicy, compute_breakpoints
 
 # ── Mock API objects ────────────────────────────────────────────
 
@@ -95,8 +96,10 @@ class _MockAnthropicClient:
                 "stream": self._stream,
             },
         )()
+        self._last_kwargs: dict = {}
 
     def _create(self, **kwargs):
+        self._last_kwargs = kwargs
         return _MockAnthropicResponse()
 
     def _stream(self, **kwargs):
@@ -249,3 +252,130 @@ class TestFromEnvErrors:
         monkeypatch.setenv("OPENAI_BASE_URL", "http://127.0.0.1:11434/v1")
         backend = OpenAIBackend.from_env()
         assert backend is not None
+
+
+class TestAnthropicCacheControl:
+    """AnthropicBackend translates looplet cache breakpoints into native
+    ``cache_control`` markers on system, tools, and the memory prefix. All
+    behaviour is additive: absent/empty/unlocatable sections are skipped."""
+
+    def test_system_prompt_marked(self):
+        client = _MockAnthropicClient()
+        llm = AnthropicBackend(client, model="test")
+        bps = compute_breakpoints(
+            CachePolicy(system_prompt=CacheControl()),
+            system_prompt="SYS",
+            tool_schemas_text="",
+            memory_text="",
+        )
+        llm.generate("hi", system_prompt="SYS", cache_breakpoints=bps)
+        system = client._last_kwargs["system"]
+        assert isinstance(system, list)
+        assert system[0]["text"] == "SYS"
+        assert system[0]["cache_control"] == {"type": "ephemeral"}
+
+    def test_last_tool_marked_with_ttl(self):
+        client = _MockAnthropicClient()
+        llm = AnthropicBackend(client, model="test")
+        tools = [
+            {"name": "a", "description": "", "input_schema": {}},
+            {"name": "b", "description": "", "input_schema": {}},
+        ]
+        bps = compute_breakpoints(
+            CachePolicy(tool_schemas=CacheControl(ttl="1h")),
+            system_prompt="",
+            tool_schemas_text="T",
+            memory_text="",
+        )
+        llm.generate_with_tools("hi", tools=tools, cache_breakpoints=bps)
+        marked = client._last_kwargs["tools"]
+        assert "cache_control" not in marked[0]
+        assert marked[-1]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+        # original tool dicts must not be mutated
+        assert "cache_control" not in tools[-1]
+
+    def test_memory_prefix_split(self):
+        client = _MockAnthropicClient()
+        llm = AnthropicBackend(client, model="test")
+        prompt = "MEMBLOB\n\nTASK: go"
+        bps = compute_breakpoints(
+            CachePolicy(memory=CacheControl()),
+            system_prompt="",
+            tool_schemas_text="",
+            memory_text="MEMBLOB",
+        )
+        llm.generate(prompt, cache_breakpoints=bps)
+        content = client._last_kwargs["messages"][0]["content"]
+        assert isinstance(content, list)
+        assert content[0]["text"] == "MEMBLOB"
+        assert content[0]["cache_control"] == {"type": "ephemeral"}
+        assert content[1]["text"] == "\n\nTASK: go"
+        assert "cache_control" not in content[1]
+
+    def test_unlocatable_memory_is_skipped(self):
+        client = _MockAnthropicClient()
+        llm = AnthropicBackend(client, model="test")
+        bps = compute_breakpoints(
+            CachePolicy(memory=CacheControl()),
+            system_prompt="",
+            tool_schemas_text="",
+            memory_text="NOT-IN-PROMPT",
+        )
+        llm.generate("hello world", cache_breakpoints=bps)
+        assert client._last_kwargs["messages"] == [{"role": "user", "content": "hello world"}]
+
+    def test_no_breakpoints_leaves_request_unchanged(self):
+        client = _MockAnthropicClient()
+        llm = AnthropicBackend(client, model="test")
+        llm.generate("hi", system_prompt="SYS")
+        assert client._last_kwargs["system"] == "SYS"
+        assert client._last_kwargs["messages"] == [{"role": "user", "content": "hi"}]
+
+
+class TestOpenAIPromptCacheKey:
+    """OpenAIBackend emits ``prompt_cache_key`` (via SDK-safe ``extra_body``)
+    only when explicitly opted in, so strict local/proxy servers are never
+    sent an unknown field by default. OpenAI caches prefixes automatically."""
+
+    def _bps(self):
+        return compute_breakpoints(
+            CachePolicy(system_prompt=CacheControl()),
+            system_prompt="SYS",
+            tool_schemas_text="",
+            memory_text="",
+        )
+
+    def test_off_by_default(self):
+        client = _MockOpenAIClient()
+        llm = OpenAIBackend(client, model="test")
+        llm.generate("hi", cache_breakpoints=self._bps())
+        assert "extra_body" not in client._last_kwargs
+
+    def test_emitted_when_enabled(self):
+        client = _MockOpenAIClient()
+        llm = OpenAIBackend(client, model="test", use_prompt_cache_key=True)
+        llm.generate("hi", cache_breakpoints=self._bps())
+        key = client._last_kwargs["extra_body"]["prompt_cache_key"]
+        assert key.startswith("looplet-")
+
+    def test_key_tracks_stable_sections_not_prompt(self):
+        client = _MockOpenAIClient()
+        llm = OpenAIBackend(client, model="test", use_prompt_cache_key=True)
+        llm.generate("hi", cache_breakpoints=self._bps())
+        k1 = client._last_kwargs["extra_body"]["prompt_cache_key"]
+        llm.generate("a totally different prompt", cache_breakpoints=self._bps())
+        k2 = client._last_kwargs["extra_body"]["prompt_cache_key"]
+        assert k1 == k2
+
+
+class TestCacheBreakpointWiring:
+    """Every shipped backend entrypoint must declare ``cache_breakpoints`` so
+    the loop dispatch (scaffolding._accepts_kwarg) actually forwards them."""
+
+    def test_all_methods_accept_cache_breakpoints(self):
+        import inspect
+
+        for cls in (OpenAIBackend, AnthropicBackend, AsyncOpenAIBackend, AsyncAnthropicBackend):
+            for method in ("generate", "generate_with_tools"):
+                sig = inspect.signature(getattr(cls, method))
+                assert "cache_breakpoints" in sig.parameters, f"{cls.__name__}.{method}"

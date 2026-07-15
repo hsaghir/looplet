@@ -7,6 +7,16 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Prompt caching in the shipped backends.** ``OpenAIBackend`` and
+  ``AnthropicBackend`` (sync + async) now accept a ``cache_breakpoints``
+  keyword and translate a configured ``CachePolicy`` into real provider
+  cache markers: Anthropic ``cache_control`` on the system block, the
+  last tool, and the persistent-memory prefix; OpenAI ``prompt_cache_key``
+  (opt-in via ``use_prompt_cache_key=True``, sent through ``extra_body``
+  so strict local/proxy servers are never handed an unknown field).
+  Previously ``CachePolicy`` was inert with the built-in backends — the
+  computed breakpoints were silently dropped. Opt-in and fully additive:
+  with no ``CachePolicy`` set, requests are byte-for-byte unchanged.
 - **`SkillRuntime.batch_ask_user(prelude=, questions=)`** runtime
   primitive for asking a batch of structured clarifying questions in
   one round, returning a `{question_id: answer}` dict. The default

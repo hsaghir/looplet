@@ -1,22 +1,20 @@
-"""Toy autonomous evolution loop over a workspace.
+"""Toy downstream search loop over a cartridge.
 
 For N iterations:
-  1. Snapshot the current workspace.
+    1. Snapshot the current cartridge.
   2. Pick a candidate mutation (deterministic round-robin from a
      small pool — in real systems this would be LLM-proposed).
   3. Apply the mutation in a copy.
   4. Score the candidate with a static eval function.
   5. Keep the mutation if score improved.
 
-This is *deliberately* small: no LLM, no real benchmark, runs in
-seconds. The point is to expose the loop's shape -- read trajectory,
-propose mutation, apply, evaluate, accept/reject -- so the same loop
-can later be wired to an LLM proposer and a real benchmark (see
-AHE 2026 for the production-grade version).
+This is deliberately small: no model, no task execution, and no real
+benchmark. Its static score is not evidence of behavioral improvement.
+Real promotion requires outcome-grounded runs and host-owned holdouts.
 
 Run::
 
-    python evolve.py <seed_workspace> [iterations]
+    python evolve.py <seed_cartridge> [iterations]
 """
 
 from __future__ import annotations
@@ -29,25 +27,25 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[3]
 
 
-def score_workspace(ws: Path) -> int:
+def score_cartridge(cartridge: Path) -> int:
     """Toy quality score: rewards balanced tool counts and a
     medium-length system prompt. Designed so the round-robin
     mutations below produce visible up/down movement."""
     score = 0
-    tools_dir = ws / "tools"
+    tools_dir = cartridge / "tools"
     n_tools = sum(1 for d in tools_dir.iterdir() if d.is_dir()) if tools_dir.is_dir() else 0
     if 2 <= n_tools <= 8:
         score += 10
     elif n_tools > 0:
         score += 4
-    prompt = ws / "prompts" / "system.md"
+    prompt = cartridge / "prompts" / "system.md"
     if prompt.is_file():
         n_words = len(prompt.read_text().split())
         if 30 <= n_words <= 200:
             score += 10
         elif n_words > 0:
             score += 3
-    cfg = ws / "config.yaml"
+    cfg = cartridge / "config.yaml"
     if cfg.is_file():
         for line in cfg.read_text().splitlines():
             if line.strip().startswith("max_steps:"):
@@ -64,7 +62,7 @@ def score_workspace(ws: Path) -> int:
     return score
 
 
-# Mutations: each takes a workspace dir and modifies in place.
+# Mutations: each takes a cartridge directory and modifies it in place.
 
 
 def mut_pad_prompt(ws: Path) -> str:
@@ -120,7 +118,7 @@ MUTATIONS = [mut_pad_prompt, mut_set_max_steps, mut_add_think_tool]
 
 def main() -> None:
     if len(sys.argv) < 2:
-        raise SystemExit("usage: evolve.py <seed_workspace> [iterations]")
+        raise SystemExit("usage: evolve.py <seed_cartridge> [iterations]")
     seed = Path(sys.argv[1]).resolve()
     iterations = int(sys.argv[2]) if len(sys.argv) > 2 else 5
 
@@ -130,7 +128,7 @@ def main() -> None:
     for cache in current.rglob("__pycache__"):
         shutil.rmtree(cache, ignore_errors=True)
 
-    base_score = score_workspace(current)
+    base_score = score_cartridge(current)
     print(f"iter 0  score={base_score}  (baseline)")
 
     history = [("baseline", base_score, "kept")]
@@ -141,7 +139,7 @@ def main() -> None:
         shutil.copytree(current, candidate)
         mutation = MUTATIONS[(i - 1) % len(MUTATIONS)]
         action_msg = mutation(candidate)
-        new_score = score_workspace(candidate)
+        new_score = score_cartridge(candidate)
         verdict = "kept" if new_score >= base_score else "rejected"
         if new_score >= base_score:
             shutil.rmtree(current)
@@ -156,7 +154,7 @@ def main() -> None:
 
     print()
     print(f"final score: {base_score}")
-    print(f"final workspace: {current}")
+    print(f"final cartridge: {current}")
     print(
         f"({iterations} iterations, {sum(1 for _, _, v in history if v == 'kept') - 1} accepted mutations)"
     )

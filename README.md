@@ -1,261 +1,298 @@
 # looplet
 
-![looplet pretty trace — agents from a paragraph, then run them](demo/looplet_pretty.gif)
-
 [![CI](https://github.com/hsaghir/looplet/actions/workflows/ci.yml/badge.svg)](https://github.com/hsaghir/looplet/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/hsaghir/looplet/branch/master/graph/badge.svg)](https://codecov.io/gh/hsaghir/looplet)
 [![PyPI version](https://img.shields.io/pypi/v/looplet.svg)](https://pypi.org/project/looplet/)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
-[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](https://github.com/hsaghir/looplet/blob/master/LICENSE)
 
-**Describe an agent in one paragraph. Get a working agent in five minutes.**
+**Test-driven harness engineering for Python agents.**
 
-```bash
-pip install looplet
-export OPENAI_BASE_URL=https://api.openai.com/v1   # any OpenAI-compatible endpoint
-export OPENAI_API_KEY=sk-...
-export OPENAI_MODEL=gpt-5.5
+## Own the loop. Test every change.
 
-looplet new "An agent that takes a URL and returns the page title and a 2-sentence summary"
-looplet run-workspace ./agent.cartridge "Summarize https://example.com"
-```
+Looplet is for teams building a tool-calling agent that is fundamentally
+one model in one loop—and that now need to change its prompts, tools,
+hooks, memory, or model without guessing what behavior broke.
 
-The recording above is a deterministic `--pretty` trace of that same CLI flow: build an agent cartridge, then run it against a real task. The real factory path uses the same commands; the recorded trace is scripted so the docs stay stable and tiny.
-
-**Mention an existing CLI, Python module, or script in your brief, and the factory wraps it.** Your team's tools already exist; looplet introspects the real surface and writes thin wrappers around them — no hallucinated signatures.
-
-```bash
-# Wrap the gh CLI as a triage agent
-looplet new "Wrap the gh CLI as a triage agent that surfaces my open PRs and issues"
-
-# Wrap an existing Python class as agent tools
-looplet new "Wrap mycompany.search:SearchClient as a SOC investigator with search/pivot/scan tools"
-```
-
-See [docs/agent-factory.md](docs/agent-factory.md) for the full pattern.
-
----
-
-## Why looplet
-
-Most agent frameworks give you `agent.run(task)` — a black box. When the agent does something wrong at step 7, you can't step in between step 6 and step 8.
-
-**Looplet does the opposite: the loop is the product.** Every step is a `Step` object you can inspect, save, or diff. Every decision the loop makes — what goes in the next prompt, whether to compact context, whether to dispatch a dangerous tool, whether to stop — is a `Protocol` method you implement in a few lines. Hooks compose without inheritance. Nothing is hidden.
-
-Agents are **data**. A cartridge is a directory of files (`cartridge.json`, `config.yaml`, `prompts/system.md`, `tools/<name>/{tool.yaml, execute.py}`) that the loader materialises into a runnable agent. The factory builds new cartridges from English briefs; the loop engine runs them. **Zero runtime dependencies.**
-
----
-
-## The mental model — one picture
+Keep the harness in reviewable files. Capture what the model saw. Replay
+recorded responses against fresh harness code. Grade independently
+observed outcomes and gate them in pytest or CI. No graph DSL, hosted
+control plane, or required third-party runtime dependencies.
 
 ```mermaid
-%%{init: {"theme":"base","themeVariables":{"fontFamily":"ui-sans-serif, system-ui, sans-serif","fontSize":"15px","lineColor":"#94a3b8"}}}%%
 flowchart LR
-    you(["<b>your code</b><br/><span style='font-size:11px;opacity:.75'>for&nbsp;step&nbsp;in&nbsp;loop(...)</span>"]):::you
-
-    h1["<b>pre_prompt</b><br/><span style='font-size:11px;opacity:.9'>redact&nbsp;·&nbsp;inject&nbsp;·&nbsp;compact</span>"]:::hookBlue
-    h2["<b>pre_dispatch</b><br/><span style='font-size:11px;opacity:.9'>permissions&nbsp;·&nbsp;approval&nbsp;·&nbsp;rewrite</span>"]:::hookAmber
-    h3["<b>post_dispatch</b><br/><span style='font-size:11px;opacity:.9'>trace&nbsp;·&nbsp;metrics&nbsp;·&nbsp;checkpoint</span>"]:::hookAmber
-    h4["<b>check_done</b><br/><span style='font-size:11px;opacity:.9'>stop&nbsp;rules&nbsp;·&nbsp;budgets</span>"]:::hookGreen
-
-    subgraph loop[" "]
-      direction LR
-      prompt(["<b>PROMPT</b><br/><span style='font-size:11px;opacity:.85'>build&nbsp;·&nbsp;call&nbsp;LLM</span>"]):::phaseBlue
-      dispatch(["<b>DISPATCH</b><br/><span style='font-size:11px;opacity:.85'>validate&nbsp;·&nbsp;run&nbsp;tool</span>"]):::phaseAmber
-      done{{"<b>DONE?</b>"}}:::phaseGreen
-      prompt -- "tool call" --> dispatch
-      dispatch -- "observation" --> done
-      done -- "no" --> prompt
-    end
-
-    step[/"<b>Step</b><br/><span style='font-size:11px;opacity:.85'>prompt&nbsp;·&nbsp;call&nbsp;·&nbsp;result&nbsp;·&nbsp;usage</span>"/]:::step
-
-    you == "task" ==> prompt
-    done == "yes" ==> step
-    step == "yield" ==> you
-
-    h1 -.-> prompt
-    h2 -.-> dispatch
-    h3 -.-> dispatch
-    h4 -.-> done
-
-    classDef you        fill:#0f172a,stroke:#334155,stroke-width:2px,color:#f8fafc;
-    classDef phaseBlue  fill:#dbeafe,stroke:#2563eb,stroke-width:2.5px,color:#1e3a8a;
-    classDef phaseAmber fill:#fef3c7,stroke:#d97706,stroke-width:2.5px,color:#78350f;
-    classDef phaseGreen fill:#d1fae5,stroke:#059669,stroke-width:2.5px,color:#064e3b;
-    classDef step       fill:#eef2ff,stroke:#4338ca,stroke-width:2.5px,color:#312e81;
-    classDef hookBlue   fill:#eff6ff,stroke:#3b82f6,stroke-width:1.5px,color:#1e40af;
-    classDef hookAmber  fill:#fffbeb,stroke:#f59e0b,stroke-width:1.5px,color:#92400e;
-    classDef hookGreen  fill:#ecfdf5,stroke:#10b981,stroke-width:1.5px,color:#065f46;
-    style loop fill:#f8fafc,stroke:#cbd5e1,stroke-width:2px,stroke-dasharray:10 6,color:#1e293b;
+    accTitle: Reviewable harness changes flowing through Looplet into a CI gate
+    H[Prompts · tools · hooks · config] --> L[composable_loop]
+    L --> S[Step stream]
+    S --> P[Prompt + response evidence]
+    S --> C[Outcome collectors]
+    C --> E[Required evals]
+    E --> G[pytest / CI]
 ```
 
-Every amber box is a `Protocol` method. A hook is any object that implements one or more — no base class, no inheritance:
-
-```python
-class RedactPII:
-    def pre_prompt(self, state, log, ctx, step):
-        return _scrub_emails(ctx)         # mutates the next LLM prompt
-
-class RetryFlakyTool:
-    def pre_dispatch(self, state, log, tc, step):
-        if tc.tool == "web_search" and state.last_error:
-            return Deny("retry with backoff", retry=True)
-
-for step in composable_loop(..., hooks=[RedactPII(), RetryFlakyTool()]):
-    ...
-```
-
-Ship-ready hooks already wired in: `ApprovalHook`, `PermissionHook`, `CheckpointHook`, `ContextPressureHook`, `ThresholdCompactHook`, `ProvenanceSink`, `TracingHook`, `MetricsHook`, `EvalHook`, plus `DefaultCompactService` for production context management. [Drop in your own](docs/hooks.md) in 10 lines.
+[Documentation](https://hsaghir.github.io/looplet/) ·
+[Why Looplet](https://hsaghir.github.io/looplet/why-looplet/) ·
+[Failure → regression proof](https://hsaghir.github.io/looplet/regression-demo/) ·
+[Evals](https://hsaghir.github.io/looplet/evals/)
 
 ---
 
-## Three ways to use it
+## See a failed run become a regression test
 
-### 1. Generate an agent from a brief
+Clone the repository and run the network-free proof:
 
 ```bash
-looplet new "<one paragraph>" ./my_agent.cartridge
-looplet run-workspace ./my_agent.cartridge "<task>"
+uv sync
+uv run python examples/regression_demo/run_demo.py
 ```
 
-The factory writes `cartridge.json`, `config.yaml`, `prompts/system.md`, and one `tools/<name>/` directory per tool the agent picks. See [docs/agent-factory.md](docs/agent-factory.md).
+```text
+1. CAPTURE v1 with fixed model responses
+   model decisions: publish_report -> done
+   collected profit: 200
+   required eval: FAIL (0.00)
 
-### 2. Hand-write the loop in Python
+2. CHANGE one reviewable harness line
+   - "profit": revenue + cost,
+   + "profit": revenue - cost,
+
+3. REPLAY captured responses with fresh v2 tool execution
+   same decisions: true
+   collected profit: 40
+   required eval: PASS (1.00)
+```
+
+The demo persists both harness versions, the captured model-call
+cassette, fresh workspaces, trajectories, host-observed artifacts, and
+grader results. The model decisions stay fixed; the changed tool code
+executes again.
+
+> **Replay is controlled re-execution, not deterministic simulation.**
+> Captured model responses are held constant. Tools, clocks, networks, and other
+> side effects are fresh unless you isolate or mock them.
+
+Read the [walkthrough](https://hsaghir.github.io/looplet/regression-demo/) or inspect the
+[source](https://github.com/hsaghir/looplet/tree/master/examples/regression_demo).
+
+---
+
+## The post-prototype workflow
+
+Most agent prototypes start as a while-loop plus tools. Keep that if it
+is enough. Reach for Looplet when the next prompt or tool change needs
+evidence:
+
+1. **Build** the harness in Python or a file-native cartridge.
+2. **Run** an iterator that yields every tool call as a `Step`.
+3. **Capture** prompts, responses, steps, and stop reasons to readable files.
+4. **Replay** captured responses through changed tools, hooks, state, or permissions.
+5. **Collect** actual world state after the run.
+6. **Gate** the behavior with required, outcome-grounded evals.
+
+The same primitives work online during development, offline against
+saved trajectories, and inside pytest or a CI CLI.
+
+## Start with one owned loop
+
+```bash
+pip install "looplet[openai]"
+
+export OPENAI_BASE_URL=https://api.openai.com/v1
+export OPENAI_API_KEY=...
+export OPENAI_MODEL=...
+```
 
 ```python
-from looplet import composable_loop, cartridge_to_preset
+from looplet import OpenAIBackend, composable_loop, tool, tools_from
 
-preset = cartridge_to_preset("./my_agent.cartridge")
+
+@tool(description="Look up one fact by key.")
+def lookup(key: str) -> dict:
+    return {"key": key, "value": {"owner": "platform"}.get(key)}
+
+
+llm = OpenAIBackend.from_env()
+tools = tools_from([lookup], include_done=True)
 
 for step in composable_loop(
-    llm=preset.llm, config=preset.config, tools=preset.tools,
-    state=preset.state, hooks=preset.hooks,
-    task={"goal": "Summarize https://example.com"},
+    llm=llm,
+    tools=tools,
+    task={"goal": "Find the owner, then finish."},
+    max_steps=5,
 ):
     print(step.pretty())
 ```
 
-`composable_loop` is a generator — break out at any point, plug in your own hooks, swap context strategy. See [docs/tutorial.md](docs/tutorial.md).
+`composable_loop()` is a generator. Your code owns iteration and can
+log, approve, route, pause, or stop at the exact tool boundary. Hooks
+are duck-typed Python objects; implement only the lifecycle methods you
+need.
 
-### 3. Skip the cartridge entirely
+For a zero-network first run:
 
-```python
-from looplet import BaseToolRegistry, OpenAIBackend, composable_loop
-from looplet.tools import register_done_tool
-
-llm = OpenAIBackend.from_env(model="gpt-5.5")
-tools = BaseToolRegistry()
-
-@tools.tool
-def greet(name: str) -> dict:
-    """Greet someone by name."""
-    return {"greeting": f"Hello, {name}!"}
-
-register_done_tool(tools)
-
-for step in composable_loop(llm=llm, tools=tools, task={"goal": "Greet Alice and Bob, then finish."}, max_steps=5):
-    print(step.pretty())
+```bash
+python -m looplet.examples.hello_world --scripted
 ```
 
-Required env vars (any OpenAI-compatible endpoint — OpenAI, Ollama, Together, Groq, vLLM, Anthropic via proxy):
-
-| Var | Example |
-|---|---|
-| `OPENAI_BASE_URL` | `https://api.openai.com/v1` |
-| `OPENAI_API_KEY` | `sk-…` |
-| `OPENAI_MODEL` | `gpt-5.5`, `claude-sonnet-4.6`, `llama3.1` |
-
-Run `looplet doctor` to verify connectivity.
+Continue with the [quickstart](https://hsaghir.github.io/looplet/quickstart/).
 
 ---
 
-## When to reach for looplet
+## Make the harness a reviewable artifact
 
-**Use it when you want to own the details of your agent loop.** Specifically:
+A cartridge is an optional directory representation of the runnable
+harness:
 
-- You need to insert logic at an exact phase — before the prompt, before a tool dispatch, after a tool returns — without forking a framework.
-- You need to swap context-management strategy at runtime (prune, summarize, truncate, your own).
-- You need the loop to pause for human approval and resume when approval arrives.
-- You want first-class debugging and evaluation: a printable `Step`, a prompt-level provenance dump, pytest-style `eval_*` functions.
-- You want zero runtime dependencies and a loop that cold-imports in ~300 ms ([docs/benchmarks.md](docs/benchmarks.md)).
-
-**Don't reach for looplet** if you want `agent.run(task)` to handle everything and return a string, or if you want a visual graph DSL.
-
----
-
-## Examples
-
-Five fully-declarative cartridges ship in `examples/`:
-
-| Workspace | What it does |
-|---|---|
-| [`hello.cartridge`](examples/hello.cartridge/) | Two-tool starter; load and run with any backend |
-| [`coder.cartridge`](examples/coder.cartridge/) | Coding agent — bash, read, write, edit, grep, glob |
-| [`dep_doctor.cartridge`](examples/dep_doctor.cartridge/) | Audits a repo's dependency files for security/license/maintenance risk |
-| [`git_detective.cartridge`](examples/git_detective.cartridge/) | Investigates repo health from git history |
-| [`threat_intel.cartridge`](examples/threat_intel.cartridge/) | Local-first security briefings |
-
-> **Four tools is usually enough.** `coder.cartridge` ships with
-> `bash`, `read`, `write`, `edit` — the same four that
-> [Pi](https://github.com/earendil-works/pi) used to rank #2 on
-> TerminalBench. `grep` and `glob` are convenience wrappers over
-> `bash`; you can drop them and the agent still works. Resist the
-> urge to add a tool until the model demonstrably can't accomplish
-> the task with the four it has.
-
-Load any of them:
-
-```python
-from looplet import cartridge_to_preset, composable_loop
-preset = cartridge_to_preset("examples/dep_doctor.cartridge", runtime={"workspace": "/path/to/project"})
-for step in composable_loop(llm=preset.llm, config=preset.config, tools=preset.tools, state=preset.state, hooks=preset.hooks, task={"goal": "Audit dependencies"}):
-    print(step.pretty())
+```text
+agent.cartridge/
+├── cartridge.json
+├── config.yaml
+├── runtime.yaml
+├── prompts/system.md
+├── tools/<name>/{tool.yaml, execute.py}
+├── hooks/<order>_<name>/{config.yaml, hook.py}
+├── resources/<name>.py
+├── memory/*.md
+└── evals/
+    ├── cases/*.json
+    ├── collect_*.py
+    └── eval_*.py
 ```
 
-Or use them as a starting point: `cp -r examples/coder.cartridge ./my_agent.cartridge`, then edit. Each cartridge round-trips losslessly with an `AgentPreset` via `preset_to_cartridge` / `cartridge_to_preset`.
+Inspect and compare it without running a model:
+
+```bash
+looplet describe ./agent.cartridge
+looplet diff ./agent-v1.cartridge ./agent-v2.cartridge --show
+looplet hash ./agent.cartridge
+looplet eval run ./agent.cartridge --out ./eval-runs --threshold 1.0
+```
+
+The prompt, tool, hook, and eval change live next to the behavioral
+contract they affect. Shared or protected holdout evals can still live
+outside the cartridge when the candidate must not be able to edit its
+own promotion gate.
+
+See the [cartridge guide](https://hsaghir.github.io/looplet/cartridge/). If a brief is a useful
+starting point, `looplet new` can scaffold a cartridge—but the
+[agent factory](https://hsaghir.github.io/looplet/agent-factory/) is onboarding, not the product
+boundary. Review and test what it writes.
 
 ---
 
-## Learn more
+## Four pieces, one narrow job
 
-| Doc | What's in it |
-|---|---|
-| [**docs/agent-factory.md**](docs/agent-factory.md) | **`looplet new` — generate agents from English briefs (start here)** |
-| [docs/tutorial.md](docs/tutorial.md) | Hand-write your first agent in 5 steps |
-| [docs/cartridge.md](docs/cartridge.md) | Workspace file layout reference |
-| [docs/hooks.md](docs/hooks.md) | Writing and composing hooks |
-| [docs/evals.md](docs/evals.md) | pytest-style agent evaluation |
-| [docs/provenance.md](docs/provenance.md) | Capturing prompts + trajectories |
-| [docs/recipes.md](docs/recipes.md) | Ollama, OTel, MCP, cost accounting, checkpoints |
-| [docs/benchmarks.md](docs/benchmarks.md) | Cold-import time & dep footprint |
-| [docs/faq.md](docs/faq.md) | FAQ, including "why not LangGraph?" |
-| [ROADMAP.md](ROADMAP.md) | What's planned, what's frozen, what's out of scope |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | Dev setup, conventions, PR checklist |
-| [CHANGELOG.md](CHANGELOG.md) | Release notes |
+| Piece | What it provides |
+| --- | --- |
+| `composable_loop()` | Sync/async iterator-first execution with explicit `Step` records |
+| Hooks and protocols | Exact interception points for context, permissions, approvals, compaction, tracing, and stop rules |
+| Provenance + replay | Human-readable model/step evidence and captured-response re-execution |
+| Collectors + evals | Host-observed artifacts, grader-only expectations, protected holdouts, pytest helpers, and CI exit codes |
+
+Core Looplet uses the Python standard library. OpenAI and Anthropic
+SDKs are optional extras; bring your own backend if you prefer.
+
+## Outcome-grounded by default
+
+Do not permanently require the model to follow yesterday's trajectory
+just because yesterday's model did. A smarter model may use different
+tools and still produce a better result.
+
+```python
+def collect_tests(state):
+    result = subprocess.run(["pytest", "-q"], check=False)
+    return {"tests_passing": result.returncode == 0}
+
+
+@eval_mark("required")
+def eval_tests_pass(ctx):
+    return ctx.artifacts["tests_passing"]
+```
+
+Use trajectory assertions to test harness mechanics—whether a guard
+fired, a dangerous call was denied, or a stop reason was recorded. Use
+collectors for product quality: tests passing, files correct, records
+written, APIs healthy, or schemas valid.
+
+The agent never receives top-level case `expected` data. Persisted runs
+keep it in a separate `expected.json`, and serious promotion gates can
+use host-owned holdouts outside the writable sandbox.
+
+Read [behavioral evals](https://hsaghir.github.io/looplet/evals/).
 
 ---
+
+## When Looplet fits
+
+Use Looplet when:
+
+- one model calls tools until it is done;
+- your team already works in Python, Git, pytest, and CI;
+- prompt, model, tool, or hook changes need regression evidence;
+- you need to intercept exact phases without subclassing a framework;
+- local, inspectable artifacts matter more than a hosted dashboard.
+
+Use something else when:
+
+- the system is naturally a branching, durable multi-stage graph;
+- a managed control plane or annotation UI should be the source of truth;
+- you want a turnkey assistant rather than a toolkit;
+- you do not want to own execution, tools, or behavioral contracts.
+
+Looplet can run inside a workflow engine and export to observability
+services. It does not try to become either one. See the
+[selection guide](https://hsaghir.github.io/looplet/why-looplet/) and [FAQ](https://hsaghir.github.io/looplet/faq/).
+
+## Shipped examples
+
+- [`coder.cartridge`](https://github.com/hsaghir/looplet/tree/master/examples/coder.cartridge) — tool-heavy coding harness with colocated cases, collectors, and required graders.
+- [`dep_doctor.cartridge`](https://github.com/hsaghir/looplet/tree/master/examples/dep_doctor.cartridge) — repository dependency audit.
+- [`git_detective.cartridge`](https://github.com/hsaghir/looplet/tree/master/examples/git_detective.cartridge) — repository-health investigation.
+- [`threat_intel.cartridge`](https://github.com/hsaghir/looplet/tree/master/examples/threat_intel.cartridge) — local-first security briefing.
+- [`planner.cartridge`](https://github.com/hsaghir/looplet/tree/master/examples/planner.cartridge) — planning composed as a subagent, not a loop phase.
+- [`regression_demo`](https://github.com/hsaghir/looplet/tree/master/examples/regression_demo) — scripted, network-free captured-response replay and eval proof.
+
+Portable twins demonstrate MCP/LEP boundaries where needed; see
+[portability](https://hsaghir.github.io/looplet/portability/) for the exact supported tiers rather
+than a blanket runtime-agnostic claim.
+
+## Documentation
+
+| Start here | Purpose |
+| --- | --- |
+| [Why Looplet](https://hsaghir.github.io/looplet/why-looplet/) | Category, fit, tradeoffs, and boundaries |
+| [Quickstart](https://hsaghir.github.io/looplet/quickstart/) | Build, capture, and test a first loop |
+| [Failure → regression](https://hsaghir.github.io/looplet/regression-demo/) | Run the core claim without a model or network |
+| [Cartridges](https://hsaghir.github.io/looplet/cartridge/) | Reviewable harness layout and round-trip behavior |
+| [Provenance](https://hsaghir.github.io/looplet/provenance/) | Capture and captured-response replay |
+| [Evals](https://hsaghir.github.io/looplet/evals/) | Outcome collectors, grader-only data, protected holdouts, pytest, and CI |
+| [Hooks](https://hsaghir.github.io/looplet/hooks/) | Lifecycle interception and composition |
+| [FAQ](https://hsaghir.github.io/looplet/faq/) | Selection guidance and honest limitations |
+| [Roadmap](https://github.com/hsaghir/looplet/blob/master/ROADMAP.md) | What belongs in core—and what does not |
 
 ## Stability
 
-`looplet` follows [SemVer](https://semver.org/). Pre-`1.0`, minor versions may introduce breaking changes — pin conservatively:
+Looplet follows SemVer. Before `1.0`, minor versions may make breaking
+changes; pin to the current minor line:
 
 ```toml
-looplet>=0.1.8,<0.2
+looplet>=0.2,<0.3
 ```
 
-See [ROADMAP.md § v1.0 API contract](ROADMAP.md#v10-api-contract) for the frozen surface and the path to `1.0`.
-
----
+The current package version is `0.2.0`. See the
+[changelog](https://github.com/hsaghir/looplet/blob/master/CHANGELOG.md) and
+[path to 1.0](https://github.com/hsaghir/looplet/blob/master/ROADMAP.md#path-to-10).
 
 ## Contributing
 
-Bug reports, docs, backends, examples, evals all welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for dev setup and conventions; browse [open issues labelled `good first issue`](https://github.com/hsaghir/looplet/issues?q=is%3Aopen+label%3A%22good+first+issue%22) for scoped tasks. Security issues go through [SECURITY.md](SECURITY.md).
+Bug reports, focused examples, backend adapters, and integrity fixes are
+welcome. New core features must be domain-agnostic, composable, and
+justify why existing hooks, tools, or host code cannot express them.
 
-Thanks to everyone who has contributed:
-
-- [@mvanhorn](https://github.com/mvanhorn) — "Why not LangGraph?" FAQ (#17)
+See [CONTRIBUTING.md](https://github.com/hsaghir/looplet/blob/master/CONTRIBUTING.md).
+Security issues go through
+[SECURITY.md](https://github.com/hsaghir/looplet/blob/master/SECURITY.md).
 
 ## License
 
-Apache 2.0. See [LICENSE](LICENSE).
+Apache License 2.0. See [LICENSE](https://github.com/hsaghir/looplet/blob/master/LICENSE).

@@ -1,0 +1,11 @@
+name: publish_report
+description: Write report.json from integer revenue and cost inputs.
+parameters:
+  revenue:
+    type: integer
+    description: Total revenue.
+  cost:
+    type: integer
+    description: Total cost.
+requires:
+  - project_dir

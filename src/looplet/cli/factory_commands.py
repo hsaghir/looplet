@@ -1,16 +1,15 @@
-"""``looplet new`` and ``looplet run-workspace`` CLI implementation.
+"""``looplet new`` and ``looplet run-cartridge`` CLI implementation.
 
 These two commands are the user-facing entry points to the agent
-factory. The vision is: a developer with one hour to spare can pip
-install looplet, write one paragraph describing the agent they want,
-run a single command, and have a working agent that operates on
-their input.
+factory. The factory scaffolds a reviewable cartridge draft from a
+brief; the developer remains responsible for reviewing its code and
+adding outcome-grounded behavioral contracts before release.
 
 ## ``looplet new <description>``
 
 Runs the bundled :mod:`agent_factory.cartridge` against a brief and
-writes the produced workspace to a directory. After this completes,
-``./<name>.workspace/`` contains a fully-loaded looplet workspace.
+writes the produced cartridge to a directory. After this completes,
+``./<name>.cartridge/`` contains a loadable Looplet harness draft.
 
 Required env vars (any OpenAI-compatible endpoint):
 
@@ -21,11 +20,11 @@ Required env vars (any OpenAI-compatible endpoint):
 * ``OPENAI_MODEL`` — model id, e.g. ``gpt-4o-mini`` or
   ``claude-sonnet-4.6``.
 
-## ``looplet run-workspace <path> <task>``
+## ``looplet run-cartridge <path> <task>``
 
-Runs an existing workspace on a task and prints the final result.
-Same env vars as above. This is the "watch the agent work" command
-once ``looplet new`` has produced a workspace.
+Runs an existing cartridge on a task and prints the final result.
+Same env vars as above. ``run-workspace`` remains a compatibility
+alias.
 
 ## Why split into two modules?
 
@@ -183,7 +182,7 @@ def cmd_new(args: argparse.Namespace) -> int:
     brief_for_factory = description
     if not tools:
         brief_for_factory = (
-            f"Build a workspace at ./{target_dir.name}/ for the following agent:\n\n"
+            f"Scaffold a cartridge draft at ./{target_dir.name}/ for this harness:\n\n"
             f"{description}\n\n"
             f"Cartridge name should be: {name}"
         )
@@ -251,11 +250,11 @@ def cmd_new(args: argparse.Namespace) -> int:
 
     elapsed = time.time() - t0
     print()
-    print(f"{_green('✓')} built in {elapsed:.1f}s — {n_steps} steps, {n_denies} denies")
+    print(f"{_green('✓')} draft built in {elapsed:.1f}s — {n_steps} steps, {n_denies} denies")
 
-    # Verify the workspace actually loads.
+    # Verify the cartridge actually loads.
     if not target_dir.is_dir():
-        print(_red(f"\nerror: workspace not created at {target_dir}"), file=sys.stderr)
+        print(_red(f"\nerror: cartridge not created at {target_dir}"), file=sys.stderr)
         return 1
     try:
         sub_preset = cartridge_to_preset(str(target_dir))
@@ -264,24 +263,24 @@ def cmd_new(args: argparse.Namespace) -> int:
         sys_prompt_chars = len(sub_preset.config.system_prompt or "")
     except Exception as exc:
         print(
-            _red(f"\nerror: produced workspace failed to load: {exc}"),
+            _red(f"\nerror: produced cartridge failed to load: {exc}"),
             file=sys.stderr,
         )
         return 1
 
     print()
-    print(f"{_bold('produced workspace:')} {target_dir}")
+    print(f"{_bold('produced cartridge draft:')} {target_dir}")
     print(f"  tools:  {', '.join(produced_tools)}  ({n_tools})")
     print(f"  prompt: {sys_prompt_chars} chars")
     if last_done_summary:
         print(f"  agent says: {last_done_summary[:120]}")
     print()
     print(_bold("next:"))
-    print(f'  looplet run-workspace {target_dir} "<your task>"')
+    print(f'  looplet run-cartridge {target_dir} "<your task>"')
     return 0
 
 
-# ── ``looplet run-workspace`` ───────────────────────────────────
+# ── ``looplet run-cartridge`` (``run-workspace`` alias) ────────
 def cmd_run_workspace(args: argparse.Namespace) -> int:
     if _check_env() != 0:
         return 1
@@ -290,7 +289,7 @@ def cmd_run_workspace(args: argparse.Namespace) -> int:
     task: str = args.task
 
     if not workspace_path.is_dir():
-        print(_red(f"error: workspace not found at {workspace_path}"), file=sys.stderr)
+        print(_red(f"error: cartridge not found at {workspace_path}"), file=sys.stderr)
         return 1
 
     try:
@@ -315,7 +314,7 @@ def cmd_run_workspace(args: argparse.Namespace) -> int:
         backend = _build_backend()
         preset = cartridge_to_preset(str(workspace_path), runtime=runtime)
     except Exception as exc:
-        print(_red(f"error: workspace load failed: {exc}"), file=sys.stderr)
+        print(_red(f"error: cartridge load failed: {exc}"), file=sys.stderr)
         return 1
 
     if args.max_steps:
@@ -421,18 +420,19 @@ def cmd_portability(args: argparse.Namespace) -> int:
 
 # ── argparse wiring (called from __main__.main) ─────────────────
 def add_subparsers(sub: "argparse._SubParsersAction") -> None:
-    """Register ``new`` and ``run-workspace`` on the top-level parser.
+    """Register ``new`` and ``run-cartridge`` on the top-level parser.
 
     Called from :mod:`looplet.__main__` so the two commands are
-    available as ``looplet new ...`` and ``looplet run-workspace ...``.
+    available as ``looplet new ...`` and ``looplet run-cartridge ...``.
     """
     new_p = sub.add_parser(
         "new",
-        help="Generate a new agent workspace from a brief (uses agent_factory)",
+        help="Scaffold a reviewable cartridge draft from a brief",
         description=(
-            "Generate a working looplet agent workspace from a one-paragraph "
-            "English brief. Requires OPENAI_BASE_URL / OPENAI_API_KEY / "
-            "OPENAI_MODEL env vars (any OpenAI-compatible endpoint)."
+            "Scaffold a reviewable Looplet cartridge draft from a one-paragraph "
+            "English brief. Review and add behavioral contracts before release. "
+            "Requires OPENAI_BASE_URL / OPENAI_API_KEY / OPENAI_MODEL env vars "
+            "(any OpenAI-compatible endpoint)."
         ),
     )
     new_p.add_argument(
@@ -443,8 +443,8 @@ def add_subparsers(sub: "argparse._SubParsersAction") -> None:
         "target",
         nargs="?",
         type=Path,
-        default=Path("./agent.workspace"),
-        help="Target directory for the produced workspace (default: ./agent.workspace)",
+        default=Path("./agent.cartridge"),
+        help="Target directory for the cartridge draft (default: ./agent.cartridge)",
     )
     new_p.add_argument(
         "--name",
@@ -478,7 +478,12 @@ def add_subparsers(sub: "argparse._SubParsersAction") -> None:
             "``run-workspace`` is a back-compat alias."
         ),
     )
-    run_p.add_argument("workspace", type=Path, help="Path to a cartridge directory")
+    run_p.add_argument(
+        "workspace",
+        metavar="cartridge",
+        type=Path,
+        help="Path to a cartridge directory",
+    )
     run_p.add_argument("task", help="Task to give the agent")
     run_p.add_argument(
         "--max-steps",

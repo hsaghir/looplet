@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Reproducible CLI demo for ``looplet new`` + ``looplet run-workspace``.
+# Reproducible CLI demo for ``looplet new`` + ``looplet run-cartridge``.
 #
 # Run as:
 #   bash demo/looplet_new_demo.sh
@@ -53,7 +53,7 @@ cd "$DEMO_DIR"
 
 clear
 
-echo "# looplet — agents from a paragraph, in one command"
+echo "# looplet new — scaffold a reviewable cartridge draft"
 PAUSE 2
 echo
 echo "# Step 1: configure any OpenAI-compatible endpoint."
@@ -68,27 +68,27 @@ PAUSE 1
 
 BRIEF="An agent that takes a URL and returns the page title and a 2-sentence summary of the content. Tools: fetch_url(url) using stdlib urllib, extract_title(html), summarize_text(text) using ctx.llm."
 
-TYPE "looplet new \"$BRIEF\" ./url_summarizer.workspace"
+TYPE "looplet new \"$BRIEF\" ./url_summarizer.cartridge"
 PAUSE 1
 echo
 
 # Real factory build. ``uv run --project ...`` keeps the demo working
 # even when the user hasn't yet ``pip install``ed looplet onto PATH.
-uv run --project "$LOOPLET_REPO" looplet new "$BRIEF" ./url_summarizer.workspace --quiet
+uv run --project "$LOOPLET_REPO" looplet new "$BRIEF" ./url_summarizer.cartridge --quiet
 
 echo
 PAUSE 2
-echo "# Step 3: give the produced agent a real task."
+echo "# Step 3: review the draft, then give it a real task."
 PAUSE 1
-TYPE 'looplet run-workspace ./url_summarizer.workspace "Summarize https://example.com"'
+TYPE 'looplet run-cartridge ./url_summarizer.cartridge "Summarize https://example.com"'
 PAUSE 1
 echo
 
 # Real run.
-uv run --project "$LOOPLET_REPO" looplet run-workspace ./url_summarizer.workspace "Summarize https://example.com" --quiet
+uv run --project "$LOOPLET_REPO" looplet run-cartridge ./url_summarizer.cartridge "Summarize https://example.com" --quiet
 
 echo
 PAUSE 2
-echo "# 6 minutes from blank dir to a working agent that fetches, parses, summarizes."
-echo "# That's the whole pitch."
+echo "# The draft loads and runs. Add outcome-grounded contracts before release."
+echo "# Generation is onboarding; reviewed harness evidence is the product boundary."
 PAUSE 3

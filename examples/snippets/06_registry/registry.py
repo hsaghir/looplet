@@ -1,12 +1,12 @@
-"""Toy workspace registry: list workspaces in a directory, or pull one
+"""Toy cartridge registry: list cartridges in a directory, or pull one
 from a git URL.
 
 Run::
 
-    # List local workspaces under <root>:
+    # List local cartridges under <root>:
     python registry.py list /path/to/repo
 
-    # Clone a workspace subdirectory from a git URL:
+    # Clone a cartridge subdirectory from a git URL:
     python registry.py pull <git_url> <subpath_in_repo> <dest>
 """
 
@@ -22,7 +22,7 @@ from pathlib import Path
 
 def cmd_list(root: Path) -> None:
     rows = []
-    for ws_json in root.rglob("workspace.json"):
+    for ws_json in root.rglob("cartridge.json"):
         if "__pycache__" in ws_json.parts:
             continue
         ws_dir = ws_json.parent
@@ -49,12 +49,12 @@ def cmd_pull(git_url: str, subpath: str, dest: Path) -> None:
             capture_output=True,
         )
         src = tmp_path / "repo" / subpath
-        if not (src / "workspace.json").is_file():
-            raise SystemExit(f"no workspace.json in {subpath}")
+        if not (src / "cartridge.json").is_file():
+            raise SystemExit(f"no cartridge.json in {subpath}")
         shutil.copytree(src, dest)
         for cache in dest.rglob("__pycache__"):
             shutil.rmtree(cache, ignore_errors=True)
-    print(f"pulled workspace into {dest}")
+    print(f"pulled cartridge into {dest}")
 
 
 def main() -> None:

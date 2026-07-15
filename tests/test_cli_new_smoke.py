@@ -1,9 +1,11 @@
-"""Smoke tests for ``looplet new`` and ``looplet run-workspace`` CLI.
+"""Smoke tests for ``looplet new`` and ``looplet run-cartridge`` CLI.
 
 The CLI's job is straightforward plumbing — load the factory, run a
 loop, surface results — so most of these tests exercise UX paths
-(missing env vars, bad workspace path, factory location lookup)
+(missing env vars, bad cartridge path, factory location lookup)
 without spinning up a real LLM.
+
+``run-workspace`` remains covered as a compatibility alias.
 """
 
 from __future__ import annotations
@@ -11,6 +13,7 @@ from __future__ import annotations
 import io
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -25,10 +28,32 @@ def test_new_help() -> None:
     assert exc.value.code == 0
 
 
-def test_run_workspace_help() -> None:
+def test_run_cartridge_help() -> None:
+    with pytest.raises(SystemExit) as exc, patch("sys.stdout", new=io.StringIO()):
+        main(["run-cartridge", "--help"])
+    assert exc.value.code == 0
+
+
+def test_run_workspace_alias_help() -> None:
     with pytest.raises(SystemExit) as exc, patch("sys.stdout", new=io.StringIO()):
         main(["run-workspace", "--help"])
     assert exc.value.code == 0
+
+
+def test_new_defaults_to_cartridge_target(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The public default is a cartridge, not the legacy workspace suffix."""
+    from looplet.cli import factory_commands
+
+    seen: dict[str, Path] = {}
+
+    def fake_cmd_new(args) -> int:
+        seen["target"] = args.target
+        return 0
+
+    monkeypatch.setattr(factory_commands, "cmd_new", fake_cmd_new)
+
+    assert main(["new", "a brief"]) == 0
+    assert seen["target"] == Path("agent.cartridge")
 
 
 def test_new_missing_env_vars(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -38,7 +63,7 @@ def test_new_missing_env_vars(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -
         monkeypatch.delenv(var, raising=False)
     captured = io.StringIO()
     with patch.object(sys, "stderr", captured):
-        rc = main(["new", "a brief", str(tmp_path / "out.workspace")])
+        rc = main(["new", "a brief", str(tmp_path / "out.cartridge")])
     assert rc == 1
     err = captured.getvalue()
     assert "missing required env vars" in err
@@ -56,7 +81,7 @@ def test_new_partial_env_vars(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -
     monkeypatch.delenv("OPENAI_MODEL", raising=False)
     captured = io.StringIO()
     with patch.object(sys, "stderr", captured):
-        rc = main(["new", "a brief", str(tmp_path / "out.workspace")])
+        rc = main(["new", "a brief", str(tmp_path / "out.cartridge")])
     assert rc == 1
     err = captured.getvalue()
     assert "OPENAI_API_KEY" in err
@@ -65,23 +90,55 @@ def test_new_partial_env_vars(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -
     assert "missing required env vars: OPENAI_BASE_URL" not in err
 
 
-def test_run_workspace_missing_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_run_cartridge_missing_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     for var in ("OPENAI_BASE_URL", "OPENAI_API_KEY", "OPENAI_MODEL"):
         monkeypatch.delenv(var, raising=False)
-    rc = main(["run-workspace", str(tmp_path), "do something"])
+    rc = main(["run-cartridge", str(tmp_path), "do something"])
     assert rc == 1
 
 
-def test_run_workspace_path_must_exist(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_run_cartridge_path_must_exist(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
     monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:1234/v1")
     monkeypatch.setenv("OPENAI_API_KEY", "test")
     monkeypatch.setenv("OPENAI_MODEL", "test-model")
     captured = io.StringIO()
     nonexistent = tmp_path / "no_such_dir"
     with patch.object(sys, "stderr", captured):
-        rc = main(["run-workspace", str(nonexistent), "do x"])
+        rc = main(["run-cartridge", str(nonexistent), "do x"])
     assert rc == 1
-    assert "workspace not found" in captured.getvalue()
+    assert "cartridge not found" in captured.getvalue()
+
+
+def test_run_cartridge_load_failure_uses_cartridge_language(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import looplet
+    from looplet.cli import factory_commands
+
+    for var, value in {
+        "OPENAI_BASE_URL": "http://localhost:1234/v1",
+        "OPENAI_API_KEY": "test",
+        "OPENAI_MODEL": "test-model",
+    }.items():
+        monkeypatch.setenv(var, value)
+    cartridge = tmp_path / "broken.cartridge"
+    cartridge.mkdir()
+    monkeypatch.setattr(factory_commands, "_build_backend", object)
+
+    def fail_load(*_args, **_kwargs):
+        raise ValueError("broken manifest")
+
+    monkeypatch.setattr(looplet, "cartridge_to_preset", fail_load)
+    captured = io.StringIO()
+    with patch.object(sys, "stderr", captured):
+        rc = main(["run-cartridge", str(cartridge), "do x"])
+
+    assert rc == 1
+    assert "cartridge load failed: broken manifest" in captured.getvalue()
 
 
 def test_factory_workspace_path_resolves_in_repo() -> None:
@@ -96,14 +153,128 @@ def test_factory_workspace_path_resolves_in_repo() -> None:
 
 
 def test_new_command_registered_on_top_level() -> None:
-    """``looplet`` (no subcommand) should mention ``new`` and ``run-workspace``."""
+    """Top-level help advertises the canonical command and compatibility alias."""
     captured = io.StringIO()
     with pytest.raises(SystemExit) as exc, patch.object(sys, "stdout", captured):
         main(["--help"])
     assert exc.value.code == 0
     out = captured.getvalue()
     assert "new" in out
+    assert "run-cartridge" in out
     assert "run-workspace" in out
+
+
+def _new_args(target: Path) -> SimpleNamespace:
+    return SimpleNamespace(
+        description="summarize a URL",
+        target=target,
+        name=None,
+        tool=None,
+        max_steps=None,
+        quiet=True,
+        pretty=False,
+    )
+
+
+def _patch_new_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> dict[str, object]:
+    import looplet
+    from looplet.cli import factory_commands
+
+    config = SimpleNamespace(max_steps=3, system_prompt="Reviewable prompt")
+    factory_preset = SimpleNamespace(
+        config=config,
+        tools=SimpleNamespace(_tools={"done": object()}),
+        hooks=[],
+    )
+    produced_preset = SimpleNamespace(
+        config=config,
+        tools=SimpleNamespace(_tools={"done": object(), "fetch_url": object()}),
+    )
+    observed: dict[str, object] = {}
+
+    def fake_load(_path: str, runtime=None):
+        return factory_preset if runtime is not None else produced_preset
+
+    def fake_loop(**kwargs):
+        observed.update(kwargs)
+        return iter(())
+
+    monkeypatch.setenv("OPENAI_MODEL", "mock-model")
+    monkeypatch.setattr(factory_commands, "_check_env", lambda: 0)
+    monkeypatch.setattr(factory_commands, "_build_backend", object)
+    monkeypatch.setattr(factory_commands, "_factory_workspace_path", lambda: tmp_path)
+    monkeypatch.setattr(looplet, "cartridge_to_preset", fake_load)
+    monkeypatch.setattr(looplet, "composable_loop", fake_loop)
+    return observed
+
+
+def test_new_success_labels_generated_code_as_draft(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from looplet.cli import factory_commands
+
+    target = tmp_path / "url_summary.cartridge"
+    target.mkdir()
+    observed = _patch_new_runtime(monkeypatch, tmp_path)
+
+    assert factory_commands.cmd_new(_new_args(target)) == 0
+
+    out = capsys.readouterr().out
+    assert "draft built" in out
+    assert "produced cartridge draft:" in out
+    assert f'looplet run-cartridge {target} "<your task>"' in out
+    task = observed["task"]
+    assert isinstance(task, dict)
+    assert "Scaffold a cartridge draft" in task["goal"]
+
+
+def test_new_missing_output_uses_cartridge_language(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from looplet.cli import factory_commands
+
+    target = tmp_path / "missing.cartridge"
+    _patch_new_runtime(monkeypatch, tmp_path)
+
+    assert factory_commands.cmd_new(_new_args(target)) == 1
+
+    captured = capsys.readouterr()
+    assert "draft built" in captured.out
+    assert f"cartridge not created at {target}" in captured.err
+
+
+def test_new_invalid_output_uses_cartridge_language(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import looplet
+    from looplet.cli import factory_commands
+
+    target = tmp_path / "broken.cartridge"
+    target.mkdir()
+    _patch_new_runtime(monkeypatch, tmp_path)
+    load_factory = looplet.cartridge_to_preset
+
+    def fail_produced_load(path: str, runtime=None):
+        if runtime is not None:
+            return load_factory(path, runtime=runtime)
+        raise ValueError("corrupted manifest")
+
+    monkeypatch.setattr(looplet, "cartridge_to_preset", fail_produced_load)
+
+    assert factory_commands.cmd_new(_new_args(target)) == 1
+
+    captured = capsys.readouterr()
+    assert "draft built" in captured.out
+    assert "produced cartridge failed to load: corrupted manifest" in captured.err
 
 
 # ── --pretty (stdlib-only renderer) ────────────────────────────
@@ -180,10 +351,10 @@ def test_new_help_advertises_pretty() -> None:
     assert "--pretty" in captured.getvalue()
 
 
-def test_run_workspace_help_advertises_pretty() -> None:
-    """``looplet run-workspace --help`` should mention the --pretty flag."""
+def test_run_cartridge_help_advertises_pretty() -> None:
+    """``looplet run-cartridge --help`` should mention the --pretty flag."""
     captured = io.StringIO()
     with pytest.raises(SystemExit) as exc, patch.object(sys, "stdout", captured):
-        main(["run-workspace", "--help"])
+        main(["run-cartridge", "--help"])
     assert exc.value.code == 0
     assert "--pretty" in captured.getvalue()

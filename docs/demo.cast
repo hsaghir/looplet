@@ -15,4 +15,4 @@
 [4.790865, "o", "  ↳ result:   {\"deleted\": 2, \"remaining\": 2}\r\n"]
 [5.041118, "o", "#3 ✓ delete_rows(where_status=cancelled) → 2 keys [1301ms]\r\n"]
 [5.491676, "o", "#4 ✓ done(verdict=cleaned 2 cancelled rows; 2 remain) → 1 keys [0ms]\r\n"]
-[5.942233, "o", "\r\n✓ done — 1 approval prompt, 4 tools, deterministic replay.\r\n"]
+[5.942233, "o", "\r\n✓ done — 1 approval prompt, 4 tools, scripted run.\r\n"]

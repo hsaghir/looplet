@@ -1,8 +1,10 @@
-# Demo script — GIF recording
+# Demo script — optional GIF recording
 
-The README hero GIF is produced from a deterministic pretty trace in
-`examples/pretty_demo.py` — no API key, no network, no flaky timing.
-Re-record whenever the CLI pretty output changes.
+The relaunched homepage uses the executable text proof, not a GIF. If a
+secondary article needs a terminal recording, generate it from the scripted
+pretty trace in `examples/pretty_demo.py`—no API key, network, or flaky model
+timing. Re-record whenever CLI language changes; do not reuse workspace-era
+assets.
 
 ## Prep
 
@@ -30,11 +32,11 @@ agg demo/looplet_pretty.cast demo/looplet_pretty.gif --theme monokai \
 
 Output: a short, deterministic GIF that shows the same append-only
 pretty printer used by `looplet new --pretty` and
-`looplet run-workspace --pretty`.
+`looplet run-cartridge --pretty`.
 
 ## Docs Loop Demo
 
-`docs/demo.gif` is a separate deterministic loop demo. It shows a real
+`docs/demo.gif` can be generated as a separate scripted loop demo. It shows a real
 `composable_loop(...)` run with a mock LLM, an approval prompt, and
 `Step.pretty()` output.
 

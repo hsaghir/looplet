@@ -18,7 +18,7 @@ Then from the repo root:
 ```bash
 make install           # uv sync --all-extras (matches CI)
 make check             # everything CI runs: lint + format + pyright + pytest
-make test              # just the tests (~2min, 1674 tests)
+make test              # just the test suite
 make install-hooks     # one-time: install a pre-push git hook that runs `make check`
 ```
 
@@ -27,7 +27,7 @@ Run it before every push, or let the pre-push hook do it for you.
 
 ## Branching & commits
 
-- Create a feature branch off `main`.
+- Create a feature branch off `master`.
 - Write small, focused commits. We aim for commits that tell a story;
   squash-merges are fine on the PR side.
 - Include a test for any behavior change; bug fixes should come with a
@@ -39,6 +39,14 @@ Run it before every push, or let the pre-push hook do it for you.
   `dataclasses`, `typing.Protocol`).
 - **Domain-agnostic core**: the harness must not assume what the agent
   *does*. Domain-specific helpers belong in the user's code, not here.
+- **Generalize before adding**: prefer a plain hook, tool, collector, grader,
+  cartridge, recipe, or downstream package over a new loop concept. Search,
+  statistics, prompt optimization, and domain policy do not belong in core.
+- **Evidence over demos**: a behavior claim needs a network-free regression
+  test or a reproducible case + collector + grader. Do not grade a preferred
+  trajectory when the real outcome can be inspected independently.
+- **Protect the oracle**: cartridge evals are useful self-tests. Promotion
+  holdouts must remain host-owned when a candidate can edit its cartridge.
 - **Fail closed**: permissions, cancellation, and parse recovery must
   default to the safe path. If in doubt, deny / cancel / re-prompt.
 - **Sync ↔ async parity**: any behavior added to `composable_loop` must
@@ -68,8 +76,12 @@ Run it before every push, or let the pre-push hook do it for you.
 
 Before opening a PR, please verify:
 
-- [ ] `make check` passes (lint + format + pyright + 1674 tests).
+- [ ] `make check` passes (lint + format + pyright + pytest).
 - [ ] New public API has docstrings and tests.
+- [ ] Behavioral changes include an outcome-grounded regression contract (or
+  the PR explains why a unit assertion is the right level).
+- [ ] The change belongs in core rather than a hook, tool, cartridge, recipe,
+  optional extra, or downstream package.
 - [ ] `CHANGELOG.md` has an entry under `## Unreleased` describing your
       change (unless it's a docs-only or internal refactor with no
       user-visible effect).

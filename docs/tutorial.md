@@ -1,150 +1,320 @@
-# Tutorial — build your first agent in 5 steps
+# Tutorial — build a testable harness
 
-This walks through the essentials. By the end you'll have an agent with
-hooks, context management, crash-resume, and approval.
+This tutorial builds the smallest useful Looplet artifact: a report
+agent whose tool writes `report.json`, plus a behavioral contract that
+checks the file independently.
 
-## Step 1 — Install and run the hello world
-
-```bash
-pip install "looplet[openai]"
-python -m looplet.examples.hello_world
-```
-
-Connects to any OpenAI-compatible API — set `OPENAI_BASE_URL` and
-`OPENAI_MODEL` to point at your provider (OpenAI, Ollama, Groq,
-Together, vLLM, …).
-
-## Step 2 — Understand the loop
-
-The core is one `for` loop. You own iteration — pause, filter, break:
-
-```python
-from looplet import (
-    composable_loop, LoopConfig, DefaultState, BaseToolRegistry, ToolSpec,
-)
-
-tools = BaseToolRegistry()
-tools.register(ToolSpec(name="greet", description="Greet someone",
-                        parameters={"name": "str"},
-                        execute=lambda *, name: {"greeting": f"Hello, {name}!"}))
-tools.register(ToolSpec(name="done", description="Finish",
-                        parameters={"answer": "str"},
-                        execute=lambda *, answer: {"answer": answer}))
-
-for step in composable_loop(
-    llm=my_llm,                       # any LLMBackend — OpenAI, Anthropic, local
-    tools=tools,
-    state=DefaultState(max_steps=5),
-    config=LoopConfig(max_steps=5),
-    task={"goal": "Greet Alice, then finish."},
-):
-    print(step.pretty())
-```
-
-## Step 3 — Add a hook
-
-Hooks are plain Python classes. Implement only the methods you need:
-
-```python
-from looplet import HookDecision, InjectContext
-
-class MyGuardrail:
-    def post_dispatch(self, state, session_log, tool_call, tool_result, step_num):
-        if tool_call.tool == "write" and "test_" not in tool_call.args.get("file_path", ""):
-            return InjectContext("You wrote code but no tests. Write tests first.")
-        return None
-
-    def check_done(self, state, session_log, context, step_num):
-        return HookDecision(block="Not done yet — run tests first.")
-```
-
-Pass hooks to the loop:
-
-```python
-composable_loop(..., hooks=[MyGuardrail()])
-```
-
-See [hooks.md](hooks.md) for the full walkthrough.
-
-## Step 4 — Add context management
-
-For long sessions, add the default compaction service so the agent can
-keep working under context pressure:
-
-```python
-from looplet import (
-    DefaultCompactService,
-    ContextBudget, ThresholdCompactHook,
-)
-
-config = LoopConfig(
-    max_steps=50,
-    compact_service=DefaultCompactService(
-        keep_recent=2,
-        keep_recent_tool_results=5,
-    ),
-)
-hooks = [ThresholdCompactHook(ContextBudget(context_window=128_000))]
-```
-
-`DefaultCompactService` prunes old bulky tool results, summarizes older
-working context, keeps recent steps verbatim, and reports what changed
-through compaction lifecycle events. Use `compact_chain(...)` with
-`PruneToolResults`, `SummarizeCompact`, and `TruncateCompact` when you
-want a custom policy.
-
-## Step 5 — Add crash-resume and approval
-
-One line for crash-safe checkpoints. Add `ApprovalHook` for human
-sign-off on risky actions:
-
-```python
-from looplet import ApprovalHook
-
-config = LoopConfig(
-    max_steps=50,
-    checkpoint_dir="./checkpoints",   # auto-save after every step, auto-resume on restart
-)
-hooks = [ApprovalHook()]              # stops loop when tool returns needs_approval=True
-```
-
-## See it all together
-
-Run the complete coding agent example (bash, read, write, edit, glob,
-grep, think — same tools as Claude Code):
+The complete source ships under
+[`examples/regression_demo/`](https://github.com/hsaghir/looplet/tree/master/examples/regression_demo).
+Run it at any point with:
 
 ```bash
-python -m looplet.examples.coding_agent "implement fizzbuzz" --model gpt-4o
-python -m looplet.examples.coding_agent --trace ./traces/   # save trajectory
+uv run python examples/regression_demo/run_demo.py
 ```
 
-## Debug — see what the LLM sees
+## 1. Start with a cartridge
 
-```python
-from looplet import preview_prompt
-
-print(preview_prompt(task={"goal": "fix the bug"}, tools=my_tools, state=my_state))
+```text
+report_agent.cartridge/
+├── cartridge.json
+├── config.yaml
+├── runtime.yaml
+├── prompts/system.md
+├── resources/project_dir.py
+├── tools/
+│   ├── publish_report/{tool.yaml, execute.py}
+│   └── done/{tool.yaml, execute.py}
+└── evals/
+    ├── cases/profit_math.json
+    ├── collect_outcome.py
+    └── eval_correctness.py
 ```
 
-## Testing without a real LLM
+The manifest identifies the artifact and schema:
 
-`looplet.testing` ships a scripted mock backend so you can unit-test
-hooks, tools, and your agent wiring without hitting a provider:
+```json title="cartridge.json"
+{
+  "name": "report_agent",
+  "schema_version": 2,
+  "description": "Write a small financial report."
+}
+```
+
+Contract-level loop configuration stays small:
+
+```yaml title="config.yaml"
+max_steps: 3
+done_tool: done
+```
+
+Host/runtime policy lives separately:
+
+```yaml title="runtime.yaml"
+use_native_tools: false
+```
+
+That split lets two hosts choose different provider or context behavior
+without pretending they are different agent contracts.
+
+## 2. Write the prompt and tool
+
+```markdown title="prompts/system.md"
+# Report agent
+
+You publish a small financial report. Call `publish_report` with the
+revenue and cost from the task, then call `done`.
+```
+
+The schema is data:
+
+```yaml title="tools/publish_report/tool.yaml"
+name: publish_report
+description: Write report.json from integer revenue and cost inputs.
+parameters:
+  revenue:
+    type: integer
+  cost:
+    type: integer
+requires:
+  - project_dir
+```
+
+The implementation is ordinary Python:
+
+```python title="tools/publish_report/execute.py"
+import json
+from pathlib import Path
+
+from looplet.types import ToolContext
+
+
+def execute(ctx: ToolContext, *, revenue: int, cost: int) -> dict:
+    root = Path(ctx.resources["project_dir"])
+    report = {
+        "revenue": revenue,
+        "cost": cost,
+        "profit": revenue - cost,
+    }
+    (root / "report.json").write_text(json.dumps(report, indent=2) + "\n")
+    return {"written": "report.json", "profit": report["profit"]}
+```
+
+`resources/project_dir.py` binds the runner's fresh sandbox:
 
 ```python
+def build(runtime=None):
+    return (runtime or {}).get("project_root", ".")
+```
+
+Inspect the loaded harness without calling a model:
+
+```bash
+looplet describe ./report_agent.cartridge
+```
+
+## 3. Express the scenario as data
+
+```json title="evals/cases/profit_math.json"
+{
+  "id": "profit_math",
+  "task": {
+    "goal": "Publish report.json for revenue 120 and cost 80, then finish."
+  },
+  "expected": {
+    "profit": 40
+  },
+  "marks": ["smoke", "regression"]
+}
+```
+
+The top-level `expected` mapping is for graders. The cartridge runner
+does not include it in the task sent to the agent. Persisted runs store
+it in `expected.json`, separate from the agent-visible
+`trajectory.json`.
+
+If a case needs starting files, put a `{path: contents}` mapping under
+`task.files`; the runner seeds those files in a fresh per-case
+workspace and removes the mapping before building the model prompt.
+
+## 4. Observe the world independently
+
+The tool claims it wrote a correct report. Do not grade that claim.
+Read the file:
+
+```python title="evals/collect_outcome.py"
+import json
+from pathlib import Path
+
+
+def collect_report(state, runtime) -> dict:
+    root = Path(runtime["project_root"])
+    path = root / "report.json"
+    if not path.is_file():
+        return {"report_exists": False}
+    report = json.loads(path.read_text())
+    return {
+        "report_exists": True,
+        "observed_profit": report.get("profit"),
+    }
+```
+
+Collector functions are discovered from `evals/collect_*.py`. A
+collector receives final state and may request the runtime mapping. Its
+dictionary is merged into `EvalContext.artifacts`.
+
+Collectors are observers, so an exception does not crash the live
+agent. It does become an explicit error result, which prevents the CLI
+from reporting a false green.
+
+## 5. Define the behavioral contract
+
+```python title="evals/eval_correctness.py"
+from looplet import EvalContext, eval_mark
+
+
+@eval_mark("required")
+def eval_profit_is_correct(ctx: EvalContext):
+    expected = ctx.task["expected"]["profit"]
+    return ctx.artifacts.get("observed_profit") == expected
+
+
+@eval_mark("required")
+def eval_completed(ctx: EvalContext):
+    return ctx.completed
+```
+
+Grader functions are discovered from `evals/eval_*.py`. `required`
+uses the normal mark mechanism but adds fail-closed CLI semantics: the
+grader must execute and pass. A skipped or errored required grader is a
+failure, not missing data to ignore.
+
+This contract permits any model trajectory that creates the correct
+artifact and completes. It does not require a specific reasoning string
+or tool order.
+
+## 6. Run it without a network
+
+Use `MockLLMBackend` in a normal test. The runner loads the cartridge,
+seeds each case, runs the live loop, invokes collectors and graders,
+and persists one self-contained record per case.
+
+```python title="tests/test_report_agent.py"
+import json
+
+from looplet import run_cartridge_evals
 from looplet.testing import MockLLMBackend
 
-llm = MockLLMBackend(responses=[
-    '{"tool": "add", "args": {"a": 2, "b": 3}, "reasoning": "sum"}',
-    '{"tool": "done", "args": {}, "reasoning": "finished"}',
-])
+
+def test_report_contract(tmp_path):
+    responses = [
+        json.dumps({
+            "tool": "publish_report",
+            "args": {"revenue": 120, "cost": 80},
+            "reasoning": "publish",
+        }),
+        json.dumps({
+            "tool": "done",
+            "args": {"summary": "published report.json"},
+            "reasoning": "finished",
+        }),
+    ]
+
+    records = run_cartridge_evals(
+        "report_agent.cartridge",
+        llm=MockLLMBackend(responses=responses),
+        output_dir=tmp_path / "runs",
+    )
+
+    scores = {result.name: result.score for result in records[0].results}
+    assert scores["eval_profit_is_correct"] == 1.0
+    assert records[0].context.artifacts["observed_profit"] == 40
 ```
 
-## Next
+This is a harness regression test, not a model-quality benchmark. The
+scripted responses make tool wiring and outcome grading deterministic.
+Evaluate a real prompt or model change with fresh sampled model runs.
 
-- [hooks.md](hooks.md) — compose hooks for guardrails,
-  metrics, caching, approval.
-- [docs/evals.md](evals.md) — score your agent as you debug it.
-- [provenance.md](provenance.md) — capture the exact
-  prompts and trajectory.
-- [docs/recipes.md](recipes.md) — Ollama, OTel, MCP, cost accounting.
+## 7. Run the contract with a model
+
+Configure an OpenAI-compatible endpoint and execute the shipped cases:
+
+```bash
+export OPENAI_BASE_URL=https://api.openai.com/v1
+export OPENAI_API_KEY=...
+export OPENAI_MODEL=...
+
+looplet eval run ./report_agent.cartridge \
+  --out ./eval-runs \
+  --threshold 1.0
+```
+
+Useful flags:
+
+- `--case profit_math` runs one case;
+- `--max-steps N` overrides the case budget;
+- `--judge` enables graders whose signature requests an `llm`;
+- `--judge-model NAME` uses a separate judge model;
+- `--threshold VALUE` fails when any scored grader falls below the value.
+
+Required graders, explicit failures, collector errors, malformed
+records, unknown cases, and empty required suites produce a non-zero
+exit.
+
+## 8. Capture, change, replay
+
+For an interesting live failure, attach `ProvenanceSink` while running
+the preset. The shipped
+[`run_demo.py`](https://github.com/hsaghir/looplet/blob/master/examples/regression_demo/run_demo.py)
+shows the complete wiring:
+
+1. wrap the model backend;
+2. attach the trajectory recorder and `EvalHook`;
+3. persist the v1 run with `save_eval_run()`;
+4. load fresh v2 tools and collectors;
+5. call `replay_loop()` on the v1 trace;
+6. persist and compare the v2 outcome.
+
+Review the harness change structurally:
+
+```bash
+looplet diff ./report-v1.cartridge ./report-v2.cartridge --show
+```
+
+Captured-response replay is useful here because the changed component
+is tool code. It keeps the model calls fixed while that code executes
+again. It would not establish that a prompt edit causes better model
+decisions; that requires new runs.
+
+## 9. Put it in CI
+
+For deterministic harness mechanics, run the pytest test above. For
+sampled agent behavior, run the CLI against the model and cases your
+release process permits:
+
+```yaml title=".github/workflows/agent-evals.yml"
+- name: Harness regression tests
+  run: uv run pytest -q tests/test_report_agent.py
+
+- name: Behavioral gate
+  env:
+    OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+    OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+    OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
+  run: >-
+    uv run looplet eval run ./report_agent.cartridge
+    --out ./eval-runs --threshold 1.0
+```
+
+For serious promotion decisions, keep hidden tests or expectations in
+a host-owned holdout suite outside the candidate's writable cartridge
+and sandbox.
+
+## What to build next
+
+- Add a [quality-gate hook](hooks.md) that blocks premature `done()`.
+- Add [redacted provenance](provenance.md) for failures worth keeping.
+- Grow cases from real incidents, not speculative taxonomies.
+- Keep outcome graders separate from efficiency metrics such as steps,
+  tokens, or latency.
+- Read the [pitfalls](pitfalls.md) before adding concurrency,
+  permissions, or long-context compaction.

@@ -71,6 +71,10 @@
   color: var(--ll-indigo-300);
 }
 
+[data-md-color-scheme="slate"] {
+  --md-code-hl-keyword-color: #82AAFF;
+  --md-code-hl-constant-color: #B8A6FF;
+}
 .md-typeset pre > code {
   font-size: 0.82em;
   line-height: 1.55;
@@ -221,6 +225,12 @@
 
 .md-typeset .hero h1::before { display: none; }
 
+/* The generated H1 permalink inherits the large gradient text treatment and
+  becomes a distracting paragraph glyph on hover/touch. The heading keeps its
+  id (and remains a valid skip-link target) without rendering that control. */
+.md-typeset .hero h1 .headerlink {
+  display: none;
+}
 .hero-sub {
   font-size: 1.2rem;
   line-height: 1.55;
@@ -275,6 +285,172 @@
   border-color: var(--ll-indigo-700);
 }
 
+[data-md-color-scheme="slate"] .hero-cta a.md-button:not(.md-button--primary) {
+  color: var(--ll-indigo-100);
+  border-color: rgba(165, 180, 252, 0.65);
+}
+
+[data-md-color-scheme="slate"] .hero-cta a.md-button:not(.md-button--primary):hover {
+  color: #FFFFFF;
+  border-color: var(--ll-indigo-300);
+}
+
+/* ── Relaunch proof surfaces ────────────────────────────────── */
+
+.proof-strip {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0.75rem;
+  margin: -1.6rem 0 2rem;
+  position: relative;
+  z-index: 2;
+}
+
+.proof-item {
+  padding: 1rem 1.05rem;
+  background: var(--md-default-bg-color);
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 0.75rem;
+  box-shadow: 0 8px 24px -18px rgba(49, 46, 129, 0.45);
+  color: var(--md-default-fg-color--light);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.proof-item p {
+  margin: 0;
+}
+
+.proof-item p:first-child {
+  color: var(--ll-indigo-600);
+  font-size: 0.88rem;
+  margin-bottom: 0.35rem;
+}
+
+[data-md-color-scheme="slate"] .proof-item p:first-child {
+  color: var(--ll-indigo-300);
+}
+
+.proof-terminal {
+  max-width: 52rem;
+  margin: 2rem auto 0.75rem;
+  overflow: hidden;
+  border: 1px solid rgba(165, 180, 252, 0.35);
+  border-radius: 0.85rem;
+  background: #0b1020;
+  box-shadow: 0 24px 60px -30px rgba(49, 46, 129, 0.8);
+}
+
+.proof-terminal__title {
+  padding: 0.65rem 1rem;
+  border-bottom: 1px solid rgba(165, 180, 252, 0.18);
+  background: #151d38;
+  color: #a5b4fc;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.72rem;
+}
+
+.md-typeset .proof-terminal .highlight,
+.md-typeset .proof-terminal pre {
+  margin: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
+}
+
+.md-typeset .proof-terminal pre>code {
+  padding: 1.25rem 1.35rem;
+  background: transparent;
+  color: #e2e8f0;
+  font-size: 0.76rem;
+  line-height: 1.6;
+}
+
+.proof-caption {
+  max-width: 44rem;
+  margin: 0 auto 2.5rem;
+  text-align: center;
+  color: var(--md-default-fg-color--light);
+  font-size: 0.84rem;
+}
+
+.workflow {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0;
+  margin: 2rem 0 2.5rem;
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 0.85rem;
+  overflow: hidden;
+}
+
+.workflow-step {
+  min-height: 9rem;
+  padding: 1.25rem;
+  position: relative;
+  background: var(--md-default-bg-color);
+  border-right: 1px solid var(--md-default-fg-color--lightest);
+}
+
+.workflow-step:last-child {
+  border-right: 0;
+}
+
+.workflow-step p {
+  margin: 0.35rem 0 0;
+  color: var(--md-default-fg-color--light);
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+.workflow-step p:nth-of-type(2) {
+  color: var(--md-default-fg-color);
+  font-size: 1rem;
+}
+
+.workflow-step__num {
+  display: block;
+  color: var(--ll-indigo-600);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+}
+
+[data-md-color-scheme="slate"] .workflow-step__num {
+  color: var(--ll-indigo-300);
+}
+
+.fit-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 1rem;
+  margin: 1.5rem 0;
+}
+
+.fit-panel {
+  padding: 0.3rem 1.3rem 1rem;
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 0.75rem;
+  background: var(--md-default-bg-color);
+}
+
+.fit-panel--yes {
+  border-top: 3px solid var(--ll-teal);
+}
+
+.fit-panel--no {
+  border-top: 3px solid var(--ll-amber);
+}
+
+.fit-panel h3 {
+  margin-top: 1rem;
+}
+
+.fit-panel li {
+  margin-bottom: 0.35rem;
+  color: var(--md-default-fg-color--light);
+}
 /* ── Grid cards ──────────────────────────────────────────────── */
 
 .grid.cards {
@@ -485,7 +661,7 @@
 
 /* ── Mermaid diagrams ────────────────────────────────────────── */
 
-.md-typeset .mermaid {
+.md-typeset .looplet-mermaid {
   text-align: center;
   margin: 2rem 0;
   padding: 1.5rem;
@@ -498,10 +674,13 @@
   border: 1px solid var(--md-default-fg-color--lightest);
 }
 
-[data-md-color-scheme="slate"] .md-typeset .mermaid {
+[data-md-color-scheme="slate"] .md-typeset .looplet-mermaid {
   background: rgba(79, 70, 229, 0.08);
 }
 
+[data-md-color-scheme="slate"] .md-typeset .looplet-mermaid .edgeLabel p {
+  color: #F8FAFC !important;
+}
 /* ── Admonition callout variants ────────────────────────────── */
 
 .md-typeset .admonition.speed,
@@ -538,6 +717,15 @@
   color: var(--ll-indigo-600);
 }
 
+[data-md-color-scheme="slate"] .md-typeset .md-button:not(.md-button--primary) {
+  color: var(--ll-indigo-300);
+  border-color: rgba(165, 180, 252, 0.65);
+}
+
+[data-md-color-scheme="slate"] .md-typeset .md-button:not(.md-button--primary):hover {
+  color: #FFFFFF;
+  border-color: var(--ll-indigo-300);
+}
 /* ── Stats row (headline numbers) ───────────────────────────── */
 
 .stats-row {
@@ -690,4 +878,52 @@ button:focus-visible,
   }
   .hero-sub { font-size: 1.05rem; }
   .grid.cards { grid-template-columns: 1fr; }
+  .proof-strip {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .workflow {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .workflow-step:nth-child(2) {
+    border-right: 0;
+  }
+  .workflow-step:nth-child(-n + 2) {
+    border-bottom: 1px solid var(--md-default-fg-color--lightest);
+  }
+  .fit-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 35em) {
+  .hero-eyebrow {
+    font-size: 0.68rem;
+    letter-spacing: 0.08em;
+  }
+  .md-typeset .hero h1 {
+    font-size: 2.15rem;
+  }
+  .proof-terminal__title {
+    overflow-wrap: anywhere;
+  }
+  .md-typeset .proof-terminal pre > code {
+    padding: 1rem 0.85rem;
+    font-size: 0.67rem;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .proof-strip {
+    grid-template-columns: 1fr;
+  }
+  .workflow {
+    grid-template-columns: 1fr;
+  }
+  .workflow-step,
+  .workflow-step:nth-child(2) {
+    border-right: 0;
+    border-bottom: 1px solid var(--md-default-fg-color--lightest);
+  }
+  .workflow-step:last-child {
+    border-bottom: 0;
+  }
 }

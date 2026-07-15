@@ -1,9 +1,22 @@
-# Evals — score your agent as you debug it
+# Behavioral evals — turn failures into release contracts
 
-Agent evals work like pytest: write functions named `eval_*`, and the
-framework discovers and runs them. The difference from tests: evals
-return **scores** (0–1), not just pass/fail, because agent output
-quality is a spectrum.
+Looplet evals make harness behavior testable in the same workflow as normal
+Python code:
+
+1. **Case:** preserve the task that exposed a failure.
+2. **Collector:** inspect the resulting world state independently of the
+    agent's claim.
+3. **Grader:** score the observed outcome against grader-only expectations.
+4. **Required mark:** turn the behavior into a fail-closed CI gate.
+
+Write functions named `eval_*` and Looplet discovers and runs them. Unlike
+ordinary assertions, evals may return scores from 0–1 because some quality
+dimensions are continuous. Required release contracts still produce ordinary
+pass/fail exit codes.
+
+The [network-free regression proof](regression-demo.md) shows this pipeline
+end to end: one captured run, one tool fix, the same model responses, and a
+required outcome grader moving from red to green.
 
 ```python
 # eval_my_agent.py — discovered automatically by eval_discover()
@@ -181,9 +194,9 @@ for r in results:
     print(r.pretty())
 ```
 
-The workflow: debug a run → notice a failure pattern → write a 5-line
-`eval_*` function → it runs automatically on every future run. Your
-debugging becomes your eval suite.
+The workflow: debug a run → preserve the case → collect the real outcome →
+write a focused `eval_*` grader → require it in CI. Your debugging becomes a
+behavioral contract instead of a trajectory snapshot.
 
 > **Discovery scope.** `eval_discover` only collects functions *defined
 > in* each `eval_*.py` file. Re-exports like `from looplet import

@@ -1,28 +1,28 @@
 name: validate_workspace
 description: |-
-  Structurally validate a looplet workspace by attempting to load it via `workspace_to_preset()`.
+  Structurally validate a Looplet cartridge by attempting to load it via `cartridge_to_preset()`.
 
   Usage:
-  - Call this after writing every file in a generated workspace to confirm it loads cleanly.
-  - On success, returns the tool names, hook names, and key config values. Use this to confirm the agent has the tools it should.
+  - Call this after a coherent batch of edits to confirm the cartridge loads cleanly.
+  - On success, returns tool names, hook names, and key config values. Use this to confirm the draft has the intended structure.
   - On failure, returns a structured error: type + message + (best-effort) which file is the culprit. Fix the file and re-validate.
 
   Side effects:
-  - Loading runs the workspace's ``setup.py`` (if any), imports its ``resources/*.py`` and ``hooks/*/hook.py`` modules, and constructs each hook. Anything those constructors do (open files, read env vars, make network calls) WILL execute. Don't validate untrusted workspaces.
+  - Loading imports `resources/*.py`, tool bodies, and hooks, and constructs declared resources/hooks. Their import/build code can open files, read env vars, or make network calls. Do not validate untrusted cartridges outside a sandbox.
 
   When to call:
-  - After writing `workspace.json`, `config.yaml`, and at least one tool — get an early signal.
-  - After every batch of file changes — cheap insurance against silent regressions.
-  - Before declaring `done` — final gate.
+  - After writing `cartridge.json`, `config.yaml`, and at least one tool.
+  - After each coherent batch of file changes.
+  - Before `done` as a structural gate. Loading successfully is not proof of task quality or release fitness.
 
   Recovery:
-  - "FileNotFoundError" → check the workspace_path and that workspace.json exists.
-  - "WorkspaceSerializationError" → the message names the offending file; read it, fix, retry.
+  - "FileNotFoundError" → check `workspace_path` and that `cartridge.json` exists.
+  - "CartridgeSerializationError" → the message names the offending file; read it, fix, retry.
   - "ImportError" inside an execute.py → the tool body has a bad import; read_file and fix.
 parameters:
   workspace_path:
     type: string
-    description: Path to the workspace directory (relative to project root).
+    description: Path to the cartridge directory (relative to project root). The parameter name is retained for compatibility.
   strict:
     type: boolean
     description: When true, any tool/hook that fails to load raises (vs. logs a warning).

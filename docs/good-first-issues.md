@@ -12,19 +12,22 @@ Curated, well-scoped tasks for first-time contributors. Each is a few hours of w
 ## Categories
 
 | Theme | Example issues |
-|---|---|
-| **New backends** | Gemini, Bedrock — implement the `LLMBackend` protocol over a new SDK |
-| **Recipes** | Local LLM via `llama-cpp-python`, OTel, MCP — runnable end-to-end docs |
-| **Eval recipes** | Port common evals into `looplet.evals.recipes` as importable functions |
-| **Examples** | New workspaces under `examples/` (e.g. research agent demonstrating `run_sub_loop`) |
+| --- | --- |
+| **Regression contracts** | Turn one reproduced failure into a case, independent collector, required grader, and network-free test |
+| **Outcome recipes** | File artifacts, host-owned test suites, schema checks, API probes, and database observations |
+| **Evidence portability** | Small exporters or schema examples for OTel and hosted observability systems, outside core runtime |
+| **Provider recipes** | Gemini, Bedrock, or local-model adapters implemented against the small backend protocol |
+| **Cartridge examples** | Focused harnesses with reviewable tools and colocated self-tests under `examples/` |
 | **Documentation** | Fill in missing docstrings on public symbols (one PR per module) |
-| **Developer ergonomics** | Makefile targets, error-message improvements |
-| **Cookbook & benchmarks** | `looplet new` recipes for new tool surfaces; factory output quality benchmarks |
+| **Integrity ergonomics** | Clearer fail-closed errors for required graders, malformed evidence, or unsafe case paths |
+| **Benchmarks** | Reproduce an existing snapshot with environment metadata and explicit caveats; do not add leaderboard claims |
 
 ## What makes a good first PR
 
 - **Small, focused.** One module or one recipe per PR; reviewer can hold it in their head.
 - **Tested.** Any behaviour change needs at least one test; mocks for LLM backends so CI doesn't need network.
+- **Outcome-grounded.** Prefer an independently observed artifact over a required tool sequence.
+- **Narrow.** Search, statistics, optimization, domain policy, and dashboards stay in recipes or downstream packages.
 - **`make check` clean.** Lint + format + pyright + pytest all green locally.
 - **Honest about scope.** If you only finished part of an umbrella issue, say "Towards #N" not "Closes #N".
 

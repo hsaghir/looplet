@@ -1,0 +1,60 @@
+name: Behavioral regression
+description: Report a harness outcome that changed across a prompt, tool, hook, model, or runtime revision
+labels: ["bug", "eval-integrity"]
+body:
+  - type: textarea
+    id: change
+    attributes:
+      label: Harness change
+      description: What prompt, tool, hook, model, permission, runtime, or Looplet revision changed?
+    validations:
+      required: true
+
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Expected and observed outcome
+      description: Describe world state, artifacts, or externally observable behavior—not only the tool sequence or final claim.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal case / reproduction
+      description: Provide a network-free reproduction when possible, or a redacted case plus collector/grader sketch.
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence bundle
+      description: Attach or describe redacted provenance, artifacts, eval results, stop reason, and version diff. Never attach secrets or unredacted PII.
+
+  - type: dropdown
+    id: experiment
+    attributes:
+      label: How was the change evaluated?
+      options:
+        - Fresh sampled model runs
+        - Captured-response replay with fresh harness execution
+        - Scripted/mock backend
+        - Offline grading of saved trajectories/artifacts
+        - Not yet evaluated
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: integrity
+    attributes:
+      label: Integrity checks
+      options:
+        - label: The quality signal checks an outcome rather than only a preferred trajectory.
+          required: true
+        - label: Grader-only expected data was not included in the agent-visible task.
+          required: true
+        - label: I understand captured-response replay does not freeze tool side effects.
+          required: true
+        - label: I have removed secrets, credentials, and PII from attached evidence.
+          required: true

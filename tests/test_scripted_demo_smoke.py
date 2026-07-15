@@ -41,4 +41,4 @@ class TestScriptedDemo:
         assert "$ python -m looplet.examples.scripted_demo" in out
         assert "APPROVAL NEEDED" in out
         assert "delete_rows(where_status='cancelled')" in out
-        assert "deterministic replay" in out
+        assert "scripted run" in out

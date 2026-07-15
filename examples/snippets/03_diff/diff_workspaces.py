@@ -1,9 +1,9 @@
-"""Semantic diff between two workspaces.
+"""Semantic diff between two cartridges.
 
 Walks both directories, classifies each file by its top-level
 category (config, prompt, tool, hook, resource, manifest, other),
 and prints a one-line summary per changed file. The point is to
-show that a workspace diff carries categorical information *in the
+show that a cartridge diff carries categorical information *in the
 path*, not in the diff content.
 
 Run::
@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 
 CATEGORIES = [
-    ("manifest", lambda p: p.name == "workspace.json" and len(p.parts) == 1),
+    ("manifest", lambda p: p.name == "cartridge.json" and len(p.parts) == 1),
     ("prompt", lambda p: p.parts[0] == "prompts"),
     ("tool", lambda p: p.parts[0] == "tools"),
     ("hook", lambda p: p.parts[0] == "hooks"),
@@ -49,7 +49,7 @@ def list_files(root: Path) -> dict[Path, bytes]:
 
 def main() -> None:
     if len(sys.argv) != 3:
-        raise SystemExit("usage: diff_workspaces.py <ws_a> <ws_b>")
+        raise SystemExit("usage: diff_workspaces.py <cartridge_a> <cartridge_b>")
     a = Path(sys.argv[1]).resolve()
     b = Path(sys.argv[2]).resolve()
     files_a = list_files(a)
@@ -69,7 +69,7 @@ def main() -> None:
             rows.append((cat, f"changed ({la}->{lb} lines)", rel))
 
     if not rows:
-        print("workspaces are identical")
+        print("cartridges are identical")
         return
 
     by_cat: dict[str, list[tuple[str, str, Path]]] = {}

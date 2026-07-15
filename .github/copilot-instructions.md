@@ -1,6 +1,7 @@
 # looplet Design Principles
 
-Preserve looplet's center of gravity: a minimal, simple, powerful, familiar Python library for owning an LLM tool-calling loop.
+Preserve looplet's center of gravity: a minimal, simple, powerful, familiar
+Python library for owning and regression-testing an LLM tool-calling harness.
 
 ## The Simple Story
 
@@ -23,4 +24,10 @@ Everything else should compile into that story.
 - **Layered cartridges:** skills and cartridges are packaging/distribution layers over looplet primitives, not a second agent runtime. A cartridge should build or wrap an `AgentPreset` whenever possible.
 - **Honest conversion:** do not pretend to decompile arbitrary Python. Exact wrappers and blueprint comparisons are reliable; expanded source generation should depend on explicit recorded recipes.
 - **Observable behavior:** preserve inspectable `Step` streams, deterministic tests, and provenance paths. Debug output should remain close to eval artifacts.
+- **Outcome-grounded evidence:** prefer collectors that inspect world state
+	over graders that require one historical tool sequence.
+- **Protected promotion oracles:** cartridge evals are self-tests. Keep
+	holdouts host-owned whenever a candidate can edit its cartridge.
+- **Captured-response replay:** recorded model responses are held constant; fresh tools
+	and side effects still execute. Never call this deterministic replay.
 - **Zero-runtime-dependency bias:** keep the core package dependency-free unless there is a compelling, user-visible reason to change that.

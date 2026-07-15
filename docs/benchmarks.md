@@ -1,110 +1,126 @@
-# Benchmarks
+# Evidence and benchmarks
 
-Honest, reproducible measurements. Every number here can be regenerated
-with a single command and a clean Python 3.11 venv.
+Looplet's primary claim is not that a loop library makes a model smarter. It
+is that an owned harness can be **inspected, changed, and regression-tested**.
+The evidence is organized accordingly: a controlled behavioral proof first,
+then model-controlled harness comparisons, then package-cost measurements.
 
-> **What this page is:** a defence of the one-dependency, loop-first
-> design choice against frameworks that give up more to do more.
->
-> **What this page is not:** an end-to-end agent benchmark. None of
-> these numbers say anything about *how well* any framework solves a
-> task. They measure *what you pay for loading it*.
+Every study below names its variable and limitations. Historical numbers are
+snapshots, not timeless leaderboard claims.
 
-All runs: Python 3.11.13, Linux x86_64, uv-managed venvs, PyPI wheels
-from 2026-04-21. See the `scripts/` directory for the scripts —
-they're short enough to read.
+## 1. Behavioral proof: failure → regression contract
 
-## Cold import time
+The repository includes a network-free experiment with two harness versions:
 
-The time from `python -c "import <pkg>"` to interpreter exit. Measured
-as median wall-clock of 9 fresh subprocess runs (so no warm bytecode
-cache).
+- the scripted model makes the same `publish_report` and `done` decisions;
+- v1 contains one arithmetic bug and the required outcome grader fails;
+- captured-response replay executes the fixed v2 tool in a fresh workspace;
+- an independent collector reads `report.json`; the same grader passes.
 
-```bash
-python scripts/bench_cold_import.py --runs 9 --markdown
-```
+| Variable | Held fixed / changed |
+| --- | --- |
+| Model calls | Fixed captured responses; no provider or network |
+| Tool decisions | Fixed: `publish_report → done` |
+| Harness code | One line changes: addition → subtraction |
+| Outcome | Profit changes from 200 → 40 |
+| Required eval | 0.00 fail → 1.00 pass |
 
-| Framework | Version | Median cold import | vs looplet |
-| --- | --- | ---: | ---: |
-| `looplet` | 0.1.8 | **289 ms** | — |
-| `strands-agents` | 1.36.0 | **1 885 ms** | 6.5× |
-| `langgraph` | 1.1.9 | **2 294 ms** | 7.9× |
-| `claude-agent-sdk` | 0.1.65 | **2 409 ms** | 8.3× |
-| `pydantic-ai` | 1.85.1 | **3 975 ms** | 13.8× |
+Run it with `uv run python examples/regression_demo/run_demo.py`. Read the
+[full proof and limitations](regression-demo.md) before treating replay as an
+experiment design: tools and side effects execute again, so this is
+captured-response replay, not deterministic simulation.
 
-Why it matters: agents are increasingly invoked as CLI tools,
-serverless functions, and hot-reload dev loops. A 3-second import tax
-is the difference between "snappy" and "go get coffee" for every
-invocation that doesn't reuse a warm process. `looplet`'s
-single-dependency core (`typing_extensions` for Python <3.12) leaves
-no room for surprises.
+## 2. Model-controlled harness comparison
 
-## Dependency footprint
+The optional
+[coder harness benchmark](https://github.com/hsaghir/looplet/tree/master/benchmarks/coder_vs_agents)
+compares `examples/coder.cartridge` with GitHub Copilot CLI while holding the
+underlying model family fixed (`claude-sonnet-4.6` in the recorded snapshot).
+The purpose is to compare scaffolding—prompt, tools, loop control, context, and
+startup—not model intelligence.
 
-Count of third-party packages installed into a fresh venv by
-`pip install <pkg>`, minus `pip`, `setuptools`, and `wheel`.
+| Recorded suite | Looplet coder | Copilot CLI | What the snapshot supports |
+| --- | ---: | ---: | --- |
+| 9 short coding/non-coding tasks with deterministic verifiers | 9/9 | 9/9 | Correctness parity on this small suite; Looplet averaged 18.3s vs 23.1s. |
+| 4 hard coding tasks with hidden verifiers | 4/4 | 4/4 | No observed correctness separation. |
+| 6 open-ended tasks, blind LLM judges | 18.0/20 after a one-line prompt change | 18.6/20 | Copilot retained a small prose-quality edge; the result is judge- and sample-sensitive. |
 
-```bash
-python scripts/bench_dep_footprint.py --markdown
-```
+Reports preserve task-level results and methodology:
 
-| Install | Packages installed |
+- [short-suite report](https://github.com/hsaghir/looplet/blob/master/benchmarks/coder_vs_agents/REPORT.md)
+- [hard-suite report](https://github.com/hsaghir/looplet/blob/master/benchmarks/coder_vs_agents/HARD_REPORT.md)
+- [open-ended report](https://github.com/hsaghir/looplet/blob/master/benchmarks/coder_vs_agents/SOFT_REPORT.md)
+- [prompt comparison](https://github.com/hsaghir/looplet/blob/master/benchmarks/coder_vs_agents/PROMPTS_COMPARISON.md)
+
+### Limits of this comparison
+
+- Same model family does not guarantee identical serving stacks, hidden
+    provider policy, caching, or sampling implementation.
+- Nine and four tasks are demonstration-sized samples, not population
+    estimates. There are no confidence intervals.
+- Looplet token counts are `chars / 4` estimates because the proxy omitted
+    usage; Copilot counts are self-reported. Compare direction, not precision.
+- Open-ended scores are single-generation LLM-judge results. Small differences
+    may be noise even with blind, counterbalanced judging.
+- The suites do not represent huge repositories, external services, or
+    multi-hour autonomous operation.
+
+The honest result is modest: a small, owned cartridge was competitive on these
+tasks. It does not establish that Looplet is universally faster, cheaper, or
+more capable than a turnkey coding agent.
+
+## 3. Runtime footprint
+
+Core Looplet 0.2.0 declares **zero third-party runtime dependencies**. Provider
+SDKs are optional extras. This is a current package property, not a benchmark
+inference.
+
+The table below is an archived environment snapshot from 2026-04-21 (Python
+3.11.13, Linux x86_64, fresh uv-managed environments, then-current PyPI
+versions). "Packages installed" includes the target package and excludes pip,
+setuptools, and wheel.
+
+| Install in that snapshot | Packages installed |
 | --- | ---: |
-| `pip install looplet` | **1** (just `looplet` — zero runtime deps) |
-| `pip install looplet[all]` | **20** |
-| `pip install claude-agent-sdk` | **30** |
-| `pip install langgraph` | **31** |
-| `pip install strands-agents` | **49** |
-| `pip install pydantic-ai` | **144** |
+| `pip install looplet` | **1** (Looplet itself; zero runtime dependencies) |
+| `pip install looplet[all]` | 20 |
+| `pip install claude-agent-sdk` | 30 |
+| `pip install langgraph` | 31 |
+| `pip install strands-agents` | 49 |
+| `pip install pydantic-ai` | 144 |
 
-`looplet[all]` pulls in the official `openai` and `anthropic` SDKs
-plus their transitive deps. If you bring your own HTTP client, stay on
-core `looplet` and write a 20-line `LLMBackend` adapter — see
-[`docs/recipes.md`](recipes.md).
+In the same archived run, median cold import over nine fresh subprocesses was
+289 ms for Looplet 0.1.8. The comparison packages ranged from 1,885 ms to
+3,975 ms. Those latency numbers are historical: hardware, OS caches, Python,
+wheel versions, and package releases all affect them. Re-run before using them
+in a current engineering decision.
 
-Why it matters: every package in your environment is a potential
-supply-chain surface, a potential version-conflict, and a potential
-wheel-download delay for your container or Lambda. 144 transitive
-dependencies is not a free choice — it's an ambient cost.
-
-## What we don't claim
-
-`looplet` is not *faster at running tools*, *better at prompting*, or
-*more accurate at any task* than the frameworks above. Per-step
-latency is dominated by the LLM round-trip; per-task accuracy depends
-on prompts, tools, and the model you choose.
-
-What `looplet` *is* is small, cold-starts in under a third of a second,
-and hands you a `for step in loop(...):` iterator so you can observe
-and interrupt any step without learning a new graph DSL.
-
-If that's the trade-off you want, these numbers are your defence
-when someone asks why.
-
-## Reproducing
+## Reproduce instead of repeating the headline
 
 ```bash
-# One-time: clean Python 3.11 venv with all four frameworks.
-uv venv /tmp/bench_env --python 3.11 -q
-uv pip install --python /tmp/bench_env/bin/python \
-    looplet langgraph claude-agent-sdk pydantic-ai strands-agents
+# Current cold-import snapshot (choose an explicit interpreter/environment).
+python scripts/bench_cold_import.py --runs 9 --markdown
 
-# Cold-import numbers.
-/tmp/bench_env/bin/python scripts/bench_cold_import.py \
-    --python /tmp/bench_env/bin/python --runs 9 --markdown
-
-# Dependency footprint (creates its own throwaway venvs).
+# Current dependency snapshot (creates throwaway environments).
 python scripts/bench_dep_footprint.py --markdown
+
+# Behavioral proof: no model, network, or external CLI.
+uv run python examples/regression_demo/run_demo.py
 ```
 
-Both scripts exit non-zero on install/import failure; that's the only
-signal they're broken.
+The model-controlled coder comparison has external prerequisites and
+environment knobs documented in its
+[benchmark README](https://github.com/hsaghir/looplet/tree/master/benchmarks/coder_vs_agents#readme).
+Commit the raw environment metadata and task-level output when publishing a new
+snapshot; do not silently replace historical results.
 
-## History
+## What these results do not claim
 
-| Date | looplet | claude-agent-sdk | pydantic-ai | langgraph | strands-agents |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| 2026-04-21 | 289 ms / 2 pkg | 2 409 ms / 30 pkg | 3 975 ms / 144 pkg | 2 294 ms / 31 pkg | 1 885 ms / 49 pkg |
+They do not show that Looplet improves model reasoning, guarantees safer
+agents, makes arbitrary replays deterministic, or outperforms graph runtimes
+and turnkey agents on their intended workloads. They show three narrower
+properties:
 
-Re-run these when any dependency's major version ships — deps tend to
-move up, not down.
+1. a harness failure can become an executable behavioral contract;
+2. a compact, owned harness can be competitive in a small same-model study;
+3. the core package imposes no third-party runtime dependency tree.

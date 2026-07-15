@@ -1,9 +1,9 @@
 {
-  "description": "Workspace-native hello-world agent. Demonstrates the workspace format: every component is a file you can edit, diff, and version-control. Mirrors looplet.examples.hello_world.",
+  "description": "File-native hello-world harness. Demonstrates the cartridge format: every component is reviewable and version-controlled.",
   "metadata": {
     "tags": [
       "hello-world",
-      "workspace-native",
+      "file-native",
       "demo"
     ]
   },

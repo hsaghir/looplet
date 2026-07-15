@@ -1,13 +1,14 @@
 """``scaffold_cartridge`` built-in tool — agent-callable wrapper.
 
-A workspace opts in via ``builtin_tools: [scaffold_cartridge]`` in
-its ``config.yaml``. The tool wraps :func:`looplet.scaffold.scaffold_cartridge`
-so an agent can scaffold a fresh workspace skeleton without leaving
+A cartridge opts in via ``builtin_tools: [scaffold_cartridge]`` in
+its ``config.yaml``. The tool wraps
+:func:`looplet.cartridge.scaffold.scaffold_cartridge` so an agent can scaffold
+a fresh cartridge skeleton without leaving
 its reasoning loop.
 
 Use this when:
 
-* The agent is generating a new workspace and the host did NOT
+* The agent is generating a new cartridge and the host did NOT
   pre-scaffold (so the path / name / tool list is the agent's choice).
 * The agent is iterating: scaffold a base, customize, validate, fix,
   scaffold a new variant, etc.
@@ -73,19 +74,19 @@ def _execute(
 SPEC = ToolSpec(
     name="scaffold_cartridge",
     description=(
-        "Create a stubbed looplet workspace skeleton at ``path`` in one call. "
-        "Generates workspace.json, config.yaml, prompts/system.md, "
+        "Create a stubbed Looplet cartridge skeleton at ``path`` in one call. "
+        "Generates cartridge.json, config.yaml, prompts/system.md, "
         "tools/<name>/{tool.yaml, execute.py} stubs (raise "
         "NotImplementedError) for each requested tool, plus the standard "
         "``done`` tool. Idempotent — re-running preserves files that "
         "already exist.\n\n"
-        "Use this FIRST when generating a new workspace, then fill in "
+        "Use this FIRST when generating a new cartridge draft, then fill in "
         "the TODO markers via multi_edit / edit_file. Saves the 5-7 "
         "turns spent writing identical boilerplate by hand.\n\n"
         "Args:\n"
         "  path (str): directory to create. Relative paths are resolved "
-        "against the host workspace.\n"
-        "  name (str): becomes workspace.json.name and the title of the "
+        "against the host project root.\n"
+        "  name (str): becomes cartridge.json.name and the title of the "
         "system prompt.\n"
         "  tools (list[str]): tool names to scaffold. ``done`` is added "
         "automatically.\n"
@@ -100,7 +101,7 @@ SPEC = ToolSpec(
             "path": {"type": "string", "description": "Directory to create."},
             "name": {
                 "type": "string",
-                "description": "Cartridge name (becomes workspace.json.name).",
+                "description": "Cartridge name (becomes cartridge.json.name).",
             },
             "tools": {
                 "type": "array",

@@ -182,7 +182,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print()
     _slow_print(
-        f"✓ done — {len(approval_calls)} approval prompt, 4 tools, deterministic replay.",
+        f"✓ done — {len(approval_calls)} approval prompt, 4 tools, scripted run.",
         delay=0.0,
     )
     return 0

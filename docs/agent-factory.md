@@ -1,13 +1,15 @@
 # The agent factory
 
-Looplet's killer feature: describe the agent you want in one
-paragraph, get a working cartridge back in a few minutes. The factory
-is built on the same primitives ([`extends:`](cartridge.md#extends),
-[`builtin_tools:`](cartridge.md#builtin-tools),
-[`scaffold_cartridge`](#scaffold_cartridge)) you'd use to hand-roll an
-agent — it's just an agent that builds other agents.
+`looplet new` is an optional authoring accelerator: describe a harness in one
+paragraph and get a reviewable cartridge draft. It is useful for scaffolding,
+but generation is not the product and generated code is not automatically a
+release-ready harness. Review the files, run structural tests, add behavioral
+cases, and gate the outcomes you care about.
 
-![looplet new — agents from a paragraph, in one command](looplet_new.gif)
+The factory is built on the same primitives ([`extends:`](cartridge.md#extends),
+[`builtin_tools:`](cartridge.md#builtin-tools),
+[`scaffold_cartridge`](cartridge.md#builtin-tools)) you'd use to hand-roll an
+agent — it's just an agent that builds other agents.
 
 ---
 
@@ -19,16 +21,17 @@ export OPENAI_BASE_URL=https://api.openai.com/v1   # or http://127.0.0.1:11434/v
 export OPENAI_API_KEY=sk-...
 export OPENAI_MODEL=gpt-5.5                       # or claude-sonnet-4.6, llama3.1, …
 
-# 2. Generate the agent.
+# 2. Scaffold a cartridge draft.
 looplet new "an agent that takes a URL and returns the page title and a 2-sentence summary" \
     ./url_summarizer.cartridge
 
-# 3. Run it on a real task.
-looplet run-workspace ./url_summarizer.cartridge "Summarize https://example.com"
+# 3. Review its files, then run it on a real task.
+looplet run-cartridge ./url_summarizer.cartridge "Summarize https://example.com"
 ```
 
-That's the entire user-facing API. No Python code required to get a
-working agent.
+No Python host code is required for this first run. The cartridge is still
+ordinary source: inspect its prompt, tools, permissions, and tests before
+giving it credentials or production access.
 
 ---
 
@@ -36,7 +39,7 @@ working agent.
 
 For each `looplet new` invocation, the produced cartridge contains:
 
-```
+```text
 my_agent.cartridge/
 ├── cartridge.json          # {"name": "my_agent", "schema_version": 1}
 ├── config.yaml             # max_steps, max_tokens, temperature, done_tool
@@ -48,9 +51,9 @@ my_agent.cartridge/
 └── tests/test_<name>.py    # at least one content assertion per pure-Python tool
 ```
 
-The factory also writes one or more `tests/test_<agent>.py` files
-that run during the build to verify the agent loads cleanly and
-produces correctly-formatted output.
+The factory also writes one or more `tests/test_<agent>.py` files that run
+during the build to verify structural loading and tool-level output shapes.
+They are generated smoke tests, not independent evidence of task quality.
 
 ---
 
@@ -61,36 +64,38 @@ produces correctly-formatted output.
 Generate a cartridge from a brief.
 
 | Flag | Default | Purpose |
-|---|---|---|
+| --- | --- | --- |
 | `target` (positional) | `./agent.cartridge` | Where to write the produced cartridge |
-| `--name` | derived from `target` | Workspace name (becomes `cartridge.json.name`) |
+| `--name` | derived from `target` | Cartridge name (becomes `cartridge.json.name`) |
 | `--tool TOOL` | _(none)_ | Pre-scaffold a tool by name (repeatable). When omitted, the agent picks tools from the brief. |
 | `--max-steps N` | `80` | Override the factory's max steps |
 | `--quiet` | _(off)_ | Suppress per-step output |
 
-When `--tool` is supplied, the factory's setup.py pre-scaffolds the
-skeleton (saves ~5 LLM turns). Otherwise the agent reads your brief
-and picks the tool list itself.
+When `--tool` is supplied, the host pre-scaffolds the skeleton (saving several
+LLM turns). Otherwise the factory agent reads your brief and picks the tool
+list itself.
 
-### `looplet run-workspace <path> <task>`
+### `looplet run-cartridge <path> <task>`
 
 Load a cartridge and run it on a task.
 
+`looplet run-workspace` remains a backward-compatible alias.
+
 | Flag | Default | Purpose |
-|---|---|---|
+| --- | --- | --- |
 | `--max-steps N` | from cartridge's `config.yaml` | Override |
 | `--quiet` | _(off)_ | Suppress per-step output |
 
 ---
 
-## Wrapping existing tools and data (the killer use case)
+## Grounding drafts in existing tools and data
 
 Most useful agents aren't built on greenfield Python — they're built on tools and data the team already has: an internal CLI, a vendor SDK, a helper module, a shell script. Naming any of these in the brief makes the factory introspect the real surface and write thin wrappers, instead of hallucinating signatures from training data.
 
 The factory's planning phase recognises three patterns and uses bash + `inspect` to ground itself in the real source:
 
 | Pattern in the brief | What the factory does |
-|---|---|
+| --- | --- |
 | Mentions a CLI on `$PATH` (e.g. `gh`, `kubectl`, `aws`, an internal CLI) | Runs `<cli> --help` and a couple of `<cli> <subcommand> --help` calls; detects `--json` support; writes subprocess-based tool bodies that call the real subcommands |
 | Mentions a Python dotted path (`pkg.module` or `pkg.module:Class`) | Imports it, runs `inspect.signature` on the public callables, and writes tool bodies that call the real methods. For class wraps it uses the cartridge `resources/` mechanism: `resources/<name>.py` builds the singleton, every tool declares `requires: [<name>]`, the body looks it up via `ctx.resources["<name>"]` |
 | Mentions a local script (`./scripts/foo.sh`, `~/bin/bar.py`) | Reads the file and writes a subprocess- or import-based wrapper from the actual source |
@@ -161,7 +166,7 @@ Every signature matches the real class — including default values like `mode="
 
 ### Why this works without flags
 
-The factory's system prompt tells the agent to introspect *first* (before scaffolding) whenever the brief mentions an existing CLI / module / script. The agent has `bash`, `read_file`, and `multi_edit` tools already; a one-line `bash("python -c 'import inspect; ...'")` is all the introspection it needs. There is no special CLI flag — naming the thing in the brief is enough.
+The factory's system prompt tells the agent to introspect _first_ (before scaffolding) whenever the brief mentions an existing CLI / module / script. The agent has `bash`, `read_file`, and `multi_edit` tools already; a one-line `bash("python -c 'import inspect; ...'")` is all the introspection it needs. There is no special CLI flag — naming the thing in the brief is enough.
 
 If the brief is purely greenfield ("an agent that takes a URL and returns the title…"), the factory falls through to ordinary scaffold-and-fill behaviour. The introspection step only fires when there's something concrete to wrap.
 
@@ -176,7 +181,7 @@ the bundled `coder.cartridge`, so it inherits all coding tools
 `list_dir`, `think`) and adds two factory-specific tools:
 
 * **`scaffold_cartridge`** — a built-in tool that calls the
-  Python helper `looplet.scaffold.scaffold_cartridge()` to write
+    public `looplet.scaffold_cartridge()` helper to write
   the cartridge skeleton in one step. The factory's prompt
   instructs the agent to call this FIRST so it skips the
   boilerplate of writing `cartridge.json` etc. by hand.
@@ -197,7 +202,9 @@ embedded in the produced agent's own system prompt:
    list output should defensively unwrap a `dict` with the same
    key.
 
-These rules make the produced agents reliable enough to ship.
+These rules avoid several common generation failures. They do not establish
+that the produced harness is correct for your environment; only reviewed code
+and outcome-grounded tests can do that.
 
 ---
 
@@ -207,12 +214,11 @@ If you already know what tools the agent should have (e.g. when
 calling the factory programmatically from a CLI you're building on
 top of looplet), pre-scaffold the skeleton **host-side**, then load
 the factory cartridge as normal. The agent's first
-`scaffold_workspace` call is idempotent and will treat the existing
+`scaffold_cartridge` call is idempotent and will treat the existing
 skeleton as a no-op.
 
 ```python
-from looplet import cartridge_to_preset, composable_loop
-from looplet.scaffold import scaffold_cartridge
+from looplet import cartridge_to_preset, composable_loop, scaffold_cartridge
 from looplet.types import DefaultState
 
 target = "/path/to/your/project/my_agent.cartridge"
@@ -236,14 +242,25 @@ effects belong in the host that invokes it, not in the cartridge.
 
 ---
 
-## Quality
+## What validation means
 
-Factory output is validated by the smoke-test suite (`tests/test_cli_new_smoke.py`) and dogfood runs across the canonical briefs in [issue #56](https://github.com/hsaghir/looplet/issues/56). Each produced workspace structurally validates via `cartridge_to_preset()`, has a non-empty system prompt and `done` tool, and (for wrap-CLI / wrap-class briefs) uses real signatures from the introspected source.
+Factory behavior is covered by the smoke-test suite
+(`tests/test_cli_new_smoke.py`) and dogfood briefs in
+[issue #56](https://github.com/hsaghir/looplet/issues/56). These checks establish
+that generated cartridges load, include required structural pieces, and can
+ground wrappers in inspected signatures. They do **not** establish task
+success, safe permissions, or production fitness.
+
+Treat generated tests as structural checks. Add an `evals/` bundle with real
+cases, independent outcome collectors, and required graders before release.
+The [tutorial](tutorial.md) builds that contract, and the
+[regression proof](regression-demo.md) shows the red-to-green workflow without
+a model call.
 
 ---
 
 ## See also
 
-- [Cartridge format](cartridge.md) — what's in a cartridge dir
-- [Composition with `extends:`](cartridge.md#extends) — how the factory inherits coder.cartridge
-- [Built-in tools](cartridge.md#builtin-tools) — `subagent`, `scaffold_cartridge`
+* [Cartridge format](cartridge.md) — what's in a cartridge dir
+* [Composition with `extends:`](cartridge.md#extends) — how the factory inherits coder.cartridge
+* [Built-in tools](cartridge.md#builtin-tools) — `subagent`, `scaffold_cartridge`

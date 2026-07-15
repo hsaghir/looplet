@@ -1,12 +1,28 @@
-name: Feature request
-description: Suggest a new feature or enhancement
+name: Harness capability request
+description: Propose a generalized capability after checking Looplet's composition boundaries
 labels: ["enhancement"]
 body:
   - type: textarea
     id: problem
     attributes:
-      label: Problem / motivation
-      description: What are you trying to do that is hard or impossible today?
+      label: Harness change and observable problem
+      description: What harness change are you trying to make, and what concrete failure or missing outcome blocks it today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Minimal evidence
+      description: Provide a small reproduction, failed case, trace/eval artifact shape, or test that demonstrates the problem without secrets.
+    validations:
+      required: true
+
+  - type: textarea
+    id: composition
+    attributes:
+      label: Existing composition points considered
+      description: Why are a hook, tool, collector, grader, cartridge, recipe, optional extra, or downstream package insufficient?
     validations:
       required: true
 
@@ -18,6 +34,14 @@ body:
         Sketch an API or design. Be concrete — we iterate fastest on
         specific proposals.
       render: python
+    validations:
+      required: true
+
+  - type: textarea
+    id: generality
+    attributes:
+      label: Generalization and integrity boundary
+      description: Which unrelated harnesses need this? Could it leak grader data, weaken a fail-closed path, or let a candidate own its promotion oracle?
     validations:
       required: true
 
@@ -34,5 +58,7 @@ body:
       options:
         - label: I have searched existing issues and discussions.
           required: true
-        - label: This feature fits the domain-agnostic scope of the core harness.
-          required: false
+        - label: I have read the roadmap's design constraints and explicit non-goals.
+          required: true
+        - label: The proposal keeps search, statistics, optimization, and domain policy outside the core loop.
+          required: true

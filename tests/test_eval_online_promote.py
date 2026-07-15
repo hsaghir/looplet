@@ -61,7 +61,7 @@ def _grader_used_echo(ctx):
     return "echo" in ctx.tool_sequence
 
 
-def _run_online(collectors=None) -> EvalHook:
+def _run_online(collectors=None, metadata=None) -> EvalHook:
     """Drive a real loop with an EvalHook attached; return the hook."""
     hook = EvalHook(
         evaluators=[_grader_completed, _grader_used_echo],
@@ -70,7 +70,7 @@ def _run_online(collectors=None) -> EvalHook:
     for _ in composable_loop(
         llm=MockLLMBackend(responses=_scripted()),
         tools=_build_tools(),
-        state=DefaultState(max_steps=5),
+        state=DefaultState(max_steps=5, metadata=dict(metadata or {})),
         config=LoopConfig(max_steps=5, use_native_tools=False),
         task={"goal": "echo hello then finish"},
         hooks=[hook],
@@ -99,6 +99,44 @@ def test_evalhook_context_none_before_run() -> None:
     assert hook.context is None
 
 
+def test_evalhook_extracts_secondary_terminal_output() -> None:
+    tools = tools_from(
+        [],
+        include_done=True,
+        done_name="escalate",
+        done_parameters={"blocked_on": "reason for escalation"},
+    )
+    hook = EvalHook(evaluators=[_grader_completed])
+    list(
+        composable_loop(
+            llm=MockLLMBackend(
+                responses=[
+                    json.dumps(
+                        {
+                            "tool": "escalate",
+                            "args": {"blocked_on": "approval"},
+                            "reasoning": "blocked",
+                        }
+                    )
+                ]
+            ),
+            tools=tools,
+            state=DefaultState(max_steps=2),
+            config=LoopConfig(
+                max_steps=2,
+                done_tool="resolve",
+                done_tools=["escalate"],
+                use_native_tools=False,
+            ),
+            task={"goal": "resolve or escalate"},
+            hooks=[hook],
+        )
+    )
+    assert hook.context is not None
+    assert hook.context.completed is True
+    assert hook.context.final_output == {"blocked_on": "approval"}
+
+
 # ── promote online → offline ─────────────────────────────────────
 
 
@@ -106,7 +144,7 @@ def test_promote_to_offline_roundtrips(tmp_path: Path) -> None:
     def collect(state) -> dict:
         return {"tests_passing": True}
 
-    hook = _run_online(collectors=[collect])
+    hook = _run_online(collectors=[collect], metadata={"trial": "candidate-a"})
     case = EvalCase(id="echo_case", task={"goal": "echo hello then finish"})
 
     out = promote_to_offline(tmp_path / "promoted", eval_hook=hook, case=case)
@@ -123,6 +161,11 @@ def test_promote_to_offline_roundtrips(tmp_path: Path) -> None:
     assert rec.context.completed is True
     # Outcome artifacts survived.
     assert rec.context.artifacts == {"tests_passing": True}
+    # Judge-visible evidence and run metadata survive online → offline.
+    assert hook.context is not None
+    assert hook.context.session_log_text
+    assert rec.context.session_log_text == hook.context.session_log_text
+    assert rec.context.metadata == hook.context.metadata
     # Case survived.
     assert rec.case.id == "echo_case"
     # Online scores survived.
@@ -151,11 +194,17 @@ def test_promote_without_run_raises() -> None:
 def test_save_eval_run_from_context_directly(tmp_path: Path) -> None:
     from looplet import save_eval_run
 
-    hook = _run_online()
+    hook = _run_online(
+        collectors=[lambda state: {"from_context": True}],
+        metadata={"source": "live"},
+    )
     # context= source path (no recorder, no eval_hook).
     out = save_eval_run(tmp_path / "c", context=hook.context)
     rec = load_eval_run(out)
     assert rec.context.tool_sequence == ["echo", "done"]
+    assert rec.context.artifacts == {"from_context": True}
+    assert rec.context.metadata["source"] == "live"
+    assert rec.context.session_log_text == hook.context.session_log_text
 
 
 def test_save_eval_run_no_source_raises(tmp_path: Path) -> None:
@@ -197,3 +246,30 @@ def test_seed_case_workspace_bad_files_type_raises(tmp_path: Path) -> None:
     case = EvalCase(id="bad", task={"files": ["not", "a", "dict"]})
     with pytest.raises(ValueError):
         seed_case_workspace(case, tmp_path / "sb")
+
+
+@pytest.mark.parametrize(
+    "case_id",
+    ["", ".", "..", "../escape", "nested/case", "a\\b", "line\nbreak", "nul\x00byte"],
+)
+def test_eval_case_rejects_unsafe_id(case_id: str) -> None:
+    with pytest.raises(ValueError, match="EvalCase id"):
+        EvalCase(id=case_id)
+
+
+@pytest.mark.parametrize("seed_path", ["../escape.py", "/tmp/escape.py", "a\\b.py"])
+def test_seed_case_workspace_rejects_escape(tmp_path: Path, seed_path: str) -> None:
+    case = EvalCase(id="unsafe_seed", task={"files": {seed_path: "bad\n"}})
+    with pytest.raises(ValueError, match="seed path"):
+        seed_case_workspace(case, tmp_path / "sb")
+
+
+def test_seed_case_workspace_rejects_symlink_escape(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sandbox = tmp_path / "sb"
+    sandbox.mkdir()
+    (sandbox / "linked").symlink_to(outside, target_is_directory=True)
+    case = EvalCase(id="symlink_seed", task={"files": {"linked/escape.py": "bad\n"}})
+    with pytest.raises(ValueError, match="seed path"):
+        seed_case_workspace(case, sandbox)

@@ -520,6 +520,7 @@ class Trajectory:
     spans: list[Span] = field(default_factory=list)
     termination_reason: str = "unknown"
     metadata: dict[str, Any] = field(default_factory=dict)
+    session_log_text: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -528,6 +529,7 @@ class Trajectory:
             "ended_at": self.ended_at,
             "task": self.task,
             "termination_reason": self.termination_reason,
+            "session_log_text": self.session_log_text,
             "metadata": self.metadata,
             "step_count": len(self.steps),
             "llm_call_count": len(self.llm_calls),
@@ -665,6 +667,11 @@ class TrajectoryRecorder:
 
     def on_loop_end(self, state: Any, session_log: Any, context: Any, llm: Any) -> int:
         self.trajectory.ended_at = time.time()
+        if session_log is not None and hasattr(session_log, "render"):
+            try:
+                self.trajectory.session_log_text = str(session_log.render() or "")
+            except Exception:  # noqa: BLE001
+                logger.warning("Failed to render session log for trajectory", exc_info=True)
         if self._harness_snapshot is not None:
             self.trajectory.metadata["harness_snapshot"] = dict(self._harness_snapshot)
         if self._recording_llm is not None:
@@ -720,8 +727,13 @@ class TrajectoryRecorder:
                     )
                 )
         self.trajectory.steps.sort(key=lambda s: s.step_num)
-        # Infer termination reason from the last step, if available.
-        if self.trajectory.steps:
+        # The loop records the authoritative reason before on_loop_end,
+        # including custom primary/secondary terminal sentinels. Keep the
+        # old inference only for callers that invoke this hook manually.
+        state_stop_reason = getattr(state, "_stop_reason", None) if state is not None else None
+        if state_stop_reason:
+            self.trajectory.termination_reason = str(state_stop_reason)
+        elif self.trajectory.steps:
             last_tool = self.trajectory.steps[-1].tool_call.get("tool", "")
             if last_tool == "done":
                 self.trajectory.termination_reason = "done"

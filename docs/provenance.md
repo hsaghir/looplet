@@ -62,7 +62,7 @@ After `flush()`, the directory contains:
 
 ```
 traces/run_1/
-├── trajectory.json         # run_id, steps, termination_reason, metadata
+├── trajectory.json         # run_id, steps, stop reason, session log, metadata
 ├── steps/
 │   ├── step_01.json        # tool_call, tool_result, context_before, linked LLM indices
 │   └── step_02.json

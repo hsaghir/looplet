@@ -13,6 +13,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from looplet import (
     EvalRunRecord,
     eval_cli,
@@ -76,6 +78,10 @@ def eval_wrote_file(ctx):
     return "write_file" in ctx.tool_sequence
 
 
+def eval_expected_available(ctx):
+    return ctx.task.get("expected") == {"file_written": True}
+
+
 def eval_judge_quality(ctx, llm):
     # LLM-as-judge grader: only runs when a judge backend is supplied.
     raw = llm.generate("rate 0..1").strip()
@@ -89,7 +95,10 @@ def collect_marker(state, runtime):
     from pathlib import Path
 
     root = Path((runtime or {}).get("project_root", "."))
-    return {"file_written": (root / "greeting.py").exists()}
+    return {
+        "file_written": (root / "greeting.py").exists(),
+        "expected_leaked": "expected" in state.task,
+    }
 """
 
 _CASE = {
@@ -168,15 +177,21 @@ def test_run_cartridge_evals_end_to_end(tmp_path: Path) -> None:
     scores = {r.name: r.score for r in rec.results}
     assert scores["eval_completed"] == 1.0
     assert scores["eval_wrote_file"] == 1.0
+    assert scores["eval_expected_available"] == 1.0
     # collector populated artifacts from the seeded+written sandbox
     assert rec.context.artifacts.get("file_written") is True
+    assert rec.context.artifacts.get("expected_leaked") is False
 
     # persisted as an offline fixture, reloadable + re-gradable
     persisted = out / "make_greeting"
     assert (persisted / "trajectory.json").is_file()
     assert (persisted / "artifacts.json").is_file()
+    trajectory = json.loads((persisted / "trajectory.json").read_text())
+    assert "expected" not in trajectory["task"]
+    assert json.loads((persisted / "expected.json").read_text()) == {"file_written": True}
     reloaded = load_eval_run(persisted)
     assert reloaded.context.tool_sequence == ["write_file", "done"]
+    assert reloaded.context.task["expected"] == {"file_written": True}
 
 
 def test_run_cartridge_evals_no_output_uses_tempdir(tmp_path: Path) -> None:
@@ -189,9 +204,60 @@ def test_run_cartridge_evals_no_output_uses_tempdir(tmp_path: Path) -> None:
 
 def test_run_cartridge_evals_case_filter(tmp_path: Path) -> None:
     cart = _make_cartridge(tmp_path)
-    # filter to a non-existent id → zero runs
-    records = run_cartridge_evals(cart, llm=MockLLMBackend(responses=_scripted()), cases=["nope"])
-    assert records == []
+    records = run_cartridge_evals(
+        cart,
+        llm=MockLLMBackend(responses=_scripted()),
+        cases=["make_greeting"],
+    )
+    assert [record.case.id for record in records] == ["make_greeting"]
+
+
+def test_run_cartridge_evals_rejects_unknown_case_filter(tmp_path: Path) -> None:
+    cart = _make_cartridge(tmp_path)
+    with pytest.raises(ValueError, match="Unknown eval case"):
+        run_cartridge_evals(
+            cart,
+            llm=MockLLMBackend(responses=_scripted()),
+            cases=["typo"],
+        )
+
+
+def test_run_cartridge_evals_rejects_expected_inside_agent_task(tmp_path: Path) -> None:
+    cart = _make_cartridge(tmp_path)
+    case_path = cart / "evals" / "cases" / "make_greeting.json"
+    case_data = json.loads(case_path.read_text())
+    case_data["task"]["expected"] = {"file_written": True}
+    case_path.write_text(json.dumps(case_data))
+    with pytest.raises(ValueError, match="reserved grader data"):
+        run_cartridge_evals(cart, llm=MockLLMBackend(responses=_scripted()))
+
+
+def test_run_cartridge_evals_resets_persisted_workspace(tmp_path: Path) -> None:
+    cart = _make_cartridge(tmp_path)
+    out = tmp_path / "runs"
+    stale = out / "make_greeting" / "workspace" / "stale.py"
+    stale.parent.mkdir(parents=True)
+    stale.write_text("must disappear\n")
+
+    run_cartridge_evals(
+        cart,
+        llm=MockLLMBackend(responses=_scripted()),
+        output_dir=out,
+    )
+    assert not stale.exists()
+
+
+def test_case_sandbox_overrides_base_runtime_project_root(tmp_path: Path) -> None:
+    cart = _make_cartridge(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    records = run_cartridge_evals(
+        cart,
+        llm=MockLLMBackend(responses=_scripted()),
+        runtime={"project_root": str(outside)},
+    )
+    assert not (outside / "greeting.py").exists()
+    assert (records[0].directory / "greeting.py").is_file()
 
 
 # ── LLM-as-judge wiring (deterministic via MockLLMBackend) ───────
@@ -248,6 +314,93 @@ def test_cli_run_without_judge_skips_judge_grader(tmp_path: Path, monkeypatch) -
     assert by["eval_judge_quality"].label == "skipped"
 
 
+def test_cli_run_unknown_case_returns_failure(tmp_path: Path, monkeypatch) -> None:
+    cart = _make_cartridge(tmp_path)
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://x")
+    import looplet.backends as _backends
+
+    monkeypatch.setattr(
+        _backends,
+        "OpenAIBackend",
+        lambda **kw: MockLLMBackend(responses=[]),
+    )
+    assert eval_cli(["run", str(cart), "--case", "typo"]) == 1
+
+
+def test_cli_run_rejects_invalid_threshold_before_backend_setup(tmp_path: Path) -> None:
+    cart = _make_cartridge(tmp_path)
+    assert eval_cli(["run", str(cart), "--threshold", "nan"]) == 1
+
+
+def test_cli_run_fails_on_evaluator_error(tmp_path: Path, monkeypatch) -> None:
+    cart = _make_cartridge(tmp_path)
+    (cart / "evals" / "eval_broken.py").write_text(
+        "def eval_broken(ctx):\n    raise RuntimeError('grader broke')\n"
+    )
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://x")
+    import looplet.backends as _backends
+
+    monkeypatch.setattr(
+        _backends,
+        "OpenAIBackend",
+        lambda **kw: MockLLMBackend(responses=_scripted()),
+    )
+    assert eval_cli(["run", str(cart)]) == 1
+
+
+def test_cli_run_fails_on_failing_verdict_label(tmp_path: Path, monkeypatch) -> None:
+    cart = _make_cartridge(tmp_path)
+    (cart / "evals" / "eval_verdict.py").write_text("def eval_verdict(ctx):\n    return 'wrong'\n")
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://x")
+    import looplet.backends as _backends
+
+    monkeypatch.setattr(
+        _backends,
+        "OpenAIBackend",
+        lambda **kw: MockLLMBackend(responses=_scripted()),
+    )
+    assert eval_cli(["run", str(cart)]) == 1
+
+
+def test_cli_run_fails_when_required_judge_is_skipped(tmp_path: Path, monkeypatch) -> None:
+    cart = _make_cartridge(tmp_path)
+    (cart / "evals" / "eval_required.py").write_text(
+        "from looplet import eval_mark\n\n"
+        "@eval_mark('required')\n"
+        "def eval_required_judge(ctx, llm):\n"
+        "    raise AssertionError('must not run without a judge')\n"
+    )
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://x")
+    import looplet.backends as _backends
+
+    monkeypatch.setattr(
+        _backends,
+        "OpenAIBackend",
+        lambda **kw: MockLLMBackend(responses=_scripted()),
+    )
+    out = tmp_path / "runs"
+    assert eval_cli(["run", str(cart), "--out", str(out)]) == 1
+    by_name = {result.name: result for result in load_eval_run(out / "make_greeting").results}
+    assert by_name["eval_required_judge"].label == "skipped"
+    assert "must not run" not in by_name["eval_required_judge"].explanation
+
+
+def test_cli_run_fails_on_collector_error(tmp_path: Path, monkeypatch) -> None:
+    cart = _make_cartridge(tmp_path)
+    (cart / "evals" / "collect_outcome.py").write_text(
+        "def collect_broken(state, runtime):\n    raise RuntimeError('collector broke')\n"
+    )
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://x")
+    import looplet.backends as _backends
+
+    monkeypatch.setattr(
+        _backends,
+        "OpenAIBackend",
+        lambda **kw: MockLLMBackend(responses=_scripted()),
+    )
+    assert eval_cli(["run", str(cart)]) == 1
+
+
 # ── CLI preflight / error paths (no live model needed) ───────────
 
 
@@ -260,6 +413,12 @@ def test_cli_run_no_evals_dir(tmp_path: Path, monkeypatch) -> None:
     cart = tmp_path / "empty.cartridge"
     cart.mkdir()
     (cart / "cartridge.json").write_text('{"name": "x", "schema_version": 2}')
+    assert eval_cli(["run", str(cart)]) == 1
+
+
+def test_cli_run_broken_eval_module_fails_preflight(tmp_path: Path) -> None:
+    cart = _make_cartridge(tmp_path)
+    (cart / "evals" / "eval_broken.py").write_text("def broken(:\n")
     assert eval_cli(["run", str(cart)]) == 1
 
 

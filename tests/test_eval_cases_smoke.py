@@ -50,6 +50,19 @@ class TestEvalCase:
         assert "marks" not in d
         assert "notes" not in d
 
+    @pytest.mark.parametrize(
+        "data",
+        [
+            {"id": "x", "task": []},
+            {"id": "x", "expected": []},
+            {"id": "x", "marks": [1]},
+            {"id": "x", "notes": 1},
+        ],
+    )
+    def test_malformed_field_types_raise(self, data) -> None:
+        with pytest.raises(ValueError, match="EvalCase"):
+            EvalCase.from_dict(data)
+
 
 class TestLoadCases:
     def test_single_json_file_one_case(self, tmp_path: Path) -> None:

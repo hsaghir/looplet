@@ -39,6 +39,22 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   `setup.py` just to attach a custom state class.
 
 ### Fixed
+- **Eval runs now fail closed instead of producing false greens.** Zero
+  scores remain scores; invalid/unsupported returns, evaluator errors,
+  collector failures, explicit failing labels, and skipped graders marked
+  `@eval_mark("required")` produce non-zero CLI exits. Integrity-sensitive
+  discovery rejects broken or duplicate eval modules rather than running a
+  partial suite; malformed trajectories/metrics and invalid thresholds also
+  fail the run instead of being skipped.
+- **Online and offline grading now share the same evidence.** Case
+  `expected` data is exposed only to graders (never leaked into the agent
+  task or recorded agent-visible task), custom terminal sentinels preserve
+  their final payloads, and session logs, metadata, artifacts, and
+  termination reasons round-trip.
+- **Cartridge eval sandboxes are isolated on every run.** Unsafe case IDs,
+  seed traversal, symlink escapes, unknown case filters, stale persisted
+  workspaces, and caller overrides of the per-case project root are rejected
+  or reset before execution.
 - **YAML parser now skips full-line comments.** `#` lines used to
   raise `CartridgeSerializationError`. Same fix applied to the
   runtime-substitution pre-pass so `${runtime.x}` inside a YAML

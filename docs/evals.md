@@ -96,13 +96,19 @@ hook = EvalHook(
 )
 ```
 
-A collector that raises or returns a non-dict is silently skipped —
-collectors observe, they must never break a run. Multiple collectors
-merge their dicts in order; later keys win.
+A collector that raises or returns a non-dict never breaks the agent
+run — collectors are observers — but `EvalHook` records a synthetic
+`collector:<name>` result with `label="error"`. CLI evaluation fails on
+that result instead of reporting a false green. Multiple successful
+collectors merge their dicts in order; later keys win.
 
 For saved trajectories, drop an `artifacts.json` next to
 `trajectory.json`. `EvalContext.from_trajectory_dir` loads it
-automatically:
+automatically and fails loudly if it is malformed. New trajectories
+also persist `session_log_text`, so an LLM judge sees the same evidence
+online and after reload. Treat eval-run directories as sensitive prompt
+evidence and apply the provenance recorder's `redact=` option where
+needed:
 
 ```
 traces/run_1/
@@ -110,6 +116,12 @@ traces/run_1/
 ├── metrics.json
 └── artifacts.json   ← {"tests_passing": true, "files_changed": 3}
 ```
+
+For compatibility with older benchmark traces, a `metrics.json` file may
+also contribute top-level `expected_*` keys to the offline grader task and
+an `output` object when the trajectory has no terminal payload. This is a
+legacy offline-harness convention, not data shown to a live agent. New eval
+cases should use the top-level case `expected` field instead.
 
 ### When trajectory inspection *is* OK
 
@@ -123,6 +135,21 @@ Reading `ctx.tool_sequence` or `ctx.steps` is appropriate for:
 If you find yourself writing `"pytest" in str(ctx.steps)` as a quality
 signal, replace it with a collector that runs `pytest` and surfaces a
 boolean artifact.
+
+### Trust boundary: the agent must not own its oracle
+
+Files under `case.task["files"]` are task inputs placed in the agent's
+writable sandbox. They are **not** a protected release oracle: the agent
+can read and modify them. Visible tests are useful guidance, but a serious
+gate should have a collector run host-owned tests or compare against
+host-owned expected data outside that sandbox. Runtime-bound collectors
+already provide this composition point; pass the protected path through
+the runner's `runtime` dict.
+
+Cartridge-shipped evals are the agent version's self-test contract. For
+automatic cartridge evolution, keep a separate host-owned holdout suite:
+the candidate may edit its cartridge, but never the evaluator that decides
+whether the candidate is promoted.
 
 ## Attach to your loop
 
@@ -210,12 +237,23 @@ def eval_verdict_correct(ctx): ...
 @eval_mark("ioc", "slow")
 def eval_ioc_quality(ctx, llm): ...
 
+# A skipped required grader is an integrity failure in the CLI.
+@eval_mark("required")
+def eval_release_gate(ctx): ...
+
 # Run only "verdict" evals:
 results = eval_run(evals, ctx, include=["verdict"])
 
 # Skip "slow" evals in CI:
 results = eval_run(evals, ctx, exclude=["slow"])
 ```
+
+`required` uses the ordinary mark mechanism; it is not a second grader
+type. In CLI runs, required graders must execute and meet the normal
+`EvalResult.passed` boundary ($0.5$ for numeric scores), independently of
+any stricter `--threshold` supplied for the run. Unmarked LLM judges remain
+optional when no judge backend is configured. Evaluator/collector errors
+and explicit failing labels always produce a non-zero CLI exit.
 
 ## Batch-run across multiple trajectories
 
@@ -230,9 +268,19 @@ for row in table:
 
 ## Cases as data: write them by hand, run them with pytest
 
-An **eval case** is just `task` + `expected` + tags. Cases live as
-JSON so you can hand-write the first few, grow the corpus from
-real runs, and review them without a Python file.
+An **eval case** is just `task` + `expected` + tags. The cartridge runner
+places the separate `expected` object at `ctx.task["expected"]` for every
+grader **after the agent loop ends**; it is never included in the task
+prompt sent to the agent. Persisted eval runs keep the agent-visible task
+in `trajectory.json` and grader-only data in a sibling `expected.json`,
+then restore the documented `ctx.task["expected"]` view when loaded. The
+provenance record therefore remains honest about what the agent saw. Cases
+live as JSON so you can hand-write the first few, grow the corpus from real
+runs, and review them without a Python file.
+
+`task["expected"]` is reserved in cartridge cases: put oracle data in the
+top-level `expected` field. The runner rejects the ambiguous nested shape
+rather than exposing it to the agent.
 
 ```json
 // evals/cases/add_basic.json

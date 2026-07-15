@@ -60,16 +60,19 @@ encodes today's expected trajectory as a permanent grade.
 from __future__ import annotations
 
 import functools
+import hashlib
 import importlib.util
 import inspect
 import json
 import logging
+import math
+import shutil
 import sys
 import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, NamedTuple
+from typing import TYPE_CHECKING, Any, Callable, NamedTuple, cast
 
 if TYPE_CHECKING:
     from looplet.session import SessionLog
@@ -122,6 +125,41 @@ CARTRIDGE_CASES_SUBPATH = "evals/cases"
 # (``collect_*.py``) live directly under ``evals/`` (code). One slot,
 # everything an agent version needs to grade itself.
 CARTRIDGE_EVALS_SUBPATH = "evals"
+
+# ``required`` is a semantic use of the existing mark mechanism, not a
+# second evaluator taxonomy. The CLI treats a skipped required grader as
+# an integrity failure; unmarked judge graders may still be intentionally
+# omitted when no judge backend is configured.
+_REQUIRED_EVAL_MARK = "required"
+
+
+def _validate_case_id(case_id: str) -> str:
+    """Return a safe case id or raise before it reaches a filesystem path."""
+    if not isinstance(case_id, str) or not case_id.strip():
+        raise ValueError("EvalCase id must be a non-empty string")
+    has_control = any(ord(char) < 32 or ord(char) == 127 for char in case_id)
+    if case_id in {".", ".."} or "/" in case_id or "\\" in case_id or has_control:
+        raise ValueError(f"EvalCase id must be one path-safe component, got {case_id!r}")
+    return case_id
+
+
+def _contained_child(root: Path, relative: str, *, label: str) -> Path:
+    """Join ``relative`` beneath ``root`` and reject traversal/symlink escapes."""
+    if not isinstance(relative, str) or not relative:
+        raise ValueError(f"{label} must be a non-empty relative path")
+    rel = Path(relative)
+    if rel.is_absolute() or ".." in rel.parts or "\\" in relative or "\x00" in relative:
+        raise ValueError(f"{label} {relative!r} escapes its root")
+    target = root / rel
+    resolved_root = root.resolve()
+    resolved_target = target.resolve()
+    try:
+        resolved_target.relative_to(resolved_root)
+    except ValueError as exc:
+        raise ValueError(f"{label} {relative!r} escapes its root") from exc
+    if resolved_target == resolved_root:
+        raise ValueError(f"{label} {relative!r} must name a file or child directory")
+    return target
 
 
 class CartridgeEvals(NamedTuple):
@@ -240,58 +278,106 @@ class EvalContext:
         if not traj_path.exists():
             raise FileNotFoundError(f"No trajectory.json in {root}")
 
-        data = json.loads(traj_path.read_text())
+        try:
+            data = json.loads(traj_path.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(f"Invalid trajectory.json in {root}: {exc}") from exc
+        if not isinstance(data, dict):
+            raise ValueError(
+                f"Invalid trajectory.json in {root}: expected object, got {type(data).__name__}"
+            )
         steps = data.get("steps", [])
-        task = data.get("task", {})
-        if not isinstance(task, dict):
-            task = {"description": str(task)} if task else {}
+        if not isinstance(steps, list) or any(not isinstance(step, dict) for step in steps):
+            raise ValueError(f"Invalid trajectory.json in {root}: steps must be a list of objects")
+        raw_task = data.get("task", {})
+        task: dict[str, Any]
+        if not isinstance(raw_task, dict):
+            task = {"description": str(raw_task)} if raw_task else {}
+        else:
+            task = dict(raw_task)
+        expected = data.get("expected")
+        expected_path = root / "expected.json"
+        if expected_path.exists():
+            try:
+                persisted_expected = json.loads(expected_path.read_text())
+            except (OSError, json.JSONDecodeError) as exc:
+                raise ValueError(f"Invalid expected.json in {root}: {exc}") from exc
+            if not isinstance(persisted_expected, dict):
+                raise ValueError(
+                    f"Invalid expected.json in {root}: expected object, "
+                    f"got {type(persisted_expected).__name__}"
+                )
+            if expected is not None and expected != persisted_expected:
+                raise ValueError(f"Conflicting grader expectations in {root}")
+            expected = persisted_expected
+        if expected is not None:
+            if not isinstance(expected, dict):
+                raise ValueError(
+                    f"Invalid trajectory.json in {root}: expected must be an object, "
+                    f"got {type(expected).__name__}"
+                )
+            if "expected" in task and task["expected"] != expected:
+                raise ValueError(f"Conflicting grader expectations in {root}")
+            # Keep the persisted agent-visible task honest while preserving
+            # the documented grader API after reload.
+            task["expected"] = expected
         # Pull through the trajectory's own metadata dict (which may
         # contain harness_snapshot from TrajectoryRecorder, plus any
-        # user-attached fields) and overlay the well-known top-level
-        # fields so they are always available at the documented keys.
+        # user-attached fields) and overlay the available well-known
+        # top-level fields at their documented keys.
         traj_metadata = data.get("metadata") or {}
         if not isinstance(traj_metadata, dict):
             traj_metadata = {}
         metadata: dict[str, Any] = dict(traj_metadata)
+        top_level_metadata = {
+            "run_id": data.get("run_id"),
+            "started_at": data.get("started_at"),
+            "ended_at": data.get("ended_at"),
+            "termination_reason": data.get("termination_reason"),
+        }
         metadata.update(
-            {
-                "run_id": data.get("run_id"),
-                "started_at": data.get("started_at"),
-                "ended_at": data.get("ended_at"),
-                "termination_reason": data.get("termination_reason"),
-            }
+            {key: value for key, value in top_level_metadata.items() if value is not None}
         )
 
-        # Extract final_output from the last done() step
+        stop_reason = data.get("termination_reason") or metadata.get("termination_reason")
+
+        # A successful terminal call is always the final step, regardless
+        # of whether the cartridge names it ``done``, ``submit``, or a
+        # secondary sentinel such as ``escalate``. Fall back to the legacy
+        # hard-coded name only for old trajectories with no stop reason.
         final_output: dict[str, Any] = {}
-        for s in reversed(steps):
-            # Support both formats:
-            #   looplet: {"tool_call": {"tool": "done", "args": {...}}}
-            #   benchmark:   {"tool": "done", "args_summary": "..."}
-            tc = s.get("tool_call", {})
-            tool_name = tc.get("tool") or s.get("tool", "")
-            if tool_name == "done":
-                final_output = tc.get("args", {})
-                break
+        terminal_steps = steps[-1:] if stop_reason == "done" else []
+        if stop_reason is None:
+            terminal_steps = [
+                s
+                for s in reversed(steps)
+                if (s.get("tool_call", {}).get("tool") or s.get("tool", "")) == "done"
+            ][:1]
+        if terminal_steps:
+            raw_output = terminal_steps[0].get("tool_call", {}).get("args", {})
+            if isinstance(raw_output, dict):
+                final_output = raw_output
 
         # Also load from metrics.json if available (ground-truth data)
         metrics_path = root / "metrics.json"
         if metrics_path.exists():
             try:
                 metrics_data = json.loads(metrics_path.read_text())
-                # Merge any ground-truth fields into task (so evaluators
-                # can compare expected vs actual without knowing the
-                # file layout). Only copies keys that don't already
-                # exist in task to avoid overwriting user-supplied values.
-                for key, value in metrics_data.items():
-                    if key.startswith("expected_") and key not in task:
-                        task[key] = value
-                # If no done() output was found in the trajectory but
-                # metrics.json has a top-level "output" dict, promote it.
-                if not final_output and isinstance(metrics_data.get("output"), dict):
-                    final_output = metrics_data["output"]
-            except Exception:  # noqa: BLE001
-                pass
+            except (OSError, json.JSONDecodeError) as exc:
+                raise ValueError(f"Invalid metrics.json in {root}: {exc}") from exc
+            if not isinstance(metrics_data, dict):
+                raise ValueError(
+                    f"Invalid metrics.json in {root}: expected object, "
+                    f"got {type(metrics_data).__name__}"
+                )
+            # Legacy benchmark traces place ground truth in metrics.json.
+            # Preserve that reader contract, but never silently ignore a
+            # malformed oracle file.
+            for key, value in metrics_data.items():
+                if key.startswith("expected_") and key not in task:
+                    task[key] = value
+            if not final_output and isinstance(metrics_data.get("output"), dict):
+                final_output = metrics_data["output"]
 
         # Load artifacts.json if present — outcome data collected
         # outside the trajectory (test results, file diffs, repo
@@ -301,19 +387,23 @@ class EvalContext:
         if artifacts_path.exists():
             try:
                 loaded = json.loads(artifacts_path.read_text())
-                if isinstance(loaded, dict):
-                    artifacts = loaded
-            except Exception:  # noqa: BLE001
-                logger.warning("Failed to load artifacts.json from %s", root, exc_info=True)
+            except (OSError, json.JSONDecodeError) as exc:
+                raise ValueError(f"Invalid artifacts.json in {root}: {exc}") from exc
+            if not isinstance(loaded, dict):
+                raise ValueError(
+                    f"Invalid artifacts.json in {root}: expected object, "
+                    f"got {type(loaded).__name__}"
+                )
+            artifacts = loaded
 
         return cls(
             steps=[_DictStep(s) for s in steps],
             task=task if isinstance(task, dict) else {"description": str(task)},
             final_output=final_output,
-            session_log_text="",  # not saved in trajectory by default
+            session_log_text=str(data.get("session_log_text") or ""),
             metadata=metadata,
             artifacts=artifacts,
-            stop_reason=data.get("termination_reason") or metadata.get("termination_reason"),
+            stop_reason=stop_reason,
         )
 
 
@@ -387,6 +477,19 @@ class EvalResult:
     duration_ms: float = 0.0
     """How long the evaluator took to run."""
 
+    def __post_init__(self) -> None:
+        if self.score is not None and (
+            not isinstance(self.score, (int, float))
+            or not math.isfinite(self.score)
+            or not 0.0 <= self.score <= 1.0
+        ):
+            raise ValueError(f"score must be finite and between 0 and 1, got {self.score!r}")
+        if self.label is not None and not isinstance(self.label, str):
+            raise ValueError(f"label must be a string, got {type(self.label).__name__}")
+        for key, metric in self.metrics.items():
+            if not isinstance(metric, (int, float)) or not math.isfinite(metric):
+                raise ValueError(f"metric {key!r} must be finite, got {metric!r}")
+
     @property
     def passed(self) -> bool:
         """Whether this evaluation passed.
@@ -396,8 +499,16 @@ class EvalResult:
         Returns ``False`` otherwise, including when both ``score`` and
         ``label`` are unset.
         """
+        if self.label is not None and self.label.lower() in {
+            "error",
+            "fail",
+            "wrong",
+            "no",
+            "skipped",
+        }:
+            return False
         if self.score is not None:
-            return self.score >= 0.5
+            return math.isfinite(self.score) and 0.0 <= self.score <= 1.0 and self.score >= 0.5
         if self.label is not None:
             return self.label.lower() in {"pass", "correct", "yes"}
         return False
@@ -412,21 +523,51 @@ class EvalResult:
         if isinstance(value, bool):
             return cls(name=name, score=1.0 if value else 0.0, label="pass" if value else "fail")
         if isinstance(value, (int, float)):
-            return cls(name=name, score=float(value))
+            score = float(value)
+            if not math.isfinite(score) or not 0.0 <= score <= 1.0:
+                return cls(
+                    name=name,
+                    label="error",
+                    explanation=f"score must be finite and between 0 and 1, got {score!r}",
+                )
+            return cls(name=name, score=score)
         if isinstance(value, str):
             return cls(name=name, label=value)
         if isinstance(value, dict):
             metrics = {k: float(v) for k, v in value.items() if isinstance(v, (int, float))}
             details = [f"{k}: {v}" for k, v in value.items() if not isinstance(v, (int, float))]
-            # Try to find a primary score
-            score = (
-                metrics.get("score")
-                or metrics.get("f1")
-                or metrics.get("accuracy")
-                or metrics.get("overall")
+            invalid_metric = next(
+                ((key, metric) for key, metric in metrics.items() if not math.isfinite(metric)),
+                None,
             )
+            if invalid_metric is not None:
+                key, metric = invalid_metric
+                return cls(
+                    name=name,
+                    label="error",
+                    details=details,
+                    explanation=f"metric {key!r} must be finite, got {metric!r}",
+                )
+            # Test key presence rather than truthiness so a real 0.0 score
+            # is not silently downgraded to a metric-only result.
+            score = next(
+                (metrics[key] for key in ("score", "f1", "accuracy", "overall") if key in metrics),
+                None,
+            )
+            if score is not None and (not math.isfinite(score) or not 0.0 <= score <= 1.0):
+                return cls(
+                    name=name,
+                    label="error",
+                    metrics=metrics,
+                    details=details,
+                    explanation=f"primary score must be finite and between 0 and 1, got {score!r}",
+                )
             return cls(name=name, score=score, metrics=metrics, details=details)
-        return cls(name=name, explanation=str(value))
+        return cls(
+            name=name,
+            label="error",
+            explanation=f"unsupported evaluator return type: {type(value).__name__}",
+        )
 
     def pretty(self) -> str:
         """One-line formatted output for terminal display."""
@@ -499,6 +640,21 @@ class EvalCase:
     expected: dict[str, Any] = field(default_factory=dict)
     marks: list[str] = field(default_factory=list)
     notes: str = ""
+
+    def __post_init__(self) -> None:
+        _validate_case_id(self.id)
+        if not isinstance(self.task, dict):
+            raise ValueError(f"EvalCase task must be an object, got {type(self.task).__name__}")
+        if not isinstance(self.expected, dict):
+            raise ValueError(
+                f"EvalCase expected must be an object, got {type(self.expected).__name__}"
+            )
+        if not isinstance(self.marks, list) or any(
+            not isinstance(mark, str) for mark in self.marks
+        ):
+            raise ValueError("EvalCase marks must be a list of strings")
+        if not isinstance(self.notes, str):
+            raise ValueError(f"EvalCase notes must be a string, got {type(self.notes).__name__}")
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {"id": self.id, "task": self.task}
@@ -592,7 +748,8 @@ def save_case(case: "EvalCase", path: str | Path) -> Path:
     target = Path(path)
     treat_as_dir = (target.exists() and target.is_dir()) or raw.endswith(("/", "\\"))
     if treat_as_dir:
-        target = target / f"{case.id}.json"
+        case_id = _validate_case_id(case.id)
+        target = _contained_child(target, f"{case_id}.json", label="case file")
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(case.to_dict(), indent=2, sort_keys=True))
     return target
@@ -664,6 +821,7 @@ def discover_collectors(
     path: str | Path,
     *,
     runtime: dict[str, Any] | None = None,
+    strict: bool = False,
 ) -> list[Callable]:
     """Discover outcome collectors (``collect_*`` functions) under ``path``.
 
@@ -685,7 +843,12 @@ def discover_collectors(
     re-run a test suite in the agent's sandbox without hard-coding the
     path.
     """
-    raw = eval_discover(path, pattern="collect_*.py", prefix="collect_")
+    raw = eval_discover(
+        path,
+        pattern="collect_*.py",
+        prefix="collect_",
+        strict=strict,
+    )
     bound: list[Callable] = []
     for fn in raw:
         try:
@@ -703,6 +866,7 @@ def load_cartridge_evals(
     cartridge_dir: str | Path,
     *,
     runtime: dict[str, Any] | None = None,
+    strict: bool = False,
 ) -> "CartridgeEvals":
     """Discover the full eval bundle shipped inside a cartridge.
 
@@ -735,12 +899,21 @@ def load_cartridge_evals(
     if not evals_root.is_dir():
         return CartridgeEvals(cases=[], graders=[], collectors=[])
     cases = load_cartridge_cases(cartridge_dir)
-    graders = eval_discover(evals_root, pattern="eval_*.py", prefix="eval_")
-    collectors = discover_collectors(evals_root, runtime=runtime)
+    graders = eval_discover(
+        evals_root,
+        pattern="eval_*.py",
+        prefix="eval_",
+        strict=strict,
+    )
+    collectors = discover_collectors(evals_root, runtime=runtime, strict=strict)
     return CartridgeEvals(cases=cases, graders=graders, collectors=collectors)
 
 
-def _eval_context_to_trajectory(ctx: "EvalContext") -> dict[str, Any]:
+def _eval_context_to_trajectory(
+    ctx: "EvalContext",
+    *,
+    expected: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Serialise an :class:`EvalContext` into the ``trajectory.json`` shape
     that :meth:`EvalContext.from_trajectory_dir` reads back.
 
@@ -765,13 +938,101 @@ def _eval_context_to_trajectory(ctx: "EvalContext") -> dict[str, Any]:
                 "tool_result": {"data": data, "error": error},
             }
         )
+    task = dict(ctx.task)
+    if expected is not None:
+        task.pop("expected", None)
     return {
         "run_id": (ctx.metadata or {}).get("run_id"),
-        "task": ctx.task,
+        "task": task,
         "termination_reason": ctx.stop_reason,
+        "session_log_text": ctx.session_log_text,
+        "metadata": dict(ctx.metadata or {}),
         "step_count": len(ctx.steps),
         "steps": steps_out,
     }
+
+
+def _write_json(
+    path: Path,
+    value: Any,
+    *,
+    redact: Callable[[str], str] | None = None,
+) -> None:
+    """Write one JSON eval artifact through the recorder's redactor."""
+    text = json.dumps(value, indent=2, default=str)
+    if redact is not None:
+        text = redact(text)
+    path.write_text(text, encoding="utf-8")
+
+
+def _merge_context_into_recorder(
+    recorder: Any,
+    ctx: "EvalContext",
+    *,
+    expected: dict[str, Any] | None = None,
+) -> bool:
+    """Merge context before a recorder's own serialization/redaction."""
+    trajectory = getattr(recorder, "trajectory", None)
+    if trajectory is None:
+        return False
+    required = ("session_log_text", "metadata", "task", "termination_reason")
+    if not all(hasattr(trajectory, field_name) for field_name in required):
+        return False
+    trajectory.session_log_text = ctx.session_log_text
+    context_metadata = dict(ctx.metadata or {})
+    recorded_metadata = getattr(trajectory, "metadata", {}) or {}
+    if isinstance(recorded_metadata, dict):
+        context_metadata.update(recorded_metadata)
+    trajectory.metadata = context_metadata
+    if not getattr(trajectory, "task", None) and ctx.task:
+        task = dict(ctx.task)
+        if expected is not None:
+            task.pop("expected", None)
+        trajectory.task = task
+    if getattr(trajectory, "termination_reason", None) in (None, "", "unknown"):
+        if ctx.stop_reason:
+            trajectory.termination_reason = ctx.stop_reason
+    return True
+
+
+def _merge_context_into_saved_trajectory(
+    root: Path,
+    ctx: "EvalContext | None",
+    *,
+    expected: dict[str, Any] | None = None,
+    redact: Callable[[str], str] | None = None,
+) -> None:
+    """Add eval-only context fields without replacing recorder fidelity."""
+    trajectory_path = root / "trajectory.json"
+    try:
+        trajectory = json.loads(trajectory_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Invalid trajectory.json in {root}: {exc}") from exc
+    if not isinstance(trajectory, dict):
+        raise ValueError(
+            f"Invalid trajectory.json in {root}: expected object, got {type(trajectory).__name__}"
+        )
+
+    if ctx is not None:
+        trajectory["session_log_text"] = ctx.session_log_text
+        context_metadata = dict(ctx.metadata or {})
+        recorded_metadata = trajectory.get("metadata") or {}
+        if isinstance(recorded_metadata, dict):
+            context_metadata.update(recorded_metadata)
+        trajectory["metadata"] = context_metadata
+    if ctx is not None and not trajectory.get("task") and ctx.task:
+        task = dict(ctx.task)
+        if expected is not None:
+            task.pop("expected", None)
+        trajectory["task"] = task
+    if (
+        ctx is not None
+        and trajectory.get("termination_reason") in (None, "", "unknown")
+        and ctx.stop_reason
+    ):
+        trajectory["termination_reason"] = ctx.stop_reason
+
+    _write_json(trajectory_path, trajectory, redact=redact)
 
 
 def save_eval_run(
@@ -802,6 +1063,7 @@ def save_eval_run(
           steps/step_NN.json
           artifacts.json    # outcome data (eval_hook.artifacts)  ← the gap
           evals.json        # grader scores (results / eval_hook.results)
+          expected.json     # grader-only case expectations, when present
           case.json         # the EvalCase that produced this run
 
     Trajectory source — exactly one is used, in this priority:
@@ -834,21 +1096,39 @@ def save_eval_run(
     src_context = context
     if src_context is None and eval_hook is not None:
         src_context = getattr(eval_hook, "context", None)
+    grader_expected: dict[str, Any] | None = None
+    if case is not None:
+        grader_expected = dict(case.expected)
+    elif eval_hook is not None and getattr(eval_hook, "expected", None) is not None:
+        grader_expected = dict(eval_hook.expected)
+
+    raw_recorder_redact = getattr(recorder, "_redact", None) if recorder is not None else None
+    recorder_redact = (
+        cast(Callable[[str], str], raw_recorder_redact) if callable(raw_recorder_redact) else None
+    )
 
     if recorder is not None:
         # Full-fidelity record (trajectory.json + steps/ + LLM calls).
-        recorder.save(root)
-    elif src_context is not None:
-        traj = _eval_context_to_trajectory(src_context)
-        (root / "trajectory.json").write_text(
-            json.dumps(traj, indent=2, default=str), encoding="utf-8"
+        merged_before_save = src_context is not None and _merge_context_into_recorder(
+            recorder,
+            src_context,
+            expected=grader_expected,
         )
+        recorder.save(root)
+        if src_context is not None and not merged_before_save:
+            _merge_context_into_saved_trajectory(
+                root,
+                src_context,
+                expected=grader_expected,
+                redact=recorder_redact,
+            )
+    elif src_context is not None:
+        traj = _eval_context_to_trajectory(src_context, expected=grader_expected)
+        _write_json(root / "trajectory.json", traj)
         steps_dir = root / "steps"
         steps_dir.mkdir(exist_ok=True)
         for i, step in enumerate(traj["steps"]):
-            (steps_dir / f"step_{i:02d}.json").write_text(
-                json.dumps(step, indent=2, default=str), encoding="utf-8"
-            )
+            _write_json(steps_dir / f"step_{i:02d}.json", step)
     else:
         raise ValueError(
             "save_eval_run needs a trajectory source: pass recorder=, context=, "
@@ -856,10 +1136,13 @@ def save_eval_run(
         )
 
     # Outcome artifacts — the piece TrajectoryRecorder never wrote.
-    artifacts = dict(getattr(eval_hook, "artifacts", {}) or {}) if eval_hook is not None else {}
-    (root / "artifacts.json").write_text(
-        json.dumps(artifacts, indent=2, default=str), encoding="utf-8"
-    )
+    if eval_hook is not None:
+        artifacts = dict(getattr(eval_hook, "artifacts", {}) or {})
+    elif src_context is not None:
+        artifacts = dict(src_context.artifacts or {})
+    else:
+        artifacts = {}
+    _write_json(root / "artifacts.json", artifacts, redact=recorder_redact)
 
     # Grader scores.
     score_objs: list[Any] = (
@@ -867,16 +1150,23 @@ def save_eval_run(
         if results is not None
         else (list(getattr(eval_hook, "results", []) or []) if eval_hook is not None else [])
     )
-    (root / "evals.json").write_text(
-        json.dumps([r.to_dict() for r in score_objs], indent=2, default=str),
-        encoding="utf-8",
+    _write_json(
+        root / "evals.json",
+        [r.to_dict() for r in score_objs],
+        redact=recorder_redact,
     )
+
+    if grader_expected is not None:
+        _write_json(root / "expected.json", grader_expected, redact=recorder_redact)
+    else:
+        (root / "expected.json").unlink(missing_ok=True)
 
     # The case itself, so the directory is self-describing.
     if case is not None:
-        (root / "case.json").write_text(
-            json.dumps(case.to_dict(), indent=2, default=str), encoding="utf-8"
-        )
+        _validate_case_id(case.id)
+        _write_json(root / "case.json", case.to_dict(), redact=recorder_redact)
+    else:
+        (root / "case.json").unlink(missing_ok=True)
 
     return root
 
@@ -944,7 +1234,13 @@ def seed_case_workspace(
             f"{{path: contents}} dict, got {type(files).__name__}"
         )
     for relpath, contents in files.items():
-        target = root / relpath
+        # Resolve once after containment validation and write through that
+        # exact path, so validation and the filesystem operation agree.
+        target = _contained_child(
+            root,
+            relpath,
+            label=f"case {case.id!r} seed path",
+        ).resolve()
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(contents if isinstance(contents, str) else str(contents))
     return root
@@ -974,23 +1270,42 @@ def load_eval_run(directory: str | Path) -> "EvalRunRecord":
     if evals_path.exists():
         try:
             raw = json.loads(evals_path.read_text())
-        except (ValueError, OSError):
-            raw = []
-        if isinstance(raw, list):
-            for d in raw:
-                if isinstance(d, dict):
-                    fields = {k: v for k, v in d.items() if k in EvalResult.__dataclass_fields__}
-                    results.append(EvalResult(**fields))
+        except (ValueError, OSError) as exc:
+            raise ValueError(f"Invalid evals.json in {root}: {exc}") from exc
+        if not isinstance(raw, list):
+            raise ValueError(
+                f"Invalid evals.json in {root}: expected list, got {type(raw).__name__}"
+            )
+        for index, item in enumerate(raw):
+            if not isinstance(item, dict):
+                raise ValueError(f"Invalid evals.json in {root}: result {index} must be an object")
+            fields = {
+                key: value for key, value in item.items() if key in EvalResult.__dataclass_fields__
+            }
+            try:
+                results.append(EvalResult(**fields))
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"Invalid evals.json in {root}: result {index}: {exc}") from exc
 
     case: EvalCase | None = None
     case_path = root / "case.json"
     if case_path.exists():
         try:
             cd = json.loads(case_path.read_text())
-            if isinstance(cd, dict):
-                case = EvalCase.from_dict(cd)
-        except (ValueError, OSError):
-            case = None
+        except (ValueError, OSError) as exc:
+            raise ValueError(f"Invalid case.json in {root}: {exc}") from exc
+        if not isinstance(cd, dict):
+            raise ValueError(
+                f"Invalid case.json in {root}: expected object, got {type(cd).__name__}"
+            )
+        case = EvalCase.from_dict(cd)
+        context_expected = context.task.get("expected")
+        if case.expected and context_expected is not None and context_expected != case.expected:
+            raise ValueError(f"Conflicting grader expectations in {root}")
+        if case.expected and context_expected is None:
+            # Backward compatibility for run directories written before
+            # grader-only expected data had its own trajectory field.
+            context.task["expected"] = dict(case.expected)
 
     return EvalRunRecord(case=case, context=context, results=results, directory=root)
 
@@ -1036,6 +1351,10 @@ def run_cartridge_evals(
             directory (``project_root`` by convention).
         cases: optional list of case ids to run (default: all).
 
+    Each case's ``expected`` mapping is injected into the evaluator's
+    context only after the loop ends; it is not included in the task the
+    agent sees.
+
     Returns one :class:`EvalRunRecord` per executed case (``context`` is
     the online run's :class:`EvalContext`, ``directory`` is the persisted
     dir when ``output_dir`` is set, else the sandbox).
@@ -1044,14 +1363,36 @@ def run_cartridge_evals(
 
     cdir = Path(cartridge_dir)
     base_runtime = dict(runtime or {})
-    overview = load_cartridge_evals(cdir, runtime=base_runtime)
+    overview = load_cartridge_evals(cdir, runtime=base_runtime, strict=True)
     wanted = set(cases) if cases is not None else None
+    if wanted is not None:
+        available = {case.id for case in overview.cases}
+        unknown = sorted(wanted - available)
+        if unknown:
+            raise ValueError(
+                f"Unknown eval case id(s): {', '.join(unknown)}; "
+                f"available: {', '.join(sorted(available)) or '(none)'}"
+            )
     selected = [c for c in overview.cases if wanted is None or c.id in wanted]
 
     records: list[EvalRunRecord] = []
     for case in selected:
+        if "expected" in case.task:
+            raise ValueError(
+                f"Eval case {case.id!r} puts reserved grader data in task['expected']; "
+                "use the top-level case expected field"
+            )
         if output_dir is not None:
-            run_dir: Path | None = Path(output_dir) / case.id
+            output_root = Path(output_dir)
+            run_dir = _contained_child(
+                output_root,
+                _validate_case_id(case.id),
+                label="eval run directory",
+            )
+            if run_dir.is_symlink():
+                run_dir.unlink()
+            elif run_dir.exists():
+                shutil.rmtree(run_dir)
             sandbox = run_dir / "workspace"
         else:
             run_dir = None
@@ -1059,9 +1400,9 @@ def run_cartridge_evals(
         seed_case_workspace(case, sandbox)
 
         case_runtime = dict(base_runtime)
-        case_runtime.setdefault(workspace_key, str(sandbox))
+        case_runtime[workspace_key] = str(sandbox)
 
-        bundle = load_cartridge_evals(cdir, runtime=case_runtime)
+        bundle = load_cartridge_evals(cdir, runtime=case_runtime, strict=True)
         preset = cartridge_to_preset(cdir, runtime=case_runtime)
         if max_steps is not None:
             preset.config.max_steps = max_steps
@@ -1072,6 +1413,7 @@ def run_cartridge_evals(
             evaluators=bundle.graders,
             collectors=bundle.collectors,
             judge_llm=judge_llm,
+            expected=case.expected,
         )
         preset.hooks = list(preset.hooks) + [hook]
 
@@ -1168,7 +1510,7 @@ def parametrize_cases(
 
 @functools.cache
 def _discover_cached(path: str) -> tuple[Callable, ...]:
-    return tuple(eval_discover(path))
+    return tuple(eval_discover(path, strict=True))
 
 
 def assert_evals_pass(
@@ -1205,6 +1547,7 @@ def eval_discover(
     *,
     pattern: str = "eval_*.py",
     prefix: str = "eval_",
+    strict: bool = False,
 ) -> list[Callable]:
     """Find evaluator functions in files matching ``pattern``.
 
@@ -1216,6 +1559,8 @@ def eval_discover(
         path: File or directory to search.
         pattern: Glob pattern for eval files (default: ``eval_*.py``).
         prefix: Function name prefix (default: ``eval_``).
+        strict: Raise when a matching module cannot be loaded instead of
+            logging and returning a partial suite.
 
     Returns:
         List of callable evaluator functions.
@@ -1224,13 +1569,17 @@ def eval_discover(
     files = [root] if root.is_file() else sorted(root.rglob(pattern))
 
     evaluators: list[Callable] = []
+    seen_names: dict[str, Path] = {}
     for fpath in files:
+        module_name = "_eval_" + hashlib.sha256(str(fpath.resolve()).encode()).hexdigest()[:16]
         try:
             spec = importlib.util.spec_from_file_location(
-                f"_eval_{fpath.stem}",
+                module_name,
                 fpath,
             )
             if spec is None or spec.loader is None:
+                if strict:
+                    raise RuntimeError("no Python module loader available")
                 continue
             mod = importlib.util.module_from_spec(spec)
             sys.modules[mod.__name__] = mod
@@ -1245,8 +1594,18 @@ def eval_discover(
                 target = inspect.unwrap(obj)
                 if getattr(target, "__module__", None) != mod.__name__:
                     continue
+                result_name = obj.__name__
+                if strict and result_name in seen_names:
+                    raise RuntimeError(
+                        f"duplicate evaluator name {result_name!r} in "
+                        f"{seen_names[result_name]} and {fpath}"
+                    )
+                seen_names[result_name] = fpath
                 evaluators.append(obj)
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            sys.modules.pop(module_name, None)
+            if strict:
+                raise RuntimeError(f"Failed to load eval file {fpath}: {exc}") from exc
             logger.warning("Failed to load eval file: %s", fpath, exc_info=True)
 
     return evaluators
@@ -1354,9 +1713,13 @@ class EvalHook:
     once at end-of-loop and merge their return values into
     :attr:`EvalContext.artifacts`. Use them to grade outcomes (tests
     passing, files modified, repo state) instead of grepping the
-    trajectory. A collector that raises or returns a non-dict is
-    silently skipped — collectors are observers and must never break
-    a run.
+    trajectory. A collector that raises or returns a non-dict never
+    breaks the agent run, but is retained as an ``error`` result so an
+    eval CLI cannot report a false green.
+
+    ``expected`` is optional grader-only case data. It is exposed as
+    ``ctx.task["expected"]`` when this hook builds the context, but is
+    never added to the task sent through the agent loop.
     """
 
     def __init__(
@@ -1365,11 +1728,13 @@ class EvalHook:
         *,
         judge_llm: LLMBackend | None = None,
         collectors: list[Callable[[Any], dict[str, Any]]] | None = None,
+        expected: dict[str, Any] | None = None,
         verbose: bool = False,
     ) -> None:
         self.evaluators = evaluators
         self.judge_llm = judge_llm
         self.collectors = list(collectors) if collectors else []
+        self.expected = dict(expected) if expected is not None else None
         self.verbose = verbose
         self._results: list[EvalResult] = []
         self._task: dict[str, Any] = {}
@@ -1439,11 +1804,16 @@ class EvalHook:
         """Save eval results to a JSON file."""
         p = Path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
+        task = dict(self._task)
+        if self.expected is not None:
+            task.pop("expected", None)
         data: dict[str, Any] = {
-            "task": self._task,
+            "task": task,
             "results": [r.to_dict() for r in self._results],
             "summary": _format_summary(self._results),
         }
+        if self.expected is not None:
+            data["expected"] = dict(self.expected)
         if self._artifacts:
             data["artifacts"] = self._artifacts
         p.write_text(json.dumps(data, indent=2, default=str))
@@ -1460,42 +1830,68 @@ class EvalHook:
         """Run all evaluators after the loop finishes."""
         steps = getattr(state, "steps", [])
 
-        # Capture task from state (stashed by composable_loop) if the
-        # hook wasn't handed one explicitly.
-        if not self._task:
-            _state_task = getattr(state, "task", None)
-            if isinstance(_state_task, dict):
-                self._task = _state_task
-            elif _state_task is not None:
-                self._task = {"description": str(_state_task)}
+        # Refresh every run: EvalHook instances are reusable and must not
+        # retain the previous task when attached to another loop.
+        state_task = getattr(state, "task", None)
+        if isinstance(state_task, dict):
+            self._task = dict(state_task)
+        elif state_task is not None:
+            self._task = {"description": str(state_task)}
+        else:
+            self._task = {}
+        if self.expected is not None:
+            self._task["expected"] = dict(self.expected)
 
-        # Extract final_output from done() step
+        stop_reason = getattr(state, "_stop_reason", None)
+
+        # A successfully completed run ends on its accepted terminal
+        # sentinel. Its name is cartridge-defined, so do not hard-code
+        # ``done``. Retain the old-name fallback for direct/manual hook
+        # invocations that predate stop-reason tracking.
         final_output: dict[str, Any] = {}
-        for s in reversed(steps):
-            tc = getattr(s, "tool_call", None)
-            if tc and getattr(tc, "tool", "") == "done":
-                final_output = getattr(tc, "args", {})
-                break
+        terminal_steps = steps[-1:] if stop_reason == "done" else []
+        if stop_reason is None:
+            terminal_steps = [
+                step
+                for step in reversed(steps)
+                if getattr(getattr(step, "tool_call", None), "tool", "") == "done"
+            ][:1]
+        if terminal_steps:
+            raw_output = getattr(getattr(terminal_steps[0], "tool_call", None), "args", {})
+            if isinstance(raw_output, dict):
+                final_output = raw_output
 
         log_text = ""
         if session_log is not None and hasattr(session_log, "render"):
             try:
-                log_text = session_log.render() or ""
+                log_text = str(session_log.render() or "")
             except Exception:  # noqa: BLE001
                 pass
 
-        # Run collectors to populate outcome artifacts. A collector
-        # that raises or returns a non-dict is skipped — collectors
-        # observe, they must never break a run.
+        # Collectors observe and therefore never raise through the loop,
+        # but harness failures remain explicit EvalResults for CI.
         artifacts: dict[str, Any] = {}
+        collector_failures: list[EvalResult] = []
         for collector in self.collectors:
+            collector_name = getattr(
+                collector,
+                "__name__",
+                getattr(getattr(collector, "func", None), "__name__", type(collector).__name__),
+            )
             try:
                 produced = collector(state)
-            except Exception:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "Eval collector %s raised; skipping",
-                    getattr(collector, "__name__", repr(collector)),
+                    collector_name,
                     exc_info=True,
+                )
+                collector_failures.append(
+                    EvalResult(
+                        name=f"collector:{collector_name}",
+                        label="error",
+                        explanation=f"{type(exc).__name__}: {exc}",
+                    )
                 )
                 continue
             if isinstance(produced, dict):
@@ -1503,26 +1899,38 @@ class EvalHook:
             else:
                 logger.warning(
                     "Eval collector %s returned %s; expected dict — ignored",
-                    getattr(collector, "__name__", repr(collector)),
+                    collector_name,
                     type(produced).__name__,
                 )
+                collector_failures.append(
+                    EvalResult(
+                        name=f"collector:{collector_name}",
+                        label="error",
+                        explanation=f"expected dict, got {type(produced).__name__}",
+                    )
+                )
         self._artifacts = artifacts
+
+        state_metadata = getattr(state, "metadata", {}) or {}
+        if not isinstance(state_metadata, dict):
+            state_metadata = {}
+        context_metadata = dict(state_metadata)
+        if stop_reason is not None:
+            context_metadata["termination_reason"] = stop_reason
 
         ctx = EvalContext(
             steps=list(steps),
             task=self._task,
             final_output=final_output,
             session_log_text=log_text,
+            metadata=context_metadata,
             artifacts=artifacts,
-            stop_reason=getattr(state, "_stop_reason", None),
+            stop_reason=stop_reason,
         )
         self._context = ctx
 
-        self._results = eval_run(
-            self.evaluators,
-            ctx,
-            judge_llm=self.judge_llm,
-        )
+        self._results = eval_run(self.evaluators, ctx, judge_llm=self.judge_llm)
+        self._results.extend(collector_failures)
 
         if self.verbose:
             print(f"\n{'─' * 50}")
@@ -1560,6 +1968,10 @@ def eval_mark(*tags: str) -> Callable:
         def eval_reasoning_depth(ctx, llm):
             ...
 
+        @eval_mark("required")
+        def eval_release_gate(ctx):
+            ...  # skipped or score < 0.5 makes the CLI fail
+
         # Run only "accuracy" evals:
         results = eval_run(evals, ctx, include=["accuracy"])
 
@@ -1577,6 +1989,37 @@ def eval_mark(*tags: str) -> Callable:
 def _get_marks(fn: Callable) -> set[str]:
     """Get eval marks from a function (empty set if unmarked)."""
     return getattr(fn, "_eval_marks", set())
+
+
+def _result_is_integrity_failure(
+    result: EvalResult | dict[str, Any],
+    *,
+    required: bool = False,
+) -> bool:
+    """Whether a non-numeric result makes a CLI run untrustworthy."""
+    if isinstance(result, EvalResult):
+        score = result.score
+        label = result.label
+    else:
+        score = result.get("score")
+        label = result.get("label")
+    normalized = str(label).lower() if label is not None else ""
+    if normalized in {"error", "fail", "wrong", "no"}:
+        return True
+    if normalized == "skipped":
+        return required
+    if score is not None:
+        try:
+            numeric_score = float(score)
+        except (TypeError, ValueError):
+            return True
+        if not math.isfinite(numeric_score) or not 0.0 <= numeric_score <= 1.0:
+            return True
+        return required and numeric_score < 0.5
+    if label is None:
+        metrics = result.metrics if isinstance(result, EvalResult) else result.get("metrics", {})
+        return required or not bool(metrics)
+    return normalized not in {"pass", "correct", "yes"}
 
 
 # ── Batch runner ─────────────────────────────────────────────────
@@ -1726,10 +2169,17 @@ def eval_cli(args: list[str] | None = None) -> int:
     parser.add_argument("-v", "--verbose", action="store_true", help="Show per-run details")
 
     parsed = parser.parse_args(args)
+    if not math.isfinite(parsed.threshold) or not 0.0 <= parsed.threshold <= 1.0:
+        print("error: --threshold must be finite and between 0 and 1")
+        return 1
 
     # Discover evals
     eval_path = parsed.evals or "."
-    evaluators = eval_discover(eval_path)
+    try:
+        evaluators = eval_discover(eval_path, strict=True)
+    except RuntimeError as exc:
+        print(f"error: {exc}")
+        return 1
     if not evaluators:
         print(f"No eval_* functions found in {eval_path}")
         return 1
@@ -1742,13 +2192,16 @@ def eval_cli(args: list[str] | None = None) -> int:
 
     contexts: list[EvalContext] = []
     names: list[str] = []
+    load_failures: list[str] = []
     for d in sorted(traces_root.iterdir()):
         if d.is_dir() and (d / "trajectory.json").exists():
             try:
                 contexts.append(EvalContext.from_trajectory_dir(d))
                 names.append(d.name)
             except Exception as e:  # noqa: BLE001
-                print(f"  SKIP {d.name}: {e}")
+                failure = f"{d.name}: {e}"
+                load_failures.append(failure)
+                print(f"  ERROR {failure}")
 
     if not contexts:
         print(f"No trajectories found in {traces_root}")
@@ -1763,14 +2216,24 @@ def eval_cli(args: list[str] | None = None) -> int:
         include=parsed.include,
         exclude=parsed.exclude,
     )
+    if not table:
+        print("No evals selected after applying include/exclude filters")
+        return 1
 
     # Print results
     below_threshold = False
+    integrity_failures: list[str] = []
+    required_names = {fn.__name__ for fn in evaluators if _REQUIRED_EVAL_MARK in _get_marks(fn)}
+    selected_names = {row["name"] for row in table}
+    for omitted in sorted(required_names - selected_names):
+        integrity_failures.append(f"{omitted}: required evaluator was filtered out")
     for row in table:
         avg = row.get("avg_score")
         if avg is not None:
-            marker = "✓" if avg >= parsed.threshold else "✗"
-            if avg < parsed.threshold:
+            scores = row.get("scores", [])
+            raw_avg = sum(scores) / len(scores) if scores else avg
+            marker = "✓" if raw_avg >= parsed.threshold else "✗"
+            if raw_avg < parsed.threshold:
                 below_threshold = True
             print(
                 f"  {marker} {row['name']:40s} avg={avg:.2f}  "
@@ -1790,16 +2253,36 @@ def eval_cli(args: list[str] | None = None) -> int:
                 for d in details[:3]:
                     print(f"        {d}")
 
+        for j, run in enumerate(row.get("per_run", [])):
+            if _result_is_integrity_failure(
+                run,
+                required=row["name"] in required_names,
+            ):
+                run_name = names[j] if j < len(names) else f"run_{j}"
+                integrity_failures.append(
+                    f"{run_name}/{row['name']}: {run.get('label') or 'invalid result'}"
+                )
+
     # Summary
     scored = [r for r in table if r.get("avg_score") is not None]
     if scored:
         overall = sum(r["avg_score"] for r in scored) / len(scored)
         print(f"\n  overall: {overall:.2f}")
         if parsed.threshold > 0:
-            status = "PASS" if not below_threshold else "FAIL"
+            status = "FAIL" if below_threshold or integrity_failures else "PASS"
             print(f"  threshold: {parsed.threshold:.2f}  → {status}")
 
-    return 1 if below_threshold else 0
+    if integrity_failures:
+        print("\n  integrity failures:")
+        for failure in integrity_failures:
+            print(f"    - {failure}")
+
+    if load_failures:
+        print("\n  trajectory load failures:")
+        for failure in load_failures:
+            print(f"    - {failure}")
+
+    return 1 if below_threshold or integrity_failures or load_failures else 0
 
 
 def _run_cartridge_cli(args: list[str]) -> int:
@@ -1848,13 +2331,20 @@ def _run_cartridge_cli(args: list[str]) -> int:
         help="Fail (exit 1) if any scored grader is below this on any case.",
     )
     parsed = parser.parse_args(args)
+    if not math.isfinite(parsed.threshold) or not 0.0 <= parsed.threshold <= 1.0:
+        print("error: --threshold must be finite and between 0 and 1", file=sys.stderr)
+        return 1
 
     cdir = Path(parsed.cartridge)
     if not cdir.is_dir():
         print(f"error: cartridge not found: {cdir}", file=sys.stderr)
         return 1
 
-    overview = load_cartridge_evals(cdir)
+    try:
+        overview = load_cartridge_evals(cdir, strict=True)
+    except (RuntimeError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     if not overview.cases:
         print(f"error: no eval cases under {cdir / CARTRIDGE_CASES_SUBPATH}", file=sys.stderr)
         return 1
@@ -1899,20 +2389,28 @@ def _run_cartridge_cli(args: list[str]) -> int:
         f"{len(overview.graders)} grader(s), {len(overview.collectors)} collector(s)"
         f"{'  [judge on]' if judge_llm is not None else ''}\n"
     )
-    records = run_cartridge_evals(
-        cdir,
-        llm=llm,
-        output_dir=parsed.out,
-        max_steps=parsed.max_steps,
-        cases=parsed.case,
-        judge_llm=judge_llm,
-    )
+    try:
+        records = run_cartridge_evals(
+            cdir,
+            llm=llm,
+            output_dir=parsed.out,
+            max_steps=parsed.max_steps,
+            cases=parsed.case,
+            judge_llm=judge_llm,
+        )
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
 
     grader_names = sorted(g.__name__ for g in overview.graders)
     header = f"{'case':22}" + "".join(f"{n:22}" for n in grader_names)
     print(header)
     print("-" * len(header))
     below_threshold = False
+    integrity_failures: list[str] = []
+    required_names = {
+        grader.__name__ for grader in overview.graders if _REQUIRED_EVAL_MARK in _get_marks(grader)
+    }
     for rec in records:
         scores = {r.name: r for r in rec.results}
         cells = ""
@@ -1931,12 +2429,25 @@ def _run_cartridge_cli(args: list[str]) -> int:
                 cells += f"{(r.label or '-'):22}"
         case_id = rec.case.id if rec.case is not None else "?"
         print(f"{case_id:22}{cells}")
+        for result in rec.results:
+            if _result_is_integrity_failure(
+                result,
+                required=result.name in required_names,
+            ):
+                integrity_failures.append(
+                    f"{case_id}/{result.name}: {result.label or 'invalid result'}"
+                )
 
     if parsed.out:
         print(f"\npersisted {len(records)} run(s) under {parsed.out}/")
+    if integrity_failures:
+        print("\nintegrity failures:")
+        for failure in integrity_failures:
+            print(f"  - {failure}")
     if parsed.threshold > 0:
-        print(f"threshold {parsed.threshold:.2f} → {'FAIL' if below_threshold else 'PASS'}")
-    return 1 if below_threshold else 0
+        failed = below_threshold or bool(integrity_failures)
+        print(f"threshold {parsed.threshold:.2f} → {'FAIL' if failed else 'PASS'}")
+    return 1 if below_threshold or integrity_failures else 0
 
 
 def _cases_cli(args: list[str]) -> int:

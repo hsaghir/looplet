@@ -28,6 +28,7 @@ from looplet import (
     load_eval_run,
     save_eval_run,
 )
+from looplet.provenance import TrajectoryRecorder
 
 
 class _FakeRecorder:
@@ -132,6 +133,50 @@ def test_load_eval_run_returns_trajectory_artifacts_scores(tmp_path: Path) -> No
     }
 
 
+def test_case_expected_is_grader_only_in_persisted_trajectory(tmp_path: Path) -> None:
+    recorder = _FakeRecorder(_sample_steps(), task={"goal": "fix bug"})
+    case = EvalCase(id="bugfix_1", task={"goal": "fix bug"}, expected={"answer": 42})
+    save_eval_run(tmp_path / "run", recorder=recorder, case=case)
+
+    trajectory = json.loads((tmp_path / "run" / "trajectory.json").read_text())
+    assert trajectory["task"] == {"goal": "fix bug"}
+    assert json.loads((tmp_path / "run" / "expected.json").read_text()) == {"answer": 42}
+    assert load_eval_run(tmp_path / "run").context.task["expected"] == {"answer": 42}
+
+
+def test_recorder_redaction_covers_eval_context_and_sidecars(tmp_path: Path) -> None:
+    recorder = TrajectoryRecorder(redact=lambda text: text.replace("SECRET", "***"))
+    context = EvalContext(
+        steps=[],
+        task={"goal": "SECRET", "expected": {"oracle": "SECRET"}},
+        session_log_text="judge saw SECRET",
+        metadata={"token": "SECRET"},
+        artifacts={"evidence": "SECRET"},
+        stop_reason="done",
+    )
+    case = EvalCase(
+        id="redacted",
+        task={"goal": "SECRET"},
+        expected={"oracle": "SECRET"},
+    )
+    save_eval_run(
+        tmp_path / "run",
+        recorder=recorder,
+        context=context,
+        case=case,
+        results=[EvalResult(name="judge", label="pass", explanation="SECRET")],
+    )
+
+    for filename in (
+        "trajectory.json",
+        "artifacts.json",
+        "evals.json",
+        "expected.json",
+        "case.json",
+    ):
+        assert "SECRET" not in (tmp_path / "run" / filename).read_text()
+
+
 def test_same_graders_score_online_and_offline(tmp_path: Path) -> None:
     # The core "both online and offline" property: the SAME grader
     # functions produce the SAME scores whether run live (on the hook's
@@ -163,6 +208,36 @@ def test_save_eval_run_without_hook_writes_empty_artifacts(tmp_path: Path) -> No
     assert rec.case is None
 
 
+def test_reusing_run_directory_removes_stale_optional_sidecars(tmp_path: Path) -> None:
+    recorder = _FakeRecorder(_sample_steps(), task={})
+    case = EvalCase(id="old", expected={"answer": 1})
+    save_eval_run(tmp_path / "run", recorder=recorder, case=case)
+    assert (tmp_path / "run" / "case.json").exists()
+    assert (tmp_path / "run" / "expected.json").exists()
+
+    save_eval_run(tmp_path / "run", recorder=recorder)
+    assert not (tmp_path / "run" / "case.json").exists()
+    assert not (tmp_path / "run" / "expected.json").exists()
+
+
+def test_recorder_run_merges_eval_context_evidence(tmp_path: Path) -> None:
+    recorder = _FakeRecorder(_sample_steps(), task={})
+    context = EvalContext(
+        steps=[],
+        task={"goal": "from context"},
+        session_log_text="judge evidence",
+        metadata={"trial": "b"},
+        artifacts={"verified": True},
+        stop_reason="done",
+    )
+    save_eval_run(tmp_path / "run", recorder=recorder, context=context)
+    rec = load_eval_run(tmp_path / "run")
+    assert rec.context.task == {"goal": "from context"}
+    assert rec.context.session_log_text == "judge evidence"
+    assert rec.context.metadata["trial"] == "b"
+    assert rec.context.artifacts == {"verified": True}
+
+
 def test_explicit_results_override_hook(tmp_path: Path) -> None:
     recorder = _FakeRecorder(_sample_steps(), task={})
     hook = _FakeEvalHook(artifacts={}, results=[EvalResult(name="from_hook", score=0.0)])
@@ -176,3 +251,23 @@ def test_load_missing_trajectory_raises(tmp_path: Path) -> None:
     (tmp_path / "empty").mkdir()
     with pytest.raises(FileNotFoundError):
         load_eval_run(tmp_path / "empty")
+
+
+@pytest.mark.parametrize(
+    ("filename", "contents"),
+    [
+        ("evals.json", "not json"),
+        ("evals.json", '[{"name": "bad", "score": 2}]'),
+        ("case.json", "[]"),
+    ],
+)
+def test_load_eval_run_rejects_corrupt_records(
+    tmp_path: Path,
+    filename: str,
+    contents: str,
+) -> None:
+    recorder = _FakeRecorder(_sample_steps(), task={})
+    save_eval_run(tmp_path / "run", recorder=recorder)
+    (tmp_path / "run" / filename).write_text(contents)
+    with pytest.raises(ValueError, match=filename):
+        load_eval_run(tmp_path / "run")

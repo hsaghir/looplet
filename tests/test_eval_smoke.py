@@ -18,6 +18,7 @@ from looplet.evals import (
     EvalContext,
     EvalHook,
     EvalResult,
+    eval_cli,
     eval_discover,
     eval_mark,
     eval_run,
@@ -55,6 +56,12 @@ class TestEvalResultFromReturn:
         r = EvalResult.from_return(0.85, name="x")
         assert r.score == 0.85 and r.name == "x"
 
+    @pytest.mark.parametrize("score", [float("nan"), float("inf"), -0.1, 1.1])
+    def test_invalid_score_is_error(self, score):
+        r = EvalResult.from_return(score, name="invalid")
+        assert r.label == "error"
+        assert r.score is None
+
     def test_bool_true(self):
         r = EvalResult.from_return(True, name="y")
         assert r.score == 1.0 and r.label == "pass"
@@ -76,6 +83,31 @@ class TestEvalResultFromReturn:
         assert r.metrics["precision"] == 0.9
         assert any("missed" in d for d in r.details)
 
+    def test_dict_preserves_zero_primary_score(self):
+        r = EvalResult.from_return({"score": 0.0, "accuracy": 0.9}, name="zero")
+        assert r.score == 0.0
+
+    def test_dict_rejects_invalid_primary_score(self):
+        r = EvalResult.from_return({"score": float("nan")}, name="invalid")
+        assert r.label == "error"
+        assert r.score is None
+
+    def test_dict_rejects_nonfinite_metric(self):
+        r = EvalResult.from_return({"latency_ms": float("inf")}, name="invalid")
+        assert r.label == "error"
+        assert "latency_ms" in r.explanation
+
+    def test_direct_invalid_score_raises(self):
+        with pytest.raises(ValueError, match="between 0 and 1"):
+            EvalResult(name="invalid", score=2.0)
+
+    def test_direct_nonfinite_metric_raises(self):
+        with pytest.raises(ValueError, match="latency_ms"):
+            EvalResult(name="invalid", metrics={"latency_ms": float("nan")})
+
+    def test_error_label_overrides_contradictory_passing_score(self):
+        assert EvalResult(name="invalid", score=1.0, label="error").passed is False
+
     def test_eval_result_passthrough(self):
         orig = EvalResult(name="orig", score=0.5)
         r = EvalResult.from_return(orig, name="override")
@@ -85,6 +117,11 @@ class TestEvalResultFromReturn:
         orig = EvalResult(score=0.5)
         r = EvalResult.from_return(orig, name="fallback")
         assert r.name == "fallback"
+
+    def test_unsupported_return_is_error(self):
+        r = EvalResult.from_return(None, name="missing_return")
+        assert r.label == "error"
+        assert "NoneType" in r.explanation
 
 
 # ── eval_run ─────────────────────────────────────────────────────
@@ -171,6 +208,24 @@ class TestEvalDiscover:
             fns = eval_discover(d)
             assert fns == []
 
+    def test_strict_discovery_rejects_broken_module(self, tmp_path: Path):
+        (tmp_path / "eval_broken.py").write_text("raise RuntimeError('broken suite')\n")
+        with pytest.raises(RuntimeError, match="eval_broken.py"):
+            eval_discover(tmp_path, strict=True)
+
+    def test_strict_discovery_rejects_duplicate_names(self, tmp_path: Path):
+        (tmp_path / "eval_one.py").write_text("def eval_same(ctx): return 1.0\n")
+        (tmp_path / "eval_two.py").write_text("def eval_same(ctx): return 0.0\n")
+        with pytest.raises(RuntimeError, match="duplicate evaluator name"):
+            eval_discover(tmp_path, strict=True)
+
+    def test_strict_discovery_rejects_alias_with_same_result_name(self, tmp_path: Path):
+        (tmp_path / "eval_alias.py").write_text(
+            "def eval_original(ctx): return 1.0\neval_alias = eval_original\n"
+        )
+        with pytest.raises(RuntimeError, match="duplicate evaluator name"):
+            eval_discover(tmp_path, strict=True)
+
 
 # ── EvalContext.from_trajectory_dir ──────────────────────────────
 
@@ -199,6 +254,61 @@ class TestEvalContextFromDir:
             assert ctx.step_count == 2
             assert ctx.tool_sequence == ["bash", "done"]
             assert ctx.final_output == {"answer": "ok"}
+
+    def test_custom_terminal_output_uses_stop_reason(self, tmp_path: Path):
+        (tmp_path / "trajectory.json").write_text(
+            json.dumps(
+                {
+                    "termination_reason": "done",
+                    "steps": [
+                        {
+                            "tool_call": {
+                                "tool": "escalate",
+                                "args": {"blocked_on": "approval"},
+                            },
+                            "tool_result": {"data": {}},
+                        }
+                    ],
+                }
+            )
+        )
+        ctx = EvalContext.from_trajectory_dir(tmp_path)
+        assert ctx.completed is True
+        assert ctx.final_output == {"blocked_on": "approval"}
+
+    def test_grader_expected_is_loaded_without_changing_saved_task(self, tmp_path: Path):
+        trajectory = {
+            "task": {"goal": "answer"},
+            "expected": {"answer": 42},
+            "steps": [],
+        }
+        (tmp_path / "trajectory.json").write_text(json.dumps(trajectory))
+        ctx = EvalContext.from_trajectory_dir(tmp_path)
+        assert trajectory["task"] == {"goal": "answer"}
+        assert ctx.task == {"goal": "answer", "expected": {"answer": 42}}
+
+    def test_rejects_conflicting_grader_expected(self, tmp_path: Path):
+        (tmp_path / "trajectory.json").write_text(
+            json.dumps({"task": {"expected": {"answer": 1}}, "steps": []})
+        )
+        (tmp_path / "expected.json").write_text(json.dumps({"answer": 2}))
+        with pytest.raises(ValueError, match="Conflicting grader expectations"):
+            EvalContext.from_trajectory_dir(tmp_path)
+
+    @pytest.mark.parametrize(
+        "trajectory",
+        [[], {"steps": {}}, {"steps": ["not an object"]}],
+    )
+    def test_rejects_malformed_trajectory_shape(self, tmp_path: Path, trajectory):
+        (tmp_path / "trajectory.json").write_text(json.dumps(trajectory))
+        with pytest.raises(ValueError, match="trajectory.json"):
+            EvalContext.from_trajectory_dir(tmp_path)
+
+    def test_rejects_corrupt_metrics(self, tmp_path: Path):
+        (tmp_path / "trajectory.json").write_text(json.dumps({"steps": []}))
+        (tmp_path / "metrics.json").write_text("not json")
+        with pytest.raises(ValueError, match="metrics.json"):
+            EvalContext.from_trajectory_dir(tmp_path)
 
 
 # ── EvalHook integration ────────────────────────────────────────
@@ -306,6 +416,14 @@ class TestEvalHookIntegration:
             data = json.loads((Path(d) / "results.json").read_text())
             assert data["results"][0]["score"] == 0.5
 
+    def test_save_keeps_grader_expected_out_of_recorded_task(self, tmp_path: Path):
+        hook = EvalHook(evaluators=[], expected={"answer": 42})
+        hook._task = {"goal": "answer", "expected": {"answer": 42}}
+        hook.save(tmp_path / "results.json")
+        data = json.loads((tmp_path / "results.json").read_text())
+        assert data["task"] == {"goal": "answer"}
+        assert data["expected"] == {"answer": 42}
+
 
 # ── EvalResult.pretty + to_dict ──────────────────────────────────
 
@@ -409,6 +527,110 @@ class TestEvalRunBatch:
         assert table == []
 
 
+class TestEvalCliIntegrity:
+    @staticmethod
+    def _trace(root: Path) -> Path:
+        run = root / "runs" / "one"
+        run.mkdir(parents=True)
+        (run / "trajectory.json").write_text(
+            json.dumps({"steps": [], "task": {}, "termination_reason": "done"})
+        )
+        return root / "runs"
+
+    def test_failing_label_returns_nonzero(self, tmp_path: Path):
+        traces = self._trace(tmp_path)
+        eval_file = tmp_path / "eval_verdict.py"
+        eval_file.write_text("def eval_verdict(ctx):\n    return 'wrong'\n")
+        assert eval_cli([str(traces), "--evals", str(eval_file)]) == 1
+
+    def test_required_skip_returns_nonzero(self, tmp_path: Path, capsys):
+        traces = self._trace(tmp_path)
+        eval_file = tmp_path / "eval_required.py"
+        eval_file.write_text(
+            "from looplet import eval_mark\n\n"
+            "@eval_mark('required')\n"
+            "def eval_required(ctx, llm):\n"
+            "    raise AssertionError('must not run without a judge')\n"
+        )
+        assert eval_cli([str(traces), "--evals", str(eval_file)]) == 1
+        output = capsys.readouterr().out
+        assert "one/eval_required: skipped" in output
+        assert "must not run" not in output
+
+    def test_required_low_score_returns_nonzero(self, tmp_path: Path):
+        traces = self._trace(tmp_path)
+        eval_file = tmp_path / "eval_required_score.py"
+        eval_file.write_text(
+            "from looplet import eval_mark\n\n"
+            "@eval_mark('required')\n"
+            "def eval_required_score(ctx):\n"
+            "    return 0.4\n"
+        )
+        assert eval_cli([str(traces), "--evals", str(eval_file)]) == 1
+
+    def test_required_metric_only_result_returns_nonzero(self, tmp_path: Path):
+        traces = self._trace(tmp_path)
+        eval_file = tmp_path / "eval_required_metric.py"
+        eval_file.write_text(
+            "from looplet import eval_mark\n\n"
+            "@eval_mark('required')\n"
+            "def eval_required_metric(ctx):\n"
+            "    return {'steps': 1}\n"
+        )
+        assert eval_cli([str(traces), "--evals", str(eval_file)]) == 1
+
+    def test_required_skipped_label_overrides_score(self, tmp_path: Path):
+        traces = self._trace(tmp_path)
+        eval_file = tmp_path / "eval_required_skip.py"
+        eval_file.write_text(
+            "from looplet import EvalResult, eval_mark\n\n"
+            "@eval_mark('required')\n"
+            "def eval_required_skip(ctx):\n"
+            "    return EvalResult(score=1.0, label='skipped')\n"
+        )
+        assert eval_cli([str(traces), "--evals", str(eval_file)]) == 1
+
+    def test_threshold_compares_unrounded_average(self, tmp_path: Path):
+        traces = self._trace(tmp_path)
+        eval_file = tmp_path / "eval_near_threshold.py"
+        eval_file.write_text("def eval_near_threshold(ctx):\n    return 0.6996\n")
+        assert eval_cli([str(traces), "--evals", str(eval_file), "--threshold", "0.7"]) == 1
+
+    @pytest.mark.parametrize("threshold", ["nan", "inf", "-0.1", "1.1"])
+    def test_invalid_threshold_returns_nonzero(self, tmp_path: Path, threshold: str):
+        traces = self._trace(tmp_path)
+        eval_file = tmp_path / "eval_ok.py"
+        eval_file.write_text("def eval_ok(ctx):\n    return 1.0\n")
+        assert eval_cli([str(traces), "--evals", str(eval_file), "--threshold", threshold]) == 1
+
+    def test_one_corrupt_trajectory_makes_batch_nonzero(self, tmp_path: Path):
+        traces = self._trace(tmp_path)
+        corrupt = traces / "two"
+        corrupt.mkdir()
+        (corrupt / "trajectory.json").write_text("not json")
+        eval_file = tmp_path / "eval_ok.py"
+        eval_file.write_text("def eval_ok(ctx):\n    return 1.0\n")
+        assert eval_cli([str(traces), "--evals", str(eval_file)]) == 1
+
+    def test_empty_include_selection_returns_nonzero(self, tmp_path: Path):
+        traces = self._trace(tmp_path)
+        eval_file = tmp_path / "eval_ok.py"
+        eval_file.write_text("def eval_ok(ctx):\n    return 1.0\n")
+        assert eval_cli([str(traces), "--evals", str(eval_file), "--include", "missing"]) == 1
+
+    def test_required_evaluator_cannot_be_filtered_out(self, tmp_path: Path):
+        traces = self._trace(tmp_path)
+        eval_file = tmp_path / "eval_required.py"
+        eval_file.write_text(
+            "from looplet import eval_mark\n\n"
+            "@eval_mark('required')\n"
+            "def eval_required(ctx): return 1.0\n\n"
+            "@eval_mark('other')\n"
+            "def eval_other(ctx): return 1.0\n"
+        )
+        assert eval_cli([str(traces), "--evals", str(eval_file), "--include", "other"]) == 1
+
+
 # ── Outcome-grading: EvalContext.artifacts ──────────────────────
 
 
@@ -442,6 +664,12 @@ class TestEvalContextArtifacts:
             (Path(d) / "trajectory.json").write_text(json.dumps({"steps": [], "task": {}}))
             ctx = EvalContext.from_trajectory_dir(d)
             assert ctx.artifacts == {}
+
+    def test_from_trajectory_dir_rejects_corrupt_artifacts(self, tmp_path: Path):
+        (tmp_path / "trajectory.json").write_text(json.dumps({"steps": [], "task": {}}))
+        (tmp_path / "artifacts.json").write_text("not json")
+        with pytest.raises(ValueError, match="artifacts.json"):
+            EvalContext.from_trajectory_dir(tmp_path)
 
     def test_from_trajectory_dir_preserves_trajectory_metadata(self):
         """Regression: ``trajectory.metadata`` (incl. harness_snapshot from
@@ -550,8 +778,10 @@ class TestEvalHookCollectors:
 
         hook = EvalHook(evaluators=[eval_ok], collectors=[collect_broken, collect_ok])
         self._run_hook(hook)
-        # Broken collector skipped; good collector still applied.
+        # Broken collector does not break the loop; it remains visible to CI.
         assert hook.results[0].score == 1.0
+        assert hook.results[1].name == "collector:collect_broken"
+        assert hook.results[1].label == "error"
 
     def test_collector_must_return_dict(self):
         def collect_bad(state):
@@ -561,6 +791,8 @@ class TestEvalHookCollectors:
             return 1.0
 
         hook = EvalHook(evaluators=[eval_noop], collectors=[collect_bad])
-        # Non-dict return is ignored, not raised.
+        # Non-dict return is not raised through the loop, but is visible.
         self._run_hook(hook)
         assert hook.results[0].score == 1.0
+        assert hook.results[1].name == "collector:collect_bad"
+        assert hook.results[1].label == "error"

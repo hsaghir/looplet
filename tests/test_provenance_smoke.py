@@ -171,6 +171,27 @@ class TestTrajectoryRecorderSmoke:
         assert traj.steps[-1].tool_call["tool"] == "done"
         assert traj.termination_reason == "done"
 
+    def test_custom_terminal_uses_authoritative_stop_reason(self):
+        hook = TrajectoryRecorder()
+
+        class DummyState:
+            def __init__(self):
+                self.steps = [self_step]
+                self._stop_reason = "done"
+
+        class DummyLog:
+            def render(self):
+                return "rendered judge evidence"
+
+        self_step = self._make_step(1, tool="escalate")
+        state = DummyState()
+        hook.pre_loop(state, DummyLog(), None)
+        hook.on_loop_end(state, DummyLog(), None, None)
+
+        assert hook.trajectory.termination_reason == "done"
+        assert hook.trajectory.session_log_text == "rendered judge evidence"
+        assert hook.trajectory.to_dict()["session_log_text"] == "rendered judge evidence"
+
     def test_save_writes_trajectory_and_steps(self, tmp_path: Path):
         hook = TrajectoryRecorder()
 
@@ -254,6 +275,12 @@ class TestProvenanceSinkSmoke:
 
 
 class TestDataclassSmoke:
+    def test_trajectory_new_field_preserves_legacy_positional_metadata(self):
+        metadata = {"legacy": True}
+        trajectory = Trajectory("run", 1.0, None, {}, [], [], [], "done", metadata)
+        assert trajectory.metadata is metadata
+        assert trajectory.session_log_text == ""
+
     def test_llm_call_metadata_defaults_empty(self):
         c = LLMCall(
             index=0,

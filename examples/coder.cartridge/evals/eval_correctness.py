@@ -15,9 +15,10 @@ Three grader *kinds* are shown deliberately:
 
 from __future__ import annotations
 
-from looplet import EvalContext, EvalResult
+from looplet import EvalContext, EvalResult, eval_mark
 
 
+@eval_mark("required")
 def eval_tests_pass(ctx: EvalContext):
     """Did the shipped test suite actually pass after the run?
 
@@ -34,6 +35,7 @@ def eval_tests_pass(ctx: EvalContext):
     return bool(ctx.artifacts["tests_passing"])
 
 
+@eval_mark("required")
 def eval_completed(ctx: EvalContext):
     """Did the agent finish by calling ``done()`` (not stall / get stopped)?"""
     return ctx.completed

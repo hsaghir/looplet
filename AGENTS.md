@@ -5,7 +5,10 @@
 
 ## What is looplet?
 
-A composable tool-calling loop for LLM agents. Zero runtime dependencies. Provider-agnostic.
+Test-driven harness engineering for Python agents: an owned, composable
+tool-calling loop plus reviewable cartridges, run evidence, captured-response
+replay, and outcome-grounded behavioral contracts. Core has zero third-party
+runtime dependencies and is provider-agnostic.
 
 Agents can be expressed two ways:
 
@@ -34,6 +37,13 @@ Keep looplet minimal, simple, powerful, and familiar to Python users.
 - **Honest conversion:** exact wrappers and blueprint comparisons are
     reliable; expanded source generation should depend on explicit recorded
     recipes, not decompiling arbitrary Python.
+- **Outcome-grounded contracts:** grade independently observed world state when
+    possible. Use trajectory assertions for harness mechanics, not as a default
+    proxy for product quality.
+- **Protected oracles:** colocated cartridge evals are versioned self-tests.
+    Keep promotion holdouts host-owned when a candidate can edit its cartridge.
+- **Honest replay:** `replay_loop()` fixes captured model responses while fresh
+    tools and side effects execute. Never describe it as deterministic replay.
 
 ## Anti-features (deliberately out of scope)
 
@@ -163,8 +173,16 @@ my_agent.cartridge/
 ├── hooks/<name>/           # OPTIONAL  cross-cutting policy (approval, redaction, ...)
 │   ├── hook.py             #          class FooHook with on_event(self, event, payload)
 │   └── config.yaml         #          class_name + kwargs for instantiation
-└── setup.py                # OPTIONAL  def setup(preset, resources, *, runtime=None) -> preset
+├── evals/                  # OPTIONAL  versioned self-test contract
+│   ├── cases/*.json        #          agent-visible task + grader-only expected
+│   ├── collect_*.py        #          host-side world-state collectors
+│   └── eval_*.py           #          outcome graders; mark release gates required
+└── memory/*.md             # OPTIONAL  static memory sources
 ```
+
+Keep protected promotion holdouts outside candidate-editable cartridges. A
+colocated `evals/` bundle travels with the harness version and is a self-test,
+not a secure oracle when the candidate can modify it.
 
 `config.yaml` (CONTRACT tier) knobs that show up most often:
 
@@ -269,7 +287,9 @@ def build():
 - **`done` is required.** A cartridge without `tools/done/` will load but the loop has no completion sentinel. `scaffold_cartridge()` always writes one.
 - **`requires:` must match a `resources/<name>.py`.** Mismatch → tool dispatch raises `KeyError` deep inside `execute()`. Validate cartridges with `cartridge_to_preset(path, strict=True)` to catch this at load time.
 - **`extends:` is resolved before this cartridge's overrides apply.** Tools/hooks defined locally override inherited ones with the same name.
-- **`setup.py` runs at load time** with `(preset, resources, *, runtime=None, **kwargs)`. Use it to mutate the preset (e.g. add a hook only when `runtime["debug"]` is set). Most cartridges don't need one.
+- **No root-level `setup.py`.** Schema v2 uses explicit config references,
+  resources, hooks, and runtime values; imperative root-level setup is not a
+  supported escape hatch.
 - **`builtin_tools:` resolves to looplet-shipped tools.** Today: `subagent` (run a sub-loop), `scaffold_cartridge` (the agent-facing scaffolder).
 - **`mcp_servers:` spawns one subprocess per entry at load.** Discovered tools are registered into the cartridge's tool registry. The live adapters are stashed on `preset.mcp_adapters`; use `with cartridge_to_preset(...) as preset:` so the subprocesses are terminated cleanly on exit.
 
@@ -296,7 +316,7 @@ This is the agent-facing equivalent of the `looplet new` human CLI: when a codin
 
 ```python
 from pathlib import Path
-from looplet.scaffold import scaffold_cartridge
+from looplet import scaffold_cartridge
 
 # 1. Create the skeleton. Always idempotent — existing files are preserved.
 root = scaffold_cartridge(
@@ -764,7 +784,7 @@ principled fixes in the library; the notes below are the "right way."
 
 ```bash
 uv sync                       # install deps
-uv run pytest                 # full suite (~1674 tests, ~2 min)
+uv run pytest                 # full suite
 uv run pytest -m smoke        # smoke tests only
 uv run ruff check .           # lint
 uv run ruff format --check .  # format check

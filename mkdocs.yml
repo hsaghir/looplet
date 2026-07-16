@@ -1,9 +1,13 @@
 site_name: looplet
-site_description: A for-loop you own for LLM tool-calling agents. Zero deps, four hooks, one iterator.
+site_description: Test-driven harness engineering for Python agents. Own the loop. Test every change.
 site_url: https://hsaghir.github.io/looplet/
 repo_url: https://github.com/hsaghir/looplet
 repo_name: hsaghir/looplet
 edit_uri: edit/master/docs/
+exclude_docs: |
+  launch/
+  demo.gif
+  looplet_new.gif
 
 theme:
   name: material
@@ -58,6 +62,10 @@ extra:
 extra_css:
   - stylesheets/extra.css
 
+extra_javascript:
+  - javascripts/mermaid.mjs
+  - javascripts/accessibility.js
+
 markdown_extensions:
   - abbr
   - admonition
@@ -87,7 +95,7 @@ markdown_extensions:
   - pymdownx.superfences:
       custom_fences:
         - name: mermaid
-          class: mermaid
+          class: looplet-mermaid-source
           format: !!python/name:pymdownx.superfences.fence_code_format
   - pymdownx.tabbed:
       alternate_style: true
@@ -97,23 +105,27 @@ markdown_extensions:
 
 nav:
   - Home: index.md
-  - Get started:
-      - Agent factory (start here): agent-factory.md
+  - Understand:
+      - Why looplet: why-looplet.md
       - Quickstart: quickstart.md
       - Tutorial: tutorial.md
-      - Recipes: recipes.md
-  - Build:
-      - Hooks: hooks.md
-      - Skills: skills.md
-      - Portability: portability.md
-      - Evals: evals.md
-      - Provenance: provenance.md
-      - Pitfalls: pitfalls.md
-  - Ship:
-      - Benchmarks: benchmarks.md
       - FAQ: faq.md
-      - Changelog: changelog.md
+  - Build:
+      - Cartridges: cartridge.md
+      - Hooks: hooks.md
+      - Skills and bundles: skills.md
+      - Recipes: recipes.md
+      - Agent factory: agent-factory.md
+      - Portability: portability.md
+  - Test:
+      - Failure to regression: regression-demo.md
+      - Capture and replay: provenance.md
+      - Behavioral evals: evals.md
+  - Ship:
+      - Pitfalls: pitfalls.md
+      - Benchmarks: benchmarks.md
       - Roadmap: roadmap.md
+      - Changelog: changelog.md
   - Contribute:
       - Contributing: contributing.md
       - Good first issues: good-first-issues.md

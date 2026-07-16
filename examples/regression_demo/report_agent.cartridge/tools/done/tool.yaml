@@ -1,0 +1,6 @@
+name: done
+description: Signal completion with a one-line summary.
+parameters:
+  summary:
+    type: string
+    description: What was completed.

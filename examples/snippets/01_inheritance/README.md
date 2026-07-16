@@ -6,7 +6,7 @@ Inheritance chains arbitrarily deep — exactly like classes.
 
 This snippet ships a **two-hop chain**:
 
-```
+```text
 coder.cartridge                              (bundled)
   ↑ extends
 refactorer.cartridge                         (this snippet)
@@ -17,7 +17,7 @@ pytest_refactorer.cartridge                  (this snippet)
 The middle cartridge narrows `coder` to a Python-only refactoring
 stance with a tighter step budget. The leaf adds a stricter
 test-discipline prompt and a slightly higher budget. **Every leaf
-inherits all 16 tools and all 8 hooks** from `coder` without copying
+inherits all 17 tools and all 10 hooks** from `coder` without copying
 or forking anything.
 
 ## Look at the files
@@ -25,11 +25,11 @@ or forking anything.
 ```text
 01_inheritance/
 ├── refactorer.cartridge/
-│   ├── workspace.json
+│   ├── cartridge.json
 │   ├── config.yaml          # extends ../../../coder.cartridge
 │   └── prompts/system.md    # narrower mission
 └── pytest_refactorer.cartridge/
-    ├── workspace.json
+    ├── cartridge.json
     ├── config.yaml          # extends ../refactorer.cartridge
     └── prompts/system.md    # adds pytest discipline
 ```
@@ -55,13 +55,13 @@ copy-pasted tool registrations.
 
 ```bash
 uv run python -c "
-from looplet import workspace_to_preset
+from looplet import cartridge_to_preset
 for ws in [
     'examples/coder.cartridge',
     'examples/snippets/01_inheritance/refactorer.cartridge',
     'examples/snippets/01_inheritance/pytest_refactorer.cartridge',
 ]:
-    p = workspace_to_preset(ws, runtime={'workspace': '.'})
+    p = cartridge_to_preset(ws, runtime={'project_root': '.'})
     n_tools = len(p.tools.introspect()['tools'])
     print(f'{ws:<60} max_steps={p.config.max_steps:>3}  tools={n_tools}')
 "
@@ -69,10 +69,10 @@ for ws in [
 
 Expected output:
 
-```
-examples/coder.cartridge                                     max_steps= 20  tools=16
-examples/snippets/01_inheritance/refactorer.cartridge        max_steps= 12  tools=16
-examples/snippets/01_inheritance/pytest_refactorer.cartridge max_steps= 16  tools=16
+```text
+examples/coder.cartridge                                     max_steps= 20  tools=17
+examples/snippets/01_inheritance/refactorer.cartridge        max_steps= 12  tools=17
+examples/snippets/01_inheritance/pytest_refactorer.cartridge max_steps= 16  tools=17
 ```
 
 All three levels share the same tool registry; each level overrides

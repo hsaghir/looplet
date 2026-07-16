@@ -30,11 +30,17 @@ body:
     validations:
       required: true
 
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Redacted evidence (optional)
+      description: If relevant, attach a minimal cartridge diff, stop reason, provenance tree, or eval result. Remove credentials, prompts with secrets, and PII.
+
   - type: input
     id: version
     attributes:
       label: looplet version
-      placeholder: "0.1.5"
+      placeholder: "0.2.0"
     validations:
       required: true
 

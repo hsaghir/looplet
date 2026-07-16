@@ -26,7 +26,7 @@ reading any code.
 > diff compares physical directory contents, not the resolved view.
 > If you want to see what an extending cartridge overrides, run it on
 > two materialised cartridges (the four standalone examples above) or
-> first materialise the extender (`preset_to_workspace(...)`).
+> first materialise the extender (`preset_to_cartridge(...)`).
 
 The same `diff -ruN` against an equivalent code-defined agent would
 land in one monolithic Python file (see the position paper, §6.1).

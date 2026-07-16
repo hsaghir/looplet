@@ -1,25 +1,26 @@
-"""Built-in tools any looplet workspace can opt into.
+"""Built-in tools any Looplet cartridge can opt into.
 
-A workspace enables built-ins by listing them in ``config.yaml``::
+A cartridge enables built-ins by listing them in ``config.yaml``::
 
     builtin_tools:
       - subagent
       - scaffold_cartridge
 
-The loader looks each name up here at workspace-load time and
-registers it in the tool registry alongside the workspace's
+The loader looks each name up here at cartridge-load time and
+registers it in the tool registry alongside the cartridge's
 own ``tools/<name>/`` directories.
 
-Built-ins live here (rather than in every workspace's ``tools/``)
+Built-ins live here (rather than in every cartridge's ``tools/``)
 so they evolve with looplet: a new release ships an improved tool
-and every workspace using ``builtin_tools:`` picks it up
-immediately, no per-workspace edit needed.
+and every cartridge using ``builtin_tools:`` picks it up
+immediately, no per-cartridge edit needed.
 
 Currently shipped built-ins:
 
-* ``subagent`` — invoke another workspace as a synchronous sub-loop.
-* ``scaffold_cartridge`` — create a stubbed workspace skeleton in one
-  call (agent-callable wrapper around :func:`looplet.scaffold.scaffold_cartridge`).
+* ``subagent`` — invoke another cartridge as a synchronous sub-loop.
+* ``scaffold_cartridge`` — create a stubbed cartridge skeleton in one
+  call (agent-callable wrapper around
+  :func:`looplet.cartridge.scaffold.scaffold_cartridge`).
 * ``search_skills`` — list installed agentskills.io SKILL.md bundles by
   task description without loading them.
 * ``activate_skill`` — load one SKILL.md body into subsequent prompts.
@@ -44,9 +45,6 @@ from looplet.tools import ToolSpec
 AVAILABLE: dict[str, ToolSpec] = {
     _SUBAGENT_SPEC.name: _SUBAGENT_SPEC,
     _SCAFFOLD_SPEC.name: _SCAFFOLD_SPEC,
-    # Back-compat: cartridges that opt in via the historical
-    # ``builtin_tools: [scaffold_cartridge]`` line keep working.
-    "scaffold_cartridge": _SCAFFOLD_SPEC,
     _SEARCH_SKILLS_SPEC.name: _SEARCH_SKILLS_SPEC,
     _ACTIVATE_SKILL_SPEC.name: _ACTIVATE_SKILL_SPEC,
 }

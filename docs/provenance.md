@@ -1,10 +1,16 @@
-# Provenance Guide
+# Capture and replay — evidence for every harness change
 
 `looplet.provenance` captures exactly what your agent saw and did —
 every prompt, every response, every step — and writes them to a
 diff-friendly directory you can `cat`, `grep`, and check into git.
 
-**The loop:** capture → read → replay.
+**The loop:** capture → inspect → turn the failure into a contract → replay
+captured responses against a changed harness.
+
+Replay here always means **captured-response replay**. The model is not called
+again, but tools, hooks, state, permissions, clocks, networks, randomness, and
+other side effects are fresh. This isolates model-output variation; it is not
+bit-for-bit deterministic simulation.
 
 ```python
 # 1. Capture
@@ -35,8 +41,10 @@ for step in replay_loop("traces/run_1/", tools=tools):
 | `replay_loop(dir, ...)` | Rerun the loop against cached LLM output | generator |
 | `python -m looplet show <dir>` | One-page readable summary | CLI |
 
-All of it is zero-dependency, safe by default, and preserves the
-`NativeToolBackend` capability surface of whatever they wrap.
+All of it is zero-dependency and preserves the `NativeToolBackend` capability
+surface of whatever it wraps. Prompts and responses may contain sensitive
+data, so configure `redact=` before capture when the run crosses a privacy or
+security boundary.
 
 ---
 
@@ -262,7 +270,7 @@ hook = TrajectoryRecorder(tracer=my_tracer)
 
 ---
 
-## Replay a captured run
+## Replay captured responses through a fresh harness
 
 ```python
 from looplet import replay_loop
@@ -274,8 +282,9 @@ for step in replay_loop("traces/run_1/", tools=my_tools):
 `replay_loop` reads `manifest.jsonl` + `call_NN_response.txt` from the
 trace directory and feeds them back into `composable_loop` in order.
 The LLM is **not** called again — your tools, hooks, permission
-engine, and state are fresh. This is the whole point: change any of
-those, diff the step output, and you get a cost-free A/B.
+engine, and state are fresh. This is useful when a tool, hook, permission,
+or loop-runtime change is the variable under review. It is not an A/B test of
+prompt or model changes because the recorded decisions stay fixed.
 
 **Common uses:**
 
@@ -285,6 +294,8 @@ those, diff the step output, and you get a cost-free A/B.
   different steps with the same LLM output, the loop behavior changed.
 - **Golden tests.** Capture once, check the directory into git,
   `replay_loop` in CI.
+- **Reproduce a tool failure.** Hold model responses fixed, change one tool
+  implementation, then let a collector grade the fresh world state.
 
 **Constraints:**
 
@@ -295,6 +306,8 @@ those, diff the step output, and you get a cost-free A/B.
   divergence is almost certainly a bug you want to see.
 - Tools **do** execute at replay time. Replace with mocks if you don't
   want side effects.
+- Prompt edits do not affect the already-captured responses. Record fresh
+  sampled runs to evaluate whether a prompt changes model decisions.
 - If `manifest.jsonl` is missing, replay falls back to the
   `call_NN_response.txt` files alone (every call treated as
   `generate`).

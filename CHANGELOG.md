@@ -27,6 +27,20 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   `SkillRuntime.ask_user(...)` with fixed-choice validation, and an
   optional `SkillRuntime.ask_handler` for host-supplied input.
 
+### Changed
+- **Relaunched Looplet around test-driven harness engineering.** The README,
+  documentation site, package metadata, roadmap, contribution guidance, and
+  issue forms now lead with the post-prototype workflow: own the loop, capture
+  failures, grade independently observed outcomes, and gate harness changes in
+  pytest or CI. A network-free regression demo protects the public claim.
+- **Agent-factory CLI language now treats generated cartridges as drafts.**
+  `looplet new` defaults to `./agent.cartridge`, recommends the canonical
+  `run-cartridge` command, and explicitly requires review and behavioral
+  contracts before release. The legacy `run-workspace` alias remains.
+- **Replay terminology is now precise.** Public examples consistently say
+  captured-response replay and state that fresh tools and side effects still
+  execute; the scripted demo no longer calls itself deterministic replay.
+
 ### Fixed
 - **Eval runs now fail closed instead of producing false greens.** Zero
   scores remain scores; invalid/unsupported returns, evaluator errors,
@@ -818,7 +832,7 @@ First public release of `looplet`.
     `call_NN_response.txt` per LLM call plus a `manifest.jsonl`.
   - Both recorders accept `redact=` for secret scrubbing and
     `max_chars_per_call=` for bounded memory.
-  - See [Provenance guide](provenance.md) for API reference,
+  - See [Provenance guide](docs/provenance.md) for API reference,
     recipes, and performance notes.
 - `Step.pretty()` — human-readable CLI formatter complementing
   `Step.summary()` (which is tuned for LLM context assembly).

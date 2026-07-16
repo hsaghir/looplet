@@ -1,4 +1,4 @@
-"""Toy admission policy for workspaces.
+"""Toy admission policy for cartridges.
 
 Three rules:
   1. If a `bash` tool is present, a hook with `Permission` in its
@@ -11,7 +11,7 @@ pipeline alongside lint and tests.
 
 Run::
 
-    python admit.py <workspace_dir>
+    python admit.py <cartridge_dir>
 """
 
 from __future__ import annotations
@@ -62,10 +62,10 @@ def violations(ws: Path) -> list[str]:
 
 def main() -> None:
     if len(sys.argv) != 2:
-        raise SystemExit("usage: admit.py <workspace_dir>")
+        raise SystemExit("usage: admit.py <cartridge_dir>")
     ws = Path(sys.argv[1]).resolve()
-    if not (ws / "workspace.json").is_file():
-        raise SystemExit(f"not a workspace: {ws}")
+    if not (ws / "cartridge.json").is_file():
+        raise SystemExit(f"not a cartridge: {ws}")
     issues = violations(ws)
     if not issues:
         print(f"OK: {ws.name} passes admission policy")

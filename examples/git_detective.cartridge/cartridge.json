@@ -1,10 +1,10 @@
 {
-  "description": "Workspace-native git history analyst. Inspects contributors, hotspots, coupling patterns, commit quality.",
+  "description": "File-native git history analyst harness. Inspects contributors, hotspots, coupling patterns, and commit quality.",
   "metadata": {
     "tags": [
       "git",
       "analysis",
-      "workspace-native"
+      "file-native"
     ]
   },
   "name": "git-detective",

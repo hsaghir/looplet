@@ -1,18 +1,30 @@
 # Quickstart
 
-Five minutes from zero to a running agent you understand every line of.
+Build one loop you can inspect, capture it, and see how the same harness
+becomes a behavioral contract.
 
-The whole looplet mental model fits in one turn:
+## 1. Run the whole claim first
 
-1. The LLM proposes a tool call.
-2. The registry validates and dispatches it.
-3. Hooks observe or steer the turn.
-4. State records the step.
-5. The loop yields a `Step` back to your code.
+If you cloned the repository, start with the network-free proof:
 
-Everything below is ordinary Python around that mechanism.
+```bash
+uv sync
+uv run python examples/regression_demo/run_demo.py
+```
 
-## 1. Install
+It holds two model responses constant, changes one tool line, executes
+the fixed tool in a fresh workspace, and turns an independently
+collected outcome from red to green. Read the
+[walkthrough](regression-demo.md) when you want every artifact.
+
+## 2. Install
+
+```bash
+pip install looplet
+```
+
+Core Looplet uses only the Python standard library. Install a provider
+extra when you want the bundled adapter:
 
 ```bash
 pip install "looplet[openai]"
@@ -20,182 +32,204 @@ pip install "looplet[openai]"
 pip install "looplet[anthropic]"
 ```
 
-!!! speed "Cold import: 289 ms"
-    looplet has zero required runtime dependencies. The `[openai]` /
-    `[anthropic]` extras are imported lazily only when you instantiate
-    a backend.
-
-## 2. Point it at any OpenAI-compatible endpoint
+Verify the loop locally without an API key:
 
 ```bash
-export OPENAI_BASE_URL=https://api.openai.com/v1   # or Ollama, Groq, Together, vLLM, …
-export OPENAI_API_KEY=sk-…
-export OPENAI_MODEL=gpt-5.5
+python -m looplet.examples.hello_world --scripted
 ```
 
-Run the bundled hello-world to sanity-check the wiring:
+The output is a sequence of explicit tool steps followed by two live
+eval results.
+
+## 3. Write an owned loop
+
+Configure any OpenAI-compatible endpoint:
 
 ```bash
-python -m looplet.examples.hello_world
+export OPENAI_BASE_URL=https://api.openai.com/v1
+export OPENAI_API_KEY=...
+export OPENAI_MODEL=...
 ```
-
-You should see three lines of `#1 greet(name='…') → {…} [Xms]` trace
-followed by a final `#N ✓ done(...)`. If that works, you are ready.
-
-## 3. Write your first loop
 
 ```python title="my_agent.py"
-from looplet import (
-    composable_loop, LoopConfig, DefaultState,
-    OpenAIBackend, tool, tools_from,
-)
+from looplet import OpenAIBackend, composable_loop, tool, tools_from
 
-llm = OpenAIBackend(base_url="https://api.openai.com/v1",
-                    api_key="sk-...", model="gpt-5.5")
 
-@tool(description="Search the docs.")
-def search(query: str) -> dict:
-    return {"results": [f"result for {query}"]}
+@tool(description="Look up one service owner by name.")
+def lookup_owner(service: str) -> dict:
+    owners = {"payments": "fintech-platform", "search": "discovery"}
+    return {"service": service, "owner": owners.get(service)}
 
-tools = tools_from([search], include_done=True)
 
-# Run.  You own the iteration.
+llm = OpenAIBackend.from_env()
+tools = tools_from([lookup_owner], include_done=True)
+
 for step in composable_loop(
     llm=llm,
     tools=tools,
-    state=DefaultState(max_steps=5),
-    config=LoopConfig(max_steps=5),
-    task={"goal": "What is looplet?"},
+    task={"goal": "Find the owner of payments, then finish."},
+    max_steps=5,
 ):
     print(step.pretty())
 ```
 
-That's it. The whole agent is 30 lines.
+The important part is not the line count. It is the execution boundary:
 
-The objects map directly to the mental model:
+- `tools_from(...)` builds the registry that validates and dispatches calls;
+- `composable_loop(...)` owns prompt → model → tool → state;
+- each dispatch is yielded as a `Step` before control returns to the loop;
+- your caller can print, route, pause, approve, or stop on that object.
 
-- `tools_from(...)` builds the registry that validates and dispatches tool calls.
-- `hooks=[...]` lets plain Python objects observe or steer the loop.
-- `DefaultState` records the steps and remaining budget.
-- `composable_loop(...)` yields each `Step` so your code can print, test, stop, or route it.
+## 4. Add one exact interception point
 
-## 4. Add a hook
-
-Hooks are plain classes. Implement only the methods you want — the loop
-checks with `hasattr` before calling.
+Hooks are ordinary objects. Implement only the lifecycle methods you
+need:
 
 ```python
-from looplet import HookDecision
+from looplet import Block
 
-class StepBudget:
-    """Cap the loop at N productive steps; block ``done()`` until
-    we've gathered enough evidence."""
 
-    def __init__(self, max_productive: int) -> None:
-        self.cap = max_productive
-        self.productive = 0
-
-    def post_dispatch(self, state, session_log, tool_call, tool_result, step_num):
-        if not tool_result.error and tool_call.tool != "done":
-            self.productive += 1
-
-    def should_stop(self, state, step_num, new_entities):
-        if self.productive >= self.cap:
-            return HookDecision(stop="step_budget_exceeded")
-        return False
-
-# ... then in composable_loop(...):
-hooks=[StepBudget(max_productive=8)]
+class RequireKnownOwner:
+    def check_done(self, state, session_log, context, step_num):
+        looked_up = [
+            step.tool_result.data
+            for step in state.steps
+            if step.tool_call.tool == "lookup_owner" and not step.tool_result.error
+        ]
+        if not any(item.get("owner") for item in looked_up):
+            return Block("Look up a known owner before finishing.")
+        return None
 ```
 
-For real token-cost tracking, wire a [`BackendRouter`](recipes.md)
-(it owns the token counters) and read `router.total_input_tokens`
-/ `router.total_output_tokens` between steps.
+Attach it without subclassing or changing the loop:
 
-See [Hooks](hooks.md) for the full protocol and a dozen recipes.
+```python
+for step in composable_loop(..., hooks=[RequireKnownOwner()]):
+    print(step.pretty())
+```
 
-## 5. Capture the trajectory
+This assertion is a **runtime guard**: it steers the live loop. Product
+quality should usually be checked after the run by an independent
+collector, as shown below.
+
+## 5. Capture what the model saw
 
 ```python
 from looplet import ProvenanceSink
 
-sink = ProvenanceSink(dir="traces/run_1", redact=lambda s: s.replace("secret", "[REDACTED]"))
-llm  = sink.wrap_llm(OpenAIBackend(base_url="https://api.openai.com/v1",
-                                    api_key="sk-...", model="gpt-5.5"))
 
-for step in composable_loop(llm=llm, tools=tools, hooks=[sink.trajectory_hook()], ...):
+sink = ProvenanceSink(dir="traces/owner_lookup")
+recorded_llm = sink.wrap_llm(llm)
+
+for step in composable_loop(
+    llm=recorded_llm,
+    tools=tools,
+    hooks=[sink.trajectory_hook(), RequireKnownOwner()],
+    task={"goal": "Find the owner of payments, then finish."},
+    max_steps=5,
+):
     print(step.pretty())
-sink.flush()     # writes trajectory.json + steps/*.json + call_*.txt
+
+sink.flush()
 ```
 
-Inspect it from the shell:
+Inspect the result from the shell:
 
 ```bash
-python -m looplet show traces/run_1/
+python -m looplet show traces/owner_lookup
 ```
 
-## 6. Turn debugging into an eval
+The directory contains exact prompt/response bodies, a model-call
+manifest, the trajectory, per-step JSON, stop reason, and metadata.
+Apply `redact=` when prompts or results may contain sensitive data.
 
-```python title="eval_my_agent.py"
-from looplet import eval_mark
+Captured responses can later drive `replay_loop(...)` with fresh tools
+or hooks. This avoids another model call; it does **not** freeze tool
+side effects. See [capture and replay](provenance.md).
 
-@eval_mark("verdict")
-def eval_returns_answer(ctx):
-    return "answer" in ctx.final_output
+## 6. Make the outcome a contract
 
-@eval_mark("budget")
-def eval_stopped_cleanly(ctx):
-    return ctx.completed            # stop_reason == "done"
+An evaluator should prefer world state over the model's route or claim:
+
+```python
+import json
+from pathlib import Path
+
+from looplet import EvalHook, eval_mark
+
+
+def collect_assignment(state):
+    path = Path("assignment.json")
+    return {
+        "assignment": json.loads(path.read_text()) if path.exists() else None,
+    }
+
+
+@eval_mark("required")
+def eval_owner_is_correct(ctx):
+    return ctx.artifacts["assignment"] == {
+        "service": "payments",
+        "owner": "fintech-platform",
+    }
+
+
+eval_hook = EvalHook(
+    evaluators=[eval_owner_is_correct],
+    collectors=[collect_assignment],
+    verbose=True,
+)
 ```
 
-Run against any saved trajectory:
+That collector assumes the real harness has a tool that writes
+`assignment.json`; the host reads the artifact after the loop. It does
+not require the model to call a particular tool sequence.
+
+For a complete executable version of this pattern—including protected
+expected data and persisted eval runs—use the
+[failure-to-regression demo](regression-demo.md).
+
+## 7. Put the harness under review
+
+When a directory is a useful review and release unit, use a cartridge:
+
+```text
+owner_agent.cartridge/
+├── cartridge.json
+├── config.yaml
+├── runtime.yaml
+├── prompts/system.md
+├── tools/lookup_owner/{tool.yaml, execute.py}
+├── tools/done/{tool.yaml, execute.py}
+└── evals/
+    ├── cases/payments_owner.json
+    ├── collect_assignment.py
+    └── eval_correctness.py
+```
 
 ```bash
-looplet eval traces/ --evals eval_my_agent.py --threshold 0.7 -v
+looplet describe ./owner_agent.cartridge
+looplet run-cartridge ./owner_agent.cartridge "Find the payments owner"
+looplet eval run ./owner_agent.cartridge --out ./eval-runs --threshold 1.0
 ```
 
-## 7. Run or share a bundle
+`looplet new` can scaffold a first cartridge from a brief, but generated
+output is a starting point: review the files and add cases, collectors,
+and required graders before shipping.
 
-A bundle is a portable skill folder that builds normal looplet
-primitives. It is the beginner-friendly way to run or share a complete
-capability without hiding the underlying loop.
+## Mental model
 
-```bash
-python -m looplet run ./skills/coder "Fix the tests" --workspace .
-python -m looplet blueprint ./skills/coder --workspace .
-python -m looplet export-code ./skills/coder coder_agent.py
-```
+1. The model proposes a tool call.
+2. The registry validates and dispatches it.
+3. Hooks can observe or steer exact lifecycle phases.
+4. State records the result.
+5. The loop yields a `Step` to your code.
+6. End-of-loop collectors inspect the resulting world.
+7. Evals grade that evidence and CI enforces the contract.
 
-Advanced users can package an importable looplet factory as a bundle:
+## Next
 
-```bash
-python -m looplet package my_agent:build ./skills/my-agent \
-    --name my-agent \
-    --description "Run my custom looplet agent."
-```
-
-Claude/Agent Skills-style folders can be wrapped when they are
-instruction-only, and looplet reports adapter gaps when scripts or
-resources need explicit tools:
-
-```bash
-python -m looplet wrap-claude-skill ./claude-skills/pdf ./skills/pdf
-```
-
----
-
-## Next steps
-
-- [Tutorial](tutorial.md) — hooks, compaction, crash-resume, approval, in five steps.
-- [Recipes](recipes.md) — Ollama, MCP, cost accounting, multi-model routing.
-- [Skills](skills.md) — lazy skills, runnable bundles, blueprints, and Claude Skill wrapping.
-- [Pitfalls](pitfalls.md) — ten sharp edges worth knowing.
-- [Hooks reference](hooks.md) — every extension point, every signature.
-
-??? question "Where are the sub-agents, the planner, the memory manager?"
-    There aren't any. A sub-agent is a function that calls
-    `composable_loop` and returns a value — then you expose it as a
-    `ToolSpec`. A planner is a hook that inspects `session_log` and
-    returns an `InjectContext(...)` in `pre_prompt`. A memory manager
-    is `StaticMemorySource` plus a `compact_service`. Nothing is
-    hidden.
+- [Tutorial](tutorial.md) — build a colocated case, collector, and required grader.
+- [Cartridges](cartridge.md) — file layout, refs, inheritance, and boundaries.
+- [Provenance](provenance.md) — capture and controlled re-execution.
+- [Evals](evals.md) — outcome philosophy, pytest helpers, and CLI gates.
+- [Hooks](hooks.md) — every interception point and return type.

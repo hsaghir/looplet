@@ -1,4 +1,4 @@
-"""Pretty trace printer for ``looplet new`` and ``looplet run-workspace``.
+"""Pretty trace printer for ``looplet new`` and ``looplet run-cartridge``.
 
 A small, dependency-free renderer that turns a stream of looplet
 ``Step`` objects into a legible terminal trace.

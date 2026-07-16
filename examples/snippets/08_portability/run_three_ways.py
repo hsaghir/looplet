@@ -1,7 +1,7 @@
 """Run the hello.cartridge via three different runtimes.
 
 All three use the same MockLLMBackend script so the demo is offline
-and deterministic. The point is that the same workspace artifact
+and reproducible. The point is that the same cartridge artifact
 plugs into multiple runtimes without modification.
 
 Run::
@@ -31,7 +31,7 @@ def make_backend() -> MockLLMBackend:
     return MockLLMBackend(
         responses=[
             json.dumps({"tool": "greet", "args": {"name": "Alice"}, "reasoning": "say hi"}),
-            json.dumps({"tool": "done", "args": {"answer": "greeted"}, "reasoning": "wrap up"}),
+            json.dumps({"tool": "done", "args": {"summary": "greeted"}, "reasoning": "wrap up"}),
         ]
     )
 
@@ -72,11 +72,13 @@ def via_subagent() -> int:
     return n
 
 
-def via_replay() -> int:
-    """Re-run the same workspace with the same scripted responses,
-    confirming determinism. In a real provenance setup, this would
-    load saved trajectory data instead of re-scripting."""
-    print("=== runtime 3: replay (deterministic re-run) ===")
+def via_scripted_rerun() -> int:
+    """Run the same cartridge again with a fresh scripted backend.
+
+    This is not captured-response replay: it does not load provenance
+    artifacts through ``replay_loop()``.
+    """
+    print("=== runtime 3: fresh scripted run ===")
     backend = make_backend()
     preset = cartridge_to_preset(str(HELLO_WS), runtime={"workspace": str(REPO)})
     state = DefaultState(max_steps=preset.config.max_steps)
@@ -98,9 +100,9 @@ def main() -> None:
     print()
     n_sub = via_subagent()
     print()
-    n_replay = via_replay()
+    n_rerun = via_scripted_rerun()
     print()
-    print(f"steps: local={n_local}, sub-agent={n_sub}, replay={n_replay}")
+    print(f"steps: local={n_local}, sub-agent={n_sub}, scripted={n_rerun}")
 
 
 if __name__ == "__main__":

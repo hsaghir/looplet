@@ -22,8 +22,8 @@ class TestPrettyDemo:
         assert rc == 0
         out = capsys.readouterr().out
         assert "looplet new" in out
-        assert "looplet run-workspace" in out
+        assert "looplet run-cartridge" in out
         assert "URL summarizer" in out
         assert "fetch_url" in out
-        assert "url_summarizer.workspace is ready" in out
+        assert "url_summarizer.cartridge draft is structurally valid" in out
         assert "Example Domain: placeholder documentation page" in out

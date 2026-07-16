@@ -1,7 +1,7 @@
 [project]
 name = "looplet"
 version = "0.2.0"
-description = "The tool-calling loop for LLM agents — iterator-first, protocol-hooked, zero runtime dependencies."
+description = "Test-driven harness engineering for Python agents — own the loop, capture failures, and gate changes in CI."
 readme = "README.md"
 license = { text = "Apache-2.0" }
 requires-python = ">=3.11"
@@ -11,10 +11,14 @@ authors = [
 keywords = [
     "llm",
     "agent",
+    "agent-harness",
+    "harness-engineering",
     "tool-calling",
+    "agent-evals",
+    "pytest",
+    "observability",
     "anthropic",
     "openai",
-    "agent-framework",
     "harness",
 ]
 classifiers = [
@@ -39,7 +43,8 @@ openai = ["openai>=1.30"]
 all = ["anthropic>=0.34", "openai>=1.30"]
 
 [project.urls]
-Homepage = "https://github.com/hsaghir/looplet"
+Homepage = "https://hsaghir.github.io/looplet/"
+Documentation = "https://hsaghir.github.io/looplet/"
 Repository = "https://github.com/hsaghir/looplet"
 Issues = "https://github.com/hsaghir/looplet/issues"
 Changelog = "https://github.com/hsaghir/looplet/blob/master/CHANGELOG.md"

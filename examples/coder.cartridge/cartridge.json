@@ -1,11 +1,11 @@
 {
-  "description": "Workspace-native coder agent. Every component (config, prompt, tools, hooks, shared resources) is a file you can edit, diff, and version-control. Behaves identically to the previous library example.",
+  "description": "File-native coder harness. Every component (config, prompt, tools, hooks, shared resources, and evals) is reviewable and version-controlled.",
   "metadata": {
     "tags": [
       "coding",
       "software-engineering",
       "testing",
-      "workspace-native"
+      "file-native"
     ]
   },
   "name": "coder",

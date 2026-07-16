@@ -1,10 +1,10 @@
 {
-  "description": "Workspace-native threat-intelligence briefing agent. Fetches feeds, extracts IOCs, maps MITRE techniques, assesses risk. v2 of examples/threat_intel.",
+  "description": "File-native threat-intelligence briefing harness. Fetches feeds, extracts IOCs, maps MITRE techniques, and assesses risk.",
   "metadata": {
     "tags": [
       "security",
       "threat-intel",
-      "workspace-native"
+      "file-native"
     ]
   },
   "name": "threat-intel",

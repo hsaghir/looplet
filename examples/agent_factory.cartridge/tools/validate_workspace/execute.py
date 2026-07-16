@@ -1,4 +1,4 @@
-"""validate_workspace tool — structural validator for generated workspaces.
+"""validate_workspace tool — structural validator for generated cartridges.
 
 Calls ``looplet.cartridge_to_preset()`` against the path and reports
 either the loaded tool/hook/config inventory (success) or a structured
@@ -31,7 +31,7 @@ def execute(
     if not abs_path.is_dir():
         return {
             "error": f"{workspace_path!r} is not a directory.",
-            "recovery": "Pass the workspace root (the directory containing workspace.json).",
+            "recovery": "Pass the cartridge root (the directory containing cartridge.json).",
         }
 
     # Defer the looplet import to call-time so the tool stays

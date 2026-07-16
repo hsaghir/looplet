@@ -2,7 +2,7 @@
 
 This module is a recording utility, not a usage example. It exercises
 the same ``PrettyPrinter`` used by ``looplet new --pretty`` and
-``looplet run-workspace --pretty``, but feeds it scripted ``Step``
+``looplet run-cartridge --pretty``, but feeds it scripted ``Step``
 objects so the resulting asciinema/GIF artifact is stable, fast, and
 does not require API credentials.
 
@@ -67,8 +67,8 @@ def _build_steps() -> list[Step]:
         _step(
             1,
             "scaffold_cartridge",
-            args={"path": "./url_summarizer.workspace", "tools": ["fetch_url", "summarize"]},
-            reasoning="Start from a normal looplet workspace: config, prompt, tools, and done.",
+            args={"path": "./url_summarizer.cartridge", "tools": ["fetch_url", "summarize"]},
+            reasoning="Start from a reviewable cartridge: config, prompt, tools, and done.",
             data={
                 "scaffolded": True,
                 "tools_created": ["fetch_url", "summarize", "done"],
@@ -94,17 +94,17 @@ def _build_steps() -> list[Step]:
         _step(
             4,
             "validate_workspace",
-            args={"path": "./url_summarizer.workspace", "strict": True},
-            reasoning="Load the workspace before handing it back so missing files fail early.",
+            args={"workspace_path": "./url_summarizer.cartridge", "strict": True},
+            reasoning="Load the cartridge before handing it back so structural defects fail early.",
             data={"valid": True, "n_tools": 3},
             duration_ms=26,
         ),
         _step(
             5,
             "done",
-            args={"summary": "url_summarizer.workspace is ready"},
-            reasoning="The agent can now be shipped, edited, or run locally.",
-            data={"summary": "url_summarizer.workspace is ready"},
+            args={"summary": "url_summarizer.cartridge draft is structurally valid"},
+            reasoning="Return the reviewable draft; behavioral release contracts remain host-owned.",
+            data={"summary": "url_summarizer.cartridge draft is structurally valid"},
             duration_ms=3,
         ),
     ]
@@ -161,7 +161,7 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(f"unknown arguments: {' '.join(unknown)}")
 
     _command(
-        'looplet new "URL summarizer" ./url_summarizer.workspace --pretty',
+        'looplet new "URL summarizer" ./url_summarizer.cartridge --pretty',
         fast=fast,
     )
     build_printer = PrettyPrinter(
@@ -171,20 +171,20 @@ def main(argv: list[str] | None = None) -> int:
     build_printer.header(
         [
             "  brief:  URL summarizer with fetch_url and summarize tools",
-            "  target: ./url_summarizer.workspace",
+            "  target: ./url_summarizer.cartridge",
             "  model:  any OpenAI-compatible endpoint",
         ]
     )
     _render(build_printer, _build_steps(), fast=fast)
-    build_printer.finish(summary="url_summarizer.workspace is ready")
+    build_printer.finish(summary="url_summarizer.cartridge draft is structurally valid")
 
     print()
     _command(
-        'looplet run-workspace ./url_summarizer.workspace "Summarize example.com" --pretty',
+        'looplet run-cartridge ./url_summarizer.cartridge "Summarize example.com" --pretty',
         fast=fast,
     )
     run_printer = PrettyPrinter(
-        title="looplet run \u00b7 url_summarizer.workspace",
+        title="looplet run \u00b7 url_summarizer.cartridge",
         max_steps=len(_run_steps()),
     )
     run_printer.header(

@@ -1,0 +1,14 @@
+{
+  "id": "profit_math",
+  "task": {
+    "goal": "Publish report.json for revenue 120 and cost 80, then finish."
+  },
+  "expected": {
+    "profit": 40
+  },
+  "marks": [
+    "smoke",
+    "regression"
+  ],
+  "notes": "The expected profit is grader-only data and is never sent to the agent."
+}

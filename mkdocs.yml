@@ -1,6 +1,6 @@
-site_name: looplet
+site_name: Looplet
 site_description: Test-driven harness engineering for Python agents. Own the loop. Test every change.
-site_url: https://hsaghir.github.io/looplet/
+site_url: https://hsaghir.com/looplet/
 repo_url: https://github.com/hsaghir/looplet
 repo_name: hsaghir/looplet
 edit_uri: edit/master/docs/
@@ -15,8 +15,8 @@ theme:
     repo: fontawesome/brands/github
     logo: material/sync
   font:
-    text: Inter
-    code: JetBrains Mono
+    text: IBM Plex Sans
+    code: IBM Plex Mono
   features:
     - navigation.tabs
     - navigation.tabs.sticky
@@ -105,32 +105,47 @@ markdown_extensions:
 
 nav:
   - Home: index.md
-  - Understand:
-      - Why looplet: why-looplet.md
-      - Quickstart: quickstart.md
-      - Tutorial: tutorial.md
-      - FAQ: faq.md
-  - Build:
+  - Start:
+    - Install and configure: install.md
+    - Quickstart: quickstart.md
+    - Tutorial: tutorial.md
+    - Migrate an existing loop: migrate.md
+    - Troubleshooting: troubleshooting.md
+  - Guides:
+    - Build:
       - Cartridges: cartridge.md
       - Hooks: hooks.md
       - Skills and bundles: skills.md
-      - Recipes: recipes.md
       - Agent factory: agent-factory.md
-      - Portability: portability.md
-  - Test:
+    - Test:
       - Failure to regression: regression-demo.md
+      - Choose the right experiment: experiments.md
       - Capture and replay: provenance.md
       - Behavioral evals: evals.md
-  - Ship:
-      - Pitfalls: pitfalls.md
-      - Benchmarks: benchmarks.md
-      - Roadmap: roadmap.md
-      - Changelog: changelog.md
+    - Operate:
+      - Runtime operations: operations.md
+      - Recipes: recipes.md
+      - Portability: portability.md
+  - Reference:
+    - CLI: cli.md
+    - Python API map: api.md
+    - Saved artifacts: artifacts.md
+    - Pitfalls: pitfalls.md
+  - Concepts:
+    - Why Looplet: why-looplet.md
+    - FAQ: faq.md
+    - Evidence and benchmarks: benchmarks.md
+  - Project:
+    - Roadmap: roadmap.md
+    - Changelog: changelog.md
   - Contribute:
-      - Contributing: contributing.md
-      - Good first issues: good-first-issues.md
-      - Demo script: demo-script.md
+    - Contributing: contributing.md
+    - Good first issues: good-first-issues.md
+    - Demo recording: demo-script.md
 
 plugins:
   - search:
       separator: '[\s\-,:!=\[\]()"/]+|(?!\b)(?=[A-Z][a-z])|\.(?!\d)|&[lg]t;'
+  - redirects:
+      redirect_maps:
+        getting-started.md: quickstart.md

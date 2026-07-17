@@ -1,5 +1,7 @@
 # Show HN draft
 
+<!-- markdownlint-disable MD034 MD036 -->
+
 ## Recommended title
 
 **Show HN: Looplet – turn failed Python agent runs into regression tests**
@@ -64,7 +66,7 @@ is naturally a durable branching graph, use a graph runtime. If you want
 hosted annotation and trace analytics, use an eval platform. If 20 lines still
 solve the problem, keep the 20 lines.
 
-Proof: https://hsaghir.github.io/looplet/regression-demo/
+Proof: https://hsaghir.com/looplet/regression-demo/
 
 Repo: https://github.com/hsaghir/looplet
 

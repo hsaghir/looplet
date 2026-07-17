@@ -1,4 +1,4 @@
-"""Tests for LLM backend adapters (using mocks — no API keys needed)."""
+"""Tests for LLM backend adapters (using mocks - no API keys needed)."""
 
 from __future__ import annotations
 

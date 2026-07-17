@@ -1,5 +1,5 @@
 {
-  "description": "Demo cartridge: declares an MCP server via mcp_servers: in config.yaml. The server is a self-contained Python stdio process bundled at _server/calc.py — no Node, no npm, no external deps. The agent calls add() then done().",
+  "description": "Demo cartridge: declares an MCP server via mcp_servers: in config.yaml. The server is a self-contained Python stdio process bundled at _server/calc.py - no Node, no npm, no external deps. The agent calls add() then done().",
   "metadata": {
     "tags": [
       "mcp",

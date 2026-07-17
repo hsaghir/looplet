@@ -4,8 +4,8 @@ Curated, well-scoped tasks for first-time contributors. Each is a few hours of w
 
 ## How to claim
 
-1. Browse [open issues labelled `good first issue`](https://github.com/hsaghir/looplet/issues?q=is%3Aopen+label%3A%22good+first+issue%22) on GitHub. Each issue body has the **acceptance criteria, file pointers, and scope** — read it carefully before starting.
-2. **Comment on the issue** ("I'd like to work on this — starting with `<module>`") so others don't duplicate work.
+1. Browse [open issues labelled `good first issue` and `launch-ready`](https://github.com/hsaghir/looplet/issues?q=is%3Aopen+label%3A%22good+first+issue%22+label%3Alaunch-ready) on GitHub. Each issue body has the **acceptance criteria, file pointers, and scope**. Read it carefully before starting.
+2. **Comment on the issue** ("I'd like to work on this - starting with `<module>`") so others don't duplicate work.
 3. Open one PR per logical chunk. If the issue has a checklist, tick the box you completed and **don't claim "Closes #N"** unless every box is ticked.
 4. Submit. Allow ~1 week per claim before someone else may pick the issue back up.
 
@@ -13,14 +13,8 @@ Curated, well-scoped tasks for first-time contributors. Each is a few hours of w
 
 | Theme | Example issues |
 | --- | --- |
-| **Regression contracts** | Turn one reproduced failure into a case, independent collector, required grader, and network-free test |
-| **Outcome recipes** | File artifacts, host-owned test suites, schema checks, API probes, and database observations |
-| **Evidence portability** | Small exporters or schema examples for OTel and hosted observability systems, outside core runtime |
-| **Provider recipes** | Gemini, Bedrock, or local-model adapters implemented against the small backend protocol |
-| **Cartridge examples** | Focused harnesses with reviewable tools and colocated self-tests under `examples/` |
-| **Documentation** | Fill in missing docstrings on public symbols (one PR per module) |
-| **Integrity ergonomics** | Clearer fail-closed errors for required graders, malformed evidence, or unsafe case paths |
-| **Benchmarks** | Reproduce an existing snapshot with environment metadata and explicit caveats; do not add leaderboard claims |
+| **Replay experiments** | [#101](https://github.com/hsaghir/looplet/issues/101): document fixed and fresh variables for tool, hook, prompt, and model changes |
+| **Documentation clarity** | Small, accepted follow-ups carrying both `good first issue` and `launch-ready`; claimed work has invitation labels removed |
 
 ## What makes a good first PR
 
@@ -29,6 +23,7 @@ Curated, well-scoped tasks for first-time contributors. Each is a few hours of w
 - **Outcome-grounded.** Prefer an independently observed artifact over a required tool sequence.
 - **Narrow.** Search, statistics, optimization, domain policy, and dashboards stay in recipes or downstream packages.
 - **`make check` clean.** Lint + format + pyright + pytest all green locally.
-- **Honest about scope.** If you only finished part of an umbrella issue, say "Towards #N" not "Closes #N".
+- **Complete.** Launch-ready issues are intentionally small. Open one PR that
+	satisfies the whole acceptance list rather than a partial umbrella change.
 
 See [CONTRIBUTING.md](https://github.com/hsaghir/looplet/blob/master/CONTRIBUTING.md) for dev setup and the full PR checklist.

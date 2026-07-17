@@ -1,9 +1,9 @@
-"""Tests for HistoryRecorder — single write path for agent loop history.
+"""Tests for HistoryRecorder - single write path for agent loop history.
 
 HistoryRecorder unifies the three parallel representations
 (Conversation messages / SessionLog entries / state.steps) behind a
 single API: ``record_step()`` and ``record_llm_turn()``. Each call
-updates all attached surfaces so they stay in lockstep — removing the
+updates all attached surfaces so they stay in lockstep - removing the
 "write three times" duplication in the loop.
 """
 

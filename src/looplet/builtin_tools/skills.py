@@ -39,7 +39,7 @@ def _search_execute(ctx: ToolContext, *, query: str, limit: int = 5) -> dict[str
     manager = ctx.resources.get("skill_manager")
     if manager is None:
         return {
-            "error": "no skill_manager resource — add resources/skill_manager.py",
+            "error": "no skill_manager resource - add resources/skill_manager.py",
             "remediation": (
                 "Create resources/skill_manager.py exposing build() that "
                 "returns a looplet.skills.SkillManager. See "
@@ -54,7 +54,7 @@ def _activate_execute(ctx: ToolContext, *, name: str) -> dict[str, Any]:
     manager = ctx.resources.get("skill_manager")
     if manager is None:
         return {
-            "error": "no skill_manager resource — add resources/skill_manager.py",
+            "error": "no skill_manager resource - add resources/skill_manager.py",
         }
     skill = manager.activate(name)
     return {

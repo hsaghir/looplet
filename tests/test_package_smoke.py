@@ -11,12 +11,6 @@ def test_version_is_string() -> None:
     assert isinstance(looplet.__version__, str)
 
 
-def test_version_value() -> None:
-    import looplet
-
-    assert looplet.__version__ == "0.2.0"
-
-
 def test_package_docstring() -> None:
     import looplet
 

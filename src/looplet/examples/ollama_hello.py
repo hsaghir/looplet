@@ -1,4 +1,4 @@
-"""Ollama hello world — run looplet against a local model, no API key.
+"""Ollama hello world - run looplet against a local model, no API key.
 
 Prereqs:
     curl -fsSL https://ollama.com/install.sh | sh      # install ollama

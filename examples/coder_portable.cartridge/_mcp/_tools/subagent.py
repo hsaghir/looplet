@@ -1,4 +1,4 @@
-"""subagent tool — portable twin of the in-process subagent.
+"""subagent tool - portable twin of the in-process subagent.
 
 The original ``tools/subagent/execute.py`` called
 ``cartridge_to_preset(<coder cartridge root>)`` to rebuild the parent's
@@ -7,7 +7,7 @@ recursively re-load THIS cartridge (re-spawning its MCP/SSP/MGP
 servers), so instead we build an isolated, in-process coding tool set
 with :func:`coder_lib_tools.make_tools` (bash/list_dir/read_file/
 write_file/edit_file/glob/grep + think + done) bound to a FRESH
-``FileCache`` — the sub-agent already runs with isolated state, so it
+``FileCache`` - the sub-agent already runs with isolated state, so it
 should not share the parent's cache anyway.
 
 The LLM is reached the portable way: ``ctx.llm`` is a

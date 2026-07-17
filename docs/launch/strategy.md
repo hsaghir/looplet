@@ -5,8 +5,8 @@
 Position Looplet in the category **agent harness engineering**, with the wedge
 **test-driven harness engineering for Python agents**.
 
-The old frame—small/composable agent loop, or agents generated from a
-paragraph—described implementation traits in a crowded framework market. It
+The old frame focused on a small/composable agent loop or agents generated from
+a paragraph. Those were implementation traits in a crowded framework market. It
 did not create urgency. The new frame starts at the post-prototype problem:
 
 > The agent works. Now how does a team change its prompt, tools, hooks, model,
@@ -68,8 +68,9 @@ Use claims in this order:
 1. **Executable proof:** `examples/regression_demo/run_demo.py`.
 2. **Protected test:** `tests/test_regression_demo.py`.
 3. **Inspectable source:** cartridge case, collector, grader, and tool diff.
-4. **Integrity suite:** fail-closed required graders, grader-only expected data,
-   protected holdouts, path containment, redaction, and online/offline parity.
+4. **Integrity suite:** fail-closed discovered required graders, grader-only
+   expected data, candidate-data containment, redaction, and online/offline
+   parity. Host-owned promotion isolation remains a separate runner concern.
 5. **Same-model study:** optional evidence that a compact owned harness can be
    competitive; never the hero claim.
 6. **Package property:** zero third-party core runtime dependencies.
@@ -87,14 +88,14 @@ Secondary calls to action:
 
 ## Launch sequence
 
-### Phase 0 — gates
+### Phase 0: gates
 
 - Merge the relaunch only after proof, full checks, strict docs build, links,
   dark/light responsive views, and claims review pass.
 - Ensure PyPI metadata and hosted docs show the same category sentence.
 - Pre-create issue labels/backlog only after searching for duplicates.
 
-### Phase 1 — repository relaunch
+### Phase 1: repository relaunch
 
 - Merge the documentation/metadata/proof PR.
 - Deploy the site and verify canonical URLs.
@@ -102,22 +103,22 @@ Secondary calls to action:
 - Pin the proof-oriented discussion or issue.
 - Make the regression proof the first README action.
 
-### Phase 2 — technical launch
+### Phase 2: technical launch
 
-- Post Show HN with the executable mechanism, tradeoffs, and caveat—not a
+- Post Show HN with the executable mechanism, tradeoffs, and caveat rather than a
   generic product pitch.
 - Reply with concrete implementation details and acknowledge when a graph,
   hosted eval platform, or raw loop is a better fit.
 - Avoid synchronized vote solicitation.
 
-### Phase 3 — audience-specific distribution
+### Phase 3: audience-specific distribution
 
 - Python/testing audiences: emphasize pytest workflow and ordinary files.
 - Agent engineering audiences: emphasize harness changes and oracle integrity.
 - Local/OSS audiences: emphasize ownership and zero-dependency core.
 - Do not cross-post identical copy; adapt the opening problem to each forum.
 
-### Phase 4 — evidence follow-up
+### Phase 4: evidence follow-up
 
 Within 48 hours:
 

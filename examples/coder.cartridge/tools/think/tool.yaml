@@ -1,5 +1,5 @@
 name: think
-description: Record a brief plan or hypothesis. No side effects — pure reasoning checkpoint.
+description: Record a brief plan or hypothesis. No side effects - pure reasoning checkpoint.
 parameters:
   thought:
     type: string

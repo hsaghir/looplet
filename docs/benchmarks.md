@@ -34,10 +34,10 @@ captured-response replay, not deterministic simulation.
 
 The optional
 [coder harness benchmark](https://github.com/hsaghir/looplet/tree/master/benchmarks/coder_vs_agents)
-compares `examples/coder.cartridge` with GitHub Copilot CLI while holding the
-underlying model family fixed (`claude-sonnet-4.6` in the recorded snapshot).
-The purpose is to compare scaffolding—prompt, tools, loop control, context, and
-startup—not model intelligence.
+compares `examples/coder.cartridge` with GitHub Copilot CLI while requesting the
+same model family (`claude-sonnet-4.6` in the recorded snapshot). Looplet used a
+proxy and Copilot used its own serving connection, so the study compares the
+end-to-end harness and serving paths rather than isolating scaffolding alone.
 
 | Recorded suite | Looplet coder | Copilot CLI | What the snapshot supports |
 | --- | ---: | ---: | --- |
@@ -71,7 +71,7 @@ more capable than a turnkey coding agent.
 
 ## 3. Runtime footprint
 
-Core Looplet 0.2.0 declares **zero third-party runtime dependencies**. Provider
+Core Looplet 0.3.0 declares **zero third-party runtime dependencies**. Provider
 SDKs are optional extras. This is a current package property, not a benchmark
 inference.
 
@@ -89,8 +89,8 @@ setuptools, and wheel.
 | `pip install strands-agents` | 49 |
 | `pip install pydantic-ai` | 144 |
 
-In the same archived run, median cold import over nine fresh subprocesses was
-289 ms for Looplet 0.1.8. The comparison packages ranged from 1,885 ms to
+In that archived run (Looplet 0.1.7, 2026-04-21), median cold import over nine
+fresh subprocesses was 289 ms. The comparison packages ranged from 1,885 ms to
 3,975 ms. Those latency numbers are historical: hardware, OS caches, Python,
 wheel versions, and package releases all affect them. Re-run before using them
 in a current engineering decision.

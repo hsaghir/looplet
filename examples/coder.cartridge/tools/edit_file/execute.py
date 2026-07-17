@@ -1,4 +1,4 @@
-"""edit_file tool — exact-string replacement with fuzzy fallback hints.
+"""edit_file tool - exact-string replacement with fuzzy fallback hints.
 
 Receives ``workspace_config`` and ``file_cache`` through
 ``ctx.resources``; ``tool.yaml`` declares
@@ -25,7 +25,7 @@ def execute(ctx: ToolContext, *, file_path: str, old_string: str, new_string: st
         return {"error": f"File not found: {file_path}"}
     # Read-before-edit enforcement. Editing a file the model hasn't
     # read in this session is almost always a sign that the model is
-    # guessing at content — the resulting old_string usually doesn't
+    # guessing at content - the resulting old_string usually doesn't
     # match and the call wastes a turn. Refuse early with a message
     # that names the read tool so the model self-corrects.
     if cache is not None and not cache.was_read(file_path):

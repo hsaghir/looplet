@@ -1,4 +1,4 @@
-"""Tests for default build_prompt — loop runs without domain callables.
+"""Tests for default build_prompt - loop runs without domain callables.
 
 A key "domain-agnostic" property: callers should be able to drop
 ``composable_loop()`` into a brand-new project with only ``tools`` +

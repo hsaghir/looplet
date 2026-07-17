@@ -6,17 +6,17 @@ persistent memory on every turn. Providers that expose prompt caching
 cache hits and skip prefill compute, yielding ~50% end-to-end latency
 savings on long sessions.
 
-Looplet historically had **zero** cache awareness — every turn
+Looplet historically had **zero** cache awareness - every turn
 rebuilt the full prompt and emitted it with no cache hints. This
 module adds the plumbing:
 
-* :class:`CachePolicy` — declarative: which sections the caller
+* :class:`CachePolicy` - declarative: which sections the caller
   considers stable enough to cache, plus per-section TTL.
-* :class:`CacheBreakpoint` — a (label, content_hash, ttl) tuple
+* :class:`CacheBreakpoint` - a (label, content_hash, ttl) tuple
   emitted per turn and handed to cache-aware backends.
-* :func:`compute_breakpoints` — deterministic hash of the three
+* :func:`compute_breakpoints` - deterministic hash of the three
   canonical stable sections (system prompt, tool schemas, memory).
-* :class:`CacheBreakDetector` — observer :class:`LoopHook` that
+* :class:`CacheBreakDetector` - observer :class:`LoopHook` that
   records hashes per turn and logs / emits events when any stable
   section's hash changes (i.e. a cache break has occurred).
 
@@ -79,7 +79,7 @@ class CacheBreakpoint:
     The ``hash`` fingerprints the content covered by this breakpoint
     (system prompt bytes, concatenated tool schemas, rendered memory).
     When two consecutive turns emit different hashes for the same
-    label, the provider's cache is invalidated — a "cache break".
+    label, the provider's cache is invalidated - a "cache break".
 
     Cache-aware backends consume ``label`` + ``content`` to place
     ``cache_control`` blocks in the right provider-specific slot.
@@ -100,10 +100,10 @@ class CachePolicy:
     the resulting :class:`CacheBreakpoint` list to any backend whose
     ``generate`` / ``generate_with_tools`` accepts a
     ``cache_breakpoints`` keyword (opt-in). Unknown backends see
-    nothing — caching is strictly additive.
+    nothing - caching is strictly additive.
 
     Sections default to ``None`` (= not cached). Enable only what's
-    actually stable — e.g. don't cache memory if you rewrite it
+    actually stable - e.g. don't cache memory if you rewrite it
     every turn, or you'll eat write costs for zero hit rate.
     """
 
@@ -113,7 +113,7 @@ class CachePolicy:
 
     def sections(self) -> list[tuple[CacheSection, CacheControl]]:
         """Enumerate configured sections in stable order (important
-        for cache-key stability — reordering breaks caches)."""
+        for cache-key stability - reordering breaks caches)."""
         out: list[tuple[CacheSection, CacheControl]] = []
         if self.system_prompt is not None:
             out.append(("system_prompt", self.system_prompt))
@@ -126,7 +126,7 @@ class CachePolicy:
 
 def _hash(text: str) -> str:
     """Stable 16-char hex hash for cache-break detection. SHA-256
-    truncated — collision risk is irrelevant at session scale."""
+    truncated - collision risk is irrelevant at session scale."""
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
@@ -166,7 +166,7 @@ class CacheBreakDetector:
     and logs when any previously-cached section changes.
 
     Use when you want production telemetry on cache miss rate without
-    changing any dispatch logic. The hook never blocks or mutates —
+    changing any dispatch logic. The hook never blocks or mutates -
     it just records the hash trail and emits ``cache_break`` log
     entries so you can count breaks in your log pipeline.
 
@@ -217,7 +217,7 @@ class CacheBreakDetector:
     @property
     def breaks(self) -> list[tuple[int, CacheSection, str, str]]:
         """All cache-break events recorded so far (step, section,
-        prior_hash, new_hash). Empty means no breaks occurred — a
+        prior_hash, new_hash). Empty means no breaks occurred - a
         perfectly cache-stable session."""
         return list(self._breaks)
 

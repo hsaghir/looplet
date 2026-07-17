@@ -1,4 +1,4 @@
-"""coupled_files — bridges to the closure-built tool from
+"""coupled_files - bridges to the closure-built tool from
 co-located ``git_detective_lib.make_tools(repo_config.path)``.
 
 Receives the shared ``repo_config`` resource through

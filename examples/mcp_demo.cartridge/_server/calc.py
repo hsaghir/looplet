@@ -1,6 +1,6 @@
 """A minimal stdio MCP (Model Context Protocol) server.
 
-Exposes one tool — ``add(a, b)`` — and speaks the MCP stdio
+Exposes one tool - ``add(a, b)`` - and speaks the MCP stdio
 transport (newline-delimited JSON-RPC). Bundled alongside the
 ``mcp_demo`` cartridge so the example is fully self-contained: no
 ``npm``, no Node, no external server install required.

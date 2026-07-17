@@ -28,5 +28,5 @@ what the cartridge declares, etc.) are NOT pinned by v1.0.
 
 ## Status
 
-Seed only — v1.0 conformance is documentation, not enforcement. v2 will
+Seed only - v1.0 conformance is documentation, not enforcement. v2 will
 mandate this suite as a release criterion.

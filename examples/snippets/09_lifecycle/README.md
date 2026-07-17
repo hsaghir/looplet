@@ -1,4 +1,4 @@
-# 09 — Lifecycle artifacts: trajectories tagged with cartridge identity
+# 09 - Lifecycle artifacts: trajectories tagged with cartridge identity
 
 A trajectory or eval result that says "we ran the agent on March 4,
 commit `abc123`" is folklore. A trajectory tagged with a **cartridge

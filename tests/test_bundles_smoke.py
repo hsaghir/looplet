@@ -723,7 +723,7 @@ class TestSkillBundles:
         assert steps[0].tool_result.data == {"value": "runtime-ok"}
 
     # NOTE: ``test_cli_coder_bundle_matches_original_coder_stdout_byte_for_byte``
-    # was removed when the v1 ``examples/coder/agent.py`` CLI was deleted —
+    # was removed when the v1 ``examples/coder/agent.py`` CLI was deleted -
     # there is no longer an "original" stdout to compare against. The
     # bundle's CLI behaviour is still exercised by
     # ``test_cli_runs_coder_bundle_with_scripted_responses`` below.

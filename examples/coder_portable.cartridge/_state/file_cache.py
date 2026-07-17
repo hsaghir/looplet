@@ -1,10 +1,10 @@
-"""Shared file cache — ported from the in-process ``@ref`` resource to an
+"""Shared file cache - ported from the in-process ``@ref`` resource to an
 out-of-process **State Service** (State Service Protocol).
 
 In the original ``coder`` cartridge the ``FileCache`` lived at
 ``resources/file_cache.py`` as a single instance shared (via
 ``"@file_cache"`` refs) between the read/write/edit tools AND the
-StaleFile/FileCache hooks — all running in the SAME Python process.
+StaleFile/FileCache hooks - all running in the SAME Python process.
 That shared-address-space requirement is exactly what pinned the
 cartridge to a Python host.
 
@@ -12,7 +12,7 @@ Here the same cache lives in ITS OWN process behind a Unix socket. The
 loader spawns this server and exports the socket path as
 ``LOOPLET_STATE_FILE_CACHE`` so the MCP tools server (read_file,
 write_file, edit_file, multi_edit, notebook_edit, bash) and the LEP
-hooks (StaleFile, FileCache) — each a SEPARATE process — connect to and
+hooks (StaleFile, FileCache) - each a SEPARATE process - connect to and
 mutate the SAME cache, reproducing the in-process ``@ref`` sharing
 across the process boundary.
 

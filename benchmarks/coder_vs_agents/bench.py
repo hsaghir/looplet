@@ -1,10 +1,10 @@
 #!/usr/bin/env python
 """Benchmark: looplet coder.cartridge vs GitHub Copilot CLI.
 
-Both agents run the SAME task, in a fresh isolated workspace, using the
-SAME underlying model (Copilot's Claude via the local copilot proxy for
-looplet; Copilot's own connection for the CLI). Each result is checked
-by a deterministic verifier.
+Both agents run the same task in a fresh isolated workspace and request
+the same model identifier. Looplet uses a local Copilot proxy; Copilot CLI
+uses its own serving connection. Each result is checked by a deterministic
+verifier.
 
 Usage:
     python bench.py [task_id ...]          # run all, or a subset
@@ -200,9 +200,7 @@ def main(argv: list[str]) -> int:
             flag = "PASS" if passed else "FAIL"
             extra = f"{rec['steps']} steps" if rec.get("steps") else ""
             to = " TIMEOUT" if rec["timed_out"] else ""
-            print(
-                f"\r  → {tool:8s} {flag}  {rec['wall_s']:6.1f}s  {extra:10s}{to}  — {detail[:80]}"
-            )
+            print(f"\r  → {tool:8s} {flag}  {rec['wall_s']:6.1f}s  {extra:10s}{to} - {detail[:80]}")
 
     # Merge with any existing results so incremental runs accumulate
     # (a re-run of a (task, tool) pair replaces the old record).

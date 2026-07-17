@@ -146,7 +146,7 @@ class TestTrajectoryRecorderSmoke:
         assert traj.ended_at is not None and traj.ended_at >= traj.started_at
 
     def test_sweeps_missed_done_step(self):
-        """Loop's done-handling path bypasses post_dispatch — on_loop_end
+        """Loop's done-handling path bypasses post_dispatch - on_loop_end
         must sweep state.steps to catch it."""
         hook = TrajectoryRecorder()
 
@@ -161,7 +161,7 @@ class TestTrajectoryRecorderSmoke:
         state.steps.append(step1)
         hook.post_dispatch(state, None, step1.tool_call, step1.tool_result, step_num=1)
         # The `done` step is appended to state.steps but post_dispatch is
-        # never called — simulate exactly that.
+        # never called - simulate exactly that.
         step2 = self._make_step(2, tool="done")
         state.steps.append(step2)
         hook.on_loop_end(state, None, None, None)
@@ -235,7 +235,7 @@ class TestTrajectoryRecorderSmoke:
         # Downstream hook tags the same Step's metadata after recorder
         step.tool_call.metadata["audit_tag"] = "ok"
         step.tool_result.metadata["scrubbed"] = True
-        # Loop ends — recorder should refresh metadata from live state.steps
+        # Loop ends - recorder should refresh metadata from live state.steps
         hook.on_loop_end(state, None, None, None)
 
         sr = hook.trajectory.steps[0]

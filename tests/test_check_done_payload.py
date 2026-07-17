@@ -123,7 +123,7 @@ def test_check_done_can_block_unsupported_answer() -> None:
     steps = _run(
         [
             '{"tool":"lookup","args":{"key":"x"},"reasoning":""}',
-            # Agent fabricates y=99 — should be blocked.
+            # Agent fabricates y=99 - should be blocked.
             '{"tool":"done","args":{"answer":"key=x and value=1 and y=99"},"reasoning":""}',
             # On retry, agent submits a grounded answer.
             '{"tool":"done","args":{"answer":"key=x and value=1"},"reasoning":""}',

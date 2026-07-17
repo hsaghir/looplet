@@ -1,11 +1,11 @@
-"""Model Gateway Protocol (MGP) — the portable host-LLM access primitive.
+"""Model Gateway Protocol (MGP) - the portable host-LLM access primitive.
 
 ``mcp_servers:`` makes *tools* portable (a tool body runs out-of-process
 over MCP). ``kind: lep`` makes *hooks* portable (a hook's policy runs
 out-of-process over LEP). ``state_services:`` (SSP) makes *shared mutable
 state* portable (a 1:N socket server both tools and hooks connect to).
 
-All three move a component out of the host's Python address space — and
+All three move a component out of the host's Python address space - and
 in doing so they sever the one ambient capability an in-process tool took
 for granted: **``ctx.llm``, the host's LLM backend.** An in-process tool
 that wants to summarise/classify/extract just calls
@@ -19,31 +19,31 @@ LLM backend in the *host* process** and exposes ``generate`` over a Unix
 domain socket. Out-of-process tool servers (MCP) and hook servers (LEP)
 both *connect* to the same socket, so the LLM they share lives behind a
 protocol rather than in one Python address space. A portable tool can
-therefore call back into the *same* model the loop is driving — restoring
+therefore call back into the *same* model the loop is driving - restoring
 functional and qualitative parity with the in-process original, with no
 Python pinned on the tool side (a Rust/Go/TS MCP server would speak only
 the wire).
 
-Unlike SSP/LEP/MCP servers — which the loader *spawns* as subprocesses —
+Unlike SSP/LEP/MCP servers - which the loader *spawns* as subprocesses -
 the gateway server runs **in the host process** (a daemon thread): the
 LLM backend is a host object that cannot be serialised across a fork. The
 loader allocates the socket path and exports it as ``LOOPLET_LLM_SOCKET``
 *before* spawning any out-of-process server, so every child inherits it
 and can connect lazily on its first ``generate`` call. The backend is
-bound at *run* time (``AgentPreset.run(llm)``), so until a run is active —
-or in a headless/test dispatch — the gateway reports "no backend" and the
+bound at *run* time (``AgentPreset.run(llm)``), so until a run is active -
+or in a headless/test dispatch - the gateway reports "no backend" and the
 tool falls back to its documented ``ctx.llm is None`` branch.
 
 Three pieces, mirroring :mod:`looplet.state_service`:
 
-* :class:`ModelGatewayServer` — owns the backend, serves clients. Holds a
+* :class:`ModelGatewayServer` - owns the backend, serves clients. Holds a
   settable ``backend`` slot; nothing else from looplet is required to
   re-implement it in another language (the wire is the contract).
-* :class:`ModelGatewayClient` — an in-process proxy. ``client.generate(
+* :class:`ModelGatewayClient` - an in-process proxy. ``client.generate(
   prompt, max_tokens=...)`` forwards over the socket. Portable MCP/LEP
   servers that want to stay stdlib-only can inline an equivalent ~30-line
   client instead of importing looplet.
-* :class:`ModelGatewayHandle` — allocates the socket, starts the host
+* :class:`ModelGatewayHandle` - allocates the socket, starts the host
   daemon thread, exports ``LOOPLET_LLM_SOCKET``, and owns teardown.
 
 Wire format (line-delimited JSON over ``AF_UNIX`` ``SOCK_STREAM``):
@@ -57,7 +57,7 @@ Wire format (line-delimited JSON over ``AF_UNIX`` ``SOCK_STREAM``):
     → {"id": 3, "method": "llm/shutdown"}
     ← {"id": 3, "result": {"ok": true}}
 
-The gateway bridges ``generate`` only — the documented ``ctx.llm`` surface
+The gateway bridges ``generate`` only - the documented ``ctx.llm`` surface
 for *tool-internal* single calls (summarise, classify, extract). The
 loop's own multi-turn ``generate_with_tools`` orchestration is not a tool
 concern and is intentionally out of scope.
@@ -128,7 +128,7 @@ class ModelGatewayServer:
     """Host-resident server exposing a (settable) LLM backend over a socket.
 
     Unlike :class:`looplet.state_service.StateServiceBase`, this server is
-    not spawned as a subprocess — it runs in the *host* process (via
+    not spawned as a subprocess - it runs in the *host* process (via
     :class:`ModelGatewayHandle`), because the LLM backend is a live host
     object. The :attr:`backend` slot is bound at run time; until then
     ``llm/generate`` returns an error and out-of-process callers degrade
@@ -241,7 +241,7 @@ class ModelGatewayServer:
                     {"id": rid, "error": {"message": f"unknown method {method!r}"}},
                 )
                 return
-        except Exception as exc:  # noqa: BLE001 — report, never crash the server
+        except Exception as exc:  # noqa: BLE001 - report, never crash the server
             _send_line(conn, {"id": rid, "error": {"message": str(exc)}})
             return
         _send_line(conn, {"id": rid, "result": result})
@@ -353,7 +353,7 @@ class ModelGatewayHandle:
     The loader creates one of these (via :meth:`start`) when a cartridge
     declares out-of-process tool servers, *before* spawning them, so the
     socket path is exported as ``LOOPLET_LLM_SOCKET`` and inherited by
-    every child. The backend is bound later — at run time — via
+    every child. The backend is bound later - at run time - via
     :meth:`set_backend`.
     """
 

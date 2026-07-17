@@ -12,9 +12,9 @@ description: |-
   - On overwrite, the file_cache entry for the path is invalidated so a subsequent read_file returns the new content.
 
   Examples:
-  - `write_file(file_path="src/utils.py", content="def foo(): ...")` — new file
-  - `write_file(file_path="src/utils.py", content=..., overwrite=True)` — explicit replace of an existing file after `read_file`
-  - DO NOT use this to "update" a file you already read — that's `edit_file`.
+  - `write_file(file_path="src/utils.py", content="def foo(): ...")` - new file
+  - `write_file(file_path="src/utils.py", content=..., overwrite=True)` - explicit replace of an existing file after `read_file`
+  - DO NOT use this to "update" a file you already read - that's `edit_file`.
 
   Recovery:
   - "already exists" → use `edit_file` (preferred) or read the file and pass `overwrite=True`

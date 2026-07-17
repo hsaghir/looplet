@@ -1,9 +1,9 @@
-"""Shared greeting log — every greeting is appended here so hooks
+"""Shared greeting log - every greeting is appended here so hooks
 that audit politeness can inspect the same record the tool wrote.
 
 Demonstrates the @ref shared-resource pattern: the greet tool and
 the PolitenessGate hook both reference ``"@greeting_log"`` in their
-config.yaml and get the SAME list instance — without this, they'd
+config.yaml and get the SAME list instance - without this, they'd
 each get an independent empty list and audit logic would silently
 break on workspace reload.
 """

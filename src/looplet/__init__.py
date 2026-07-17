@@ -1,4 +1,4 @@
-"""looplet — composable tool-calling LLM agent harness.
+"""looplet - composable tool-calling LLM agent harness.
 
 A minimal, composable framework for building tool-calling LLM agent loops.
 
@@ -10,10 +10,10 @@ else, import from the relevant submodule::
     from looplet.cache import CacheBreakDetector, compute_breakpoints
 """
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 # ── Public re-exports (one import per submodule, alphabetical) ──────────
-# ruff: noqa: F401 — __init__.py intentionally re-exports for `from looplet import X`
+# ruff: noqa: F401 - __init__.py intentionally re-exports for `from looplet import X`
 
 from looplet.approval import ApprovalHook
 from looplet.async_loop import async_composable_loop

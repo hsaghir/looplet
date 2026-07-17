@@ -1,4 +1,4 @@
-"""Smoke tests for Skill — composable tool+context bundles."""
+"""Smoke tests for Skill - composable tool+context bundles."""
 
 from __future__ import annotations
 

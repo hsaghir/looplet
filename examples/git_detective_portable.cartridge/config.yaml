@@ -1,4 +1,4 @@
-# git_detective — FULLY PORTABLE twin.
+# git_detective - FULLY PORTABLE twin.
 #
 # Unlike git_detective (which loads 8 git tools as in-process
 # tools/*/execute.py closures over a shared INPROCESS `repo_config`
@@ -7,10 +7,10 @@
 # no Python tool body, and no INPROCESS resource anywhere, so the
 # cartridge is classified `portable`: it can run on any future loader
 # (Rust, Go, TypeScript) that implements the MCP stdio transport and the
-# LEP hook transport — no Python required (the server only needs `git`).
+# LEP hook transport - no Python required (the server only needs `git`).
 #
 # The target repo is resolved by the MCP server from $LOOPLET_PROJECT_ROOT
-# (set by the host), falling back to the server's working directory — the
+# (set by the host), falling back to the server's working directory - the
 # portable equivalent of the original's repo_config resource.
 #
 # Still-portable companions carried over verbatim:
@@ -28,7 +28,7 @@ builtin_hooks:
 
 mcp_servers:
   git_tools:
-    # Self-contained stdio MCP server — shells out to `git` only.
+    # Self-contained stdio MCP server - shells out to `git` only.
     # ${runtime.cartridge_root} is injected by the loader so the spawned
     # command finds the bundled server regardless of checkout location.
     command: "python3 ${runtime.cartridge_root}/_mcp/tools_server.py"

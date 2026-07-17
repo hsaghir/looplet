@@ -1,5 +1,5 @@
 {
-  "description": "Fully-portable twin of skillful_analyst. The done/read_text/write_text tools are served by a bundled MCP stdio server, the WriteScopeGuard is a kind: lep hook, and the skill system (search_skills/activate_skill builtins + skill_activation hook + skill_manager) is host-provided. Zero Python tool bodies — runs on any conforming loader (Rust/Go/TS).",
+  "description": "Fully-portable twin of skillful_analyst. The done/read_text/write_text tools are served by a bundled MCP stdio server, the WriteScopeGuard is a kind: lep hook, and the skill system (search_skills/activate_skill builtins + skill_activation hook + skill_manager) is host-provided. Zero Python tool bodies - runs on any conforming loader (Rust/Go/TS).",
   "metadata": {
     "tags": ["skills", "analyst", "portable", "demo"]
   },

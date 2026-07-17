@@ -58,7 +58,7 @@ class TestBackendConvenienceKwargs:
         pytest.importorskip("openai")  # optional extra; CI installs it
         from looplet.backends import OpenAIBackend
 
-        # This should NOT raise — it auto-creates the client
+        # This should NOT raise - it auto-creates the client
         llm = OpenAIBackend(base_url="http://localhost:9999/v1", api_key="test")
         assert llm._client is not None
         assert llm._model == "gpt-4o"

@@ -6,17 +6,138 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-16
+
 ### Added
-- **Prompt caching in the shipped backends.** `OpenAIBackend` and
-  `AnthropicBackend` (sync + async) now accept a `cache_breakpoints`
-  keyword and translate a configured `CachePolicy` into real provider
-  cache markers: Anthropic `cache_control` on the system block, the
-  last tool, and the persistent-memory prefix; OpenAI `prompt_cache_key`
-  (opt-in via `use_prompt_cache_key=True`, sent through `extra_body`
-  so strict local/proxy servers are never handed an unknown field).
-  Previously `CachePolicy` was inert with the built-in backends — the
-  computed breakpoints were silently dropped. Opt-in and fully additive:
-  with no `CachePolicy` set, requests are byte-for-byte unchanged.
+
+- **Cartridge-native behavioral contracts.** Cartridges can ship cases,
+  independent outcome collectors, and required graders under `evals/`.
+  `run_cartridge_evals()` executes the complete contract in fresh per-case
+  workspaces and persists trajectories, artifacts, grader-only expectations,
+  and results for offline review.
+- **Out-of-process control surfaces.** The RPC protocol now covers lifecycle
+  events, cancellation, completion payloads, checkpoint/resume, backend
+  selection, capability negotiation, and protocol versioning. LEP hooks, SSP
+  state service, and MGP model gateway provide explicit cross-runtime
+  boundaries without changing the core loop.
+- **Cartridge portability analysis and portable examples.** `looplet
+  portability` reports blockers and supported tiers. Portable twins for the
+  shipped cartridges demonstrate MCP/LEP boundaries and are protected by
+  cross-runtime conformance tests.
+- **Runtime interaction primitives.** `SkillRuntime.ask_user()` and
+  `batch_ask_user()` support host-supplied structured questions while retaining
+  a sequential fallback for adapters without native form rendering.
+- **Declarative hook contracts.** `ViewSpec`, thread-rewrite support, and
+  related hook surfaces make context views and rewrites inspectable.
+- **Provider usage telemetry.** Model token usage is recorded on state and
+  lifecycle events so hooks and host applications can account for real calls.
+- **Environment-selected backend construction.** `make_backend()` and the RPC
+  backend command support Anthropic, OpenAI, OpenAI-compatible proxy, and
+  explicit deterministic mock configuration through documented environment
+  variables.
+- **Public regression proof.** A network-free example captures fixed model
+  responses, changes one tool implementation, independently collects the fresh
+  artifact, and moves a required grader from red to green.
+
+### Changed
+
+- **Looplet is now positioned as test-driven harness engineering.** The README,
+  documentation site, package metadata, roadmap, contribution guidance, and
+  issue forms lead with the post-prototype workflow: own the loop, capture
+  failures, grade independently observed outcomes, and gate harness changes in
+  pytest or CI.
+- **Agent-factory output is explicitly a draft.** `looplet new` defaults to
+  `./agent.cartridge`, recommends `run-cartridge`, and requires review plus
+  behavioral contracts before release. `run-workspace` remains a compatibility
+  alias.
+- **Replay terminology is precise.** Documentation says captured-response
+  replay and states that tools and side effects execute again. Prompt and model
+  changes require fresh sampled runs.
+- **The shipped coder harness is more capable and cache-friendly.** It adds a
+  reviewable `web_search` tool, sharper safety and answer-quality guidance, and
+  keeps stable prompt prefixes to improve provider cache reuse.
+- **Same-model harness evidence is documented with caveats.** Reproducible
+  benchmark reports compare harness scaffolding rather than claiming universal
+  model or framework superiority.
+
+### Fixed
+
+- **Eval integrity boundaries fail closed.** Zero scores remain scores;
+  invalid returns, evaluator errors, collector failures, explicit failing
+  labels, discovered required graders that are filtered, skipped, errored,
+  invalid, or below the pass boundary, empty grader suites, malformed
+  trajectories/metrics, duplicate eval modules, invalid thresholds, unsafe
+  case IDs, seed traversal, symlink escapes, and stale workspaces no longer
+  produce false greens. Detecting a grader deleted before discovery still
+  requires a trusted expected-grader manifest.
+- **Online and offline grading use the same evidence.** Expected data stays
+  grader-only, terminal payloads survive persistence, and session logs,
+  metadata, artifacts, and stop reasons round-trip.
+- **Provider cache policy now reaches real requests.** OpenAI and Anthropic
+  adapters translate configured cache breakpoints into provider request fields
+  while preserving byte-equivalent behavior when caching is disabled.
+- **RPC and MCP edges are hardened.** MCP JSON-string arguments and non-dict
+  tool results are normalized safely; MCP response reads and startup cleanup
+  honor configured timeouts; RPC checkpoint capabilities, completion reasons,
+  and backend construction now reflect actual runtime behavior.
+- **Installed `looplet new` includes its factory.** Wheels and sdists now carry
+  `agent_factory.cartridge` plus its `coder.cartridge` parent, with a clean-wheel
+  CI smoke test covering factory loading and CLI help.
+
+### Developer experience
+
+- Repository and launch documentation now use ASCII punctuation consistently;
+  CI enforces the no-em-dash rule across tracked UTF-8 files.
+- Release metadata, mirrored documentation, lockfile version, changelog date,
+  strict docs build, and publication tag are covered by automated gates.
+- The public issue backlog is split into independent evidence, compatibility,
+  and provider work with explicit dependencies and non-goals.
+
+## [0.2.0] - 2026-05-14
+
+### Added
+- **`mcp_servers:` slot in `config.yaml`** - declarative MCP
+  (Model Context Protocol) transport for cross-language tools. Loader
+  spawns one stdio subprocess per entry, runs MCP discovery, and
+  registers every discovered tool into the agent’s registry alongside
+  in-process Python tools. Optional per-server `tools:` allow-list.
+  `AgentPreset` is now a context manager (`__exit__` terminates spawned
+  MCP subprocesses cleanly).
+- **`examples/mcp_demo.cartridge/`** - fully self-contained demo. The
+  MCP server is a ~60-line Python stdio process bundled at
+  `_server/calc.py` (no Node, no npm, no external deps).
+- **`cartridge_root` auto-injected into the runtime dict**, so YAML
+  fields can reference `${runtime.cartridge_root}` (most importantly in
+  `mcp_servers.<name>.command`).
+- **`language:` field** in cartridge metadata + per-tool
+  `description.md` files (closes paper gaps).
+
+### Changed
+- **Cartridge spec v2 is now the only supported shape.** Loader
+  hard-fails on `schema_version != 2`. RUNTIME-tier keys must live in
+  `runtime.yaml`, not `config.yaml`.
+- Round-2 cleanup: extracted three pure helpers from `_load.py`,
+  trimmed re-exports, tightened render→runtime boundary.
+- Four v2 cuts: `tags`, single-file constraints, `${py:}` references,
+  `done_tools` plural.
+
+### Fixed
+- **`MCPToolAdapter` now uses newline-delimited JSON framing** per the
+  MCP stdio spec. Previous LSP-style `Content-Length:` framing silently
+  failed against every real MCP server. Init-failure errors now include
+  exit code and stderr tail.
+
+### Removed
+- **All v1 back-compat.** Public surface trimmed: `Workspace`,
+  `WorkspaceLayout`, `WorkspaceSerializationError`, `workspace_to_preset`,
+  `preset_to_workspace`, `scaffold_workspace`, `ContextManagerHook`.
+  Use `Cartridge*` equivalents.
+- Magic `prompts/briefing.md` / `prompts/recovery.md` auto-load and
+  `setup.py` escape hatch.
+- Alias modules: `scaffold.py`, `prompt_files.py`, `hot_reload.py`,
+  `spec_slots.py`, `workspace.py`.
+
+### Added
 - **Unified workspace reference grammar.** Three forms, one resolver,
   applied uniformly to every string value the cartridge loader
   processes:
@@ -28,12 +149,12 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   `${runtime.x}` supports nested lookup (`${runtime.a.b}`) and
   defaults (`${runtime.x:-15}`). The legacy `"@name"` form continues
   to work as an alias for `${ref:name}` so existing cartridges load
-  unchanged. See `docs/cartridge.md#reference-grammar` for the full
+  unchanged. See `docs/workspace.md#reference-grammar` for the full
   spec.
 - **`AgentPreset.resources` field.** the cartridge loader now
   populates this dict with every resource it built. Callers that
   need post-load access to live objects (benchmarks, evidence-bundle
-  writers, SDK shims) read from `preset.resources` by name — no more
+  writers, SDK shims) read from `preset.resources` by name - no more
   module-hunting to reach a resource the cartridge constructed.
   Empty for presets built directly in code.
 - **Declarative `state:` directive in `config.yaml`.** Cartridges
@@ -48,37 +169,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   Closes the last gap where a non-trivial workspace had to write
   `setup.py` just to attach a custom state class.
 
-### Changed
-- **Relaunched Looplet around test-driven harness engineering.** The README,
-  documentation site, package metadata, roadmap, contribution guidance, and
-  issue forms now lead with the post-prototype workflow: own the loop, capture
-  failures, grade independently observed outcomes, and gate harness changes in
-  pytest or CI. A network-free regression demo protects the public claim.
-- **Agent-factory CLI language now treats generated cartridges as drafts.**
-  `looplet new` defaults to `./agent.cartridge`, recommends the canonical
-  `run-cartridge` command, and explicitly requires review and behavioral
-  contracts before release. The legacy `run-workspace` alias remains.
-- **Replay terminology is now precise.** Public examples consistently say
-  captured-response replay and state that fresh tools and side effects still
-  execute; the scripted demo no longer calls itself deterministic replay.
-
 ### Fixed
-- **Eval runs now fail closed instead of producing false greens.** Zero
-  scores remain scores; invalid/unsupported returns, evaluator errors,
-  collector failures, explicit failing labels, and skipped graders marked
-  `@eval_mark("required")` produce non-zero CLI exits. Integrity-sensitive
-  discovery rejects broken or duplicate eval modules rather than running a
-  partial suite; malformed trajectories/metrics and invalid thresholds also
-  fail the run instead of being skipped.
-- **Online and offline grading now share the same evidence.** Case
-  `expected` data is exposed only to graders (never leaked into the agent
-  task or recorded agent-visible task), custom terminal sentinels preserve
-  their final payloads, and session logs, metadata, artifacts, and
-  termination reasons round-trip.
-- **Cartridge eval sandboxes are isolated on every run.** Unsafe case IDs,
-  seed traversal, symlink escapes, unknown case filters, stale persisted
-  workspaces, and caller overrides of the per-case project root are rejected
-  or reset before execution.
 - **YAML parser now skips full-line comments.** `#` lines used to
   raise `CartridgeSerializationError`. Same fix applied to the
   runtime-substitution pre-pass so `${runtime.x}` inside a YAML
@@ -96,7 +187,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   by `StagnationHook` in `looplet.stagnation`. The
   back-compat bridge methods on `StepProgressTracker`
   (`consecutive_empty`, `is_diminishing`, `record_step`,
-  `guidance_text`) are also removed — use the native
+  `guidance_text`) are also removed - use the native
   `consecutive_unproductive` / `is_stagnating` properties.
 
 ### Changed
@@ -137,7 +228,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   creates a working but stubbed cartridge skeleton in one call:
   `cartridge.json` + `config.yaml` + `prompts/system.md` +
   `tools/<name>/{tool.yaml, execute.py}` stubs (raise
-  `NotImplementedError`) + the standard `done` tool. Idempotent —
+  `NotImplementedError`) + the standard `done` tool. Idempotent  -
   re-running preserves existing files via `_write_if_absent`. (#46)
 - **`builtin_tools:` directive in `config.yaml`.** Cartridges can opt
   into looplet-shipped tools without writing a `tools/<name>/` dir:
@@ -151,7 +242,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   sub-loop, sharing the parent's LLM and forwarding the parent's
   `workspace_config.path` as the sub-loop's `runtime["workspace"]`.
   Returns the sub-loop's final `done` summary. Recursion-guarded via
-  `contextvars.ContextVar` (default `max_depth=5`). Sequential only —
+  `contextvars.ContextVar` (default `max_depth=5`). Sequential only  -
   parallel fan-out deferred. (#46)
 - **`scaffold_cartridge` built-in tool.** Agent-callable wrapper
   around the scaffold helper. The agent factory uses it as the very
@@ -172,15 +263,15 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   parent's `workspace_config` resource and forwards
   `runtime["workspace"]` to the sub-loop's resource builders.
 - **`subagent` recursion depth via process-global env var
-  (`LOOPLET_SUBAGENT_DEPTH`)** — two parallel parent loops in the
+  (`LOOPLET_SUBAGENT_DEPTH`)** - two parallel parent loops in the
   same process raced. Replaced with a `ContextVar` (threadsafe and
   per-async-task). The sub-loop receives a freshly-constructed
   `runtime` (it does NOT share the parent's `resources` /
-  `file_cache` instances — only the cartridge path is forwarded).
+  `file_cache` instances - only the cartridge path is forwarded).
 - **`validate_workspace` was silent on TODO-laden scaffolds.** Now
   scans the system prompt for `<TODO:` markers and tool execute.py
   files for `NotImplementedError("scaffold:` and surfaces both as
-  warnings — agents can no longer `done` on an unfilled skeleton. (#48)
+  warnings - agents can no longer `done` on an unfilled skeleton. (#48)
 - **`subagent` cwd-fallback was silent.** When neither the parent's
   `workspace_config` resource nor `ctx.metadata['runtime']` is
   present, the sub-loop's `runtime['workspace']` falls back to
@@ -224,7 +315,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
      using YAML block scalars (`|-`). The looplet workspace YAML
      loader gained `|`/`|-`/`>` block-scalar support so these
      descriptions round-trip correctly.
-- **`ToolError.recovery_hint`** — structured suggestion (dict or str)
+- **`ToolError.recovery_hint`** - structured suggestion (dict or str)
   for how the caller could recover. The dispatcher now populates it
   on the four self-correctable errors: unknown-tool ("did you mean?"),
   unexpected-argument (`{unexpected, did_you_mean, expected}`),
@@ -234,18 +325,18 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   without re-discovering the catalog from prose; existing models still
   see the same human-readable error message.
 - **`looplet.LLMResponsesExhausted`** + **`MockLLMBackend(cycle=False)`**
-  — opt-in test ergonomics. The default still cycles for backward
+  - opt-in test ergonomics. The default still cycles for backward
   compatibility; passing `cycle=False` makes the mock raise instead of
   silently re-using `responses[0]` past the last scripted answer
   (which previously made over-running loops look "stuck on step 1").
   Same flag on `AsyncMockLLMBackend`.
-- **`run_sub_loop(parent_hooks=...)`** — opt-in event forwarding from
+- **`run_sub_loop(parent_hooks=...)`** - opt-in event forwarding from
   a sub-loop to the parent's observability stack. When supplied, the
   parent's hooks (e.g. `MetricsHook`, `StreamingHook`,
   `TrajectoryRecorder`) receive every lifecycle event the sub-loop
   emits via their `on_event` method, tagged with `subagent_id` in the
   payload's `extra` dict so consumers can route / nest. Defaults to
-  `None` — no forwarding, sub-loop fully isolated.
+  `None` - no forwarding, sub-loop fully isolated.
 
 ### Changed
 - **`tool.yaml requires:` validated at workspace-load time.** A typo
@@ -254,7 +345,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   dispatch and crash deep inside the tool body with `AttributeError`.
   The loader now warns in loose mode (default) and raises
   `CartridgeSerializationError` in strict mode, naming the
-  unresolvable resource and listing the available ones — surfaces
+  unresolvable resource and listing the available ones - surfaces
   the bug at its source.
 
 ### Changed
@@ -265,7 +356,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   `looplet.cartridge`) and `SkillBundle` (the runnable folder format
   from `looplet.bundles`). All docstrings, doc pages, README, and
   comments now use these names. The `ClaudeSkillCompatibility.level`
-  string `"looplet-cartridge"` is renamed to `"looplet-bundle"` —
+  string `"looplet-cartridge"` is renamed to `"looplet-bundle"`  -
   the only minor breaking change in this consolidation. Renamed
   `tests/test_cartridge_round_trip_smoke.py` to
   `tests/test_skill_bundle_round_trip_smoke.py`. No behavioural
@@ -348,7 +439,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   Trajectory directories may now ship an `artifacts.json` next to
   `trajectory.json`; `EvalContext.from_trajectory_dir` loads it
   automatically. Collectors that raise or return non-dicts are skipped
-  silently — observers must never break a run.
+  silently - observers must never break a run.
 - **`AgentPreset.run(llm, …)`** convenience method drives
   `composable_loop` with the preset's wiring in one call.
 - **`composable_loop(…, max_steps=N, system_prompt=…)`** keyword
@@ -356,7 +447,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - **`OpenAIBackend.from_env()` / `AnthropicBackend.from_env()` /
   `AsyncOpenAIBackend.from_env()`** classmethods that read
   `OPENAI_*` / `ANTHROPIC_*` env vars in one line.
-- **`OpenAIBackend(api_key=…)` no longer requires `base_url`** — the
+- **`OpenAIBackend(api_key=…)` no longer requires `base_url`** - the
   cloud path now works with just an API key (or env vars).
 - **`BaseToolRegistry.tool` decorator** registers a `ToolSpec` in one
   step, mirroring the module-level `@tool` decorator.
@@ -370,12 +461,12 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   per-step / per-call annotations on saved trajectories.
 - **`LifecycleEvent.HOOK_DECISION`** (PR #20) fires whenever a hook
   returns a non-noop `HookDecision`. Payload carries the slot,
-  hook name, and serialized decision — single observation point for
+  hook name, and serialized decision - single observation point for
   every gate, redaction, or short-circuit in the run.
 - **`LifecycleEvent.DONE_ACCEPTED`** (PR #21) fires after
   `check_done` accepts the `done()` call and the final payload is
   committed. Payload includes the `tool_call` and `tool_result` of
-  the accepted termination — observer-only, fired right before STOP.
+  the accepted termination - observer-only, fired right before STOP.
 - **`serialize_harness(...)` + `TrajectoryRecorder(harness_snapshot=…)`**
   (PR #22) record a stable JSON-friendly snapshot of the agent
   config, tool list, hooks, and LLM backend on every saved
@@ -457,7 +548,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   conversations preserve any out-of-band tags hooks attached.
 - **`Message(role="system", …)` no longer breaks serialization.**
   `MessageRole` is a `str, Enum`, so callers naturally pass plain
-  strings — but `_serialize_message` did `msg.role.value`, which
+  strings - but `_serialize_message` did `msg.role.value`, which
   raised `AttributeError` when `role` was a plain `str`.
   `Message.__post_init__` now coerces to `MessageRole` so both call
   styles work identically.
@@ -466,7 +557,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   results keyed on `id(bound_method)`. Bound methods are ephemeral
   in CPython (`obj.method` creates a fresh object each access), so
   they get garbage-collected and their ids get reused for unrelated
-  methods on other classes — leaving the cache claiming a
+  methods on other classes - leaving the cache claiming a
   legacy-signature hook accepts `tool_call`, then raising
   `TypeError: ...check_done() got an unexpected keyword argument
   'tool_call'`. The cache now keys on `id(method.__func__)` (the
@@ -474,7 +565,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   callables that lack `__func__`.
 - **`async_composable_loop` now accepts `max_steps=` and
   `system_prompt=` shorthands.** The sync `composable_loop` got
-  these convenience kwargs but the async version was missed —
+  these convenience kwargs but the async version was missed  -
   callers had to construct a `LoopConfig` even for one-liner async
   agents. The signatures now match.
 - **`generate_kwargs` now reach backends declared as `**kwargs`.**
@@ -523,7 +614,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 ### Changed
 - `ToolContext` is now always created (never `None`), with `metadata`
   populated from `state.metadata` (copy, not reference).
-- `default_max_tokens` defaults to `None` across all backends — lets
+- `default_max_tokens` defaults to `None` across all backends - lets
   the provider API decide instead of forcing 2000.
 - All docs and examples updated to use convenience `OpenAIBackend(base_url=...)`
   and `register_done_tool()`.
@@ -550,39 +641,39 @@ First public release of `looplet`.
   discussions-seed, demo-script) + mkdocs-material config + GitHub
   Pages workflow.
 - `THIRD_PARTY_USERS.md` social-proof seed.
-- `src/looplet/examples/ollama_hello.py` — zero-API-key onboarding.
+- `src/looplet/examples/ollama_hello.py` - zero-API-key onboarding.
 - Codecov upload step in CI (non-blocking).
 - Leaner README (<170 lines) with the pydantic-ai-harness disambiguation
   moved to the top.
 
-### Added (evals — pytest-style agent evaluation)
+### Added (evals - pytest-style agent evaluation)
 - **Eval framework** (`looplet.evals`). Write `eval_*` functions
   that take `EvalContext` and return any of `float`, `bool`, `str`,
   `dict`, or `EvalResult`. The framework normalizes all return types.
-- **`eval_discover(path)`** — auto-discovers eval functions in
+- **`eval_discover(path)`** - auto-discovers eval functions in
   `eval_*.py` files (like pytest discovers `test_*`).
-- **`eval_run(evals, ctx)`** — runs evaluators, auto-detects
+- **`eval_run(evals, ctx)`** - runs evaluators, auto-detects
   `llm` parameter for LLM-as-judge, catches errors gracefully.
-- **`eval_run_batch(evals, contexts)`** — runs same evals across
+- **`eval_run_batch(evals, contexts)`** - runs same evals across
   multiple trajectories with per-eval avg/min/max aggregation.
-- **`eval_mark(*tags)`** — decorator for categorizing evals.
+- **`eval_mark(*tags)`** - decorator for categorizing evals.
   `eval_run` and `eval_run_batch` accept `include=`/`exclude=` to
   filter by marks.
-- **`eval_cli(args)`** — CLI runner with threshold-based pass/fail
+- **`eval_cli(args)`** - CLI runner with threshold-based pass/fail
   exit codes for CI integration.
-- **`EvalHook`** — LoopHook that builds EvalContext at `on_loop_end`
+- **`EvalHook`** - LoopHook that builds EvalContext at `on_loop_end`
   and runs all evaluators automatically during development.
-- **`EvalContext.from_trajectory_dir()`** — loads context from saved
+- **`EvalContext.from_trajectory_dir()`** - loads context from saved
   trajectories with support for both looplet and benchmark formats.
 
 ### Added (MCP + skills)
-- **`MCPToolAdapter`** — wraps MCP server tools as `ToolSpec` instances
+- **`MCPToolAdapter`** - wraps MCP server tools as `ToolSpec` instances
   via JSON-RPC over stdio. No MCP SDK required.
-- **`Skill`** — bundles tools + context + prompt fragment into one
+- **`Skill`** - bundles tools + context + prompt fragment into one
   loadable unit. `skill.register(registry)` adds all tools.
 
 ### Added (approval)
-- **`ApprovalHook`** — stops the loop when a tool returns
+- **`ApprovalHook`** - stops the loop when a tool returns
   `needs_approval=True`. Combined with `checkpoint_dir` for
   crash-safe async human-in-the-loop approval.
 - Renamed `elicit` → `approval` uniformly: `LoopConfig.approval_handler`,
@@ -605,15 +696,15 @@ First public release of `looplet`.
 - Trimmed `__all__` from 154 → 54 symbols organized into labeled tiers.
 
 ### Changed (developer experience)
-- Added `preview_prompt()` — shows what the LLM sees before the first
+- Added `preview_prompt()` - shows what the LLM sees before the first
   call. Invaluable for debugging.
-- Added `TrajectoryRecorder.summary()` — one-liner run summary.
+- Added `TrajectoryRecorder.summary()` - one-liner run summary.
 - Added `--trace DIR` to coding_agent example for trajectory recording.
 - Added step-by-step tutorial to README (5 progressive steps).
 - Added `LoopConfig` docstring with "start here" guide listing the
   4 essential fields.
 - Added `FileCheckpointStore.load_latest()` + auto-resume wiring in
-  `composable_loop` — crash-resume is now one line:
+  `composable_loop` - crash-resume is now one line:
   `LoopConfig(checkpoint_dir="./ckpt")`.
 
 ### Removed
@@ -626,24 +717,24 @@ First public release of `looplet`.
 - Removed all internal project references (cadence, primal_security).
 
 ### Added (compaction strategies)
-- **`PruneToolResults`** — new zero-LLM-call compaction service that
+- **`PruneToolResults`** - new zero-LLM-call compaction service that
   clears old tool-result content while keeping conversation structure
   intact. Configurable `keep_recent` (how many recent tool results
   to preserve) and `compactable_tools` (restrict to specific tools).
-  Cheapest possible compaction — use as the first stage in a chain.
-- **`compact_chain(*services)`** — combinator that tries compaction
+  Cheapest possible compaction - use as the first stage in a chain.
+- **`compact_chain(*services)`** - combinator that tries compaction
   services in order; first stage that has an effect wins. Replaces
   the need for a separate `ChainedCompactService` class. Usage:
   `compact_chain(PruneToolResults(), SummarizeCompact(), TruncateCompact())`.
-- **`CompactOutcome.cleanup`** — optional post-compact callback.
+- **`CompactOutcome.cleanup`** - optional post-compact callback.
   When set, `run_compact()` invokes it after firing `POST_COMPACT`.
   Use for domain-specific state resets (clear caches, re-inject
   context, reset token baselines) without the loop knowing details.
 
-### Changed (renames — back-compat aliases kept)
-- **`DefaultCompactService`** → **`TruncateCompact`** — clearer name
+### Changed (renames - back-compat aliases kept)
+- **`DefaultCompactService`** → **`TruncateCompact`** - clearer name
   for "drop old entries, keep N recent, zero LLM calls."
-- **`LLMCompactService`** → **`SummarizeCompact`** — clearer name
+- **`LLMCompactService`** → **`SummarizeCompact`** - clearer name
   for "LLM summarizes middle, keeps N recent."
 - Old names (`DefaultCompactService`, `LLMCompactService`) remain
   as aliases and continue to work.
@@ -656,11 +747,11 @@ First public release of `looplet`.
   `LoopConfig.cache_policy` threads per-turn `CacheBreakpoint` lists
   (label + SHA-256 hash + TTL) to backends that expose
   `generate_with_cache(..., cache_breakpoints=[...])`. Backends
-  without the kwarg keep working unchanged — caching is strictly
+  without the kwarg keep working unchanged - caching is strictly
   additive. `CacheBreakDetector` ships as a drop-in observer hook
   that records section-hash changes across turns for cache-miss
   telemetry.
-- **`LLMCompactService`** — new compaction strategy that spends one
+- **`LLMCompactService`** - new compaction strategy that spends one
   LLM call to summarise the session. Produces a dense 4-section
   summary (task goal, findings, open questions, recent decisions)
   spliced into the session log as a synthetic entry after
@@ -676,91 +767,91 @@ First public release of `looplet`.
   exposes `peak_tier` for production dashboards.
 
 ### Added (architecture improvements)
-- **Proactive compact hook slot** — `LoopHook.should_compact(state,
+- **Proactive compact hook slot** - `LoopHook.should_compact(state,
   session_log, conversation, step_num) -> bool`. Fires at the top of
   each step, before prompt build. Any hook returning `True` triggers
   the configured `CompactService` preemptively. Complements the
-  reactive `prompt_too_long` path — use for message-count or
+  reactive `prompt_too_long` path - use for message-count or
   token-estimate heuristics. `StreamingHook` gets a no-op stub.
-- **Tool-result streaming via `TOOL_PROGRESS`** — new
+- **Tool-result streaming via `TOOL_PROGRESS`** - new
   `LifecycleEvent.TOOL_PROGRESS`. When hooks are present, the loop
   builds a `ToolContext.on_progress` callback per tool-call that
   emits `TOOL_PROGRESS` (with the originating `tool_call`) whenever
   the tool invokes `ctx.report_progress(stage, data)`. Observers can
   stream intermediate output from long-running tools without
   blocking dispatch.
-- **Budget-aware turn continuation** — new
+- **Budget-aware turn continuation** - new
   `LoopConfig.max_turn_continuations: int = 0`. When `> 0` and the
   backend exposes `last_stop_reason`, `llm_call_with_retry` will
   re-prompt up to N times on `stop_reason == "max_tokens"` and
   concatenate outputs so long thoughts aren't truncated mid-message.
   `LLMResult` gains `stop_reason` and `continuations` fields.
-- **`build_briefing` / `build_prompt` as hook slots** — both are now
+- **`build_briefing` / `build_prompt` as hook slots** - both are now
   optional methods on `LoopHook`. First hook returning a non-`None`
   string wins; the loop falls back to `LoopConfig.build_briefing` /
   `config.build_prompt` / the built-in default. Lets domain hooks
   own prompt construction without threading callables through
   `LoopConfig` separately.
-- **`DomainAdapter`** — new dataclass bundling the five domain
+- **`DomainAdapter`** - new dataclass bundling the five domain
   callables (`build_briefing`, `extract_entities`, `build_trace`,
   `build_prompt`, `extract_step_metadata`) into a single object.
   `LoopConfig.domain: DomainAdapter | None = None` seeds matching
   flat fields when they are `None`. Flat fields still win over the
-  adapter, which wins over built-in defaults — use the adapter to
+  adapter, which wins over built-in defaults - use the adapter to
   package a reusable agent in one handle instead of five kwargs.
 
 ### Removed (breaking)
-- **`InvestigationLog`** backward-compat alias is gone — use
+- **`InvestigationLog`** backward-compat alias is gone - use
   `SessionLog` directly.
-- **`HARNESS_FLAGS`** backward-compat alias is gone — use `FLAGS`.
+- **`HARNESS_FLAGS`** backward-compat alias is gone - use `FLAGS`.
 - **Legacy `CADENCE_*` environment variables** for feature flags are
   no longer read; use the `LOOPLET_*` prefix.
-- **`_clone_tools_excluding`** private alias is gone — use
+- **`_clone_tools_excluding`** private alias is gone - use
   `clone_tools_excluding`.
 - **`LoopConfig.permissions`** is gone. Register a
-  `PermissionHook(PermissionEngine(...))` in `hooks=[...]` instead —
+  `PermissionHook(PermissionEngine(...))` in `hooks=[...]` instead  -
   it flows through the same unified `HookDecision` + event bus as
   every other hook.
 
 ### Added
-- **Unified hook vocabulary — `HookDecision`** (`looplet.hook_decision`).
+- **Unified hook vocabulary - `HookDecision`** (`looplet.hook_decision`).
   All hook slots now accept a single `HookDecision` return type (legacy
   `None` / `bool` / `str` returns still work via `normalise_hook_return`).
   Helpers `Allow()`, `Deny(reason)`, `Block(reason)`, `Stop(reason)`,
   `Continue()`, `InjectContext(text)` make intent explicit at the call
   site.
-- **Lifecycle events — `on_event(payload)`** (`looplet.events`).
+- **Lifecycle events - `on_event(payload)`** (`looplet.events`).
   `LoopHook` gained an optional `on_event(EventPayload)` method. The
   loop now fires 10 named events: `SESSION_START`, `PRE_LLM_CALL`,
   `POST_LLM_RESPONSE`, `PRE_TOOL_USE`, `POST_TOOL_USE`,
   `POST_TOOL_FAILURE`, `PRE_COMPACT`, `POST_COMPACT`, `STOP`,
   `SUBAGENT_START`, `SUBAGENT_STOP`. Any hook can subscribe with a
   single method instead of implementing every slot.
-- **`PermissionHook`** (`looplet.permissions`) — wraps
+- **`PermissionHook`** (`looplet.permissions`) - wraps
   `PermissionEngine` and plugs it into the event bus so policy
   decisions flow through the same `HookDecision` path as custom hooks.
 - **`CompactService` + `DefaultCompactService` + `run_compact(...)`**
-  (`looplet.compact`) — reactive compaction is now a swappable
+  (`looplet.compact`) - reactive compaction is now a swappable
   service with `PRE_COMPACT` / `POST_COMPACT` events.
-- **`LoopConfig.render_messages_override`** — byte-exact escape hatch.
+- **`LoopConfig.render_messages_override`** - byte-exact escape hatch.
   Receives `(messages, default_prompt, step_num)` and returns the
   exact prompt string sent to the LLM. Lets advanced callers take full
   control of prompt rendering without forking the loop.
-- **First-class subagents** — `run_sub_loop(..., subagent_id=...)`
+- **First-class subagents** - `run_sub_loop(..., subagent_id=...)`
   now fires `SUBAGENT_START` / `SUBAGENT_STOP` events on the parent's
   hooks and returns `subagent_id` in the result dict for correlation.
-- **`replay_loop(trace_dir, tools=...)`** — rerun a captured trace
+- **`replay_loop(trace_dir, tools=...)`** - rerun a captured trace
   through a fresh `composable_loop` without calling the LLM again.
   Useful for golden-trajectory regression tests, hook A/Bs, and
   cost-free loop diffs. Raises `RuntimeError` if the replay loop
   requests more calls than were recorded or diverges in method
   (`generate` vs `generate_with_tools`). Falls back to
   `call_NN_response.txt` files when `manifest.jsonl` is missing.
-- **`python -m looplet show <trace-dir>`** — stdlib-only CLI that
+- **`python -m looplet show <trace-dir>`** - stdlib-only CLI that
   prints a one-page summary of a captured trace (run id, termination,
   per-step tool calls with durations, LLM totals). Exit code 1 when
   the directory is missing or malformed.
-- **`looplet.provenance`** — new module for debugging agent runs:
+- **`looplet.provenance`** - new module for debugging agent runs:
   - `RecordingLLMBackend` / `AsyncRecordingLLMBackend` wrap any backend
     and capture every prompt, system prompt, tool schema, response,
     duration, and error as `LLMCall` records. `generate_with_tools` is
@@ -777,13 +868,13 @@ First public release of `looplet`.
     `max_chars_per_call=` for bounded memory.
   - See [Provenance guide](provenance.md) for API reference,
     recipes, and performance notes.
-- `Step.pretty()` — human-readable CLI formatter complementing
+- `Step.pretty()` - human-readable CLI formatter complementing
   `Step.summary()` (which is tuned for LLM context assembly).
 
 ## [0.1.6] - 2026-04-17
 
 ### Added
-- **`looplet.testing`** — public test-utility module exposing
+- **`looplet.testing`** - public test-utility module exposing
   `MockLLMBackend` and `AsyncMockLLMBackend` (scripted, zero-dependency)
   so downstream packages can unit-test hooks, tools, and backends
   without a real LLM provider.
@@ -805,35 +896,35 @@ First public release of `looplet`.
   drift on LLM failure).
 
 ### Previously added in this release
-- **`ToolError` taxonomy** — structured `ErrorKind` enum
+- **`ToolError` taxonomy** - structured `ErrorKind` enum
   (`PERMISSION_DENIED`, `TIMEOUT`, `VALIDATION`, `EXECUTION`, `PARSE`,
   `CONTEXT_OVERFLOW`, `RATE_LIMIT`, `NETWORK`, `CANCELLED`) plus a
   `ToolError` dataclass. `ToolResult` now carries both `error: str`
   (for JSON-safe display) and `error_detail: ToolError` (for
   introspection).
-- **`PermissionEngine`** — declarative `ALLOW` / `DENY` / `ASK` /
+- **`PermissionEngine`** - declarative `ALLOW` / `DENY` / `ASK` /
   `DEFAULT` rules with fail-closed `arg_matcher`, plug-in `ask_handler`
   for human-in-the-loop, and an append-only denial audit log.
-- **`CancelToken`** — cooperative cancellation is now threaded through
+- **`CancelToken`** - cooperative cancellation is now threaded through
   `LoopConfig` → `llm_call_with_retry` / `async_llm_call_with_retry`
   → `ToolContext.cancel_token`, so both the next LLM call and any
   in-flight tool can stop cleanly.
-- **`ToolContext.elicit`** — `LoopConfig.elicit_handler` surfaces a
+- **`ToolContext.elicit`** - `LoopConfig.elicit_handler` surfaces a
   generic `elicit(prompt) → str` protocol to tools for interactive
   prompts.
-- **Multi-block messages** — `Message.content` supports a `list` of
+- **Multi-block messages** - `Message.content` supports a `list` of
   `ContentBlock(kind, data)` alongside plain `str`. `HEAVY_BLOCK_KINDS`
   (`image` / `audio` / `video` / `binary`) are stripped before
   summarization.
-- **Async `build_trace`** — `async_composable_loop` now stashes the
+- **Async `build_trace`** - `async_composable_loop` now stashes the
   built trace on `state.trace` at exit (async generators can't
   `return` a value).
-- **`SyncToAsyncAdapter.generate_with_tools`** — router-selected sync
+- **`SyncToAsyncAdapter.generate_with_tools`** - router-selected sync
   backends keep native-tools support in the async loop.
-- **Preflight context check** — async loop matches sync by skipping a
+- **Preflight context check** - async loop matches sync by skipping a
   doomed LLM call when the prompt is already too long under
   `FLAGS.reactive_recovery`.
-- **Checkpoint state counters** — `resume_loop_state` now round-trips
+- **Checkpoint state counters** - `resume_loop_state` now round-trips
   `state.queries_used` and `state.budget_remaining` so budget
   enforcement continues across resume.
 

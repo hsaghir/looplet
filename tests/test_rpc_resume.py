@@ -10,7 +10,7 @@ The RPC server makes the loop's existing crash-resume machinery
   write as a ``{"event":"checkpoint","id":"step_N","step_num":N,"path":...}``
   frame so an orchestrator can record restart points.
 * ``{"cmd":"resume","checkpoint":"<id|path>","task":{...}}`` loads a saved
-  checkpoint and starts a run with it as the loop's ``initial_checkpoint`` —
+  checkpoint and starts a run with it as the loop's ``initial_checkpoint`` -
   the continuation picks up at step ``N+1`` with the prior session log
   restored, even in a brand-new server process.
 
@@ -75,7 +75,7 @@ def _scaffold(tmp_path: Path) -> Path:
 
 
 def _server(ws: Path, tmp_path: Path, *, backend: Any) -> tuple[RPCServer, io.StringIO]:
-    """A freshly loaded RPCServer — models a distinct process per call."""
+    """A freshly loaded RPCServer - models a distinct process per call."""
     out = io.StringIO()
     server = RPCServer(in_stream=io.StringIO(""), out_stream=out)
     server.cmd_load_workspace({"path": str(ws), "runtime": {"workspace": str(tmp_path)}})
@@ -164,7 +164,7 @@ def test_resume_from_checkpoint_continues_at_next_step(tmp_path: Path) -> None:
 
     # session/log/step state preserved across the process boundary: a
     # checkpoint written by the resumed run includes the ORIGINAL entries
-    # (steps 1 & 2) plus the continuation — proving checkpoint.py round-tripped.
+    # (steps 1 & 2) plus the continuation - proving checkpoint.py round-tripped.
     latest = FileCheckpointStore(str(ck)).load_latest()
     assert latest is not None
     entries = latest.session_log_data.get("entries", [])

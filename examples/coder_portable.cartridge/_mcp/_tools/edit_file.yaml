@@ -3,11 +3,11 @@ description: |-
   Perform an exact-string replacement in an existing file.
 
   Usage:
-  - **You must call `read_file` on the same path first in the current session.** edit_file refuses with a clear error otherwise — editing without reading first usually fails because the file's actual content differs from what was assumed.
+  - **You must call `read_file` on the same path first in the current session.** edit_file refuses with a clear error otherwise - editing without reading first usually fails because the file's actual content differs from what was assumed.
   - `old_string` must match the file contents EXACTLY, character for character (whitespace, indentation, newlines all matter). Copy from read_file's output, removing only the `   N | ` line-number prefix.
   - `old_string` must appear EXACTLY ONCE in the file. If it matches multiple locations, the call returns the match count and you should add more surrounding context (3+ lines) to make it unique.
   - If `old_string` doesn't match, the response includes "Similar lines:" with line numbers + similarity scores. Re-read those lines and retry with the exact text.
-  - Use `write_file` (not edit_file) for creating new files. Use multiple edit_file calls for multiple separate changes — one edit per call so each step is reviewable.
+  - Use `write_file` (not edit_file) for creating new files. Use multiple edit_file calls for multiple separate changes - one edit per call so each step is reviewable.
   - Returns a unified diff so you can verify the change applied correctly.
 
   Recovery:

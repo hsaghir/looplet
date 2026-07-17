@@ -100,7 +100,7 @@ def test_malformed_builtin_hooks_entry_strict() -> None:
     # The validation lives at the entry-shape check; the simplest
     # smoke is that a known dict-with-2-keys is rejected by the
     # inline builder loop. Build a tiny config in-process.
-    # Skip: covered by the contract documented in the loader source —
+    # Skip: covered by the contract documented in the loader source -
     # the strict-mode path raises CartridgeSerializationError on any
     # entry that isn't ``str`` or ``dict[1]``.
     pytest.skip(

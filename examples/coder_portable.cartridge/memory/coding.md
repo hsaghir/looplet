@@ -2,8 +2,8 @@
 
 Static distillation of the coder agent's working conventions. (The
 original `coder` cartridge derived equivalent memory dynamically from
-`@instructions_memory` — discovering CLAUDE.md / AGENTS.md in the
-project — and `@project_memory` — git branch + step budget. Those
+`@instructions_memory` - discovering CLAUDE.md / AGENTS.md in the
+project - and `@project_memory` - git branch + step budget. Those
 builders are in-process and not portable; this file is the static
 substitute. Per-project instruction files and live git context are not
 surfaced by the portable twin.)

@@ -1,4 +1,4 @@
-"""bash tool — execute a shell command in the workspace root.
+"""bash tool - execute a shell command in the workspace root.
 
 Receives the workspace_config resource through ``ctx.resources``
 (workspace tool DI; ``tool.yaml`` declares ``requires:
@@ -10,7 +10,7 @@ Pre-dispatch checks (model-actionable, fail-loud rather than silent):
 * **Destructive command detection.** A small allow-list of
   patterns (``rm -rf``, ``git push --force``, ``dd``, ``mkfs``,
   process killers) refuses execution and points at the safer
-  alternative. Novel commands flow through unchanged — the
+  alternative. Novel commands flow through unchanged - the
   permission engine is the principled gate.
 * **sed -i refusal.** ``sed`` in-place edits bypass the file_cache,
   causing the next ``read_file`` to return stale content. Refuses

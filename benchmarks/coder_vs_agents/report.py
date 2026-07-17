@@ -9,7 +9,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 
 
-def _fmt(v, suffix="", dash="—"):
+def _fmt(v, suffix="", dash=" - "):
     return f"{v}{suffix}" if v is not None else dash
 
 
@@ -31,9 +31,9 @@ def main() -> int:
             kinds[r["task"]] = r["kind"]
 
     out = []
-    out.append("# looplet coder vs GitHub Copilot CLI — benchmark\n")
+    out.append("# looplet coder vs GitHub Copilot CLI - benchmark\n")
     out.append(
-        f"- Model (both): `{meta['model']}`  ·  looplet via proxy `{meta['proxy']}`, "
+        f"- Requested model family: `{meta['model']}`  ·  looplet via proxy `{meta['proxy']}`, "
         f"Copilot via its own connection\n"
         f"- Tasks: {meta['n_tasks']}  ·  looplet max_steps: {meta['max_steps']}\n"
         f"- Each task run in a fresh isolated workspace; every result checked by a "
@@ -43,7 +43,7 @@ def main() -> int:
     # per-task table
     out.append("\n## Per-task results\n")
     out.append("| Task | Kind | looplet | wall | steps | copilot | wall | credits | in/out tok |")
-    out.append("|---|---|:--:|--:|--:|:--:|--:|--:|--:|")
+    out.append("| --- | --- | :---: | ---: | ---: | :---: | ---: | ---: | ---: |")
     for t in tasks:
         lp = by.get((t, "looplet"), {})
         cp = by.get((t, "copilot"), {})
@@ -66,7 +66,7 @@ def main() -> int:
 
     out.append("\n## Aggregate\n")
     out.append("| Metric | looplet | copilot |")
-    out.append("|---|--:|--:|")
+    out.append("| --- | ---: | ---: |")
     ln, lp, lwall, lrecs = agg("looplet")
     cn, cp, cwall, crecs = agg("copilot")
     out.append(f"| Tasks passed (overall) | {lp}/{ln} | {cp}/{cn} |")
@@ -74,19 +74,19 @@ def main() -> int:
         _, lpk, _, _ = agg("looplet", kind)
         _, cpk, _, _ = agg("copilot", kind)
         nk = sum(1 for t in tasks if kinds[t] == kind)
-        out.append(f"| — {kind} | {lpk}/{nk} | {cpk}/{nk} |")
+        out.append(f"| - {kind} | {lpk}/{nk} | {cpk}/{nk} |")
     out.append(f"| Total wall time | {lwall:.1f}s | {cwall:.1f}s |")
     out.append(f"| Avg wall / task | {lwall / max(ln, 1):.1f}s | {cwall / max(cn, 1):.1f}s |")
     ccred = sum(r["credits"] or 0 for r in crecs)
-    out.append(f"| Total AI credits (copilot self-report) | — | {ccred:.1f} |")
+    out.append(f"| Total AI credits (copilot self-report) | - | {ccred:.1f} |")
     cin = sum(r["in_tokens"] or 0 for r in crecs)
     cout = sum(r["out_tokens"] or 0 for r in crecs)
-    out.append(f"| Total input tokens (copilot) | — | {cin:,} |")
-    out.append(f"| Total output tokens (copilot) | — | {cout:,} |")
+    out.append(f"| Total input tokens (copilot) | - | {cin:,} |")
+    out.append(f"| Total output tokens (copilot) | - | {cout:,} |")
     lest = sum(r["est_total_tokens"] or 0 for r in lrecs)
-    out.append(f"| Est. total tokens (looplet, chars/4) | ~{lest:,} | — |")
+    out.append(f"| Est. total tokens (looplet, chars/4) | ~{lest:,} | - |")
     lcalls = sum(r["llm_calls"] or 0 for r in lrecs)
-    out.append(f"| Total LLM calls (looplet) | {lcalls} | — |")
+    out.append(f"| Total LLM calls (looplet) | {lcalls} | - |")
 
     # failures detail
     fails = [r for r in rows if not r["passed"]]

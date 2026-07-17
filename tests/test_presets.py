@@ -1,4 +1,4 @@
-"""Tests for looplet.presets — high-level agent presets."""
+"""Tests for looplet.presets - high-level agent presets."""
 
 import pytest
 

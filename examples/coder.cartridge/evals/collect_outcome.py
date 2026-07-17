@@ -1,4 +1,4 @@
-"""Outcome collector for the coder cartridge — discovered by
+"""Outcome collector for the coder cartridge - discovered by
 ``load_cartridge_evals`` (functions named ``collect_*`` in
 ``evals/collect_*.py``).
 
@@ -7,7 +7,7 @@ A collector runs once at end-of-loop and returns a dict merged into
 world* (here: does the test suite pass?) instead of grepping the
 trajectory. ``discover_collectors`` binds the ``runtime`` kwarg at
 discovery time, so this re-runs the suite in the agent's own project
-root without hard-coding any path — it relocates with the cartridge.
+root without hard-coding any path - it relocates with the cartridge.
 """
 
 from __future__ import annotations

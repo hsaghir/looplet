@@ -1,4 +1,4 @@
-"""Checkpoint — save and restore loop state for crash recovery and long-running tasks.
+"""Checkpoint - save and restore loop state for crash recovery and long-running tasks.
 
 Provides:
   - Checkpoint: serializable snapshot of loop state at a given step
@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 class Checkpoint:
     """Serializable snapshot of agent loop state at a given step.
 
-    All fields are JSON-safe — no pickle, no binary formats.
+    All fields are JSON-safe - no pickle, no binary formats.
     """
 
     step_number: int
@@ -155,7 +155,7 @@ class CheckpointHook:
     """Loop hook that auto-saves checkpoints every N steps.
 
     Implements the LoopHook duck-type interface. Only post_dispatch()
-    is active — all other methods are no-ops that preserve loop behaviour.
+    is active - all other methods are no-ops that preserve loop behaviour.
 
     Args:
         store: CheckpointStore to save to.

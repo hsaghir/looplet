@@ -1,7 +1,7 @@
-"""Session log — the agent's memory of what it did and found.
+"""Session log - the agent's memory of what it did and found.
 
 Records per-step: theory, tool called, entities discovered,
-findings, recall keys. Domain-agnostic — works for any agent pipeline.
+findings, recall keys. Domain-agnostic - works for any agent pipeline.
 """
 
 from __future__ import annotations
@@ -51,7 +51,7 @@ class LogEntry:
 
     def render(self, *, highlights_label: str = "highlights") -> str:
         """Render this entry for prompt context inclusion."""
-        parts = [f"  S{self.step}: {self.tool} — {self.reasoning[:80]}"]
+        parts = [f"  S{self.step}: {self.tool} - {self.reasoning[:80]}"]
         if self.entities_seen:
             parts.append(f"    entities: {', '.join(self.entities_seen[:8])}")
         if self.highlights:
@@ -65,7 +65,7 @@ class LogEntry:
 
 
 class SessionLog:
-    """Session memory — records what the agent has done and found.
+    """Session memory - records what the agent has done and found.
 
     Organized as a linear narrative log: each step records tool, reasoning,
     entities discovered, findings, and a recall key for data retrieval.
@@ -245,7 +245,7 @@ class SessionLog:
         """Compact old entries into a deterministic summary in-place.
 
         Returns True if compaction occurred, False if not needed.
-        No LLM call — uses render_compact() for the summary.
+        No LLM call - uses render_compact() for the summary.
 
         Args:
             max_entries_to_keep: Number of recent entries to preserve verbatim.

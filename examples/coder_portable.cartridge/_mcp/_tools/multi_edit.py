@@ -1,11 +1,11 @@
-"""multi_edit tool — atomic batch of exact-string replacements on one file.
+"""multi_edit tool - atomic batch of exact-string replacements on one file.
 
 Many real edits to a single file (e.g. updating an import, changing a
 function signature, and tweaking a call site) are naturally a batch.
 Doing them as N separate ``edit_file`` calls means N×(read + edit +
 verify) round-trips. ``multi_edit`` applies all edits in order
 against an in-memory copy of the file and writes the result
-atomically — either every edit succeeds or none do.
+atomically - either every edit succeeds or none do.
 
 Receives ``workspace_config`` and ``file_cache`` through
 ``ctx.resources``; ``tool.yaml`` declares
@@ -114,7 +114,7 @@ def execute(ctx: ToolContext, *, file_path: str, edits: list) -> dict:
         else:
             text = text.replace(old, new, 1)
             applied.append({"index": i, "replacements": 1})
-    # All edits succeeded — write atomically.
+    # All edits succeeded - write atomically.
     atomic_write_text(p, text, encoding=encoding if encoding != "could not decode" else "utf-8")
     if cache is not None:
         cache.invalidate(file_path)

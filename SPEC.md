@@ -27,7 +27,7 @@ skills do not stand alone as agents.
 
 When in doubt: if it has a system prompt and a `done` sentinel, it is
 a cartridge. If it adds tools/instructions to *another* agent's loop,
-it is a skill. The two are complementary, not competing — see
+it is a skill. The two are complementary, not competing - see
 [`examples/skillful_analyst.cartridge/`](examples/skillful_analyst.cartridge/)
 for a cartridge that loads skills at runtime.
 
@@ -51,8 +51,8 @@ for a cartridge that loads skills at runtime.
 ```
 my_agent.cartridge/                # or my_agent.cartridge/
 ├── cartridge.json              # required: name, schema_version (alias: cartridge.json)
-├── config.yaml                 # required: contract — what the agent does
-├── runtime.yaml                # optional: runtime knobs — how this host runs it
+├── config.yaml                 # required: contract - what the agent does
+├── runtime.yaml                # optional: runtime knobs - how this host runs it
 ├── prompts/
 │   └── system.md               # required: the system prompt, alone
 ├── tools/
@@ -77,7 +77,7 @@ valid manifest file). The manifest may be named `cartridge.json`
 (historical) or `cartridge.json` (spec terminology); they are
 equivalent. If both are present, `cartridge.json` wins.
 
-## Manifest — `cartridge.json` / `cartridge.json`
+## Manifest - `cartridge.json` / `cartridge.json`
 
 ```json
 {
@@ -97,12 +97,12 @@ declarative.
 of `tools/<n>/execute.py` and `hooks/<n>/hook.py`. Conformant
 runtimes MUST refuse cartridges whose declared `language` they
 cannot execute, with a clear error pointing at the alternative
-runtime — they MUST NOT attempt to import bodies in an unsupported
+runtime - they MUST NOT attempt to import bodies in an unsupported
 language. The shipped Python loader rejects any value other than
 `"python"`. Absent or empty `language` is treated as `"python"` for
 v1 back-compat.
 
-## Configuration — `config.yaml`
+## Configuration - `config.yaml`
 
 The configuration file declares loop budgets, model binding, slot
 references, and inheritance. All fields are optional except as
@@ -113,13 +113,13 @@ noted. Loaders MUST accept any v1.0 cartridge with an empty
 
 LoopConfig fields fall into three tiers:
 
-- **CONTRACT** — *what the agent does.* Lives in `config.yaml`.
+- **CONTRACT** - *what the agent does.* Lives in `config.yaml`.
   `max_steps`, `system_prompt`, `done_tool`, `done_tools`,
   `permissions`, `memory`, `model`, `extends`, `builtin_tools`,
   `builtin_hooks`, `mcp_servers`, etc. These travel with the cartridge across hosts
   and SHOULD round-trip identically. (`tool_metadata` rides along
-  but is auto-populated by the loader — not authored by hand.)
-- **RUNTIME** — *how this host runs it.* Lives in the sibling
+  but is auto-populated by the loader - not authored by hand.)
+- **RUNTIME** - *how this host runs it.* Lives in the sibling
   `runtime.yaml`. `max_tokens`, `temperature`, `recovery_temperature`,
   `max_turn_continuations`, `generate_kwargs`, `use_native_tools`,
   `concurrent_dispatch`, `reactive_recovery`, `context_window`,
@@ -128,14 +128,14 @@ LoopConfig fields fall into three tiers:
   `tracer`, `recovery_registry`, `compact_service`, `cache_policy`,
   `checkpoint_dir`, `initial_checkpoint`, `tool_result_persist_dir`.
   Different hosts MAY override freely.
-- **HOST** — *runtime-supplied callables.* Never serialised:
+- **HOST** - *runtime-supplied callables.* Never serialised:
   `approval_handler`, `cancel_token`, `render_messages_override`.
 
 **Spec v2.** RUNTIME-tier keys MUST live in `runtime.yaml`.
 A loader MUST reject `config.yaml` containing any RUNTIME-tier key.
 There is no v1 grace period.
 
-### Runtime configuration — `runtime.yaml`
+### Runtime configuration - `runtime.yaml`
 
 `runtime.yaml` is an optional sibling of `config.yaml` containing
 only RUNTIME-tier fields. Same YAML shape and reference grammar as
@@ -165,7 +165,7 @@ Unknown tool names in `tool_render_hints:` are a load-time error
 
 Merge order under `extends:`: parent `runtime.yaml` is loaded
 first, then child overrides via shallow merge (top-level scalars
-and lists replaced wholesale; mappings recursively merged) — same
+and lists replaced wholesale; mappings recursively merged) - same
 rules as `config.yaml`. Keys outside the RUNTIME or HOST tier
 appearing in `runtime.yaml` MUST raise a load-time error.
 
@@ -347,7 +347,7 @@ Three forms work in any string-valued YAML field:
 
 The legacy `@name` form is an alias for `${ref:name}`.
 
-## System prompt — `prompts/system.md`
+## System prompt - `prompts/system.md`
 
 A single Markdown file containing the agent's system prompt verbatim.
 No templating. The whole file is the prompt.
@@ -357,11 +357,11 @@ No templating. The whole file is the prompt.
 Two additional optional files in `prompts/` get auto-attached as
 hooks when present:
 
-* **`prompts/briefing.md`** — auto-prepended to every step's
+* **`prompts/briefing.md`** - auto-prepended to every step's
   briefing section (via `pre_prompt`). Use for short reminders that
   should appear in every prompt without bloating the system prompt.
   Other hooks may add their own briefing output; all are concatenated.
-* **`prompts/recovery.md`** — injected into the prompt that follows
+* **`prompts/recovery.md`** - injected into the prompt that follows
   any tool error (via `post_dispatch` + `InjectContext`). Use for
   general remediation guidance that applies broadly when something
   goes wrong.
@@ -389,9 +389,9 @@ A loader MUST NOT auto-load `prompts/briefing.md` or
 
 No other prompt files are recognised in v1.1. Cartridges that need
 more elaborate prompt templating use plain Python in a hook or
-resource — the cartridge format does not include a templating DSL.
+resource - the cartridge format does not include a templating DSL.
 
-## Tools — `tools/<name>/`
+## Tools - `tools/<name>/`
 
 Each tool is either a directory with a `tool.yaml` manifest and an
 `execute.py` body **or** (v1.1) a single Python file at
@@ -514,7 +514,7 @@ output_schema:
     pass:    { type: boolean }
 ```
 
-## Hooks — `hooks/NN_<name>/`
+## Hooks - `hooks/NN_<name>/`
 
 A hook directory contains either a local `hook.py` plus optional
 `config.yaml` (kwargs passed to the hook class), or just `config.yaml`
@@ -532,7 +532,7 @@ The `NN_` prefix sorts hook ordering. The hook must implement the
 `LoopHook` protocol: at minimum one of `pre_dispatch`, `post_dispatch`,
 `check_done`, or `should_stop`.
 
-## Resources — `resources/<name>.py`
+## Resources - `resources/<name>.py`
 
 Each resource module exports a `build(runtime=None)` function that
 returns a singleton instance. Tools and hooks request the singleton
@@ -548,7 +548,7 @@ The reserved resource name `runtime` is auto-injected from the host
 runtime dict. Tools may declare `requires: [runtime]` directly without
 a builder file.
 
-## Memory — `memory/`
+## Memory - `memory/`
 
 Files in this directory contribute to the agent's persistent context.
 
@@ -561,7 +561,7 @@ Files in this directory contribute to the agent's persistent context.
 Memory sources are concatenated in filename order, prefixed with
 `memory/long_term.md` if present.
 
-## Setup — `setup.py` (optional escape hatch)
+## Setup - `setup.py` (optional escape hatch)
 
 A `setup(preset, resources, *, runtime=None)` function may mutate the
 preset before it is returned. Most cartridges should not need this;
@@ -614,8 +614,8 @@ exercise the suite against the reference loader.
 ### Observable-behavior conformance (trajectory parity)
 
 Loader-shape parity (above) is necessary but not sufficient for
-portability. A second, stronger claim — **observable-behavior
-conformance** — is exercised by trajectory-fixture pairs:
+portability. A second, stronger claim - **observable-behavior
+conformance** - is exercised by trajectory-fixture pairs:
 
 - **Fixture.** A cartridge plus a scripted sequence of tool calls
   plus an `expected_trajectory.json` listing the
@@ -653,7 +653,7 @@ Reference test: `tests/conformance/test_trajectory_conformance.py`.
 
 ## Changelog
 
-- **v1.1** (2026-05-12) — additive: tool `tags:` (advisory metadata),
+- **v1.1** (2026-05-12) - additive: tool `tags:` (advisory metadata),
   tool `render:` (advisory rendering hints with `preview:` and
   `max_chars:`), single-file tool form (`tools/<name>.py` with
   module-level dunders), `done_tools: [a, b]` plural sentinels
@@ -661,10 +661,10 @@ Reference test: `tests/conformance/test_trajectory_conformance.py`.
   (`prompts/briefing.md` auto-prepended to the briefing section,
   `prompts/recovery.md` injected after tool errors). All five are
   optional; v1.0 cartridges load on a v1.1 loader unchanged.
-- **v1.0** (2026-05-09) — first numbered version. New slots:
+- **v1.0** (2026-05-09) - first numbered version. New slots:
   `model:`, `permissions:`, `memory.long_term`, `output_schema` on
   `done`. Conformance fixture seed introduced.
-- **v0.x** — implementation-defined; everything was already
+- **v0.x** - implementation-defined; everything was already
   declarative but slots were not numbered.
 
 ## Cartridge identity (v2 prep)
@@ -700,7 +700,7 @@ record this in a parallel registry keyed under the reserved name
 `_resource_thread_safety` so the runtime can refuse
 `concurrent_dispatch` of tools whose `requires:` includes an unsafe
 resource. Resources that omit the declaration are treated as
-"unknown" — the default runtime behaviour is to allow with a
+"unknown" - the default runtime behaviour is to allow with a
 warning; stricter hosts may choose to fail.
 
 `THREAD_SAFE` MUST be a Python `bool`. Any other value is a
@@ -774,7 +774,7 @@ resources in a copy-on-write dict.
 
 **Status.** Deferred. The current model (`done_tool: report` +
 `done_tools: [escalate, ...]`, each with its own `tool.yaml` and
-optional `output_schema:`) is retained — and as of cartridge spec v2
+optional `output_schema:`) is retained - and as of cartridge spec v2
 **every sentinel listed in `done_tools:` whose `tool.yaml` declares
 `output_schema:` is validated** by the loop, just like the primary
 `done_tool`. The loader records secondary-sentinel schemas in
@@ -804,7 +804,7 @@ contract should describe *what the agent does* (its tools, memory,
 permissions, system prompt), not *how aggressively a particular host
 recycles tokens*. The same cartridge ought to run with no compaction
 in a 1M-token-window deployment and with `DefaultCompactService` in
-a 32k-token one — without editing `config.yaml`.
+a 32k-token one - without editing `config.yaml`.
 
 If a cartridge requires compaction for correctness (e.g. it expects
 its conversation to fit inside a fixed budget), document that in
@@ -812,7 +812,7 @@ its conversation to fit inside a fixed budget), document that in
 that ignore the runtime-tier `compact_service` setting are
 responsible for ensuring the conversation fits their window.
 
-## v2.0 — hard removals (this release)
+## v2.0 - hard removals (this release)
 
 Setting `schema_version: 2` in `cartridge.json` opts the cartridge
 into the v2 contract. The loader hard-fails (instead of emitting a
@@ -833,7 +833,7 @@ into the v2 contract. The loader hard-fails (instead of emitting a
    policy, the tool stays decoupled.
 5. **`__requires__` / `__render__` / `__tags__` on a single-file
    tool.** The single-file form (`tools/<name>.py`) is reserved
-   for *trivial* tools — no shared resources, no rendering hints,
+   for *trivial* tools - no shared resources, no rendering hints,
    no catalog tags. Any tool that needs those must use the
    multi-file form (`tools/<name>/{tool.yaml, execute.py}`).
    Render hints belong in `runtime.yaml: tool_render_hints:`.

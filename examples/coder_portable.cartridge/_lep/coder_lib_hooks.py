@@ -6,7 +6,7 @@ each one implements the standard :class:`looplet.loop.LoopHook`
 protocol and returns ``HookDecision``/``InjectContext`` values, so
 they compose with the rest of the looplet ecosystem.
 
-Design intent — *steer, don't restrict*:
+Design intent - *steer, don't restrict*:
 
 * :class:`TestGuardHook` defaults to **observe-only** mode.
   Failures emit a briefing nudge; ``done()`` is never blocked.
@@ -51,7 +51,7 @@ class TestGuardHook:
 
     By default (``strict=False``), the hook only **observes**:
     it injects a briefing nudge after each test invocation
-    ("Tests passed" / "Tests FAILED — read the traceback…") and
+    ("Tests passed" / "Tests FAILED - read the traceback…") and
     surfaces the outcome to evaluators via ``state``. It does NOT
     block ``done()``: the model may have a legitimate reason to
     finish without running tests (docs change, no test runner,
@@ -60,7 +60,7 @@ class TestGuardHook:
 
     Pass ``strict=True`` to recover the old hard-block behavior
     (refuse ``done()`` if files were written but tests didn't pass).
-    Use sparingly — see ``docs/evals.md`` "Trajectory-blind evals"
+    Use sparingly - see ``docs/evals.md`` "Trajectory-blind evals"
     for the rationale.
     """
 
@@ -127,7 +127,7 @@ class StaleFileHook:
     def post_dispatch(self, state, session_log, tool_call, tool_result, step_num):
         if tool_call.tool != "bash":
             return None
-        # Check for stale files even on failed commands — a partial
+        # Check for stale files even on failed commands - a partial
         # build or interrupted write can still modify files.
         stale = self._cache.stale_files()
         if stale:

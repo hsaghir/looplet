@@ -1,5 +1,5 @@
 {
-  "description": "Child planner cartridge — produces a numbered plan for a single goal, then calls done. Invoked by ../planner.cartridge via the subagent builtin.",
+  "description": "Child planner cartridge - produces a numbered plan for a single goal, then calls done. Invoked by ../planner.cartridge via the subagent builtin.",
   "metadata": {"tags": ["planner-child", "demo"]},
   "name": "planner_child",
   "schema_version": 2

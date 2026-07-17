@@ -1,11 +1,11 @@
 """Smoke tests for the three-layer context budget system.
 
-Layer 1 — per-tool-result cap (``TOOL_RESULT_MAX_CHARS``,
+Layer 1 - per-tool-result cap (``TOOL_RESULT_MAX_CHARS``,
 ``TOOL_RESULT_PERSIST_THRESHOLD_CHARS``).
-Layer 2 — per-context-window aggregate cap
+Layer 2 - per-context-window aggregate cap
 (``CONTEXT_WINDOW_STEPS``, ``CONTEXT_INLINE_PER_STEP_CHARS``,
 ``CONTEXT_WINDOW_TOTAL_CHARS``).
-Layer 3 — whole-conversation compact (existing
+Layer 3 - whole-conversation compact (existing
 :class:`looplet.compact.CompactService`; not exercised here, only
 the tunable's existence is asserted).
 """

@@ -20,7 +20,7 @@ captured-response replay, and outcome-grounded release contracts.
 | [social.md](social.md) | Short, thread, LinkedIn, Reddit, and newsletter variants |
 | [claims-ledger.md](claims-ledger.md) | Evidence, qualifiers, and prohibited shorthand for every launch claim |
 | [launch-checklist.md](launch-checklist.md) | Technical, editorial, repository, publication, and follow-up gates |
-| [issue-roadmap.md](issue-roadmap.md) | Scoped post-launch issue drafts that reinforce the category without bloating core |
+| [issue-roadmap.md](issue-roadmap.md) | Active, scoped launch backlog with priorities and explicit boundaries |
 
 Existing image assets (`mental-model.png`, `hook-stack.png`, and
 `step-trace.png`) describe loop ownership. Use them as secondary explainers,

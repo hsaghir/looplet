@@ -442,7 +442,7 @@ class TestComposableLoopBasic:
         from looplet.loop import LoopConfig, composable_loop
 
         state = SimpleState(max_steps=2)
-        # LLM never calls done — just calls search forever
+        # LLM never calls done - just calls search forever
         from tests.conftest import MockLLMBackend
 
         llm = MockLLMBackend(['{"tool": "search", "args": {}}'] * 10)
@@ -656,7 +656,7 @@ class TestComposableLoopHooks:
                 config=LoopConfig(max_steps=5),
             )
         )
-        # Real search should NOT have been called — intercepted
+        # Real search should NOT have been called - intercepted
         assert "real_search" not in dispatched
 
     def test_multi_tool_in_one_response(self):
@@ -778,7 +778,7 @@ class TestExtractEntitiesSignatureDispatch:
         return steps, state
 
     def test_legacy_one_arg_extractor_keeps_working(self):
-        """``extract_entities(data) -> list[str]`` — backward compat."""
+        """``extract_entities(data) -> list[str]`` - backward compat."""
         seen: list = []
 
         def stateless(data):
@@ -790,7 +790,7 @@ class TestExtractEntitiesSignatureDispatch:
         assert all(isinstance(d, dict) for d in seen)
 
     def test_two_arg_extractor_receives_state(self):
-        """``extract_entities(data, state=None)`` — gets live state."""
+        """``extract_entities(data, state=None)`` - gets live state."""
         observed = {"states": []}
 
         def stateful(data, state=None):
@@ -806,7 +806,7 @@ class TestExtractEntitiesSignatureDispatch:
         assert getattr(state, "_marker", None) == "set"
 
     def test_kwargs_extractor_receives_state(self):
-        """``extract_entities(data, **kw)`` — sig-detect picks it up too."""
+        """``extract_entities(data, **kw)`` - sig-detect picks it up too."""
         observed = {"states": []}
 
         def varkw(data, **kw):
@@ -911,7 +911,7 @@ class TestPreLoopToolsKwarg:
 
 
 # ══════════════════════════════════════════════════════════════════
-# LoopContext / hook bind() — closures-over-state are first class
+# LoopContext / hook bind() - closures-over-state are first class
 # ══════════════════════════════════════════════════════════════════
 
 

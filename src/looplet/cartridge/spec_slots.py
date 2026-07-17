@@ -5,7 +5,7 @@ and ``memory:`` blocks documented in ``SPEC.md`` into the live
 runtime objects the loop expects (``LoopConfig`` field overrides and
 ``PermissionHook`` instances).
 
-Kept here rather than inlined in :mod:`looplet.workspace` so the
+Kept here rather than inlined in the cartridge loader so the
 permission / model / memory shape can be tested in isolation and
 ported to a future spec-only package without dragging the loader.
 """

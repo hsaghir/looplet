@@ -1,4 +1,4 @@
-# threat_intel — FULLY PORTABLE twin.
+# threat_intel - FULLY PORTABLE twin.
 #
 # Unlike threat_intel (which loads the 7 tools as in-process
 # tools/*/execute.py bodies re-importing threat_intel_lib.py), this twin
@@ -6,7 +6,7 @@
 # (_mcp/tools_server.py). There is no tools/ directory and no Python tool
 # body anywhere, so the cartridge is classified `portable`: it can run on
 # any future loader (Rust, Go, TypeScript) that implements the MCP stdio
-# transport and the LEP hook transport — no Python required.
+# transport and the LEP hook transport - no Python required.
 #
 # Still-portable companions carried over verbatim:
 #   - hooks/00_FeedAllowlistGuard → kind: lep egress policy (PROTOCOL)
@@ -26,7 +26,7 @@ builtin_hooks:
 
 mcp_servers:
   ti_tools:
-    # Self-contained stdio MCP server — no network/API access required.
+    # Self-contained stdio MCP server - no network/API access required.
     # ${runtime.cartridge_root} is injected by the loader so the spawned
     # command finds the bundled server regardless of checkout location.
     command: "python3 ${runtime.cartridge_root}/_mcp/tools_server.py"

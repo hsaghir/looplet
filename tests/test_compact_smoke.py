@@ -101,7 +101,7 @@ class TestRunCompactEvents:
                     return HookDecision(stop="do not compact")
                 return None
 
-        # A service that would raise if called — proves the abort worked.
+        # A service that would raise if called - proves the abort worked.
         class AngryService:
             def compact(self, **kwargs):
                 raise RuntimeError("should not run")

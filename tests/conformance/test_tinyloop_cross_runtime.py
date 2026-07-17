@@ -145,7 +145,7 @@ def test_tinyloop_summary_matches_for_declarative_slot_fixtures(
 
     Cross-runtime evidence that ``permissions``, ``model``,
     ``output_schema`` and ``memory_sources`` are part of the
-    cartridge contract — not loader-specific decoration. If a fixture
+    cartridge contract - not loader-specific decoration. If a fixture
     is added or its expected.json widens, tinyloop must keep up.
     """
     fixture_dir = REPO_ROOT / "tests" / "conformance" / "fixtures" / fixture_name

@@ -1,4 +1,4 @@
-"""think tool — pure reasoning checkpoint, no side effects."""
+"""think tool - pure reasoning checkpoint, no side effects."""
 
 
 def execute(*, thought: str) -> dict:

@@ -1,4 +1,4 @@
-"""Shared workspace_config — the project directory the coder operates in.
+"""Shared workspace_config - the project directory the coder operates in.
 
 The canonical "where am I" value for every coder tool. Resolved by
 :func:`looplet.cartridge.runtime_helpers.resolve_project_root`, which

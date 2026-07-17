@@ -1,4 +1,4 @@
-"""Tests for looplet.tools — ToolSpec, BaseToolRegistry, register_think_tool."""
+"""Tests for looplet.tools - ToolSpec, BaseToolRegistry, register_think_tool."""
 
 from __future__ import annotations
 
@@ -193,7 +193,7 @@ class TestBatchDispatch:
         reg.register(
             ToolSpec(
                 name="write",
-                description="Write — serial only",
+                description="Write - serial only",
                 parameters={"key": "key", "val": "value"},
                 execute=lambda key="", val="": f"wrote:{key}={val}",
                 concurrent_safe=False,

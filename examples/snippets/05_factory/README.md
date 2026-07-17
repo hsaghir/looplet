@@ -1,4 +1,4 @@
-# 05 — Recursive editing (agents that build agents)
+# 05 - Recursive editing (agents that build agents)
 
 Cartridges are files. An agent that can read, write, and validate
 files can build them. There is no separate "code generation"

@@ -1,4 +1,4 @@
-"""Shared repo_config — points at the git repository to analyze.
+"""Shared repo_config - points at the git repository to analyze.
 
 Resolved via :func:`looplet.cartridge.runtime_helpers.resolve_project_root`,
 so a host running the agent from inside the target repo doesn't need

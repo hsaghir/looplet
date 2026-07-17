@@ -5,7 +5,7 @@ The reusable building block. Both the library entrypoint
 (``examples/coder/skill/looplet.py``) delegate to the helpers below
 to construct identical hook stacks, memory sources, and evaluators.
 That guarantees library/bundle parity is *structural* rather
-than coincidental — the two surfaces cannot drift without someone
+than coincidental - the two surfaces cannot drift without someone
 deliberately editing both call sites.
 
 Defaults follow the "steer, don't restrict" principle (see
@@ -19,7 +19,7 @@ Defaults follow the "steer, don't restrict" principle (see
   net, not as a per-tool process budget.
 * :func:`build_eval_hook` ships a ``collect_test_results``
   collector that re-runs pytest after the loop and surfaces the
-  outcome via ``ctx.artifacts`` — outcome-grading rather than
+  outcome via ``ctx.artifacts`` - outcome-grading rather than
   trajectory-grading.
 """
 
@@ -57,7 +57,7 @@ __all__ = [
 SYSTEM_PROMPT = """\
 You are an expert software engineer. You solve tasks by understanding \
 the codebase, planning carefully, making precise changes, and verifying \
-with tests. You never guess — you read first, then act.
+with tests. You never guess - you read first, then act.
 
 ## Workflow
 1. EXPLORE: list_dir to see structure. glob/grep to find relevant files.
@@ -181,7 +181,7 @@ def build_default_hooks(
       ``done()`` is never blocked. Outcome is graded post-run via
       :func:`build_eval_hook`.
     * ``StagnationHook`` uses :func:`result_size_fingerprint` and a
-      lenient threshold (6) — it ignores legitimate retries that
+      lenient threshold (6) - it ignores legitimate retries that
       change the world (e.g. running the test suite three times
       across edits) and only fires on truly unproductive loops.
     * ``PerToolLimitHook`` exposes a single high cap (``100``) as a
@@ -227,7 +227,7 @@ def build_default_memory_sources(workspace: str, max_steps: int) -> list:
 def make_test_collector(workspace: str, *, timeout_s: int = 60):
     """Return a collector that re-runs the project's test suite.
 
-    Outcome-grounded eval data — the collector runs *after* the agent
+    Outcome-grounded eval data - the collector runs *after* the agent
     finishes and surfaces the result via ``ctx.artifacts``. Skipped
     silently when no Python test runner is detected.
     """

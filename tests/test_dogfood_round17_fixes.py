@@ -1,4 +1,4 @@
-"""Regression tests for dogfood round 17 — fixes surfaced by building
+"""Regression tests for dogfood round 17 - fixes surfaced by building
 the support_l1 cartridge (extends support_base, 3 terminal sentinels,
 sub-agent invocation, EscalationGateHook).
 
@@ -6,7 +6,7 @@ Two real loader / loop bugs:
 
 1. **output_schema validated against the wrong sentinel.** The loop
    was running ``config.output_schema`` validation against EVERY
-   terminal sentinel — including the v1.1 secondary ``done_tools``,
+   terminal sentinel - including the v1.1 secondary ``done_tools``,
    even though the schema was authored for the primary ``done_tool``.
    A perfectly valid ``escalate(...)`` payload was rejected because
    it didn't match the ``resolve`` schema.
@@ -47,7 +47,7 @@ def _write_minimal(root: Path) -> None:
 
 
 def test_output_schema_still_validates_primary_done_tool(tmp_path: Path) -> None:
-    """Sanity check: the primary done_tool's schema is still enforced —
+    """Sanity check: the primary done_tool's schema is still enforced -
     the fix only narrows when validation runs, doesn't disable it."""
     root = tmp_path / "x.cartridge"
     _write_minimal(root)
@@ -70,7 +70,7 @@ def test_output_schema_still_validates_primary_done_tool(tmp_path: Path) -> None
     )
     (resolve_dir / "execute.py").write_text("def execute(ctx, *, draft): return {'draft': draft}\n")
 
-    # Call resolve WITHOUT the required ``evidence`` field — must be
+    # Call resolve WITHOUT the required ``evidence`` field - must be
     # rejected by the loop's output-schema gate.
     llm = MockLLMBackend(
         responses=[

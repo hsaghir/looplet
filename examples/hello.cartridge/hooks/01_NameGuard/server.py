@@ -1,4 +1,4 @@
-"""NameGuard — a portable ``kind: lep`` permission policy.
+"""NameGuard - a portable ``kind: lep`` permission policy.
 
 This hook runs *out of process* over the Loop Effect Protocol (LEP).
 The host never hands it live loop state; it ships only the declared
@@ -8,7 +8,7 @@ server returns a permission decision.
 Policy: refuse any ``greet`` call whose ``name`` argument is empty or
 whitespace. Everything else is allowed. Because the decision is a pure
 function of the declared view, the hook is classified ``portable`` and
-round-trips losslessly as a declarative ``kind: lep`` block — no Python
+round-trips losslessly as a declarative ``kind: lep`` block - no Python
 source needs to be vendored beyond this self-contained server.
 
 The complementary ``00_PolitenessGate`` hook stays in-process: it reads

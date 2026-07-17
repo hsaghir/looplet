@@ -77,8 +77,8 @@ agent.cartridge/
 ```
 
 `looplet describe`, `looplet diff`, and `looplet hash` make structural
-changes explicit in code review. Cartridges are optional—the same
-primitives work directly in Python—but they provide a useful versioned
+changes explicit in code review. Cartridges are optional. The same
+primitives work directly in Python, but cartridges provide a useful versioned
 unit for teams and CI.
 
 ### 3. Preserve evidence
@@ -94,7 +94,7 @@ Model responses are held constant; tool code and side effects execute again.
 ### 4. Grade outcomes
 
 [Collectors and evals](evals.md) let the host inspect the world after a
-run—rerun tests, read an artifact, inspect a database—and then grade
+run by rerunning tests, reading an artifact, or inspecting a database, then grade
 that evidence. The default is outcome-grounded:
 
 ```python
@@ -108,8 +108,10 @@ def eval_tests_pass(ctx):
     return ctx.artifacts["tests_passing"]
 ```
 
-The model does not own its oracle. Required graders, collector errors,
-malformed records, and missing cases fail closed in the CLI.
+The live task omits grader-only expected data. Discovered required graders,
+collector errors, malformed records, and missing cases fail closed in the CLI.
+Cartridge evals are still editable self-tests; protected promotion requires a
+host-owned runner and an isolation boundary outside candidate authority.
 
 ## Where looplet fits
 
@@ -147,7 +149,7 @@ Choose something else when:
 - you do not want to own the loop, tools, or test contract.
 
 That boundary is deliberate. Looplet should make one loop unusually
-easy to understand and change safely—not become a container for every
+easy to understand and change safely, not become a container for every
 agent feature.
 
 ## See the claim run

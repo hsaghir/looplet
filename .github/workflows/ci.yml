@@ -69,6 +69,9 @@ jobs:
       - name: Install dependencies
         run: uv sync --all-extras
 
+      - name: Text style check
+        run: uv run python scripts/check_text_style.py
+
       - name: Ruff check
         run: uv run ruff check .
 
@@ -93,6 +96,13 @@ jobs:
 
       - name: Build sdist + wheel
         run: uv build
+
+      - name: Smoke-test installed wheel
+        run: |
+          smoke_env=$(mktemp -d)
+          uv venv "$smoke_env" --python 3.12
+          uv pip install --python "$smoke_env/bin/python" dist/*.whl
+          "$smoke_env/bin/python" scripts/smoke_built_wheel.py
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4

@@ -184,8 +184,8 @@ That collector assumes the real harness has a tool that writes
 `assignment.json`; the host reads the artifact after the loop. It does
 not require the model to call a particular tool sequence.
 
-For a complete executable version of this pattern—including protected
-expected data and persisted eval runs—use the
+For a complete executable version of this pattern, including protected
+expected data and persisted eval runs, use the
 [failure-to-regression demo](regression-demo.md).
 
 ## 7. Put the harness under review
@@ -228,8 +228,8 @@ and required graders before shipping.
 
 ## Next
 
-- [Tutorial](tutorial.md) — build a colocated case, collector, and required grader.
-- [Cartridges](cartridge.md) — file layout, refs, inheritance, and boundaries.
-- [Provenance](provenance.md) — capture and controlled re-execution.
-- [Evals](evals.md) — outcome philosophy, pytest helpers, and CLI gates.
-- [Hooks](hooks.md) — every interception point and return type.
+- [Tutorial](tutorial.md): build a colocated case, collector, and required grader.
+- [Cartridges](cartridge.md): file layout, refs, inheritance, and boundaries.
+- [Provenance](provenance.md): capture and controlled re-execution.
+- [Evals](evals.md): outcome philosophy, pytest helpers, and CLI gates.
+- [Hooks](hooks.md): every interception point and return type.

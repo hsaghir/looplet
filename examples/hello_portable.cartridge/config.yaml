@@ -15,7 +15,7 @@
 # @ref pattern portable: it holds the shared mutable greeting log in its
 # OWN process behind a Unix socket, and the loader injects a
 # StateServiceClient proxy so the MCP greet tool and the LEP
-# PolitenessGate hook — two SEPARATE processes — both read and write the
+# PolitenessGate hook - two SEPARATE processes - both read and write the
 # SAME state, exactly as the original @ref demo did in one address space.
 #
 # Run `looplet portability examples/hello_portable.cartridge` → PORTABLE.

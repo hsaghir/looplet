@@ -2,7 +2,7 @@
 
 Pure functions and dataclasses that describe *what the agent can do*:
 read and write files, run bash, search the workspace.  No agent
-control flow, no hook logic — just the executable surface area.
+control flow, no hook logic - just the executable surface area.
 
 The module exports a single composition function,
 :func:`make_tools`, that wires every ``@tool``-decorated callable
@@ -324,7 +324,7 @@ def make_tools(workspace: str, file_cache: FileCache):
         if not p.exists():
             return {"error": f"File not found: {file_path}"}
         # file_unchanged optimization: skip full content if unchanged
-        # since last *read* (not edit — edits update the hash but the
+        # since last *read* (not edit - edits update the hash but the
         # model hasn't seen the new content via read_file yet).
         if start_line == 0 and end_line == 0 and file_cache.is_unchanged(file_path):
             return {

@@ -1,4 +1,4 @@
-"""Tests for looplet.parse — JSON and native tool parsing."""
+"""Tests for looplet.parse - JSON and native tool parsing."""
 
 from __future__ import annotations
 

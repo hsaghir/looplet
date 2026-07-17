@@ -1,4 +1,4 @@
-"""NameGuard — a portable ``kind: lep`` permission policy.
+"""NameGuard - a portable ``kind: lep`` permission policy.
 
 This hook runs *out of process* over the Loop Effect Protocol (LEP).
 The host never hands it live loop state; it ships only the declared

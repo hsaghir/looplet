@@ -107,7 +107,7 @@ def test_runtime_yaml_rejects_contract_tier_keys(tmp_path: Path) -> None:
 
 def test_extends_inherits_parent_runtime_yaml(tmp_path: Path) -> None:
     """A child cartridge that ``extends:`` a parent picks up the
-    parent's ``runtime.yaml`` defaults — without this, splitting
+    parent's ``runtime.yaml`` defaults - without this, splitting
     runtime knobs out would silently drop them from descendants."""
     parent = tmp_path / "parent.cartridge"
     parent.mkdir()

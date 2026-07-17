@@ -1,4 +1,4 @@
-"""Cold-import benchmark — measure startup cost of four frameworks.
+"""Cold-import benchmark - measure startup cost of four frameworks.
 
 Runs each import in a fresh Python subprocess so we measure *cold*
 import time (no warm cache from previous runs). Reports median of N
@@ -10,7 +10,7 @@ Usage::
     python scripts/bench_cold_import.py --runs 21    # smoother
     python scripts/bench_cold_import.py --markdown   # emit markdown
 
-This is not an apples-to-apples performance benchmark — each framework
+This is not an apples-to-apples performance benchmark - each framework
 does different amounts of work on import. It *is* apples-to-apples for
 "how long until I can write the first line of my agent".
 """
@@ -128,7 +128,7 @@ def main() -> int:
         print("| --- | --- | ---: | ---: |")
         looplet_med = next((r[2] for r in rows if r[0] == "looplet"), None)
         for name, version, median, _ in rows:
-            ratio = f"{median / looplet_med:.1f}×" if looplet_med and name != "looplet" else "—"
+            ratio = f"{median / looplet_med:.1f}×" if looplet_med and name != "looplet" else " - "
             print(f"| `{name}` | {version} | **{median:.0f} ms** | {ratio} |")
 
     return 0

@@ -1,7 +1,7 @@
 """Cross-runtime trajectory conformance.
 
-Both runtimes — looplet's ``composable_loop`` and the from-scratch
-``tinyloop`` — receive the same scripted sequence of tool calls and
+Both runtimes - looplet's ``composable_loop`` and the from-scratch
+``tinyloop`` - receive the same scripted sequence of tool calls and
 must produce identical step traces (modulo timing and call_id
 formatting). This is the strongest portability claim in SPEC.md:
 not just "the cartridge loads", but "the cartridge *runs the same
@@ -89,7 +89,7 @@ def test_looplet_trajectory_matches_expected() -> None:
     from looplet.types import DefaultState
 
     preset = cartridge_to_preset(str(FIXTURE / "cartridge"), strict=True)
-    # MockLLMBackend script — JSON-formatted tool calls, one per turn.
+    # MockLLMBackend script - JSON-formatted tool calls, one per turn.
     responses = [
         json.dumps({"tool": c["tool"], "args": c["args"], "reasoning": "scripted"}) for c in SCRIPT
     ]

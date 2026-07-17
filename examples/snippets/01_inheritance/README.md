@@ -1,8 +1,8 @@
-# 01 — Cartridge inheritance
+# 01 - Cartridge inheritance
 
 A cartridge inherits tools, hooks, resources, and config from a parent
 via `extends:`. Local fields override inherited ones with the same name.
-Inheritance chains arbitrarily deep — exactly like classes.
+Inheritance chains arbitrarily deep - exactly like classes.
 
 This snippet ships a **two-hop chain**:
 

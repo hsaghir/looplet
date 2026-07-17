@@ -2,15 +2,15 @@
 
 The State Service is the out-of-process replacement for the in-process
 ``@ref`` shared-resource pattern: a small server owns a piece of shared
-mutable state behind a Unix-domain socket, and any number of clients —
-each potentially in a *separate* process — read and mutate the SAME
+mutable state behind a Unix-domain socket, and any number of clients -
+each potentially in a *separate* process - read and mutate the SAME
 state through a :class:`StateServiceClient` proxy.
 
 These tests witness the two properties the primitive must guarantee:
 
-* **round-trip** — a client can call the server's public methods and get
+* **round-trip** - a client can call the server's public methods and get
   results back over the wire (method discovery, mutation, query).
-* **1:N sharing** — two independent clients connected to the same socket
+* **1:N sharing** - two independent clients connected to the same socket
   observe each other's writes (the cross-process shared-state contract
   that makes the ``@ref`` pattern portable).
 """

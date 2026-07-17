@@ -5,7 +5,7 @@ inject domain-specific behavior into the generic loop without modifying
 any framework code.
 
 Hooks are [`@runtime_checkable`](https://docs.python.org/3/library/typing.html#typing.runtime_checkable)
-Protocols — **any object with the right methods is a hook**. No base
+Protocols - **any object with the right methods is a hook**. No base
 class, no registry, no decorator:
 
 ```python
@@ -297,7 +297,7 @@ async hooks while also supporting sync hooks in the same hook list.
 
 ## Testing Hooks
 
-Hooks are plain Python classes — test them in isolation:
+Hooks are plain Python classes - test them in isolation:
 
 ```python
 def test_quality_gate_rejects_early():
@@ -318,7 +318,7 @@ def test_quality_gate_allows_enough():
 
 ## Tool-internal LLM access: `ctx.llm`
 
-Tools that accept a `ctx` parameter receive `ctx.llm` — the same LLM
+Tools that accept a `ctx` parameter receive `ctx.llm` - the same LLM
 backend the loop is using. This lets tools make internal LLM calls
 (summarize, classify, extract) without closing over the backend:
 
@@ -333,28 +333,28 @@ def search(*, query: str, ctx: ToolContext) -> dict:
 
 Tool-internal calls are:
 
-- **Tracked** — when a `RecordingLLMBackend` is in use, internal calls
+- **Tracked** - when a `RecordingLLMBackend` is in use, internal calls
   appear in the same `manifest.jsonl` with `scope: "tool:<name>"`
-- **Cost-accounted** — `CostTracker` sees them
-- **Debuggable** — `python -m looplet show traces/` shows them alongside
+- **Cost-accounted** - `CostTracker` sees them
+- **Debuggable** - `python -m looplet show traces/` shows them alongside
   loop-level calls
 
 `ctx.llm` is `None` when no LLM is available (e.g. in unit tests
 without a backend). Always guard with `if ctx.llm is not None`.
 
-For multi-step sub-tasks, use `run_sub_loop()` instead — `ctx.llm`
+For multi-step sub-tasks, use `run_sub_loop()` instead - `ctx.llm`
 is for single-call internal operations.
 
 ---
 
 ## Hook-to-hook communication: `step_context`
 
-Hooks sometimes need to share data within the same step — e.g. an
+Hooks sometimes need to share data within the same step - e.g. an
 entity-extraction hook writes entities in `post_dispatch`, and a
 briefing hook reads them in the next step's `pre_prompt`.
 
 Use `state.step_context` for this. The loop clears it to `{}` at the
-start of every step, so it's ephemeral — no manual cleanup needed:
+start of every step, so it's ephemeral - no manual cleanup needed:
 
 ```python
 class EntityExtractor:
@@ -388,8 +388,8 @@ hooks = [EntityExtractor(), BriefingBuilder()]
 ## Related: provenance hook
 
 `TrajectoryRecorder` (in `looplet.provenance`) is a hook that
-captures a complete structured record of every loop run —
-`pre_loop` → `pre_prompt` → `post_dispatch` → `on_loop_end` — and
+captures a complete structured record of every loop run -
+`pre_loop` → `pre_prompt` → `post_dispatch` → `on_loop_end` - and
 serialises it to disk alongside per-LLM-call prompt/response files.
 Use it whenever you want a git-diffable audit trail of what your
 agent did. See [provenance.md](provenance.md).

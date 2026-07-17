@@ -1,4 +1,4 @@
-"""Tests for looplet.scaffolding — LLM retry, truncation, trackers."""
+"""Tests for looplet.scaffolding - LLM retry, truncation, trackers."""
 
 from __future__ import annotations
 

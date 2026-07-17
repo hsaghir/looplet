@@ -6,7 +6,7 @@ prompt without aborting the current step. looplet exposes the same
 pattern as a thread-safe :class:`SteeringQueue` plus a
 :class:`SteeringHook` that drains the queue in ``pre_prompt``.
 
-The queue is intentionally minimal — no UI, no transport, no async
+The queue is intentionally minimal - no UI, no transport, no async
 runtime. Producers push from any thread (or signal handler / web
 endpoint / CLI input thread); the loop reads on its turn. Two delivery
 modes mirror Pi:
@@ -28,24 +28,24 @@ Usage::
     for step in composable_loop(llm=..., hooks=hooks, ...):
         ...
 
-Timing — what steers can and cannot do
+Timing - what steers can and cannot do
 --------------------------------------
 
 A steer lands in the briefing of the **next** prompt. That means
 steers influence the next *decision*, not files the model already
 wrote. Empirically (verified against Claude Sonnet 4.5):
 
-* "Use the X library when you call Y" — landed reliably; Y had not
+* "Use the X library when you call Y" - landed reliably; Y had not
   been called yet.
-* "Add a docstring to the function you just wrote" — usually ignored;
+* "Add a docstring to the function you just wrote" - usually ignored;
   the model considered the file done and moved on.
-* "Refactor the class you wrote in step 3 to do Z" — sometimes ignored,
+* "Refactor the class you wrote in step 3 to do Z" - sometimes ignored,
   sometimes triggered a partial rewrite, never deterministic.
 
 Treat steering as **forward guidance**: prefer "from now on, …" or
 "when you write X, do Y" over "go back and fix what you wrote in step
 N". For retroactive changes, append the requirement to the task
-description and let the model re-plan from scratch — that is what the
+description and let the model re-plan from scratch - that is what the
 loop is built to do.
 """
 
@@ -124,7 +124,7 @@ class SteeringHook:
 
     Install via the ``hooks=`` list on :func:`composable_loop`. The
     returned text is appended to the briefing section of the next
-    prompt — the same channel used by ``InjectContext``.
+    prompt - the same channel used by ``InjectContext``.
     """
 
     queue: SteeringQueue

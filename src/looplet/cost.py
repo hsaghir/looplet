@@ -8,7 +8,7 @@ events and aggregates usage from whatever the backend returns.
 The tracker is **provider-shape agnostic**: it inspects the raw
 response object for the common attribute / dict shapes used by the
 OpenAI and Anthropic Python SDKs. If the backend doesn't surface
-usage, the tracker silently records zero — it never raises from a
+usage, the tracker silently records zero - it never raises from a
 hook.
 
 Usage::
@@ -159,7 +159,7 @@ class CostTracker:
     calls: int = 0
     per_call: list[dict[str, int]] = field(default_factory=list)
 
-    # Char-based fallback stats — populated even when the provider
+    # Char-based fallback stats - populated even when the provider
     # omits usage. ``CostHook`` feeds these from the prompt+response
     # lengths it sees. Useful as a coarse cost proxy when running
     # behind proxies (Copilot, OpenRouter free tier, ...) that strip
@@ -181,7 +181,7 @@ class CostTracker:
         """Add one LLM-call's prompt/response sizes (provider-agnostic).
 
         Safe to call even when ``record(usage)`` already ran for the
-        same call — the two counters live independently. Typical
+        same call - the two counters live independently. Typical
         callsite: a thin wrapper around the backend that knows both
         the input and output strings.
         """
@@ -208,7 +208,7 @@ class CostTracker:
     def estimated_cost(self) -> float:
         """USD estimate from prompt/response chars, when token data is missing.
 
-        Uses the model's ``input``/``output`` rates (no cache discount —
+        Uses the model's ``input``/``output`` rates (no cache discount -
         char-based estimates can't tell cached and fresh tokens apart).
         Returns 0.0 when the model is not in the prices table.
         """
@@ -313,7 +313,7 @@ class CostHook:
     Args:
         tracker: The :class:`CostTracker` to feed.
         backend: Optional backend reference. When the loop's
-            ``raw_response`` is a plain string (the default — the loop
+            ``raw_response`` is a plain string (the default - the loop
             hands hooks the parsed text, not the API response object),
             :class:`CostHook` falls back to ``backend.last_usage``.
             Both shipped backends (:class:`looplet.backends.OpenAIBackend`,
@@ -333,7 +333,7 @@ class CostHook:
             if backend_usage:
                 usage = dict(backend_usage)
         self.tracker.record(usage)
-        # Always record char counts too — cheap, and the only stat we
+        # Always record char counts too - cheap, and the only stat we
         # have when the provider strips ``usage`` from responses.
         prompt_text = payload.prompt or ""
         response_text = _coerce_response_text(payload.raw_response)
@@ -354,7 +354,7 @@ def _coerce_response_text(raw: Any) -> str:
       the default), this list shape is what every call surfaces.
 
     Without coercion, char-based cost estimation under-reports the
-    response side to zero whenever native tools are used — which is
+    response side to zero whenever native tools are used - which is
     the common case post-spec-v2.
     """
     if isinstance(raw, str):

@@ -2,12 +2,12 @@
 
 Owns :func:`cartridge_to_preset` and the helpers it relies on:
 
-* :func:`_resolve_extends` — materialises an ``extends:`` chain
+* :func:`_resolve_extends` - materialises an ``extends:`` chain
   into a single rooted directory by overlaying child files onto a
   copy of the parent.
-* :func:`_shallow_merge_config` — merges two ``config.yaml``
+* :func:`_shallow_merge_config` - merges two ``config.yaml``
   dicts with child-wins semantics.
-* :func:`_workspace_to_preset_inner` — the actual loader body,
+* :func:`_workspace_to_preset_inner` - the actual loader body,
   separated so :func:`cartridge_to_preset` can wrap it with
   extends-resolution + tempdir cleanup.
 
@@ -131,10 +131,11 @@ def cartridge_to_preset(
     strict: bool = False,
     runtime: dict[str, Any] | None = None,
 ) -> "AgentPreset":
-    """Read a workspace directory and materialise an :class:`AgentPreset`.
+    """Read a cartridge directory and materialise an :class:`AgentPreset`.
 
     Args:
-        workspace_dir: Path to the workspace root.
+        workspace_dir: Path to the cartridge root. The parameter name is
+            retained for API compatibility.
         state_factory: Builds the runtime ``state`` from ``max_steps``.
             Defaults to ``DefaultState(max_steps=...)``.
         strict: When ``True``, raise :class:`CartridgeSerializationError`
@@ -144,25 +145,23 @@ def cartridge_to_preset(
             and continue. Use ``strict=True`` for round-trip
             verification and CI lint.
         runtime: Optional dict of host-supplied runtime values
-            (e.g. ``{"workspace": "/tmp/myrepo"}`` for the coder
-            coder workspace). Three integration points read it:
+            (e.g. ``{"project_root": "/tmp/myrepo"}`` for a coding
+            cartridge). Two integration points read it:
               * ``${runtime.<key>}`` placeholders in ``config.yaml``
                 are substituted before constructing ``LoopConfig``.
               * ``resources/<name>.py`` builders that declare
                 ``def build(runtime)`` (or ``**kwargs``) receive it.
-              * ``setup.py``'s ``setup(...)`` receives it via the
-                ``runtime`` kwarg when its signature accepts it.
 
-    Self-contained workspaces may co-locate helper modules (by
-    convention ``<workspace>/lib.py``); the loader pushes the workspace
+        Self-contained cartridges may co-locate helper modules (by
+        convention ``<cartridge>/lib.py``); the loader pushes the cartridge
     root onto :data:`sys.path` for the duration of the load so
     ``from lib import X`` resolves cleanly inside tools / hooks /
-    resources / setup.py without forcing every workspace to register an
+    resources without forcing every cartridge to register an
     import shim.
     """
     root = Path(workspace_dir)
-    # Accept both the historical ``workspace.json`` and the spec
-    # alias ``cartridge.json``. ``workspace.json`` wins if both exist.
+    # Accept canonical ``cartridge.json`` and the historical
+    # ``workspace.json`` filename. The canonical filename wins.
     if not _manifest_present(root):
         raise FileNotFoundError(
             f"cartridge metadata not found at "
@@ -172,7 +171,7 @@ def cartridge_to_preset(
 
     # ``extends:`` resolution. If config.yaml declares
     # ``extends: <path>``, we merge the parent workspace under the
-    # current one — for every file under tools/, hooks/, resources/,
+    # current one - for every file under tools/, hooks/, resources/,
     # prompts/, memory/, and any top-level *.py the child doesn't
     # provide, we transparently inherit from the parent. Implemented by
     # materializing a merged directory in a tempdir and loading from
@@ -183,11 +182,12 @@ def cartridge_to_preset(
         # Re-validate metadata in the merged dir.
         if not _manifest_present(extended_root):
             raise CartridgeSerializationError(
-                f"merged workspace at {extended_root} missing workspace.json (or cartridge.json)"
+                f"merged cartridge at {extended_root} missing cartridge.json "
+                f"(or historical workspace.json)"
             )
         root = extended_root
 
-    # Shared-resource registry — built once, referenced by ``@<name>``
+    # Shared-resource registry - built once, referenced by ``@<name>``
     # strings throughout hook / tool kwargs. Lets two hooks share the
     # same live object (e.g. a FileCache) on reload, instead of
     # silently splitting into two independent instances.
@@ -195,13 +195,13 @@ def cartridge_to_preset(
 
     # Inject ``cartridge_root`` (absolute path) into the runtime dict
     # so ``${runtime.cartridge_root}`` substitutes correctly in any
-    # YAML field — most importantly ``mcp_servers.<name>.command``,
+    # YAML field - most importantly ``mcp_servers.<name>.command``,
     # which often needs to point at a server bundled alongside the
     # cartridge (``${runtime.cartridge_root}/_server/foo.py``). The
     # caller's value (if any) wins so test harnesses can override.
     runtime_dict.setdefault("cartridge_root", str(root))
 
-    # Workspaces are self-contained — their tools / hooks / resources
+    # Cartridges are self-contained. Their tools / hooks / resources
     # may reference co-located helper modules (conventionally
     # ``<workspace>/<wsname>_lib.py`` or similar; pick a name unique to
     # this workspace so two workspaces loaded back-to-back don't share
@@ -272,7 +272,7 @@ def _resolve_extends(root: Path, *, _seen: set[Path] | None = None) -> Path:
     *merged* workspace directory is materialized under a tempdir:
 
     * Parent files are copied first (recursively).
-    * Child files overlay on top — any same-relative-path file in the
+    * Child files overlay on top - any same-relative-path file in the
       child wins.
 
     Returns the path to the merged workspace, or ``root`` itself when
@@ -323,7 +323,7 @@ def _resolve_extends(root: Path, *, _seen: set[Path] | None = None) -> Path:
     # are still bound to its path until process end).
     _EXTENDS_TEMPDIRS.append(merged)
     # Copy parent first, then overlay child. Directory overlay is
-    # correct for tools/, hooks/, resources/, prompts/, memory/ —
+    # correct for tools/, hooks/, resources/, prompts/, memory/ -
     # each entry lives in its own subdirectory and the child either
     # adds a new entry or replaces an entry of the same name.
     _shutil.copytree(parent_root, merged, dirs_exist_ok=True, symlinks=False)
@@ -335,7 +335,7 @@ def _resolve_extends(root: Path, *, _seen: set[Path] | None = None) -> Path:
     # didn't redeclare (e.g. ``max_tokens``, ``max_steps``, ``model:``,
     # ``permissions:``, ...). Builders observing this from outside the
     # merge would see ``extends:`` as a partial inheritance mechanism
-    # — which is the opposite of what the schema promises.
+    # - which is the opposite of what the schema promises.
     #
     # The merge strategy is shallow: top-level scalars and lists are
     # replaced wholesale by the child if redeclared, while top-level
@@ -343,7 +343,7 @@ def _resolve_extends(root: Path, *, _seen: set[Path] | None = None) -> Path:
     # ``tool_metadata:``) are recursively shallow-merged so a child
     # can override a single key inside a block (e.g. just
     # ``model.reasoning_effort``) without losing siblings. Lists are
-    # NOT concatenated — wholesale-replace mirrors how layered config
+    # NOT concatenated - wholesale-replace mirrors how layered config
     # files (Kubernetes overlays, Terraform locals, Hydra) handle them.
     parent_cfg_path = parent_root / CartridgeLayout.CONFIG_YAML
     child_cfg_path = root / CartridgeLayout.CONFIG_YAML
@@ -529,8 +529,8 @@ def _workspace_to_preset_inner(
     state_factory: Callable[[int], Any] | None,
     strict: bool,
 ) -> "AgentPreset":
-    """Inner workspace loader. Assumes ``sys.path`` already includes
-    the workspace root so co-located ``lib.py`` modules import cleanly.
+    """Inner cartridge loader. Assumes ``sys.path`` already includes
+    the cartridge root so co-located ``lib.py`` modules import cleanly.
     Split out from :func:`cartridge_to_preset` to keep the path-management
     boilerplate at the public boundary.
     """
@@ -585,16 +585,14 @@ def _workspace_to_preset_inner(
     if cfg_path.is_file():
         raw_cfg_text = cfg_path.read_text(encoding="utf-8")
         # Apply ``${runtime.<key>}`` substitution before YAML parsing so
-        # workspace authors can parameterise config.yaml without needing
-        # a setup.py for the common cases.
+        # cartridge authors can parameterise config.yaml declaratively.
         raw_cfg_text = _apply_runtime_substitutions(raw_cfg_text, runtime_dict)
         cfg_kwargs.update(_load_yaml(raw_cfg_text, source_path=cfg_path) or {})
 
-    # ── Cartridge spec v2 prep: sibling ``runtime.yaml`` ────────
-    # ``runtime.yaml`` is the new home for runtime-tier knobs
+    # ── Schema-v2 sibling ``runtime.yaml`` ──────────────────────
+    # ``runtime.yaml`` is the home for runtime-tier knobs
     # (sampling, context window sizing, compaction strategy,
-    # caching, telemetry). The cartridge spec v2 will require
-    # those keys to live there; v1.x accepts both shapes.
+    # caching, telemetry). Schema v2 requires those keys to live there.
     #
     # Precedence: ``config.yaml`` < ``runtime.yaml``. The host's
     # runtime file overrides whatever defaults the cartridge author
@@ -637,7 +635,7 @@ def _workspace_to_preset_inner(
     if sys_prompt_path.is_file():
         cfg_kwargs["system_prompt"] = sys_prompt_path.read_text(encoding="utf-8")
 
-    # Memory sources — file-based (``memory/*.md`` + ``memory/*.py``)
+    # Memory sources - file-based (``memory/*.md`` + ``memory/*.py``)
     # come first; yaml-declared ``memory_sources: ['${ref:...}']``
     # entries (still as ref strings here) get appended after, then
     # both pass through ``_resolve_refs`` below which converts the
@@ -652,7 +650,7 @@ def _workspace_to_preset_inner(
     # (tracer, router, compact_service, recovery_registry, cache_policy,
     # approval_handler, domain, build_briefing, output_schema, …) can be
     # wired declaratively from ``resources/<name>.py`` builders instead
-    # of forcing every workspace into a ``setup.py`` detour. Symmetric
+    # of forcing imperative load-time wiring. Symmetric
     # with the hook-kwargs ref resolution below.
     cfg_kwargs = _resolve_refs(
         cfg_kwargs,
@@ -679,14 +677,14 @@ def _workspace_to_preset_inner(
             f"accept ``done_tools:``; v2.0 does not."
         )
 
-    # ``builtin_tools:`` is a workspace-loader directive, not a
-    # ``LoopConfig`` field — pop it before constructing the config so
+    # ``builtin_tools:`` is a cartridge-loader directive, not a
+    # ``LoopConfig`` field - pop it before constructing the config so
     # ``LoopConfig(**cfg_kwargs)`` doesn't choke on an unknown kwarg.
     # The popped list is consumed below where the tool registry is
     # populated.
     _builtin_tool_names: list[str] = list(cfg_kwargs.pop("builtin_tools", None) or [])
 
-    # Symmetric ``builtin_hooks:`` directive — opt into looplet-shipped
+    # Symmetric ``builtin_hooks:`` directive - opt into looplet-shipped
     # hooks (``skill_activation``, ...) without writing a hooks/<name>/
     # directory. Each entry is either a string (name) or a single-key
     # dict ``{name: {kwarg: value}}``. ``${ref:...}`` and ``${runtime.x}``
@@ -834,7 +832,7 @@ def _workspace_to_preset_inner(
             f"compiled ``OutputSchema`` instance (e.g. supplied via a "
             f"resource), not a raw dict. To declare an output schema "
             f"declaratively, put the ``output_schema:`` block inside "
-            f"``tools/done/tool.yaml`` instead — see SPEC.md "
+            f"``tools/done/tool.yaml`` instead - see SPEC.md "
             f"'Output contract on done'."
         )
         if strict:
@@ -1088,7 +1086,7 @@ def _workspace_to_preset_inner(
             # a tool that declares ``requires: [my_resoruce]`` (typo)
             # silently receives ``ctx.resources["my_resoruce"] = None``
             # at dispatch time and crashes deep inside its body with
-            # ``AttributeError`` — forcing the user to read a stack
+            # ``AttributeError`` - forcing the user to read a stack
             # trace inside their own tool to find the typo. Validating
             # here points at the ``tool.yaml`` line directly.
             if spec.requires:
@@ -1173,7 +1171,7 @@ def _workspace_to_preset_inner(
                         if _is_secondary:
                             config.done_tool_schemas[spec.name] = compiled
 
-    # Built-in tools — opt-in via ``builtin_tools:`` in config.yaml.
+    # Built-in tools - opt-in via ``builtin_tools:`` in config.yaml.
     # These are looplet-shipped tools (``subagent``, future helpers)
     # that any workspace can enable without writing a tools/<name>/
     # directory. Looked up in :mod:`looplet.builtin_tools` by name.
@@ -1193,7 +1191,7 @@ def _workspace_to_preset_inner(
                 continue
             registry.register(spec)
 
-    # MCP servers — opt-in via ``mcp_servers:`` in config.yaml. Each
+    # MCP servers - opt-in via ``mcp_servers:`` in config.yaml. Each
     # entry spawns an :class:`MCPToolAdapter` that discovers the
     # server's tools and registers them as ``ToolSpec`` instances. The
     # adapters are stashed on ``preset.mcp_adapters`` for caller-side
@@ -1293,7 +1291,7 @@ def _workspace_to_preset_inner(
     # values fall back to alphabetical-by-dirname).
     #
     # The directory-name convention (``00_FirstHook``, ``01_SecondHook``)
-    # works for small hook chains but doesn't scale — inserting a hook
+    # works for small hook chains but doesn't scale - inserting a hook
     # between positions 5 and 6 in a chain of 30 means renaming 24
     # directories with ``git mv``, destroying history and producing
     # noisy merge conflicts. The ``order:`` directive lets workspace
@@ -1327,11 +1325,11 @@ def _workspace_to_preset_inner(
                             enabled = bool(parsed["enabled"])
                 except (CartridgeSerializationError, ValueError, TypeError):
                     # Malformed config.yaml will be re-raised below
-                    # with full context — here we just fall back to
+                    # with full context - here we just fall back to
                     # alphabetical ordering for this hook.
                     pass
             # ``enabled: false`` lets workspace authors ablate a hook
-            # without renaming or deleting its directory — essential
+            # without renaming or deleting its directory - essential
             # for ``extends:``-based ablation cells, where a child
             # workspace toggles individual parent hooks off to measure
             # their contribution.
@@ -1340,7 +1338,7 @@ def _workspace_to_preset_inner(
                 continue
             # Tuple sort: explicit order first, then directory name.
             # When ``order_value == inf`` (no ``order:`` field), hooks
-            # sort by dirname only — the legacy behaviour.
+            # sort by dirname only - the legacy behaviour.
             hook_entries.append(((order_value, hook_dir.name), hook_dir))
         hook_entries.sort(key=lambda x: x[0])
         for _key, hook_dir in hook_entries:
@@ -1356,7 +1354,7 @@ def _workspace_to_preset_inner(
                 if cfg_yaml.is_file()
                 else {}
             ) or {}
-            # ── kind: lep — an out-of-process hook (no hook.py) ──────
+            # ── kind: lep - an out-of-process hook (no hook.py) ──────
             # A ``kind: lep`` hook ships only declarative data: a command
             # to launch a policy server, the capability view it subscribes
             # to, and a failure policy. The host bridges it via
@@ -1424,7 +1422,7 @@ def _workspace_to_preset_inner(
                     raise CartridgeSerializationError(msg) from exc
                 logger.warning("%s; skipping hook", msg)
 
-    # Built-in hooks — symmetric to ``builtin_tools:``. Each entry is
+    # Built-in hooks - symmetric to ``builtin_tools:``. Each entry is
     # either a string (name) or a single-key dict ``{name: {kwargs...}}``.
     if _builtin_hook_specs:
         from looplet.builtin_hooks import build_builtin_hook  # noqa: PLC0415
@@ -1433,7 +1431,7 @@ def _workspace_to_preset_inner(
             if isinstance(entry, str):
                 hname, raw_kwargs = entry, {}
             elif isinstance(entry, dict) and "use" in entry:
-                # ``use: stdlib/<name>`` alias form — a portable, explicit
+                # ``use: stdlib/<name>`` alias form - a portable, explicit
                 # spelling that names a looplet-shipped (standard-library)
                 # hook archetype. Any other keys are its kwargs.
                 use_val = str(entry.get("use") or "")
@@ -1474,7 +1472,7 @@ def _workspace_to_preset_inner(
                 continue
             hooks.append(hook)
 
-    # State — priority: declarative ``state:`` directive in config.yaml,
+    # State - priority: declarative ``state:`` directive in config.yaml,
     # then ``state_factory`` constructor arg, then ``DefaultState``.
     max_steps = int(getattr(config, "max_steps", 15))
     state: Any
@@ -1484,17 +1482,17 @@ def _workspace_to_preset_inner(
         # if it has ``__init__`` taking ``max_steps``, pass it; otherwise
         # treat as a pre-built instance.
         if callable(_state_directive) and not isinstance(_state_directive, type):
-            # Plain callable factory — call with no args.
+            # Plain callable factory - call with no args.
             state = _state_directive()
         elif inspect.isclass(_state_directive):
-            # Class reference — try ``Class(max_steps=...)`` first,
+            # Class reference - try ``Class(max_steps=...)`` first,
             # fall back to ``Class()`` for stateless types.
             try:
                 state = _state_directive(max_steps=max_steps)
             except TypeError:
                 state = _state_directive()
         else:
-            # Pre-built instance — use as-is.
+            # Pre-built instance - use as-is.
             state = _state_directive
     elif state_factory is not None:
         state = state_factory(max_steps)
@@ -1510,7 +1508,7 @@ def _workspace_to_preset_inner(
     # it; this warning lets a builder catch the typo at load time
     # without breaking those use cases.
     if config.done_tool and config.done_tool not in registry.tool_names:
-        # Suppress the warning when v1.1 ``done_tools:`` is in play —
+        # Suppress the warning when v1.1 ``done_tools:`` is in play -
         # the cartridge has explicitly opted into a different terminal
         # set, and the legacy default ``done`` may be irrelevant.
         if not config.done_tools:
@@ -1522,7 +1520,7 @@ def _workspace_to_preset_inner(
                 f"done() call."
             )
             logger.warning("%s", msg)
-    # v1.1 ``done_tools:`` plural — same sanity check applied to each
+    # v1.1 ``done_tools:`` plural - same sanity check applied to each
     # extra terminal sentinel.
     for extra_done in config.done_tools:
         if extra_done and extra_done not in registry.tool_names:
@@ -1669,7 +1667,7 @@ def _workspace_to_preset_inner(
             preset.config.memory_sources = []
         preset.config.memory_sources = list(preset.config.memory_sources) + [long_term_source]
 
-    # ``setup.py`` escape hatch — runs after the declarative load to
+    # ``setup.py`` escape hatch - runs after the declarative load to
     # let the workspace attach callable / opaque fields that don't
     # round-trip via JSON (e.g. ``LoopConfig.tracer``,
     # ``LoopConfig.compact_service``, custom domain adapters), or
@@ -1697,7 +1695,7 @@ def _workspace_to_preset_inner(
             )
         # Modern signature accepts (preset, resources, tool_modules,
         # hook_modules); the older 2-arg signature still works for
-        # forward compatibility — inspect.signature picks the right one.
+        # forward compatibility - inspect.signature picks the right one.
         import inspect as _i  # noqa: PLC0415
 
         sig_params = _i.signature(setup_fn).parameters
@@ -1715,7 +1713,7 @@ def _workspace_to_preset_inner(
     # Portability classification (advisory, non-mutating): label every
     # assembled hook ``portable`` (faithfully reproducible across runtimes)
     # or ``inprocess`` (faithful, but Python-pinned) and log a one-line
-    # summary. This is purely diagnostic — it never changes preset shape,
+    # summary. This is purely diagnostic - it never changes preset shape,
     # so cartridge round-trip/serialise behaviour is unaffected.
     try:
         from looplet.hook_contract import classify  # noqa: PLC0415

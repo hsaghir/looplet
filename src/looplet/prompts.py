@@ -5,13 +5,13 @@ find information in the same place across steps. This aids coherence
 in multi-turn agent loops.
 
 Section order (stable → volatile):
-  1. TASK         — Task description (never changes)
-  2. TOOLS        — Available tools (never changes)
-  3. FACTS        — Established state facts (grows monotonically)
-  4. SESSION      — Session log / memory (grows, compacts)
-  5. ASSESSMENT   — Guidance, briefing (changes per step)
-  6. RESULTS      — Last few steps of raw results (changes per step)
-  7. STEP         — Step/budget counter + response instruction (changes per step)
+  1. TASK - Task description (never changes)
+  2. TOOLS - Available tools (never changes)
+  3. FACTS - Established state facts (grows monotonically)
+  4. SESSION - Session log / memory (grows, compacts)
+  5. ASSESSMENT - Guidance, briefing (changes per step)
+  6. RESULTS - Last few steps of raw results (changes per step)
+  7. STEP - Step/budget counter + response instruction (changes per step)
 """
 
 from __future__ import annotations
@@ -53,7 +53,7 @@ def build_prompt(
         "What do you want to do next? Respond with JSON only, no prose:\n"
         '{"tool": "<tool_name>", "args": {...all required arguments...}, "reasoning": "<short>"}'
     ),
-    low_budget_warning: str = "⚠ LOW BUDGET — consolidate and prepare your conclusion.",
+    low_budget_warning: str = "⚠ LOW BUDGET - consolidate and prepare your conclusion.",
     section_headers: dict[str, str] | None = None,
 ) -> str:
     """Build the user prompt with stable section ordering.
@@ -85,7 +85,7 @@ def build_prompt(
 
     parts: list[str] = []
 
-    # ── §0 MEMORY (persistent — rendered before TASK so it's
+    # ── §0 MEMORY (persistent - rendered before TASK so it's
     #     the first thing the model sees every turn; survives
     #     all compactions when sourced from PersistentMemorySource) ──
     if memory:
@@ -95,7 +95,7 @@ def build_prompt(
             parts.append(mem_text)
             parts.append("")
 
-    # ── §1 TASK (stable — never changes) ────────────────────
+    # ── §1 TASK (stable - never changes) ────────────────────
     parts.append(f"═══ {headers['task']} ═══")
     if task_fields:
         for key in task_fields:
@@ -108,7 +108,7 @@ def build_prompt(
                 parts.append(f"{key}: {val}")
     parts.append("")
 
-    # ── §2 TOOLS (stable — never changes) ───────────────────
+    # ── §2 TOOLS (stable - never changes) ───────────────────
     parts.append(f"═══ {headers['tools']} ═══")
     parts.append(tool_catalog)
     parts.append("")
@@ -136,7 +136,7 @@ def build_prompt(
         parts.append(briefing)
         parts.append("")
 
-    # ── §6 RECENT RESULTS (volatile — last few raw results) ─
+    # ── §6 RECENT RESULTS (volatile - last few raw results) ─
     if context_history and context_history.strip() != "(no steps taken yet)":
         parts.append(f"═══ {headers['results']} ═══")
         parts.append(context_history)
@@ -145,7 +145,7 @@ def build_prompt(
     # ── §7 STEP (counter + action instruction) ───────────────
     budget = state_summary.get("budget_remaining", "?")
     parts.append(
-        f"═══ {headers['step']} {step_number}/{max_steps} — budget: {budget} steps remaining ═══"
+        f"═══ {headers['step']} {step_number}/{max_steps} - budget: {budget} steps remaining ═══"
     )
     if isinstance(budget, int) and budget <= 3:
         parts.append(low_budget_warning)
@@ -200,7 +200,7 @@ def preview_prompt(
     config: Any = None,
     step_number: int = 1,
 ) -> str:
-    """Render the prompt the LLM would see — useful for debugging.
+    """Render the prompt the LLM would see - useful for debugging.
 
     Call this before or after running the loop to inspect exactly
     what the model receives::
@@ -222,7 +222,7 @@ def preview_prompt(
         tools: BaseToolRegistry instance.
         state: AgentState instance (or None for empty facts).
         session_log: SessionLog instance (or None for empty log).
-        config: LoopConfig (optional — used for system_prompt + memory_sources).
+        config: LoopConfig (optional - used for system_prompt + memory_sources).
         step_number: Which step to render for (default 1).
     """
 

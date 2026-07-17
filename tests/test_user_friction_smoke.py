@@ -25,7 +25,7 @@ from looplet.testing import MockLLMBackend
 
 
 class _FakeOpenAIClient:
-    """Minimal stand-in for openai.OpenAI — captures init kwargs."""
+    """Minimal stand-in for openai.OpenAI - captures init kwargs."""
 
     last_kwargs: dict[str, Any] = {}
 

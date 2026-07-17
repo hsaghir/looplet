@@ -1,7 +1,7 @@
 """Helpers for inspecting ``done()`` steps recorded in ``state.steps``.
 
 The composable loop records every ``done()`` invocation as a regular
-``Step`` in ``state.steps`` — including attempts that were rejected by
+``Step`` in ``state.steps`` - including attempts that were rejected by
 a hook's ``check_done``.  Rejected attempts carry the marker
 ``tool_result.data = {"rejected": True, "reason": "<gate message>"}``
 set by the loop engine (see ``loop.py`` where quality-gate rejections
@@ -10,14 +10,14 @@ are recorded).
 These helpers let consumers walk the history without reimplementing
 the marker convention:
 
-- :func:`iter_done_steps` — yield every ``done()`` step in reverse
+- :func:`iter_done_steps` - yield every ``done()`` step in reverse
   chronological order.
-- :func:`last_accepted_done` — return the most recent accepted
+- :func:`last_accepted_done` - return the most recent accepted
   ``done()`` step (payload lives in ``step.tool_result.data``).
-- :func:`last_rejected_done` — return the most recent rejected
+- :func:`last_rejected_done` - return the most recent rejected
   ``done()`` step (intent lives in ``step.tool_call.args``).
 
-Typical use — recovering the agent's intended output when the gate
+Typical use - recovering the agent's intended output when the gate
 rejected ``done()`` and budget then ran out::
 
     from looplet.done_steps import last_accepted_done, last_rejected_done
@@ -77,7 +77,7 @@ def iter_done_steps(
 ) -> Iterator[Step]:
     """Yield every ``done()`` step from ``state.steps`` in reverse order.
 
-    Walking in reverse is the common case — consumers usually want the
+    Walking in reverse is the common case - consumers usually want the
     most recent attempt.  Any object with a ``steps`` attribute works;
     this matches the ``AgentState`` protocol without importing it.
     """
@@ -97,7 +97,7 @@ def last_accepted_done(
     "Accepted" means the step is a ``done()`` call whose
     ``tool_result.data`` is not a rejection marker.  The returned
     step's ``tool_result.data`` is the payload the ``done`` tool
-    produced (typically a dict of summary / reasoning / etc. — shape
+    produced (typically a dict of summary / reasoning / etc. - shape
     is consumer-defined).
     """
     for step in iter_done_steps(state, tool_name=tool_name):

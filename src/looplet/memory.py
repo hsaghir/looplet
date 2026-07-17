@@ -9,18 +9,18 @@ every prompt.
 
 Three tiny convenience implementations are shipped:
 
-* :class:`StaticMemorySource` — constant text (rubrics, SOPs, style
+* :class:`StaticMemorySource` - constant text (rubrics, SOPs, style
   notes).
-* :class:`CallableMemorySource` — wraps a lambda; receives the current
+* :class:`CallableMemorySource` - wraps a lambda; receives the current
   ``AgentState`` so memory can vary per turn (e.g. "case id = X,
   pinned entities = [...]").
-* :class:`AgentsMdMemorySource` — walks parent directories from a
+* :class:`AgentsMdMemorySource` - walks parent directories from a
   starting path collecting ``AGENTS.md`` / ``CLAUDE.md`` files (the
   convention shared by Claude Code, Pi, and Cursor). Read on
   construction; pass to ``LoopConfig.memory_sources``.
 
 For other filesystem-backed sources, callers can compose
-``CallableMemorySource(lambda _: Path("RUBRIC.md").read_text())`` —
+``CallableMemorySource(lambda _: Path("RUBRIC.md").read_text())`` -
 looplet core stays out of the filesystem otherwise.
 
 Rendering is done by :func:`render_memory`, which returns a single
@@ -84,7 +84,7 @@ class CallableMemorySource:
         return self.fn(state)
 
 
-# Default filenames in walk order — first match per directory wins.
+# Default filenames in walk order - first match per directory wins.
 _AGENTS_MD_FILENAMES: tuple[str, ...] = ("AGENTS.md", "CLAUDE.md")
 
 

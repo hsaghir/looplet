@@ -3,7 +3,7 @@
 These are generalizable ergonomics patterns any agent framework benefits
 from: when a tool call fails because of a caller/input mistake (typo'd
 tool name, typo'd arg, field-not-found inside the tool body), the
-result should carry a clean VALIDATION error with a suggestion — not an
+result should carry a clean VALIDATION error with a suggestion - not an
 opaque TypeError, a silent empty list, or a pseudo-error sentinel mixed
 into the tool's data payload.
 """
@@ -36,7 +36,7 @@ class TestSuggestSimilar:
         assert suggest_similar("scan", []) is None
 
     def test_cutoff_threshold_respected(self) -> None:
-        # 'scanx' is closeish to 'scan' — strict cutoff rejects it.
+        # 'scanx' is closeish to 'scan' - strict cutoff rejects it.
         assert suggest_similar("zzzzscan", ["scan"], cutoff=0.9) is None
 
 
@@ -150,25 +150,27 @@ class TestToolValidationErrorRouting:
                 execute=pick,
             )
         )
-        # Happy path — unchanged.
+        # Happy path - unchanged.
         ok = reg.dispatch(ToolCall(tool="pick", args={"name": "apple"}))
         assert ok.error is None
         assert ok.data == {"picked": "apple"}
 
-        # Typo path — clean structured error, with did-you-mean baked in.
+        # Typo path - clean structured error, with did-you-mean baked in.
         bad = reg.dispatch(ToolCall(tool="pick", args={"name": "aple"}))
         assert bad.data is None
         assert bad.error_kind == ErrorKind.VALIDATION
         assert bad.error_retriable is False
         assert "'aple'" in bad.error
         assert "Did you mean 'apple'" in bad.error
-        # The message is the author's message — no "ToolValidationError:"
+        # The message is the author's message - no "ToolValidationError:"
         # type prefix, so it renders cleanly in LLM context.
         assert not bad.error.startswith("ToolValidationError:")
 
     def test_validation_error_distinct_from_execution_error(self) -> None:
-        """Plain exceptions still classify as EXECUTION (or stdlib kinds)
-        — ToolValidationError is the opt-in semantic signal."""
+        """Plain exceptions still classify as EXECUTION (or stdlib kinds).
+
+        ToolValidationError is the opt-in semantic signal.
+        """
 
         def boom() -> None:
             raise RuntimeError("uh oh")

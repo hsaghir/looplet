@@ -1,4 +1,4 @@
-"""Cartridge spec v2 — Phase 3 hard removals + migration tool.
+"""Cartridge spec v2 - Phase 3 hard removals + migration tool.
 
 * ``schema_version: 2`` hard-fails on:
     - runtime-tier keys in config.yaml

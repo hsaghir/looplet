@@ -1,4 +1,4 @@
-# looplet — Agent Guide
+# looplet - Agent Guide
 
 > This file is optimized for coding agents (Copilot, Claude Code, etc.).
 > For human-oriented docs, see [README.md](README.md).
@@ -91,7 +91,7 @@ user pays for it whether they want it or not. Both must hold.
 looplet's default permission posture is **allow-all**. This is
 deliberate. The reasoning:
 
-1. Approval popups create alarm fatigue — users either rubber-stamp or
+1. Approval popups create alarm fatigue - users either rubber-stamp or
    disable them, so they degrade into security theater.
 2. The right boundary for an autonomous coding agent is the **process
    sandbox**: a container, a VM, a chroot, an unprivileged user, a
@@ -162,8 +162,8 @@ A cartridge is a directory of files the loader materialises into a runnable agen
 ```
 my_agent.cartridge/
 ├── cartridge.json          # REQUIRED  {"name": "my_agent", "schema_version": 1}
-├── config.yaml             # REQUIRED  CONTRACT tier — what the agent does (max_steps, system_prompt, done_tool, ...)
-├── runtime.yaml            # OPTIONAL  RUNTIME tier — how this host runs it (max_tokens, temperature, compact_service, ...)
+├── config.yaml             # REQUIRED  CONTRACT tier - what the agent does (max_steps, system_prompt, done_tool, ...)
+├── runtime.yaml            # OPTIONAL  RUNTIME tier - how this host runs it (max_tokens, temperature, compact_service, ...)
 ├── prompts/system.md       # REQUIRED  the agent's system prompt
 ├── tools/<name>/
 │   ├── tool.yaml           # REQUIRED  name, description, parameters, requires
@@ -188,7 +188,7 @@ not a secure oracle when the candidate can modify it.
 
 ```yaml
 max_steps: 30                        # LoopConfig.max_steps
-# system prompt: write it as prompts/system.md — the loader auto-loads
+# system prompt: write it as prompts/system.md - the loader auto-loads
 # the file. (Do NOT put `system_prompt_path:` here; that's not a real
 # LoopConfig field.) For inline use, set `system_prompt: |- ...` instead.
 done_tool: done
@@ -211,7 +211,7 @@ mcp_servers:
     tools: [read_file, write_file]   # optional allow-list; absent = all
 ```
 
-`runtime.yaml` (RUNTIME tier) — host-specific knobs that travel
+`runtime.yaml` (RUNTIME tier) - host-specific knobs that travel
 separately so the cartridge stays runtime-agnostic:
 
 ```yaml
@@ -226,7 +226,7 @@ Field tiers (spec v2):
 - **CONTRACT** (`config.yaml`): `max_steps`, `system_prompt`, `done_tool`,
   `done_tools`, `permissions`, `memory`, `model`, `extends`,
   `builtin_tools`, `builtin_hooks`, `mcp_servers`. (`tool_metadata` rides along but
-  is auto-populated by the loader — do not author.)
+  is auto-populated by the loader - do not author.)
 - **RUNTIME** (`runtime.yaml`): `max_tokens`, `temperature`,
   `recovery_temperature`, `max_turn_continuations`, `generate_kwargs`,
   `use_native_tools`, `concurrent_dispatch`, `reactive_recovery`,
@@ -260,7 +260,7 @@ parameters:
     description: Time window like '24h' or '7d'.
     default: "24h"
 requires:
-  - siem      # MUST match resources/siem.py — loader injects ctx.resources["siem"]
+  - siem      # MUST match resources/siem.py - loader injects ctx.resources["siem"]
 ```
 
 `tools/search/execute.py`:
@@ -275,7 +275,7 @@ def execute(ctx, *, pattern: str, window: str = "24h") -> dict:
 `resources/siem.py`:
 
 ```python
-"""Shared SIEM client singleton — built once when the cartridge loads."""
+"""Shared SIEM client singleton - built once when the cartridge loads."""
 from mycompany.siem import SIEMClient
 
 def build():
@@ -310,7 +310,7 @@ preset_to_cartridge(preset, "./serialised.cartridge")
 
 ---
 
-## Recipe 0 — Scaffold a cartridge from Python
+## Recipe 0 - Scaffold a cartridge from Python
 
 This is the agent-facing equivalent of the `looplet new` human CLI: when a coding agent needs to **create a new agent as files**, it calls `scaffold_cartridge()` directly and edits the produced files. No factory, no LLM-in-the-loop.
 
@@ -318,7 +318,7 @@ This is the agent-facing equivalent of the `looplet new` human CLI: when a codin
 from pathlib import Path
 from looplet import scaffold_cartridge
 
-# 1. Create the skeleton. Always idempotent — existing files are preserved.
+# 1. Create the skeleton. Always idempotent - existing files are preserved.
 root = scaffold_cartridge(
     Path("./url_summariser.cartridge"),
     name="url_summariser",
@@ -351,13 +351,13 @@ for step in composable_loop(
     print(step.pretty())
 ```
 
-`scaffold_cartridge(path, *, name, tools, overwrite=False)` raises `FileExistsError` on a non-empty directory unless `overwrite=True`. With `overwrite=True`, files already present are NOT clobbered — safe to re-run after edits.
+`scaffold_cartridge(path, *, name, tools, overwrite=False)` raises `FileExistsError` on a non-empty directory unless `overwrite=True`. With `overwrite=True`, files already present are NOT clobbered - safe to re-run after edits.
 
-For class-wraps (singleton resources), write `resources/<name>.py` with a `build()` function and add `requires: [<name>]` to every tool.yaml that uses it. Don't try to construct the singleton at module top-level — the loader expects the `resources/` mechanism so the same instance threads through `ctx.resources["<name>"]` on every dispatch.
+For class-wraps (singleton resources), write `resources/<name>.py` with a `build()` function and add `requires: [<name>]` to every tool.yaml that uses it. Don't try to construct the singleton at module top-level - the loader expects the `resources/` mechanism so the same instance threads through `ctx.resources["<name>"]` on every dispatch.
 
 ---
 
-## Recipe 1 — Minimal agent (5 lines)
+## Recipe 1 - Minimal agent (5 lines)
 
 ```python
 from looplet import composable_loop, LoopConfig, DefaultState, tool, tools_from
@@ -376,7 +376,7 @@ for step in composable_loop(
     print(step.pretty())
 ```
 
-## Recipe 2 — Coding agent with presets
+## Recipe 2 - Coding agent with presets
 
 ```python
 from looplet.presets import coding_agent_preset
@@ -394,7 +394,7 @@ for step in composable_loop(
     print(step.pretty())
 ```
 
-## Recipe 3 — Custom coding agent (full control)
+## Recipe 3 - Custom coding agent (full control)
 
 ```python
 from looplet import (
@@ -453,7 +453,7 @@ for step in composable_loop(
     print(step.pretty())
 ```
 
-## Recipe 4 — Add a tool
+## Recipe 4 - Add a tool
 
 ```python
 from looplet import tool, tools_from
@@ -467,7 +467,7 @@ def my_tool(*, query: str, limit: int = 10) -> dict:
 tools = tools_from([my_tool])
 ```
 
-## Recipe 5 — Write a hook
+## Recipe 5 - Write a hook
 
 Hooks are `@runtime_checkable` Protocols. Implement only the methods you need:
 
@@ -493,7 +493,7 @@ class SecurityGuard:
         return False
 ```
 
-## Recipe 6 — Test without a real LLM
+## Recipe 6 - Test without a real LLM
 
 ```python
 from looplet import composable_loop, LoopConfig, DefaultState, MockLLMBackend, tool, tools_from
@@ -521,7 +521,7 @@ def test_my_agent():
     assert steps[0].tool_result.error is None
 ```
 
-## Recipe 7 — MCP server tools
+## Recipe 7 - MCP server tools
 
 ```python
 from looplet import BaseToolRegistry
@@ -535,7 +535,7 @@ with MCPToolAdapter("npx @modelcontextprotocol/server-filesystem /tmp") as mcp:
     # Use in composable_loop as normal
 ```
 
-## Recipe 8 — Sub-agent for focused task
+## Recipe 8 - Sub-agent for focused task
 
 ```python
 from looplet.subagent import run_sub_loop
@@ -551,7 +551,7 @@ print(result["summary"])   # concise finding
 print(result["findings"])  # list of issues found
 ```
 
-## Recipe 8b — Compose agents as tools
+## Recipe 8b - Compose agents as tools
 
 Any agent can be exposed to another agent as a normal tool:
 
@@ -577,7 +577,7 @@ tools = tools_from([deep_research])
 The parent's `ProvenanceSink` will record only the parent trajectory;
 wire a separate sink inside the sub-agent for parent-child linked traces.
 
-## Recipe 9 — Permissions
+## Recipe 9 - Permissions
 
 ```python
 from looplet import PermissionEngine, PermissionHook, PermissionDecision
@@ -594,17 +594,17 @@ engine.ask("write", reason="file modification needs review")
 hooks = [PermissionHook(engine)]
 ```
 
-## Recipe 10 — Crash-resume with checkpoints
+## Recipe 10 - Crash-resume with checkpoints
 
 ```python
 config = LoopConfig(
     max_steps=50,
     checkpoint_dir="./checkpoints",  # auto-save every step, auto-resume on restart
 )
-# If the process crashes, restart the same script — it resumes from last checkpoint.
+# If the process crashes, restart the same script - it resumes from last checkpoint.
 ```
 
-## Recipe 11 — PII redaction + trajectory capture
+## Recipe 11 - PII redaction + trajectory capture
 
 ```python
 import re
@@ -627,7 +627,7 @@ sink.flush()
 provider or the trace file. Pass `redact_upstream=False` to get the
 legacy record-only behaviour.
 
-## Recipe 12 — Budget-capped loop with meaningful stop reason
+## Recipe 12 - Budget-capped loop with meaningful stop reason
 
 ```python
 from looplet import HookDecision, composable_loop
@@ -658,7 +658,7 @@ def eval_no_hard_timeout(ctx):
     return ctx.stop_reason != "timeout"
 ```
 
-## Recipe 13 — Discovery-safe eval file
+## Recipe 13 - Discovery-safe eval file
 
 `eval_discover` only collects functions defined IN the eval file.
 Imports (decorators, helpers, library functions) are filtered out by
@@ -666,8 +666,8 @@ Imports (decorators, helpers, library functions) are filtered out by
 
 ```python
 # eval_my_agent.py
-from looplet import eval_mark              # decorator — not collected
-from my_helpers import eval_tool_count     # helper from another module — not collected
+from looplet import eval_mark              # decorator - not collected
+from my_helpers import eval_tool_count     # helper from another module - not collected
 
 @eval_mark("verdict")
 def eval_correct_answer(ctx):              # collected
@@ -729,7 +729,7 @@ principled fixes in the library; the notes below are the "right way."
 
 2. **`redact=` in `ProvenanceSink` / `RecordingLLMBackend` scrubs
    UPSTREAM by default.** Secrets never reach the provider OR the
-   trace. Do NOT double-wrap the LLM in a separate redactor — pass the
+   trace. Do NOT double-wrap the LLM in a separate redactor - pass the
    callable to the sink:
    ```python
    # ✓ do this
@@ -744,7 +744,7 @@ principled fixes in the library; the notes below are the "right way."
 
 4. **`eval_discover` only collects functions defined in the eval
    file.** Imported decorators and helpers are filtered by
-   `__module__`. This is intentional — do not work around it by
+   `__module__`. This is intentional - do not work around it by
    defining pass-through wrappers; just import normally.
 
 5. **`should_stop` fires AFTER the current step**, so the last step in
@@ -766,7 +766,7 @@ principled fixes in the library; the notes below are the "right way."
    have surfaced as a prompt for the model.
 
 8. **`composable_loop` is a generator.** The `for step in ...` pattern
-   is mandatory — the loop does not run if you only call
+   is mandatory - the loop does not run if you only call
    `composable_loop(...)`. Consume the iterator, or wrap with
    `list(...)` when you don't care about streaming.
 
@@ -776,7 +776,7 @@ principled fixes in the library; the notes below are the "right way."
    native tool-calling silently falls back to JSON parsing.
 
 10. **Prefer Protocol-conforming classes over inheritance.** All hooks,
-    LLM backends, and states are `@runtime_checkable` Protocols —
+    LLM backends, and states are `@runtime_checkable` Protocols -
     any object with the right methods works. No `LoopHook`
     subclassing, no registration.
 
@@ -797,7 +797,7 @@ make install-hooks            # install pre-commit + pre-push git hooks
 
 ```
 src/looplet/
-  __init__.py          # Public API — all exports here
+  __init__.py          # Public API - all exports here
   loop.py              # Core loop: composable_loop, LoopConfig, LoopHook
   types.py             # Step, ToolCall, ToolResult, LLMBackend, DefaultState
   tools.py             # BaseToolRegistry, ToolSpec
@@ -807,7 +807,7 @@ src/looplet/
   checkpoint.py        # Crash-resume
   hook_decision.py     # HookDecision, Allow/Deny/Block/Stop/InjectContext
   skills.py            # Skill bundles
-  subagent.py          # run_sub_loop — sub-agents as tools
+  subagent.py          # run_sub_loop - sub-agents as tools
   mcp.py               # MCP server adapter
   evals.py             # Evaluation system + EvalContext.stop_reason
   provenance.py        # Trajectory recording + redact (scrubs upstream by default)
@@ -900,19 +900,19 @@ class AgentState(Protocol):
 ## Error taxonomy
 
 Tools classify errors via `ErrorKind`:
-- `PERMISSION_DENIED` — blocked by permission check
-- `TIMEOUT` — execution exceeded deadline (retriable)
-- `VALIDATION` — bad args or unknown tool
-- `EXECUTION` — generic runtime failure
-- `PARSE` — LLM response couldn't be parsed
-- `CONTEXT_OVERFLOW` — prompt exceeded context window
-- `RATE_LIMIT` — provider throttling (retriable)
-- `NETWORK` — transport failure (retriable)
-- `CANCELLED` — cancelled via CancelToken
+- `PERMISSION_DENIED` - blocked by permission check
+- `TIMEOUT` - execution exceeded deadline (retriable)
+- `VALIDATION` - bad args or unknown tool
+- `EXECUTION` - generic runtime failure
+- `PARSE` - LLM response couldn't be parsed
+- `CONTEXT_OVERFLOW` - prompt exceeded context window
+- `RATE_LIMIT` - provider throttling (retriable)
+- `NETWORK` - transport failure (retriable)
+- `CANCELLED` - cancelled via CancelToken
 
 ## LoopConfig cheat sheet
 
-`LoopConfig` has ~40 fields. Group them mentally as follows — most agents
+`LoopConfig` has ~40 fields. Group them mentally as follows - most agents
 only touch the first group.
 
 **Essentials (always set these):**
@@ -927,7 +927,7 @@ only touch the first group.
 `build_briefing`, `build_prompt`, `extract_entities`,
 `extract_step_metadata`, `build_trace`, `domain`
 
-**Wired-in capabilities (opt-in — each enables one feature):**
+**Wired-in capabilities (opt-in - each enables one feature):**
 `compact_service` (compaction) · `checkpoint_dir` (crash-resume) ·
 `cache_policy` (prompt caching) · `router` (multi-model) ·
 `tracer` (telemetry) · `recovery_registry` (error recovery) ·
@@ -935,7 +935,7 @@ only touch the first group.
 `approval_handler` (human-in-the-loop) · `cancel_token` (cooperative stop) ·
 `initial_checkpoint` (resume a specific checkpoint)
 
-**Escape hatches (rare — only when `build_prompt` isn't enough):**
+**Escape hatches (rare - only when `build_prompt` isn't enough):**
 `render_messages_override`
 
 > **Footgun:** `LoopConfig(max_steps=N)` and `DefaultState(max_steps=M)`
@@ -947,7 +947,7 @@ only touch the first group.
 Every hook method accepts a `HookDecision` (or one of its factory
 helpers). Legacy returns (`str`, `bool`, raw `ToolResult`) still work
 via `normalize_hook_return`, but new code should use the factory
-helpers — they read naturally and compose:
+helpers - they read naturally and compose:
 
 | Intent | Use |
 |---|---|

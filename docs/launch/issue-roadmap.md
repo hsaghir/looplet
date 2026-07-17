@@ -1,178 +1,88 @@
-# Relaunch issue roadmap
+# Launch issue roadmap
 
-These are issue drafts, not permission to expand core. Search open/closed issues
-before posting. Open only items with a maintainer, a narrow acceptance test, and
-no duplicate. Suggested order follows user value, not implementation novelty.
+The public backlog is now curated into independent work units. Every open task
+has a concrete deliverable, explicit non-goals, and a verification path. The
+`launch-ready` label means the scope is accepted and ready to claim; it does not
+promise that the work belongs in core.
 
-## Launch-ready issues
+## Priority 0: release and feedback
 
-### 1. Add a `looplet regression` recipe that promotes a saved failure to a case skeleton
+- [#18](https://github.com/hsaghir/looplet/issues/18): pinned launch feedback
+  focused on one concrete harness failure and an independently observable
+  outcome. This is an operational thread, not claimable work.
+- Release `0.3.0` only after the repository, docs, distribution, and public
+  metadata gates in `launch-checklist.md` pass.
 
-**Labels:** `enhancement`, `evals`, `help wanted`
+## Priority 1: teach the integrity boundary
 
-**Problem:** The conceptual path from a useful saved run to a hand-authored case
-is clear, but users must copy task metadata and artifact fields manually.
+- [#100](https://github.com/hsaghir/looplet/issues/100): runnable holdout recipe
+  that keeps oracle capabilities out of candidate task, runtime, resources,
+  tools, and writable files, with explicit OS-isolation limits.
+- [#101](https://github.com/hsaghir/looplet/issues/101): replay experiment guide
+  that distinguishes tool, hook, prompt, and model changes.
+- [#105](https://github.com/hsaghir/looplet/issues/105): network-free migration
+  from a private tool loop to one outcome-grounded regression contract.
 
-**Scope:** A recipe or CLI helper that writes a reviewable **draft** case and
-collector TODOs. It must not infer correctness, generate expected values from
-the agent's claim, or mutate a cartridge without an explicit target.
+These are small documentation/example contributions. They must not add a
+sandbox product, deterministic replay claim, framework comparison benchmark,
+or generated-agent promise.
 
-**Acceptance:**
+Only #101 is currently a first-contributor, `launch-ready` chunk. #100 requires
+a reviewed trust-boundary design, and #105 spans example, provenance, eval,
+tests, and docs despite remaining useful launch work.
 
-- network-free fixture input;
-- agent-visible task copied without grader-only data;
-- output refuses overwrite by default;
-- explicit TODO for host-observed outcome and expected oracle;
-- docs state that promotion requires human review.
+## Priority 2: make evidence portable and reviewable
 
-**Boundary:** Drafting ergonomics only; no automatic grader generation or
-self-improvement loop.
+- [#103](https://github.com/hsaghir/looplet/issues/103): provenance and eval
+  artifact compatibility policy before any new schema fields land.
+- [#102](https://github.com/hsaghir/looplet/issues/102): versioned JSON eval
+  summary whose fail-closed states match the CLI exit code, blocked by #103.
+- [#104](https://github.com/hsaghir/looplet/issues/104): redaction-preserving
+  diff for persisted eval-run outcomes, separate from cartridge source diff
+  and blocked by #103.
 
----
+Dependency order: #103 establishes compatibility rules before #102 or #104
+freezes a public representation. Only #103 carries `launch-ready` today;
+#102 and #104 become claimable after that contract lands.
 
-### 2. Emit a stable machine-readable eval summary for CI annotations
+## Optional provider work
 
-**Labels:** `enhancement`, `evals`
+- [#4](https://github.com/hsaghir/looplet/issues/4): optional Gemini adapter
+  using the current `google-genai` SDK.
+- [#5](https://github.com/hsaghir/looplet/issues/5): optional Bedrock Converse
+  adapter, pending a reviewed async/dependency design before it becomes
+  launch-ready.
+- [#6](https://github.com/hsaghir/looplet/issues/6): verified
+  `llama-cpp-python` recipe; PR #91 is the active contribution path, so it is
+  not advertised as unclaimed work.
 
-**Problem:** Human CLI output is useful locally, but CI integrations need a
-versioned summary of case, grader, required status, score/label, and errors.
+Provider work stays in optional extras or documentation. It does not change the
+core loop, and compatibility claims must name the model and verification date.
 
-**Acceptance:**
+## Closed during launch cleanup
 
-- documented schema version;
-- required/missing/error states remain distinct;
-- collector failures cannot serialize as passing;
-- golden compatibility tests;
-- no hosted service dependency.
-
-**Boundary:** Portable output only; dashboards and analytics remain downstream.
-
----
-
-### 3. Publish a host-owned holdout reference recipe
-
-**Labels:** `documentation`, `eval-integrity`, `good first issue`
-
-**Problem:** Colocated self-tests are easy to understand; teams need one exact
-example where the candidate can edit its cartridge but cannot read or modify
-the promotion suite.
-
-**Acceptance:**
-
-- candidate and holdout in separate roots;
-- host runtime binds protected collector/expected data;
-- test proves traversal/symlink attempts cannot reach the oracle;
-- docs compare visible guidance tests, cartridge self-tests, and release
-  holdouts.
-
-**Boundary:** Filesystem recipe and tests; no new sandbox product.
-
----
-
-### 4. Add PR-friendly cartridge and eval-run diff output
-
-**Labels:** `enhancement`, `provenance`, `help wanted`
-
-**Problem:** `looplet diff` covers harness structure, while reviewers also need
-a concise, redaction-aware summary of changed outcomes across persisted runs.
-
-**Acceptance:**
-
-- separate harness diff from outcome/eval diff;
-- no claim that step-sequence differences are quality regressions;
-- stable text output suitable for PR comments;
-- secrets are never newly revealed by the renderer;
-- fixtures cover missing/malformed artifacts.
-
-**Boundary:** Comparison/reporting only; no statistical significance engine.
-
----
-
-### 5. Document replay experiment patterns: tool change, hook change, prompt change
-
-**Labels:** `documentation`, `good first issue`
-
-**Problem:** Users can misuse captured-response replay to evaluate a prompt
-change even though responses are already fixed.
-
-**Acceptance:**
-
-- executable tool-change example using replay;
-- hook/permission example with mocked side effects;
-- prompt/model example using fresh sampled runs instead of replay;
-- decision table naming fixed and fresh variables.
-
-**Boundary:** Documentation/examples only unless a concrete API defect appears.
-
----
-
-### 6. Define provenance and eval artifact schema/version policy
-
-**Labels:** `api-design`, `provenance`, `evals`
-
-**Problem:** Evidence is intentionally portable, but downstream consumers need
-to know which fields are stable and how migrations fail.
-
-**Acceptance:**
-
-- inventory current artifact files and schemas;
-- classify stable, optional, and internal fields;
-- forward/backward compatibility policy;
-- fixtures for at least one prior-version load;
-- no opaque database or mandatory exporter.
-
-**Boundary:** Stabilize existing artifacts before adding fields.
-
-## Evidence-building issues (open after launch feedback)
-
-### 7. Migration recipe: replace a private while-loop incrementally
-
-Produce before/after code showing tools retained, iterator introduced, then
-provenance and one behavioral contract added. Avoid framework comparison
-rhetoric. Acceptance is a network-free tested example and a "keep your raw
-loop" exit criterion.
-
-### 8. Outcome collector cookbook
-
-Add small tested recipes for file/schema, subprocess/test suite, HTTP probe with
-mock transport, and database query with an in-memory fixture. Keep domain
-policy in examples. Each recipe must state trust and side-effect boundaries.
-
-### 9. Optional OpenTelemetry evidence export recipe
-
-Map stable Looplet steps/provenance to OTel without adding a core runtime
-dependency. Acceptance includes optional installation, no import impact on
-core, redaction guidance, and a network-free exporter test.
-
-### 10. Re-run the same-model harness benchmark with repeated trials
-
-Only proceed with a preregistered task set, environment metadata, repeated
-runs, uncertainty intervals, raw task-level output, and no universal
-performance headline. Keep benchmark dependencies outside runtime.
-
-## Questions to turn into issues only with evidence
-
-- A new lifecycle hook: show why existing hook phases cannot express it.
-- A reusable grader: provide at least two unrelated domains and a protected
-  outcome source.
-- New cartridge syntax: show the repeated plain-Python/file pattern and a
-  migration strategy.
-- Prompt optimization or harness search: build downstream first; core work is
-  limited to missing generic artifact/contract primitives proven by that use.
-- Hosted UI or annotation flow: integrate downstream; do not add to Looplet
-  core.
+- #10 was partially delivered: the smaller Makefile contributor contract
+  ships, while the remaining wrapper targets were explicitly closed as not
+  planned.
+- #7 duplicated the shipped `planner.cartridge` subagent pattern and pulled the
+  product toward a turnkey research agent.
+- #8 treated trajectory efficiency metrics as generic quality scores.
+- #55 bundled five unrelated generated-agent recipes into one issue.
+- #56 called factory quality the product and proposed step count as a release
+  gate. The factory is now optional scaffolding, not the product boundary.
 
 ## Triage rubric
 
-Score each candidate issue 0–2 on:
+Score each proposed core change from 0 to 2 on:
 
 1. observed user failure;
-2. outcome can be verified independently;
-3. generalizes across domains;
-4. cannot be expressed with existing composition points;
-5. preserves fail-closed integrity;
-6. keeps runtime dependency-free;
-7. has a network-free acceptance test.
+2. independently verifiable outcome;
+3. cross-domain generality;
+4. inability to express it with existing composition points;
+5. preservation of fail-closed integrity;
+6. zero-dependency core;
+7. network-free acceptance test.
 
-Do not schedule a core feature below 11/14. A recipe or downstream experiment
-may proceed earlier to gather the missing evidence.
+Do not schedule a core feature below 11/14. Use a recipe or downstream
+experiment to gather missing evidence first. Search, statistics, optimization,
+domain policy, dashboards, and turnkey agents remain outside core.

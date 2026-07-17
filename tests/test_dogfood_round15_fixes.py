@@ -1,17 +1,17 @@
 """Regression tests for friction surfaced in dogfood round 15
-(soc_triage cartridge — production SOC analyst).
+(soc_triage cartridge - production SOC analyst).
 
 Two things came out:
 
-* **bind name collision** — the loop calls ``hook.bind(loop_ctx)``.
+* **bind name collision** - the loop calls ``hook.bind(loop_ctx)``.
   User cartridges naturally name their dependency-injection method
   ``bind(*, my_resource)`` (it's a generic verb). The loop used to
   crash with ``TypeError: bind() takes 1 positional argument but
   2 were given`` whenever a hook defined a kw-only ``bind``.
-  Fix: sig-aware dispatch — only call bind(loop_ctx) if the
+  Fix: sig-aware dispatch - only call bind(loop_ctx) if the
   signature actually accepts a positional argument.
 
-* **mid-loop PII scrubbing causes hallucinations** — not a loader
+* **mid-loop PII scrubbing causes hallucinations** - not a loader
   bug; documented as a pitfall in docs/pitfalls.md.
 """
 
@@ -45,7 +45,7 @@ def test_loop_does_not_crash_on_hook_with_kw_only_bind() -> None:
     bind_calls: list[dict] = []
 
     class HookWithKwOnlyBind:
-        def bind(self, *, my_resource):  # kw-only — DOES NOT match loop's bind protocol
+        def bind(self, *, my_resource):  # kw-only - DOES NOT match loop's bind protocol
             bind_calls.append({"my_resource": my_resource})
 
     @tool
@@ -65,7 +65,7 @@ def test_loop_does_not_crash_on_hook_with_kw_only_bind() -> None:
     )
     cfg = LoopConfig(max_steps=3)
     state = DefaultState(max_steps=3)
-    # No exception — even though the hook has bind() that the loop
+    # No exception - even though the hook has bind() that the loop
     # used to call positionally and explode on.
     steps = list(
         composable_loop(
@@ -92,7 +92,7 @@ def test_loop_still_calls_positional_bind_protocol() -> None:
     received: list[object] = []
 
     class HookWithPositionalBind:
-        def bind(self, loop_ctx):  # positional — MATCHES loop protocol
+        def bind(self, loop_ctx):  # positional - MATCHES loop protocol
             received.append(loop_ctx)
 
     @tool

@@ -9,9 +9,9 @@ description: |-
   - Use this to find files by NAME pattern. Use `grep` to find files by CONTENT.
 
   Examples:
-  - `glob(pattern="**/*.py")` — every Python file in the project
-  - `glob(pattern="tests/test_*.py")` — every test file
-  - `glob(pattern="src/**/cli.*")` — any cli.* under src/
+  - `glob(pattern="**/*.py")` - every Python file in the project
+  - `glob(pattern="tests/test_*.py")` - every test file
+  - `glob(pattern="src/**/cli.*")` - any cli.* under src/
 parameters:
   pattern:
     type: string

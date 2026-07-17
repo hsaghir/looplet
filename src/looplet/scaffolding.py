@@ -1,4 +1,4 @@
-"""Agent scaffolding — domain-agnostic loop mechanics.
+"""Agent scaffolding - domain-agnostic loop mechanics.
 
 Provides the sophisticated scaffolding that makes agentic loops effective:
   - LLM retry with exponential backoff
@@ -7,7 +7,7 @@ Provides the sophisticated scaffolding that makes agentic loops effective:
   - Tool result truncation at capture (prevent context blow-up)
   - Context overflow detection and compression
 
-Each mechanism is independent and stateless — pure functions operating
+Each mechanism is independent and stateless - pure functions operating
 on agent state and loop counters.
 """
 
@@ -85,7 +85,7 @@ class LLMResult:
     from ``backend.last_stop_reason`` when the backend opts in by
     exposing that attribute. ``None`` means "unknown / not reported".
     ``continuations`` counts how many budget-aware continuation calls
-    were stitched together to produce ``text`` — always ``0`` unless
+    were stitched together to produce ``text`` - always ``0`` unless
     the caller requested continuation.
     """
 
@@ -134,7 +134,7 @@ def _accepts_kwarg(fn: Any, name: str) -> bool:
     accepts arbitrary keyword arguments via ``**kwargs``.
 
     Backends written as ``def generate(self, prompt, **kw)`` should
-    obviously receive forwarded ``generate_kwargs`` — otherwise
+    obviously receive forwarded ``generate_kwargs`` - otherwise
     ``LoopConfig.generate_kwargs`` silently no-ops on common
     permissive backend patterns.
     """
@@ -191,7 +191,7 @@ def llm_call_with_retry(
         list of Anthropic-style content blocks instead of a string.
       - result.is_prompt_too_long: True if prompt exceeded context window
 
-    Prompt-too-long errors are not retried — retrying the same prompt
+    Prompt-too-long errors are not retried - retrying the same prompt
     against the same context window will always fail.
 
     When ``tools`` is provided and the backend exposes ``generate_with_tools``,
@@ -212,7 +212,7 @@ def llm_call_with_retry(
     use_native = tools is not None and hasattr(llm, "generate_with_tools")
     last_error: Exception | None = None
     for attempt in range(max_retries + 1):
-        # Re-check cancellation between retries — a long backoff could span it.
+        # Re-check cancellation between retries - a long backoff could span it.
         if cancel_token is not None and getattr(cancel_token, "is_cancelled", False):
             return LLMResult(None, RuntimeError("cancelled during retry backoff"))
         try:
@@ -309,7 +309,7 @@ def llm_call_with_retry(
             if attempt < max_retries:
                 wait = RETRY_BACKOFF_BASE * (2**attempt)
                 logger.warning(
-                    "LLM call failed (attempt %d/%d): %s — retrying in %.1fs",
+                    "LLM call failed (attempt %d/%d): %s - retrying in %.1fs",
                     attempt + 1,
                     max_retries + 1,
                     e,
@@ -364,7 +364,7 @@ class StepProgressTracker:
 
     Domain-agnostic. Classifies each step based on whether new
     information was found and whether the same tool+args were called
-    before. Provides raw data — domain-specific guidance is generated
+    before. Provides raw data - domain-specific guidance is generated
     by hooks, not by this tracker.
 
     Also provides backward-compatibility with ``StallDetector``
@@ -735,7 +735,7 @@ def _compact_result(data: Any, result_key: str | None, max_chars: int) -> Any:
                 s = json.dumps(val, default=str)
                 if len(s) > budget // 4:
                     result[key] = (
-                        f"[{type(val).__name__}, {len(val) if isinstance(val, list) else len(str(val))} items — compacted]"
+                        f"[{type(val).__name__}, {len(val) if isinstance(val, list) else len(str(val))} items - compacted]"
                     )
                 else:
                     result[key] = val
@@ -764,7 +764,7 @@ def emergency_truncate(
     (not just those above a threshold), ages old step results to None,
     and produces a single summary.
 
-    Uses deterministic compaction — no LLM call. The ``llm`` parameter is
+    Uses deterministic compaction - no LLM call. The ``llm`` parameter is
     kept for API compatibility but ignored.
     """
     if not hasattr(session_log, "entries") or len(session_log.entries) <= keep_recent:

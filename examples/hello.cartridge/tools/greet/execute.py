@@ -1,4 +1,4 @@
-"""Greet tool — top-level function, no closures.
+"""Greet tool - top-level function, no closures.
 
 Receives the shared ``greeting_log`` resource through ``ctx.resources``;
 ``tool.yaml`` declares ``requires: [greeting_log]`` and the dispatcher

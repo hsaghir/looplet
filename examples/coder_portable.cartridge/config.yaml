@@ -16,9 +16,9 @@
 #                                                 → default_compact_service)
 #
 # Intentionally omitted (no portable protocol surface):
-#   * EvalHook — a host-side post-run evaluation harness (collectors +
+#   * EvalHook - a host-side post-run evaluation harness (collectors +
 #     evaluators) with no LEP decide-slot equivalent.
-#   * @instructions_memory / @project_memory — dynamic CallableMemorySource
+#   * @instructions_memory / @project_memory - dynamic CallableMemorySource
 #     builders (git branch + step-count + file discovery). Replaced with a
 #     static memory/coding.md distillation; the dynamic git/step context is
 #     a documented limitation of the portable twin.
@@ -82,7 +82,7 @@ builtin_hooks:
 # Out-of-process shared mutable state (State Service Protocol). The
 # loader spawns this server and exports its socket as
 # LOOPLET_STATE_FILE_CACHE so the MCP tool server and the cache-backed
-# LEP hooks (FileCacheHook, StaleFileHook) — all separate processes —
+# LEP hooks (FileCacheHook, StaleFileHook) - all separate processes -
 # read and write the SAME FileCache, exactly as the @ref demo did.
 state_services:
   file_cache:

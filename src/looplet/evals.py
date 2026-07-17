@@ -1,4 +1,4 @@
-"""Eval framework — pytest-style evaluation for agent runs.
+"""Eval framework - pytest-style evaluation for agent runs.
 
 Write functions named ``eval_*`` that take an :class:`EvalContext`
 and return a score, label, dict, or :class:`EvalResult`. The
@@ -52,7 +52,7 @@ Or attach to the loop for live scoring with outcome collectors::
     print(hook.summary())
 
 Prefer evaluating ``ctx.final_output`` and ``ctx.artifacts`` over
-indexing ``ctx.tool_sequence`` or grepping ``ctx.steps`` — the
+indexing ``ctx.tool_sequence`` or grepping ``ctx.steps`` - the
 former survives the model changing its workflow, the latter
 encodes today's expected trajectory as a permanent grade.
 """
@@ -116,7 +116,7 @@ logger = logging.getLogger(__name__)
 # the case files travel *inside* the cartridge directory so they are
 # version-controlled with the agent, but the cartridge *package* stays
 # evals-agnostic. The convention (this subpath) is owned here, in
-# ``looplet.evals`` — not in ``looplet.cartridge`` — so the dependency
+# ``looplet.evals`` - not in ``looplet.cartridge`` - so the dependency
 # points evals → (a path string), never cartridge → evals.
 CARTRIDGE_CASES_SUBPATH = "evals/cases"
 
@@ -198,7 +198,7 @@ class EvalRunRecord(NamedTuple):
 
 @dataclass
 class EvalContext:
-    """Everything an evaluator sees — the same data you see when debugging.
+    """Everything an evaluator sees - the same data you see when debugging.
 
     Build from a live loop run (via :class:`EvalHook`) or from saved
     trajectories (via :meth:`from_trajectory_dir`).
@@ -211,10 +211,10 @@ class EvalContext:
     """Original task dict passed to ``composable_loop``."""
 
     final_output: dict[str, Any] = field(default_factory=dict)
-    """The ``done()`` tool's args — the agent's final answer."""
+    """The ``done()`` tool's args - the agent's final answer."""
 
     session_log_text: str = ""
-    """Rendered session log — the text the LLM saw."""
+    """Rendered session log - the text the LLM saw."""
 
     metadata: dict[str, Any] = field(default_factory=dict)
     """Extra context: run_id, model, timestamp, etc."""
@@ -224,8 +224,8 @@ class EvalContext:
 
     Populated by :class:`EvalHook` collectors at the end of a run, or
     loaded from ``artifacts.json`` via :meth:`from_trajectory_dir`.
-    Use this slot to grade *what changed in the world* — tests
-    passing, files modified, repo state — instead of grepping
+    Use this slot to grade *what changed in the world* - tests
+    passing, files modified, repo state - instead of grepping
     :attr:`steps` for tool calls. See ``docs/evals.md`` for the
     "trajectory-blind eval" recipe.
     """
@@ -379,7 +379,7 @@ class EvalContext:
             if not final_output and isinstance(metrics_data.get("output"), dict):
                 final_output = metrics_data["output"]
 
-        # Load artifacts.json if present — outcome data collected
+        # Load artifacts.json if present - outcome data collected
         # outside the trajectory (test results, file diffs, repo
         # state, etc.). See EvalHook(collectors=...).
         artifacts: dict[str, Any] = {}
@@ -614,7 +614,7 @@ class EvalResult:
 
 @dataclass
 class EvalCase:
-    """A single eval case — task + expected outcomes + tags.
+    """A single eval case - task + expected outcomes + tags.
 
     Cases live as data: they round-trip to JSON via :meth:`to_dict`
     and :func:`load_cases`, so users can write them by hand and grow
@@ -631,7 +631,7 @@ class EvalCase:
       rather than trajectory-oriented (``read_file_count``).
     * ``marks``: same vocabulary as :func:`eval_mark`. Carried into
       pytest as native marks via :func:`pytest_param_cases`.
-    * ``notes``: free-text — why this case was added, what regression
+    * ``notes``: free-text - why this case was added, what regression
       it captures.
     """
 
@@ -791,7 +791,7 @@ def load_cartridge_cases(cartridge_dir: str | Path) -> list["EvalCase"]:
     version against its own evals.
 
     Unlike :func:`load_cases`, a missing ``evals/cases/`` directory is
-    not an error — it returns ``[]`` (a cartridge need not ship evals).
+    not an error - it returns ``[]`` (a cartridge need not ship evals).
     Malformed case files still raise :class:`ValueError` (loud, never
     silently partial).
     """
@@ -810,7 +810,7 @@ def save_cartridge_cases(cartridge_dir: str | Path, cases: list["EvalCase"]) -> 
     written paths.
 
     Note this writes *only* the eval slot and never touches the rest of
-    the cartridge — the eval corpus is managed independently of
+    the cartridge - the eval corpus is managed independently of
     :func:`looplet.cartridge.preset_to_cartridge`, which by design does
     not serialise (or clobber) evals.
     """
@@ -828,8 +828,8 @@ def discover_collectors(
     The sibling of :func:`eval_discover` for the *collector* role: where
     a grader reads ``EvalContext`` and returns a score, a collector runs
     once at end-of-loop and returns a ``dict`` merged into
-    :attr:`EvalContext.artifacts` (so graders can grade *outcomes* —
-    tests passing, files changed — instead of grepping the trajectory).
+    :attr:`EvalContext.artifacts` (so graders can grade *outcomes* -
+    tests passing, files changed - instead of grepping the trajectory).
 
     A collector is a top-level function named ``collect_*`` whose
     signature is either ``(state) -> dict`` or ``(state, runtime) ->
@@ -838,7 +838,7 @@ def discover_collectors(
     returned callables are uniformly ``(state) -> dict`` and drop
     straight into ``EvalHook(collectors=…)``. This mirrors how
     :func:`eval_run` passes ``llm`` only to evaluators whose signature
-    asks for it — runtime is injected by introspection, not convention
+    asks for it - runtime is injected by introspection, not convention
     soup. Runtime-parameterised collectors are what let a collector
     re-run a test suite in the agent's sandbox without hard-coding the
     path.
@@ -873,9 +873,9 @@ def load_cartridge_evals(
     Returns a :class:`CartridgeEvals` (``cases, graders, collectors``)
     read from ``<cartridge_dir>/evals/``:
 
-    * ``cases``      — ``evals/cases/*.json`` / ``*.jsonl`` (data).
-    * ``graders``    — ``eval_*`` functions in ``evals/eval_*.py``.
-    * ``collectors`` — ``collect_*`` functions in ``evals/collect_*.py``
+    * ``cases`` - ``evals/cases/*.json`` / ``*.jsonl`` (data).
+    * ``graders`` - ``eval_*`` functions in ``evals/eval_*.py``.
+    * ``collectors`` - ``collect_*`` functions in ``evals/collect_*.py``
       (runtime-bound via :func:`discover_collectors`).
 
     This is the single call that makes "evals ship with the agent
@@ -1053,7 +1053,7 @@ def save_eval_run(
     :meth:`EvalHook.save` bundles artifacts into a different shape.
     ``save_eval_run`` writes the per-case layout that
     :meth:`EvalContext.from_trajectory_dir` (hence :func:`load_eval_run`)
-    reads — so **online** grading (the live :class:`EvalHook`) and
+    reads - so **online** grading (the live :class:`EvalHook`) and
     **offline** inspection (reload + re-grade) share one on-disk format.
 
     Layout written under ``directory``::
@@ -1066,14 +1066,14 @@ def save_eval_run(
           expected.json     # grader-only case expectations, when present
           case.json         # the EvalCase that produced this run
 
-    Trajectory source — exactly one is used, in this priority:
+    Trajectory source - exactly one is used, in this priority:
 
-    * ``recorder`` — a :class:`looplet.provenance.TrajectoryRecorder`
+    * ``recorder`` - a :class:`looplet.provenance.TrajectoryRecorder`
       (full fidelity incl. LLM calls). Preferred for a freshly captured
       run.
-    * ``context`` — an :class:`EvalContext` serialised to the trajectory
+    * ``context`` - an :class:`EvalContext` serialised to the trajectory
       shape. Use when promoting an online run.
-    * ``eval_hook.context`` — falls back to the hook's captured context
+    * ``eval_hook.context`` - falls back to the hook's captured context
       (this is what :func:`promote_to_offline` rides on).
 
     Args:
@@ -1081,7 +1081,7 @@ def save_eval_run(
         context: trajectory source (see above).
         eval_hook: optional :class:`EvalHook` whose ``artifacts``,
             ``results`` (and, as a last resort, ``context``) are used.
-        case: optional :class:`EvalCase` — written as ``case.json`` so
+        case: optional :class:`EvalCase` - written as ``case.json`` so
             the run directory is self-describing.
         results: optional explicit grader results, overriding
             ``eval_hook.results`` (e.g. when graders were run offline).
@@ -1135,7 +1135,7 @@ def save_eval_run(
             "or an eval_hook with a captured .context (run the loop first)."
         )
 
-    # Outcome artifacts — the piece TrajectoryRecorder never wrote.
+    # Outcome artifacts - the piece TrajectoryRecorder never wrote.
     if eval_hook is not None:
         artifacts = dict(getattr(eval_hook, "artifacts", {}) or {})
     elif src_context is not None:
@@ -1183,8 +1183,8 @@ def promote_to_offline(
     The headline workflow: you run an agent with an online
     :class:`EvalHook`, spot an interesting case (a regression, a slow
     path, an edge case), and want to keep it forever as an offline eval
-    you can replay and re-grade. This writes the hook's captured run —
-    trajectory, tool calls, outcome ``artifacts``, and scores — to
+    you can replay and re-grade. This writes the hook's captured run -
+    trajectory, tool calls, outcome ``artifacts``, and scores - to
     ``directory`` in the same layout :func:`load_eval_run` reads, so the
     promoted run is indistinguishable from one captured offline.
 
@@ -1247,17 +1247,17 @@ def seed_case_workspace(
 
 
 def load_eval_run(directory: str | Path) -> "EvalRunRecord":
-    """Read back one persisted eval-case run — trajectory + artifacts + scores.
+    """Read back one persisted eval-case run - trajectory + artifacts + scores.
 
     The READ mechanism for inspecting *exactly what happened* on each
     eval case. Returns an :class:`EvalRunRecord` bundling:
 
-    * ``context`` — an :class:`EvalContext` (full step trajectory +
+    * ``context`` - an :class:`EvalContext` (full step trajectory +
       outcome ``artifacts``), built via
       :meth:`EvalContext.from_trajectory_dir`, so the **same** graders
       that scored the run live can re-score it offline.
-    * ``results`` — the grader scores persisted in ``evals.json``.
-    * ``case`` — the :class:`EvalCase` from ``case.json`` when present.
+    * ``results`` - the grader scores persisted in ``evals.json``.
+    * ``case`` - the :class:`EvalCase` from ``case.json`` when present.
 
     Pair with :func:`save_eval_run`. A directory missing
     ``trajectory.json`` raises :class:`FileNotFoundError` (loud).
@@ -1359,7 +1359,7 @@ def run_cartridge_evals(
     the online run's :class:`EvalContext`, ``directory`` is the persisted
     dir when ``output_dir`` is set, else the sandbox).
     """
-    from looplet.cartridge import cartridge_to_preset  # noqa: PLC0415 — evals→cartridge is allowed
+    from looplet.cartridge import cartridge_to_preset  # noqa: PLC0415 - evals→cartridge is allowed
 
     cdir = Path(cartridge_dir)
     base_runtime = dict(runtime or {})
@@ -1553,7 +1553,7 @@ def eval_discover(
 
     Discovers all functions whose name starts with ``prefix`` in
     all Python files matching ``pattern`` under ``path``. Works
-    like pytest's test collection — no registration needed.
+    like pytest's test collection - no registration needed.
 
     Args:
         path: File or directory to search.
@@ -1898,7 +1898,7 @@ class EvalHook:
                 artifacts.update(produced)
             else:
                 logger.warning(
-                    "Eval collector %s returned %s; expected dict — ignored",
+                    "Eval collector %s returned %s; expected dict - ignored",
                     collector_name,
                     type(produced).__name__,
                 )
@@ -1958,7 +1958,7 @@ class EvalHook:
 def eval_mark(*tags: str) -> Callable:
     """Tag an eval function with category marks for filtering.
 
-    Like pytest.mark — lets you group and filter evals::
+    Like pytest.mark - lets you group and filter evals::
 
         @eval_mark("accuracy", "fast")
         def eval_answer_correct(ctx):
@@ -2035,7 +2035,7 @@ def eval_run_batch(
 ) -> list[dict[str, Any]]:
     """Run evaluators across multiple trajectories.
 
-    Like pytest parametrize — same evals, different inputs::
+    Like pytest parametrize - same evals, different inputs::
 
         contexts = [EvalContext.from_trajectory_dir(d) for d in trace_dirs]
         table = eval_run_batch(evals, contexts)
@@ -2131,7 +2131,7 @@ def eval_cli(args: list[str] | None = None) -> int:
     """
     import argparse
 
-    # Lightweight subcommand dispatch — keep the existing flat surface
+    # Lightweight subcommand dispatch - keep the existing flat surface
     # working when the first arg isn't a recognized subcommand.
     raw = list(args) if args is not None else sys.argv[1:]
     if raw and raw[0] == "cases":
@@ -2247,7 +2247,7 @@ def eval_cli(args: list[str] | None = None) -> int:
         if parsed.verbose:
             for j, run in enumerate(row.get("per_run", [])):
                 label = names[j] if j < len(names) else f"run_{j}"
-                score = run.get("score", "—")
+                score = run.get("score", " - ")
                 details = run.get("details", [])
                 print(f"      {label}: {score}")
                 for d in details[:3]:
@@ -2423,7 +2423,7 @@ def _run_cartridge_cli(args: list[str]) -> int:
                 if r.score < parsed.threshold:
                     below_threshold = True
             elif r.metrics:
-                # Metric grader (no pass/fail score) — show the numbers.
+                # Metric grader (no pass/fail score) - show the numbers.
                 cells += f"{('; '.join(f'{k}={v:g}' for k, v in r.metrics.items())):22}"
             else:
                 cells += f"{(r.label or '-'):22}"
@@ -2451,7 +2451,7 @@ def _run_cartridge_cli(args: list[str]) -> int:
 
 
 def _cases_cli(args: list[str]) -> int:
-    """``looplet eval cases ls|show <path>`` — read-only case browser."""
+    """``looplet eval cases ls|show <path>`` - read-only case browser."""
     import argparse
 
     parser = argparse.ArgumentParser(

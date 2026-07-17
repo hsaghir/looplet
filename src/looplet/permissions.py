@@ -3,12 +3,12 @@
 Register a :class:`PermissionEngine` via ``hooks=[PermissionHook(engine)]``
 to get:
 
-* Four canonical decisions — ``allow``, ``deny``, ``ask``, ``default``
+* Four canonical decisions - ``allow``, ``deny``, ``ask``, ``default``
 * Rule-based matching on ``(tool_name, arg_matcher)``
 * Automatic audit trail of every denial, surfaced as a
   :class:`looplet.types.ToolError` with
   ``kind=ErrorKind.PERMISSION_DENIED``
-* A single extension point — plug in a callable ``ask_handler`` to
+* A single extension point - plug in a callable ``ask_handler`` to
   wire up human-in-the-loop prompts without touching the engine
 
 This is the minimum needed to match modern agent permission semantics
@@ -36,7 +36,7 @@ class PermissionDecision(str, Enum):
     ALLOW = "allow"
     DENY = "deny"
     ASK = "ask"
-    DEFAULT = "default"  # no rule matched — caller decides fallback
+    DEFAULT = "default"  # no rule matched - caller decides fallback
 
 
 ArgMatcher = Callable[[dict[str, Any]], bool]
@@ -50,7 +50,7 @@ class PermissionRule:
 
     Rules are checked in order; the first matching rule wins. A rule
     matches when the tool name equals ``tool`` (``"*"`` matches any)
-    and — if provided — ``arg_matcher(args)`` is truthy.
+    and - if provided - ``arg_matcher(args)`` is truthy.
     """
 
     tool: str
@@ -74,7 +74,7 @@ class PermissionRule:
             #   DEFAULT → act as if it did NOT match
             fail_closed_match = self.decision == PermissionDecision.DENY
             logger.warning(
-                "PermissionRule arg_matcher for '%s' (decision=%s) raised %s — "
+                "PermissionRule arg_matcher for '%s' (decision=%s) raised %s - "
                 "failing closed (matches=%s)",
                 self.tool,
                 self.decision.value,
@@ -107,7 +107,7 @@ class PermissionEngine:
 
     ``default`` controls what happens when no rule matches. ``ask_handler``
     is an optional callable that turns an ``ASK`` outcome into a concrete
-    ``ALLOW`` or ``DENY`` — typically by prompting a human or another
+    ``ALLOW`` or ``DENY`` - typically by prompting a human or another
     agent. Without a handler, ``ASK`` falls back to ``default`` so the
     engine never blocks indefinitely.
 
@@ -178,7 +178,7 @@ class PermissionEngine:
                         # Guard: handler must return ALLOW or DENY.
                         if decision not in (PermissionDecision.ALLOW, PermissionDecision.DENY):
                             logger.warning(
-                                "ask_handler returned %r for tool '%s' — "
+                                "ask_handler returned %r for tool '%s' - "
                                 "treating as DENY (must return ALLOW or DENY)",
                                 decision,
                                 call.tool,
@@ -212,7 +212,7 @@ class PermissionEngine:
         if self.default in (PermissionDecision.ALLOW, PermissionDecision.DENY):
             return self.default
         logger.warning(
-            "PermissionEngine.default=%r is ambiguous for '%s' — "
+            "PermissionEngine.default=%r is ambiguous for '%s' - "
             "collapsing to DENY (configure default=ALLOW or DENY to silence)",
             self.default,
             call.tool,
@@ -221,7 +221,7 @@ class PermissionEngine:
 
     def _record_denial(self, call: ToolCall, rule: PermissionRule | None, reason: str) -> None:
         # Strip internal ``__…__`` scaffolding keys (e.g. ``__theory__``)
-        # that parse.py stamps onto tool args — those are agent-internal
+        # that parse.py stamps onto tool args - those are agent-internal
         # metadata, not user-visible args, and leaking them into an
         # audit log is noisy + potentially sensitive.
         clean_args = {k: v for k, v in call.args.items() if not k.startswith("__")}
@@ -267,7 +267,7 @@ class PermissionHook:
 
         When ``self.engine`` was produced by a workspace resource
         builder (its class lives in ``_chw_resource_<name>``), the
-        original ref name is preserved — e.g. a workspace declaring
+        original ref name is preserved - e.g. a workspace declaring
         ``resources/sql_permissions.py`` round-trips as
         ``{"engine": "@sql_permissions"}``. Otherwise the writer
         emits the generic ``"@engine"`` name.
@@ -279,7 +279,7 @@ class PermissionHook:
 
     def on_event(self, payload: Any) -> Any:
         """Fire on ``PRE_TOOL_USE`` and convert engine outcomes to decisions."""
-        # Lazy import — avoids a hard cycle with looplet.events.
+        # Lazy import - avoids a hard cycle with looplet.events.
         from looplet.events import LifecycleEvent  # noqa: PLC0415
         from looplet.hook_decision import Allow, Deny  # noqa: PLC0415
 

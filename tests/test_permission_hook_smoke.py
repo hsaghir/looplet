@@ -1,4 +1,4 @@
-"""Smoke tests for :class:`PermissionHook` — the unified permission path."""
+"""Smoke tests for :class:`PermissionHook` - the unified permission path."""
 
 from __future__ import annotations
 

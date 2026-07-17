@@ -2,7 +2,7 @@
 
 The constructor accepts an optional ``workspace`` path. When omitted
 (the recommended setup), it is resolved via
-:func:`looplet.cartridge.runtime_helpers.resolve_project_root` — so
+:func:`looplet.cartridge.runtime_helpers.resolve_project_root` - so
 the hook works whether or not the host passes a runtime dict, and
 without a stale "workspace" name in the config.
 """

@@ -106,7 +106,7 @@ class MockLLMBackend:
                 f"MockLLMBackend(cycle=False): generate() called "
                 f"{self.calls} times but only {len(self._responses)} "
                 f"responses were scripted. The loop made more LLM calls "
-                f"than your test expected — either script more responses "
+                f"than your test expected - either script more responses "
                 f"or arrange for the loop to terminate sooner."
             )
         response = self._responses[self._index % len(self._responses)]
@@ -125,7 +125,7 @@ class AsyncMockLLMBackend:
     """Scripted asynchronous LLM backend for tests.
 
     Mirrors :class:`MockLLMBackend` but implements the ``AsyncLLMBackend``
-    protocol — ``generate`` is a coroutine.
+    protocol - ``generate`` is a coroutine.
     """
 
     def __init__(
@@ -157,7 +157,7 @@ class AsyncMockLLMBackend:
                 f"AsyncMockLLMBackend(cycle=False): generate() called "
                 f"{self.calls} times but only {len(self._responses)} "
                 f"responses were scripted. The loop made more LLM calls "
-                f"than your test expected — either script more responses "
+                f"than your test expected - either script more responses "
                 f"or arrange for the loop to terminate sooner."
             )
         response = self._responses[self._index % len(self._responses)]
@@ -172,7 +172,7 @@ class AsyncMockLLMBackend:
 
 
 def _is_llm_backend_subclass(obj: Any) -> bool:
-    """Internal smoke-test helper — verifies Mock backends satisfy the protocol."""
+    """Internal smoke-test helper - verifies Mock backends satisfy the protocol."""
     from looplet.types import LLMBackend  # noqa: PLC0415
 
     return isinstance(obj, LLMBackend)

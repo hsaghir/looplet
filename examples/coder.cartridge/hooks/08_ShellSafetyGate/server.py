@@ -1,4 +1,4 @@
-"""ShellSafetyGate — a portable ``kind: lep`` permission policy.
+"""ShellSafetyGate - a portable ``kind: lep`` permission policy.
 
 A catastrophic-command guardrail for the coder agent that runs *out of
 process* over the Loop Effect Protocol (LEP). The host ships only the
@@ -6,12 +6,12 @@ declared view (``tool`` + ``args``); this server inspects the proposed
 ``bash`` command and denies a small, conservative set of irreversibly
 destructive patterns (root/home wipes, raw-disk writes, filesystem
 formats, fork bombs, world-writable recursion on ``/``). Everything else
-is allowed — ordinary coding shell usage is untouched.
+is allowed - ordinary coding shell usage is untouched.
 
 Because the decision is a pure function of the declared view, the hook
 is classified ``portable`` and round-trips losslessly as a self-contained
 ``kind: lep`` block alongside the cartridge's in-process hooks
-(TestGuard, FileCache, StaleFile, Linter, Eval) — demonstrating both the
+(TestGuard, FileCache, StaleFile, Linter, Eval) - demonstrating both the
 out-of-process and in-process authoring styles in one cartridge.
 """
 

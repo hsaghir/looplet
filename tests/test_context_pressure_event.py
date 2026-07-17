@@ -1,10 +1,10 @@
-"""Tests for ContextPressureEvent — the 4th tier of token budget tracking.
+"""Tests for ContextPressureEvent - the 4th tier of token budget tracking.
 
 The 3-tier (compact / warning / blocking) system already exists on
 ``ContextPressureHook``, but only the *compact* and *blocking* tiers
 trigger visible actions. The *warning* tier is computed but nothing
 consumes it. Some agent frameworks use the warning tier to signal the *user*
-("85% full — consider wrapping up"), which requires pushing the signal
+("85% full - consider wrapping up"), which requires pushing the signal
 through an event channel.
 
 This test locks in:

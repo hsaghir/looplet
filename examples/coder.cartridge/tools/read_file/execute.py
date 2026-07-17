@@ -1,4 +1,4 @@
-"""read_file tool — read with line numbers + cache integration.
+"""read_file tool - read with line numbers + cache integration.
 
 Receives ``workspace_config`` and ``file_cache`` through
 ``ctx.resources``; ``tool.yaml`` declares
@@ -26,7 +26,7 @@ def execute(ctx: ToolContext, *, file_path: str, start_line: int = 0, end_line: 
             "error": f"{file_path!r} is a directory, not a file.",
             "recovery": f"list_dir(path={file_path!r})",
         }
-    # Binary detection — prevents read_file from returning garbage
+    # Binary detection - prevents read_file from returning garbage
     # bytes that would blow up the model's tokenizer or look like a
     # legitimate edit target.
     is_binary, reason = is_binary_file(p)
@@ -79,7 +79,7 @@ def execute(ctx: ToolContext, *, file_path: str, start_line: int = 0, end_line: 
         truncated = True
         content = (
             content[:10000]
-            + f"\n... [{len(content) - 20000} chars truncated — re-read with start_line/end_line] ...\n"
+            + f"\n... [{len(content) - 20000} chars truncated - re-read with start_line/end_line] ...\n"
             + content[-10000:]
         )
     if cache is not None:

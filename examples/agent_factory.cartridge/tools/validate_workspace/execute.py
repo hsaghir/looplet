@@ -1,4 +1,4 @@
-"""validate_workspace tool — structural validator for generated cartridges.
+"""validate_workspace tool - structural validator for generated cartridges.
 
 Calls ``looplet.cartridge_to_preset()`` against the path and reports
 either the loaded tool/hook/config inventory (success) or a structured
@@ -108,9 +108,9 @@ def execute(
         "warnings": [
             warning
             for warning in (
-                "system_prompt is empty — add prompts/system.md" if sys_prompt_chars == 0 else None,
-                "no `done` tool — every agent must have one" if "done" not in tools else None,
-                "system_prompt still has <TODO:> markers — fill them in"
+                "system_prompt is empty - add prompts/system.md" if sys_prompt_chars == 0 else None,
+                "no `done` tool - every agent must have one" if "done" not in tools else None,
+                "system_prompt still has <TODO:> markers - fill them in"
                 if todo_in_prompt
                 else None,
                 (

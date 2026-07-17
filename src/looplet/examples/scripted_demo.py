@@ -1,4 +1,4 @@
-"""Scripted demo — **GIF-recording utility, not a usage example.**
+"""Scripted demo - **GIF-recording utility, not a usage example.**
 
 This file exists only to produce the deterministic terminal GIF at the
 top of the README. The LLM is replaced with a scripted
@@ -7,26 +7,26 @@ top of the README. The LLM is replaced with a scripted
 What the GIF shows:
 
 1. An 8-line ``DebugHook`` (just a ``Protocol`` impl) prints a one-liner
-   for every LLM call and every tool dispatch — that's the entire
+   for every LLM call and every tool dispatch - that's the entire
    "debugging story" of this library.
 2. A destructive tool (``delete_rows``) trips ``ApprovalHook``; the
    loop pauses on an ``APPROVAL NEEDED`` prompt. A scripted ``"yes"``
-   lets it resume — the same flow your ops engineer, Slack bot, or
+   lets it resume - the same flow your ops engineer, Slack bot, or
    HITL pipeline would use.
 3. The loop returns cleanly. All 5 steps are visible. No magic.
 
 For a real usage example, see instead:
 
-* ``hello_world.py`` — the 20-line "first agent" (real LLM).
-* ``coding_agent.py`` — a realistic tool-using agent (real LLM).
-* ``data_agent.py`` — approval + compact + checkpoints wired together
+* ``hello_world.py`` - the 20-line "first agent" (real LLM).
+* ``coding_agent.py`` - a realistic tool-using agent (real LLM).
+* ``data_agent.py`` - approval + compact + checkpoints wired together
     (real LLM by default; pass ``--scripted`` for CI).
 
 Run::
 
     python -m looplet.examples.scripted_demo
 
-Output is identical on every run — that's the point. If you change
+Output is identical on every run - that's the point. If you change
 this file, re-record the GIF (see ``docs/demo-script.md``).
 """
 
@@ -118,7 +118,7 @@ def main(argv: list[str] | None = None) -> int:
     if argv:
         raise SystemExit("scripted_demo accepts no arguments")
 
-    # ── 1. Tools — cheap real ones + one "dangerous" one ──────────
+    # ── 1. Tools - cheap real ones + one "dangerous" one ──────────
     rows = [
         {"id": 1, "user": "alice", "status": "paid"},
         {"id": 2, "user": "bob", "status": "paid"},
@@ -127,7 +127,7 @@ def main(argv: list[str] | None = None) -> int:
     ]
     tools = build_tools(rows)
 
-    # ── 2. Scripted LLM — one JSON per turn ──────────────────────
+    # ── 2. Scripted LLM - one JSON per turn ──────────────────────
     llm = MockLLMBackend(
         responses=[
             json.dumps({"tool": "head", "args": {"n": 4}}),
@@ -142,7 +142,7 @@ def main(argv: list[str] | None = None) -> int:
         ]
     )
 
-    # ── 3. Sync approval handler — scripted "yes" for determinism
+    # ── 3. Sync approval handler - scripted "yes" for determinism
     approval_calls: list[str] = []
 
     def handler(prompt: str, options: list[str] | None) -> str:
@@ -162,7 +162,7 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
 
-    # ── 4. Run — user-owned for-loop ─────────────────────────────
+    # ── 4. Run - user-owned for-loop ─────────────────────────────
     _slow_print("$ python -m looplet.examples.scripted_demo", delay=0.5)
     _slow_print(
         "# task: head the orders table, count by status, clean cancelled rows",
@@ -182,7 +182,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print()
     _slow_print(
-        f"✓ done — {len(approval_calls)} approval prompt, 4 tools, scripted run.",
+        f"✓ done - {len(approval_calls)} approval prompt, 4 tools, scripted run.",
         delay=0.0,
     )
     return 0

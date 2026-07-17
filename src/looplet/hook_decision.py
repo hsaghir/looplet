@@ -1,4 +1,4 @@
-"""Unified hook return type — one dataclass, every lifecycle slot.
+"""Unified hook return type - one dataclass, every lifecycle slot.
 
 Every hook method on :class:`looplet.loop.LoopHook` traditionally
 had its own return shape: ``str | None`` for briefing injection,
@@ -14,7 +14,7 @@ default". Fields that don't apply to the current call site are
 silently ignored, so a hook can safely set fields that only matter
 for one slot without guessing which method the loop will call.
 
-The dataclass is intentionally flat — no inheritance, no variants,
+The dataclass is intentionally flat - no inheritance, no variants,
 one level of optional attributes. That keeps the API surface small
 and makes it trivial to inspect a decision in logs.
 
@@ -49,8 +49,8 @@ class HookDecision:
     """The single unified return type for every hook method.
 
     Fields are evaluated per call site. A hook that runs in a slot the
-    field doesn't apply to — e.g. setting ``updated_args`` in
-    ``on_loop_end`` — is a silent no-op, never a crash. This lets one
+    field doesn't apply to - e.g. setting ``updated_args`` in
+    ``on_loop_end`` - is a silent no-op, never a crash. This lets one
     hook cover multiple lifecycle events without switching on method
     name.
 
@@ -61,7 +61,7 @@ class HookDecision:
             briefing. ``None`` means "allow".
         stop: When set on any hook during a step, signals the loop to
             terminate after the current step completes. The string is
-            the ``termination_reason`` — captured in trajectories and
+            the ``termination_reason`` - captured in trajectories and
             logs. ``None`` means "continue".
         updated_args: When set on ``pre_tool_use``, replaces the tool
             call's arguments before dispatch. Enables auto-correction
@@ -74,13 +74,13 @@ class HookDecision:
             lands in history. ``None`` in either slot means "use the
             real tool output".
         permission: When set on ``pre_tool_use``, grants or refuses
-            the call directly — ``"allow"`` proceeds to dispatch;
+            the call directly - ``"allow"`` proceeds to dispatch;
             ``"deny"`` converts to a ``ToolError(kind=PERMISSION_DENIED)``
             using ``block`` as the human-readable reason. Collapses
             the old ``check_permission`` + ``PermissionEngine`` duality
             into one field.
         additional_context: Plain text appended to the next briefing.
-            Works on every hook slot — pre-prompt, post-dispatch,
+            Works on every hook slot - pre-prompt, post-dispatch,
             on_compact, etc. Subject to ``max_briefing_tokens``.
         metadata: Free-form dict preserved in trajectory records.
             Good for hook-specific telemetry that shouldn't leak
@@ -258,7 +258,7 @@ def _toolresult_from_wire(raw: Any) -> "ToolResult | None":
 #     return Stop("budget exceeded")
 #     return InjectContext("remember: this is a dry run")
 #
-# Each returns a ``HookDecision`` — they're factories, not classes.
+# Each returns a ``HookDecision`` - they're factories, not classes.
 
 
 def Allow(updated_args: dict[str, Any] | None = None) -> HookDecision:
@@ -350,14 +350,14 @@ def normalize_hook_return(
         * :class:`ToolResult` → ``HookDecision(updated_result=r)``
           (dispatch-intercept)
 
-    Anything else raises ``TypeError`` — hooks that return garbage
+    Anything else raises ``TypeError`` - hooks that return garbage
     should fail loud, not silently drop.
     """
     if value is None:
         return None
     if isinstance(value, HookDecision):
         return value
-    # ToolResult — dispatch intercept.
+    # ToolResult - dispatch intercept.
     if isinstance(value, ToolResult):
         return HookDecision(updated_result=value)
     if isinstance(value, bool):
@@ -365,7 +365,7 @@ def normalize_hook_return(
             return Allow() if value else Deny("permission denied")
         if slot == "should_stop":
             return Stop("hook_requested_stop") if value else None
-        # Bools from other slots are nonsense — signal cleanly.
+        # Bools from other slots are nonsense - signal cleanly.
         raise TypeError(
             f"hook slot {slot!r} received bool {value!r}; expected HookDecision | str | None"
         )
@@ -374,7 +374,7 @@ def normalize_hook_return(
             return InjectContext(value)
         if slot == "check_done":
             return Block(value)
-        # Strings from unexpected slots — accept as briefing rather
+        # Strings from unexpected slots - accept as briefing rather
         # than crash; the old "return a string" behaviour was additive
         # in every case that shipped.
         return InjectContext(value)

@@ -12,7 +12,7 @@ Features:
   perspective, though provider SDKs may continue in the background
   until their own socket timeouts fire).
 - ``retry_on`` predicate lets the caller decide which exceptions are
-  retriable — default retries every ``Exception`` that is not
+  retriable - default retries every ``Exception`` that is not
   :class:`KeyboardInterrupt` / :class:`SystemExit`.
 - Preserves ``generate_with_tools`` when the wrapped backend
   provides it.
@@ -71,7 +71,7 @@ def _run_with_timeout(
     """Run ``fn`` in a worker thread and wait up to ``timeout_s`` seconds.
 
     Raises :class:`TimeoutError` if the call does not complete in time.
-    The worker thread is daemonic — if the provider SDK ignores
+    The worker thread is daemonic - if the provider SDK ignores
     interruption we abandon it rather than hang the agent loop.
     """
     if timeout_s is None or timeout_s <= 0:
@@ -83,7 +83,7 @@ def _run_with_timeout(
     def _target() -> None:
         try:
             result.append(fn())
-        except BaseException as exc:  # noqa: BLE001 — forward to caller
+        except BaseException as exc:  # noqa: BLE001 - forward to caller
             error.append(exc)
 
     t = threading.Thread(target=_target, daemon=True)
@@ -191,7 +191,7 @@ class ResilientBackend:
         for attempt in range(1, self._retries + 1):
             try:
                 return _run_with_timeout(fn, self._timeout_s)
-            except BaseException as exc:  # noqa: BLE001 — decide below
+            except BaseException as exc:  # noqa: BLE001 - decide below
                 if not self._retry_on(exc):
                     raise
                 errors.append(exc)

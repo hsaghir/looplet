@@ -23,7 +23,7 @@ _EVAL_CALL = _re.compile(r"(?<![\w.])(eval|exec)\s*\(")
 
 
 def _uses_builtin_eval(txt: str) -> bool:
-    """True only for the *builtin* eval/exec/ast — not a user's `.eval()` /
+    """True only for the *builtin* eval/exec/ast - not a user's `.eval()` /
     `_eval()` / `def eval(...)` (a recursive-descent evaluator legitimately
     names a method `eval`)."""
     if "literal_eval" in txt:

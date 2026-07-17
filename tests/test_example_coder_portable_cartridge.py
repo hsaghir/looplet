@@ -1,6 +1,6 @@
 """End-to-end dogfood of the fully-portable ``coder_portable`` cartridge.
 
-This is the cross-runtime twin of ``coder`` — the most complex example
+This is the cross-runtime twin of ``coder`` - the most complex example
 cartridge (16 tools, a shared ``FileCache`` resource, and six hooks).
 Every portable component lives out of process behind a protocol:
 
@@ -19,7 +19,7 @@ The tests prove the twin composes across process boundaries:
    16 tools are reachable across the boundary.
 3. The deterministic file tools (write/read/edit/grep) run out of
    process AND their reads land in the SAME FileCache State Service that
-   a DIFFERENT process (the cache-backed LEP hooks) would observe —
+   a DIFFERENT process (the cache-backed LEP hooks) would observe -
    reproducing the original in-process ``@ref`` sharing with zero shared
    Python objects.
 4. The ``subagent`` tool reaches the host LLM over the Model Gateway: it
@@ -103,7 +103,7 @@ def test_coder_portable_cross_process_tools(monkeypatch, tmp_path) -> None:
         )
         assert w.error is None
         # NB: the framework strips whitespace on string args, so the
-        # trailing newline is trimmed — assert on the body, not bytes.
+        # trailing newline is trimmed - assert on the body, not bytes.
         assert (tmp_path / target).read_text().rstrip() == "def add(a, b):\n    return a + b"
 
         # (2) read_file (separate process) reads it back AND records the
@@ -150,7 +150,7 @@ def test_coder_portable_cross_process_tools(monkeypatch, tmp_path) -> None:
 
 def test_coder_portable_structured_param_schema_and_coercion(monkeypatch, tmp_path) -> None:
     """Regression: structured tool params (``multi_edit.edits: list``) must
-    advertise as JSON-Schema ``array`` — not ``string`` — and a JSON-string
+    advertise as JSON-Schema ``array`` - not ``string`` - and a JSON-string
     value for such a param must be coerced to a list across the MCP boundary.
 
     The vendored tool modules use ``from __future__ import annotations``

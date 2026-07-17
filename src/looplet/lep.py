@@ -1,4 +1,4 @@
-"""Loop Effect Protocol (LEP) — run a looplet hook in another process.
+"""Loop Effect Protocol (LEP) - run a looplet hook in another process.
 
 This is the productionised host-side bridge first prototyped under
 ``paper/experiments/cross_runtime_portability/lep_poc``. An
@@ -14,7 +14,7 @@ every lifecycle slot the adapter:
      :meth:`HookDecision.from_wire`, then maps it to the exact value the
      loop expects from that slot.
 
-The adapter carries **zero decision logic** — it is pure transport plus
+The adapter carries **zero decision logic** - it is pure transport plus
 the §3 fidelity map. That is what makes an out-of-process hook
 behaviourally indistinguishable from the same hook in-process, and hence
 what makes a ``kind: lep`` cartridge entry a lossless translation of a
@@ -128,7 +128,7 @@ class LEPHookAdapter:
         """Run one slot remotely and reconstruct its effect.
 
         On any transport/protocol failure, applies ``on_failure`` rather
-        than propagating — an out-of-process hook must never crash the
+        than propagating - an out-of-process hook must never crash the
         host loop.
         """
         if self._proc is None:
@@ -173,7 +173,7 @@ class LEPHookAdapter:
         A Python policy server typically does
         ``from looplet.lep import LEPServerBase``. When looplet runs from a
         source checkout (not pip-installed into the child's site-packages),
-        the package dir is only on the *host's* ``sys.path`` — the spawned
+        the package dir is only on the *host's* ``sys.path`` - the spawned
         interpreter would not find it. We prepend the directory that
         contains the ``looplet`` package to the child's ``PYTHONPATH`` so
         the import resolves regardless of how the host obtained looplet.
@@ -306,7 +306,7 @@ class LEPServerBase:
     Subclasses set :attr:`slots`/:attr:`effects` (for the
     ``loop/initialize`` capability advertisement) and implement
     :meth:`decide`. Call :meth:`serve` from ``__main__`` to run the
-    stdin/stdout JSON-RPC loop. Nothing else from looplet is required —
+    stdin/stdout JSON-RPC loop. Nothing else from looplet is required -
     a subclass may import :class:`HookDecision` for convenience, or
     return a raw effect dict to stay dependency-free like a Rust server.
     """

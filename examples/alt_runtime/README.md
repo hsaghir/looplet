@@ -1,4 +1,4 @@
-# `tinyloop` — a second runtime for the cartridge format
+# `tinyloop` - a second runtime for the cartridge format
 
 A 200-line stand-alone Python script that loads and runs Cartridge
 Spec v1.0 cartridges without importing `looplet`. Its purpose is

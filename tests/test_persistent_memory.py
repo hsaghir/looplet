@@ -1,7 +1,7 @@
 """Tests for PersistentMemorySource.
 
 Problem: many agent frameworks inject a memory file on every turn;
-it survives all compactions. Open-harness had no equivalent — callers must stuff memory
+it survives all compactions. Open-harness had no equivalent - callers must stuff memory
 into the system prompt manually, and it isn't protected from
 compaction.
 

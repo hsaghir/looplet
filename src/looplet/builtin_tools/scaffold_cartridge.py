@@ -1,4 +1,4 @@
-"""``scaffold_cartridge`` built-in tool — agent-callable wrapper.
+"""``scaffold_cartridge`` built-in tool - agent-callable wrapper.
 
 A cartridge opts in via ``builtin_tools: [scaffold_cartridge]`` in
 its ``config.yaml``. The tool wraps
@@ -15,7 +15,7 @@ Use this when:
 
 When the host already knows what to build (e.g. ``looplet new
 --name=foo --tools=a,b``) it should pre-scaffold via ``runtime``
-kwargs instead — that saves the agent a tool turn.
+kwargs instead - that saves the agent a tool turn.
 """
 
 from __future__ import annotations
@@ -78,7 +78,7 @@ SPEC = ToolSpec(
         "Generates cartridge.json, config.yaml, prompts/system.md, "
         "tools/<name>/{tool.yaml, execute.py} stubs (raise "
         "NotImplementedError) for each requested tool, plus the standard "
-        "``done`` tool. Idempotent — re-running preserves files that "
+        "``done`` tool. Idempotent - re-running preserves files that "
         "already exist.\n\n"
         "Use this FIRST when generating a new cartridge draft, then fill in "
         "the TODO markers via multi_edit / edit_file. Saves the 5-7 "

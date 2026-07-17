@@ -1,4 +1,4 @@
-# Tutorial — build a testable harness
+# Tutorial: build a testable harness
 
 This tutorial builds the smallest useful Looplet artifact: a report
 agent whose tool writes `report.json`, plus a behavioral contract that
@@ -305,9 +305,10 @@ release process permits:
     --out ./eval-runs --threshold 1.0
 ```
 
-For serious promotion decisions, keep hidden tests or expectations in
-a host-owned holdout suite outside the candidate's writable cartridge
-and sandbox.
+For serious promotion decisions, keep holdout collectors, graders, expected
+data, and capabilities in a host-owned runner. Do not pass them through the
+candidate task or runtime. If candidate code is untrusted, enforce the boundary
+with OS or process isolation rather than directory layout alone.
 
 ## What to build next
 

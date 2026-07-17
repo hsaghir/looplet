@@ -71,7 +71,7 @@ class TestApiSchemaRequired:
             execute=lambda **_: {},
         )
         schema = spec.to_api_schema()
-        # JSON Schema path uses parameters directly — required survives.
+        # JSON Schema path uses parameters directly - required survives.
         assert schema["input_schema"]["required"] == ["x"]
 
     def test_no_params_api_schema_empty_required(self) -> None:

@@ -303,7 +303,7 @@ def test_v2_payload_discriminated_outcome_validates(tmp_path: Path) -> None:
 
 
 def test_v2_rejects_tags_on_multi_file_tool(tmp_path: Path) -> None:
-    """v2 cut: ``tags:`` on tool.yaml — categorisation is a hook concern."""
+    """v2 cut: ``tags:`` on tool.yaml - categorisation is a hook concern."""
     root = tmp_path / "v2.cartridge"
     _write_minimal(root)
     (root / "cartridge.json").write_text('{"name": "x", "schema_version": 2}\n')
@@ -323,7 +323,7 @@ def test_v2_rejects_tags_on_multi_file_tool(tmp_path: Path) -> None:
 
 
 def test_v2_rejects_dunders_on_single_file_tool(tmp_path: Path) -> None:
-    """v2 cut: single-file tools must stay trivial — no resources/render/tags."""
+    """v2 cut: single-file tools must stay trivial - no resources/render/tags."""
     root = tmp_path / "v2.cartridge"
     _write_minimal(root)
     (root / "cartridge.json").write_text('{"name": "x", "schema_version": 2}\n')
@@ -343,7 +343,7 @@ def test_v2_rejects_dunders_on_single_file_tool(tmp_path: Path) -> None:
 
 
 def test_v2_rejects_py_ref_grammar(tmp_path: Path) -> None:
-    """v2 cut: ``${py:module:symbol}`` — wrap in resources/<name>.py builder."""
+    """v2 cut: ``${py:module:symbol}`` - wrap in resources/<name>.py builder."""
     root = tmp_path / "v2.cartridge"
     _write_minimal(root)
     (root / "cartridge.json").write_text('{"name": "x", "schema_version": 2}\n')

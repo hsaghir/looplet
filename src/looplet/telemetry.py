@@ -1,4 +1,4 @@
-"""Telemetry — structured observability for monitoring agent behavior in production.
+"""Telemetry - structured observability for monitoring agent behavior in production.
 
 Provides:
   - Span: a named, timed unit of work with parent-child nesting
@@ -126,7 +126,7 @@ class Tracer:
         if self._stack and self._stack[-1] is span:
             self._stack.pop()
         else:
-            # Handle out-of-order ending — scan and remove
+            # Handle out-of-order ending - scan and remove
             try:
                 self._stack.remove(span)
             except ValueError:

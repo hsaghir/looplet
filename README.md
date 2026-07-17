@@ -11,8 +11,8 @@
 ## Own the loop. Test every change.
 
 Looplet is for teams building a tool-calling agent that is fundamentally
-one model in one loop—and that now need to change its prompts, tools,
-hooks, memory, or model without guessing what behavior broke.
+one model in one loop. It is for the point when prompts, tools, hooks, memory,
+or models must change without guessing what behavior broke.
 
 Keep the harness in reviewable files. Capture what the model saw. Replay
 recorded responses against fresh harness code. Grade independently
@@ -168,15 +168,14 @@ looplet hash ./agent.cartridge
 looplet eval run ./agent.cartridge --out ./eval-runs --threshold 1.0
 ```
 
-The prompt, tool, hook, and eval change live next to the behavioral
-contract they affect. Shared or protected holdout evals can still live
-outside the cartridge when the candidate must not be able to edit its
-own promotion gate.
+The prompt, tool, hook, and self-test change live next to the behavioral
+contract they affect. A promotion holdout belongs in a separate host-owned
+runner and requires an isolation boundary outside candidate authority.
 
 See the [cartridge guide](https://hsaghir.github.io/looplet/cartridge/). If a brief is a useful
-starting point, `looplet new` can scaffold a cartridge—but the
+starting point, `looplet new` can scaffold a cartridge. The
 [agent factory](https://hsaghir.github.io/looplet/agent-factory/) is onboarding, not the product
-boundary. Review and test what it writes.
+boundary, so review and test what it writes.
 
 ---
 
@@ -187,7 +186,7 @@ boundary. Review and test what it writes.
 | `composable_loop()` | Sync/async iterator-first execution with explicit `Step` records |
 | Hooks and protocols | Exact interception points for context, permissions, approvals, compaction, tracing, and stop rules |
 | Provenance + replay | Human-readable model/step evidence and captured-response re-execution |
-| Collectors + evals | Host-observed artifacts, grader-only expectations, protected holdouts, pytest helpers, and CI exit codes |
+| Collectors + evals | Host-observed artifacts, grader-only expectations, pytest helpers, and CI exit codes |
 
 Core Looplet uses the Python standard library. OpenAI and Anthropic
 SDKs are optional extras; bring your own backend if you prefer.
@@ -209,14 +208,16 @@ def eval_tests_pass(ctx):
     return ctx.artifacts["tests_passing"]
 ```
 
-Use trajectory assertions to test harness mechanics—whether a guard
+Use trajectory assertions to test harness mechanics, such as whether a guard
 fired, a dangerous call was denied, or a stop reason was recorded. Use
 collectors for product quality: tests passing, files correct, records
 written, APIs healthy, or schemas valid.
 
-The agent never receives top-level case `expected` data. Persisted runs
-keep it in a separate `expected.json`, and serious promotion gates can
-use host-owned holdouts outside the writable sandbox.
+The live task never includes top-level case `expected` data. Persisted runs
+keep it in a separate `expected.json`. Cartridge evals remain editable
+self-tests; a promotion oracle must stay in a host-owned runner and out of the
+candidate task, runtime, resources, tools, and writable files. Arbitrary
+candidate code requires OS or process isolation.
 
 Read [behavioral evals](https://hsaghir.github.io/looplet/evals/).
 
@@ -245,12 +246,12 @@ services. It does not try to become either one. See the
 
 ## Shipped examples
 
-- [`coder.cartridge`](https://github.com/hsaghir/looplet/tree/master/examples/coder.cartridge) — tool-heavy coding harness with colocated cases, collectors, and required graders.
-- [`dep_doctor.cartridge`](https://github.com/hsaghir/looplet/tree/master/examples/dep_doctor.cartridge) — repository dependency audit.
-- [`git_detective.cartridge`](https://github.com/hsaghir/looplet/tree/master/examples/git_detective.cartridge) — repository-health investigation.
-- [`threat_intel.cartridge`](https://github.com/hsaghir/looplet/tree/master/examples/threat_intel.cartridge) — local-first security briefing.
-- [`planner.cartridge`](https://github.com/hsaghir/looplet/tree/master/examples/planner.cartridge) — planning composed as a subagent, not a loop phase.
-- [`regression_demo`](https://github.com/hsaghir/looplet/tree/master/examples/regression_demo) — scripted, network-free captured-response replay and eval proof.
+- [`coder.cartridge`](https://github.com/hsaghir/looplet/tree/master/examples/coder.cartridge): tool-heavy coding harness with colocated cases, collectors, and required graders.
+- [`dep_doctor.cartridge`](https://github.com/hsaghir/looplet/tree/master/examples/dep_doctor.cartridge): repository dependency audit.
+- [`git_detective.cartridge`](https://github.com/hsaghir/looplet/tree/master/examples/git_detective.cartridge): repository-health investigation.
+- [`threat_intel.cartridge`](https://github.com/hsaghir/looplet/tree/master/examples/threat_intel.cartridge): local-first security briefing.
+- [`planner.cartridge`](https://github.com/hsaghir/looplet/tree/master/examples/planner.cartridge): planning composed as a subagent, not a loop phase.
+- [`regression_demo`](https://github.com/hsaghir/looplet/tree/master/examples/regression_demo): scripted, network-free captured-response replay and eval proof.
 
 Portable twins demonstrate MCP/LEP boundaries where needed; see
 [portability](https://hsaghir.github.io/looplet/portability/) for the exact supported tiers rather
@@ -265,10 +266,10 @@ than a blanket runtime-agnostic claim.
 | [Failure → regression](https://hsaghir.github.io/looplet/regression-demo/) | Run the core claim without a model or network |
 | [Cartridges](https://hsaghir.github.io/looplet/cartridge/) | Reviewable harness layout and round-trip behavior |
 | [Provenance](https://hsaghir.github.io/looplet/provenance/) | Capture and captured-response replay |
-| [Evals](https://hsaghir.github.io/looplet/evals/) | Outcome collectors, grader-only data, protected holdouts, pytest, and CI |
+| [Evals](https://hsaghir.github.io/looplet/evals/) | Outcome collectors, grader-only data, trust boundaries, pytest, and CI |
 | [Hooks](https://hsaghir.github.io/looplet/hooks/) | Lifecycle interception and composition |
 | [FAQ](https://hsaghir.github.io/looplet/faq/) | Selection guidance and honest limitations |
-| [Roadmap](https://github.com/hsaghir/looplet/blob/master/ROADMAP.md) | What belongs in core—and what does not |
+| [Roadmap](https://github.com/hsaghir/looplet/blob/master/ROADMAP.md) | Core boundaries and explicit non-goals |
 
 ## Stability
 
@@ -276,10 +277,10 @@ Looplet follows SemVer. Before `1.0`, minor versions may make breaking
 changes; pin to the current minor line:
 
 ```toml
-looplet>=0.2,<0.3
+looplet>=0.3,<0.4
 ```
 
-The current package version is `0.2.0`. See the
+The next launch release is `0.3.0`. See the
 [changelog](https://github.com/hsaghir/looplet/blob/master/CHANGELOG.md) and
 [path to 1.0](https://github.com/hsaghir/looplet/blob/master/ROADMAP.md#path-to-10).
 

@@ -1,5 +1,5 @@
 """Evals ship *inside* the cartridge directory, but as an adjacent
-artifact owned by ``looplet.evals`` — not by the cartridge package.
+artifact owned by ``looplet.evals`` - not by the cartridge package.
 
 This is the first slice of "evals ship with the agent version":
 ``<cartridge>/evals/cases/`` carries the eval corpus as pure data, so it
@@ -8,7 +8,7 @@ Crucially the cartridge *loader* stays evals-agnostic (see
 ``test_cartridge_package_layout.py``: ``looplet.evals`` is a FORBIDDEN
 dep of the cartridge package); the read/write of the eval slot lives in
 ``looplet.evals`` instead. Graders (``eval_*``) and the ``looplet eval``
-runner are later slices — this file pins only the case-data slot.
+runner are later slices - this file pins only the case-data slot.
 """
 
 from __future__ import annotations
@@ -102,7 +102,7 @@ def test_missing_eval_slot_returns_empty_not_error(tmp_path: Path) -> None:
 
 
 def test_hand_authored_cases_are_discovered(tmp_path: Path) -> None:
-    # The corpus grows by dropping JSON in by hand (no Python) — the
+    # The corpus grows by dropping JSON in by hand (no Python) - the
     # whole point of "cases live as data".
     cartridge = _build_cartridge(tmp_path)
     cases_dir = cartridge / CARTRIDGE_CASES_SUBPATH

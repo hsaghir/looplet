@@ -1,4 +1,4 @@
-"""Sub-agent spawning — run focused sub-tasks with isolated context.
+"""Sub-agent spawning - run focused sub-tasks with isolated context.
 
 Provides run_sub_loop() which creates an isolated composable_loop() call
 with its own state and session log. The parent agent gets back
@@ -62,12 +62,12 @@ def run_sub_loop(
             (MetricsHook, StreamingHook, TrajectoryRecorder, …) see
             the sub-loop's per-step activity. The parent hooks are
             **not** invoked through their full ``LoopHook`` interface
-            (no ``pre_loop`` / ``check_done`` from the sub-loop —
+            (no ``pre_loop`` / ``check_done`` from the sub-loop -
             those would conflate parent + sub state); only their
             event-driven ``on_event`` method is forwarded. Opt-in:
             callers building tool-as-subagent patterns pass
             ``parent_hooks=ctx.hooks`` (or pull from a parent context).
-            Defaults to ``None`` — no forwarding, fully isolated.
+            Defaults to ``None`` - no forwarding, fully isolated.
         context: Domain-specific backend passed through to the loop.
         state: Optional custom state. If None, uses _MinimalState.
         sub_tools: Optional custom tool registry. If None, clones parent
@@ -121,7 +121,7 @@ def run_sub_loop(
     # Wrap each parent hook so its ``on_event`` receives every event
     # the sub-loop emits, tagged with this subagent_id so consumers
     # can route / nest. We do NOT forward the full LoopHook interface
-    # (pre_loop, check_done, etc.) — those would conflate parent + sub
+    # (pre_loop, check_done, etc.) - those would conflate parent + sub
     # state. Only event-stream observers see the activity.
     sub_hooks: list[Any] = list(hooks or [])
     if parent_hooks:
@@ -163,7 +163,7 @@ def run_sub_loop(
         conversation=_sub_conv,
     )
 
-    # Exhaust generator — collect step dicts
+    # Exhaust generator - collect step dicts
     steps: list[dict[str, Any]] = []
     trace: Any = None
     try:
@@ -200,7 +200,7 @@ def run_sub_loop(
     result.setdefault("findings", all_findings)
     result.setdefault("highlights", all_highlights)
 
-    # Fire SUBAGENT_STOP — observers see completion, final state, and
+    # Fire SUBAGENT_STOP - observers see completion, final state, and
     # the llm-call cost via EventPayload.extra. Swallowing exceptions
     # is already handled by emit_event.
     emit_event(
@@ -242,7 +242,7 @@ class _ParentHookForwarder:
     def on_event(self, payload: Any) -> None:
         # Tag the payload's extra dict so parent observers can filter /
         # nest sub-activity. Mutating the live payload is acceptable
-        # here — it's about to be discarded by every other observer at
+        # here - it's about to be discarded by every other observer at
         # the end of this dispatch.
         try:
             extra = getattr(payload, "extra", None)
@@ -310,7 +310,7 @@ def clone_tools_excluding(parent_tools: Any, exclude: list[str]) -> Any:
 
     Warns (via the module logger) when ``exclude`` contains names that
     are not present in ``parent_tools``. Typos here are silent
-    correctness bugs — e.g. a caller passing
+    correctness bugs - e.g. a caller passing
     ``exclude=["finish"]`` when the parent's done tool is named
     ``"finalize"`` would otherwise ship the state-mutating tool into
     the sub-agent without any signal.
@@ -322,7 +322,7 @@ def clone_tools_excluding(parent_tools: Any, exclude: list[str]) -> Any:
     if missing:
         logger.warning(
             "clone_tools_excluding: names %s are not registered on the parent "
-            "(available: %s) — nothing to exclude for those entries. Typo?",
+            "(available: %s) - nothing to exclude for those entries. Typo?",
             missing,
             sorted(parent_names),
         )

@@ -1,4 +1,4 @@
-"""Tests for loop wiring — optional capabilities integrated into composable_loop.
+"""Tests for loop wiring - optional capabilities integrated into composable_loop.
 
 Covers:
   - router: ModelRouter selects backend per-call
@@ -166,7 +166,7 @@ def test_router_selects_backend():
 
     state = SimpleState()
     reg = _make_registry()
-    # pass a different llm directly — router should override it
+    # pass a different llm directly - router should override it
     fallback_llm = TrackingLLM("fallback")
     config = LoopConfig(router=FakeRouter())
 
@@ -260,7 +260,7 @@ def test_auto_resume_from_checkpoint_dir():
             "step_1",
         )
 
-        # Run with checkpoint_dir but NO initial_checkpoint — should auto-resume
+        # Run with checkpoint_dir but NO initial_checkpoint - should auto-resume
         responses = ['{"tool": "done", "args": {"summary": "resumed"}}']
         llm = _make_scripted_llm(responses)
         state = SimpleState()
@@ -581,7 +581,7 @@ def test_initial_checkpoint_restores_session_log():
 
 
 def test_all_new_params_default_to_none():
-    """All new LoopConfig fields default to None — no behavior change."""
+    """All new LoopConfig fields default to None - no behavior change."""
     from looplet.loop import LoopConfig
 
     cfg = LoopConfig()

@@ -1,4 +1,4 @@
-"""Composable agent loop — domain-agnostic hook-based architecture.
+"""Composable agent loop - domain-agnostic hook-based architecture.
 
 The loop handles orchestration: LLM call → parse → dispatch → continue/stop.
 Domain-specific behavior is injected via hooks and LoopConfig callables.
@@ -86,7 +86,7 @@ class LoopContext:
 
     Hooks that need long-lived access to ``state``, ``tools``,
     ``conversation``, or the current ``step_num`` outside their
-    declared method signatures used to capture them in closures —
+    declared method signatures used to capture them in closures -
     which then refused to round-trip through ``to_config()`` because
     closures can't be serialised. ``LoopContext`` makes this
     first-class:
@@ -125,7 +125,7 @@ class LoopHook(Protocol):
     """Protocol for composable loop hooks.
 
     Hooks inject domain-specific behavior into the generic agent loop.
-    All methods are optional — implement only what you need.
+    All methods are optional - implement only what you need.
 
     Minimal example::
 
@@ -144,15 +144,15 @@ class LoopHook(Protocol):
 
     Hook methods (called in this order per step):
         pre_loop:        once at loop start
-        pre_prompt:      before each LLM call — inject briefing text (additive, all hooks contribute)
+        pre_prompt:      before each LLM call - inject briefing text (additive, all hooks contribute)
         build_briefing:  override the briefing section (first hook returning non-None wins)
         build_prompt:    override the entire prompt (first hook returning non-None wins)
-        pre_dispatch:    before each tool call — intercept, cache, or deny
-        post_dispatch:   after each tool call — inject follow-up context
-        check_done:      when done() is called — reject premature completion
-        should_stop:     after each step — force early termination
-        should_compact:  at step start — trigger proactive compaction
-        on_loop_end:     once after loop exits — cleanup
+        pre_dispatch:    before each tool call - intercept, cache, or deny
+        post_dispatch:   after each tool call - inject follow-up context
+        check_done:      when done() is called - reject premature completion
+        should_stop:     after each step - force early termination
+        should_compact:  at step start - trigger proactive compaction
+        on_loop_end:     once after loop exits - cleanup
 
     Return types:
         All hook methods accept ``HookDecision`` as return type.
@@ -160,11 +160,11 @@ class LoopHook(Protocol):
         and are auto-converted via ``normalize_hook_return()``.
 
     Precedence for prompt injection:
-        1. ``build_prompt`` hook (first non-None wins) — full prompt override
-        2. ``config.build_prompt`` callable — full prompt override
-        3. ``build_briefing`` hook (first non-None wins) — briefing section only
-        4. ``config.build_briefing`` callable — briefing section only
-        5. ``pre_prompt`` hooks — additive text appended to briefing
+        1. ``build_prompt`` hook (first non-None wins) - full prompt override
+        2. ``config.build_prompt`` callable - full prompt override
+        3. ``build_briefing`` hook (first non-None wins) - briefing section only
+        4. ``config.build_briefing`` callable - briefing section only
+        5. ``pre_prompt`` hooks - additive text appended to briefing
         6. Default 7-section template from ``looplet.prompts``
 
     Optional ``bind(self, ctx: LoopContext) -> None`` method:
@@ -174,7 +174,7 @@ class LoopHook(Protocol):
         load and before :meth:`pre_loop`. The loop mutates
         ``ctx.step_num`` and ``ctx.conversation`` as it progresses,
         so a hook that stores ``self.ctx = ctx`` reads live values
-        forever after — replacing the closures-over-loop-state
+        forever after - replacing the closures-over-loop-state
         anti-pattern that broke ``to_config()`` workspace round-trip.
 
         ``bind`` is intentionally NOT part of the Protocol body so
@@ -244,7 +244,7 @@ class LoopHook(Protocol):
         Returns True to allow execution, False to deny.  When denied, the
         tool call is skipped and a ToolResult with error='permission denied'
         is recorded. All hooks must return True for the call to proceed
-        (AND semantics — any single deny blocks).
+        (AND semantics - any single deny blocks).
 
         Typical uses: approval gates, sandboxing, rate limits, read-only
         mode enforcement.
@@ -313,7 +313,7 @@ class LoopHook(Protocol):
         Returns True to proactively trigger the configured
         :class:`looplet.compact.CompactService` before the next
         LLM call. Complements the reactive path (which fires only on
-        a ``prompt_too_long`` error) — use this when you want to
+        a ``prompt_too_long`` error) - use this when you want to
         preempt context pressure based on message count, token
         estimates, or wall-clock heuristics. If any hook returns
         True the compaction runs; otherwise the step proceeds as
@@ -332,7 +332,7 @@ class LoopHook(Protocol):
         When any hook returns a non-``None`` string, the loop uses
         that text as the briefing for the current step and skips
         :attr:`LoopConfig.build_briefing` / the default. First hook
-        wins — subsequent hooks don't run for this slot.
+        wins - subsequent hooks don't run for this slot.
 
         Intended for domain adapters that want to bundle briefing
         logic alongside the rest of their hook surface instead of
@@ -394,7 +394,7 @@ class LoopHook(Protocol):
         :attr:`LifecycleEvent.STOP` has the same effect as returning
         it from the matching per-method hook.
 
-        Implementing ``on_event`` is strictly additive — hooks can
+        Implementing ``on_event`` is strictly additive - hooks can
         still implement per-method slots and mix both styles.
         """
         ...
@@ -417,7 +417,7 @@ class DomainAdapter:
     on ``LoopConfig`` therefore win over the bundled adapter, which
     wins over the loop's built-in defaults.
 
-    All fields are optional — provide only what differs from the
+    All fields are optional - provide only what differs from the
     defaults. See :class:`LoopConfig` for callable signatures.
     """
 
@@ -432,20 +432,20 @@ class DomainAdapter:
 class LoopConfig:
     """Configuration for the composable agent loop.
 
-    **Start here** — most fields have sensible defaults. For your
+    **Start here** - most fields have sensible defaults. For your
     first agent, you only need::
 
         config = LoopConfig(max_steps=10)
         state = DefaultState(max_steps=10)  # must match
 
     Essential fields (set these first):
-      - ``max_steps`` — how many tool calls before the loop stops.
+      - ``max_steps`` - how many tool calls before the loop stops.
         **Important:** also pass the same value to ``DefaultState(max_steps=N)``
-        — the state tracks budget_remaining, config tracks the loop limit.
+                because state tracks budget_remaining while config tracks the loop limit.
         If they differ, the lower one wins.
-      - ``system_prompt`` — who the agent is
-      - ``compact_service`` — how to manage growing context
-      - ``checkpoint_dir`` — crash-safe auto-resume (one directory path)
+      - ``system_prompt`` - who the agent is
+      - ``compact_service`` - how to manage growing context
+      - ``checkpoint_dir`` - crash-safe auto-resume (one directory path)
 
     Everything else is optional and can be added later as your agent
     matures. See the tutorial in README.md for a progressive walkthrough.
@@ -497,7 +497,7 @@ class LoopConfig:
     model can then read more on demand via its own file-reading tools.
 
     Mirrors Claude Code's per-session ``tool-results/`` directory.
-    When ``None`` (default) only inline truncation applies — the full
+    When ``None`` (default) only inline truncation applies - the full
     output simply gets capped at ``TOOL_RESULT_MAX_CHARS``.
     """
 
@@ -508,18 +508,18 @@ class LoopConfig:
     so long thoughts aren't truncated. Requires the backend to expose
     ``last_stop_reason`` after each call. Default ``0`` (off)."""
 
-    # Domain-specific callables — injected by the agent
+    # Domain-specific callables - injected by the agent
 
     build_briefing: Callable[..., str] | None = None
-    """Callable[[state, session_log, context], str] — builds the briefing
+    """Callable[[state, session_log, context], str] - builds the briefing
     section injected at the top of each prompt."""
 
     extract_entities: Callable[..., list[str]] | None = None
-    """Callable[[data], list[str]] — extracts entity strings from a tool
+    """Callable[[data], list[str]] - extracts entity strings from a tool
     result's data for entity tracking and session log recording."""
 
     build_trace: Callable[..., Any] | None = None
-    """Callable[[Any, SessionLog, Any], Any] — builds the final output
+    """Callable[[Any, SessionLog, Any], Any] - builds the final output
     artifact from (state, session_log, context).
 
     Receives keyword args: task, state, session_log, done, llm, llm_calls,
@@ -528,14 +528,14 @@ class LoopConfig:
     """
 
     build_prompt: Callable[..., str] | None = None
-    """Callable[..., str] — builds the full LLM prompt from loop state.
+    """Callable[..., str] - builds the full LLM prompt from loop state.
 
     Receives keyword args: task, tool_catalog, state_summary,
     context_history, step_number, max_steps, session_log, briefing.
     """
 
     extract_step_metadata: Callable[..., tuple[list[str], list[str]]] | None = None
-    """Callable[[Any, int], tuple[list[str], list[str]]] — returns
+    """Callable[[Any, int], tuple[list[str], list[str]]] - returns
     (findings, highlights) from (state, step_num).
 
     Called after each non-done tool dispatch to gather per-step metadata
@@ -547,24 +547,24 @@ class LoopConfig:
     above. When set, each adapter field seeds the matching flat field
     above only if that flat field is ``None``. Direct field assignments
     on :class:`LoopConfig` therefore win over the adapter. Prefer this
-    when composing a reusable agent package — pass one adapter instead
+    when composing a reusable agent package - pass one adapter instead
     of threading five callables through config kwargs."""
 
     use_native_tools: bool = True
     """If True, pass tool schemas to the LLM and parse tool_use blocks
-    instead of JSON text. Default True — the loop probes the backend
+    instead of JSON text. Default True - the loop probes the backend
     for ``generate_with_tools`` and silently falls back to JSON-text
     parsing when the backend does not implement it. Set to False to
     force the JSON-text path even on backends that support native tools."""
 
     concurrent_dispatch: bool = False
     """If True, dispatch non-dependent tool calls in parallel via
-    ThreadPoolExecutor. Default False — some backends and tools
+    ThreadPoolExecutor. Default False - some backends and tools
     are not thread-safe."""
 
     reactive_recovery: bool = True
     """If True, attempt multi-strategy recovery when a prompt exceeds
-    the context window (prompt-too-long error). Default True — essential
+    the context window (prompt-too-long error). Default True - essential
     for reliability in long sessions."""
 
     max_briefing_tokens: int | None = None
@@ -606,7 +606,7 @@ class LoopConfig:
     router: ModelRouter | None = None
     """When set, ``router.select(purpose='reasoning')`` is called at each
     step instead of the ``llm`` argument passed directly.  Import from
-    ``looplet.router`` — e.g. ``SimpleRouter``, ``FallbackRouter``.
+    ``looplet.router`` - e.g. ``SimpleRouter``, ``FallbackRouter``.
     """
 
     checkpoint_dir: str | None = None
@@ -688,10 +688,10 @@ class LoopConfig:
     context_window: int = 128_000
     """Maximum context window (in tokens) for the backend.  Used by:
 
-    * The **pre-flight** prompt-size check — if the estimated prompt exceeds
+    * The **pre-flight** prompt-size check - if the estimated prompt exceeds
       ``context_window - 3000`` tokens, reactive recovery fires *before*
       the LLM call (avoiding a wasted API call).
-    * ``ThresholdCompactHook`` — when you also set ``compact_service``,
+    * ``ThresholdCompactHook`` - when you also set ``compact_service``,
       proactive compaction triggers based on this value.
 
     Override to match your actual backend's window:
@@ -719,7 +719,7 @@ class LoopConfig:
     threading it through ``state.metadata`` (which is agent-level) or
     closures (which are invisible to provenance).
 
-    ``tool_metadata`` is merged *under* ``state.metadata`` — state
+    ``tool_metadata`` is merged *under* ``state.metadata`` - state
     values win on key conflicts. This makes ``tool_metadata`` the
     right place for defaults (``db_path``, ``workspace``, ``api_base``)
     while ``state.metadata`` carries per-run overrides.
@@ -769,7 +769,7 @@ def _default_extract_entities(data: Any, state: Any = None) -> list[str]:
     Accepts a ``state`` kwarg (defaulting to ``None``) so domain
     extractors that need the live state can have a stateless signature
     in ``${py:...}`` workspace refs and still receive it from the loop.
-    Stateless extractors keep the 1-arg form working — the loop only
+    Stateless extractors keep the 1-arg form working - the loop only
     passes ``state`` when the callable's signature accepts it.
     """
     return []
@@ -797,7 +797,7 @@ def _build_tool_ctx(
 ) -> ToolContext:
     """Build a ToolContext for tool dispatch.
 
-    Always returns a ToolContext — tools that declare ``ctx`` should
+    Always returns a ToolContext - tools that declare ``ctx`` should
     never receive ``None``.  The context carries the cancel token,
     approval handler, LLM, progress callback, and metadata from the
     agent state.
@@ -849,7 +849,7 @@ def _scope_llm_for_tool(llm: Any, tool_call: ToolCall | None) -> Any:
 
     If ``llm`` is (or wraps) a ``_RecordingBase``, returns a thin proxy
     that sets ``scope`` on every captured :class:`LLMCall`.  Otherwise
-    returns ``llm`` unchanged — no overhead for non-recording backends.
+    returns ``llm`` unchanged - no overhead for non-recording backends.
     """
     tool_name = getattr(tool_call, "tool", "unknown") if tool_call else "unknown"
 
@@ -865,7 +865,7 @@ def _scope_llm_for_tool(llm: Any, tool_call: ToolCall | None) -> Any:
             break
 
     if recording is None:
-        return llm  # no recording layer — pass through unchanged
+        return llm  # no recording layer - pass through unchanged
 
     return _ScopedLLMProxy(llm, recording, f"tool:{tool_name}")
 
@@ -879,7 +879,7 @@ class _ScopedLLMProxy:
     :class:`LLMCall` so provenance consumers can distinguish
     loop-level calls from tool-internal calls.
 
-    Zero overhead when the backend isn't recording — the proxy is only
+    Zero overhead when the backend isn't recording - the proxy is only
     created by :func:`_scope_llm_for_tool` when a recording layer is
     detected.
     """
@@ -941,16 +941,16 @@ def emit_event(
 ) -> list[Any]:
     """Dispatch a :class:`LifecycleEvent` to every hook that opts in.
 
-    Public API — safe to call from subagents, custom hooks, or external
+    Public API - safe to call from subagents, custom hooks, or external
     orchestrators that need to fire lifecycle events on a hook list.
 
-    Hooks without ``on_event`` are silently skipped — this is the
+    Hooks without ``on_event`` are silently skipped - this is the
     additive surface, nobody has to implement it. Returned
     :class:`HookDecision` objects are collected so the caller can act
     on ``block`` / ``stop`` / ``updated_*`` fields; ``None`` returns
     are filtered out.
 
-    Exceptions from a hook are swallowed and logged — event dispatch
+    Exceptions from a hook are swallowed and logged - event dispatch
     must never break the loop.
     """
     from looplet.events import EventPayload  # noqa: PLC0415
@@ -964,7 +964,7 @@ def emit_event(
             continue
         # Deduplicate: when the event has a per-method equivalent
         # (PRE_TOOL_USE → pre_dispatch, POST_TOOL_USE/FAILURE → post_dispatch),
-        # skip hooks that implement the per-method slot — they already fired.
+        # skip hooks that implement the per-method slot - they already fired.
         _equiv = _EVENT_METHOD_EQUIV.get(event)
         if _equiv is not None and hasattr(hook, _equiv):
             continue
@@ -1050,13 +1050,13 @@ _CHECK_DONE_ACCEPTS_TOOL_CALL: dict[int, bool] = {}
 """Cache mapping ``id(method.__func__)`` (i.e. the unbound function on the
 class) to whether ``check_done`` accepts a ``tool_call`` keyword argument.
 
-Bound methods are ephemeral in CPython — ``obj.check_done`` creates a
+Bound methods are ephemeral in CPython - ``obj.check_done`` creates a
 fresh bound-method object on each access, so caching by
 ``id(bound_method)`` is unsound: bound methods get garbage-collected
 and their ids get reused for unrelated methods on other classes,
 poisoning the cache. ``method.__func__`` (the underlying class
 attribute) has stable identity and is safe to key on. For plain
-callables that lack ``__func__`` (rare — e.g. lambdas attached as
+callables that lack ``__func__`` (rare - e.g. lambdas attached as
 attributes), we fall back to ``id`` of the callable itself.
 """
 
@@ -1129,7 +1129,7 @@ def _validate_hooks(hooks: list[Any]) -> None:
 
     Catches typos like ``post_dispach`` by checking that at least one
     method name matches the known set.  Silently accepts hooks with
-    at least one valid method — partial implementations are the norm.
+    at least one valid method - partial implementations are the norm.
     """
     import warnings  # noqa: PLC0415
 
@@ -1155,7 +1155,7 @@ def _validate_hooks(hooks: list[Any]) -> None:
 
 @dataclass
 class _InterceptResult:
-    """Return value of _intercept_tool_calls — collected pre-dispatch outcomes."""
+    """Return value of _intercept_tool_calls - collected pre-dispatch outcomes."""
 
     intercepted: dict[int, ToolResult] = field(default_factory=dict)
     """Map of call-index → ToolResult for intercepted/denied calls."""
@@ -1435,8 +1435,8 @@ def composable_loop(
     Yields Steps, returns a trace object built by config.build_trace.
 
     Args:
-        llm: LLM backend — must implement ``generate()`` (see :class:`LLMBackend`).
-        task: The task description — dict, string, or any domain object.
+        llm: LLM backend - must implement ``generate()`` (see :class:`LLMBackend`).
+        task: The task description - dict, string, or any domain object.
             When a dict, ``task.get("id")`` is used for event labels.
         tools: Tool registry with available tools.
         context: Opaque domain handle passed verbatim to hook methods
@@ -1448,9 +1448,9 @@ def composable_loop(
         config: Loop configuration (steps, tokens, callables).
         state: Agent state (must satisfy AgentState protocol).
         session_log: Session log for recording agent memory.
-        stream: Optional EventEmitter — when set, emits structured events for
+        stream: Optional EventEmitter - when set, emits structured events for
             each loop lifecycle moment (start, step, LLM call, dispatch, end).
-        conversation: Optional Conversation — when set, the loop auto-records
+        conversation: Optional Conversation - when set, the loop auto-records
             each LLM prompt/response and tool call/result as Messages in the
             conversation thread. Works alongside session_log (both are populated).
         max_steps: Convenience shorthand. When set, configures both
@@ -1551,7 +1551,7 @@ def composable_loop(
         state = _DefaultState(max_steps=config.max_steps)
 
     # Sync max_steps: config is the source of truth.  Warn once when the
-    # two disagree — a common footgun for agents assembling a loop for
+    # two disagree - a common footgun for agents assembling a loop for
     # the first time.
     if isinstance(state, _DefaultState) and state.max_steps != config.max_steps:
         import warnings  # noqa: PLC0415
@@ -1565,7 +1565,7 @@ def composable_loop(
         )
         state.max_steps = config.max_steps
 
-    # Warn when a hook object has no recognized hook methods — likely a typo.
+    # Warn when a hook object has no recognized hook methods - likely a typo.
     _validate_hooks(hooks)
 
     t0 = time.time()
@@ -1573,12 +1573,12 @@ def composable_loop(
     if session_log is None:
         session_log = SessionLog()
 
-    # ── Conversation thread — always active (single source of truth) ──
+    # ── Conversation thread - always active (single source of truth) ──
     from looplet.conversation import Conversation as _Conversation  # noqa: PLC0415
 
     _conv = conversation if conversation is not None else _Conversation()
 
-    # ── Unified history recorder — single write path for step/turn events ──
+    # ── Unified history recorder - single write path for step/turn events ──
     _history = HistoryRecorder(
         state=state,
         session_log=session_log,
@@ -1635,7 +1635,7 @@ def composable_loop(
         # explicit initial_checkpoint was given, load the latest.
         # This makes crash-resume a one-liner:
         #   LoopConfig(checkpoint_dir="./ckpt")
-        # — saves after every step, resumes on restart.
+        # - saves after every step, resumes on restart.
         if config.initial_checkpoint is None:
             _latest = _ckpt_store.load_latest()
             if _latest is not None:
@@ -1711,7 +1711,7 @@ def composable_loop(
     llm_calls = 0
     done = False
     stop_reason = "budget_exhausted"  # tracks why the loop exited
-    # Recovery state — each strategy fires at most once
+    # Recovery state - each strategy fires at most once
     recovery_state = {
         "budget_enforcement": False,
         "emergency_truncate": False,
@@ -1781,7 +1781,7 @@ def composable_loop(
             ]
             if positional:
                 bind_fn(loop_ctx)
-            # else: hook has bind() with kw-only args — not the loop's
+            # else: hook has bind() with kw-only args - not the loop's
             # bind protocol; user's setup.py is responsible for it.
         except (TypeError, ValueError):
             # Builtins / C-extension callables that introspection can't
@@ -1812,7 +1812,7 @@ def composable_loop(
             else:
                 hook.pre_loop(state, session_log, context)
 
-    # Fire SESSION_START — single-slot subscribers to lifecycle
+    # Fire SESSION_START - single-slot subscribers to lifecycle
     # events get it in one place alongside the per-method pre_loop.
     from looplet.events import LifecycleEvent as _LE  # noqa: PLC0415
 
@@ -1825,7 +1825,7 @@ def composable_loop(
     )
 
     # ── Emit LoopStartEvent ─────────────────────────────────────
-    # Skip if a StreamingHook is in hooks — it already emits LoopStartEvent
+    # Skip if a StreamingHook is in hooks - it already emits LoopStartEvent
     # from its pre_loop method and we don't want duplicates.
     from looplet.streaming import StreamingHook as _StreamingHook  # noqa: PLC0415
 
@@ -1846,13 +1846,13 @@ def composable_loop(
         # Clear per-step hook context so hooks start each step with
         # a clean slate.  Hooks write to state.step_context during a
         # step; other hooks read from it within the same step.  The
-        # loop owns the lifecycle — cleared here, populated by hooks.
+        # loop owns the lifecycle - cleared here, populated by hooks.
         try:
             setattr(state, "step_context", {})  # noqa: B010
         except AttributeError:
             pass
 
-        # Cancellation check between turns — stop cleanly, no more LLM calls.
+        # Cancellation check between turns - stop cleanly, no more LLM calls.
         if config.cancel_token is not None and getattr(config.cancel_token, "is_cancelled", False):
             stop_reason = "cancelled"
             break
@@ -1925,7 +1925,7 @@ def composable_loop(
                     if _briefing_budget:
                         text_tokens = len(text) // 4
                         if _briefing_used + text_tokens > _briefing_budget:
-                            briefing_parts.append("(briefing truncated — token budget exceeded)")
+                            briefing_parts.append("(briefing truncated - token budget exceeded)")
                             break
                         _briefing_used += text_tokens
                     briefing_parts.append(text)
@@ -2007,11 +2007,11 @@ def composable_loop(
         if stream is not None and _StepStartEvent is not None:
             stream.emit(_StepStartEvent(step_num=step_num))
 
-        # Resolve effective LLM once per step — used by both the main call and
+        # Resolve effective LLM once per step - used by both the main call and
         # parse-recovery below, regardless of whether pre-flight fires.
         effective_llm = _get_llm()
 
-        # Fire PRE_LLM_CALL — observers only; return decisions are
+        # Fire PRE_LLM_CALL - observers only; return decisions are
         # collected but only ``additional_context`` is honored (the
         # prompt string is already built at this point; mutating it
         # would invalidate the briefing budget accounting).
@@ -2033,7 +2033,7 @@ def composable_loop(
 
         if preflight_too_long and config.reactive_recovery:
             logger.warning(
-                "Pre-flight block: prompt ~%d tokens exceeds safe limit — "
+                "Pre-flight block: prompt ~%d tokens exceeds safe limit - "
                 "running recovery before LLM call",
                 estimated_tokens,
             )
@@ -2140,7 +2140,7 @@ def composable_loop(
 
         # Surface provider token usage / cost onto state so budget hooks
         # read it from the declared view instead of a backend side-channel
-        # (keeps cost/budget hooks portable across runtimes — §9 T9).
+        # (keeps cost/budget hooks portable across runtimes - §9 T9).
         _step_usage = getattr(effective_llm, "last_usage", None) or None
         if _step_usage:
             try:
@@ -2157,7 +2157,7 @@ def composable_loop(
             except Exception:  # pragma: no cover - defensive
                 logger.debug("usage surfacing failed", exc_info=True)
 
-        # Fire POST_LLM_RESPONSE — hooks can observe raw text before
+        # Fire POST_LLM_RESPONSE - hooks can observe raw text before
         # it hits the parser. Stop requests are honored at end-of-step.
         _post_llm_decisions = emit_event(
             hooks,
@@ -2178,7 +2178,7 @@ def composable_loop(
                 post_dispatch_parts.append(_d.additional_context)
 
         if raw_response is None:
-            # If cancellation caused the failure, exit cleanly — no error step.
+            # If cancellation caused the failure, exit cleanly - no error step.
             if config.cancel_token is not None and getattr(
                 config.cancel_token, "is_cancelled", False
             ):
@@ -2204,7 +2204,7 @@ def composable_loop(
         if (config.use_native_tools) and isinstance(raw_response, list):
             tool_calls = parse_native_tool_use(raw_response)
             # Graceful fallback: model may return text-only content (no
-            # tool_use blocks) even when native tools are enabled — e.g.
+            # tool_use blocks) even when native tools are enabled - e.g.
             # when it emits a JSON tool call inside a markdown code fence.
             # Re-parse the flattened text via the JSON-text parser, which
             # already handles fences, extra prose, and escape repair.
@@ -2214,7 +2214,7 @@ def composable_loop(
             tool_calls = parse_multi_tool_calls(raw_response)
         if not tool_calls:
             consecutive_parse_failures += 1
-            # Consult recovery_registry if set — use returned action
+            # Consult recovery_registry if set - use returned action
             _recovery_action = None
             if config.recovery_registry is not None:
                 _recovery_action = config.recovery_registry.attempt_recovery(
@@ -2230,7 +2230,7 @@ def composable_loop(
                         tool="__parse_error__",
                         args_summary="",
                         data=None,
-                        error=f"Parse error — recovery aborted: {_recovery_action.message}",
+                        error=f"Parse error - recovery aborted: {_recovery_action.message}",
                     )
                     step = Step(number=step_num, tool_call=tool_call, tool_result=tool_result)
                     state.steps.append(step)
@@ -2243,7 +2243,7 @@ def composable_loop(
                     post_dispatch_parts.append(_recovery_action.message)
             if consecutive_parse_failures <= PARSE_RECOVERY_MAX:
                 logger.warning(
-                    "Parse failure %d/%d at step %d — attempting recovery",
+                    "Parse failure %d/%d at step %d - attempting recovery",
                     consecutive_parse_failures,
                     PARSE_RECOVERY_MAX,
                     step_num,
@@ -2493,7 +2493,7 @@ def composable_loop(
                         gate_warning = _decision.block or "blocked by hook"
                         break
 
-            # Output schema validation — reject done() if payload is invalid.
+            # Output schema validation - reject done() if payload is invalid.
             # Cartridge Spec v1.1 attached ``output_schema`` only to the
             # PRIMARY ``done_tool``. v2 extends this to *every* sentinel
             # via :attr:`LoopConfig.done_tool_schemas` (populated by the
@@ -2549,7 +2549,7 @@ def composable_loop(
                     recall_key="",
                 )
             else:
-                # done() dispatch intentionally bypasses permission checks — it's
+                # done() dispatch intentionally bypasses permission checks - it's
                 # a loop signal, not a side-effecting tool. Permission-gating a
                 # termination signal would prevent the agent from ever stopping.
                 _ctx = _build_tool_ctx(
@@ -2562,7 +2562,7 @@ def composable_loop(
                     llm=effective_llm,
                 )
                 tool_result = tools.dispatch(tool_call, ctx=_ctx)
-                # Run post_dispatch hooks for done() too — otherwise
+                # Run post_dispatch hooks for done() too - otherwise
                 # MetricsHook / TracingHook / AuditHook silently miss
                 # the final step of every run. Lifecycle events
                 # (PRE/POST_TOOL_USE) deliberately skip done since it
@@ -2679,7 +2679,7 @@ def composable_loop(
     if state is not None:
         state._stop_reason = stop_reason  # pyright: ignore[reportAttributeAccessIssue]
 
-    # Fire STOP — event-style hooks see termination reason before
+    # Fire STOP - event-style hooks see termination reason before
     # on_loop_end cleanup runs. Return values are ignored (the loop
     # is already exiting); hooks should use on_loop_end for llm-call
     # side effects.
@@ -2698,7 +2698,7 @@ def composable_loop(
             if isinstance(extra, int):
                 llm_calls += extra
 
-    # Emit LoopEndEvent — skip if StreamingHook already emits it
+    # Emit LoopEndEvent - skip if StreamingHook already emits it
     if stream is not None and _LoopEndEvent is not None and not _has_streaming_hook:
         stream.emit(
             _LoopEndEvent(
@@ -2780,7 +2780,7 @@ def _recovery_chain(
 
     Tries strategies in order, each at most once:
       1. Aggressive budget enforcement (shrink all results to 2KB)
-      2. Emergency session log compression (emergency_truncate — routed
+      2. Emergency session log compression (emergency_truncate - routed
          through :func:`looplet.compact.run_compact` so
          ``PRE_COMPACT`` / ``POST_COMPACT`` events fire and users can
          swap in a custom :class:`CompactService`)

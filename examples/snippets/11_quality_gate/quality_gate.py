@@ -1,4 +1,4 @@
-"""Quality-gate hook — runs checks at ``done()`` time, not after every write.
+"""Quality-gate hook - runs checks at ``done()`` time, not after every write.
 
 This snippet demonstrates the looplet alternative to a built-in
 "mid-edit linting" feature. We *deliberately* do not run linters or
@@ -7,7 +7,7 @@ checker will report transient errors, and the agent will burn budget
 chasing them.
 
 Instead, write a tiny ``check_done`` hook that runs the gate exactly
-once — when the agent thinks it's done. If the gate fails, the hook
+once - when the agent thinks it's done. If the gate fails, the hook
 blocks ``done()`` with an actionable message; the agent gets one more
 turn to fix it.
 
@@ -42,7 +42,7 @@ class QualityGate:
         context: Any,
         step_num: int,
     ) -> HookDecision | None:
-        result = subprocess.run(  # noqa: S602 — opt-in user-supplied command
+        result = subprocess.run(  # noqa: S602 - opt-in user-supplied command
             self._cmd,
             shell=True,
             capture_output=True,
@@ -51,7 +51,7 @@ class QualityGate:
             check=False,
         )
         if result.returncode == 0:
-            return None  # gate passes — allow done()
+            return None  # gate passes - allow done()
         return Block(
             f"Quality gate failed (exit {result.returncode}). "
             f"Fix the issues below, then call done() again.\n\n"
@@ -79,4 +79,4 @@ class QualityGate:
 #     kwargs:
 #       cmd: "uv run pytest -q && uv run ruff check ."
 #
-# That's it — same hook, packaged as files.
+# That's it - same hook, packaged as files.

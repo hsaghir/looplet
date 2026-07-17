@@ -58,7 +58,7 @@ def test_activate_skill_with_resource(tmp_path: Path) -> None:
 
 
 def test_build_skill_manager_handles_missing_dir(tmp_path: Path) -> None:
-    # Empty dir, no SKILL.md anywhere — should still return a manager.
+    # Empty dir, no SKILL.md anywhere - should still return a manager.
     m = build_skill_manager_for_workspace(tmp_path)
     assert isinstance(m, SkillManager)
     assert m.search("anything") == []
@@ -69,7 +69,7 @@ def test_skillful_analyst_workspace_loads_without_setup_py() -> None:
     ws = Path(__file__).resolve().parents[1] / "examples" / "skillful_analyst.cartridge"
     assert not (ws / "setup.py").exists(), "skillful_analyst should not need setup.py"
     assert not (ws / "resources" / "project_root.py").exists(), (
-        "skillful_analyst should not need resources/project_root.py — tools read "
+        "skillful_analyst should not need resources/project_root.py - tools read "
         "ctx.resources['runtime'] which the loader auto-injects."
     )
 

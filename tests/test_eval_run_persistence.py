@@ -7,7 +7,7 @@ back as an ``EvalRunRecord`` (case + EvalContext with the full step
 trajectory and outcome artifacts + persisted grader scores). This is
 the mechanism for inspecting *exactly what happened* on each eval case,
 and it keeps online (live EvalHook) and offline (reload + re-grade)
-evals on the same files — they are NOT consolidated away.
+evals on the same files - they are NOT consolidated away.
 
 Lives in ``looplet.evals`` (no cartridge dependency).
 """
@@ -32,7 +32,7 @@ from looplet.provenance import TrajectoryRecorder
 
 
 class _FakeRecorder:
-    """Stand-in for TrajectoryRecorder.save — writes the trajectory.json
+    """Stand-in for TrajectoryRecorder.save - writes the trajectory.json
     + steps/ layout that the real recorder produces, without driving a
     live loop. Keeps the test fast and deterministic."""
 

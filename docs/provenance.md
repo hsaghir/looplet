@@ -1,7 +1,7 @@
-# Capture and replay — evidence for every harness change
+# Capture and replay: evidence for every harness change
 
-`looplet.provenance` captures exactly what your agent saw and did —
-every prompt, every response, every step — and writes them to a
+`looplet.provenance` captures exactly what your agent saw and did: every
+prompt, response, and step. It writes them to a
 diff-friendly directory you can `cat`, `grep`, and check into git.
 
 **The loop:** capture → inspect → turn the failure into a contract → replay
@@ -37,7 +37,7 @@ for step in replay_loop("traces/run_1/", tools=tools):
 | `RecordingLLMBackend` | Every call to `generate` / `generate_with_tools` | `LLMBackend` (wraps any backend) |
 | `AsyncRecordingLLMBackend` | Same, async | `AsyncLLMBackend` |
 | `TrajectoryRecorder` | Every loop step, with context-before and linked LLM calls | `LoopHook` |
-| `ProvenanceSink` | Both of the above in a 3-line drop-in | — |
+| `ProvenanceSink` | Both of the above in a 3-line drop-in | Not a protocol |
 | `replay_loop(dir, ...)` | Rerun the loop against cached LLM output | generator |
 | `python -m looplet show <dir>` | One-page readable summary | CLI |
 
@@ -48,7 +48,7 @@ security boundary.
 
 ---
 
-## Quick start — `ProvenanceSink`
+## Quick start: `ProvenanceSink`
 
 ```python
 from looplet import ProvenanceSink, composable_loop, DefaultState
@@ -97,7 +97,7 @@ from looplet.provenance import RecordingLLMBackend
 
 llm = RecordingLLMBackend(MyBackend())
 
-# Use `llm` anywhere a backend is expected — `composable_loop`, a sub-agent,
+# Use `llm` anywhere a backend is expected - `composable_loop`, a sub-agent,
 # a one-off `llm.generate(...)` call. Every invocation is captured.
 
 response = llm.generate("hello", system_prompt="be brief", max_tokens=50)
@@ -156,7 +156,7 @@ llm  = sink.wrap_llm(AnthropicBackend(...))
 ```
 
 If you want the legacy record-only behaviour (scrub the trace but
-forward the raw prompt to the provider — useful when the provider
+forward the raw prompt to the provider), which is useful when the provider
 itself needs the PII to respond correctly), opt out:
 
 ```python
@@ -179,7 +179,7 @@ assert rec.calls[-1].tools == [...]
 ## Trajectory provenance only
 
 Install `TrajectoryRecorder` as a hook. It captures a structured
-`Trajectory` for the whole run using the standard hook surface —
+`Trajectory` for the whole run using the standard hook surface:
 `pre_loop`, `pre_prompt`, `post_dispatch`, `on_loop_end`. No changes to
 the loop are needed.
 
@@ -214,7 +214,7 @@ assert hook.trajectory.metadata["harness_snapshot"]["schema_version"] == 1
 
 Pair `TrajectoryRecorder` with `RecordingLLMBackend` and every
 `StepRecord.llm_call_indices` will point into
-`Trajectory.llm_calls` — so you always know which prompt produced a
+`Trajectory.llm_calls`, so you always know which prompt produced a
 given tool call:
 
 ```python
@@ -236,7 +236,7 @@ for i in indices:
 |---|---|
 | `step_num` | 1-based loop step index |
 | `timestamp`, `duration_ms` | When the step ran and how long |
-| `pretty` | `Step.pretty()` — `#N ✓ tool(args) → result [Xms]` |
+| `pretty` | `Step.pretty()` - `#N ✓ tool(args) → result [Xms]` |
 | `tool_call` | `ToolCall.to_dict()` |
 | `tool_result` | `ToolResult.to_dict()` (truncated safely) |
 | `context_before` | The briefing shown to the LLM before this step's prompt |
@@ -247,17 +247,17 @@ for i in indices:
 
 `on_loop_end` inspects the last step and sets `termination_reason`:
 
-- `"done"` — the agent called the `done` tool successfully
-- `"error"` — the last step returned an error
-- `"max_steps_or_stop"` — budget exhausted or a `should_stop` hook fired
-- `"no_steps"` — the loop produced nothing
+- `"done"`: the agent called the `done` tool successfully
+- `"error"`: the last step returned an error
+- `"max_steps_or_stop"`: budget exhausted or a `should_stop` hook fired
+- `"no_steps"`: the loop produced nothing
 
 The loop's `done` path bypasses `post_dispatch`, so `TrajectoryRecorder`
 sweeps `state.steps` at `on_loop_end` to catch that final step.
 
 ### Embedded `Tracer`
 
-`TrajectoryRecorder` embeds a `Tracer` by default — no extra hook
+`TrajectoryRecorder` embeds a `Tracer` by default, so no extra hook is
 needed. Pass your own if you want to export spans elsewhere:
 
 ```python
@@ -281,7 +281,7 @@ for step in replay_loop("traces/run_1/", tools=my_tools):
 
 `replay_loop` reads `manifest.jsonl` + `call_NN_response.txt` from the
 trace directory and feeds them back into `composable_loop` in order.
-The LLM is **not** called again — your tools, hooks, permission
+The LLM is **not** called again. Your tools, hooks, permission
 engine, and state are fresh. This is useful when a tool, hook, permission,
 or loop-runtime change is the variable under review. It is not an A/B test of
 prompt or model changes because the recorded decisions stay fixed.
@@ -300,9 +300,9 @@ prompt or model changes because the recorded decisions stay fixed.
 **Constraints:**
 
 - If your loop now asks for **more** LLM calls than were recorded,
-  replay raises `RuntimeError` — reduce `max_steps` or re-record.
+  replay raises `RuntimeError`; reduce `max_steps` or re-record.
 - If a call was recorded as `generate_with_tools` but the replay loop
-  uses `generate` (or vice versa), replay raises `RuntimeError` — the
+  uses `generate` (or vice versa), replay raises `RuntimeError`. The
   divergence is almost certainly a bug you want to see.
 - Tools **do** execute at replay time. Replace with mocks if you don't
   want side effects.
@@ -393,7 +393,7 @@ for scenario in scenarios:
                                 hooks=[sink.trajectory_hook()]):
         ...
     sink.flush()
-# Now you have traces/<name>/trajectory.json for every scenario —
+# Now you have traces/<name>/trajectory.json for every scenario -
 # diff across runs, feed to a notebook, attach to PR descriptions.
 ```
 
@@ -417,10 +417,10 @@ except Exception:
   step: one `StepRecord` append.
 - Memory is bounded by `max_chars_per_call` (default 200,000 chars) on
   each `prompt`/`response`/`system_prompt`. Tool schemas and response
-  blocks are stored as-is — if you pass giant tool schemas, consider
+  blocks are stored as-is. If you pass giant tool schemas, consider
   redacting or truncating before the call.
 - `save()` is the only disk I/O. Call it once at loop end (or inside
-  an `except` handler) — not inside the loop.
+  an `except` handler), not inside the loop.
 - Both sync and async variants are correct under
   `asyncio.gather(...)` concurrency at the call site, but note that
   `TrajectoryRecorder` is designed for a single loop at a time; use
@@ -435,8 +435,8 @@ except Exception:
   wrapper in front of it or use OTel via `TracingHook` which is designed
   for that.
 - **PII-sensitive deployments** without a `redact=` callable. The
-  recorder writes prompts verbatim — if your prompts contain PII and
+  recorder writes prompts verbatim. If your prompts contain PII and
   you can't scrub, pick a different tool.
 
-For everything else — development, CI, benchmarks, debugging, golden
-tests — this is what you want.
+For development, CI, benchmarks, debugging, and golden tests, this is the
+intended workflow.

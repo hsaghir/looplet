@@ -3,10 +3,10 @@
 These tests witness the two hazards the cross-runtime design must
 survive (HOOK_CARTRIDGE_DESIGN.md):
 
-* **H4 composition** — an in-process hook and an out-of-process LEP hook
+* **H4 composition** - an in-process hook and an out-of-process LEP hook
   run in the *same* loop and their authority composes (AND semantics on
   permission; both denials are honoured).
-* **H2 wide view** — an LEP hook that declares a ``transcript`` view can
+* **H2 wide view** - an LEP hook that declares a ``transcript`` view can
   read conversation history across the process boundary and decide on it.
 
 It also pins the failure-policy contract (fail_closed denies on a broken

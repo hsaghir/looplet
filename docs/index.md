@@ -13,8 +13,8 @@ hide:
 <p class="hero-sub" markdown>
 Looplet keeps prompts, tools, hooks, memory, and evals in reviewable
 files. Capture what the model saw, replay recorded responses against
-fresh harness code, and gate changes with outcome-based pytest evals—
-without a graph DSL or hosted platform.
+fresh harness code, and gate changes with outcome-based pytest evals.
+No graph DSL or hosted platform is required.
 </p>
 
 <p class="hero-badges" markdown>
@@ -85,7 +85,7 @@ Host-observed outcomes become required pytest and CI contracts.
 <p class="proof-caption" markdown>
 No API key. No network. One captured model decision stream, one fresh
 tool execution, one independently collected outcome. [Read exactly
-what the demo proves—and what it does not.](regression-demo.md)
+what the demo proves and what it does not.](regression-demo.md)
 </p>
 
 ---
@@ -171,8 +171,8 @@ for step in composable_loop(
 
 Every tool call is a `Step` object returned to your code. Hooks can
 intercept the prompt, dispatch, result, stop decision, and lifecycle
-without mandatory inheritance. The loop stays an iterator—not a graph
-you have to compile or a runtime you have to surrender.
+without mandatory inheritance. The loop stays an iterator rather than a graph
+you must compile or a runtime you must surrender.
 
 ```mermaid
 flowchart LR
@@ -221,9 +221,10 @@ looplet hash ./agent.cartridge
 looplet eval run ./agent.cartridge --out ./eval-runs --threshold 1.0
 ```
 
-The prompt or tool change sits beside the case and grader that cover
-it. Protected holdouts can remain outside the cartridge when the
-candidate must not own its promotion oracle.
+The prompt or tool change sits beside the case and grader that cover it.
+Cartridge evals are versioned self-tests. A promotion oracle must remain in a
+host-owned runner and outside every task, runtime value, resource, tool, and
+file available to the candidate.
 
 [Cartridge layout and boundaries →](cartridge.md){ .md-button .md-button--primary }
 
@@ -274,7 +275,7 @@ candidate must not own its promotion oracle.
 !!! info "Replay is intentionally not called deterministic"
     It holds recorded model responses constant. Tools and side effects execute
     again. Use mocks or sandboxes when the world also needs to be
-    controlled. Use new sampled runs—not replay—to measure whether a
+    controlled. Use new sampled runs, not replay, to measure whether a
     prompt or model change improves decisions.
 
 ---
@@ -297,8 +298,8 @@ def eval_tests_pass(ctx):
 ```
 
 Collectors inspect the world after the run. Evals grade that evidence.
-Trajectory assertions remain useful for harness mechanics—whether a
-permission rule fired or the right stop reason was recorded—but not as
+Trajectory assertions remain useful for harness mechanics, including whether a
+permission rule fired or the right stop reason was recorded, but not as
 a default proxy for product quality.
 
 [Learn the eval philosophy →](evals.md){ .md-button .md-button--primary }
@@ -381,7 +382,7 @@ Python standard library; provider SDKs are optional extras.
 
     ---
 
-    Build outcome collectors, protected holdouts, pytest cases, and CI gates.
+    Build outcome collectors, grader-only cases, trust boundaries, and CI gates.
 
 </div>
 

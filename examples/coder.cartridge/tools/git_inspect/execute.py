@@ -1,4 +1,4 @@
-"""git_inspect tool — safe read-only git helpers."""
+"""git_inspect tool - safe read-only git helpers."""
 
 from __future__ import annotations
 

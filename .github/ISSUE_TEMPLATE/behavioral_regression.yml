@@ -14,7 +14,7 @@ body:
     id: outcome
     attributes:
       label: Expected and observed outcome
-      description: Describe world state, artifacts, or externally observable behavior—not only the tool sequence or final claim.
+      description: Describe world state, artifacts, or externally observable behavior, not only the tool sequence or final claim.
     validations:
       required: true
 

@@ -6,7 +6,7 @@ hook portable across runtimes?"*. This module lifts that question to the
 (Rust/Go/TypeScript), and if not, exactly which components pin it to a
 Python host?"*
 
-It is a **static** analyser — it reads the cartridge directory and its
+It is a **static** analyser - it reads the cartridge directory and its
 ``config.yaml`` / ``runtime.yaml`` rather than importing any Python
 bodies. That keeps it dependency-free and lets it grade cartridges whose
 tool/resource code can't even be imported in the current environment
@@ -15,18 +15,18 @@ tool/resource code can't even be imported in the current environment
 Four portability tiers, mirroring the conformance model in
 ``HOOK_CARTRIDGE_DESIGN.md``:
 
-* :data:`PROTOCOL` — pure data or out-of-process protocol. Runs on *any*
+* :data:`PROTOCOL` - pure data or out-of-process protocol. Runs on *any*
   conforming loader with no shared code: ``config.yaml``, ``prompts/``,
   ``mcp_servers:`` tools, ``kind: lep`` hooks.
-* :data:`STDLIB` — declarative reference to a looplet-shipped archetype
+* :data:`STDLIB` - declarative reference to a looplet-shipped archetype
   (``builtin_tools:`` / ``builtin_hooks:``). No Python body lives in the
   cartridge; portable to any runtime that ships the same named stdlib.
-* :data:`RUNTIME` — a ``resources/*.py`` whose only job is to wrap a
+* :data:`RUNTIME` - a ``resources/*.py`` whose only job is to wrap a
   host-provided builtin *service* (compaction, the skill manager, …) via
   a looplet factory such as ``default_compact_service``. The service is a
   host responsibility every conforming loader ships its own equivalent
-  of, so it does NOT pin the cartridge to Python — not a blocker.
-* :data:`INPROCESS` — a Python body or shared in-process object that
+  of, so it does NOT pin the cartridge to Python - not a blocker.
+* :data:`INPROCESS` - a Python body or shared in-process object that
   pins the cartridge to a Python host: ``tools/<n>/execute.py``,
   single-file ``tools/<n>.py``, ``hooks/<n>/`` class hooks, and
   author-owned ``resources/*.py`` (``@ref`` shared mutable state).
@@ -61,7 +61,7 @@ PROTOCOL = "protocol"
 STDLIB = "stdlib"
 # RUNTIME: a host-provided builtin service (compaction, skill manager, …)
 # wrapped declaratively. Any conforming loader ships its own equivalent,
-# so it does NOT pin the cartridge to a Python host — not a blocker.
+# so it does NOT pin the cartridge to a Python host - not a blocker.
 RUNTIME = "runtime"
 INPROCESS = "inprocess"
 
@@ -158,12 +158,12 @@ class CartridgePortabilityReport:
         ]
         if self.profile == PROFILE_PORTABLE:
             lines.append(
-                "  ✔ No Python-pinned components — runs on any conforming loader (Rust/Go/TS)."
+                "  ✔ No Python-pinned components - runs on any conforming loader (Rust/Go/TS)."
             )
         else:
             lines.append("  Python-host blockers (pin the cartridge to Python):")
             for c in self.blockers:
-                why = f" — {c.reasons[0]}" if c.reasons else ""
+                why = f" - {c.reasons[0]}" if c.reasons else ""
                 lines.append(f"    ✗ {c.kind}:{c.name} [{c.detail}]{why}")
         lines.append("")
         lines.append("  Components:")
@@ -183,7 +183,7 @@ def _read_yaml_file(path: Path) -> dict[str, Any]:
         return {}
     try:
         loaded = _load_yaml(path.read_text(encoding="utf-8"), source_path=path)
-    except Exception:  # noqa: BLE001 — malformed config shouldn't crash analysis
+    except Exception:  # noqa: BLE001 - malformed config shouldn't crash analysis
         return {}
     return loaded if isinstance(loaded, dict) else {}
 
@@ -200,7 +200,7 @@ def _analyse_tools(root: Path, mcp_servers: dict[str, Any]) -> list[ComponentRep
                 tier=PROTOCOL,
                 detail="mcp",
                 reasons=(
-                    "out-of-process MCP server — tool body runs over the "
+                    "out-of-process MCP server - tool body runs over the "
                     "stdio protocol, no Python required by the loader",
                 ),
             )
@@ -218,7 +218,7 @@ def _analyse_tools(root: Path, mcp_servers: dict[str, Any]) -> list[ComponentRep
                         tier=INPROCESS,
                         detail="python-single-file",
                         reasons=(
-                            "single-file Python tool body — pinned to a "
+                            "single-file Python tool body - pinned to a "
                             "Python host (port to an MCP server for "
                             "cross-runtime portability)",
                         ),
@@ -234,7 +234,7 @@ def _analyse_tools(root: Path, mcp_servers: dict[str, Any]) -> list[ComponentRep
                         tier=INPROCESS,
                         detail="python-execute",
                         reasons=(
-                            "Python execute.py tool body — pinned to a "
+                            "Python execute.py tool body - pinned to a "
                             "Python host (port to an MCP server for "
                             "cross-runtime portability)",
                         ),
@@ -261,7 +261,7 @@ def _analyse_hooks(root: Path, builtin_hooks: list[Any]) -> list[ComponentReport
                 tier=STDLIB,
                 detail="builtin",
                 reasons=(
-                    "declarative looplet stdlib hook — portable to any "
+                    "declarative looplet stdlib hook - portable to any "
                     "runtime that ships the same named archetype",
                 ),
             )
@@ -282,7 +282,7 @@ def _analyse_hooks(root: Path, builtin_hooks: list[Any]) -> list[ComponentReport
                         tier=PROTOCOL,
                         detail="lep",
                         reasons=(
-                            "out-of-process LEP hook — portable by "
+                            "out-of-process LEP hook - portable by "
                             "construction over line-delimited JSON-RPC",
                         ),
                     )
@@ -296,7 +296,7 @@ def _analyse_hooks(root: Path, builtin_hooks: list[Any]) -> list[ComponentReport
                         tier=INPROCESS,
                         detail=detail,
                         reasons=(
-                            "in-process Python hook class — reads live loop "
+                            "in-process Python hook class - reads live loop "
                             "state; port to a kind: lep hook for portability",
                         ),
                     )
@@ -336,7 +336,7 @@ def _analyse_resources(
                 if p.stem in state_services:
                     # A resource whose name matches a declared state
                     # service is backed by the out-of-process
-                    # StateServiceClient the loader injects — portable.
+                    # StateServiceClient the loader injects - portable.
                     out.append(
                         ComponentReport(
                             kind="resource",
@@ -345,7 +345,7 @@ def _analyse_resources(
                             detail="state-service",
                             reasons=(
                                 "shared state served out-of-process by a "
-                                "state_services: entry — the loader injects a "
+                                "state_services: entry - the loader injects a "
                                 "StateServiceClient proxy, so no Python body "
                                 "is required by the host",
                             ),
@@ -365,7 +365,7 @@ def _analyse_resources(
                             detail="host-service",
                             reasons=(
                                 "builtin host service (compaction / skill "
-                                "manager / …) — a host responsibility, not "
+                                "manager / …) - a host responsibility, not "
                                 "author-owned state; any conforming loader "
                                 "provides its own equivalent",
                             ),
@@ -379,7 +379,7 @@ def _analyse_resources(
                         tier=INPROCESS,
                         detail="shared-ref",
                         reasons=(
-                            "Python resource (@ref shared object) — shared "
+                            "Python resource (@ref shared object) - shared "
                             "mutable state in one address space; port to a "
                             "state_services: entry for cross-runtime "
                             "portability",
@@ -408,7 +408,7 @@ def _analyse_state_services(
                 tier=PROTOCOL,
                 detail="ssp",
                 reasons=(
-                    "out-of-process state service (SSP) — shared mutable "
+                    "out-of-process state service (SSP) - shared mutable "
                     "state lives behind a Unix socket, addressable by any "
                     "runtime over line-delimited JSON; no Python required "
                     "by the loader",
@@ -458,7 +458,7 @@ def _analyse_cartridge(
             name="config.yaml",
             tier=PROTOCOL,
             detail="data",
-            reasons=("declarative configuration — pure data",),
+            reasons=("declarative configuration - pure data",),
         )
     )
     if (root / "prompts").is_dir():
@@ -468,7 +468,7 @@ def _analyse_cartridge(
                 name="prompts/",
                 tier=PROTOCOL,
                 detail="text",
-                reasons=("prompt text — pure data",),
+                reasons=("prompt text - pure data",),
             )
         )
 
@@ -482,7 +482,7 @@ def _analyse_cartridge(
                 tier=STDLIB,
                 detail="builtin",
                 reasons=(
-                    "declarative looplet stdlib tool — portable to any "
+                    "declarative looplet stdlib tool - portable to any "
                     "runtime that ships the same named archetype",
                 ),
             )
@@ -493,7 +493,7 @@ def _analyse_cartridge(
     components.extend(_analyse_state_services(state_services))
     components.extend(_analyse_resources(root, state_services))
 
-    # ``extends:`` inheritance — the loader merges the parent workspace
+    # ``extends:`` inheritance - the loader merges the parent workspace
     # under the child, so the child inherits every parent component. A
     # report that ignored this would silently under-count blockers (e.g.
     # a one-tool child that ``extends:`` a 27-blocker parent). Resolve the
@@ -523,7 +523,7 @@ def _analyse_cartridge(
                         tier=c.tier,
                         detail=c.detail,
                         reasons=(
-                            f"inherited via extends: {extends_val} — "
+                            f"inherited via extends: {extends_val} - "
                             + (c.reasons[0] if c.reasons else ""),
                         ),
                     )

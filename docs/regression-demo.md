@@ -64,6 +64,12 @@ flowchart LR
 
 The command prints its evidence directory. Inside it:
 
+!!! note "The workspaces are separate"
+  The v1 and v2 directories are fresh workspaces, not snapshots restored
+  from one deterministic environment. Model responses are held constant;
+  file writes and every other tool side effect execute independently in
+  each workspace.
+
 ```text
 looplet-regression-demo/
 ├── harness-v1.cartridge/

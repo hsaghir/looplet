@@ -49,7 +49,7 @@ Out of scope:
 
 - Issues in downstream agents built on top of `looplet` (report to
   that project).
-- Issues in optional LLM SDKs (`anthropic`, `openai`) — report
+- Issues in optional LLM SDKs (`anthropic`, `openai`) - report
   upstream.
 - Prompt-injection vectors against LLM backends (these are a property
   of the backend / your deployment, not the harness).
@@ -64,7 +64,7 @@ When deploying `looplet`:
   (usually `DENY`) instead of relying on rule coverage.
 - Thread a `CancelToken` through long-running loops so you can stop
   them cleanly.
-- Treat checkpoint files as sensitive — they contain prompt and tool
+- Treat checkpoint files as sensitive - they contain prompt and tool
   result history.
 - Pin the `looplet` version in your lock file and review
   `CHANGELOG.md` before upgrading.

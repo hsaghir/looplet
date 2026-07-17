@@ -1,6 +1,6 @@
 """T8 dogfood: declarative ``rewrite_thread`` effect (portable compaction).
 
-``CompactOutcome.cleanup`` is a Python closure — it cannot cross a
+``CompactOutcome.cleanup`` is a Python closure - it cannot cross a
 process boundary, so an out-of-process / cross-runtime compactor cannot
 use it. T8 adds a declarative, JSON-safe equivalent:
 :func:`~looplet.hook_decision.RewriteThread` /

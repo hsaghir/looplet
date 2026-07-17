@@ -1,7 +1,7 @@
 """A minimal stdio MCP (Model Context Protocol) server.
 
-Portable twin of the ``mcp_demo`` calc server. Exposes TWO tools —
-``add(a, b)`` and ``done(total)`` — over the MCP stdio transport
+Portable twin of the ``mcp_demo`` calc server. Exposes TWO tools -
+``add(a, b)`` and ``done(total)`` - over the MCP stdio transport
 (newline-delimited JSON-RPC). Bundling the completion sentinel
 (``done``) here, instead of as an in-process ``tools/done/execute.py``,
 is what makes the ``mcp_demo_portable`` cartridge fully portable: no

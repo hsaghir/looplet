@@ -5,9 +5,9 @@ reactive recovery is triggered. Each strategy mutates agent state to
 reduce prompt size, then the caller rebuilds the prompt and retries.
 
 Strategies (tried in order, each fires at most once):
-  1. **Aggressive budget** — shrink all tool results to 2 KB each
-  2. **Reactive compact** — deterministic session log compression
-  3. **Clear old results** — drop all result data except last 2 steps
+  1. **Aggressive budget** - shrink all tool results to 2 KB each
+  2. **Reactive compact** - deterministic session log compression
+  3. **Clear old results** - drop all result data except last 2 steps
 """
 
 from __future__ import annotations
@@ -56,7 +56,7 @@ def rebuild_prompt(
     context_history = state.context_summary()
     briefing = build_briefing(state, session_log, context) if build_briefing else ""
 
-    # Render persistent memory — same as the main loop body.
+    # Render persistent memory - same as the main loop body.
     _memory_sources = getattr(config, "memory_sources", None)
     if _memory_sources:
         from looplet.memory import render_memory as _render_memory  # noqa: PLC0415

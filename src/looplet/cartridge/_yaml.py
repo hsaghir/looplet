@@ -1,6 +1,6 @@
 """Custom YAML reader/writer for the subset of YAML the cartridge format uses.
 
-Dependency-free (stdlib only) — keeping looplet.cartridge a zero-dep
+Dependency-free (stdlib only) - keeping looplet.cartridge a zero-dep
 package is a v1 commitment. The full PyYAML dep is overkill for the
 shape we need: ``key: value`` mappings, nested blocks, lists of
 scalars, lists of dicts, inline flow collections (``[a, b]``,
@@ -128,7 +128,7 @@ def _load_yaml(text: str, *, source_path: str | Path | None = None) -> Any:
             raw_val = _strip_inline_comment(raw_val.strip())
             pos += 1
             if raw_val in ("|", "|-", "|+", ">", ">-", ">+"):
-                # YAML block scalar — gather all subsequent lines whose
+                # YAML block scalar - gather all subsequent lines whose
                 # indent exceeds ``indent``, strip the leading common
                 # indent, and join with newlines (literal ``|`` style)
                 # or spaces (folded ``>`` style). The trailing chomp
@@ -183,7 +183,7 @@ def _load_yaml(text: str, *, source_path: str | Path | None = None) -> Any:
             if not after:
                 out.append(parse_block(indent + 2))
             elif _is_inline_single_key_dict(after):
-                # ``- key: <flow value or scalar>`` — may be a single-key
+                # ``- key: <flow value or scalar>`` - may be a single-key
                 # dict (when no follow-on fields at the same indent),
                 # OR the first key of a multi-field block mapping list
                 # item:
@@ -241,7 +241,7 @@ def _load_yaml(text: str, *, source_path: str | Path | None = None) -> Any:
                 if i + 1 == len(s) or s[i + 1] == " ":
                     # Cheap sanity: key part before colon must not
                     # itself contain spaces (would mean it's a sentence,
-                    # not a key — see issue with ``- some sentence: blah``).
+                    # not a key - see issue with ``- some sentence: blah``).
                     key_part = s[:i].strip()
                     return bool(key_part) and " " not in key_part
         return False
@@ -253,7 +253,7 @@ def _load_yaml(text: str, *, source_path: str | Path | None = None) -> Any:
         is the actual scalar. The custom parser previously kept the
         comment glued to the value, so e.g. ``done_tool: done  # foo``
         registered the literal string ``"done  # foo"`` as the tool
-        name — silently breaking sentinel matching.
+        name - silently breaking sentinel matching.
 
         A ``#`` is only a comment delimiter when:
         * preceded by whitespace (or appears at start of value), AND

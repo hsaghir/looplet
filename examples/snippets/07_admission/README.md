@@ -1,4 +1,4 @@
-# 07 — Admission policy
+# 07 - Admission policy
 
 When an agent is a directory, an *admission policy* is just a function
 that inspects the directory and refuses to load it if a rule is
@@ -20,7 +20,7 @@ This snippet ships a policy with three rules:
 uv run python examples/snippets/07_admission/admit.py examples/coder.cartridge
 
 # The refactorer trivially passes because it has no hooks dir of its
-# own — and the policy is purely static, so it does not chase
+# own - and the policy is purely static, so it does not chase
 # `extends:` into the parent. This illustrates a real subtlety:
 # admission of an inheriting cartridge either needs to resolve the
 # parent or inherit policy decisions.
@@ -33,5 +33,5 @@ uv run python examples/snippets/07_admission/admit.py \
 The policy is 60 lines of plain Python. It runs in a CI pipeline
 beside lint and tests. The same shape ports to OPA/Rego, signed
 attestations, or any policy engine an organisation already runs.
-The point is not the rules themselves — it is that *the boundary
+The point is not the rules themselves - it is that *the boundary
 makes the policy possible*.

@@ -1,6 +1,15 @@
 name: Docs
 
 on:
+  pull_request:
+    branches: [master]
+    paths:
+      - "docs/**"
+      - "mkdocs.yml"
+      - "CHANGELOG.md"
+      - "CONTRIBUTING.md"
+      - "ROADMAP.md"
+      - ".github/workflows/docs.yml"
   push:
     branches: [master]
     paths:
@@ -36,13 +45,15 @@ jobs:
       - name: Build
         # docs/index.md is committed directly.
         # docs/{roadmap,contributing,changelog}.md are symlinks to
-        # the root-level canonical files — mkdocs follows them.
+        # the root-level canonical files - mkdocs follows them.
         run: mkdocs build --strict
 
       - uses: actions/upload-pages-artifact@v3
+        if: github.event_name != 'pull_request'
         with: { path: site }
 
   deploy:
+    if: github.event_name != 'pull_request'
     needs: build
     runs-on: ubuntu-latest
     environment:

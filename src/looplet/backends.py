@@ -7,13 +7,13 @@ pre-built provider client object for full control.
 
 Typical usage::
 
-    # OpenAI (convenience — auto-creates client)
+    # OpenAI (convenience - auto-creates client)
     from looplet.backends import OpenAIBackend
 
     llm = OpenAIBackend(base_url="https://api.openai.com/v1",
                         api_key="sk-...", model="gpt-4o")
 
-    # OpenAI (explicit client — full control)
+    # OpenAI (explicit client - full control)
     from openai import OpenAI
     llm = OpenAIBackend(OpenAI(), model="gpt-4o")
 
@@ -261,7 +261,7 @@ class OpenAIBackend:
         default_max_tokens: Default max_tokens sent to the API.
             ``None`` (default) means "don't send max_tokens, let the
             provider decide." Set to an int to cap every call.
-        base_url: Convenience shorthand — when provided without ``client``,
+        base_url: Convenience shorthand - when provided without ``client``,
             an ``openai.OpenAI(base_url=..., api_key=...)`` client is
             created automatically. Most users hit this friction point
             immediately: ``OpenAIBackend(base_url="...", api_key="...")``
@@ -492,7 +492,7 @@ class AnthropicBackend:
             ``api_key`` is provided instead.
         model: Model name (e.g. ``"claude-sonnet-4-20250514"``).
         default_max_tokens: Default max_tokens when not overridden per call.
-        api_key: Convenience shorthand — when provided without ``client``,
+        api_key: Convenience shorthand - when provided without ``client``,
             an ``anthropic.Anthropic(api_key=...)`` client is created.
 
     Example (explicit client)::
@@ -668,7 +668,7 @@ class AsyncOpenAIBackend:
         client: An ``openai.AsyncOpenAI`` client instance. Optional if
             ``base_url`` and ``api_key`` are provided instead.
         model: Model name (e.g. ``"gpt-4o"``).
-        base_url: Convenience shorthand — auto-creates an AsyncOpenAI client.
+        base_url: Convenience shorthand - auto-creates an AsyncOpenAI client.
         api_key: API key for the auto-created client.
     """
 

@@ -3,20 +3,20 @@
 Looplet's context pipeline has THREE nested budgets that mirror Claude
 Code's design:
 
-1. **Per-tool-result cap** — at dispatch time, ``truncate_tool_result``
+1. **Per-tool-result cap** - at dispatch time, ``truncate_tool_result``
    caps any single tool's ``data`` to :data:`TOOL_RESULT_MAX_CHARS`.
    Persist-and-preview kicks in when the result exceeds
    :data:`TOOL_RESULT_PERSIST_THRESHOLD_CHARS` and a persist directory
    is configured.
 
-2. **Per-context-window aggregate cap** — at LLM-prompt assembly time,
+2. **Per-context-window aggregate cap** - at LLM-prompt assembly time,
    ``state.context_summary()`` shows the last
    :data:`CONTEXT_WINDOW_STEPS` steps with each step's data inlined
    (truncated to :data:`CONTEXT_INLINE_PER_STEP_CHARS` per step). When
    the aggregate exceeds :data:`CONTEXT_WINDOW_TOTAL_CHARS`, the
    largest entries get persist-previewed until the total fits.
 
-3. **Whole-conversation compact** — when the loop's reactive-compact
+3. **Whole-conversation compact** - when the loop's reactive-compact
    layer detects context pressure (handled by
    :class:`looplet.compact.CompactService` and the ``ThresholdCompactHook``).
    Tunables live in those modules; the only knob here is
@@ -43,7 +43,7 @@ import os
 def _env_int(name: str, default: int) -> int:
     """Read ``LOOPLET_<name>`` from the environment as an int.
 
-    Returns ``default`` when the var is unset, empty, or unparseable —
+    Returns ``default`` when the var is unset, empty, or unparseable -
     we never crash a process over a malformed budget knob.
     """
     raw = os.environ.get(f"LOOPLET_{name}", "")
@@ -69,7 +69,7 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
-# ── Layer 1 — per-tool-result cap ─────────────────────────────────
+# ── Layer 1 - per-tool-result cap ─────────────────────────────────
 
 
 TOOL_RESULT_MAX_CHARS: int = _env_int("TOOL_RESULT_MAX_CHARS", 6000)
@@ -111,7 +111,7 @@ serialized result, plus the persist-path. Mirrors Claude Code's
 """
 
 
-# ── Layer 2 — per-context-window aggregate cap ───────────────────
+# ── Layer 2 - per-context-window aggregate cap ───────────────────
 
 
 CONTEXT_WINDOW_STEPS: int = _env_int("CONTEXT_WINDOW_STEPS", 5)
@@ -127,7 +127,7 @@ CONTEXT_INLINE_PER_STEP_CHARS: int = _env_int("CONTEXT_INLINE_PER_STEP_CHARS", 3
 
 Each step's result is JSON-serialized; if the serialization exceeds
 this cap, it gets per-step truncation with a "[truncated; full result
-N chars]" tail. Independent of Layer 1 — Layer 1 caps at dispatch
+N chars]" tail. Independent of Layer 1 - Layer 1 caps at dispatch
 time, this layer caps at prompt-assembly time.
 """
 
@@ -182,7 +182,7 @@ def get_context_window_total_chars() -> int:
     return override if override is not None else CONTEXT_WINDOW_TOTAL_CHARS
 
 
-# ── Layer 3 — whole-conversation compact ──────────────────────────
+# ── Layer 3 - whole-conversation compact ──────────────────────────
 
 
 COMPACT_TRIGGER_FRACTION: float = _env_float("COMPACT_TRIGGER_FRACTION", 0.75)

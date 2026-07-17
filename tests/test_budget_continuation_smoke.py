@@ -106,7 +106,7 @@ class TestBudgetContinuation:
                 config=LoopConfig(max_steps=2, max_turn_continuations=2),
             )
         )
-        # Continuation stitched the truncated JSON back together —
+        # Continuation stitched the truncated JSON back together -
         # the parser succeeds, producing exactly one done step.
         assert len(steps) == 1
         assert steps[0].tool_call.tool == "done"

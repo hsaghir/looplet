@@ -34,7 +34,7 @@ def _collect_toplevel_looplet_imports(path: Path) -> set[str]:
     """Return the looplet.* modules imported at module scope by ``path``.
 
     Imports inside function bodies, class bodies, or ``TYPE_CHECKING``
-    blocks are deliberately excluded — they don't count against
+    blocks are deliberately excluded - they don't count against
     extractability since they don't fire at module load time.
     """
     tree = ast.parse(path.read_text(encoding="utf-8"))

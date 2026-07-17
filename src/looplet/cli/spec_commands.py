@@ -157,7 +157,7 @@ def cmd_conform(args: argparse.Namespace) -> int:
         return 2
 
     loader: Callable[..., Any] = cartridge_to_preset
-    print(_bold(f"Cartridge Spec v1.0 conformance — {len(fixtures)} fixture(s)"))
+    print(_bold(f"Cartridge Spec v1.0 conformance - {len(fixtures)} fixture(s)"))
     print(_dim(f"  fixtures: {fixtures_dir}"))
     print()
 
@@ -170,19 +170,19 @@ def cmd_conform(args: argparse.Namespace) -> int:
             continue
         if not cartridge.is_dir():
             failures.append((fix.name, "missing cartridge/ subdir"))
-            print(f"  {_red('FAIL')} {fix.name} — missing cartridge/")
+            print(f"  {_red('FAIL')} {fix.name} - missing cartridge/")
             continue
         try:
             preset = loader(str(cartridge), strict=True)
         except Exception as e:  # noqa: BLE001
             failures.append((fix.name, f"{type(e).__name__}: {e}"))
-            print(f"  {_red('FAIL')} {fix.name} — load error: {type(e).__name__}: {e}")
+            print(f"  {_red('FAIL')} {fix.name} - load error: {type(e).__name__}: {e}")
             continue
         actual = _summarise_preset(preset)
         expected = json.loads(expected_path.read_text())
         if actual != expected:
             failures.append((fix.name, "summary mismatch"))
-            print(f"  {_red('FAIL')} {fix.name} — summary mismatch")
+            print(f"  {_red('FAIL')} {fix.name} - summary mismatch")
             if args.verbose:
                 _print_summary_diff(expected, actual)
         else:
@@ -411,7 +411,7 @@ def _line_delta(a: str | None, b: str | None) -> str:
 # hash. ``__pycache__/`` and ``*.pyc`` are interpreter byproducts,
 # ``.git/`` and ``.venv/`` are not part of the cartridge surface, and
 # ``seed/`` holds optional starter data the agent may overwrite at
-# runtime — its presence/contents must not change the cartridge's
+# runtime - its presence/contents must not change the cartridge's
 # identity. Update SPEC.md when this list changes.
 _HASH_EXCLUDED_DIRS = frozenset(
     {"__pycache__", ".git", ".venv", "seed", ".pytest_cache", ".mypy_cache"}
@@ -716,7 +716,7 @@ def add_subparsers(sub: "argparse._SubParsersAction") -> None:
             "     into explicit builtin_hooks: entries.\n"
             "  3. Bump schema_version to 2 in cartridge.json.\n\n"
             "Refuses to migrate cartridges with setup.py (v2 removes that\n"
-            "escape hatch; port the wiring manually). Idempotent — running\n"
+            "escape hatch; port the wiring manually). Idempotent - running\n"
             "a second time is a no-op."
         ),
     )

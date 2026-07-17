@@ -1,4 +1,4 @@
-"""Done tool — completion sentinel for the planner child."""
+"""Done tool - completion sentinel for the planner child."""
 
 
 def execute(*, summary: str) -> dict:

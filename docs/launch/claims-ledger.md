@@ -12,7 +12,7 @@ and language that must not be substituted for it.
 | Captured model responses can run through fresh harness code without another model call. | `RecordingLLMBackend`, `replay_loop()`, replay tests, demo. | Tools, hooks, state, permissions, and side effects execute again. | "Deterministic replay" or "free A/B testing" without variable scope. |
 | Provenance artifacts are human-readable text/JSON. | Prompt/response files, manifests, trajectories, CLI `show`. | Sensitive values may be present; redaction must be configured at the right boundary. | "Safe to commit every trace." |
 | Collectors can grade world state independently of the agent's final claim. | `EvalHook` collectors, demo collector, eval tests. | Independence depends on collector design and host ownership. | "Agents cannot game Looplet evals." |
-| Top-level case expected data is withheld from the live agent task. | Eval runner/persistence implementation and integrity tests. | Agent-visible files are not protected; external holdouts are needed when candidates can edit cartridges. | "All cartridge evals are hidden." |
+| Top-level case expected data is withheld from the live agent task. | Eval runner/persistence implementation and integrity tests. | Candidate runtime and files are not protected; promotion needs a host-owned runner and OS/process isolation against arbitrary code. | "All cartridge evals are hidden." |
 | Required graders and collector/evaluator errors fail the CLI. | Eval CLI implementation and focused integrity suite. | State the exact command/configuration; library users can choose other handling. | "Looplet guarantees no false greens." |
 | Cartridges are reviewable harness directories. | Cartridge format, describe/diff/hash commands, round-trip tests. | Round-trip is defined for supported serializable fields; Python escape hatches remain. | "Lossless serialization of arbitrary Python." |
 | A compact Looplet coder matched Copilot correctness in recorded small same-model suites. | `benchmarks/coder_vs_agents/*` reports. | Historical, small samples; serving stacks differ; open-ended judging is noisy. | "Looplet beats Copilot" or universal speed/cost claims. |
@@ -45,7 +45,7 @@ level 4 into a headline.
 - Say **captured-response replay**, not deterministic replay.
 - Say **outcome-grounded**, not objective, unless the outcome truly has an
   objective verifier.
-- Say **host-owned protected holdout**, not hidden eval, when security matters.
+- Say **host-owned holdout with an explicit isolation boundary**, not hidden eval, when security matters.
 - Say **core runtime**, not whole development environment, for dependency
   claims.
 - Say **can fail closed under the CLI contract**, not guarantees safety.

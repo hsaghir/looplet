@@ -1,4 +1,4 @@
-"""Tests for looplet.context — ContextPressureHook."""
+"""Tests for looplet.context - ContextPressureHook."""
 
 from __future__ import annotations
 
@@ -340,7 +340,7 @@ class TestHealthProbe:
         assert "compressed" in result.lower() or "entities" in result.lower()
 
     def test_reminder_has_no_ioc_reference(self):
-        """No 'IOC' text — uses 'highlight' or 'notable item'."""
+        """No 'IOC' text - uses 'highlight' or 'notable item'."""
         from looplet.context import ContextPressureHook
 
         hook = ContextPressureHook(llm=None)

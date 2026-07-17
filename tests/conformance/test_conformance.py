@@ -123,7 +123,7 @@ def test_conformance_fixture(fixture_dir: Path) -> None:
     # Cartridge spec v2: any fixture that declares ``ask:`` rules must
     # supply an ``ask_handler`` to the loader, otherwise loading
     # fail-louds. Fixtures don't carry executable Python, so wire in a
-    # deterministic stub here that always denies — conformance is
+    # deterministic stub here that always denies - conformance is
     # about loader behaviour, not runtime decisions.
     preset = cartridge_to_preset(str(cartridge), strict=True, runtime=runtime_kwargs)
     summary = _summarise_preset(preset)

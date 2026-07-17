@@ -60,7 +60,7 @@ class TestMissingArgValidation:
 
         result = tools.dispatch(ToolCall(tool="tool", args={}))
 
-        # Full arg name is present — no mid-word truncation.
+        # Full arg name is present - no mid-word truncation.
         assert "verylongargumentname" in (result.error or "")
 
     def test_supplied_args_still_execute(self) -> None:
@@ -97,12 +97,12 @@ class TestMissingArgValidation:
             )
         )
 
-        # url missing — should fail
+        # url missing - should fail
         r1 = tools.dispatch(ToolCall(tool="fetch", args={"timeout": 10}))
         assert r1.error is not None
         assert "url" in r1.error
 
-        # url present — should work
+        # url present - should work
         r2 = tools.dispatch(ToolCall(tool="fetch", args={"url": "http://x"}))
         assert r2.error is None
 
@@ -116,7 +116,7 @@ class TestRunSubLoopConfigParity:
         from looplet import OpenAIBackend, run_sub_loop
         from looplet.testing import MockLLMBackend
 
-        # The point is API parity — we only need to assert that the
+        # The point is API parity - we only need to assert that the
         # signature accepts ``config=`` without raising. A tiny mock
         # backend lets us reach the loop body.
         llm = MockLLMBackend(responses=['call tool: {"name":"done","args":{}}'])

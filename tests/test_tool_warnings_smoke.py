@@ -1,4 +1,4 @@
-"""Tool warnings — soft advisories attached to successful tool results.
+"""Tool warnings - soft advisories attached to successful tool results.
 
 Lets tool authors say "here's your data, AND you should know X" without
 forcing a failure. Complements ToolValidationError (hard stop) and the
@@ -20,7 +20,7 @@ from looplet import (
 
 
 def _noctx_tool(execute):
-    """Build a ToolSpec whose execute takes only (ctx) — convenience."""
+    """Build a ToolSpec whose execute takes only (ctx) - convenience."""
     return ToolSpec(
         name="t",
         description="test tool",
@@ -110,7 +110,7 @@ def test_warnings_scoped_per_call_not_cumulative() -> None:
 
     assert r1.warnings == ["this call"]
     assert r2.warnings == ["this call"]  # only warnings from r2's own call
-    # ctx as an observer accumulates full history — useful for audit.
+    # ctx as an observer accumulates full history - useful for audit.
     assert ctx.warnings == ["this call", "this call"]
 
 
@@ -118,7 +118,7 @@ def test_warnings_scoped_per_call_not_cumulative() -> None:
 
 
 def test_warnings_preserved_when_tool_raises() -> None:
-    """Warnings emitted before a raise appear alongside the error —
+    """Warnings emitted before a raise appear alongside the error -
     they usually explain *why* the tool then gave up."""
 
     def tool(ctx: ToolContext):

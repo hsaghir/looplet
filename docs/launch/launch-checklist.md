@@ -6,10 +6,13 @@ No launch date overrides a failed integrity or evidence gate.
 
 - [ ] The canonical category is identical across README, docs home, PyPI
       description, release copy, and repository description.
+- [ ] The package version is unused on PyPI and matches `pyproject.toml`,
+      `looplet.__version__`, README, and a dated changelog section.
 - [ ] The primary CTA runs the network-free regression proof.
 - [ ] Every outward factual claim appears in `claims-ledger.md`.
 - [ ] No public copy says deterministic replay, automatic optimization,
       production-safe, or universal framework replacement.
+- [ ] No tracked UTF-8 file contains an em dash; `make style` passes.
 - [ ] Raw loop, graph runtime, hosted eval platform, and turnkey agent
       alternatives are described honestly.
 - [ ] Factory-generated cartridges are described as drafts, not validated
@@ -46,7 +49,8 @@ No launch date overrides a failed integrity or evidence gate.
 - [ ] README links resolve from GitHub and PyPI contexts.
 - [ ] No stale 0.1.x positioning, test counts, "one dependency," or workspace
       class examples remain.
-- [ ] Cartridge docs distinguish colocated self-tests from protected holdouts.
+- [ ] Cartridge docs distinguish colocated self-tests from host-owned holdouts
+      and do not present candidate runtime or directory layout as protection.
 - [ ] Provenance docs consistently say captured-response replay.
 - [ ] Roadmap keeps search, statistics, and optimization outside core.
 - [ ] Code samples use public imports and canonical CLI names.

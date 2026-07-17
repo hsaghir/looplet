@@ -1,7 +1,7 @@
 [project]
 name = "looplet"
-version = "0.2.0"
-description = "Test-driven harness engineering for Python agents — own the loop, capture failures, and gate changes in CI."
+version = "0.3.0"
+description = "Test-driven harness engineering for Python agents: own the loop, capture failures, and gate changes in CI."
 readme = "README.md"
 license = { text = "Apache-2.0" }
 requires-python = ">=3.11"
@@ -70,6 +70,8 @@ build-backend = "hatchling.build"
 packages = ["src/looplet"]
 
 [tool.hatch.build.targets.wheel.force-include]
+"examples/agent_factory.cartridge" = "looplet/_bundled/agent_factory.cartridge"
+"examples/coder.cartridge" = "looplet/_bundled/coder.cartridge"
 "tests/fixtures/coder_skill_bundle/SKILL.md" = "tests/fixtures/coder_skill_bundle/SKILL.md"
 "tests/fixtures/coder_skill_bundle/looplet.py" = "tests/fixtures/coder_skill_bundle/looplet.py"
 "tests/fixtures/coder_skill_bundle/tools.py" = "tests/fixtures/coder_skill_bundle/tools.py"
@@ -86,6 +88,8 @@ include = [
     "CHANGELOG.md",
     "docs/hooks.md",
     "docs/skills.md",
+    "examples/agent_factory.cartridge",
+    "examples/coder.cartridge",
     "tests/fixtures/coder_skill_bundle/SKILL.md",
     "tests/fixtures/coder_skill_bundle/looplet.py",
     "tests/fixtures/coder_skill_bundle/tools.py",
@@ -117,7 +121,7 @@ select = [
 ]
 ignore = [
     "E501",  # line length handled by formatter
-    "E741",  # ambiguous variable names (l, I, O) — acceptable in math/LLM contexts
+    "E741",  # ambiguous variable names (l, I, O) - acceptable in math/LLM contexts
 ]
 
 [tool.ruff.lint.per-file-ignores]

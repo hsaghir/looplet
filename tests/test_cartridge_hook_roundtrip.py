@@ -2,8 +2,8 @@
 
 The "100% lossless" claim (HOOK_CARTRIDGE_DESIGN.md §9.0) means: a
 cartridge → library (preset) → cartridge → library round-trip preserves
-hook *behaviour*. This test exercises the linchpin case — a declarative
-``kind: lep`` hook — and asserts:
+hook *behaviour*. This test exercises the linchpin case - a declarative
+``kind: lep`` hook - and asserts:
 
 * the serialiser emits a self-contained ``kind: lep`` config (server
   script copied in, command rewritten relative);

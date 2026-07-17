@@ -71,7 +71,7 @@ class CompactOutcome:
     Python closure cannot cross a process boundary."""
 
     follow_up: dict[str, Any] | None = None
-    """Declarative, JSON-safe post-compact thread rewrite — the portable
+    """Declarative, JSON-safe post-compact thread rewrite - the portable
     reification of :attr:`cleanup`. Same schema as
     :class:`~looplet.hook_decision.HookDecision.rewrite_thread`
     (``reset_metadata_keys`` / ``metadata_updates``); applied by
@@ -128,7 +128,7 @@ class CompactService(Protocol):
 
     A service is called with the same ``(state, session_log, llm,
     step_num)`` signature as the legacy recovery strategies plus a
-    ``conversation`` (optional — None for loops that do not thread
+    ``conversation`` (optional - None for loops that do not thread
     one). It must mutate those surfaces in place and return a
     :class:`CompactOutcome` describing what it did.
     """
@@ -293,7 +293,7 @@ class TruncateCompact:
     Conversation side: calls :meth:`Conversation.compact` with the
     default deterministic summarizer.
 
-    Fast, free, and deterministic — but anything in the dropped
+    Fast, free, and deterministic - but anything in the dropped
     middle is gone. Use when speed matters more than context
     retention, or as the last-resort stage in a :func:`compact_chain`.
     """
@@ -326,7 +326,7 @@ class TruncateCompact:
         )
         compacted_step_range = candidate_step_range if session_was_compacted else None
 
-        # Conversation side (optional — most domains don't thread one).
+        # Conversation side (optional - most domains don't thread one).
         messages_after = _compact_conversation_if_smaller(
             conversation,
             keep_recent=self.keep_recent,
@@ -412,7 +412,7 @@ def run_compact(
         if getattr(d, "rewrite_thread", None):
             apply_thread_rewrite(state, d.rewrite_thread)
 
-    # Post-compact cleanup callback — domain-specific state resets.
+    # Post-compact cleanup callback - domain-specific state resets.
     if outcome.cleanup is not None:
         try:
             outcome.cleanup()
@@ -491,7 +491,7 @@ def _emit_compact_event(
         try:
             result = fn(payload)
         except Exception:  # noqa: BLE001
-            # Compaction must never break the loop — log and continue.
+            # Compaction must never break the loop - log and continue.
             import logging  # noqa: PLC0415
 
             logging.getLogger(__name__).exception(
@@ -517,11 +517,11 @@ in order, in plain text (no markdown headers, no code fences):
    accomplish.
 2. Key findings: facts the agent has established, as a compact
    bulleted list. Preserve identifiers (IDs, paths, hashes, host
-   names) verbatim — downstream reasoning depends on them.
+   names) verbatim - downstream reasoning depends on them.
 3. Open questions: what remains to investigate, as a compact
    bulleted list.
 4. Recent decisions: the last few tool calls and their outcomes, one
-   short line each — enough for the agent to not repeat work.
+   short line each - enough for the agent to not repeat work.
 
 Hard constraints:
 * Never invent facts not present in the transcript.
@@ -541,7 +541,7 @@ class SummarizeCompact:
     findings, open questions, recent decisions). When the session log
     is long enough to shorten, the summary is spliced in before the
     recent entries. Falls back to deterministic keep-recent on any
-    summariser error — compaction always succeeds.
+    summariser error - compaction always succeeds.
 
     Prefer for long-running autonomous sessions where reasoning-chain
     preservation matters. Avoid for sub-second latency budgets or
@@ -614,7 +614,7 @@ class SummarizeCompact:
                 extra={"mode": "empty_fallback", "transcript_source": transcript_source},
             )
 
-        # Escape curly braces in transcript before str.format() — tool
+        # Escape curly braces in transcript before str.format() - tool
         # results routinely contain JSON with {/} which would cause
         # KeyError/ValueError from the format call.
         _safe_transcript = transcript.replace("{", "{{").replace("}", "}}")
@@ -623,7 +623,7 @@ class SummarizeCompact:
             transcript=_safe_transcript,
         )
 
-        # 2. Ask the LLM for a summary. Recovery-tier call — no retry
+        # 2. Ask the LLM for a summary. Recovery-tier call - no retry
         #    on prompt-too-long since that's exactly what we're
         #    compacting in response to; just fall back to deterministic.
         llm_calls_spent = 0
@@ -681,7 +681,7 @@ class SummarizeCompact:
                 insert_pos = max(0, len(entries) - self.keep_recent)
                 entries.insert(insert_pos, summary_entry)
             except Exception:  # noqa: BLE001
-                # Session log shape varies across domains — never let
+                # Session log shape varies across domains - never let
                 # a splice failure break the loop.
                 pass
 
@@ -720,7 +720,7 @@ class PruneToolResults:
     Iterates :attr:`Conversation.messages`, finds TOOL messages older
     than the last ``keep_recent`` tool results, and replaces their
     ``content`` with a short marker string. Zero LLM calls, zero
-    structure changes — the message count stays the same, only the
+    structure changes - the message count stays the same, only the
     payload shrinks.
 
     Use as the cheapest first stage in a :func:`compact_chain`::
@@ -943,7 +943,7 @@ def compact_chain(*services: CompactService) -> CompactService:
     :class:`CompactOutcome`. If not, the next stage runs.
 
     The last stage always runs and its outcome is returned even if
-    nothing changed — this lets a terminal :class:`TruncateCompact`
+    nothing changed - this lets a terminal :class:`TruncateCompact`
     guarantee progress.
 
     Usage::
@@ -999,5 +999,5 @@ class _CompactChain:
                 outcome.extra["chain_stage_count"] = len(self._stages)
                 return outcome
 
-        # Unreachable — the loop always returns on the last stage.
+        # Unreachable - the loop always returns on the last stage.
         return CompactOutcome(reason=reason)  # pragma: no cover

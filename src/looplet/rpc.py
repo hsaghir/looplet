@@ -1,4 +1,4 @@
-"""RPC mode — drive a looplet loop over stdio JSONL.
+"""RPC mode - drive a looplet loop over stdio JSONL.
 
 Lets non-Python clients (TypeScript, Rust, Go, shell) embed looplet
 without FFI. The protocol is the smallest thing that works:
@@ -8,7 +8,8 @@ without FFI. The protocol is the smallest thing that works:
 * **Inbound commands** (stdin → server):
 
   - ``{"cmd": "load_workspace", "path": "...", "runtime": {...}}``
-    Load an :class:`AgentPreset` from a workspace. Required first.
+        Load an :class:`AgentPreset` from a cartridge. The command name is retained
+        for protocol compatibility. Required first.
   - ``{"cmd": "set_backend", "factory": "pkg.module:fn"}``
     Import a callable that returns an :class:`LLMBackend`. Required
     before ``run``.
@@ -24,14 +25,14 @@ without FFI. The protocol is the smallest thing that works:
     either an absolute path to a ``step_N.json`` file (e.g. the ``path``
     from a ``checkpoint`` frame) or a bare id (``"step_N"``) resolved
     against ``checkpoint_dir``. The loop restores the saved session log
-    and continues at step ``N+1`` — even in a brand-new process.
-  - ``{"cmd": "cancel"}`` — cooperatively cancel the *in-flight* ``run``.
+    and continues at step ``N+1`` - even in a brand-new process.
+  - ``{"cmd": "cancel"}`` - cooperatively cancel the *in-flight* ``run``.
     May arrive while a ``run`` is streaming: a small reader thread reads
     stdin during the run and trips the loop's
     :class:`~looplet.types.CancelToken`, so the loop stops between turns
     and ends with ``done`` carrying ``stop_reason="cancelled"``. A
     ``cancel`` received when no run is active is a harmless no-op.
-  - ``{"cmd": "quit"}`` — terminate cleanly.
+  - ``{"cmd": "quit"}`` - terminate cleanly.
 
 * **Outbound events** (server → stdout):
 
@@ -42,19 +43,19 @@ without FFI. The protocol is the smallest thing that works:
     agent supports, so an orchestrator can degrade gracefully.
   - ``{"event": "step", "step": <Step.to_dict>, "step_num": N}``
   - ``{"event": "checkpoint", "id": "step_N", "step_num": N,
-    "path": "..."}`` — emitted for each checkpoint the loop writes during
+    "path": "..."}`` - emitted for each checkpoint the loop writes during
     a ``run``/``resume`` with ``checkpoint_dir`` set. ``id`` is the
     checkpoint key, ``path`` the on-disk JSON file (pass it back as a
     ``resume`` ``checkpoint`` to restart from that point).
   - ``{"event": "event", "kind": <LifecycleEvent>, "step_num": N,
     "payload": {...}}`` for every in-process lifecycle event emitted
     during a ``run`` (the white-box feed and a fine-grained liveness
-    signal — each event is a lease renewal for an orchestrator). The
+    signal - each event is a lease renewal for an orchestrator). The
     ``payload`` is a best-effort JSON-safe view
     (:meth:`looplet.events.EventPayload.to_jsonable`); non-JSON values
     are dropped, never raised on.
   - ``{"event": "done", "stop_reason": "<StopReason>", "steps": N,
-    "output": <obj|null>}`` — the terminal frame of every ``run``.
+    "output": <obj|null>}`` - the terminal frame of every ``run``.
     ``stop_reason`` is a value from the frozen :class:`StopReason` enum
     (``done|max_steps|budget|stagnated|cancelled|error``); ``steps`` is the
     number of step frames emitted (retained for back-compat); ``output`` is
@@ -139,13 +140,13 @@ class StopReason(str, Enum):
     handshake's ``stop_reasons``. ``StopReason`` subclasses ``str`` so a
     member compares equal to (and JSON-serialises as) its wire value.
 
-    * ``DONE`` — the agent called the accepted ``done()`` sentinel.
-    * ``MAX_STEPS`` — the step budget was exhausted (the loop ran to its
+    * ``DONE`` - the agent called the accepted ``done()`` sentinel.
+    * ``MAX_STEPS`` - the step budget was exhausted (the loop ran to its
       ``max_steps`` limit without an explicit stop).
-    * ``BUDGET`` — a resource/cost budget hook stopped the loop.
-    * ``STAGNATED`` — a stagnation guard stopped the loop (no new progress).
-    * ``CANCELLED`` — a cancel token was observed between turns.
-    * ``ERROR`` — the run raised before terminating normally.
+    * ``BUDGET`` - a resource/cost budget hook stopped the loop.
+    * ``STAGNATED`` - a stagnation guard stopped the loop (no new progress).
+    * ``CANCELLED`` - a cancel token was observed between turns.
+    * ``ERROR`` - the run raised before terminating normally.
     """
 
     DONE = "done"
@@ -171,7 +172,7 @@ RPC_PROTOCOL_VERSION = "1.0"
 # (the contract's ``max_steps``) rather than a resource budget. The loop seeds
 # ``stop_reason = "budget_exhausted"`` and leaves it untouched when the
 # ``while budget_remaining > 0`` guard trips, so this exact token must map to
-# ``MAX_STEPS`` — NOT ``BUDGET`` — even though it contains the word "budget".
+# ``MAX_STEPS`` - NOT ``BUDGET`` - even though it contains the word "budget".
 _MAX_STEPS_TOKENS = frozenset({"budget_exhausted", "max_steps", "exhausted", "step_budget"})
 
 
@@ -192,7 +193,7 @@ def map_stop_reason(raw: Any, *, errored: bool = False) -> StopReason:
     substring so the loop's ``"budget_exhausted"`` sentinel resolves to
     ``MAX_STEPS``, while a true resource-budget hook (``"budget_exceeded"``)
     resolves to ``BUDGET``. An unrecognised but intentional hook stop is
-    treated as a policy/resource guard (``BUDGET``) — the dominant real use
+    treated as a policy/resource guard (``BUDGET``) - the dominant real use
     case (see the budget-hook recipe).
     """
     if errored:
@@ -223,13 +224,13 @@ def _has_permission_authority(hooks: Iterable[Any]) -> bool:
     Covers the PermissionEngine-backed
     :class:`~looplet.permissions.PermissionHook`, the out-of-process
     :class:`~looplet.lep.LEPHookAdapter` policy server, and any back-compat
-    hook exposing ``check_permission`` — all of which advertise that surface.
+    hook exposing ``check_permission`` - all of which advertise that surface.
     """
     return any(hasattr(hook, "check_permission") for hook in hooks)
 
 
 def _has_cost_sink(preset: Any) -> bool:
-    """True iff a cost sink is wired — a :class:`~looplet.cost.CostHook`
+    """True iff a cost sink is wired - a :class:`~looplet.cost.CostHook`
     feeding a tracker, or a bare :class:`~looplet.cost.CostTracker` published
     as a resource."""
     try:
@@ -249,18 +250,18 @@ def _capabilities(preset: Any) -> dict[str, Any]:
     An orchestrator reads this to degrade gracefully across heterogeneous
     agents:
 
-    * ``events`` / ``cancel`` — always offered by the RPC server itself
+    * ``events`` / ``cancel`` - always offered by the RPC server itself
       (every loop emits :class:`~looplet.events.LifecycleEvent`\\ s and
       accepts a cancel token), so they are unconditionally true.
-    * ``checkpoint`` — always true: like events/cancel it is offered by the
+    * ``checkpoint`` - always true: like events/cancel it is offered by the
       RPC server itself. The loop checkpoints *any* run when the caller passes
       a per-call ``checkpoint_dir`` to ``run``/``resume`` (``config.checkpoint_dir``
       only sets the auto-default), so an orchestrator must not gate crash-recovery
       on whether a cartridge happened to set ``checkpoint_dir``.
-    * ``cost`` — true when a cost sink is wired.
-    * ``permission_authority`` — true when a permission hook (a
+    * ``cost`` - true when a cost sink is wired.
+    * ``permission_authority`` - true when a permission hook (a
       ``PermissionEngine``-backed or LEP hook) is present.
-    * ``stop_reasons`` — the frozen termination enum the ``done`` event
+    * ``stop_reasons`` - the frozen termination enum the ``done`` event
       reports.
     """
     hooks = getattr(preset, "hooks", None) or []
@@ -309,7 +310,7 @@ class _RPCEventForwarder:
     """Pure ``on_event`` observer that streams lifecycle events to the wire.
 
     Appended to the run's hook list so it subscribes through the loop's
-    existing ``on_event`` bus — ``composable_loop``'s core is untouched.
+    existing ``on_event`` bus - ``composable_loop``'s core is untouched.
     It implements *only* ``on_event`` (no per-method slots) so the loop's
     on-event/per-method deduplication (``PRE_TOOL_USE``→``pre_dispatch``,
     ``POST_TOOL_USE``→``post_dispatch``) never skips it: a pure observer
@@ -319,7 +320,7 @@ class _RPCEventForwarder:
     Each event becomes a ``{"event": "event", "kind": <name>, "step_num":
     N, "payload": {...}}`` frame. Serialisation is best-effort and
     self-contained: a malformed payload is dropped, never raised into the
-    loop (the loop's ``emit_event`` also guards — this is belt-and-suspenders).
+    loop (the loop's ``emit_event`` also guards - this is belt-and-suspenders).
     """
 
     def __init__(self, out_stream: TextIO) -> None:
@@ -446,7 +447,7 @@ class RPCServer:
 
         ``ref`` is tried first as a filesystem path (an absolute
         ``step_N.json``), then as a bare key resolved against
-        ``checkpoint_dir`` via :class:`FileCheckpointStore` — both reuse
+        ``checkpoint_dir`` via :class:`FileCheckpointStore` - both reuse
         ``checkpoint.py``'s serialisation verbatim.
         """
         from looplet.checkpoint import Checkpoint, FileCheckpointStore
@@ -524,7 +525,7 @@ class RPCServer:
 
         # Checkpoint-frame emission. The loop writes a JSON checkpoint after
         # every step when ``checkpoint_dir`` is set (keyed ``step_N``). We never
-        # touch the loop or the on-disk format — we observe the directory and
+        # touch the loop or the on-disk format - we observe the directory and
         # announce each NEW file. Stems present before this run started are
         # skipped so a resume that reuses the same directory does not re-announce
         # the checkpoints the original run already reported.
@@ -558,7 +559,7 @@ class RPCServer:
         steps_emitted = 0
         errored = False
         # Subscribe to the lifecycle-event bus by appending a pure observer
-        # hook (do NOT mutate preset.hooks — it is reused across runs).
+        # hook (do NOT mutate preset.hooks - it is reused across runs).
         run_hooks = [*self.preset.hooks, _RPCEventForwarder(self.out_stream)]
         try:
             for step in composable_loop(
@@ -598,7 +599,7 @@ class RPCServer:
             self._active_cancel_token = None
 
         # The final checkpoint is written during loop teardown, after the last
-        # step is yielded — drain once more so it is never missed.
+        # step is yielded - drain once more so it is never missed.
         _drain_checkpoints()
 
         # Map the loop's internal termination signal onto the frozen

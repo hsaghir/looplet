@@ -2,7 +2,7 @@
 
 ``install_skills(skills, registry, ...)`` lets users load a bundle
 of skills in one call instead of manually registering tools,
-concatenating system prompts, and extending memory_sources —
+concatenating system prompts, and extending memory_sources -
 three operations that were easy to forget piecemeal.
 """
 

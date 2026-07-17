@@ -1,7 +1,7 @@
 """End-to-end: run a cartridge against its shipped evals (the CLI core).
 
 ``run_cartridge_evals`` ties the whole "evals ship with the agent
-version" story together — seed each case's sandbox, run the cartridge as
+version" story together - seed each case's sandbox, run the cartridge as
 a live agent with an online :class:`EvalHook`, grade, and optionally
 persist. Driven here with a :class:`MockLLMBackend` and a minimal
 in-test cartridge so it is fully deterministic (no network). Also covers

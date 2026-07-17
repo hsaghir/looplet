@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/hsaghir/looplet/blob/master/cartridge.schema.json",
-  "title": "Cartridge — agent artifact schema",
+  "title": "Cartridge - agent artifact schema",
   "description": "Machine-readable schema for the cartridge artifact described in SPEC.md (cartridge-spec v1.0). Two manifest files share this schema: workspace.json and config.yaml.",
   "type": "object",
   "$defs": {

@@ -3,9 +3,9 @@
 ``HistoryRecorder`` is the single call site that writes a completed step
 or an LLM turn into any combination of the three history surfaces:
 
-* ``Conversation`` — authoritative message thread (user / assistant / tool).
-* ``SessionLog`` — per-step narrative log used in prompt assembly.
-* ``state.steps`` — the ``AgentState`` list consumed by
+* ``Conversation`` - authoritative message thread (user / assistant / tool).
+* ``SessionLog`` - per-step narrative log used in prompt assembly.
+* ``state.steps`` - the ``AgentState`` list consumed by
   ``context_summary()`` / ``snapshot()``.
 
 Before this module existed the composable loop wrote to each surface
@@ -32,7 +32,7 @@ class HistoryRecorder:
 
     Args:
         state: Agent state whose ``steps`` list should receive completed
-            ``Step`` objects. Optional — omit when the domain has no
+            ``Step`` objects. Optional - omit when the domain has no
             state (e.g. sub-agents with their own minimal state).
         session_log: SessionLog that should receive one ``LogEntry`` per
             step. Optional.
@@ -120,7 +120,7 @@ class HistoryRecorder:
         ``metadata["kind"] == "compaction_boundary"`` and the summary +
         dropped step range on metadata. The boundary is preserved by
         ``Conversation.compact()`` so it survives subsequent
-        compactions — giving the LLM (and debuggers) an explicit
+        compactions - giving the LLM (and debuggers) an explicit
         record of what was compressed and when.
 
         No-op if no ``Conversation`` is attached. Does not touch

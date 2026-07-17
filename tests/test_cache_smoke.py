@@ -135,7 +135,7 @@ class TestLoopIntegration:
                 return '{"tool":"done","args":{"answer":"ok"},"reasoning":"r"}'
 
         pol = CachePolicy(system_prompt=CacheControl())
-        # Should not raise — cache_breakpoints is filtered out when backend
+        # Should not raise - cache_breakpoints is filtered out when backend
         # doesn't declare it.
         list(
             composable_loop(

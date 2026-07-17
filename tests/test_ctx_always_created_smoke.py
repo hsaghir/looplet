@@ -39,7 +39,7 @@ class TestToolContextAlwaysCreated:
             ToolSpec(name="my_tool", description="t", parameters={"value": "str"}, execute=my_tool)
         )
 
-        # No cancel_token, no approval_handler, no hooks — previously ctx was None
+        # No cancel_token, no approval_handler, no hooks - previously ctx was None
         list(
             composable_loop(
                 llm=mock,

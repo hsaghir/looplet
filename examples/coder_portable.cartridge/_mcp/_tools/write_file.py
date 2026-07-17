@@ -1,4 +1,4 @@
-"""write_file tool — create / overwrite a file inside the workspace.
+"""write_file tool - create / overwrite a file inside the workspace.
 
 Receives ``workspace_config`` and ``file_cache`` through
 ``ctx.resources``; ``tool.yaml`` declares

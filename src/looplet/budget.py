@@ -8,11 +8,11 @@ delegated entirely to user hooks.
 
 This module ships threshold-tier budgeting as first-class config:
 
-* :class:`ContextBudget` — declarative tier thresholds.
-* :class:`ThresholdCompactHook` — ready-to-register
+* :class:`ContextBudget` - declarative tier thresholds.
+* :class:`ThresholdCompactHook` - ready-to-register
   :class:`looplet.loop.LoopHook` whose ``should_compact()`` returns
   ``True`` when estimated prompt tokens cross the configured tier.
-* :class:`BudgetTelemetry` — observer for production dashboards.
+* :class:`BudgetTelemetry` - observer for production dashboards.
 
 All tiers are **opt-in**. The loop still runs without any budget set
 (identical to prior behaviour). Attach :class:`ThresholdCompactHook`
@@ -45,11 +45,11 @@ logger = logging.getLogger(__name__)
 BudgetTier = Literal["ok", "warning", "error", "blocking"]
 """Classification of current context pressure.
 
-* ``ok`` — plenty of headroom.
-* ``warning`` — approaching limit; compaction would be cheap but
+* ``ok`` - plenty of headroom.
+* ``warning`` - approaching limit; compaction would be cheap but
   isn't required yet.
-* ``error`` — close to limit; compaction strongly recommended.
-* ``blocking`` — past the compaction-buffer boundary; reactive
+* ``error`` - close to limit; compaction strongly recommended.
+* ``blocking`` - past the compaction-buffer boundary; reactive
   recovery (prompt-too-long) is imminent if no action is taken.
 """
 
@@ -60,7 +60,7 @@ class ContextBudget:
 
     All values are in tokens. Defaults use sensible production
     constants for a 200K-token window with 13K buffer.
-    Adjust to match your backend — the tiers are proportional, not
+    Adjust to match your backend - the tiers are proportional, not
     absolute. A sensible rule of thumb:
 
     * ``warning_at`` ≈ 60% of ``context_window``
@@ -82,7 +82,7 @@ class ContextBudget:
 
     compact_buffer: int = 13_000
     """Reserved headroom for the turn's output. Compaction must leave
-    at least this much slack — otherwise the next LLM call will fail
+    at least this much slack - otherwise the next LLM call will fail
     with prompt-too-long on a slightly larger response."""
 
     @property
@@ -117,7 +117,7 @@ def classify_tier(
     add-ons (e.g. rendered memory, briefing tail). Returns
     ``(tier, estimated_tokens)``.
     """
-    # Prefer conversation — it's the closest approximation of what
+    # Prefer conversation - it's the closest approximation of what
     # the LLM actually sees (tool catalog, briefing, etc. are still
     # excluded, but message history dominates in long sessions).
     if conversation is not None and hasattr(conversation, "messages"):
@@ -127,7 +127,7 @@ def classify_tier(
             if isinstance(c, str):
                 total_chars += len(c)
             elif isinstance(c, list):
-                # ContentBlock list — sum text of each block.
+                # ContentBlock list - sum text of each block.
                 for blk in c:
                     total_chars += len(getattr(blk, "text", "") or "")
         est = max(1, total_chars // 4)
@@ -159,9 +159,9 @@ class ThresholdCompactHook:
 
     ``fire_tier`` controls how aggressive the trigger is:
 
-    * ``"error"`` (default) — compact at the error tier and above.
+    * ``"error"`` (default) - compact at the error tier and above.
       Rare, only when the session is genuinely large.
-    * ``"warning"`` — compact earlier; trades a bit of summary cost
+    * ``"warning"`` - compact earlier; trades a bit of summary cost
       for guaranteed zero prompt-too-long incidents.
     """
 
@@ -171,7 +171,7 @@ class ThresholdCompactHook:
         *,
         fire_tier: Literal["warning", "error"] = "error",
     ) -> None:
-        # Accept a dict form for workspace workspace round-trip — workspace
+        # Accept a dict form for workspace workspace round-trip - workspace
         # config.yaml stores constructor kwargs as primitives, so the
         # ``budget`` field arrives as a plain dict from to_config().
         if isinstance(budget, dict):
@@ -189,7 +189,7 @@ class ThresholdCompactHook:
     def to_config(self) -> dict[str, Any]:
         """Round-trip kwargs for ``preset_to_cartridge``.
 
-        Returns the constructor kwargs needed to rebuild this hook —
+        Returns the constructor kwargs needed to rebuild this hook -
         the budget is unpacked into its scalar fields so the workspace
         can serialise it as plain JSON.
         """
@@ -234,7 +234,7 @@ class ThresholdCompactHook:
 class BudgetTelemetry:
     """Observer hook that records tier transitions per step.
 
-    Use in production for dashboards — "what fraction of steps ran
+    Use in production for dashboards - "what fraction of steps ran
     at ``warning`` or above?". Does not trigger compaction; pair with
     :class:`ThresholdCompactHook` if you want both telemetry and
     action.
@@ -252,7 +252,7 @@ class BudgetTelemetry:
         step_num: int,
     ) -> None:
         # Prefer conversation from state (stashed by composable_loop)
-        # for a more accurate token estimate — in long sessions
+        # for a more accurate token estimate - in long sessions
         # session_log-only estimates can be off by 2-3×.
         conversation = getattr(state, "conversation", None)
         tier, est = classify_tier(self.budget, session_log=session_log, conversation=conversation)

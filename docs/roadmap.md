@@ -1,15 +1,15 @@
-# Roadmap — test-driven harness engineering
+# Roadmap: test-driven harness engineering
 
 Looplet is the small Python engine and test bench for an agent harness you
 own. The roadmap is organized around one question:
 
-> Can a team change a real tool-calling harness and know—before release—what
+> Can a team change a real tool-calling harness and know, before release, what
 > behavior improved, regressed, or remains unproven?
 
 This is a direction document, not a dated promise. Shipped behavior is
 specified by the code, tests, and changelog.
 
-## Current status — 0.2.0 (Beta)
+## Current status: 0.3.0 (Beta)
 
 The foundation is in place:
 
@@ -23,14 +23,15 @@ The foundation is in place:
 - captured-response replay through a fresh harness execution;
 - case data, outcome collectors, pytest-style graders, required marks, and CI
   exit codes;
-- grader-only expected data and support for host-owned protected holdouts;
+- grader-only expected data and explicit guidance for host-owned holdout
+  boundaries;
 - zero third-party dependencies in the core runtime, with provider SDKs as
   optional extras.
 
 The public proof is the
-[network-free failure-to-regression demo](regression-demo.md): one fixed set of
-model decisions, one tool-code change, and one required outcome grader moving
-from red to green.
+[network-free failure-to-regression demo](regression-demo.md): one fixed
+set of model decisions, one tool-code change, and one required outcome grader
+moving from red to green.
 
 ## Design constraints
 
@@ -40,9 +41,11 @@ Every roadmap item must preserve these constraints.
 2. **Test outcomes, not historical trajectories.** Tool sequences are useful
    for debugging and harness-plumbing assertions, not as a default quality
    oracle.
-3. **Fail closed at integrity boundaries.** Missing required graders,
-   collector errors, malformed expected data, and sandbox escapes must not
-   produce false greens.
+3. **Fail closed at integrity boundaries.** Discovered required graders that
+  are filtered, skipped, errored, invalid, or failing; empty grader suites;
+  collector errors; malformed expected data; and sandbox escapes must not
+  produce false greens. Detecting deletion before discovery requires a trusted
+  expected-grader manifest.
 4. **Keep the core domain-neutral.** New behavior should compile into a hook,
    tool, collector, grader, cartridge, recipe, or downstream package unless
    the execution engine itself must understand it.
@@ -50,13 +53,14 @@ Every roadmap item must preserve these constraints.
    inheritance, or hidden control plane.
 6. **Name experimental limits.** Captured-response replay holds model responses constant;
    it does not make fresh tools or side effects deterministic.
-7. **Keep promotion oracles protected.** Colocated cartridge evals are
-   versioned self-tests. Host-owned holdouts decide promotion when candidates
-   can edit their own cartridges.
+7. **Keep promotion oracles outside candidate authority.** Colocated cartridge
+  evals are versioned self-tests. A promotion runner must keep oracle data and
+  capabilities out of candidate inputs, runtime, resources, tools, and files;
+  arbitrary candidate code requires OS or process isolation.
 8. **Preserve zero-dependency core.** Optional integrations must not impose
    ambient cost on every user.
 
-## Priority 1 — make the regression workflow obvious
+## Priority 1: make the regression workflow obvious
 
 The first product goal is for a post-prototype Python team to complete this
 path without reverse-engineering the library:
@@ -74,14 +78,15 @@ path without reverse-engineering the library:
 Planned work:
 
 - keep one network-free red-to-green proof protected by tests;
-- improve error messages around missing required graders, malformed bundles,
-  and unsafe case paths;
+- add a trusted expected-grader manifest before claiming deletion detection;
+- improve errors for invalid required graders, malformed bundles, and unsafe
+  case paths;
 - make persisted eval runs easy to inspect and attach to pull requests;
 - document clear choices between replay, mocks, and fresh model sampling;
 - publish migration recipes for teams replacing a private raw loop without
   rewriting their tools.
 
-## Priority 2 — behavioral contract ergonomics
+## Priority 2: behavioral contract ergonomics
 
 Cases, collectors, and graders should feel as routine as pytest fixtures and
 assertions while retaining explicit trust boundaries.
@@ -94,8 +99,8 @@ Planned work:
   structured reports, and host-owned test suites;
 - explicit helpers for separating agent-visible fixtures from grader-only
   expected data;
-- documentation and tests for versioned cartridge self-tests plus external
-  protected holdouts;
+- documentation and tests for versioned cartridge self-tests plus host-owned
+  holdouts with explicit isolation boundaries;
 - small, evidence-backed grader utilities only where they generalize across
   domains.
 
@@ -104,7 +109,7 @@ annotation operations, generic prompt scoring, or a large catalog of
 subjective domain graders. Those fit downstream packages and hosted eval
 platforms better.
 
-## Priority 3 — evidence portability and review
+## Priority 3: evidence portability and review
 
 A run should be understandable without a proprietary viewer and useful beyond
 Looplet itself.
@@ -124,7 +129,7 @@ Captured-response replay will remain honestly scoped. Bit-for-bit replay of
 arbitrary side-effecting tools is not a core promise; deterministic behavior
 requires the host to isolate or mock those effects.
 
-## Priority 4 — cartridge lifecycle hardening
+## Priority 4: cartridge lifecycle hardening
 
 Cartridges are the review and distribution unit for a harness, not a second
 runtime.
@@ -204,4 +209,4 @@ Open an issue with:
 - the smallest API that would solve the generalized problem.
 
 A focused external recipe is often the fastest path to evidence. Promotion
-into core comes after the pattern proves general—not before.
+into core comes only after the pattern proves general.

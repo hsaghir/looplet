@@ -1,4 +1,4 @@
-# 10 — Downstream cartridge-search mechanics
+# 10 - Downstream cartridge-search mechanics
 
 A separate optimization system can edit a cartridge, evaluate a candidate,
 and decide whether to keep it. This snippet shows only that file-copy/mutation

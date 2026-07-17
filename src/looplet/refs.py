@@ -1,21 +1,20 @@
-"""Resource-reference helpers shared between core and the workspace loader.
+"""Resource-reference helpers shared between core and the cartridge loader.
 
 This module owns the small registry that lets hooks like
 :class:`looplet.permissions.PermissionHook` ask "was this engine handed
-to me by a workspace ``resources/<name>.py`` builder?" — and if so,
-return ``"@<name>"`` so :func:`looplet.workspace.preset_to_cartridge`
+to me by a cartridge ``resources/<name>.py`` builder?" If so,
+return ``"@<name>"`` so :func:`looplet.cartridge.preset_to_cartridge`
 can serialise the original reference instead of a placeholder.
 
-It lives in its own tiny module (rather than inside ``workspace.py``)
-so that core modules — ``permissions``, ``streaming``, ``evals``,
-``telemetry`` — can call :func:`resource_ref_for` without importing
-the 3000-line workspace loader. The workspace loader is then cleanly
+It lives in its own tiny module rather than inside the cartridge loader
+so that core modules - ``permissions``, ``streaming``, ``evals``,
+``telemetry`` - can call :func:`resource_ref_for` without importing
+the cartridge loader. The loader is then cleanly
 extractable into a separate package without leaving reverse imports
 behind.
 
 Public symbol: :func:`resource_ref_for`. Everything else is treated as
-internal but is re-exported from :mod:`looplet.workspace` for
-backwards compatibility with tests written against the old location.
+internal to cartridge loading and serialization.
 """
 
 from __future__ import annotations
@@ -24,7 +23,7 @@ from typing import Any
 
 _REF_PREFIX = "@"
 
-# id() -> resource name, populated by the workspace loader's
+# id() -> resource name, populated by the cartridge loader's
 # ``_load_resources`` via ``_register_resource_origin``. Empty in
 # pure-Python (no-workspace) usage; that path simply makes
 # ``resource_ref_for`` return ``None`` and callers fall back to a
@@ -38,7 +37,7 @@ def _register_resource_origin(instance: Any, name: str) -> None:
     Only registers instances that support :mod:`weakref`. Built-in
     containers (``list``, ``tuple``, ``dict``, ``set``) and other
     types that reject weak references would otherwise pin a stale
-    entry forever — and Python's ``id()`` can be reused once the
+    entry forever - and Python's ``id()`` can be reused once the
     original object is garbage-collected, leading to false positives
     in :func:`resource_ref_for`. Skip them here; their identity is
     recovered via the ``__module__``-based fallback path.
@@ -50,7 +49,7 @@ def _register_resource_origin(instance: Any, name: str) -> None:
         weakref.finalize(instance, _resource_origin.pop, key, None)
     except TypeError:
         # Object can't be weak-referenced (list / tuple / dict / set /
-        # bare int / etc.) — skip the identity registration entirely
+        # bare int / etc.) - skip the identity registration entirely
         # so a future object at the same ``id()`` can't pick up this
         # name by accident.
         return
@@ -58,7 +57,7 @@ def _register_resource_origin(instance: Any, name: str) -> None:
 
 
 def resource_ref_for(value: Any) -> str | None:
-    """Return ``"@<name>"`` when ``value`` was produced by a workspace
+    """Return ``"@<name>"`` when ``value`` was produced by a cartridge
     ``resources/<name>.py`` builder; ``None`` otherwise.
 
     Two detection paths:
@@ -67,10 +66,10 @@ def resource_ref_for(value: Any) -> str | None:
        stamps every built instance into :data:`_resource_origin`
        keyed by ``id``. This handles the common case where the
        builder returns a stock third-party object (e.g.
-       ``PermissionEngine``, ``MetricsCollector``) whose own
-       ``__module__`` is *not* in the workspace.
+    ``PermissionEngine``, ``MetricsCollector``) whose own
+    ``__module__`` is *not* in the cartridge.
     2. **Module name fallback.** When the value (or its first list
-       element) was *defined* inside the workspace's resource module
+    element) was *defined* inside the cartridge's resource module
        (e.g. a closure built by ``def build(): def fn(...): ...``),
        its ``__module__`` starts with ``_chw_resource_``.
 
@@ -79,17 +78,17 @@ def resource_ref_for(value: Any) -> str | None:
     of a hardcoded fallback (e.g. ``"@engine"``).
 
     Returns ``None`` for in-process objects so callers can fall back
-    to a default ref name. In a pure-Python (no-workspace) program,
+    to a default ref name. In a pure-Python program without a cartridge,
     :data:`_resource_origin` is empty and this always returns ``None``,
     which is the correct answer.
     """
-    # Path 1: identity registry — handles instances of stock classes
+    # Path 1: identity registry - handles instances of stock classes
     # like ``looplet.permissions.PermissionEngine`` whose own
-    # ``__module__`` is the framework, not the workspace.
+    # ``__module__`` is the framework, not the cartridge.
     by_id = _resource_origin.get(id(value))
     if by_id is not None:
         return f"{_REF_PREFIX}{by_id}"
-    # Also probe list/tuple elements for identity matches — common
+    # Also probe list/tuple elements for identity matches - common
     # for ``EvalHook(evaluators=[...])`` whose list is rebuilt each
     # call by the resource builder.
     if isinstance(value, (list, tuple)) and value:
@@ -97,7 +96,7 @@ def resource_ref_for(value: Any) -> str | None:
         if elem_id is not None:
             return f"{_REF_PREFIX}{elem_id}"
 
-    # Path 2: module-name fallback — handles closures defined inside
+    # Path 2: module-name fallback - handles closures defined inside
     # the resource module (CallableMemorySource(fn=lambda ...)) and
     # custom classes declared in the resource file.
     candidate_modules: list[str] = []

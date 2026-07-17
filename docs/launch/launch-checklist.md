@@ -17,10 +17,15 @@ No launch date overrides a failed integrity or evidence gate.
       alternatives are described honestly.
 - [ ] Factory-generated cartridges are described as drafts, not validated
       production agents.
+- [ ] Portable-coder copy says zero in-process analyzer blockers and includes
+      subprocess-language, socket, omitted-behavior, and non-Python-loader
+      qualifiers.
 
 ## 2. Executable proof gates
 
 - [ ] Fresh checkout/install instructions succeed.
+- [ ] The installed-wheel smoke resolves `coder_portable` and reports the
+      portable profile with zero blockers.
 - [ ] `uv run python examples/regression_demo/run_demo.py` exits 0.
 - [ ] Stable output shows 200/FAIL → one-line diff → 40/PASS.
 - [ ] `tests/test_regression_demo.py` passes independently.
@@ -78,9 +83,13 @@ No launch date overrides a failed integrity or evidence gate.
 - [ ] Planned issues were searched for duplicates and only launch-ready items
       were opened.
 - [ ] Release/discussion copy uses live canonical URLs.
+- [ ] Tag publication creates both the PyPI distribution and a GitHub Release
+      with the wheel, sdist, and matching changelog notes.
 
 ## 7. Publication
 
+- [ ] PyPI, GitHub Releases, the repository badge, package metadata, and docs
+      all show the same release version.
 - [ ] Show HN post uses the recommended technical title and caveat.
 - [ ] First comment links source and explains trace/replay/eval separation.
 - [ ] Social copy is adapted per audience rather than pasted everywhere.

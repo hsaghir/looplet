@@ -42,6 +42,8 @@ import sys
 import time
 from pathlib import Path
 
+from looplet.bundled import bundled_cartridge_path
+
 
 def _bold(s: str) -> str:
     return f"\033[1m{s}\033[0m" if sys.stdout.isatty() else s
@@ -109,21 +111,13 @@ def _factory_workspace_path() -> Path:
     if env_override and Path(env_override).is_dir():
         return Path(env_override)
 
-    # Walk up from this file looking for the bundled factory directory.
-    here = Path(__file__).resolve()
-    for parent in [here.parent, *here.parents]:
-        source_candidate = parent / "examples" / "agent_factory.cartridge"
-        if source_candidate.is_dir():
-            return source_candidate
-
-    installed_candidate = here.parents[1] / "_bundled" / "agent_factory.cartridge"
-    if installed_candidate.is_dir():
-        return installed_candidate
-
-    raise FileNotFoundError(
-        "Could not locate the bundled agent_factory.cartridge. "
-        "Reinstall looplet or set LOOPLET_FACTORY_DIR to an explicit factory cartridge."
-    )
+    try:
+        return bundled_cartridge_path("agent_factory")
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(
+            "Could not locate the bundled agent_factory.cartridge. "
+            "Reinstall looplet or set LOOPLET_FACTORY_DIR to an explicit factory cartridge."
+        ) from exc
 
 
 # ── ``looplet new`` ─────────────────────────────────────────────

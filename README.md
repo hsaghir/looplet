@@ -178,6 +178,31 @@ starting point, `looplet new` can scaffold a cartridge. The
 [agent factory](https://hsaghir.com/looplet/agent-factory/) is onboarding, not the product
 boundary, so review and test what it writes.
 
+## One harness, explicit runtime boundaries
+
+Looplet ships `coder_portable`, a coding-harness reference architecture with
+zero in-process portability blockers. Its 16 tools run over MCP, policy and
+cache hooks run over LEP, shared file-cache state runs over SSP, and
+model-backed tools call the host through MGP.
+
+```python
+from looplet import bundled_cartridge_path
+from looplet.cartridge import analyse_cartridge
+
+
+coder = bundled_cartridge_path("coder_portable")
+assert analyse_cartridge(coder).profile == "portable"
+```
+
+This is protocol portability, not a claim that no Python process is involved.
+The bundled servers are Python programs launched with the active Looplet
+interpreter, SSP and MGP use Unix sockets, and a complete Rust, Go, or
+TypeScript host has not yet executed the coder. The Python-host coder remains
+the factory default because it also carries host-owned eval and dynamic-memory
+behavior.
+
+[Read the portability model and evidence limits](https://hsaghir.com/looplet/portability/).
+
 ---
 
 ## Four pieces, one narrow job
@@ -248,15 +273,17 @@ services. It does not try to become either one. See the
 ## Shipped examples
 
 - [`coder.cartridge`](https://github.com/hsaghir/looplet/tree/master/examples/coder.cartridge): tool-heavy coding harness with colocated cases, collectors, and required graders.
+- [`coder_portable.cartridge`](https://github.com/hsaghir/looplet/tree/master/examples/coder_portable.cartridge): the same coding architecture moved behind MCP, LEP, SSP, and MGP boundaries; bundled in the distribution as a reference artifact.
 - [`dep_doctor.cartridge`](https://github.com/hsaghir/looplet/tree/master/examples/dep_doctor.cartridge): repository dependency audit.
 - [`git_detective.cartridge`](https://github.com/hsaghir/looplet/tree/master/examples/git_detective.cartridge): repository-health investigation.
 - [`threat_intel.cartridge`](https://github.com/hsaghir/looplet/tree/master/examples/threat_intel.cartridge): local-first security briefing.
 - [`planner.cartridge`](https://github.com/hsaghir/looplet/tree/master/examples/planner.cartridge): planning composed as a subagent, not a loop phase.
 - [`regression_demo`](https://github.com/hsaghir/looplet/tree/master/examples/regression_demo): scripted, network-free captured-response replay and eval proof.
 
-Portable twins demonstrate MCP/LEP boundaries where needed; see
-[portability](https://hsaghir.com/looplet/portability/) for the exact supported tiers rather
-than a blanket runtime-agnostic claim.
+Portable twins demonstrate explicit protocol boundaries where needed; see
+[portability](https://hsaghir.com/looplet/portability/) for the supported tiers,
+cross-process evidence, and non-Python-loader limits rather than a blanket
+runtime-agnostic claim.
 
 ## Documentation
 
@@ -286,7 +313,7 @@ changes; pin to the current minor line:
 looplet>=0.3,<0.4
 ```
 
-The next launch release is `0.3.0`. See the
+The current launch release is `0.3.0`. See the
 [changelog](https://github.com/hsaghir/looplet/blob/master/CHANGELOG.md) and
 [path to 1.0](https://github.com/hsaghir/looplet/blob/master/ROADMAP.md#path-to-10).
 

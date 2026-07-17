@@ -10,5 +10,5 @@ mcp_servers:
   analyst_tools:
     # done / read_text / write_text served out of process so no Python
     # tool body is required by the host.
-    command: "python3 ${runtime.cartridge_root}/_mcp/tools_server.py"
+    command: '"${runtime.python_executable}" "${runtime.cartridge_root}/_mcp/tools_server.py"'
     timeout_s: 10

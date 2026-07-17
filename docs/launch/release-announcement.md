@@ -11,8 +11,8 @@
 Looplet is being relaunched around the job it is best at: **test-driven harness
 engineering for Python agents**.
 
-The relaunch will ship as `looplet==0.3.0`; `0.2.0` remains the earlier
-published distribution with the old public story until release.
+The relaunch ships as `looplet==0.3.0`; `0.2.0` is the previous published
+distribution with the old public story.
 
 The new entry point is a network-free regression proof. It captures one failed
 run, changes one reviewable tool line, replays the same model responses through
@@ -45,6 +45,9 @@ and behavioral evidence close to pytest and CI.
 - **Outcome contracts:** collectors inspect world state; graders use
   grader-only expected data; discovered required checks fail closed in pytest
   or CI.
+- **Portable harness boundaries:** the bundled `coder_portable` reference moves
+  16 tools, five hooks, shared state, and host model access across MCP, LEP,
+  SSP, and MGP with zero in-process analyzer blockers.
 
 ### Run the proof
 
@@ -55,7 +58,7 @@ uv sync
 uv run python examples/regression_demo/run_demo.py
 ```
 
-After publication, install it with `pip install --upgrade looplet==0.3.0`.
+Install it with `pip install --upgrade looplet==0.3.0`.
 
 It requires no API key or network. The generated directory contains both
 harness versions, the captured model-call cassette, fresh workspaces,
@@ -74,6 +77,10 @@ Looplet also does not try to become a graph runtime, hosted eval platform,
 turnkey assistant, or automatic optimizer. Those systems can consume its
 steps, artifacts, cartridges, and behavioral contracts without being pulled
 into core.
+
+Portable means the loader does not import author-owned capability code. The
+reference servers currently use Python, SSP/MGP use Unix sockets, and the full
+coder has not yet run under a production non-Python loader.
 
 ### Existing users
 

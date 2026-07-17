@@ -53,13 +53,16 @@ Not the primary ICP:
    replay + collectors/graders.
 4. **Review unit:** cartridges keep prompts, tools, hooks, resources, cases,
    and graders in ordinary files.
-5. **Boundary:** one loop, no graph DSL, no hosted control plane, no automatic
+5. **Portable reference:** the bundled coder demonstrates explicit MCP, LEP,
+   SSP, and MGP boundaries with zero in-process analyzer blockers.
+6. **Boundary:** one loop, no graph DSL, no hosted control plane, no automatic
    optimization, zero third-party core runtime dependencies.
-6. **Caveat:** replay holds model responses constant; fresh tools and side effects still
+7. **Caveat:** replay holds model responses constant; fresh tools and side effects still
    execute.
 
 Do not lead with protocol count, import time, generated agents, or feature
-breadth. Those can support a decision after the behavioral proof is clear.
+breadth. Portability supports the decision after the behavioral proof is clear,
+and must retain its subprocess-language, socket, and non-Python-loader caveats.
 
 ## Proof ladder
 
@@ -73,7 +76,9 @@ Use claims in this order:
    parity. Host-owned promotion isolation remains a separate runner concern.
 5. **Same-model study:** optional evidence that a compact owned harness can be
    competitive; never the hero claim.
-6. **Package property:** zero third-party core runtime dependencies.
+6. **Portable architecture:** analyzer + cross-process MCP/LEP/SSP/MGP tests;
+   not evidence of full production execution on a non-Python loader.
+7. **Package property:** zero third-party core runtime dependencies.
 
 ## Primary call to action
 

@@ -60,3 +60,25 @@ def test_site_roadmap_matches_canonical_direction() -> None:
 
 def test_site_contributing_guide_matches_canonical_guide() -> None:
     assert (ROOT / "docs" / "contributing.md").read_text() == (ROOT / "CONTRIBUTING.md").read_text()
+
+
+def test_portable_coder_is_in_both_distribution_formats() -> None:
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text())
+    wheel_files = project["tool"]["hatch"]["build"]["targets"]["wheel"]["force-include"]
+    sdist_files = project["tool"]["hatch"]["build"]["targets"]["sdist"]["include"]
+
+    source = "examples/coder_portable.cartridge"
+    assert wheel_files[source] == "looplet/_bundled/coder_portable.cartridge"
+    assert source in sdist_files
+    assert (
+        wheel_files["tests/fixtures/coder_skill_bundle/__init__.py"]
+        == "tests/fixtures/coder_skill_bundle/__init__.py"
+    )
+
+
+def test_tag_publish_creates_a_github_release_from_built_artifacts() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "publish.yml").read_text()
+
+    assert "name: create GitHub release" in workflow
+    assert "needs: [build, publish]" in workflow
+    assert 'gh release create "$GITHUB_REF_NAME" dist/*' in workflow

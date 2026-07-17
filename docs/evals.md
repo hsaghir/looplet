@@ -1,4 +1,4 @@
-# Behavioral evals — turn failures into release contracts
+# Behavioral evals: turn failures into release contracts
 
 Looplet evals make harness behavior testable in the same workflow as normal
 Python code:
@@ -19,14 +19,14 @@ end to end: one captured run, one tool fix, the same model responses, and a
 required outcome grader moving from red to green.
 
 ```python
-# eval_my_agent.py — discovered automatically by eval_discover()
+# eval_my_agent.py - discovered automatically by eval_discover()
 
 def eval_tests_passed(ctx):
     """Did the agent get tests to pass?
 
     Outcome-grounded: read from `ctx.artifacts`, populated by a
     collector that re-runs the test suite (see "Trajectory-blind evals"
-    below). Don't grep `ctx.steps` for "pytest" — a smarter model
+    below). Don't grep `ctx.steps` for "pytest" - a smarter model
     might use a different runner and pass tests anyway.
     """
     return ctx.artifacts.get("tests_passing", False)
@@ -49,7 +49,7 @@ def eval_reasoning_gaps(ctx, llm):
     return float(resp.strip())
 ```
 
-**Return anything** — `float`, `bool`, `str`, `dict`, or `EvalResult`.
+**Return anything:** `float`, `bool`, `str`, `dict`, or `EvalResult`.
 The framework normalises. If your function takes an `llm` parameter,
 the framework passes the judge LLM automatically.
 
@@ -59,7 +59,7 @@ The single biggest pitfall when writing evals is grading the *trajectory*
 the model took instead of the *outcome* it produced. A real anecdote
 from agent labs: a code-summarisation eval scored the model on whether
 it read a specific list of files. The model was inferring those classes
-from their usage elsewhere — a *better* strategy — and the eval marked
+from their usage elsewhere, which was a *better* strategy, and the eval marked
 it down. The "restriction" preserved a 2024 trajectory as a permanent
 ceiling.
 
@@ -109,8 +109,8 @@ hook = EvalHook(
 )
 ```
 
-A collector that raises or returns a non-dict never breaks the agent
-run — collectors are observers — but `EvalHook` records a synthetic
+A collector that raises or returns a non-dict never breaks the agent run
+because collectors are observers. `EvalHook` still records a synthetic
 `collector:<name>` result with `label="error"`. CLI evaluation fails on
 that result instead of reporting a false green. Multiple successful
 collectors merge their dicts in order; later keys win.
@@ -140,10 +140,10 @@ cases should use the top-level case `expected` field instead.
 
 Reading `ctx.tool_sequence` or `ctx.steps` is appropriate for:
 
-- **Harness regression tests** — verifying that *your hooks fired*, not
+- **Harness regression tests:** verify that *your hooks fired*, not
   that the model picked a particular tool.
-- **Debugging** — finding why a specific run went sideways.
-- **Auditing** — recording what the agent did, not grading it.
+- **Debugging:** find why a specific run went sideways.
+- **Auditing:** record what the agent did without grading it.
 
 If you find yourself writing `"pytest" in str(ctx.steps)` as a quality
 signal, replace it with a collector that runs `pytest` and surfaces a
@@ -154,15 +154,17 @@ boolean artifact.
 Files under `case.task["files"]` are task inputs placed in the agent's
 writable sandbox. They are **not** a protected release oracle: the agent
 can read and modify them. Visible tests are useful guidance, but a serious
-gate should have a collector run host-owned tests or compare against
-host-owned expected data outside that sandbox. Runtime-bound collectors
-already provide this composition point; pass the protected path through
-the runner's `runtime` dict.
+gate should invoke host-owned collector and grader code from the runner layer,
+while keeping oracle data, paths, callables, and capabilities out of the task
+and the `runtime` passed to `cartridge_to_preset()`. That runtime is available
+to candidate resources and is not a secret channel.
 
 Cartridge-shipped evals are the agent version's self-test contract. For
-automatic cartridge evolution, keep a separate host-owned holdout suite:
-the candidate may edit its cartridge, but never the evaluator that decides
-whether the candidate is promoted.
+automatic cartridge evolution, keep a separate host-owned holdout suite and
+runner: the candidate may edit its cartridge, but never receive or modify the
+evaluator that decides promotion. Separate paths alone do not constrain
+arbitrary same-user code; use OS or process isolation when the candidate is
+untrusted.
 
 ## Attach to your loop
 
@@ -318,7 +320,7 @@ looplet eval cases ls evals/cases/
 looplet eval cases show evals/cases/ multiply_fix   # full JSON dump
 ```
 
-Run them with stock pytest. The shortest path is two helpers — no
+Run them with stock pytest. The shortest path uses two helpers, with no
 `pytest` import needed in your test file:
 
 ```python
@@ -339,8 +341,8 @@ failures, and raises `AssertionError` with each failed result's
 `pretty()` block on its own line. Discovery is cached, so calling it
 once per parametrized case is free.
 
-If you want more control — pick which evaluators run, pass a judge
-LLM, branch on individual results — drop down to the primitives:
+If you want more control over selected evaluators, judge models, or individual
+results, drop down to the primitives:
 
 ```python
 import pytest
@@ -361,7 +363,7 @@ def test_coder(case, my_agent):
 ```
 
 The same `EVALS` list also drives `EvalHook` for live grading and
-`eval_cli` for CI batch runs — write the eval once, use it three ways.
+`eval_cli` for CI batch runs. Write the eval once and use it three ways.
 
 To save a case after a successful manual run:
 

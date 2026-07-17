@@ -1,4 +1,4 @@
-"""FileCacheHook — observes file reads/writes and updates the shared cache.
+"""FileCacheHook - observes file reads/writes and updates the shared cache.
 
 Re-imports the original class from examples.coder.hooks. Adds to_config()
 so the workspace round-trip captures the @ref to the shared FileCache.

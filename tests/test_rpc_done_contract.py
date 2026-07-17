@@ -7,7 +7,7 @@ orchestration contract it carries::
      "output": <obj|null>}
 
 * ``stop_reason`` is a value from the frozen :class:`~looplet.rpc.StopReason`
-  enum (``done|max_steps|budget|stagnated|cancelled|error``) — the same set
+  enum (``done|max_steps|budget|stagnated|cancelled|error``) - the same set
   advertised in the capability handshake's ``stop_reasons``.
 * ``steps`` is retained for back-compat (number of step frames emitted).
 * ``output`` is the structured payload of the accepted ``done()`` sentinel
@@ -59,7 +59,7 @@ def make_boom_backend() -> "_BoomBackend":
 
 
 class _BoomBackend:
-    """Backend whose generate() raises — drives the error termination path."""
+    """Backend whose generate() raises - drives the error termination path."""
 
     def generate(
         self,

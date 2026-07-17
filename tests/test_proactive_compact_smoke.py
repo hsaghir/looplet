@@ -116,7 +116,7 @@ class TestProactiveCompact:
     def test_compact_skipped_when_service_unset(self):
         cfg = LoopConfig(max_steps=2)
         h = _Compacter(on_steps={1})
-        # No service configured — loop must not crash; hook is just ignored.
+        # No service configured - loop must not crash; hook is just ignored.
         list(
             composable_loop(
                 llm=MockLLMBackend(

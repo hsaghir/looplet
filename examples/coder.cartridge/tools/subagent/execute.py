@@ -1,4 +1,4 @@
-"""subagent tool — workspace wrapper around looplet.subagent.run_sub_loop."""
+"""subagent tool - workspace wrapper around looplet.subagent.run_sub_loop."""
 
 from __future__ import annotations
 

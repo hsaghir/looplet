@@ -61,7 +61,7 @@ class ToolError:
     """
 
     kind: ErrorKind
-    """Discriminator — which class of failure occurred."""
+    """Discriminator - which class of failure occurred."""
 
     message: str
     """Human-readable description, safe to include in LLM context."""
@@ -81,8 +81,8 @@ class ToolError:
     Producers set this via ``_classify_exception()`` in ``tools.py``."""
 
     context: dict[str, Any] = field(default_factory=dict)
-    """Optional structured metadata — e.g. ``{"attempts": 3,
-    "next_retry_in": 2.0}`` — attached by the producer for observability."""
+    """Optional structured metadata - e.g. ``{"attempts": 3,
+    "next_retry_in": 2.0}`` - attached by the producer for observability."""
 
     recovery_hint: dict[str, Any] | str | None = None
     """Optional structured suggestion for how the caller could recover.
@@ -100,7 +100,7 @@ class ToolError:
       to ``"Did you mean '<closest>'?"`` when one is found.
 
     Tool authors should populate this on any error the model could
-    fix by changing its next call — leaving it ``None`` means "no
+    fix by changing its next call - leaving it ``None`` means "no
     actionable recovery information" (a hard failure, e.g. a
     permission deny). The recovery hint is included in the rendered
     error text the loop hands back to the model on the next turn.
@@ -121,7 +121,7 @@ class ToolValidationError(Exception):
 
     Tool authors should raise this instead of returning pseudo-error
     sentinels inside their normal output (e.g. ``{"error": "..."}``
-    mixed into a result list). Agents — and human callers — then see a
+    mixed into a result list). Agents - and human callers - then see a
     uniform :class:`ToolResult` shape: successful results carry
     ``data``; bad inputs carry ``error`` / ``error_kind = VALIDATION``
     / ``error_retriable = False``.
@@ -131,7 +131,7 @@ class ToolValidationError(Exception):
     * Unknown or mistyped column / field / path names, with a
       "did you mean '<x>'?" suggestion baked into the message.
     * Nested-path lookups that would return all-NULL (silent-empty
-      footgun) — raise with a diagnostic instead of returning ``[]``.
+      footgun) - raise with a diagnostic instead of returning ``[]``.
     * Any precondition the LLM itself could fix on the next turn by
       adjusting its arguments.
 
@@ -199,7 +199,7 @@ class ToolContext:
 
     Gives tools structured
     access to workspace information, cancellation, progress reporting, and
-    arbitrary per-session metadata. Strictly opt-in — tools without a
+    arbitrary per-session metadata. Strictly opt-in - tools without a
     ``ctx`` kwarg in their signature never receive one.
 
     Fields:
@@ -255,7 +255,7 @@ class ToolContext:
 
     Returns the caller's reply, or ``None`` when:
       * No handler is installed (headless/autonomous run).
-      * The handler defers (async approval — the loop should
+      * The handler defers (async approval - the loop should
         checkpoint and stop; see :class:`ApprovalHook`).
 
     Tools should treat ``None`` as "proceed without approval" to
@@ -269,7 +269,7 @@ class ToolContext:
     the next call starts with a clean slate.
 
     Use warnings for information the caller *should* see but which is
-    not a failure — e.g. "result used a low-confidence heuristic",
+    not a failure - e.g. "result used a low-confidence heuristic",
     "truncated to first 20 items of 3345", "column X may not contain
     the expected schema". This avoids the historical anti-pattern of
     either (a) staying silent and producing a confidently-wrong result
@@ -308,8 +308,8 @@ class ToolContext:
     def warn(self, message: str) -> None:
         """Record a soft advisory about the in-flight tool result.
 
-        Complements :class:`ToolValidationError` — which aborts the
-        call — and plain errors — which report pure failure. A warning
+        Complements :class:`ToolValidationError` - which aborts the
+        call - and plain errors - which report pure failure. A warning
         lets the tool say "here is your data, *and* you should know
         something about how I got it". The dispatcher attaches every
         warning to :attr:`ToolResult.warnings` for the agent to see.
@@ -321,7 +321,7 @@ class ToolContext:
                 if col.confidence < 0.7:
                     ctx.warn(
                         f"time column {col.name!r} was a low-confidence "
-                        f"guess — results may be inaccurate"
+                        f"guess - results may be inaccurate"
                     )
                 return col.name
         """
@@ -333,7 +333,7 @@ class ToolContext:
 
         Returns the approval response, or ``None`` if no handler is
         installed or the handler defers (async). Tools should treat
-        ``None`` as "approved by default" or "not yet — proceed
+        ``None`` as "approved by default" or "not yet - proceed
         cautiously" depending on their risk model."""
         if self.request_approval is None:
             return None
@@ -433,12 +433,12 @@ class DefaultState:
         Three nested budgets (centralised in
         :mod:`looplet.context_budget`):
 
-        * ``CONTEXT_WINDOW_STEPS`` — sliding window of recent steps
+        * ``CONTEXT_WINDOW_STEPS`` - sliding window of recent steps
           (older are out of scope for this layer; the compact layer
           handles them).
-        * ``CONTEXT_INLINE_PER_STEP_CHARS`` — per-step soft cap;
+        * ``CONTEXT_INLINE_PER_STEP_CHARS`` - per-step soft cap;
           longer steps get a "[truncated; full result N chars]" tail.
-        * ``CONTEXT_WINDOW_TOTAL_CHARS`` — aggregate cap across the
+        * ``CONTEXT_WINDOW_TOTAL_CHARS`` - aggregate cap across the
           whole window. When exceeded, the largest step contributions
           are progressively truncated until the total fits.
         """
@@ -582,7 +582,7 @@ class NativeToolBackend(Protocol):
     The loop detects the capability via hasattr(backend, "generate_with_tools")
     and uses it whenever ``LoopConfig.use_native_tools`` is True (the
     default). When the backend lacks ``generate_with_tools``, the loop
-    silently falls back to JSON-text parsing — no configuration needed.
+    silently falls back to JSON-text parsing - no configuration needed.
 
     The returned list is normalised to Anthropic-style content blocks:
         [{"type": "text", "text": "..."},
@@ -678,7 +678,7 @@ class ToolResult:
     """Human-readable summary of the arguments used (for compact context)."""
 
     data: Any
-    """Raw output returned by the tool — list, dict, str, or None."""
+    """Raw output returned by the tool - list, dict, str, or None."""
 
     error: str | None = None
     """Error message if the tool raised an exception; None on success.
@@ -703,7 +703,7 @@ class ToolResult:
 
     Populated from :attr:`ToolContext.warnings` by the dispatcher when a
     tool calls :meth:`ToolContext.warn`. Unlike :attr:`error`, a
-    warning does not indicate failure — the ``data`` field still carries
+    warning does not indicate failure - the ``data`` field still carries
     the tool's output. Rendered into :meth:`to_dict` so agents see them
     when building their next-step prompt.
 
@@ -722,7 +722,7 @@ class ToolResult:
 
     @property
     def error_message(self) -> str | None:
-        """Human-readable message — same as ``error``."""
+        """Human-readable message - same as ``error``."""
         return self.error
 
     @property
@@ -839,7 +839,7 @@ class Step:
         if r.error:
             tail = f"ERROR: {r.error[:80]}"
         elif isinstance(r.data, dict) and r.data.get("needs_approval"):
-            # Surface approval-gated tool calls clearly — otherwise
+            # Surface approval-gated tool calls clearly - otherwise
             # ApprovalHook silently stops the loop and the user sees
             # a ✓ step with no indication that anything is pending.
             desc = str(r.data.get("approval_description", "")).strip()
@@ -847,7 +847,7 @@ class Step:
         elif isinstance(r.data, list):
             tail = f"{len(r.data)} items"
         elif isinstance(r.data, dict):
-            # Prefer showing list-valued fields — a {"files": [...]} or
+            # Prefer showing list-valued fields - a {"files": [...]} or
             # {"results": [...]} shape is common and "N keys" throws
             # away the most useful part for both humans and skimmable
             # eval output.
@@ -857,7 +857,7 @@ class Step:
                 tail = f"{len(v)} {k}"
             elif len(r.data) == 1:
                 # Single-scalar-value dict (e.g. {"answer": "..."} from
-                # a done tool) — show the value, not "1 keys".
+                # a done tool) - show the value, not "1 keys".
                 k, v = next(iter(r.data.items()))
                 snippet = str(v)
                 snippet = snippet if len(snippet) <= 60 else snippet[:57] + "..."

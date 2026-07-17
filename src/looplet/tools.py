@@ -1,4 +1,4 @@
-"""Tool registry — domain-agnostic tool specification and dispatch.
+"""Tool registry - domain-agnostic tool specification and dispatch.
 
 Provides ToolSpec (tool definition) and BaseToolRegistry (registration,
 dispatch, catalog rendering). Domain-specific agents subclass
@@ -53,7 +53,7 @@ def suggest_similar(
 
     Thin, cached wrapper around :func:`difflib.get_close_matches`.
     Intended for building "did you mean '<x>'?" messages in tool error
-    text — both inside tool implementations (via
+    text - both inside tool implementations (via
     :class:`~looplet.types.ToolValidationError`) and inside the
     dispatcher's own unknown-tool / unknown-argument diagnostics.
 
@@ -129,18 +129,18 @@ def _classify_exception(e: BaseException) -> ToolError:
     Covers the common stdlib cases. Provider-specific exceptions
     (rate limits, context-overflow errors, API cancellations) are
     matched by class name as a best-effort since importing every
-    provider SDK here would create a dependency mess — producers
+    provider SDK here would create a dependency mess - producers
     should attach a richer :class:`ToolError` directly when a more
     specific classification is needed.
     """
     msg = f"{type(e).__name__}: {e}"
-    # Cooperative cancellation — asyncio.CancelledError inherits from
+    # Cooperative cancellation - asyncio.CancelledError inherits from
     # BaseException, so check it before the stdlib Exception branches.
     import asyncio as _asyncio  # noqa: PLC0415
 
     if isinstance(e, _asyncio.CancelledError):
         return ToolError(kind=ErrorKind.CANCELLED, message=msg, retriable=False)
-    # Tool authors signalling a caller-fixable input mistake — treat
+    # Tool authors signalling a caller-fixable input mistake - treat
     # the message as the full, LLM-facing explanation (skip the type
     # prefix) so "did you mean …?" hints render cleanly.
     if isinstance(e, ToolValidationError):
@@ -187,7 +187,7 @@ def _format_param_hint(spec: "ToolSpec") -> str:
             tag = f"{name}: {typ}" + (" (required)" if name in required else "")
             parts.append(tag)
         return "{" + ", ".join(parts) + "}"
-    # Simple format — all params are required by convention.
+    # Simple format - all params are required by convention.
     parts = [f"{name}: {desc}" for name, desc in params.items()]
     return "{" + ", ".join(parts) + "}"
 
@@ -297,16 +297,16 @@ class ToolSpec:
 
     ``parameters`` accepts two formats:
 
-    1. **Simple** (backward-compatible): ``{"name": "str", "path": "file path"}``
-       — keys are parameter names, values are type/description strings.
+     1. **Simple** (backward-compatible): ``{"name": "str", "path": "file path"}``.
+         Keys are parameter names and values are type/description strings.
 
-    2. **JSON Schema**: ``{"type": "object", "properties": {...}, "required": [...]}``
-       — a full JSON Schema object.  Detected automatically when the dict
+     2. **JSON Schema**: ``{"type": "object", "properties": {...}, "required": [...]}``.
+         This is a full JSON Schema object, detected automatically when the dict
        contains **both** ``"type": "object"`` and a ``"properties"`` key.
 
     **Disambiguation:** detection requires both keys, so a simple-format
     dict that happens to contain ``"type"`` (e.g. ``{"type": "str"}``)
-    is *not* misdetected — only a literal ``{"type": "object",
+    is *not* misdetected - only a literal ``{"type": "object",
     "properties": {...}}`` shape triggers JSON-Schema mode.
 
     Example (simple)::
@@ -332,7 +332,7 @@ class ToolSpec:
     """Human-readable description shown to the LLM in the tool catalog."""
 
     parameters: dict[str, Any]
-    """Parameter schema — simple ``{name: desc}`` dict or full JSON Schema object."""
+    """Parameter schema - simple ``{name: desc}`` dict or full JSON Schema object."""
 
     execute: Callable[..., Any] = field(repr=False)
     """Callable invoked when the tool is dispatched. Receives kwargs matching parameters."""
@@ -358,9 +358,9 @@ class ToolSpec:
 
     Cartridge mechanism for tool dependency injection: ``tool.yaml``
     can declare ``requires: [workspace_config, file_cache]`` and the
-    workspace loader populates this list. The
+    cartridge loader populates this list. The
     :class:`BaseToolRegistry` dispatcher then resolves each name
-    against the workspace's resource registry and hands the live
+    against the cartridge's resource registry and hands the live
     instances to the tool through ``ctx.resources``.
 
     Empty list (the default) preserves the existing dispatch behaviour
@@ -368,25 +368,24 @@ class ToolSpec:
     """
 
     tags: list[str] = field(default_factory=list)
-    """Free-form labels attached to the tool (cartridge-spec v1.1).
+    """Free-form labels attached to an in-process tool.
 
-    Declared in ``tool.yaml`` as ``tags: [enrichment, ioc-only]`` or
-    in single-file form as ``__tags__ = [...]``. The runtime is free
-    to ignore tags or use them (e.g., a hook may filter the tool
-    catalog by tag during a particular phase). Tags are pure
-    metadata — they do NOT affect dispatch.
+    Tags are Python API metadata and do not affect dispatch. Cartridge
+    schema v2 deliberately rejects per-tool ``tags:`` because the hook that
+    consumes a category should own its tool list.
     """
 
     render: dict[str, Any] = field(default_factory=dict)
-    """Rendering hints for prompt assembly (cartridge-spec v1.1).
+    """Host-side rendering hints for prompt assembly.
 
-    Optional cartridge-side hints about how the runtime should render
-    this tool's results into the prompt's RECENT RESULTS section.
+    Runtime configuration may set these through
+    ``runtime.yaml: tool_render_hints:``. Cartridge schema v2 does not accept
+    rendering policy in ``tool.yaml``.
     Recognised keys (all optional):
 
-    * ``preview: int`` — for tools whose ``data`` is a list, render
+    * ``preview: int`` - for tools whose ``data`` is a list, render
       only the first N items plus a ``[+M more]`` tail.
-    * ``max_chars: int`` — per-step cap for THIS tool's results,
+    * ``max_chars: int`` - per-step cap for THIS tool's results,
       overriding the global ``CONTEXT_INLINE_PER_STEP_CHARS``.
 
     Hints are advisory: a conformant runtime MAY honor them or fall
@@ -632,7 +631,7 @@ class BaseToolRegistry:
             spec: The tool specification to register.
 
         Warns (via ``logging.getLogger(__name__).warning``) when a
-        tool with the same name is already registered — silent
+        tool with the same name is already registered - silent
         overwrites are a common source of bugs when composing
         multiple ``Skill`` bundles that happen to share a tool name.
         """
@@ -648,7 +647,7 @@ class BaseToolRegistry:
                 import logging  # noqa: PLC0415
 
                 logging.getLogger(__name__).warning(
-                    "Tool %r is already registered — overwriting. "
+                    "Tool %r is already registered - overwriting. "
                     "This usually indicates a name collision between skills "
                     "or tool bundles; give one of them a unique name.",
                     spec.name,
@@ -793,7 +792,7 @@ class BaseToolRegistry:
 
                 logging.getLogger(__name__).warning(
                     "Tool %r declares requires=%s but its execute "
-                    "signature has no ``ctx`` parameter — the resources "
+                    "signature has no ``ctx`` parameter - the resources "
                     "won't reach the tool. Add ``ctx`` to the signature.",
                     spec.name,
                     spec.requires,
@@ -826,7 +825,7 @@ class BaseToolRegistry:
         # LLMs frequently send {"command": ""} or {"command": null}
         # which passes the "key exists" check but produces silent
         # failures (bash runs empty command → exit 0, no output).
-        # Only check params that ARE present — missing ones are caught below.
+        # Only check params that ARE present - missing ones are caught below.
         for p in required:
             if p not in sanitized:
                 continue  # caught by the missing-args check below
@@ -856,7 +855,7 @@ class BaseToolRegistry:
                 )
 
         missing = [p for p in required if p not in sanitized]
-        # Unknown / mistyped extra args — the common case is the LLM
+        # Unknown / mistyped extra args - the common case is the LLM
         # sending ``file_pth`` instead of ``file_path``. Without this
         # check the extra arg slides into the ``**kwargs`` of the tool
         # callable (or raises an opaque ``TypeError: got an unexpected
@@ -951,7 +950,7 @@ class BaseToolRegistry:
                 except RuntimeError:
                     loop = None
                 if loop is not None and loop.is_running():
-                    # Inside an async context — run in a thread to avoid
+                    # Inside an async context - run in a thread to avoid
                     # blocking the event loop.
                     import concurrent.futures  # noqa: PLC0415
 
@@ -966,7 +965,7 @@ class BaseToolRegistry:
         except Exception as e:
             _te = _classify_exception(e)
             # Even on failure, surface any warnings the tool had
-            # already emitted before it raised — they often diagnose
+            # already emitted before it raised - they often diagnose
             # the root cause (e.g. "heuristic X fell back to …").
             warns = (
                 list(ctx.warnings[warn_start:])
@@ -1015,7 +1014,7 @@ class BaseToolRegistry:
         callable does not complete within ``timeout_s`` seconds.
 
         Uses ``shutdown(wait=False)`` so the caller returns immediately
-        on timeout — the orphaned thread finishes on its own.  Avoids
+        on timeout - the orphaned thread finishes on its own.  Avoids
         the ``with ThreadPoolExecutor`` pattern which calls
         ``shutdown(wait=True)`` on exit and blocks until the thread
         completes, defeating the entire purpose of the timeout.
@@ -1029,7 +1028,7 @@ class BaseToolRegistry:
             pool.shutdown(wait=False, cancel_futures=True)
             raise
         finally:
-            # On success the thread is already done — clean shutdown
+            # On success the thread is already done - clean shutdown
             # is instantaneous.  On timeout the thread may still be
             # running; wait=False lets us return immediately.
             pool.shutdown(wait=False)
@@ -1160,7 +1159,7 @@ def _summarize_args_dict(args: dict[str, Any]) -> str:
     denial paths can all render args the same way as successful
     dispatch. Without this, the same call looks like
     ``bash(cmd=ls)`` when allowed and ``bash({'cmd': 'ls'})`` when
-    denied or intercepted — visually jarring in logs.
+    denied or intercepted - visually jarring in logs.
     """
     parts: list[str] = []
     for k, v in args.items():
@@ -1216,7 +1215,7 @@ def register_done_tool(
 
     The composable loop expects a tool matching ``LoopConfig.done_tool``
     (default ``"done"``) to be registered. When absent, the LLM's
-    ``done()`` call lands on "Unknown tool" — a common first-use
+    ``done()`` call lands on "Unknown tool" - a common first-use
     footgun since there is no error at setup time.
 
     Call this alongside ``register_think_tool`` when building a
@@ -1229,7 +1228,7 @@ def register_done_tool(
 
     Args:
         registry: The tool registry to add the done tool to.
-        name: Tool name — must match ``LoopConfig.done_tool``.
+        name: Tool name - must match ``LoopConfig.done_tool``.
         parameters: Custom parameter schema. Defaults to
             ``{"summary": "Brief summary of what was accomplished"}``.
     """

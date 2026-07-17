@@ -1,4 +1,4 @@
-"""async_composable_loop — async agent loop tests."""
+"""async_composable_loop - async agent loop tests."""
 
 from __future__ import annotations
 

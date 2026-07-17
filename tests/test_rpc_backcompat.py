@@ -2,8 +2,8 @@
 
 Proves the RPC-foundation additions are non-breaking: a legacy client
 that uses only load_workspace/set_backend/run/quit and reads only the
-step/done/ready/error events still works — even though the server now
-also emits `event` and `checkpoint` frames — and every shipped
+step/done/ready/error events still works - even though the server now
+also emits `event` and `checkpoint` frames - and every shipped
 local-first example cartridge still loads through the v1 loader.
 """
 

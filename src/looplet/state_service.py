@@ -1,10 +1,10 @@
-"""State Service Protocol (SSP) — the portable shared-mutable-state primitive.
+"""State Service Protocol (SSP) - the portable shared-mutable-state primitive.
 
 ``mcp_servers:`` makes *tools* portable (a tool body runs out-of-process
 over MCP). ``kind: lep`` makes *hooks* portable (a hook's policy runs
 out-of-process over LEP). Both are **1:1** stdio bridges: one parent, one
 child. Neither can express the last in-process coupling the portability
-report flags — **shared mutable state** that two *different* components
+report flags - **shared mutable state** that two *different* components
 read and write (e.g. ``hello``'s greeting log, which the ``greet`` tool
 appends to and the ``PolitenessGate`` hook reads to gate ``done()``).
 
@@ -19,14 +19,14 @@ point its own tools/hooks at the socket).
 
 Three pieces, mirroring :mod:`looplet.lep`:
 
-* :class:`StateServiceBase` — subclass, define public methods, call
+* :class:`StateServiceBase` - subclass, define public methods, call
   :meth:`StateServiceBase.serve`. Holds the state; nothing else from
   looplet is required (a Rust/Go server would speak only the wire).
-* :class:`StateServiceClient` — an in-process proxy. ``client.record(...)``
+* :class:`StateServiceClient` - an in-process proxy. ``client.record(...)``
   forwards to the server over the socket; the loader injects one into the
   resource registry under the service's name, so existing ``@ref`` /
   ``requires:`` wiring resolves to it unchanged.
-* :class:`StateServiceHandle` — spawns a server, waits for its socket,
+* :class:`StateServiceHandle` - spawns a server, waits for its socket,
   and owns the client + teardown.
 
 Wire format (line-delimited JSON over ``AF_UNIX`` ``SOCK_STREAM``):
@@ -119,7 +119,7 @@ class StateServiceBase:
     ``_`` and not one of the framework methods), and call :meth:`serve`
     from ``__main__``. Every method call is serialized under a single
     lock, so subclasses may keep ordinary (non-thread-safe) Python state
-    — the lock makes concurrent client access safe by construction.
+    while the lock makes concurrent client access safe by construction.
     """
 
     #: Method names that belong to the framework and are never exposed
@@ -234,7 +234,7 @@ class StateServiceBase:
                     {"id": rid, "error": {"message": f"unknown method {method!r}"}},
                 )
                 return
-        except Exception as exc:  # noqa: BLE001 — report, never crash the server
+        except Exception as exc:  # noqa: BLE001 - report, never crash the server
             _send_line(conn, {"id": rid, "error": {"message": str(exc)}})
             return
         _send_line(conn, {"id": rid, "result": result})
@@ -387,7 +387,7 @@ class StateServiceHandle:
             raise StateServiceError(f"state service {name!r} has an empty command")
         socket_dir = tempfile.mkdtemp(prefix=f"looplet-state-{name}-")
         socket_path = os.path.join(socket_dir, f"{name}.sock")
-        proc = subprocess.Popen(  # noqa: S603 — argv is operator-supplied
+        proc = subprocess.Popen(  # noqa: S603 - argv is operator-supplied
             argv,
             stdin=subprocess.DEVNULL,
             env=cls._server_env(socket_path, env),
@@ -401,7 +401,7 @@ class StateServiceHandle:
 
     def close(self) -> None:
         try:
-            self.client.call  # noqa: B018 — touch to ensure attr exists
+            self.client.call  # noqa: B018 - touch to ensure attr exists
             self.client._rpc("state/shutdown", {})  # noqa: SLF001
         except Exception:  # pragma: no cover - best effort
             pass

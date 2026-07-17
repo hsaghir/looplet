@@ -103,7 +103,7 @@ class TestDefaultStateStepContext:
         assert state.step_context == {}
 
     def test_step_context_not_in_snapshot(self):
-        """step_context is ephemeral — should NOT leak into snapshot."""
+        """step_context is ephemeral - should NOT leak into snapshot."""
         state = DefaultState(max_steps=5)
         state.step_context["temp"] = "data"
         snap = state.snapshot()

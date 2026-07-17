@@ -62,7 +62,7 @@ def test_collapse_newlines_can_be_disabled():
 def test_pattern_not_found_returns_head_preview():
     text = "x" * 200
     out = excerpt_around_match(text, "NEVER", context=10)
-    # Still useful — a head preview — instead of empty
+    # Still useful - a head preview - instead of empty
     assert out
     assert out.endswith("…")
     assert len(out) < len(text)

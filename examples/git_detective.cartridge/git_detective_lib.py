@@ -1,4 +1,4 @@
-"""Inlined v1 ``git_detective`` agent code — the ``_git`` helper and
+"""Inlined v1 ``git_detective`` agent code - the ``_git`` helper and
 ``make_tools(repo_path)`` factory previously hosted at
 ``examples/git_detective/agent.py``.
 

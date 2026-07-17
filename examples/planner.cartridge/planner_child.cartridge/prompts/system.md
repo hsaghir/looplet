@@ -4,4 +4,4 @@ each one short and concrete (under 20 words).
 
 Call `done` exactly once with `summary` set to the numbered plan as a
 single string. Do not call any other tools. Do not include any
-preamble — just the numbered list.
+preamble - just the numbered list.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""``tinyloop`` — a 200-line second runtime for Cartridge Spec v1.0.
+"""``tinyloop`` - a 200-line second runtime for Cartridge Spec v1.0.
 
 This file is intentionally a stand-alone script that does NOT import
 :mod:`looplet`. Its only job is to demonstrate that the cartridge
@@ -158,7 +158,7 @@ def _parse_tiny_yaml(source: str) -> dict[str, Any]:
     raw_lines = source.splitlines()
     lines: list[tuple[int, str]] = []  # (indent, body)
     for ln in raw_lines:
-        # Drop trailing inline comments — but only ones that aren't
+        # Drop trailing inline comments - but only ones that aren't
         # inside a string or flow expression. The fixtures keep things
         # simple enough that the conservative "strip everything after
         # an unquoted ``#``" approach works.
@@ -238,7 +238,7 @@ def _parse_tiny_yaml(source: str) -> dict[str, Any]:
             if indent < base_indent or body.startswith("- "):
                 break
             if indent > base_indent:
-                # Should not happen — we always descend explicitly.
+                # Should not happen - we always descend explicitly.
                 i += 1
                 continue
             if ":" not in body:
@@ -355,7 +355,7 @@ def load_cartridge(root: Path) -> TinyCartridge:
 
     # Cartridge Spec v2: runtime-tier knobs live in a sibling
     # ``runtime.yaml``. Load it (if present) and merge under
-    # ``config`` — the resulting flat dict matches v1.x callers'
+    # ``config`` - the resulting flat dict matches v1.x callers'
     # expectations, while v2 cartridges keep the contract / runtime
     # separation on disk.
     runtime_path = root / "runtime.yaml"
@@ -441,11 +441,11 @@ def _normalise_permissions(raw: Any) -> dict[str, Any] | None:
     The on-disk shape splits rules across ``deny:``, ``ask:`` and
     optional ``allow:`` lists. The conformance summary wants a
     single ordered ``rules`` list with ``{tool, decision, reason}``
-    entries — matching what the reference looplet ``PermissionEngine``
+    entries - matching what the reference looplet ``PermissionEngine``
     serialises. We preserve declaration order: ``deny`` then ``ask``
     then ``allow``, since v1.0 callers describe rules in that order
     of safety. The ``contains:`` matcher is intentionally dropped
-    from the summary — it's an enforcement detail, not part of the
+    from the summary - it's an enforcement detail, not part of the
     declarative contract surface.
     """
     if not isinstance(raw, dict):
@@ -510,7 +510,7 @@ def conformance_summary(cart: TinyCartridge) -> dict[str, Any]:
     model_summary: dict[str, Any] | None = None
     if isinstance(cart.model, dict):
         # The conformance summary intentionally exposes only the
-        # binding identity (provider, name, reasoning_effort) — not
+        # binding identity (provider, name, reasoning_effort) - not
         # generation knobs like max_tokens/temperature, which live in
         # the flat config and are already surfaced above.
         model_summary = {

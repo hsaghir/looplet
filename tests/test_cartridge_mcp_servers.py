@@ -23,7 +23,7 @@ from looplet.tools import ToolSpec
 
 
 class _FakeAdapter:
-    """Pretend MCPToolAdapter — records its construction args and
+    """Pretend MCPToolAdapter - records its construction args and
     exposes a fixed list of ``ToolSpec`` objects."""
 
     instances: list["_FakeAdapter"] = []
@@ -171,7 +171,7 @@ def test_mcp_servers_failure_cleans_up_already_started_adapters(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """If the second server fails to start, the first one must be
-    closed before the loader propagates the error — otherwise we
+    closed before the loader propagates the error - otherwise we
     leak subprocesses."""
 
     started: list[_FakeAdapter] = []

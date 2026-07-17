@@ -2,15 +2,15 @@
 
 Closes the three follow-up gaps after per-case persistence:
 
-* ``EvalHook.context`` — inspect an ONLINE run's trajectory / tool calls
+* ``EvalHook.context`` - inspect an ONLINE run's trajectory / tool calls
   with the same :class:`EvalContext` surface used offline.
-* ``promote_to_offline`` — turn a live online run into a durable offline
+* ``promote_to_offline`` - turn a live online run into a durable offline
   fixture (no separate TrajectoryRecorder needed).
-* ``seed_case_workspace`` — materialise a case's seed files, so a runner
+* ``seed_case_workspace`` - materialise a case's seed files, so a runner
   no longer hand-rolls sandbox seeding.
 
 Driven with a MockLLMBackend + a real (tiny) tool registry so the loop
-actually runs — no network, deterministic.
+actually runs - no network, deterministic.
 """
 
 from __future__ import annotations

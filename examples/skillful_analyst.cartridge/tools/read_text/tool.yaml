@@ -2,7 +2,7 @@ name: read_text
 description: |-
   Read a UTF-8 text file and return its contents.
 
-  Use this for any file the user references — CSVs, JSON, plaintext,
+  Use this for any file the user references - CSVs, JSON, plaintext,
   source files. Returns ``{"content": str, "size": int, "lines": int}``.
 parameters:
   path:

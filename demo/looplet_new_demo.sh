@@ -39,7 +39,7 @@ TYPE() {
     printf "\n"
 }
 
-# Tunables — caller may override via env.
+# Tunables - caller may override via env.
 : "${OPENAI_BASE_URL:=http://127.0.0.1:19823/v1}"
 : "${OPENAI_API_KEY:=copilot}"
 : "${OPENAI_MODEL:=claude-sonnet-4.6}"
@@ -53,7 +53,7 @@ cd "$DEMO_DIR"
 
 clear
 
-echo "# looplet new — scaffold a reviewable cartridge draft"
+echo "# looplet new - scaffold a reviewable cartridge draft"
 PAUSE 2
 echo
 echo "# Step 1: configure any OpenAI-compatible endpoint."

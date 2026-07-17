@@ -95,7 +95,7 @@ class TestToolProgressEvents:
             assert p.tool_call.tool == "work"
 
     def test_no_subscribers_no_context_overhead(self):
-        # With zero hooks and no cancel/approval, ctx is None — tool's
+        # With zero hooks and no cancel/approval, ctx is None - tool's
         # progress calls become no-ops (ctx is None in the tool).
         list(
             composable_loop(

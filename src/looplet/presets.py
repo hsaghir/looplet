@@ -3,7 +3,7 @@
 Presets reduce the boilerplate needed to set up an agent from ~50 lines
 to ~3 lines.  Each preset returns an :class:`AgentPreset` dataclass
 containing a pre-configured ``LoopConfig``, hook list, tool registry,
-and ``DefaultState`` — everything ``composable_loop`` needs.
+and ``DefaultState`` - everything ``composable_loop`` needs.
 
 Usage::
 
@@ -49,7 +49,7 @@ class AgentPreset:
     """Complete agent configuration returned by preset functions.
 
     Contains everything needed for ``composable_loop``.  All fields are
-    mutable — override any after construction for customization.
+    mutable - override any after construction for customization.
 
     For the common case, call :meth:`run` to drive the loop directly::
 
@@ -210,7 +210,7 @@ class AgentPreset:
                 config=self.config, hooks=self.hooks, task=task,
             )
 
-        Returns the loop generator — iterate to drive the agent.
+        Returns the loop generator - iterate to drive the agent.
         """
         from looplet.loop import composable_loop  # noqa: PLC0415
 
@@ -327,7 +327,7 @@ def _edit(*, file_path: str, old_string: str, new_string: str, workspace: str = 
         }
     if count > 1:
         return {
-            "error": f"old_string matches {count} locations — ambiguous",
+            "error": f"old_string matches {count} locations - ambiguous",
             "remediation": "Include more context to make it unique.",
         }
     with open(full, "w") as f:
@@ -579,7 +579,7 @@ def coding_agent_preset(
                 "1. Write test file before or alongside implementation.\n"
                 "2. Type hints on all function signatures.\n"
                 "3. Docstrings on public functions.\n"
-                "4. No bare except — catch specific exceptions.\n"
+                "4. No bare except - catch specific exceptions.\n"
                 "5. snake_case for functions, PascalCase for classes.\n"
             )
         ],
@@ -660,7 +660,7 @@ def minimal_preset(
     tools: list[ToolSpec] | None = None,
     system_prompt: str = "You are a helpful assistant.",
 ) -> AgentPreset:
-    """Minimal agent preset — bare loop with optional custom tools.
+    """Minimal agent preset - bare loop with optional custom tools.
 
     Use as a starting point for custom agents. Provides only the loop
     config and state; bring your own tools or pass them in.

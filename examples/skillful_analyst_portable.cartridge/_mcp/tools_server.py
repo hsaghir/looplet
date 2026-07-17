@@ -1,13 +1,13 @@
 """Stdio MCP server for the skillful_analyst_portable cartridge.
 
 Serves the three tools that were in-process ``tools/*/execute.py`` bodies
-in the original ``skillful_analyst`` cartridge — ``done``, ``read_text``,
-and ``write_text`` — over the MCP stdio transport. Moving them out of
+in the original ``skillful_analyst`` cartridge - ``done``, ``read_text``,
+and ``write_text`` - over the MCP stdio transport. Moving them out of
 process is what makes the twin fully portable: no Python tool body is
 required by the host.
 
 Relative paths are resolved against the server's working directory
-(``os.getcwd()``), which the loader sets to the host project root — the
+(``os.getcwd()``), which the loader sets to the host project root - the
 portable, host-agnostic equivalent of the original tools'
 ``resolve_project_root(runtime)`` anchoring.
 

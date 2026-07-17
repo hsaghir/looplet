@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# commit-msg hook — enforces conventional commit format.
+# commit-msg hook - enforces conventional commit format.
 #
 # Accepts: feat|fix|docs|refactor|test|chore|ci|style|perf|build|examples|friction
 # followed by optional (scope): and a description.

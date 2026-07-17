@@ -238,7 +238,7 @@ def discover_skill_bundles(
                 )
             if on_duplicate == "warn":
                 logger.warning(
-                    "duplicate bundle name %r — keeping %s, dropping %s",
+                    "duplicate bundle name %r - keeping %s, dropping %s",
                     card.name,
                     first.path,
                     card.path,

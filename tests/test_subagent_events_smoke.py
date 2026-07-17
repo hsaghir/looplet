@@ -198,13 +198,13 @@ def test_no_parent_hooks_means_no_forwarding() -> None:
         task={"goal": "x"},
         tools=tools,
         max_steps=2,
-        # hooks= is the SUB-loop's hooks — does not implicitly include
+        # hooks= is the SUB-loop's hooks - does not implicitly include
         # the parent observer.
     )
     assert received == []
     # And: even if you pass [parent_hook] as hooks=, it gets the
     # sub-loop's full LoopHook interface (which it doesn't implement),
     # not just on_event forwarding. The on_event method is still
-    # called for events, so we'd see them — that's the OLD behaviour.
+    # called for events, so we'd see them - that's the OLD behaviour.
     # The new behaviour is that you can have parent observers see
     # events WITHOUT sharing the sub-loop's full hook interface.

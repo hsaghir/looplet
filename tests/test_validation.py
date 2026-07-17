@@ -1,4 +1,4 @@
-"""Tests for looplet.validation — schema enforcement for tool call args and done payloads."""
+"""Tests for looplet.validation - schema enforcement for tool call args and done payloads."""
 
 from __future__ import annotations
 

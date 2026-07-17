@@ -1,9 +1,9 @@
 """Stdio MCP server for the dep_doctor_portable cartridge.
 
 Serves all 7 audit tools that were in-process ``tools/*/execute.py``
-bodies in the original ``dep_doctor`` cartridge — ``detect_dep_files``,
+bodies in the original ``dep_doctor`` cartridge - ``detect_dep_files``,
 ``parse_deps``, ``check_package``, ``check_license_compat``,
-``find_alternatives``, ``think``, ``done`` — over the MCP stdio
+``find_alternatives``, ``think``, ``done`` - over the MCP stdio
 transport. Moving them out of process is what makes the twin fully
 portable: no Python tool body is required by the host.
 
@@ -13,7 +13,7 @@ The package registry (``PACKAGE_DB``) and license compatibility table
 
 ``find_alternatives`` reaches the host model through the Model Gateway
 (MGP): the loader exports ``LOOPLET_LLM_SOCKET`` and this server connects
-to it lazily, so the tool returns real LLM-suggested alternatives — full
+to it lazily, so the tool returns real LLM-suggested alternatives - full
 parity with the in-process original. When no gateway is present (or no
 backend is bound yet) it degrades to empty alternatives, exactly the
 fallback the original tool takes when ``ctx.llm is None``.
@@ -114,7 +114,7 @@ def _host_llm():
     """Return the host Model Gateway client only when a backend is bound.
 
     Returns ``None`` when there is no reachable gateway *or* no backend is
-    currently bound — i.e. exactly the cases where the in-process original
+    currently bound - i.e. exactly the cases where the in-process original
     sees ``ctx.llm is None`` and degrades.
     """
     global _HOST_LLM, _HOST_LLM_TRIED
@@ -167,7 +167,7 @@ PACKAGE_DB = {
         "weekly_downloads": 35_000_000,
         "cves": [],
         "status": "warning",
-        "description": "YAML parser — single maintainer risk",
+        "description": "YAML parser - single maintainer risk",
     },
     "cryptography": {
         "latest_version": "44.0.0",
@@ -257,7 +257,7 @@ PACKAGE_DB = {
         "weekly_downloads": 50_000_000,
         "cves": [],
         "status": "warning",
-        "description": "Utility library — no updates since 2021",
+        "description": "Utility library - no updates since 2021",
     },
     "event-stream": {
         "latest_version": "4.0.1",
@@ -277,7 +277,7 @@ LICENSE_COMPATIBILITY = {
     "Apache-2.0": {"compatible_with": ["MIT", "BSD-3-Clause", "Apache-2.0"]},
     "GPL-3.0": {
         "compatible_with": ["GPL-3.0", "AGPL-3.0"],
-        "note": "Copyleft — may require open-sourcing your code",
+        "note": "Copyleft - may require open-sourcing your code",
     },
     "LGPL-3.0": {"compatible_with": ["GPL-3.0", "LGPL-3.0", "AGPL-3.0"], "note": "Weak copyleft"},
 }
@@ -461,7 +461,7 @@ TOOLS = [
     },
     {
         "name": "check_package",
-        "description": "Check a package's health — latest version, release date, CVEs, "
+        "description": "Check a package's health - latest version, release date, CVEs, "
         "license, maintainer activity.",
         "inputSchema": {
             "type": "object",

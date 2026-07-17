@@ -1,12 +1,12 @@
 """Cartridge dataclass + manifest helpers.
 
-* :class:`Cartridge` — the in-memory representation of a loaded
+* :class:`Cartridge` - the in-memory representation of a loaded
   cartridge directory. Carries name, version, schema_version,
   metadata, plus the path it was loaded from. Returned by
   :meth:`Cartridge.from_directory`; consumed by
   :func:`looplet.cartridge.preset_to_cartridge` (as the structured
   target it writes into).
-* :func:`_manifest_path` and :func:`_manifest_present` — small
+* :func:`_manifest_path` and :func:`_manifest_present` - small
   helpers that probe a directory for either ``cartridge.json`` or
   the historical ``workspace.json`` manifest filename. Prefers
   ``cartridge.json`` when both exist.
@@ -37,8 +37,8 @@ from looplet.cartridge._layout import (
 def _manifest_path(root: Path) -> Path | None:
     """Return the path to the cartridge manifest file, or ``None``.
 
-    Accepts both ``cartridge.json`` (Cartridge Spec v1.0 canonical name)
-    and ``workspace.json`` (historical alias). Prefers
+    Accepts both ``cartridge.json`` (canonical name)
+    and ``workspace.json`` (historical filename). Prefers
     ``cartridge.json`` if both exist.
     """
     primary = root / CartridgeLayout.CARTRIDGE_JSON
@@ -59,10 +59,8 @@ def _read_schema_version(root: Path) -> int:
 
     Returns ``SCHEMA_VERSION`` (the latest known version) when the
     manifest is missing or unparseable; callers that have already
-    verified the manifest exists will get the actual value. Used by
-    the loader to gate spec-v2 hard-errors so v1 cartridges keep
-    loading with deprecation warnings while ``schema_version: 2``
-    cartridges hard-fail on deprecated shapes.
+    verified the manifest exists will get the actual value. The loader accepts
+    schema version 2 only and rejects all other declared versions.
     """
     meta_path = _manifest_path(root)
     if meta_path is None:
@@ -83,8 +81,8 @@ def _read_manifest_language(root: Path) -> str:
     Cartridge spec v2 adds an optional ``language:`` field to
     ``cartridge.json`` that names the body language of the cartridge's
     ``tools/`` and ``hooks/`` (Python today; future runtimes may add
-    others). Defaults to ``"python"`` when missing for back-compat
-    with v1.x cartridges authored before the field existed. Always
+    others). Defaults to ``"python"`` when missing for manifests authored
+    before the field existed. Always
     returns a normalised lowercase string.
 
     Conformant runtimes use this field to refuse cartridges they
@@ -129,7 +127,7 @@ class Cartridge:
         """Load workspace metadata from a workspace directory.
 
         Use :func:`cartridge_to_preset` to materialise the
-        :class:`AgentPreset` from the loaded workspace.
+        :class:`AgentPreset` from the loaded cartridge.
         """
         root = Path(path)
         if not root.is_dir():
@@ -172,7 +170,7 @@ class Cartridge:
         )
 
     def to_preset(self) -> "AgentPreset":
-        """Materialise the :class:`AgentPreset` described by this workspace."""
+        """Materialise the :class:`AgentPreset` described by this cartridge."""
         # Lazy import to break the circular dep: the loader imports
         # this module to know about the Cartridge dataclass type.
         from looplet.cartridge import cartridge_to_preset  # noqa: PLC0415

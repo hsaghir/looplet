@@ -1,6 +1,6 @@
-"""Built-in hooks any looplet workspace can opt into.
+"""Built-in hooks any Looplet cartridge can opt into.
 
-Symmetric to :mod:`looplet.builtin_tools`. A workspace lists hooks it
+Symmetric to :mod:`looplet.builtin_tools`. A cartridge lists hooks it
 wants in ``config.yaml``::
 
     builtin_hooks:
@@ -12,32 +12,32 @@ wants in ``config.yaml``::
 The loader looks each name up in :data:`AVAILABLE`, resolves
 ``${ref:...}`` / ``${runtime.x}`` placeholders in kwargs against the
 live resource registry, and instantiates the hook. The resulting hook
-joins the workspace's other hooks (those defined in ``hooks/<name>/``).
+joins the cartridge's other hooks (those defined in ``hooks/<name>/``).
 
-Built-ins live here (rather than in every workspace's ``hooks/``) so
+Built-ins live here (rather than in every cartridge's ``hooks/``) so
 they evolve with looplet: a new release ships an improved hook and
-every workspace using ``builtin_hooks:`` picks it up immediately.
+every cartridge using ``builtin_hooks:`` picks it up immediately.
 
 Currently shipped built-ins:
 
-* ``skill_activation`` — auto-installs :class:`SkillActivationHook`
+* ``skill_activation`` - auto-installs :class:`SkillActivationHook`
   bound to the ``skill_manager`` resource (the natural pair for the
   ``search_skills`` / ``activate_skill`` built-in tools).
-* ``stagnation`` — :class:`looplet.stagnation.StagnationHook` (loop
+* ``stagnation`` - :class:`looplet.stagnation.StagnationHook` (loop
   guard for repeating tool calls). Default kwargs:
   ``threshold=3``, ``ignore_tools=["think", "done"]``.
-* ``per_tool_limit`` — :class:`looplet.limits.PerToolLimitHook`
+* ``per_tool_limit`` - :class:`looplet.limits.PerToolLimitHook`
   (caps each tool's call count). Tune per workspace via
   ``default_limit`` / ``limits``.
-* ``threshold_compact`` — :class:`looplet.budget.ThresholdCompactHook`
+* ``threshold_compact`` - :class:`looplet.budget.ThresholdCompactHook`
   with an inline ``budget:`` dict (parsed into
   :class:`looplet.budget.ContextBudget`).
-* ``static_briefing`` — :class:`looplet.cartridge.prompt_files.StaticBriefingHook`.
+* ``static_briefing`` - :class:`looplet.cartridge.prompt_files.StaticBriefingHook`.
   Inline replacement for the v1.x magic ``prompts/briefing.md`` file:
   declare ``text:`` (inline body) xor ``path:`` (relative to cartridge
   root). Spec v2 prefers this declarative form so the briefing source
   is visible in ``config.yaml`` rather than auto-discovered by filename.
-* ``recovery_hint`` — :class:`looplet.cartridge.prompt_files.RecoveryHintHook`.
+* ``recovery_hint`` - :class:`looplet.cartridge.prompt_files.RecoveryHintHook`.
   Inline replacement for the v1.x magic ``prompts/recovery.md`` file;
   same ``text:`` / ``path:`` kwargs as ``static_briefing``.
 
@@ -53,7 +53,7 @@ from typing import Any, Callable
 __all__ = ["AVAILABLE", "build_builtin_hook"]
 
 
-# Builders are lazy so ``looplet.workspace`` can import this module
+# Builders are lazy so the cartridge loader can import this module
 # without dragging unrelated subsystems on every load.
 def _build_skill_activation(*, resources: dict[str, Any], **kwargs: Any) -> Any:
     from looplet.skills import SkillActivationHook  # noqa: PLC0415
@@ -61,7 +61,7 @@ def _build_skill_activation(*, resources: dict[str, Any], **kwargs: Any) -> Any:
     manager = kwargs.pop("manager", None) or resources.get("skill_manager")
     if manager is None:
         raise ValueError(
-            "builtin hook 'skill_activation' needs a SkillManager — "
+            "builtin hook 'skill_activation' needs a SkillManager - "
             "either add resources/skill_manager.py (the convention) "
             "or pass `manager: ${ref:my_manager}` in config.yaml."
         )

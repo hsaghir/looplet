@@ -1,4 +1,4 @@
-"""glob tool — match files by glob pattern, return relative paths.
+"""glob tool - match files by glob pattern, return relative paths.
 
 Receives the workspace_config resource through ``ctx.resources``;
 ``tool.yaml`` declares ``requires: [workspace_config]``.

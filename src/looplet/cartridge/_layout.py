@@ -18,12 +18,11 @@ SCHEMA_VERSION = 2
 
 
 class CartridgeLayout:
-    """Fixed mount points inside a workspace directory."""
+    """Fixed mount points inside a cartridge directory."""
 
+    # Historical manifest filename accepted for schema-v2 conformance.
     WORKSPACE_JSON = "workspace.json"
-    # Cartridge Spec v1.0 alias for ``workspace.json``. The loader
-    # accepts either filename so cartridges authored against the spec
-    # terminology load without renaming.
+    # Canonical schema-v2 manifest filename.
     CARTRIDGE_JSON = "cartridge.json"
     CONFIG_YAML = "config.yaml"
     PROMPTS_DIR = "prompts"
@@ -41,7 +40,7 @@ class CartridgeLayout:
     # (e.g. with the resolved model identity for cost tracking); user
     # cartridges should not author it directly. If you want acceptance
     # gates, write a ``check_done`` hook under ``hooks/<name>/`` that
-    # reads its criteria from ``hook.config.yaml`` — same as any other
+    # reads its criteria from ``hook.config.yaml`` - same as any other
     # policy. See ``examples/snippets/11_quality_gate/``.
     SERIALIZABLE_CONFIG_FIELDS: tuple[str, ...] = (
         "max_steps",
@@ -84,26 +83,24 @@ class CartridgeLayout:
         "render_messages_override",
     )
 
-    # ── Field tiering (cartridge spec v2 prep) ──────────────────
+    # ── Schema-v2 field tiering ─────────────────────────────────
     # Three tiers carve ``LoopConfig`` into "what the agent does"
     # (CONTRACT), "how the runtime executes it" (RUNTIME), and
     # "what the host application provides" (HOST). The cartridge
-    # spec v2 will move RUNTIME and HOST keys out of
-    # ``config.yaml`` into a sibling ``runtime.yaml`` (RUNTIME)
-    # and host-supplied :class:`LoopConfig` patches (HOST). v1.x
-    # accepts both shapes; runtime keys placed in ``config.yaml``
-    # raise a :class:`DeprecationWarning` pointing at the new home.
+    # spec keeps RUNTIME and HOST keys out of ``config.yaml``. Runtime
+    # values live in sibling ``runtime.yaml``; host capabilities are
+    # supplied by the caller. Schema-v2 loading rejects tier violations.
     #
     # See ``paper/principled_cartridge_v2.md`` for the rationale.
 
     RUNTIME_TIER_FIELDS: frozenset[str] = frozenset(
         {
-            # Sampling — host-tunable defaults.
+            # Sampling - host-tunable defaults.
             "max_tokens",
             "temperature",
             "recovery_temperature",
             "max_turn_continuations",
-            # Backend kwargs passthrough — same family as the sampling
+            # Backend kwargs passthrough - same family as the sampling
             # knobs above (``top_p``, ``frequency_penalty``, etc.); pure
             # "how to sample", not "what the agent does".
             "generate_kwargs",
@@ -117,13 +114,13 @@ class CartridgeLayout:
             "context_inline_per_step_chars",
             "context_window_total_chars",
             "max_briefing_tokens",
-            # Wired capabilities — runtime-specific implementations.
+            # Wired capabilities - runtime-specific implementations.
             "router",
             "tracer",
             "recovery_registry",
             "compact_service",
             "cache_policy",
-            # Persistence — operational, not behavioural.
+            # Persistence - operational, not behavioural.
             "checkpoint_dir",
             "initial_checkpoint",
             "tool_result_persist_dir",
@@ -140,7 +137,7 @@ class CartridgeLayout:
 
     # ── Runtime-yaml-only overrides that aren't LoopConfig fields ──
     # These keys are accepted in ``runtime.yaml`` but NEVER make it
-    # into ``LoopConfig`` — they configure the loader's wiring of
+    # into ``LoopConfig`` - they configure the loader's wiring of
     # something else (e.g. per-tool render overlays merged onto
     # ``ToolSpec.render`` after registration). Cartridge spec v2's
     # principled-exclusion answer for "I want render hints" routes

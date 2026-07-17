@@ -1,4 +1,4 @@
-"""todo tool — persistent checklist for coder.workspace sessions."""
+"""todo tool - persistent checklist for coder.workspace sessions."""
 
 from __future__ import annotations
 

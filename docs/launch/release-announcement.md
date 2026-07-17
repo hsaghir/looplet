@@ -9,6 +9,9 @@
 Looplet is being relaunched around the job it is best at: **test-driven harness
 engineering for Python agents**.
 
+The relaunch will ship as `looplet==0.3.0`; `0.2.0` remains the earlier
+published distribution with the old public story until release.
+
 The new entry point is a network-free regression proof. It captures one failed
 run, changes one reviewable tool line, replays the same model responses through
 fresh harness code, independently collects the resulting artifact, and moves a
@@ -37,8 +40,9 @@ and behavioral evidence close to pytest and CI.
   trajectories, stop reasons, and metadata.
 - **Captured-response replay:** recorded model outputs can drive a fresh
   harness without another model call.
-- **Outcome contracts:** collectors inspect world state; graders use protected
-  expected data; required checks fail closed in pytest or CI.
+- **Outcome contracts:** collectors inspect world state; graders use
+  grader-only expected data; discovered required checks fail closed in pytest
+  or CI.
 
 ### Run the proof
 
@@ -48,6 +52,8 @@ cd looplet
 uv sync
 uv run python examples/regression_demo/run_demo.py
 ```
+
+After publication, install it with `pip install --upgrade looplet==0.3.0`.
 
 It requires no API key or network. The generated directory contains both
 harness versions, the captured model-call cassette, fresh workspaces,

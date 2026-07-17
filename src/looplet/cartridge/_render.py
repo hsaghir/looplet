@@ -1,17 +1,17 @@
 """Serialiser-side renderers and helpers.
 
-* :func:`_safe_filename` — sanitise a string into a filesystem-safe name.
-* :class:`_DataclassReprFailed` — raised when a dataclass instance can't
+* :func:`_safe_filename` - sanitise a string into a filesystem-safe name.
+* :class:`_DataclassReprFailed` - raised when a dataclass instance can't
   be reproduced on disk (closure, lambda, non-importable type).
-* :func:`_render_value_literal` — emit a Python literal for any
+* :func:`_render_value_literal` - emit a Python literal for any
   JSON-able / dataclass / importable callable value.
-* :func:`_render_dataclass_kwargs` — emit ``field=value, ...`` for a
+* :func:`_render_dataclass_kwargs` - emit ``field=value, ...`` for a
   dataclass instance, recursing through nested dataclasses.
-* :func:`_apply_runtime_substitutions` — pre-pass substituting
+* :func:`_apply_runtime_substitutions` - pre-pass substituting
   ``${runtime.x}`` placeholders into a YAML source text BEFORE the
   YAML parser sees it (lets cartridges reference runtime values in
   positions where YAML scalars don't survive structured replacement).
-* :func:`_hook_class` — `hook if isclass(hook) else type(hook)`.
+* :func:`_hook_class` - `hook if isclass(hook) else type(hook)`.
 
 These are split out from the bigger `_serialise` /
 `preset_to_cartridge` so they can be re-used and unit-tested in
@@ -55,7 +55,7 @@ def _render_value_literal(value: Any, imports: set[str]) -> str:
     instances, or anything else that can't be re-emitted in source.
     """
 
-    # Enum check first — string-backed enums (``class X(str, Enum)``)
+    # Enum check first - string-backed enums (``class X(str, Enum)``)
     # would otherwise match the scalar branch and ``repr()`` would
     # emit invalid ``<EnumClass.MEMBER: 'value'>`` source.
     if isinstance(value, _enum.Enum):
@@ -131,7 +131,7 @@ def _render_dataclass_kwargs(instance: Any, imports: set[str]) -> str:
     parts: list[str] = []
     for f in _dc.fields(instance):
         val = getattr(instance, f.name)
-        # Skip fields holding their default — keeps builder readable
+        # Skip fields holding their default - keeps builder readable
         # and matches dataclass __repr__ semantics.
         if f.default is not _dc.MISSING and val == f.default:
             continue
@@ -147,7 +147,7 @@ def _render_dataclass_kwargs(instance: Any, imports: set[str]) -> str:
 
 
 _RUNTIME_PLACEHOLDER = re.compile(
-    # Match ``${runtime.field}`` or ``${runtime.field:-default}`` —
+    # Match ``${runtime.field}`` or ``${runtime.field:-default}`` -
     # ``field`` may be dotted for nested lookup.  Same shape as the
     # structured grammar in ``_resolve_refs`` so workspace authors
     # can use one syntax for both raw text (config.yaml interpolation
@@ -167,7 +167,7 @@ def _apply_runtime_substitutions(text: str, runtime: dict[str, Any]) -> str:
     **Scalar-only at text time.** When the resolved runtime value is
     a non-scalar (dict, list, custom object), the placeholder is
     *left intact* and the structured-value pass (``_resolve_refs``,
-    run after YAML parsing) handles it — so callers passing structured
+    run after YAML parsing) handles it - so callers passing structured
     runtime values like ``runtime={'alert': {...}}`` see them as the
     original object, not as a stringified ``"{'id': 'X', ...}"``.
     """

@@ -1,4 +1,4 @@
-"""Tests for looplet.rpc — stdio JSONL RPC mode.
+"""Tests for looplet.rpc - stdio JSONL RPC mode.
 
 Uses MockLLMBackend via a factory function so the loop is deterministic.
 """

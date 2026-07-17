@@ -1,24 +1,24 @@
-"""Resource registry, reference resolution, and the v1.1 single-file tool loader.
+"""Resource registry, reference resolution, and single-file tool loading.
 
 Owns the four reference-resolution mechanisms shared across the
 loader / serialiser:
 
-* :func:`_load_resources` — build the per-run resource registry by
+* :func:`_load_resources` - build the per-run resource registry by
   importing every ``resources/<name>.py`` and calling its
   ``build()``. Each instance is registered in
   :data:`looplet.refs._resource_origin` so hooks / writers can
   recover the original ``@<name>`` ref later.
-* :func:`_resolve_refs` — walk a YAML-loaded dict / list / scalar
+* :func:`_resolve_refs` - walk a YAML-loaded dict / list / scalar
   and replace every ``@name`` / ``${ref:name}`` /
   ``${py:mod:sym}`` / ``${runtime.x}`` token with the live
   object the cartridge author meant.
-* :func:`_resolve_py_ref` and :func:`_resolve_runtime_ref` —
+* :func:`_resolve_py_ref` and :func:`_resolve_runtime_ref` -
   the per-form helpers `_resolve_refs` delegates into for
   ``${py:...}`` and ``${runtime.x}`` respectively.
-* :func:`_load_single_file_tool` — load the v1.1
+* :func:`_load_single_file_tool` - load the optional
   ``tools/<name>.py`` form (module-level dunders + ``execute``
   callable) into a :class:`ToolSpec`.
-* :func:`_coerce_default` — best-effort cast of a runtime default
+* :func:`_coerce_default` - best-effort cast of a runtime default
   text into a typed value.
 """
 
@@ -45,21 +45,21 @@ def _load_resources(root: Path, runtime: dict[str, Any] | None = None) -> dict[s
     loader inspects the signature: ``build()`` (zero-arg) is the
     short form; ``build(runtime)`` lets the resource read the
     host-supplied ``runtime`` dict (e.g. ``runtime['workspace']`` for
-    the coder workspace). Resources are shared by every ``"@<name>"``
+    the coder project). Resources are shared by every ``"@<name>"``
     reference in hook / tool kwargs.
 
     Each built instance is also registered in
     :data:`_resource_origin` (keyed by ``id``, with a finalizer that
     drops the entry when the instance is garbage-collected) so that
     :func:`resource_ref_for` can recover the original ref name on
-    workspace round-trip — even when the instance's class lives in a
+    cartridge round-trip, even when the instance's class lives in a
     third-party module (e.g. ``looplet.permissions.PermissionEngine``)
     rather than the workspace's own resource module.
 
     Reserved key: ``"runtime"`` is auto-injected with the host-supplied
     runtime dict so tools can ``requires: [runtime]`` and read
     ``ctx.resources["runtime"]`` directly, without the boilerplate of
-    a one-line ``resources/runtime.py`` builder. A workspace that
+    a one-line ``resources/runtime.py`` builder. A cartridge that
     ships its own ``resources/runtime.py`` overrides this default
     (the explicit file wins).
     """
@@ -125,16 +125,15 @@ def _load_resources(root: Path, runtime: dict[str, Any] | None = None) -> dict[s
 # ``_REF_PREFIX``, ``_resource_origin``, ``_register_resource_origin`` and
 # ``resource_ref_for`` live in :mod:`looplet.refs` so that core modules
 # (permissions, streaming, evals, telemetry) can call ``resource_ref_for``
-# without importing this 3000-line workspace loader. Re-exported here for
-# backwards compatibility — existing tests reach
-# ``looplet.workspace._resource_origin`` directly, and that still works.
+# without importing the cartridge loader. Re-exported here for internal
+# serialization and compatibility tests.
 from looplet.refs import (  # noqa: E402, F401, I001, PLC0415
     _resource_origin,
 )
 
 
-# Unified ``${kind:value}`` reference grammar — applied to every
-# string value the workspace loader resolves. Three kinds today:
+# Unified ``${kind:value}`` reference grammar - applied to every
+# string value the cartridge loader resolves. Three kinds today:
 #
 #   ${ref:name}           → looked up in the resources registry
 #   ${py:module:symbol}   → importlib.import_module + getattr
@@ -142,8 +141,8 @@ from looplet.refs import (  # noqa: E402, F401, I001, PLC0415
 #
 # Anything not matching this pattern (and not the legacy ``@name``
 # form) passes through unchanged. The grammar is intentionally
-# *closed* — there is no escape hatch for arbitrary expressions; if
-# a workspace needs imperative wiring it falls back to ``setup.py``.
+# *closed* - there is no escape hatch for arbitrary expressions; if
+# imperative expressions are deliberately unsupported.
 #
 # Same syntax for ``${runtime.x}`` as ``_apply_runtime_substitutions``
 # uses on raw text below; this resolver handles the structured-value
@@ -173,13 +172,13 @@ def _resolve_py_ref(spec: str) -> Any:
         module = importlib.import_module(module_path)
     except ImportError as exc:
         raise CartridgeSerializationError(
-            f"py: reference {spec!r} — could not import {module_path!r}: {exc}"
+            f"py: reference {spec!r} - could not import {module_path!r}: {exc}"
         ) from exc
     obj: Any = module
     for attr in attr_path.split("."):
         if not hasattr(obj, attr):
             raise CartridgeSerializationError(
-                f"py: reference {spec!r} — {attr!r} not found on {obj!r}"
+                f"py: reference {spec!r} - {attr!r} not found on {obj!r}"
             )
         obj = getattr(obj, attr)
     return obj
@@ -235,7 +234,7 @@ def _load_single_file_tool(
     Required: an ``execute`` callable.
 
     **Cartridge spec v2 constraint.** The single-file form is for
-    *trivial* tools only — a v2 cartridge that declares
+    *trivial* tools only - a v2 cartridge that declares
     ``__requires__``, ``__render__``, or ``__tags__`` on a single-file
     tool is rejected at load time. Use the multi-file form
     (``tools/<name>/{tool.yaml, execute.py}``) for any tool that needs
@@ -353,8 +352,7 @@ def _coerce_default(text: str | None) -> Any:
 
 
 # ``resource_ref_for`` is defined in :mod:`looplet.refs` and re-imported
-# above; kept available here as ``looplet.workspace.resource_ref_for`` for
-# backwards compatibility.
+# above for cartridge serialization.
 
 
 def _resolve_refs(

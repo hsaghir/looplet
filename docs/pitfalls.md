@@ -18,7 +18,7 @@ but matching them silences the warning and makes intent clear.
 ## 2. `redact=` in provenance scrubs upstream BY DEFAULT
 
 ```python
-# ✓ do this — PII never reaches Anthropic OR the trace file
+# ✓ do this - PII never reaches Anthropic OR the trace file
 sink = ProvenanceSink(dir="traces/", redact=scrub_pii)
 llm  = sink.wrap_llm(AnthropicBackend(...))
 ```
@@ -35,7 +35,7 @@ sink = ProvenanceSink(dir="traces/", redact=scrub_pii, redact_upstream=False)
 ## 3. Use `HookDecision(stop="reason")` in `should_stop`
 
 ```python
-# ✓ do this — the reason string appears in EvalContext.stop_reason
+# ✓ do this - the reason string appears in EvalContext.stop_reason
 def should_stop(self, state, step_num, new_entities):
     if self.tokens > self.cap:
         return HookDecision(stop="budget_exceeded")
@@ -50,8 +50,8 @@ timeout stop.
 
 ```python
 # eval_my_agent.py
-from looplet import eval_mark            # decorator — not collected
-from my_helpers import eval_count_tools  # helper from another file — not collected
+from looplet import eval_mark            # decorator - not collected
+from my_helpers import eval_count_tools  # helper from another file - not collected
 
 @eval_mark("verdict")
 def eval_correct(ctx):                   # collected
@@ -94,7 +94,7 @@ return {"error": "ENOENT"}
 
 ## 7. Do not swallow exceptions in hooks
 
-A hook that eats `KeyError` can mask a real bug — for example, a
+A hook that eats `KeyError` can mask a real bug - for example, a
 missing `tool_call.args` key that should have surfaced as a prompt for
 the model. Let exceptions propagate unless you have a specific recovery.
 
@@ -108,7 +108,7 @@ for step in composable_loop(...):
 # ✓ or this if you do not care about streaming
 list(composable_loop(...))
 
-# ✗ this does nothing — the loop never runs
+# ✗ this does nothing - the loop never runs
 composable_loop(...)
 ```
 
@@ -134,7 +134,7 @@ Otherwise native tool-calling silently falls back to JSON parsing.
 
 All hooks, LLM backends, and states are `@runtime_checkable` Protocols.
 Any object with the right methods works. Do not subclass `LoopHook` or
-register anywhere — just implement the methods you need:
+register anywhere - just implement the methods you need:
 
 ```python
 # ✓ do this
@@ -151,7 +151,7 @@ class MyHook(LoopHook):         # unnecessary
 
 A good editing trajectory looks like: `write A`, `write B`, `edit C`,
 then `done()`. The intermediate states almost always fail to compile
-or type-check — that's normal, the work isn't finished yet.
+or type-check - that's normal, the work isn't finished yet.
 
 If you wire a `post_dispatch` hook that runs `mypy` / `tsc` / LSP
 diagnostics after every edit and injects the errors as
@@ -170,7 +170,7 @@ class LSPFeedback:
                 return InjectContext(f"Type errors:\n{errors}")
         return None
 
-# ✓ do this — only check at natural sync points (done() or explicit checkpoints)
+# ✓ do this - only check at natural sync points (done() or explicit checkpoints)
 class LSPFeedback:
     def check_done(self, state, session_log, context, step_num):
         errors = run_typechecker()
@@ -191,7 +191,7 @@ older than N tokens, or summarising older messages in place), the
 cache hit rate collapses and per-turn cost can rise 5–10×.
 
 ```python
-# ✗ silently cache-hostile — every turn rewrites the prefix
+# ✗ silently cache-hostile - every turn rewrites the prefix
 config = LoopConfig(
     compact_service=PruneToolResults(keep_recent_tool_results=2),
     cache_policy=CachePolicy(...),
@@ -219,7 +219,7 @@ A natural-looking pattern is to write a hook that scrubs PII (emails,
 SSNs, names) from `tool_result.data` in `post_dispatch` so the LLM
 "never sees" sensitive values. This works for the trace file. **It
 does not work for the LLM.** When the model receives `[EMAIL]`
-instead of `j.smith@example.com`, it doesn't treat it as opaque — it
+instead of `j.smith@example.com`, it doesn't treat it as opaque - it
 *invents* a plausible-looking replacement (`bhansen@corp.local`) and
 then continues building a story around the invention. By the time
 the agent writes a structured report, every downstream value can be
@@ -241,7 +241,7 @@ class PIIRedactionHook:
 The right pattern is to scrub **at the boundary, not in the loop**:
 
 * **Trace-only redaction.** Use
-    `ProvenanceSink(redact=scrub_pii, redact_upstream=False)` — this rewrites
+    `ProvenanceSink(redact=scrub_pii, redact_upstream=False)` - this rewrites
     what hits disk while forwarding the original prompt to the provider. This is
     an explicit opt-out from the safer upstream-redaction default; use it only
     when the provider is allowed to receive the raw values.
@@ -270,7 +270,7 @@ data rolls out and is only summarized in `SESSION LOG` as the agent's
 
 For chained tool-use cartridges where step *M* needs to reference
 data returned by step *M-K* (with K > 5), the LLM no longer sees
-the source-of-truth value. It does not say "I don't know" — it
+the source-of-truth value. It does not say "I don't know" - it
 *reconstructs* a plausible value and proceeds. This was
 mis-diagnosed as model hallucination in the SOC-triage dogfood;
 the actual root cause was the agent's `lookup_user(...)` at step 8
@@ -278,7 +278,7 @@ referring to a username from `get_alert(...)` at step 1, which had
 already aged out of the recent-results window.
 
 ```yaml
-# config.yaml — declare a wider window when your agent chains tools
+# config.yaml - declare a wider window when your agent chains tools
 # across many steps:
 context_window_steps: 30                   # default 5
 context_window_total_chars: 60000          # default 20 000
@@ -294,7 +294,7 @@ the env defaults for the run.
 but *isn't* in the prompt at the call where it appears wrong, your
 window is too narrow.
 
-## 15. `ctx.metadata` is per-dispatch — use a resource for cross-tool state
+## 15. `ctx.metadata` is per-dispatch - use a resource for cross-tool state
 
 Every tool dispatch builds a fresh `ToolContext` and copies
 `metadata` from `state.metadata` (and `LoopConfig.tool_metadata`).
@@ -376,11 +376,13 @@ Visible tests guide the agent; they cannot protect a release gate. Likewise,
 colocated cartridge evals are versioned self-tests, but a candidate that can
 edit its own cartridge can also edit those graders.
 
-Use the top-level case `expected` field for grader-only data. For a promotion
-or release decision, run host-owned collectors and holdouts outside the
-candidate's writable tree, passing only the protected path or callable through
-`runtime`. If a generated harness can modify the evaluator that promotes it,
-the green result is not evidence.
+Use the top-level case `expected` field for grader-only data in ordinary
+self-tests. For promotion, run collector and grader code in a host-owned runner
+and do not pass oracle data, paths, callables, or capabilities through the
+candidate task, runtime, resources, tools, or files. If a generated harness can
+inspect or modify the evaluator that promotes it, the green result is not
+evidence. Separate directories are not a sandbox against arbitrary same-user
+code; use OS or process isolation for that threat.
 
 ## 18. Captured-response replay is not deterministic replay
 

@@ -1,4 +1,4 @@
-"""Tests for looplet.checkpoint — save/restore loop state."""
+"""Tests for looplet.checkpoint - save/restore loop state."""
 
 from __future__ import annotations
 

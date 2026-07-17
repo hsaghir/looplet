@@ -1,10 +1,10 @@
-"""Greeting log — ported from the in-process ``@ref`` resource to an
+"""Greeting log - ported from the in-process ``@ref`` resource to an
 out-of-process **State Service** (State Service Protocol).
 
 In the original ``hello`` cartridge this lived at
 ``resources/greeting_log.py`` as a plain ``GreetingLog`` class whose
 single instance was shared (via ``"@greeting_log"`` refs) between the
-greet tool and the PolitenessGate hook — both running in the SAME Python
+greet tool and the PolitenessGate hook - both running in the SAME Python
 process. That shared-address-space requirement is exactly what pinned
 the cartridge to a Python host.
 
@@ -13,7 +13,7 @@ loader spawns this server, injects a :class:`StateServiceClient` proxy
 under the name ``greeting_log`` (so ``requires: [greeting_log]`` and
 ``@greeting_log`` resolve to it unchanged), and exports the socket path
 as ``LOOPLET_STATE_GREETING_LOG`` so the MCP greet tool and the LEP
-PolitenessGate hook — each a separate process — can connect to and
+PolitenessGate hook - each a separate process - can connect to and
 mutate the SAME log. All method calls are serialized under one lock, so
 concurrent readers/writers see a consistent record.
 

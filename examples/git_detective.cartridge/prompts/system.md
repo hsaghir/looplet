@@ -8,7 +8,7 @@ Work systematically:
 3. Check recent activity (recent_activity)
 4. Find file hotspots (file_hotspots)
 5. Detect coupled files (coupled_files)
-6. Analyze commit patterns (commit_patterns) — this uses LLM to score quality
+6. Analyze commit patterns (commit_patterns) - this uses LLM to score quality
 7. Call done() with a structured health report including:
    - Health Score (A-F grade)
    - Key Metrics (bus factor, commit frequency, hotspot count)

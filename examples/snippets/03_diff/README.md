@@ -1,4 +1,4 @@
-# 03 — Semantic diff
+# 03 - Semantic diff
 
 When the agent is files, *the path of an edit reveals its category*.
 A cartridge pull request that touches `tools/lint/` adds a tool; one
@@ -19,7 +19,7 @@ uv run python examples/snippets/03_diff/diff_workspaces.py \
 ```
 
 Output is grouped by `# manifest`, `# config`, `# prompt`, `# tool`,
-`# hook`, `# resource` — you see what changed *categorically* before
+`# hook`, `# resource` - you see what changed *categorically* before
 reading any code.
 
 > Note: when one of the cartridges uses `extends:` (inheritance), the

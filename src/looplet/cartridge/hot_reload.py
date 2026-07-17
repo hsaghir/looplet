@@ -1,8 +1,8 @@
-"""Hot-reload of workspace presets.
+"""Hot-reload of cartridge presets.
 
-Pi reloads its TypeScript extensions when the underlying files change —
+Pi reloads its TypeScript extensions when the underlying files change -
 including when the agent edits its own extensions. The pattern is
-powerful enough that looplet should support it for workspaces too,
+powerful enough that Looplet should support it for cartridges too,
 without dragging in ``watchdog`` or any other runtime dependency.
 
 This module ships a tiny mtime-poll watcher: between runs of
@@ -34,7 +34,7 @@ Usage::
 
 The watcher keeps the loop body simple and is deliberately *between
 runs*, not mid-step. Mid-step hot-reload would require freezing the
-event loop, re-binding tools, and reasoning about partial state — a
+event loop, re-binding tools, and reasoning about partial state - a
 poor trade for a feature most users only want at the boundaries.
 """
 

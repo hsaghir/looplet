@@ -2,7 +2,7 @@
 
 ``looplet.cartridge.portability.analyse_cartridge`` is a *static*
 analyser: it reads a cartridge directory (no Python bodies imported) and
-classifies every component into one of three portability tiers —
+classifies every component into one of three portability tiers -
 ``protocol`` (config/prompts/MCP tools/LEP hooks), ``stdlib``
 (``builtin_tools``/``builtin_hooks`` declarative references), or
 ``inprocess`` (Python tool bodies, class hooks, ``resources/*.py``).
@@ -272,14 +272,14 @@ def test_hello_portable_example_is_fully_portable() -> None:
 
 def test_hello_example_is_python_host() -> None:
     """The original ``hello`` cartridge stays python-host (in-process tools,
-    class hook, and @ref resource) — the portable twin lives alongside it."""
+    class hook, and @ref resource) - the portable twin lives alongside it."""
     report = analyse_cartridge(_EXAMPLES / "hello.cartridge")
     assert report.profile == "python-host"
 
 
 def test_builtin_runtime_service_resource_is_runtime_tier(tmp_path: Path) -> None:
     """A resource that only wraps a looplet builtin host service (compaction,
-    skill manager, …) is RUNTIME tier — a host responsibility, not an
+    skill manager, …) is RUNTIME tier - a host responsibility, not an
     author-owned shared-state blocker."""
     root = tmp_path / "svc.cartridge"
     (root / "resources").mkdir(parents=True)

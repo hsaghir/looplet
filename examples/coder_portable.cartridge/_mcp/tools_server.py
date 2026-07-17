@@ -1,5 +1,5 @@
 """Out-of-process MCP stdio server exposing the coder cartridge's full
-tool set — the portable replacement for the original cartridge's 16
+tool set - the portable replacement for the original cartridge's 16
 in-process ``tools/<name>/execute.py`` bodies.
 
 Speaks the MCP stdio transport (newline-delimited JSON-RPC), so any
@@ -8,19 +8,19 @@ unchanged from the original cartridge (``coder_lib_tools.py`` helpers +
 each ``_tools/<name>.py`` body); this server is the protocol adapter
 that wires three things the original got from its Python host:
 
-* **workspace** — the original read ``ctx.resources['workspace_config'].path``
+* **workspace** - the original read ``ctx.resources['workspace_config'].path``
   (an in-process ``@ref`` resource). Here it comes from
   ``$LOOPLET_PROJECT_ROOT`` (or cwd), exposed through a tiny shim with
   the same ``.path`` attribute.
 
-* **file_cache** — the original shared a single in-process ``FileCache``
+* **file_cache** - the original shared a single in-process ``FileCache``
   between the file tools and the StaleFile/FileCache hooks via
   ``@file_cache``. Here it lives in a separate **State Service** process;
   we reach it through a :class:`StateServiceClient` (socket exported as
   ``LOOPLET_STATE_FILE_CACHE``). A thin proxy gives it the exact
   FileCache method surface the tools call.
 
-* **ctx.llm** — ``subagent`` and ``web_fetch`` need the host LLM. Here
+* **ctx.llm** - ``subagent`` and ``web_fetch`` need the host LLM. Here
   it is reached over the **Model Gateway Protocol**: a
   :class:`ModelGatewayClient` (socket ``LOOPLET_LLM_SOCKET``) forwards
   generation to the host's bound backend. When no backend is bound,
@@ -83,7 +83,7 @@ _ANNOT_TYPES = {
 # 563), so ``inspect.signature(fn).parameters[...].annotation`` is the
 # *string* name of the type (e.g. ``"list"``), not the type object. Map by
 # name too, otherwise structured params (``edits: list``) silently fall back
-# to ``"string"`` in the advertised schema — which makes the model encode
+# to ``"string"`` in the advertised schema - which makes the model encode
 # them as a JSON string and trips the tool's list validation.
 _ANNOT_TYPES_BY_NAME = {
     "str": "string",
@@ -214,7 +214,7 @@ def _schema_from_signature(name: str, fn) -> dict:
 
     Optionality note: looplet's MCP adapter flattens an inputSchema to a
     simple ``{name: type_string}`` dict and DROPS the JSON-Schema
-    ``required`` list — it then treats a param as optional only when its
+    ``required`` list - it then treats a param as optional only when its
     type/description string begins with ``(optional)``. So we encode a
     Python default as an ``"(optional) <type>"`` type string; that keeps
     the param *known* (passable) while marking it not-required, exactly
@@ -224,7 +224,7 @@ def _schema_from_signature(name: str, fn) -> dict:
     required: list[str] = []
     for param in inspect.signature(fn).parameters.values():
         if param.kind in (param.POSITIONAL_ONLY, param.POSITIONAL_OR_KEYWORD):
-            continue  # ctx — host wiring, not a model-facing argument
+            continue  # ctx - host wiring, not a model-facing argument
         if param.kind in (param.VAR_POSITIONAL, param.VAR_KEYWORD):
             continue
         jtype = _json_type(param.annotation)

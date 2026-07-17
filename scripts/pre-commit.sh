@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Pre-commit hook — auto-formats staged files and blocks the commit on
+# Pre-commit hook - auto-formats staged files and blocks the commit on
 # lint errors.  Fast (< 1s on a typical change).  Pairs with the
 # pre-push hook which runs the full CI check.
 #
@@ -27,7 +27,7 @@ if ! uv run ruff format --check $STAGED_PY >/dev/null 2>&1; then
     echo "  ✓ reformatted and re-staged"
 fi
 
-# 2. Lint.  Fail fast on errors — developer must fix before committing.
+# 2. Lint.  Fail fast on errors - developer must fix before committing.
 if ! uv run ruff check $STAGED_PY; then
     echo ""
     echo "✗ pre-commit: lint errors above.  Fix them or run"

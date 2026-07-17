@@ -15,7 +15,7 @@ Typical usage::
         {"error": str(exc), "step": step_num},
     )
     if action is None:
-        break  # max attempts exceeded — abort
+        break  # max attempts exceeded - abort
     if action.action_type == "modify_prompt":
         prompt = build_simplified_prompt(...)
 """
@@ -77,7 +77,7 @@ class RecoveryRecipe:
 
     Args:
         scenario: The failure scenario this recipe handles.
-        handler: ``Callable[[dict], RecoveryAction]`` — receives a context
+        handler: ``Callable[[dict], RecoveryAction]`` - receives a context
             dict with state/error info and returns the recovery action.
         max_attempts: Maximum number of times this recipe fires before the
             registry returns ``None`` (default 3).
@@ -114,8 +114,8 @@ class RecoveryRegistry:
     def register(self, recipe: RecoveryRecipe) -> None:
         """Register a recipe for a failure scenario.
 
-        Warns when a recipe for the same scenario is already registered
-        — silent overwrites when composing registries are a real
+        Warns when a recipe for the same scenario is already registered.
+        Silent overwrites when composing registries are a real
         footgun (e.g. ``build_default_registry()`` followed by a
         caller adding their own ``PARSE_ERROR`` recipe would overwrite
         the default without any signal). The overwrite still happens
@@ -123,7 +123,7 @@ class RecoveryRegistry:
         """
         if recipe.scenario in self._recipes:
             logger.warning(
-                "Recovery recipe for %s is already registered — overwriting. "
+                "Recovery recipe for %s is already registered - overwriting. "
                 "If this is intentional, silence this warning by clearing the "
                 "registry before re-registering.",
                 recipe.scenario.name,
@@ -151,7 +151,7 @@ class RecoveryRegistry:
         recipe = self._recipes.get(scenario)
         if recipe is None:
             logger.info(
-                "No recovery recipe registered for %s — aborting recovery.",
+                "No recovery recipe registered for %s - aborting recovery.",
                 scenario.name,
             )
             return None
@@ -174,7 +174,7 @@ class RecoveryRegistry:
         return scenario in self._recipes
 
     def reset(self) -> None:
-        """Clear all attempt counts — call at the start of a new session."""
+        """Clear all attempt counts - call at the start of a new session."""
         self._attempt_counts.clear()
 
     def get_attempts(self, scenario: FailureScenario) -> int:
@@ -291,7 +291,7 @@ def build_default_registry() -> RecoveryRegistry:
                 action_type="inject_guidance",
                 payload={"pivot": True},
                 message=(
-                    "Progress has stalled — no new information found in recent steps. "
+                    "Progress has stalled - no new information found in recent steps. "
                     "Consider pivoting to a different angle, summarising current "
                     "findings, or calling done() if the task is complete."
                 ),

@@ -1,5 +1,5 @@
 /* ─────────────────────────────────────────────────────────────
-   looplet — docs visual theme
+   looplet - docs visual theme
    ───────────────────────────────────────────────────────────── */
 
 :root {
@@ -96,7 +96,7 @@
   margin: 3rem 0;
 }
 
-/* ── Header bar — gradient ──────────────────────────────────── */
+/* ── Header bar - gradient ──────────────────────────────────── */
 
 .md-header {
   background: linear-gradient(
@@ -539,7 +539,7 @@
   font-size: 0.85rem;
 }
 
-/* ── Tables — comparison polish ──────────────────────────────── */
+/* ── Tables - comparison polish ──────────────────────────────── */
 
 .md-typeset table:not([class]) {
   border-radius: 0.5rem;
@@ -587,7 +587,7 @@
   font-weight: 600;
 }
 
-/* ── Code blocks — softer surface ────────────────────────────── */
+/* ── Code blocks - softer surface ────────────────────────────── */
 
 .md-typeset pre {
   border-radius: 0.6rem;
@@ -650,7 +650,7 @@
   padding: 0.5rem 0 0.2rem;
 }
 
-/* ── Admonitions — softer corners ────────────────────────────── */
+/* ── Admonitions - softer corners ────────────────────────────── */
 
 .md-typeset .admonition,
 .md-typeset details {
@@ -700,7 +700,7 @@
           mask-image: var(--md-admonition-icon--tip);
 }
 
-/* ── Links — subtle underline on hover ──────────────────────── */
+/* ── Links - subtle underline on hover ──────────────────────── */
 
 .md-typeset a:not(.md-button):not(.md-tabs__link):not(.headerlink) {
   text-decoration: none;

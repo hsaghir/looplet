@@ -109,7 +109,7 @@ class ContextPressureHook:
         step_num: int,
     ) -> str | None:
         """Age results, enforce budgets, compact if needed."""
-        # Layer 1: Age old tool results (idempotent — skips already-compacted)
+        # Layer 1: Age old tool results (idempotent - skips already-compacted)
         self._age_results(state, step_num)
 
         # Layer 2: Enforce result budgets (skips already-compacted)
@@ -127,10 +127,10 @@ class ContextPressureHook:
         # stale UI warnings when usage drops after a compaction.
         self._emit_pressure(estimated)
 
-        # Tier 3a: Blocking check — refuse to proceed if context is nearly full
+        # Tier 3a: Blocking check - refuse to proceed if context is nearly full
         if estimated >= self._blocking_threshold:
             logger.warning(
-                "Context at ~%d tokens (blocking threshold %d) — forcing emergency compact",
+                "Context at ~%d tokens (blocking threshold %d) - forcing emergency compact",
                 estimated,
                 self._blocking_threshold,
             )
@@ -155,7 +155,7 @@ class ContextPressureHook:
         if self._compact_failures < self._max_compact_failures:
             if estimated >= self._compact_threshold:
                 logger.info(
-                    "Context at ~%d tokens (compact threshold %d) — compacting",
+                    "Context at ~%d tokens (compact threshold %d) - compacting",
                     estimated,
                     self._compact_threshold,
                 )
@@ -209,7 +209,7 @@ class ContextPressureHook:
     def _emit_boundary(self, *, summary: str, dropped_step_range: tuple[int, int]) -> None:
         """Record a compaction boundary on the attached recorder, if any.
 
-        No-op when no ``recorder`` was supplied. Never raises — boundary
+        No-op when no ``recorder`` was supplied. Never raises - boundary
         recording must not break the loop.
         """
         if self._recorder is None:
@@ -239,7 +239,7 @@ class ContextPressureHook:
     def _emit_pressure(self, estimated: int) -> None:
         """Emit a ``ContextPressureEvent`` on tier *changes* only.
 
-        Prevents event spam — if pressure stays in the same tier across
+        Prevents event spam - if pressure stays in the same tier across
         many turns we only emit once per transition. The very first
         call always emits (initial state).
         """
@@ -275,7 +275,7 @@ class ContextPressureHook:
         """Progressively age tool results based on step distance.
 
         Idempotent: skips results that are already compacted or None.
-        Does NOT clear data to None — keeps compact summary forever
+        Does NOT clear data to None - keeps compact summary forever
         so the LLM can still see what was found, with recall key.
         """
         if not hasattr(state, "steps"):
@@ -382,9 +382,9 @@ def _compact_data(data: Any, result_key: str | None) -> dict:
             if result_key:
                 summary["recall_key"] = result_key
             return summary
-        # Already compact or no rows — mark and pass through
+        # Already compact or no rows - mark and pass through
         return {_COMPACTED_MARKER: True, **data}
-    # String or other — wrap in dict
+    # String or other - wrap in dict
     return {
         _COMPACTED_MARKER: True,
         "summary": str(data)[:500],

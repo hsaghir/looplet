@@ -8,7 +8,7 @@ During ``run`` the server forwards every in-process
 
 in addition to the existing ``step`` frames (which stay byte-for-byte
 unchanged). The forwarder subscribes through the existing ``on_event``
-hook bus — a pure observer hook appended to the run's hook list — so
+hook bus - a pure observer hook appended to the run's hook list - so
 ``composable_loop``'s core is untouched. A small, safe serialiser
 (:meth:`EventPayload.to_jsonable`) drops non-JSON objects and never
 raises into the loop.
@@ -187,7 +187,7 @@ def test_event_payload_to_jsonable_never_raises_and_drops_non_json() -> None:
     # Whole thing must be JSON serialisable (the point of the serialiser).
     json.dumps(data)
     assert data["prompt"] == "hello"
-    assert "raw_response" not in data  # dropped — not JSON, no to_dict
+    assert "raw_response" not in data  # dropped - not JSON, no to_dict
     assert data["extra"]["ok"] == 1
     assert "bad" not in data["extra"]
     assert "deep" not in data["extra"]["nested"]

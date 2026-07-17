@@ -1,4 +1,4 @@
-"""Cartridge spec v2 — Phase 2 features.
+"""Cartridge spec v2 - Phase 2 features.
 
 * ``static_briefing`` / ``recovery_hint`` as builtin_hooks
 * ``thread_safe:`` resource declaration

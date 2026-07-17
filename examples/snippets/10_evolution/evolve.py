@@ -3,7 +3,7 @@
 For N iterations:
     1. Snapshot the current cartridge.
   2. Pick a candidate mutation (deterministic round-robin from a
-     small pool — in real systems this would be LLM-proposed).
+     small pool - in real systems this would be LLM-proposed).
   3. Apply the mutation in a copy.
   4. Score the candidate with a static eval function.
   5. Keep the mutation if score improved.

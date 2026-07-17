@@ -2,10 +2,10 @@
 
 Two extra prompt slots beyond ``prompts/system.md``:
 
-* ``prompts/briefing.md`` — auto-prepended to every step's briefing
+* ``prompts/briefing.md`` - auto-prepended to every step's briefing
   section. Use for short, persistent reminders that should appear in
   every prompt.
-* ``prompts/recovery.md`` — injected as ``InjectContext`` on the
+* ``prompts/recovery.md`` - injected as ``InjectContext`` on the
   prompt that follows a tool error. Use for general remediation
   guidance the agent should consult when something goes wrong.
 

@@ -1,6 +1,6 @@
 """T9 dogfood: provider usage/cost surfaced onto state + view.
 
-Budget/cost hooks historically read ``backend.last_usage`` directly — a
+Budget/cost hooks historically read ``backend.last_usage`` directly - a
 runtime-local side-channel that an out-of-process (LEP) hook cannot see.
 These tests lock the portable path: the loop stamps token usage onto
 ``state.metadata`` and into the ``POST_LLM_RESPONSE`` event payload, and

@@ -2,7 +2,7 @@
 
 Handles common LLM quirks: markdown code fences, extra text
 before/after JSON, single-tool and multi-tool batch formats.
-Domain-agnostic — works for any agent.
+Domain-agnostic - works for any agent.
 """
 
 from __future__ import annotations
@@ -70,7 +70,7 @@ def parse_multi_tool_calls(raw: "str | list[Any] | None") -> list[ToolCall]:
     2. Multi-tool:   {"tools": [{"tool": "name", ...}, ...], "theory": "..."}
     3. Markdown fenced JSON (```json ... ```)
     4. Extra surrounding text before/after the JSON object
-    5. Malformed JSON — falls back to regex extraction, then returns []
+    5. Malformed JSON - falls back to regex extraction, then returns []
     """
     text_raw = to_text(raw)
     if not text_raw or not text_raw.strip():
@@ -121,7 +121,7 @@ def _try_parse_json(text: str) -> dict | None:
             return obj
     except (json.JSONDecodeError, ValueError):
         pass
-    # Retry with literal newlines/tabs escaped — LLMs frequently put
+    # Retry with literal newlines/tabs escaped - LLMs frequently put
     # raw newlines inside JSON string values (especially in edit_file
     # old_string/new_string with multi-line code).
     try:
@@ -149,7 +149,7 @@ def _escape_literal_newlines(text: str) -> str:
     while i < len(text):
         ch = text[i]
         if ch == "\\" and in_string:
-            # Escaped character — copy both backslash and next char
+            # Escaped character - copy both backslash and next char
             result.append(ch)
             if i + 1 < len(text):
                 i += 1
@@ -183,7 +183,7 @@ def _dict_to_tool_call(d: dict) -> ToolCall | None:
     # Try multiple common arg-key names the model might use.
     args = d.get("args") or d.get("input") or d.get("parameters") or {}
     if isinstance(args, str):
-        # LLM sent a bare string instead of a dict — stash it under
+        # LLM sent a bare string instead of a dict - stash it under
         # "_raw_arg" so dispatch can still see it (and the validation
         # error will show what was provided).  Common with simple
         # single-param tools where the model skips the key.

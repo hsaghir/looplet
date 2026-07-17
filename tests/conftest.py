@@ -32,7 +32,7 @@ def mock_llm_scripted():
 
 @pytest.fixture
 def mock_registry() -> Any:
-    """Return a BaseToolRegistry instance (lazy import — only resolves after task 2.2)."""
+    """Return a BaseToolRegistry instance (lazy import - only resolves after task 2.2)."""
     from looplet.tools import BaseToolRegistry  # noqa: PLC0415  # lazy import intentional
 
     return BaseToolRegistry()

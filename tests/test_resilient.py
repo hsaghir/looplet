@@ -178,7 +178,7 @@ class TestBackoff:
         )
         with pytest.raises(RetryExhausted):
             llm.generate("p")
-        # Raw delays: 1, 2, 4, 8, ... — cap at 2.0 means everything >= 2 is 2
+        # Raw delays: 1, 2, 4, 8, ... - cap at 2.0 means everything >= 2 is 2
         for d in sleeps[2:]:
             assert d == pytest.approx(2.0)
 

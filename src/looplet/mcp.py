@@ -29,15 +29,18 @@ Usage::
     adapter.close()
 
 Works with any MCP-compliant server (filesystem, GitHub, Slack, etc.).
-No MCP SDK dependency — communicates via raw JSON-RPC over stdio.
+No MCP SDK dependency - communicates via raw JSON-RPC over stdio.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import os
+import signal
 import subprocess
 import threading
+from collections.abc import Callable
 from typing import Any
 
 from looplet.tools import BaseToolRegistry, ToolSpec
@@ -71,12 +74,16 @@ class MCPToolAdapter:
         env: dict[str, str] | None = None,
         timeout: float = 30.0,
     ) -> None:
+        if timeout <= 0:
+            raise ValueError("timeout must be greater than zero")
         self._command = command
         self._env = env
         self._timeout = timeout
         self._proc: subprocess.Popen | None = None
         self._request_id = 0
         self._lock = threading.Lock()
+        self._reader_lock = threading.Lock()
+        self._reader_threads: set[threading.Thread] = set()
         self._tool_schemas: list[dict[str, Any]] = []
         self._started = False
 
@@ -119,20 +126,40 @@ class MCPToolAdapter:
 
     def close(self) -> None:
         """Shut down the MCP server subprocess."""
-        if self._proc is not None:
-            try:
-                self._proc.terminate()
-                self._proc.wait(timeout=5)
-            except Exception:  # noqa: BLE001
-                self._proc.kill()
-            self._proc = None
-            self._started = False
+        proc = self._proc
+        self._proc = None
+        self._started = False
+        if proc is not None:
+            wait_timeout = min(5.0, max(0.1, self._timeout))
+            self._stop_process_tree(proc, wait_timeout=wait_timeout)
+            with self._reader_lock:
+                readers = list(self._reader_threads)
+            for reader in readers:
+                reader.join(timeout=wait_timeout)
+            readers_alive = any(reader.is_alive() for reader in readers)
+
+            for stream in (
+                proc.stdin,
+                None if readers_alive else proc.stdout,
+                None if readers_alive else proc.stderr,
+            ):
+                if stream is not None:
+                    try:
+                        stream.close()
+                    except (BrokenPipeError, OSError):
+                        pass
 
     # ── Internals ────────────────────────────────────────────────
 
     def _ensure_started(self) -> None:
         if self._started:
             return
+        process_options: dict[str, Any] = {}
+        if os.name == "posix":
+            process_options["start_new_session"] = True
+        elif os.name == "nt":
+            process_options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+
         self._proc = subprocess.Popen(
             self._command,
             shell=True,
@@ -140,6 +167,7 @@ class MCPToolAdapter:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=self._env,
+            **process_options,
         )
         try:
             # Initialize the MCP session
@@ -152,15 +180,9 @@ class MCPToolAdapter:
                 },
             )
             if init_resp is None:
-                stderr_tail = ""
-                if self._proc is not None and self._proc.stderr is not None:
-                    try:
-                        stderr_tail = (
-                            self._proc.stderr.read(4096).decode("utf-8", errors="replace").strip()
-                        )
-                    except Exception:
-                        pass
-                rc = self._proc.poll() if self._proc is not None else None
+                proc = self._proc
+                rc = proc.poll() if proc is not None else None
+                stderr_tail = self._stderr_tail_if_exited(proc)
                 raise RuntimeError(
                     f"MCP server failed to initialize: {self._command!r} "
                     f"(exit_code={rc}); stderr: {stderr_tail!r}"
@@ -173,10 +195,18 @@ class MCPToolAdapter:
                 self._tool_schemas = tools_resp["tools"]
                 logger.info("MCP: loaded %d tools from %s", len(self._tool_schemas), self._command)
             self._started = True
-        except BaseException:
-            # Any failure during init leaves a live subprocess —
+        except BaseException as exc:
+            # Any failure during init leaves a live subprocess -
             # clean it up so callers don't leak a server per retry.
+            proc = self._proc
+            rc = proc.poll() if proc is not None else None
+            stderr_tail = self._stderr_tail_if_exited(proc)
             self.close()
+            if isinstance(exc, (BrokenPipeError, OSError, TimeoutError)):
+                raise RuntimeError(
+                    f"MCP server failed to initialize: {self._command!r} "
+                    f"(exit_code={rc}); stderr: {stderr_tail!r}"
+                ) from exc
             raise
 
     def _send_request(self, method: str, params: dict) -> dict | None:
@@ -205,8 +235,12 @@ class MCPToolAdapter:
         """Write a message and read the response."""
         if self._proc is None or self._proc.stdin is None or self._proc.stdout is None:
             return None
-        self._write_message(msg)
-        return self._read_message()
+        try:
+            self._write_message(msg)
+            return self._read_message()
+        except OSError:
+            self.close()
+            raise
 
     def _write_message(self, msg: dict) -> None:
         """Write a JSON-RPC message as a single newline-delimited line.
@@ -229,7 +263,10 @@ class MCPToolAdapter:
         """
         if self._proc is None or self._proc.stdout is None:
             return None
-        line = self._proc.stdout.readline()
+        line = self._run_io_with_timeout(
+            self._proc.stdout.readline,
+            operation="response",
+        )
         if not line:
             return None
         try:
@@ -241,6 +278,89 @@ class MCPToolAdapter:
             logger.warning("MCP error: %s", data["error"])
             return None
         return data.get("result", data)
+
+    def _stderr_tail_if_exited(self, proc: subprocess.Popen | None) -> str:
+        """Read one bounded stderr chunk after a child has exited."""
+        if proc is None or proc.stderr is None or proc.poll() is None:
+            return ""
+        stderr = proc.stderr
+        try:
+            line = self._run_io_with_timeout(
+                lambda: stderr.read(4096),
+                operation="stderr",
+                timeout=min(self._timeout, 0.1),
+            )
+        except (OSError, TimeoutError):
+            return ""
+        return line.decode("utf-8", errors="replace").strip()
+
+    def _run_io_with_timeout(
+        self,
+        operation_fn: Callable[[], bytes],
+        *,
+        operation: str,
+        timeout: float | None = None,
+    ) -> bytes:
+        """Run one blocking pipe read with a portable wall-clock bound."""
+        done = threading.Event()
+        values: list[bytes] = []
+        errors: list[BaseException] = []
+
+        def read() -> None:
+            try:
+                values.append(operation_fn())
+            except BaseException as exc:  # noqa: BLE001
+                errors.append(exc)
+            finally:
+                with self._reader_lock:
+                    self._reader_threads.discard(threading.current_thread())
+                done.set()
+
+        reader = threading.Thread(target=read, daemon=True, name=f"looplet-mcp-{operation}")
+        with self._reader_lock:
+            self._reader_threads.add(reader)
+        reader.start()
+        limit = self._timeout if timeout is None else timeout
+        if not done.wait(limit):
+            if operation == "response" and self._proc is not None:
+                self._stop_process_tree(self._proc, wait_timeout=min(5.0, max(0.1, limit)))
+                done.wait(min(5.0, max(0.1, limit)))
+            raise TimeoutError(f"MCP server {operation} timed out after {limit:g}s")
+        if errors:
+            raise errors[0]
+        return values[0] if values else b""
+
+    @staticmethod
+    def _stop_process_tree(proc: subprocess.Popen, *, wait_timeout: float) -> None:
+        """Terminate a shell command and any child retaining its stdio pipes."""
+        if proc.poll() is not None:
+            return
+
+        try:
+            if os.name == "posix":
+                os.killpg(proc.pid, signal.SIGTERM)
+            elif os.name == "nt":
+                subprocess.run(
+                    ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            else:
+                proc.terminate()
+            proc.wait(timeout=wait_timeout)
+            return
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+        try:
+            if os.name == "posix":
+                os.killpg(proc.pid, signal.SIGKILL)
+            else:
+                proc.kill()
+            proc.wait(timeout=wait_timeout)
+        except (OSError, subprocess.SubprocessError):
+            pass
 
     def _make_executor(self, tool_name: str, param_types: dict[str, str] | None = None) -> Any:
         """Create an execute function that calls the MCP server.
@@ -285,7 +405,7 @@ class MCPToolAdapter:
         """Parse JSON-string args for params declared as array/object.
 
         A model driving the loop via JSON-text tool calls sometimes
-        double-encodes a structured argument — e.g. it emits
+        double-encodes a structured argument - e.g. it emits
         ``"edits": "[{\\"old_string\\": ...}]"`` (a JSON string) instead
         of a real list. In-process dispatch tolerates this loosely, but
         an MCP server validating against its inputSchema rejects the

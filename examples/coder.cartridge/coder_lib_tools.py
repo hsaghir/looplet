@@ -2,7 +2,7 @@
 
 Pure functions and dataclasses that describe *what the agent can do*:
 read and write files, run bash, search the workspace.  No agent
-control flow, no hook logic — just the executable surface area.
+control flow, no hook logic - just the executable surface area.
 
 The module exports a single composition function,
 :func:`make_tools`, that wires every ``@tool``-decorated callable
@@ -113,7 +113,7 @@ def _run(cmd: str, cwd: str, timeout: int = 120) -> dict:
             spill = _spill_output(cwd, "stdout", r.stdout)
             stdout = (
                 stdout[:7000]
-                + f"\n\n... [{len(stdout) - 14000} chars truncated — full output at {spill}] ...\n\n"
+                + f"\n\n... [{len(stdout) - 14000} chars truncated - full output at {spill}] ...\n\n"
                 + stdout[-7000:]
             )
             result["stdout_spill_file"] = spill
@@ -122,7 +122,7 @@ def _run(cmd: str, cwd: str, timeout: int = 120) -> dict:
             spill = _spill_output(cwd, "stderr", r.stderr)
             stderr = (
                 stderr[:2000]
-                + f"\n... [{len(stderr) - 4000} chars truncated — full output at {spill}] ..."
+                + f"\n... [{len(stderr) - 4000} chars truncated - full output at {spill}] ..."
                 + stderr[-2000:]
             )
             result["stderr_spill_file"] = spill
@@ -197,7 +197,7 @@ def _is_path_inside(target: Path, root: Path) -> bool:
 
 
 # Common binary/non-text suffixes that read_file should reject up
-# front. The list is conservative — when a real text file slips in
+# front. The list is conservative - when a real text file slips in
 # (e.g. ``.svg``, ``.csv``) the content-sniff below catches the
 # opposite case.
 _BINARY_SUFFIXES: frozenset[str] = frozenset(
@@ -329,7 +329,7 @@ def atomic_write_text(path: Path, content: str, encoding: str = "utf-8") -> None
 # control-operator split, the first token of any subcommand) appears
 # in this set without the user's permission engine having explicitly
 # allowed it. The list intentionally covers the common footguns rather
-# than trying to be exhaustive — anything novel still flows through
+# than trying to be exhaustive - anything novel still flows through
 # the regular permission engine, which is the principled gate.
 _DESTRUCTIVE_COMMANDS: frozenset[str] = frozenset(
     {
@@ -347,7 +347,7 @@ _DESTRUCTIVE_COMMANDS: frozenset[str] = frozenset(
 )
 
 # Argument-pattern flags that turn an otherwise-safe command into a
-# destructive one (e.g. ``rm -rf`` vs ``rm`` alone — the latter is
+# destructive one (e.g. ``rm -rf`` vs ``rm`` alone - the latter is
 # fine for individual files). Maps command name → tuple of flag
 # patterns that elevate it.
 _DESTRUCTIVE_FLAGS: dict[str, tuple[str, ...]] = {
@@ -368,11 +368,11 @@ def classify_bash_command(command: str) -> dict[str, Any]:
 
     Returns a dict with:
 
-    * ``destructive`` (bool) — True when the command is in the
+    * ``destructive`` (bool) - True when the command is in the
       destructive-name set or matches a destructive-flag pattern.
-    * ``reasons`` (list[str]) — human-readable reasons; empty when
+    * ``reasons`` (list[str]) - human-readable reasons; empty when
       the command is considered safe.
-    * ``first_token`` (str) — the leading executable name parsed from
+    * ``first_token`` (str) - the leading executable name parsed from
       the command (best-effort; complex shell syntax may not parse).
 
     The bash tool surfaces these as a model-actionable error rather
@@ -424,16 +424,16 @@ def classify_sed_command(command: str) -> dict[str, Any]:
 
     ``sed -i`` rewrites files outside the model's read-then-edit
     discipline and bypasses the file_cache invalidation that
-    ``edit_file`` does — so a subsequent ``read_file`` may return
+    ``edit_file`` does - so a subsequent ``read_file`` may return
     cached pre-edit content. Surface a model-actionable error
     pointing the model at ``edit_file`` instead of refusing
     silently.
 
     Returns a dict with:
 
-    * ``in_place_edit`` (bool) — True when any subcommand is
+    * ``in_place_edit`` (bool) - True when any subcommand is
       ``sed -i ...`` or ``sed --in-place ...``.
-    * ``recommendation`` (str) — short guidance ("use edit_file
+    * ``recommendation`` (str) - short guidance ("use edit_file
       instead") when ``in_place_edit``; empty otherwise.
     """
     parts = re.split(r"&&|\|\||\||;|&", command)
@@ -475,7 +475,7 @@ def classify_view_command(command: str) -> dict[str, Any]:
       ``-`` that points at an existing-looking source file).
     * Lets ``cat``-as-pipe-source through when the file is clearly not
       project source (e.g. ``/proc/...``, ``/dev/...``, ``/tmp/`` outside
-      the workspace) — but the conservative default is to refuse so the
+      the workspace) - but the conservative default is to refuse so the
       model self-corrects to ``read_file``.
 
     Returns ``{"viewing_file": bool, "first_token": str, "recommendation": str}``.
@@ -489,7 +489,7 @@ def classify_view_command(command: str) -> dict[str, Any]:
     if name not in _VIEW_COMMANDS:
         return {"viewing_file": False, "first_token": name, "recommendation": ""}
     # Look at positional args (skip flags). If none look like files,
-    # this is probably reading from stdin / a pipe — let it through.
+    # this is probably reading from stdin / a pipe - let it through.
     positional = [t for t in tokens[1:] if not t.startswith("-")]
     if not positional:
         return {"viewing_file": False, "first_token": name, "recommendation": ""}
@@ -715,7 +715,7 @@ def make_tools(workspace: str, file_cache: FileCache):
         if not p.exists():
             return {"error": f"File not found: {file_path}"}
         # file_unchanged optimization: skip full content if unchanged
-        # since last *read* (not edit — edits update the hash but the
+        # since last *read* (not edit - edits update the hash but the
         # model hasn't seen the new content via read_file yet).
         if start_line == 0 and end_line == 0 and file_cache.is_unchanged(file_path):
             return {

@@ -6,7 +6,7 @@ Covers two architectural invariants:
    LLM raises a prompt-too-long error. Without this, long async sessions
    silently fail on context overflow.
 
-2. **Reset-on-success** — once any recovery strategy succeeds, the
+2. **Reset-on-success** - once any recovery strategy succeeds, the
    ``recovery_state`` ledger must reset so a *later* prompt-too-long
    in the same run can trigger the chain again. Without reset, a
    single successful compaction permanently disables recovery.

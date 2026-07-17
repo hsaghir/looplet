@@ -1,5 +1,5 @@
 """Out-of-process MCP stdio server exposing the ``greet`` and ``done``
-tools — the portable replacement for the original cartridge's
+tools - the portable replacement for the original cartridge's
 ``tools/greet/execute.py`` and ``tools/done/execute.py`` Python bodies.
 
 Speaks the MCP stdio transport (newline-delimited JSON-RPC), so any

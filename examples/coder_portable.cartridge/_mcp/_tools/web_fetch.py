@@ -1,4 +1,4 @@
-"""web_fetch tool — dependency-free HTTP(S) fetch with HTML text extraction."""
+"""web_fetch tool - dependency-free HTTP(S) fetch with HTML text extraction."""
 
 from __future__ import annotations
 

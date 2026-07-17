@@ -1,4 +1,4 @@
-# Cartridges — the harness as reviewable files
+# Cartridges: the harness as reviewable files
 
 `looplet.cartridge` makes the agent harness an editable, testable artifact on
 disk. A cartridge round-trips with an `AgentPreset` for the JSON-able subset
@@ -32,7 +32,7 @@ Python. Diff-friendly. Git-friendly. Editor-friendly. Agent-friendly.
 
 ---
 
-## Principled exclusions — what cartridges deliberately don't do
+## Principled exclusions: what cartridges deliberately don't do
 
 The cartridge format is intentionally narrow. Every feature in the
 table below was considered and *deliberately left out* of the format,
@@ -54,9 +54,9 @@ exclusion stance, update this table first and propagate.
 | Built-in **to-do list** (loop-tracked task ledger) | They confuse models and duplicate the session log. | Have the agent read/write a plain `TODO.md` file with the same tools it uses for everything else, OR compose a `Todo` tool. | (any tool with `read`/`write` over `TODO.md`) |
 | Built-in **approval popups** by default | Approval fatigue degrades into security theatre. The right boundary is a sandbox. | Run inside a container/worktree (default). Opt in to `PermissionHook(engine)` + `ApprovalHook` only when there is a real human supervising. | [`src/looplet/permissions.py`](https://github.com/hsaghir/looplet/blob/master/src/looplet/permissions.py) |
 | Built-in **TUI / chat shell** | looplet is a library that yields `Step`s. Shells and TUIs are downstream. | Build any TUI on top of the `Step` stream, or use the separate `looplet new` shell. | (consumer code) |
-| Built-in **background daemons** (long-running shell tasks) | Lifecycle, signals, and cleanup are not loop concerns. | tmux, systemd, a job queue — anything that already solves daemon supervision. | (out of scope) |
+| Built-in **background daemons** (long-running shell tasks) | Lifecycle, signals, and cleanup are not loop concerns. | tmux, systemd, or a job queue that already solves daemon supervision. | (out of scope) |
 | Built-in **DSL / magic globals** | Cartridges should be plain Python data + plain functions. | YAML for declarative slots; importable Python for code. No DSL. | (every shipped cartridge) |
-| Built-in **mandatory inheritance** | Hooks/backends/states are `@runtime_checkable` Protocols. | Any object with the right methods works — no base class to import. | [`src/looplet/loop.py` `LoopHook`](https://github.com/hsaghir/looplet/blob/master/src/looplet/loop.py) |
+| Built-in **mandatory inheritance** | Hooks/backends/states are `@runtime_checkable` Protocols. | Any object with the right methods works; no base class is required. | [`src/looplet/loop.py` `LoopHook`](https://github.com/hsaghir/looplet/blob/master/src/looplet/loop.py) |
 | **Phases / state machines** | Phases turn the LLM into a slot-filler and re-introduce the rigidity cartridges replaced. | Write the SOP into `prompts/system.md` and let the LLM follow it. For genuine state-machine routing, write a host application that orchestrates multiple cartridges. | [`examples/coder.cartridge/prompts/system.md`](https://github.com/hsaghir/looplet/blob/master/examples/coder.cartridge/prompts/system.md) |
 | **Wider context window / cache policy / compaction knobs in the cartridge** | Two hosts can legitimately disagree about token budgets, retention, and cache TTLs without changing what the agent does. | Sibling `runtime.yaml` carries every RUNTIME-tier knob (`context_window`, `max_tokens`, `cache_policy`, `compact_service`, etc.); the same cartridge runs unchanged on a 32k-window host and a 1M-window host. | [`examples/coder.cartridge/runtime.yaml`](https://github.com/hsaghir/looplet/blob/master/examples/coder.cartridge/runtime.yaml) |
 | **Magic prompt files** (`prompts/briefing.md`, `prompts/recovery.md` auto-loaded by filename) | Magic filenames create hidden behaviour discovered only by reading the loader. Every hook a cartridge installs should be visible in `config.yaml`. | Declare the file via `builtin_hooks: - static_briefing: { path: ... }` / `recovery_hint`. Hard-rejected in v2 unless declared. | [docs below: `static_briefing` / `recovery_hint`](#builtin-hooks) |
@@ -65,8 +65,8 @@ exclusion stance, update this table first and propagate.
 | **Multi-`extends:`** (`extends: [a, b]`) | Diamond-inheritance / C3 linearisation buys nothing in practice; cartridges that "extend two parents" are composing two concerns. | Single `extends:` chain + `builtin_hooks:` + a shared `resources/` module. For genuinely independent concerns, host the two cartridges side-by-side. | [`examples/snippets/01_inheritance/`](https://github.com/hsaghir/looplet/blob/master/examples/snippets/01_inheritance/) |
 | **Polyglot tool bodies in one cartridge** (Python + TypeScript + Rust under one `tools/<name>/`) | A runtime cannot execute tool bodies in a language it does not host; mixing languages forecloses portability instead of enabling it. | Pick one body language per cartridge. Two-runtime portability ships the *same-language* cartridge to both runtimes; cross-language reuse is a registry concern. | (out of scope for v1.x) |
 | **Signed cartridges** (signature embedded in the cartridge body) | Signing is a registry concern; the cartridge must remain content-addressable so the signature can target a stable hash. | Sibling `<name>.cartridge.sig` over the canonical content hash from [SPEC.md §"Cartridge identity"](https://github.com/hsaghir/looplet/blob/master/SPEC.md#cartridge-identity-v2-prep). Computed by the registry / signer, not by the loader. | (out of scope for v1.x) |
-| **Host-owned release holdouts inside the cartridge** | Colocated evals are useful self-tests, but a candidate that can edit its own promotion oracle can manufacture a false green. | Ship versioned self-tests under `evals/`; keep protected holdouts outside the cartridge and inject host-owned paths through `runtime`. | [`examples/regression_demo/report_agent.cartridge/evals/`](https://github.com/hsaghir/looplet/tree/master/examples/regression_demo/report_agent.cartridge/evals) |
-| **API keys / model secrets / approval handlers / cancel tokens / trajectory sinks** | These are HOST-tier — never serialised. The cartridge declares *intent* (`model:`, `permissions: ask:`); the host supplies *capability*. | API keys via host env. Approval handlers via `runtime={"ask_handler": fn}` (load-time fail-loud if `ask:` rules are present without one). Trajectory sinks via `ProvenanceSink` in the runner. | [SPEC.md §"Permissions"](https://github.com/hsaghir/looplet/blob/master/SPEC.md#permissions-v10-slot) |
+| **Host-owned release holdouts inside candidate inputs** | Colocated evals are useful self-tests, but a candidate that can edit or inspect its promotion oracle can manufacture a false green. | Ship versioned self-tests under `evals/`; keep promotion collectors, graders, expected data, and capabilities in a host-owned runner and out of candidate task/runtime/resources/tools/files. | [Issue #100: holdout boundary recipe](https://github.com/hsaghir/looplet/issues/100) |
+| **API keys / model secrets / approval handlers / cancel tokens / trajectory sinks** | These are HOST-tier and are never serialised. The cartridge declares *intent* (`model:`, `permissions: ask:`); the host supplies *capability*. | API keys via host env. Approval handlers via `runtime={"ask_handler": fn}` (load-time fail-loud if `ask:` rules are present without one). Trajectory sinks via `ProvenanceSink` in the runner. | [SPEC.md §"Permissions"](https://github.com/hsaghir/looplet/blob/master/SPEC.md#permissions-v10-slot) |
 
 If a feature in this table turns out to be wrong, the bar to add it
 to the format is: (a) it cannot be expressed as a hook / tool /
@@ -107,7 +107,7 @@ Sort order matters for hooks: directories are loaded alphabetically,
 which becomes the hook-list order at execution time. Use `00_`, `10_`,
 `20_` prefixes to keep room for inserts.
 
-### Self-tests versus protected holdouts
+### Self-tests versus host-owned holdouts
 
 `load_cartridge_evals()` discovers all three parts of a colocated `evals/`
 bundle: case data, `collect_*` outcome collectors, and `eval_*` graders.
@@ -118,9 +118,13 @@ expected data.
 Those evals define what the cartridge claims about itself and should travel
 with its version. They are analogous to package tests. They are not a secure
 promotion oracle when the candidate or generator can modify the cartridge.
-Keep release holdouts in host-owned storage, keep their expected data out of
-the agent sandbox, and bind protected collectors through the runner's
-`runtime` dictionary. See [Behavioral evals](evals.md#trust-boundary-the-agent-must-not-own-its-oracle).
+
+A serious promotion runner keeps holdout collectors, graders, expected data,
+paths, and capabilities outside every value passed to the candidate, including
+the task and `runtime` used by `cartridge_to_preset()`. Separate directories do
+not protect an oracle from arbitrary code with the same filesystem authority;
+use OS, container, or process isolation for that threat. See
+[Behavioral evals](evals.md#trust-boundary-the-agent-must-not-own-its-oracle).
 
 ---
 
@@ -234,11 +238,11 @@ dict (`name: kwargs`). Unknown names raise
 
 **Working examples in the repo:**
 
-- `examples/coder.cartridge/` — `subagent`, `stagnation`,
+- `examples/coder.cartridge/`: `subagent`, `stagnation`,
   `per_tool_limit`, `threshold_compact`.
-- `examples/agent_factory.cartridge/` — `scaffold_cartridge` (extends
+- `examples/agent_factory.cartridge/`: `scaffold_cartridge` (extends
   `coder.cartridge`).
-- `examples/skillful_analyst.cartridge/` — `search_skills`,
+- `examples/skillful_analyst.cartridge/`: `search_skills`,
   `activate_skill`, `skill_activation`.
 
 ---
@@ -268,11 +272,11 @@ objects: `build_briefing`, `extract_entities`, `build_trace`,
 
 Behaviour controlled by `strict`:
 
-- `strict=False` (default) — they are silently omitted from the
+- `strict=False` (default): they are silently omitted from the
   serialised config. Each skipped field appends a string to
   `Cartridge.serialization_warnings` so callers can audit what was
   dropped.
-- `strict=True` — `CartridgeSerializationError` is raised on the first
+- `strict=True`: `CartridgeSerializationError` is raised on the first
   non-round-trippable field.
 
 Tools whose `execute` is a closure or lambda fall into the same
@@ -378,7 +382,7 @@ print(cartridge.name, cartridge.description, cartridge.schema_version)
 | Edit prompt / tool / hook content as text files, version-control diffs, and re-execute | `Cartridge` |
 | Review or modify a harness from another process or agent | `Cartridge` |
 | Snapshot the live preset of a running agent for later inspection | `Cartridge` |
-| Both: ship a bundle whose `build()` simply loads a cartridge | Both — bundle's `looplet.py` calls `cartridge_to_preset(__file__).to_preset()` |
+| Both: ship a bundle whose `build()` simply loads a cartridge | Both; the bundle's `looplet.py` calls `cartridge_to_preset(__file__).to_preset()` |
 
 ---
 

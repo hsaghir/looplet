@@ -2,7 +2,7 @@
 
 The portability boundary for a hook is not its code but its **declared
 view** of loop state (HOOK_CARTRIDGE_DESIGN.md §4, hazard H2). A hook
-that runs out-of-process — over the Loop Effect Protocol (LEP) — never
+that runs out-of-process - over the Loop Effect Protocol (LEP) - never
 touches live ``state``/``session_log`` objects; the host serialises only
 the *subset of fields the hook subscribed to* and ships that subset over
 the wire.
@@ -16,7 +16,7 @@ Because the projection is explicit and total, two properties hold:
   that reads outside its view cannot exist over the wire, so the view is
   an enforceable upper bound on the hook's read set.
 * **Determinism.** ``extract_view`` is a pure function of its inputs, so
-  the same loop position yields the same wire payload on every runtime —
+  the same loop position yields the same wire payload on every runtime -
   the precondition for behavioural round-trip equivalence (§5.3).
 
 Field vocabulary (the only keys a ``ViewSpec`` may name):
@@ -26,12 +26,12 @@ Field vocabulary (the only keys a ``ViewSpec`` may name):
     reasoning     the model's stated reason for the call (str)
     tool_result   {data, error, duration_ms, warnings} of the result
     step          the current step number (int)
-    transcript    session-log entries — counts under ``digest`` fidelity,
+    transcript    session-log entries - counts under ``digest`` fidelity,
                   full serialised entries under ``full`` fidelity
     usage         provider token usage / cost, when surfaced on state
     state_digest  a small, stable digest of agent state (counts only)
 
-``fidelity`` is ``"digest"`` (default — cheap, counts/sizes only) or
+``fidelity`` is ``"digest"`` (default - cheap, counts/sizes only) or
 ``"full"`` (ship entry bodies; needed by hooks that legitimately read
 the transcript, at the cost of bandwidth).
 """
@@ -45,7 +45,7 @@ __all__ = ["ViewSpec", "extract_view", "KNOWN_VIEW_FIELDS"]
 
 #: Every field name a ``ViewSpec`` is allowed to subscribe to. Naming an
 #: unknown field is a configuration error (caught at load), not a silent
-#: empty — that is what keeps the view an *enforceable* contract.
+#: empty - that is what keeps the view an *enforceable* contract.
 KNOWN_VIEW_FIELDS: frozenset[str] = frozenset(
     {
         "tool",
@@ -66,9 +66,9 @@ class ViewSpec:
 
     Attributes:
         fields: The subset of :data:`KNOWN_VIEW_FIELDS` the hook may
-            observe. The empty set means "no loop state at all" — valid
+            observe. The empty set means "no loop state at all" - valid
             for hooks that decide purely from the event slot.
-        fidelity: ``"digest"`` (counts/sizes only — the default) or
+        fidelity: ``"digest"`` (counts/sizes only - the default) or
             ``"full"`` (ship entry bodies for ``transcript``).
     """
 
@@ -151,7 +151,7 @@ def _transcript_view(session_log: Any, *, full: bool) -> Any:
 
 
 def _state_digest(state: Any) -> dict[str, Any]:
-    """A small, stable digest of agent state — counts only, never bodies."""
+    """A small, stable digest of agent state - counts only, never bodies."""
     digest: dict[str, Any] = {}
     entities = getattr(state, "entities", None)
     if entities is not None:
@@ -176,7 +176,7 @@ def extract_view(
 
     Returns a JSON-safe dict whose keys are **exactly** the subscribed
     fields that are applicable at this call site. Fields the hook did not
-    subscribe to are never included — even if the data is available — so
+    subscribe to are never included - even if the data is available - so
     the wire payload is a faithful witness of the hook's read set.
     """
     view: dict[str, Any] = {}

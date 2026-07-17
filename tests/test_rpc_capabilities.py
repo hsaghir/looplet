@@ -6,7 +6,7 @@ The ``ready`` event emitted after ``load_workspace`` must carry a
     {events, cancel, checkpoint, cost, permission_authority, stop_reasons[]}
 
 Values are derived from what the loaded :class:`AgentPreset` actually
-supports — e.g. ``permission_authority`` is true only when a permission
+supports - e.g. ``permission_authority`` is true only when a permission
 hook (PermissionEngine-backed or LEP) is present. The bare ``ready``
 emitted for every other command is unchanged (additive only).
 """
@@ -163,7 +163,7 @@ def test_cost_true_with_cost_tracker_resource() -> None:
 
 def test_checkpoint_is_a_server_capability(tmp_path: Path) -> None:
     # checkpoint is offered by the RPC server for ANY run (via a per-call
-    # checkpoint_dir on run/resume), so it is advertised unconditionally —
+    # checkpoint_dir on run/resume), so it is advertised unconditionally -
     # whether or not the cartridge sets config.checkpoint_dir.
     assert _capabilities(_FakePreset())["checkpoint"] is True
     cfg = LoopConfig(max_steps=5, checkpoint_dir=str(tmp_path))

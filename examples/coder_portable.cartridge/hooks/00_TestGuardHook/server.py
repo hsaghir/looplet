@@ -2,11 +2,11 @@
 
 Wraps the vendored :class:`coder_lib_hooks.TestGuardHook` (observe-only
 by default). It keeps its own ``_tests_passed`` / ``_files_written``
-state across slot calls IN THIS PROCESS — the LEP server is long-lived,
+state across slot calls IN THIS PROCESS - the LEP server is long-lived,
 so the in-process statefulness survives unchanged. Two slots:
 
-* ``post_dispatch`` — watch bash test runs + record written files.
-* ``check_done``    — surface the finishing-without-tests nudge
+* ``post_dispatch`` - watch bash test runs + record written files.
+* ``check_done`` - surface the finishing-without-tests nudge
   (strict=False never blocks).
 """
 

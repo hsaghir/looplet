@@ -2,12 +2,12 @@
 
 Two universal footguns any agent harness has to guard against:
 
-1. **Runaway tool repetition** — an agent calls the same tool 50 times,
+1. **Runaway tool repetition** - an agent calls the same tool 50 times,
    exhausting budget without making progress.  :class:`PerToolLimitHook`
    caps cumulative calls per tool name and blocks further invocations
    with an informative ``ToolResult.error`` once the cap is reached.
 
-2. **Silent budget exhaustion** — the loop's ``max_steps`` runs out
+2. **Silent budget exhaustion** - the loop's ``max_steps`` runs out
    mid-task and the agent has no warning that it should start
    wrapping up.  :class:`BudgetWarningHook` injects a briefing nudge
    when the remaining fraction of the budget drops below a threshold.
@@ -96,7 +96,7 @@ class PerToolLimitHook:
         return dict(self._counts)
 
     def reset(self) -> None:
-        """Clear all counters — useful between runs."""
+        """Clear all counters - useful between runs."""
         self._counts.clear()
 
     def to_config(self) -> dict[str, Any]:
@@ -138,7 +138,7 @@ class PerToolLimitHook:
             )
 
         # Count this call.  We increment here (pre-dispatch) so that
-        # even tool errors consume budget — the cap is on attempts,
+        # even tool errors consume budget - the cap is on attempts,
         # not successes.
         self._counts[tool] = used + 1
         return None
@@ -150,14 +150,14 @@ class PerToolLimitHook:
 class BudgetWarningHook:
     """Inject a briefing warning when remaining budget crosses a threshold.
 
-    Fires once per threshold — e.g. with ``thresholds=(0.5, 0.25, 0.1)``
+    Fires once per threshold - e.g. with ``thresholds=(0.5, 0.25, 0.1)``
     the agent sees three escalating nudges as ``max_steps`` runs out.
     Thresholds are fractions of the total budget (``state.step_count``
     relative to an inferred ``total``), monotonically decreasing.
 
     The ``total`` is read from ``state.step_count + state.budget_remaining``
     on first fire so the hook works with any ``AgentState`` that
-    satisfies the protocol — no configuration required.
+    satisfies the protocol - no configuration required.
 
     Args:
         thresholds: Fractions in ``(0, 1)``, one warning per fraction.
@@ -202,7 +202,7 @@ class BudgetWarningHook:
         return set(self._fired)
 
     def reset(self) -> None:
-        """Clear fired-threshold memory — useful between runs."""
+        """Clear fired-threshold memory - useful between runs."""
         self._fired.clear()
         self._total = None
 

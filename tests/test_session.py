@@ -1,4 +1,4 @@
-"""Tests for looplet.session — LogEntry and SessionLog."""
+"""Tests for looplet.session - LogEntry and SessionLog."""
 
 from __future__ import annotations
 

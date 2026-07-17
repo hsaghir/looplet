@@ -1,4 +1,4 @@
-"""Tests for looplet.conversation — unified message thread."""
+"""Tests for looplet.conversation - unified message thread."""
 
 from __future__ import annotations
 
@@ -147,7 +147,7 @@ class TestConversationFork:
         c.append(Message(role=MessageRole.USER, content="original"))
         fork = c.fork()
 
-        # Mutate fork — parent must not change
+        # Mutate fork - parent must not change
         fork.append(Message(role=MessageRole.ASSISTANT, content="fork reply"))
         assert len(c.messages) == 1
         assert len(fork.messages) == 2
@@ -159,7 +159,7 @@ class TestConversationFork:
         c.append(Message(role=MessageRole.USER, content="original"))
         fork = c.fork()
 
-        # Mutate message metadata in fork — must not affect parent
+        # Mutate message metadata in fork - must not affect parent
         fork.messages[0].metadata["fork_key"] = "yes"
         assert "fork_key" not in c.messages[0].metadata
 
@@ -416,7 +416,7 @@ class TestConversationSerialize:
         c = Conversation()
         c.append(Message(role="system", content="hi"))
         c.append(Message(role="user", content="hello"))
-        # Round-trip — would have raised AttributeError before the fix.
+        # Round-trip - would have raised AttributeError before the fix.
         c2 = Conversation.deserialize(c.serialize())
         assert c2.messages[0].role is MessageRole.SYSTEM
         assert c2.messages[1].role is MessageRole.USER

@@ -1,15 +1,15 @@
-"""Provenance — capture exactly what the LLM saw and what the agent did.
+"""Provenance - capture exactly what the LLM saw and what the agent did.
 
 Two layers:
 
 * **LLM-call provenance** (:class:`RecordingLLMBackend`,
-  :class:`AsyncRecordingLLMBackend`) — wrap any :class:`LLMBackend` and
+  :class:`AsyncRecordingLLMBackend`) - wrap any :class:`LLMBackend` and
   record every prompt, system prompt, tool schema list, raw response,
   duration, and any error. Dump to a promptflow-style directory of
   ``call_NN_prompt.txt`` / ``call_NN_response.txt`` files plus a
   ``manifest.jsonl`` for machine consumption.
 
-* **Trajectory provenance** (:class:`TrajectoryRecorder`) — a
+* **Trajectory provenance** (:class:`TrajectoryRecorder`) - a
   :class:`LoopHook` that records a structured :class:`Trajectory` for an
   entire run: per-step timing, tool-call / tool-result dicts, the
   context briefing shown to the LLM, termination reason, and optional
@@ -76,7 +76,7 @@ class LLMCall:
     """One LLM invocation captured by a recording backend.
 
     Fields mirror the inputs and outputs of the LLM protocol. ``response``
-    is the raw return value — a string for ``generate`` or a list of
+    is the raw return value - a string for ``generate`` or a list of
     content blocks for ``generate_with_tools``. ``duration_ms`` is
     measured around the wrapped call. ``error`` is a short string when
     the wrapped backend raised; it does not include the traceback.
@@ -146,7 +146,7 @@ class _RecordingBase:
         self._redact = redact
         # When True (default), ``redact`` is also applied to the prompt
         # and system_prompt BEFORE they are forwarded to the wrapped
-        # backend — so secrets never leave the process, not just the
+        # backend - so secrets never leave the process, not just the
         # trace.  Set to False to record-only.
         self._redact_upstream = redact_upstream
         self.calls: list[LLMCall] = []
@@ -230,7 +230,7 @@ class _RecordingBase:
 
 
 def _format_prompt_block(call: LLMCall) -> str:
-    parts = [f"# call {call.index:02d} — method={call.method}"]
+    parts = [f"# call {call.index:02d} - method={call.method}"]
     if call.step_num is not None:
         parts.append(f"# step={call.step_num}")
     parts.append(
@@ -250,7 +250,7 @@ def _format_prompt_block(call: LLMCall) -> str:
 
 def _format_response_block(call: LLMCall) -> str:
     parts = [
-        f"# call {call.index:02d} — duration={call.duration_ms:.1f}ms "
+        f"# call {call.index:02d} - duration={call.duration_ms:.1f}ms "
         f"error={'yes' if call.error else 'no'}",
     ]
     if call.error:
@@ -542,7 +542,7 @@ class TrajectoryRecorder:
     """Hook that captures a :class:`Trajectory` across one loop run.
 
     Install via the ``hooks=`` list on :func:`composable_loop`. Optionally
-    pair with a :class:`RecordingLLMBackend` — the recorder will stamp
+    pair with a :class:`RecordingLLMBackend` - the recorder will stamp
     ``current_step_num`` on it before each prompt so captured calls link
     back to the step they belonged to.
 
@@ -609,7 +609,7 @@ class TrajectoryRecorder:
             # stringify defensively so we never raise from a hook.
             try:
                 self._pending_context = str(context)
-            except Exception:  # pragma: no cover — defensive
+            except Exception:  # pragma: no cover - defensive
                 self._pending_context = ""
         self._pending_llm_start = (
             len(self._recording_llm.calls) if self._recording_llm is not None else 0
@@ -701,7 +701,7 @@ class TrajectoryRecorder:
                 if live_tr_meta:
                     sr.tool_result["metadata"] = dict(live_tr_meta)
         # Sweep ``state.steps`` for any Step that was yielded but not
-        # routed through ``post_dispatch`` — notably the ``done`` step,
+        # routed through ``post_dispatch`` - notably the ``done`` step,
         # which the loop handles on its own termination path.
         captured_nums = {s.step_num for s in self.trajectory.steps}
         if state is not None and hasattr(state, "steps"):
@@ -824,7 +824,7 @@ class ProvenanceSink:
             ...
         sink.flush()
 
-    The sink is safe to reuse across runs — call :meth:`reset` between
+    The sink is safe to reuse across runs - call :meth:`reset` between
     them, or construct a fresh sink per run (cheaper and clearer).
     """
 
@@ -849,7 +849,7 @@ class ProvenanceSink:
         """Wrap ``backend`` in a recording backend and stash a reference.
 
         Pass ``async_=True`` to force the async variant; otherwise the
-        sink inspects ``generate`` — if it is a coroutine function the
+        sink inspects ``generate`` - if it is a coroutine function the
         async wrapper is used.
         """
         import inspect
@@ -897,7 +897,7 @@ class ProvenanceSink:
 class _ReplayLLMBackend:
     """Internal LLM backend that returns captured responses in order.
 
-    Used by :func:`replay_loop`. Not exported in ``__init__.__all__`` —
+    Used by :func:`replay_loop`. Not exported in ``__init__.__all__`` -
     most users should call :func:`replay_loop` instead. Surface it via
     ``from looplet.provenance import _ReplayLLMBackend`` if you need
     low-level control.
@@ -911,7 +911,7 @@ class _ReplayLLMBackend:
         self._calls = calls
         self._index = 0
         # Surface ``generate_with_tools`` only if any recorded call used
-        # it — keeps ``hasattr`` detection honest for the loop.
+        # it - keeps ``hasattr`` detection honest for the loop.
         if any(c.get("method") == "generate_with_tools" for c in calls):
             self.generate_with_tools = self._generate_with_tools_impl
 
@@ -1018,7 +1018,7 @@ def _load_trace_calls(trace_dir: Path) -> list[dict[str, Any]]:
             idx += 1
     if not calls:
         raise FileNotFoundError(
-            f"no recorded calls found in {trace_dir} — expected "
+            f"no recorded calls found in {trace_dir} - expected "
             f"manifest.jsonl or call_NN_response.txt files"
         )
     return calls
@@ -1078,7 +1078,7 @@ def replay_loop(
     replay LLM that returns each captured response in order.
 
     The user's tool registry, hooks, permission engine, and state are
-    the ones passed in — this is what makes replay useful: change those
+    the ones passed in - this is what makes replay useful: change those
     and diff the step output without spending a dollar on the LLM.
 
     Args:
@@ -1088,7 +1088,7 @@ def replay_loop(
         state: Optional :class:`AgentState`. Defaults to a fresh
             :class:`DefaultState` sized to the recorded call count.
         hooks: Optional hooks to install on the replay loop.
-        config: Optional :class:`LoopConfig` — if omitted, a default is
+        config: Optional :class:`LoopConfig` - if omitted, a default is
             constructed with ``max_steps`` matching the recorded call
             count.
         task: Optional task dict (defaults to ``{}``).

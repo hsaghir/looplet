@@ -1,4 +1,4 @@
-"""Tests for looplet.subagent — run_sub_loop and _MinimalState."""
+"""Tests for looplet.subagent - run_sub_loop and _MinimalState."""
 
 from __future__ import annotations
 

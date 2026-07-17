@@ -1,1 +1,1 @@
-"""looplet.examples package — demonstration agents for non-security domains."""
+"""looplet.examples package - demonstration agents for non-security domains."""

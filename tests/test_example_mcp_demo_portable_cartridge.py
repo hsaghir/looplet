@@ -7,7 +7,7 @@ server and guards them with a ``kind: lep`` permission hook. Nothing is
 pinned to a Python host.
 
 The test loads the cartridge to a live preset (spawning the MCP server
-and the LEP hook server — two separate processes) and witnesses that the
+and the LEP hook server - two separate processes) and witnesses that the
 MCP transport tools and the LEP permission policy compose: the guard
 vets ``add`` operands before dispatch, the MCP ``add`` computes the sum
 out of process, and the MCP ``done`` completes the run.

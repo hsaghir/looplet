@@ -9,7 +9,7 @@ cases, and gate the outcomes you care about.
 The factory is built on the same primitives ([`extends:`](cartridge.md#extends),
 [`builtin_tools:`](cartridge.md#builtin-tools),
 [`scaffold_cartridge`](cartridge.md#builtin-tools)) you'd use to hand-roll an
-agent — it's just an agent that builds other agents.
+agent. It is simply an agent that builds other agents.
 
 ---
 
@@ -90,7 +90,10 @@ Load a cartridge and run it on a task.
 
 ## Grounding drafts in existing tools and data
 
-Most useful agents aren't built on greenfield Python — they're built on tools and data the team already has: an internal CLI, a vendor SDK, a helper module, a shell script. Naming any of these in the brief makes the factory introspect the real surface and write thin wrappers, instead of hallucinating signatures from training data.
+Most useful agents aren't built on greenfield Python. They use tools and data
+the team already has: an internal CLI, a vendor SDK, a helper module, or a shell
+script. Naming one in the brief makes the factory inspect the real surface and
+write thin wrappers instead of hallucinating signatures from training data.
 
 The factory's planning phase recognises three patterns and uses bash + `inspect` to ground itself in the real source:
 
@@ -162,11 +165,17 @@ def execute(ctx, *, pattern, window=None, tables=None) -> dict:
     return {"hits": [h.__dict__ for h in hits], "count": len(hits)}
 ```
 
-Every signature matches the real class — including default values like `mode="full"` and `profile_top_k=10` — because the factory ran `inspect.signature` first.
+Every signature matches the real class, including default values such as
+`mode="full"` and `profile_top_k=10`, because the factory ran
+`inspect.signature` first.
 
 ### Why this works without flags
 
-The factory's system prompt tells the agent to introspect _first_ (before scaffolding) whenever the brief mentions an existing CLI / module / script. The agent has `bash`, `read_file`, and `multi_edit` tools already; a one-line `bash("python -c 'import inspect; ...'")` is all the introspection it needs. There is no special CLI flag — naming the thing in the brief is enough.
+The factory's system prompt tells the agent to introspect _first_ (before
+scaffolding) whenever the brief mentions an existing CLI, module, or script.
+The agent already has `bash`, `read_file`, and `multi_edit`; a one-line
+`bash("python -c 'import inspect; ...'")` is enough. There is no special CLI
+flag. Naming the dependency in the brief triggers inspection.
 
 If the brief is purely greenfield ("an agent that takes a URL and returns the title…"), the factory falls through to ordinary scaffold-and-fill behaviour. The introspection step only fires when there's something concrete to wrap.
 
@@ -174,18 +183,18 @@ If the brief is purely greenfield ("an agent that takes a URL and returns the ti
 
 ## What the factory does internally
 
-`agent_factory.cartridge` is a cartridge itself — see
+`agent_factory.cartridge` is itself a cartridge; see
 `examples/agent_factory.cartridge/`. It [`extends:`](cartridge.md#extends)
 the bundled `coder.cartridge`, so it inherits all coding tools
 (`read_file`, `write_file`, `multi_edit`, `bash`, `grep`, `glob`,
 `list_dir`, `think`) and adds two factory-specific tools:
 
-* **`scaffold_cartridge`** — a built-in tool that calls the
+* **`scaffold_cartridge`:** a built-in tool that calls the
     public `looplet.scaffold_cartridge()` helper to write
   the cartridge skeleton in one step. The factory's prompt
   instructs the agent to call this FIRST so it skips the
   boilerplate of writing `cartridge.json` etc. by hand.
-* **`validate_workspace`** — runs `cartridge_to_preset()` on the
+* **`validate_workspace`:** runs `cartridge_to_preset()` on the
   produced path and returns a structured success/error.
 
 The factory's system prompt includes "robustness rules" that get
@@ -244,11 +253,9 @@ effects belong in the host that invokes it, not in the cartridge.
 
 ## What validation means
 
-Factory behavior is covered by the smoke-test suite
-(`tests/test_cli_new_smoke.py`) and dogfood briefs in
-[issue #56](https://github.com/hsaghir/looplet/issues/56). These checks establish
-that generated cartridges load, include required structural pieces, and can
-ground wrappers in inspected signatures. They do **not** establish task
+Factory behavior is covered by `tests/test_cli_new_smoke.py`. Those tests
+establish that generated cartridges load, include required structural pieces,
+and report draft/error states consistently. They do **not** establish task
 success, safe permissions, or production fitness.
 
 Treat generated tests as structural checks. Add an `evals/` bundle with real
@@ -261,6 +268,6 @@ a model call.
 
 ## See also
 
-* [Cartridge format](cartridge.md) — what's in a cartridge dir
-* [Composition with `extends:`](cartridge.md#extends) — how the factory inherits coder.cartridge
-* [Built-in tools](cartridge.md#builtin-tools) — `subagent`, `scaffold_cartridge`
+* [Cartridge format](cartridge.md): what belongs in a cartridge directory
+* [Composition with `extends:`](cartridge.md#extends): how the factory inherits `coder.cartridge`
+* [Built-in tools](cartridge.md#builtin-tools): `subagent`, `scaffold_cartridge`

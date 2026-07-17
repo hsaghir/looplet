@@ -7,7 +7,7 @@ also exports the helpers it uses (``_write_*``, ``_iter_tool_specs``,
 ``_write_memory``) so the loader / round-trip tests can call into
 them directly when needed.
 
-Logically the inverse of :mod:`looplet.cartridge._load` — a
+Logically the inverse of :mod:`looplet.cartridge._load` - a
 preset that came in via ``cartridge_to_preset`` should round-trip
 to an equivalent directory through this module.
 """
@@ -57,7 +57,7 @@ def preset_to_cartridge(
     overwrite: bool = False,
     strict: bool = False,
 ) -> Cartridge:
-    """Write an :class:`AgentPreset` to a workspace directory.
+    """Write an :class:`AgentPreset` to a cartridge directory.
 
     Args:
         preset: The harness to serialise.
@@ -65,13 +65,13 @@ def preset_to_cartridge(
             exists and is non-empty, ``overwrite=True`` is required.
         name: Cartridge name. Defaults to the directory basename.
         description: Free-form description stored in
-            ``workspace.json``.
+            ``cartridge.json``.
         overwrite: Allow writing into a non-empty existing directory
-            (its workspace-managed subdirectories are wiped first).
+            (its cartridge-managed subdirectories are wiped first).
         strict: When ``True``, raise
             :class:`CartridgeSerializationError` on any non-round-trippable
             component. When ``False`` (default), record warnings on the
-            returned workspace and skip the offending field.
+            returned cartridge and skip the offending field.
 
     Returns:
         The :class:`Cartridge` describing the newly-written directory.
@@ -108,7 +108,7 @@ def preset_to_cartridge(
     )
     warnings: list[str] = []
 
-    # 1. config — write JSON-able subset; emit warnings for the rest.
+    # 1. config - write JSON-able subset; emit warnings for the rest.
     cfg = preset.config
     serialized_cfg: dict[str, Any] = {}
     for fname in CartridgeLayout.SERIALIZABLE_CONFIG_FIELDS:
@@ -190,7 +190,7 @@ def preset_to_cartridge(
         encoding="utf-8",
     )
 
-    # 3. tools — one subdir per tool with tool.yaml + execute.py
+    # 3. tools - one subdir per tool with tool.yaml + execute.py
     tools_root = root / CartridgeLayout.TOOLS_DIR
     tools_root.mkdir(exist_ok=True)
     _builtin_names = set(builtin_tool_names)
@@ -204,13 +204,13 @@ def preset_to_cartridge(
             continue
         _write_tool(spec, tools_root, warnings, strict)
 
-    # 4. hooks — one subdir per hook, ordered by index for deterministic load
+    # 4. hooks - one subdir per hook, ordered by index for deterministic load
     hooks_root = root / CartridgeLayout.HOOKS_DIR
     hooks_root.mkdir(exist_ok=True)
     for idx, hook in enumerate(preset.hooks):
         _write_hook(hook, hooks_root, idx, warnings, strict)
 
-    # 5. memory sources — three emission paths:
+    # 5. memory sources - three emission paths:
     #    StaticMemorySource              → memory/<idx>_static.md
     #    CallableMemorySource(top-level) → memory/<idx>_callable.py
     #    CallableMemorySource(_chw_resource_X.<lambda>)
@@ -235,7 +235,7 @@ def preset_to_cartridge(
             # back to ``_chw_resource_<name>``. The wrapper itself
             # (CallableMemorySource) lives in ``looplet.memory`` so we
             # stash the wrapped fn whose ``__module__`` is the workspace
-            # resource module — that's what the pre-pass uses to copy
+            # resource module - that's what the pre-pass uses to copy
             # the original ``resources/<name>.py`` file verbatim.
             from looplet.memory import CallableMemorySource  # noqa: PLC0415
 
@@ -259,11 +259,11 @@ def preset_to_cartridge(
             encoding="utf-8",
         )
 
-    # 6. resources — for any @<name> ref found in written hook configs,
+    # 6. resources - for any @<name> ref found in written hook configs,
     # emit a placeholder ``resources/<name>.py`` so the snapshot loads
     # without unresolved-reference errors. The placeholder returns the
     # actual instance the hook is currently bound to so the reload
-    # behaves identically to the source preset (within process — across
+    # behaves identically to the source preset (within process - across
     # processes the user must replace the placeholder with a real
     # builder).
     #
@@ -299,7 +299,7 @@ def preset_to_cartridge(
         extra_refs=config_field_refs,
     )
 
-    # 7. workspace-root helper modules — when the preset was loaded
+    # 7. workspace-root helper modules - when the preset was loaded
     # from another workspace, copy any top-level ``*.py`` helper files
     # (e.g. ``coder_lib_tools.py``, ``threat_intel_lib.py``) so the
     # snapshot stays self-contained. Without this, hooks / tools /
@@ -398,7 +398,7 @@ def _copy_workspace_helpers(preset: Any, dest_root: Path, warnings: list[str]) -
     The source workspace is looked up via :func:`_preset_origin_root`,
     populated by :func:`cartridge_to_preset` for every preset it
     returns. When the preset was built in-process (no recorded
-    origin), this is a no-op — there's nothing to vendor.
+    origin), this is a no-op - there's nothing to vendor.
     """
     src_root = _preset_origin_root(preset)
     if src_root is None:
@@ -467,7 +467,7 @@ def _write_resources_for_refs(
             refs_seen[ref_name] = actual
 
     # Caller-supplied refs (e.g. config.compact_service) win over hook
-    # refs when names collide — the LoopConfig field is the
+    # refs when names collide - the LoopConfig field is the
     # authoritative live instance for that key.
     if extra_refs:
         for ref_name, instance in extra_refs.items():
@@ -482,19 +482,19 @@ def _write_resources_for_refs(
 
     def _origin_chw_resource_file(value: Any) -> Path | None:
         """If ``value`` (or every callable element of a list/tuple)
-        traces back to a single workspace resource module, return the
+        traces back to a single cartridge resource module, return the
         on-disk source file. Two detection paths:
 
         1. **Identity registry** (set up by :func:`_load_resources`):
            covers stock-class instances like ``PermissionEngine``
            whose own ``__module__`` is the framework, not the
-           workspace.
+           cartridge.
         2. **Module name fallback**: covers closures defined inside
            the resource module (``def build(): def fn(...): ...``)
            and custom classes declared in the resource file.
 
-        The original ``resources/<name>.py`` is the canonical builder
-        — copying it round-trips builds that compute lists / closures
+        The original ``resources/<name>.py`` is the canonical builder.
+        Copying it round-trips builds that compute lists / closures
         / nested objects without losing the original ``def build()``
         signature.
         """
@@ -564,7 +564,7 @@ def _write_resources_for_refs(
         # patterns. Emit a builder that re-imports each callable by
         # ``module:qualname``. ``__main__`` callables are accepted
         # (so script-driven dogfooding round-trips) but recorded as
-        # a non-fatal warning in strict mode — cross-process loads
+        # a non-fatal warning in strict mode - cross-process loads
         # need the callables moved to a real module.
         if (
             isinstance(instance, (list, tuple))
@@ -593,7 +593,7 @@ def _write_resources_for_refs(
                 # round-trip works, cross-process needs editing.
                 warnings.append(
                     f"resource {ref_name!r}: contains __main__ callables "
-                    f"{main_callables} — re-imports from ``__main__`` for "
+                    f"{main_callables} - re-imports from ``__main__`` for "
                     f"same-process round-trip but cross-process loads will "
                     f"fail until these are moved to an importable module"
                 )
@@ -631,7 +631,7 @@ def _write_resources_for_refs(
         # Dataclass auto-emit: when the live instance is a dataclass we
         # reproduce its full field state in the builder (not just the
         # required ctor args). Common shape: ``PermissionEngine(rules=[
-        # PermissionRule(...), ...])`` — the rules list is JSON-able-ish
+        # PermissionRule(...), ...])`` - the rules list is JSON-able-ish
         # only after we re-emit each PermissionRule's class import.
         # Falls through to the generic class branch when reproduction
         # fails (e.g. a field holds a closure).
@@ -668,13 +668,13 @@ def _write_resources_for_refs(
 
         # Best-effort: for installed classes, emit a builder that
         # imports the class and returns a fresh instance. This loses
-        # cross-process state — explain that in the header.
+        # cross-process state - explain that in the header.
         if (
             cls_module
             and cls_module not in {"__main__", "builtins"}
             and not cls_module.startswith("_chw_")
         ):
-            # Inspect the constructor so we know which kwargs to pass —
+            # Inspect the constructor so we know which kwargs to pass -
             # FileCache(workspace=...) needs ``workspace`` from runtime,
             # while StreamingHook(emitter=...) won't survive at all.
             try:
@@ -737,11 +737,11 @@ def _write_resources_for_refs(
             stub = (
                 f"# AUTOGENERATED resource builder for {ref_name!r}.\n"
                 f"# Returns a FRESH {cls_name} instance from {cls_module} on\n"
-                f"# every workspace load. Required ctor kwargs are derived from\n"
+                f"# every cartridge load. Required ctor kwargs are derived from\n"
                 f"# the live source instance when possible (top-level callables\n"
                 f"# get re-imported); the rest fall back to ``runtime.get(<kw>)``.\n"
                 f"# Replace any unresolved kwargs with real construction before\n"
-                f"# distributing the workspace.\n"
+                f"# distributing the cartridge.\n"
                 f"from {cls_module} import {cls_name}\n"
                 f"{extra_import_block}"
                 "\n"
@@ -857,7 +857,7 @@ def _write_tool(spec: Any, tools_root: Path, warnings: list[str], strict: bool) 
     # Cartridge-loaded tools live in dynamic ``_chw_tool_<name>`` modules
     # registered in ``sys.modules``. Re-importing by that synthetic name
     # would silently fail at reload (the new process has no entry under
-    # that key). Copy the original on-disk ``execute.py`` verbatim — it
+    # that key). Copy the original on-disk ``execute.py`` verbatim - it
     # already carries the correct shim or top-level function.
     if module_name.startswith("_chw_tool_"):
         import sys as _sys  # noqa: PLC0415
@@ -896,7 +896,7 @@ def _write_tool(spec: Any, tools_root: Path, warnings: list[str], strict: bool) 
 
 
 def _write_hook(hook: Any, hooks_root: Path, index: int, warnings: list[str], strict: bool) -> None:
-    # ── kind: lep — out-of-process hook serialises to declarative data ──
+    # ── kind: lep - out-of-process hook serialises to declarative data ──
     # An LEPHookAdapter carries no Python decision logic; its faithful
     # cartridge form is the launch command + declared view + failure
     # policy. Emitting that (instead of trying to pickle the adapter as a
@@ -918,7 +918,7 @@ def _write_hook(hook: Any, hooks_root: Path, index: int, warnings: list[str], st
         # server script + its local helpers) is copied into the hook dir
         # and rewritten to a bare filename, which the loader resolves
         # relative to the hook dir. argv[0] (the interpreter/executable)
-        # and non-file tokens (flags) pass through verbatim — copying the
+        # and non-file tokens (flags) pass through verbatim - copying the
         # interpreter binary would break it outside its install tree.
         emitted_cmd: list[str] = []
         for idx, tok in enumerate(hook._argv):
@@ -951,15 +951,15 @@ def _write_hook(hook: Any, hooks_root: Path, index: int, warnings: list[str], st
     # Strategy: write a hook.py that **re-imports** the original class from
     # its module by default, so the class's full closure (typing imports,
     # helpers, sibling utilities) stays intact. ``inspect.getsource(cls)``
-    # alone returns just the class body — names like ``Any`` and the
+    # alone returns just the class body - names like ``Any`` and the
     # tool-call decision helpers vanish on reload.
     #
     # When the original module is not importable from disk (anonymous /
     # closure / dynamically-defined class), fall back to the full module
-    # source — which is heavier but preserves correctness.
+    # source - which is heavier but preserves correctness.
     src = _render_hook_source(cls, warnings, strict)
     # Only prepend the AUTOGENERATED header when the rendered source
-    # doesn't already carry it — branch 0 of ``_render_hook_source``
+    # doesn't already carry it - branch 0 of ``_render_hook_source``
     # copies an existing source file verbatim and we don't want the
     # header to stack across repeat round-trips.
     header = "# AUTOGENERATED from preset_to_cartridge.\n"
@@ -1001,7 +1001,7 @@ def _infer_hook_kwargs_from_init(hook: Any) -> dict[str, Any]:
     re-emitted as their original ``@<name>`` ref so the round-tripped
     cartridge resolves them via the same mechanism.
 
-    Skips parameters whose value couldn't be located (defensive — the
+    Skips parameters whose value couldn't be located (defensive - the
     user can fix the hook config manually if needed).
     """
     kwargs: dict[str, Any] = {}
@@ -1080,7 +1080,7 @@ def _render_hook_source(cls: type, warnings: list[str], strict: bool) -> str:
         if chw_file and Path(chw_file).is_file():
             return Path(chw_file).read_text(encoding="utf-8")
 
-    # 1. Try to re-import — works for installed packages, top-level classes
+    # 1. Try to re-import - works for installed packages, top-level classes
     #    in importable modules, and anything addressable by ``module:name``.
     if (
         module_name
@@ -1091,7 +1091,7 @@ def _render_hook_source(cls: type, warnings: list[str], strict: bool) -> str:
             mod = importlib.import_module(module_name)
             if getattr(mod, cls_name, None) is cls:
                 # Canonical "as <cls_name>" form so this branch produces
-                # byte-identical output to the MRO-walk branch below —
+                # byte-identical output to the MRO-walk branch below -
                 # the snapshot writer needs to be idempotent under repeat
                 # round-trips, and that requires both code paths to emit
                 # the same source for the same hook class.
@@ -1107,7 +1107,7 @@ def _render_hook_source(cls: type, warnings: list[str], strict: bool) -> str:
 
     # 2. Class came from a workspace ``_chw_hook_*`` dynamic module
     #    (re-loaded from disk). Walk the MRO to find an importable
-    #    parent class — workspace hook files commonly subclass an
+    #    parent class - workspace hook files commonly subclass an
     #    installed class to add ``to_config()``, so the ancestor is
     #    a stable re-import target.
     for ancestor in cls.__mro__[1:]:
@@ -1122,7 +1122,7 @@ def _render_hook_source(cls: type, warnings: list[str], strict: bool) -> str:
         try:
             mod = importlib.import_module(anc_module)
             if getattr(mod, anc_name, None) is ancestor:
-                # Same canonical form as branch 1 — see comment there.
+                # Same canonical form as branch 1 - see comment there.
                 return (
                     "# Re-imported from the original module so the class's\n"
                     "# full closure (typing imports, helpers) stays available.\n"
@@ -1155,7 +1155,7 @@ def _render_hook_source(cls: type, warnings: list[str], strict: bool) -> str:
     except (OSError, TypeError):
         # ``TypeError: <class X> is a built-in class`` is what
         # ``inspect.getsource`` raises for classes loaded from the
-        # workspace's own ``_chw_hook_*`` dynamic modules — those
+        # workspace's own ``_chw_hook_*`` dynamic modules - those
         # have no on-disk source ``inspect`` can find.
         msg = f"hook class {cls_name!r} has no retrievable source"
         if strict:
@@ -1173,7 +1173,7 @@ def _write_memory(
     ``memory/`` (StaticMemorySource → ``*.md``, top-level
     CallableMemorySource → ``*.py``). Returns a resource ref name
     (e.g. ``"project_memory"``) when the wrapped fn came from a
-    workspace-loaded ``_chw_resource_<name>`` module — the caller adds
+    workspace-loaded ``_chw_resource_<name>`` module - the caller adds
     the corresponding ``"@<name>"`` entry to ``config.yaml``'s
     ``memory_sources`` list and the resource auto-emit machinery
     copies the original on-disk source verbatim.
@@ -1196,7 +1196,7 @@ def _write_memory(
         # Branch A: fn was created inside a workspace-loaded
         # ``_chw_resource_<name>`` builder. The resource pipeline
         # already knows how to copy the original ``resources/<name>.py``
-        # file verbatim — route through @ref to reuse that machinery
+        # file verbatim - route through @ref to reuse that machinery
         # and to keep the closure (which closes over runtime values
         # like ``workspace`` / ``max_steps``) intact across reload.
         if fn_mod.startswith("_chw_resource_"):
@@ -1229,7 +1229,7 @@ def _write_memory(
                 )
             return None
 
-        # Branch C: lambda / closure / non-importable. Warn and skip —
+        # Branch C: lambda / closure / non-importable. Warn and skip -
         # the caller should move the closure into a
         # ``resources/<name>.py`` builder so branch A can route it.
         msg = (

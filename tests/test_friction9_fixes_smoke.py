@@ -53,6 +53,6 @@ class TestValidatingBatchArgsSummary:
         call = ToolCall(tool="square", args={"n": "oops"}, reasoning="r")
         result = reg.dispatch_batch([call])[0]
         assert result.error is not None
-        # Previously: "{'n': 'oops'}"  — dict repr, truncated at 100 chars.
+        # Previously: "{'n': 'oops'}" - dict repr, truncated at 100 chars.
         # Now: consistent k=v formatting like the single-dispatch path.
         assert result.args_summary == "n=oops"

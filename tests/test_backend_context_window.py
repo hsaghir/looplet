@@ -5,7 +5,7 @@ Today, ``ContextPressureHook`` uses a static ``DEFAULT_CONTEXT_WINDOW =
 Hard-coding a single value means:
 
 * On a Haiku-like 200K model, we never trigger compaction until the
-  session is ~60K over the ceiling — reactive-compact thrashes.
+  session is ~60K over the ceiling - reactive-compact thrashes.
 * On an 8K model, we happily build prompts that will 413 every turn.
 
 Backends should be able to declare their effective window, optionally

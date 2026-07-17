@@ -1,4 +1,4 @@
-"""CalcGuard — a portable ``kind: lep`` permission policy.
+"""CalcGuard - a portable ``kind: lep`` permission policy.
 
 This hook runs *out of process* over the Loop Effect Protocol (LEP) and
 guards the ``add`` tool that is itself served by a *separate* MCP stdio
@@ -9,7 +9,7 @@ before it is ever dispatched to the MCP server.
 
 Policy: refuse any ``add`` call whose ``a`` or ``b`` operand is missing
 or not a number. The calculator server's schema requires two integers,
-so a non-numeric operand would fault the MCP process — the guard turns
+so a non-numeric operand would fault the MCP process - the guard turns
 that into a clean, early permission denial instead.
 
 Because the decision is a pure function of the declared view, the hook

@@ -1,4 +1,4 @@
-"""Tests for looplet.types — core data types and protocols."""
+"""Tests for looplet.types - core data types and protocols."""
 
 from __future__ import annotations
 
@@ -283,7 +283,7 @@ class TestAgentStateProtocol:
             def snapshot(self):
                 return {}
 
-        # Protocol runtime check relies on attributes — missing 'steps'
+        # Protocol runtime check relies on attributes - missing 'steps'
         bad = BadState()
         assert not isinstance(bad, AgentState)
 

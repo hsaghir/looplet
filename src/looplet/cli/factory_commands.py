@@ -13,11 +13,11 @@ writes the produced cartridge to a directory. After this completes,
 
 Required env vars (any OpenAI-compatible endpoint):
 
-* ``OPENAI_BASE_URL`` — e.g. ``http://127.0.0.1:19823/v1`` for a
+* ``OPENAI_BASE_URL`` - e.g. ``http://127.0.0.1:19823/v1`` for a
   local proxy or ``https://api.openai.com/v1`` for direct OpenAI.
-* ``OPENAI_API_KEY`` — your key (or any string for proxies that
+* ``OPENAI_API_KEY`` - your key (or any string for proxies that
   don't validate it).
-* ``OPENAI_MODEL`` — model id, e.g. ``gpt-4o-mini`` or
+* ``OPENAI_MODEL`` - model id, e.g. ``gpt-4o-mini`` or
   ``claude-sonnet-4.6``.
 
 ## ``looplet run-cartridge <path> <task>``
@@ -99,30 +99,30 @@ def _build_backend():
 
 
 def _factory_workspace_path() -> Path:
-    """Locate the bundled ``examples/agent_factory.cartridge`` directory.
+    """Locate the bundled ``agent_factory.cartridge`` directory.
 
-    Looplet ships with this cartridge in the repo's ``examples/``
-    folder. When installed via ``pip install``, the examples may not
-    be co-packaged; in that case we fall back to ``LOOPLET_FACTORY_DIR``
-    or print a clear error.
-
-    Accepts both the spec name (``agent_factory.cartridge``) and the
-    historical ``agent_factory.cartridge`` so external checkouts
-    pinned to an older revision still work.
+    Source checkouts use ``examples/``; wheels and sdists install the
+    complete factory dependency tree under ``looplet/_bundled``.
+    ``LOOPLET_FACTORY_DIR`` remains an explicit override.
     """
-    # Walk up from this file looking for the bundled factory directory.
-    here = Path(__file__).resolve()
-    for parent in [here.parent, *here.parents]:
-        for suffix in ("agent_factory.cartridge", "agent_factory.cartridge"):
-            candidate = parent / "examples" / suffix
-            if candidate.is_dir():
-                return candidate
     env_override = os.environ.get("LOOPLET_FACTORY_DIR")
     if env_override and Path(env_override).is_dir():
         return Path(env_override)
+
+    # Walk up from this file looking for the bundled factory directory.
+    here = Path(__file__).resolve()
+    for parent in [here.parent, *here.parents]:
+        source_candidate = parent / "examples" / "agent_factory.cartridge"
+        if source_candidate.is_dir():
+            return source_candidate
+
+    installed_candidate = here.parents[1] / "_bundled" / "agent_factory.cartridge"
+    if installed_candidate.is_dir():
+        return installed_candidate
+
     raise FileNotFoundError(
-        "Could not locate examples/agent_factory.cartridge. "
-        "Set LOOPLET_FACTORY_DIR to point at it, or run from the looplet repo."
+        "Could not locate the bundled agent_factory.cartridge. "
+        "Reinstall looplet or set LOOPLET_FACTORY_DIR to an explicit factory cartridge."
     )
 
 
@@ -161,7 +161,7 @@ def cmd_new(args: argparse.Namespace) -> int:
 
     # When the user passed --tool flags, pre-scaffold the skeleton
     # host-side so the agent's first ``scaffold_cartridge`` call is a
-    # no-op (idempotent — existing files are preserved). This used to
+    # no-op (idempotent - existing files are preserved). This used to
     # live in agent_factory.cartridge/setup.py; v2 cartridges can't
     # ship executable Python at the root, so the scaffolding moves to
     # the host CLI where filesystem side effects belong.
@@ -250,7 +250,7 @@ def cmd_new(args: argparse.Namespace) -> int:
 
     elapsed = time.time() - t0
     print()
-    print(f"{_green('✓')} draft built in {elapsed:.1f}s — {n_steps} steps, {n_denies} denies")
+    print(f"{_green('✓')} draft built in {elapsed:.1f}s - {n_steps} steps, {n_denies} denies")
 
     # Verify the cartridge actually loads.
     if not target_dir.is_dir():
@@ -373,7 +373,7 @@ def cmd_run_workspace(args: argparse.Namespace) -> int:
 
     elapsed = time.time() - t0
     print()
-    print(f"{_green('✓')} done in {elapsed:.1f}s — {n_steps} steps")
+    print(f"{_green('✓')} done in {elapsed:.1f}s - {n_steps} steps")
     print()
     if final_summary:
         print(_bold("result:"))
@@ -518,7 +518,7 @@ def add_subparsers(sub: "argparse._SubParsersAction") -> None:
             "Python-pinned (Python tool bodies, class hooks, resources). "
             "Prints an overall portable / python-host profile verdict and "
             "names the exact components that pin the cartridge to a Python "
-            "host. No env vars required — reads the cartridge directory only."
+            "host. No env vars required - reads the cartridge directory only."
         ),
     )
     portab_p.add_argument("cartridge", type=Path, help="Path to a cartridge directory")

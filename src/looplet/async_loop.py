@@ -1,8 +1,8 @@
-"""Async composable loop — ``async for step in async_composable_loop(...)``.
+"""Async composable loop - ``async for step in async_composable_loop(...)``.
 
 Async mirror of :func:`looplet.loop.composable_loop` for use with
 async LLM backends (:class:`AsyncOpenAIBackend`, etc.). All hooks,
-tools, parsing, and state management remain synchronous — only
+tools, parsing, and state management remain synchronous - only
 LLM calls are awaited.
 
 Usage::
@@ -19,7 +19,7 @@ Usage::
 
 The function accepts the same arguments as ``composable_loop`` and
 yields the same :class:`Step` objects. Hooks are still synchronous
-Protocol methods — they run inline between awaited LLM calls.
+Protocol methods - they run inline between awaited LLM calls.
 
 When to use this instead of ``composable_loop``:
 - Your LLM backend has ``async def generate()``
@@ -27,8 +27,8 @@ When to use this instead of ``composable_loop``:
 - You want to run multiple agent loops concurrently via asyncio.gather
 
 When NOT to use this:
-- Your LLM backend is synchronous — use ``composable_loop`` instead
-- You need async hooks — not yet supported
+- Your LLM backend is synchronous - use ``composable_loop`` instead
+- You need async hooks - not yet supported
 """
 
 from __future__ import annotations
@@ -84,7 +84,7 @@ class _SyncBridgeLLM:
     when called from a non-async context, or falls through if the
     backend is already sync.
 
-    This is intentionally simple — it covers the common case of
+    This is intentionally simple - it covers the common case of
     single-call tool-internal LLM use (summarize, classify). For
     complex async tool workflows, users should write async tools
     and await directly (future feature).
@@ -217,7 +217,7 @@ async def async_llm_call(
             if attempt < max_retries:
                 wait = RETRY_BACKOFF_BASE * (2**attempt)
                 logger.warning(
-                    "Async LLM call attempt %d/%d failed: %s — retrying in %.1fs",
+                    "Async LLM call attempt %d/%d failed: %s - retrying in %.1fs",
                     attempt + 1,
                     max_retries + 1,
                     e,
@@ -257,7 +257,7 @@ async def async_composable_loop(
             print(step.pretty())
 
     The ``max_steps`` and ``system_prompt`` keyword shorthands mirror
-    :func:`looplet.loop.composable_loop` — when set they override the
+    :func:`looplet.loop.composable_loop` - when set they override the
     matching fields on ``config`` (a fresh ``LoopConfig`` is created
     if none is passed) so simple async agents don't need to construct
     a config explicitly.
@@ -555,7 +555,7 @@ async def async_composable_loop(
                         tool="__parse_error__",
                         args_summary="",
                         data=None,
-                        error=f"Parse error — recovery aborted: {recovery_action.message}",
+                        error=f"Parse error - recovery aborted: {recovery_action.message}",
                     )
                     step = Step(number=step_num, tool_call=tc, tool_result=tr)
                     state.steps.append(step)

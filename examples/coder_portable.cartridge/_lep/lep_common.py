@@ -3,14 +3,14 @@
 Two pieces the in-process hooks took for granted now cross process
 boundaries:
 
-* ``FileCacheProxy`` — the StaleFile/FileCache hooks were constructed
+* ``FileCacheProxy`` - the StaleFile/FileCache hooks were constructed
   with the shared ``@file_cache`` instance. Here that cache lives in a
   State Service; this proxy forwards the two methods those hooks call
   (``stale_files`` / ``render``) over the socket the loader exported as
-  ``LOOPLET_STATE_FILE_CACHE`` — the SAME socket the MCP file tools use,
+  ``LOOPLET_STATE_FILE_CACHE`` - the SAME socket the MCP file tools use,
   so hook and tool processes observe one cache.
 
-* ``view_to_call`` — the LEP adapter ships a declared *view* dict; the
+* ``view_to_call`` - the LEP adapter ships a declared *view* dict; the
   vendored hook methods expect ``tool_call`` / ``tool_result`` objects.
   This rebuilds the minimal duck-typed objects those methods read.
 """
@@ -63,7 +63,7 @@ def normalize(decision: Any) -> Any:
     """Coerce a vendored hook return into a LEP-acceptable effect.
 
     The in-process hook slots return ``HookDecision``/``InjectContext``
-    (already fine) — but ``pre_prompt`` returns a bare ``str`` briefing.
+    (already fine) - but ``pre_prompt`` returns a bare ``str`` briefing.
     LEP's ``_effect_dict`` only accepts ``HookDecision|dict|None``, so a
     plain string is wrapped as an ``InjectContext`` (the adapter then
     surfaces it via ``decision.additional_context``).

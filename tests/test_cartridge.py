@@ -295,7 +295,7 @@ def test_coder_preset_round_trips_with_strict_load(tmp_path: Path) -> None:
     out = tmp_path / "coder.cartridge"
     preset_to_cartridge(preset, out, name="coder")
 
-    # strict=True must succeed end-to-end — every hook must reload.
+    # strict=True must succeed end-to-end - every hook must reload.
     reloaded = cartridge_to_preset(out, strict=True)
     original_hook_names = [type(h).__name__ for h in preset.hooks]
     reloaded_hook_names = [type(h).__name__ for h in reloaded.hooks]
@@ -445,7 +445,7 @@ def test_hello_workspace_loads_and_runs_end_to_end() -> None:
 
     assert len(steps) == 3
     assert [s.tool_call.tool for s in steps] == ["greet", "greet", "done"]
-    # Shared log captured both greetings — proves @ref + setup.py wired
+    # Shared log captured both greetings - proves @ref + setup.py wired
     # the SAME GreetingLog instance into the tool and the hook.
     assert hook.log.names() == ["Alice", "Bob"]
 
@@ -456,7 +456,7 @@ def test_hello_workspace_loads_and_runs_end_to_end() -> None:
 def test_coder_workspace_loads_with_shared_filecache(tmp_path) -> None:
     """examples/coder.cartridge migrates the v1 coder bundle to the
     v2 layout. Validates that:
-      * Declarative + setup.py-injected hooks load (8 total — TestGuard,
+      * Declarative + setup.py-injected hooks load (8 total - TestGuard,
         FileCache, StaleFile, Stagnation, ThresholdCompact, PerToolLimit
         from YAML; LinterHook + EvalHook appended by setup.py to match
         looplet.examples coder reference feature-for-feature)
@@ -744,7 +744,7 @@ def test_coder_workspace_bidirectional_round_trip(tmp_path) -> None:
 
     # The coder workspace ships co-located ``lib_*.py`` helper modules
     # that hosts and tools subclass / call into. Round-tripping a
-    # preset doesn't auto-copy these — the snapshot is otherwise
+    # preset doesn't auto-copy these - the snapshot is otherwise
     # self-contained but its hook.py / execute.py shims still
     # ``from lib_tools import ...``. Copy them alongside so the
     # reload finds the same helpers.
@@ -759,7 +759,7 @@ def test_coder_workspace_bidirectional_round_trip(tmp_path) -> None:
     # runtime['workspace']; pass it on reload.
     reloaded = cartridge_to_preset(snap_dir, runtime={"workspace": str(target)})
 
-    # All 8 declarative hooks survive the round-trip — including
+    # All 8 declarative hooks survive the round-trip - including
     # EvalHook now that its evaluators + collectors live in
     # resources/eval_evaluators.py and resources/eval_collectors.py
     # (referenced via @ref instead of injected via setup.py).
@@ -921,7 +921,7 @@ def test_permission_engine_via_at_ref(tmp_path) -> None:
 def test_eval_hook_declarative_via_at_ref(tmp_path) -> None:
     """EvalHook with declarative evaluators + collectors via @ref.
     Confirms callable-graph hooks are NOT a permanent setup.py
-    requirement — when callables are exposed as resource builders
+    requirement - when callables are exposed as resource builders
     that return them, the @ref registry resolves them just like any
     other shared resource."""
     import json as _json
@@ -996,7 +996,7 @@ def test_streaming_hook_declarative_via_at_ref(tmp_path) -> None:
 def test_compact_service_via_at_ref_in_config(tmp_path) -> None:
     """A workspace can wire ``LoopConfig.compact_service`` declaratively
     via ``compact_service: "@compact_service"`` in config.yaml plus a
-    ``resources/compact_service.py`` builder — no setup.py needed."""
+    ``resources/compact_service.py`` builder - no setup.py needed."""
     import json as _json
 
     ws = tmp_path
@@ -1042,7 +1042,7 @@ def test_tracer_via_at_ref_in_config(tmp_path) -> None:
 @pytest.mark.filterwarnings("ignore::DeprecationWarning")
 def test_unresolved_at_ref_in_config_raises_in_strict(tmp_path) -> None:
     """A typo'd @ref in config.yaml fails loud at load time, same as
-    hook kwargs — no silent string-into-LoopConfig leakage."""
+    hook kwargs - no silent string-into-LoopConfig leakage."""
     import json as _json
 
     import pytest
@@ -1078,7 +1078,7 @@ def test_callable_loop_config_field_auto_emits_resource(tmp_path: Path) -> None:
     assert '"@compact_service"' in rt_text or "@compact_service" in rt_text
     assert (tmp_path / "ws" / "resources" / "compact_service.py").is_file()
 
-    # Reload — compact_service should come back via the @ref machinery.
+    # Reload - compact_service should come back via the @ref machinery.
     reloaded = cartridge_to_preset(tmp_path / "ws", strict=True)
     assert reloaded.config.compact_service is not None
     # Loose preset round-trip records no warnings for this field.
@@ -1139,7 +1139,7 @@ def test_builtin_hooks_round_trip_without_subclassing(tmp_path: Path) -> None:
     assert "evaluators.py" in resources
 
     reloaded = cartridge_to_preset(tmp_path / "ws")
-    # All four hooks survive — no silent drops.
+    # All four hooks survive - no silent drops.
     cls_names = sorted(type(h).__name__ for h in reloaded.hooks)
     assert cls_names == ["EvalHook", "MetricsHook", "PermissionHook", "StreamingHook"]
 
@@ -1170,7 +1170,7 @@ def _emit_callback(event) -> None:
 def test_list_of_top_level_callables_auto_emits_real_imports(tmp_path: Path) -> None:
     """When a hook kwarg holds a list of importable callables (e.g.
     ``EvalHook(evaluators=[a, b])``), the auto-emit machinery should
-    write a builder that re-imports each callable by name — not fall
+    write a builder that re-imports each callable by name - not fall
     back to a None-stub for ``builtins.list``."""
     from looplet import (
         AgentPreset,
@@ -1236,7 +1236,7 @@ def test_live_instance_kwarg_derivation_for_emitter(tmp_path: Path) -> None:
     # ``self._callback(event)``.
     assert "runtime.get('callback')" not in builder
 
-    # Reload — the callback should be the same module-level function.
+    # Reload - the callback should be the same module-level function.
     reloaded = cartridge_to_preset(tmp_path / "ws", strict=True)
     emitter = reloaded.hooks[0]._emitter
     cb = getattr(emitter, "_callback", None) or getattr(emitter, "callback", None)
@@ -1371,7 +1371,7 @@ def test_callable_memory_source_lambda_warns_in_loose_mode(tmp_path: Path) -> No
 def test_dataclass_auto_emit_reproduces_field_state(tmp_path: Path) -> None:
     """When a hook holds a dataclass instance with non-default field
     values (e.g. ``PermissionEngine(rules=[PermissionRule(...), ...])``),
-    the auto-emit builder must reproduce every field — not just the
+    the auto-emit builder must reproduce every field - not just the
     required ctor args. Previously ``PermissionEngine`` round-tripped
     with empty rules because ``rules`` has a default_factory and the
     generic builder skipped non-required kwargs."""
@@ -1403,7 +1403,7 @@ def test_dataclass_auto_emit_reproduces_field_state(tmp_path: Path) -> None:
 
     preset_to_cartridge(preset, tmp_path / "ws", strict=True)
     builder = (tmp_path / "ws" / "resources" / "engine.py").read_text()
-    # Real reproduction — not an empty-rules shell.
+    # Real reproduction - not an empty-rules shell.
     assert "PermissionEngine(rules=[" in builder
     assert "tool='dangerous'" in builder
     assert "PermissionDecision.DENY" in builder
@@ -1461,7 +1461,7 @@ def test_chw_resource_round_trip_copies_original_source(tmp_path: Path) -> None:
     )
     (src / "resources").mkdir()
     custom_src = (
-        '"""Custom inline resource — exists only inside this workspace."""\n'
+        '"""Custom inline resource - exists only inside this workspace."""\n'
         "class CustomLog:\n"
         "    def __init__(self):\n"
         "        self.entries = []\n"
@@ -1482,14 +1482,14 @@ def test_chw_resource_round_trip_copies_original_source(tmp_path: Path) -> None:
     preset = cartridge_to_preset(src, strict=True)
     snap = tmp_path / "snap"
     ws = preset_to_cartridge(preset, snap, name="snap", strict=False)
-    # Resource source must come back verbatim — no None-stub warnings.
+    # Resource source must come back verbatim - no None-stub warnings.
     assert not any("custom_log" in w for w in ws.serialization_warnings), (
         f"unexpected warnings: {ws.serialization_warnings}"
     )
     snap_resource = (snap / "resources" / "custom_log.py").read_text()
     assert snap_resource == custom_src
 
-    # Reload the snapshot — the LogHook's log attribute must be a fresh
+    # Reload the snapshot - the LogHook's log attribute must be a fresh
     # CustomLog instance (not None).
     reloaded = cartridge_to_preset(snap, strict=True)
     assert type(reloaded.hooks[0].log).__name__ == "CustomLog"
@@ -1524,7 +1524,7 @@ def test_chw_hook_inline_class_round_trips(tmp_path: Path) -> None:
     snap = tmp_path / "snap"
     preset_to_cartridge(preset, snap, name="snap", strict=True)
     snap_hook = (snap / "hooks" / "00_GateHook" / "hook.py").read_text()
-    # Must contain the inline marker — proves source was preserved.
+    # Must contain the inline marker - proves source was preserved.
     assert "inline-marker-XYZ" in snap_hook
 
 
@@ -1736,7 +1736,7 @@ def test_tool_requires_round_trips_via_yaml(tmp_path: Path) -> None:
 
 def test_tool_without_ctx_logs_warning_when_requires_set(tmp_path: Path, caplog) -> None:
     """A ``requires:`` declaration on a tool that doesn't accept ``ctx``
-    is a configuration mistake — the dispatcher logs a warning so
+    is a configuration mistake - the dispatcher logs a warning so
     users notice instead of silently dropping the dependency."""
     import logging
 
@@ -1815,7 +1815,7 @@ def test_resource_ref_for_preserves_original_ref_name(tmp_path: Path) -> None:
     original = (src / "resources" / "sql_permissions.py").read_text()
     assert snap_resource == original
 
-    # Two-pass byte-identical round-trip — the rules survive intact.
+    # Two-pass byte-identical round-trip - the rules survive intact.
     preset2 = cartridge_to_preset(snap1, strict=True)
     snap2 = tmp_path / "snap2"
     preset_to_cartridge(preset2, snap2, name="snap")
@@ -1826,7 +1826,7 @@ def test_resource_ref_for_preserves_original_ref_name(tmp_path: Path) -> None:
 
 def test_workspace_root_resources_dir_is_on_sys_path(tmp_path: Path) -> None:
     """Tools and other workspace modules must be able to ``from
-    <resource_name> import helper`` — the loader pushes both the
+    <resource_name> import helper`` - the loader pushes both the
     workspace root AND its ``resources/`` subdir onto ``sys.path``
     for the duration of the load."""
     src = tmp_path / "ws"
@@ -1842,7 +1842,7 @@ def test_workspace_root_resources_dir_is_on_sys_path(tmp_path: Path) -> None:
     )
     (src / "tools" / "ping").mkdir(parents=True)
     (src / "tools/ping/tool.yaml").write_text("name: ping\nparameters: {}\n")
-    # Imports from a resources/-defined helper module — this would
+    # Imports from a resources/-defined helper module - this would
     # fail with ModuleNotFoundError if resources/ wasn't on sys.path.
     (src / "tools/ping/execute.py").write_text(
         "from helper_resource import greet\ndef execute(): return {'msg': greet()}\n"
@@ -1882,7 +1882,7 @@ def test_tool_requires_unknown_resource_warns_in_loose_mode(tmp_path: Path, capl
         "def execute(*, s='ok'): return {'status': 'completed', 's': s}\n"
     )
     (src / "tools" / "demo").mkdir(parents=True)
-    # Typo — workspace_confgi instead of workspace_config.
+    # Typo - workspace_confgi instead of workspace_config.
     (src / "tools/demo/tool.yaml").write_text(
         "name: demo\nparameters: {}\nrequires:\n  - workspace_confgi\n"
     )
@@ -1932,7 +1932,7 @@ def test_resource_origin_drops_unhashable_to_prevent_id_reuse_collision(
     because ``weakref.finalize(list, ...)`` raises TypeError. Python's
     ``id()`` is reused after GC, so a *different* test's brand-new
     evaluators list could land at the same id and inherit the
-    previous workspace's ref name — making the writer try to copy a
+    previous workspace's ref name - making the writer try to copy a
     no-longer-existent ``resources/<name>.py`` file.
 
     Fix: instances that don't support weak references are NOT
@@ -1957,7 +1957,7 @@ def test_resource_origin_drops_unhashable_to_prevent_id_reuse_collision(
     (src / "resources").mkdir()
     (src / "resources/my_list.py").write_text(
         "def build(runtime=None):\n"
-        "    # A bare list — built-in containers don't support weakref.\n"
+        "    # A bare list - built-in containers don't support weakref.\n"
         "    return [lambda x: x]\n"
     )
 
@@ -2180,7 +2180,7 @@ class TestHookOrderDirective:
     Lower values run earlier; ties + missing values fall back to
     alphabetical-by-dirname (the legacy behaviour). This lets workspace
     authors keep stable directory names while controlling execution
-    order via a small integer per hook — no more renaming 24 dirs to
+    order via a small integer per hook - no more renaming 24 dirs to
     insert a hook between positions 5 and 6.
     """
 
@@ -2232,7 +2232,7 @@ class TestHookOrderDirective:
 
         preset = cartridge_to_preset(ws)
         # The hook classes are all named "Marker" (different module
-        # instances) — assert we got 3 in the right order by checking
+        # instances) - assert we got 3 in the right order by checking
         # the loader's hook_modules dict via the dirname keys.
         assert len(preset.hooks) == 3
 
@@ -2282,7 +2282,7 @@ class TestHookOrderDirective:
         assert len(preset.hooks) == 3
         # Hook list order is "00_a, new_inserted, 01_b" by ``order:``,
         # not "00_a, 01_b, new_inserted" (which would be alphabetical).
-        # We confirm by looking at the loader's hook_modules registry —
+        # We confirm by looking at the loader's hook_modules registry -
         # python ``id()``s are unique per dirname's module.
 
     def test_unordered_hooks_sort_after_ordered_ones(self, tmp_path: Path) -> None:
@@ -2305,7 +2305,7 @@ class TestHookOrderDirective:
     def test_order_field_is_not_passed_to_hook_constructor(self, tmp_path: Path) -> None:
         """``order:`` is loader-only; hook constructors don't see it.
 
-        Marker.__init__ only accepts ``threshold`` — if ``order``
+        Marker.__init__ only accepts ``threshold`` - if ``order``
         leaked into kwargs, this would raise TypeError.
         """
         ws = tmp_path / "h.workspace"
@@ -2434,7 +2434,7 @@ class TestHookEnabledDirective:
         from looplet.cartridge import CartridgeLayout, cartridge_to_preset
 
         ws = self._two_hook_workspace(tmp_path)
-        # Hook with strict __init__ — would TypeError if `enabled` leaked.
+        # Hook with strict __init__ - would TypeError if `enabled` leaked.
         (ws / CartridgeLayout.HOOKS_DIR / "a_hook" / "hook.py").write_text(
             textwrap.dedent("""
                 from looplet import LoopHook
@@ -2496,7 +2496,7 @@ class TestHookConstructorErrorContext:
                     self.required_arg = required_arg
         """)
         )
-        # config.yaml passes a wrong kwarg — constructor will TypeError.
+        # config.yaml passes a wrong kwarg - constructor will TypeError.
         (d / "config.yaml").write_text(
             textwrap.dedent("""
             kwargs:

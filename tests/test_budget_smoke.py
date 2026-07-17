@@ -137,7 +137,7 @@ class TestLoopIntegration:
                 type(self).calls += 1
                 return super().compact(**kw)
 
-        # Very tight budget — forces fire on step 2.
+        # Very tight budget - forces fire on step 2.
         b = ContextBudget(
             context_window=100,
             warning_at=5,

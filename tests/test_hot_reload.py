@@ -1,4 +1,4 @@
-"""Tests for looplet.hot_reload — mtime-poll workspace reloading."""
+"""Tests for looplet.hot_reload - mtime-poll workspace reloading."""
 
 from __future__ import annotations
 

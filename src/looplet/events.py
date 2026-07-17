@@ -30,33 +30,33 @@ class LifecycleEvent(str, Enum):
 
     Ordered roughly by when they fire in a single step:
 
-    * :attr:`SESSION_START` — once, at the top of ``composable_loop``.
-    * :attr:`PRE_LLM_CALL` — per step, after prompt/messages are built,
+    * :attr:`SESSION_START` - once, at the top of ``composable_loop``.
+    * :attr:`PRE_LLM_CALL` - per step, after prompt/messages are built,
       before the model is invoked.
-    * :attr:`POST_LLM_RESPONSE` — per step, after the raw response
+    * :attr:`POST_LLM_RESPONSE` - per step, after the raw response
       lands, before it is parsed.
-    * :attr:`PRE_TOOL_USE` — per tool call, before dispatch. Hooks
+    * :attr:`PRE_TOOL_USE` - per tool call, before dispatch. Hooks
       returning ``HookDecision`` here can rewrite args, deny, or
       short-circuit with a cached result.
-    * :attr:`TOOL_PROGRESS` — while a tool is executing, whenever it
+    * :attr:`TOOL_PROGRESS` - while a tool is executing, whenever it
       calls ``ctx.report_progress(stage, data)``. Observers only.
-    * :attr:`POST_TOOL_USE` — per tool call, after a successful
+    * :attr:`POST_TOOL_USE` - per tool call, after a successful
       dispatch. Hooks can rewrite the result before it hits history.
-    * :attr:`POST_TOOL_FAILURE` — per tool call, when dispatch raised
+    * :attr:`POST_TOOL_FAILURE` - per tool call, when dispatch raised
       or returned an error. Runs before retry/recovery decisions.
-    * :attr:`PRE_COMPACT` — before any conversation compaction runs.
-    * :attr:`POST_COMPACT` — after compaction, with a count of
+    * :attr:`PRE_COMPACT` - before any conversation compaction runs.
+    * :attr:`POST_COMPACT` - after compaction, with a count of
       messages removed / summary length.
-    * :attr:`HOOK_DECISION` — fires whenever a hook returns a
+    * :attr:`HOOK_DECISION` - fires whenever a hook returns a
       ``HookDecision`` that is not a no-op; payload carries slot,
       hook_name, and the decision dict.
-    * :attr:`DONE_ACCEPTED` — fires after ``check_done`` has accepted a
+    * :attr:`DONE_ACCEPTED` - fires after ``check_done`` has accepted a
       ``done()`` call and the final payload is committed; payload
       includes ``tool_call`` (the done call) and ``tool_result`` (the
       dispatched done result).
-    * :attr:`STOP` — when the loop is about to exit, for any reason.
+    * :attr:`STOP` - when the loop is about to exit, for any reason.
       The payload includes ``termination_reason``.
-    * :attr:`SUBAGENT_START` / :attr:`SUBAGENT_STOP` — when a forked
+    * :attr:`SUBAGENT_START` / :attr:`SUBAGENT_STOP` - when a forked
       sub-agent loop begins and ends. Only fires if subagents are in
       use.
     """
@@ -95,7 +95,7 @@ class EventPayload:
     state: Any = None
     session_log: Any = None
     context: Any = None
-    # Per-slot optional fields — populated only when the event fires
+    # Per-slot optional fields - populated only when the event fires
     # in a context where they make sense. Kept flat to avoid variant
     # juggling at every call site.
     prompt: str | None = None
@@ -119,7 +119,7 @@ class EventPayload:
         deliberately *small and safe*:
 
         * The loop-internal object fields ``state``, ``session_log`` and
-          ``context`` are always dropped — they are large, often cyclic,
+          ``context`` are always dropped - they are large, often cyclic,
           and never JSON. ``event``/``step_num`` are dropped too because a
           transport surfaces them separately (as ``kind`` / ``step_num``).
         * Every other field is reduced via :func:`_to_jsonable`: scalars
@@ -131,7 +131,7 @@ class EventPayload:
         * ``None`` values and the empty ``extra`` dict are omitted to keep
           frames compact.
 
-        This method never raises — a malformed payload must not break the
+        This method never raises - a malformed payload must not break the
         loop that emitted it.
         """
         out: dict[str, Any] = {}

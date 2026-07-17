@@ -1,5 +1,5 @@
 {
-  "description": "Fully-portable twin of the `coder` cartridge. Every portable component is out-of-process: the 16 tools are an MCP stdio server (_mcp/tools_server.py), the shared FileCache is a State Service Protocol server (_state/file_cache.py), and all five ported hooks are kind: lep. web_fetch/subagent reach the host LLM over the Model Gateway. Compaction is a RUNTIME builtin (default_compact_service). EvalHook and the dynamic memory builders are intentionally omitted (documented limitations). `looplet portability` reports the PORTABLE profile — it runs on any conforming loader (Rust/Go/TS).",
+  "description": "Fully-portable twin of the `coder` cartridge. Every portable component is out-of-process: the 16 tools are an MCP stdio server (_mcp/tools_server.py), the shared FileCache is a State Service Protocol server (_state/file_cache.py), and all five ported hooks are kind: lep. web_fetch/subagent reach the host LLM over the Model Gateway. Compaction is a RUNTIME builtin (default_compact_service). EvalHook and the dynamic memory builders are intentionally omitted (documented limitations). `looplet portability` reports the PORTABLE profile - it runs on any conforming loader (Rust/Go/TS).",
   "metadata": {
     "tags": [
       "coding",

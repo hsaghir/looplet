@@ -1,4 +1,4 @@
-"""Tests for looplet.prompts — structured prompt assembly."""
+"""Tests for looplet.prompts - structured prompt assembly."""
 
 from __future__ import annotations
 

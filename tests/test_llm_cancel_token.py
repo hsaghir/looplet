@@ -9,7 +9,7 @@ A ``CancelToken`` on ``LoopConfig`` must reach:
 2. The ``ToolContext`` threaded into tool dispatch so tools and LLM calls
    share the same cancellation signal.
 3. Cause an early loop exit when ``is_cancelled`` becomes true between
-   turns — without raising, so the trace stays clean.
+   turns - without raising, so the trace stays clean.
 """
 
 from __future__ import annotations
@@ -44,7 +44,7 @@ class _CancelAwareLLM(LLMBackend):
 
 
 class _VanillaLLM(LLMBackend):
-    """Backend without cancel_token param — must keep working."""
+    """Backend without cancel_token param - must keep working."""
 
     def __init__(self) -> None:
         self.calls = 0

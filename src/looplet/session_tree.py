@@ -1,4 +1,4 @@
-"""Session-as-tree — branching/forking over a recorded agent trajectory.
+"""Session-as-tree - branching/forking over a recorded agent trajectory.
 
 Pi treats sessions as a tree: each entry has ``id`` and ``parentId`` so
 operators can fork, clone, and replay from any prior point. looplet's
@@ -7,13 +7,13 @@ under a parent gives the same capability with no change to the loop.
 
 This module provides:
 
-* :class:`TreeNode` — one recorded step (linear by default; gets
+* :class:`TreeNode` - one recorded step (linear by default; gets
   siblings only when a fork is created).
-* :class:`SessionTree` — rooted tree with ``fork(node_id)``,
+* :class:`SessionTree` - rooted tree with ``fork(node_id)``,
   ``leaves()``, ``path_to(node_id)``.
-* :class:`SessionTreeRecorder` — hook that builds the tree from the
+* :class:`SessionTreeRecorder` - hook that builds the tree from the
   ``POST_TOOL_USE`` lifecycle events emitted by the loop.
-* :func:`save_tree` / :func:`load_tree` — JSONL round-trip on disk.
+* :func:`save_tree` / :func:`load_tree` - JSONL round-trip on disk.
 
 The tree is **descriptive, not prescriptive**: it does not change the
 loop. Replaying a path is done by reconstructing prompts/results from
@@ -31,7 +31,7 @@ Usage::
 
     save_tree(tree, "trees/run_1.jsonl")
 
-    # Later — fork from step 3 and continue the conversation differently:
+    # Later - fork from step 3 and continue the conversation differently:
     fork_id = tree.fork(tree.path_to_step(3)[-1].id)
     # ...feed that fork_id as parent into a new sub-loop run.
 """
@@ -331,7 +331,7 @@ def render_summary(tree: SessionTree, *, t_start: float | None = None) -> str:
 
     lines: list[str] = []
     lines.append(
-        f"# Session tree summary — {len(nodes)} steps, "
+        f"# Session tree summary - {len(nodes)} steps, "
         f"{len(tree.branches())} branch(es), {error_count} error(s)"
     )
     lines.append("")

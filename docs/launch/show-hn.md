@@ -20,8 +20,8 @@ demo works.
 A prompt or model change fixes one case and breaks another. A tool still
 returns "success" but writes the wrong file. The final answer looks plausible,
 but the world state is wrong. Most of the hard work is in the harness around
-the model—prompt, tools, context, permissions, stop rules, and evidence—not in
-writing another `while` loop.
+the model: prompt, tools, context, permissions, stop rules, and evidence. It is
+not in writing another `while` loop.
 
 Looplet is a small Python library for owning and regression-testing that
 harness. The loop is an iterator that yields each tool dispatch as a typed
@@ -48,7 +48,9 @@ The smallest proof is network-free:
 
 The collector reads `report.json` after the run; it does not trust the agent's
 completion message. Expected data stays grader-only. Required graders fail the
-CLI/CI when they are missing, errored, or below the gate.
+CLI/CI when a discovered required grader is filtered, skipped, errored,
+invalid, or below the gate. Detecting a grader deleted before discovery needs a
+trusted expected-grader manifest and is not claimed here.
 
 Important caveat: this is **captured-response replay**, not deterministic
 simulation. The recorded model responses are held constant, but tools, clocks, networks,

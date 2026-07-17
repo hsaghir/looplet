@@ -1,4 +1,4 @@
-"""Scaffold a minimal looplet workspace skeleton in one call.
+"""Scaffold a minimal Looplet cartridge skeleton in one call.
 
 Use this from the host before invoking the agent_factory so the agent
 starts with the boilerplate already in place and spends LLM turns on
@@ -18,18 +18,18 @@ Programmatic use:
         tools=["summarize", "extract_keywords"],
     )
 
-After this returns, ``summarizer.workspace/`` contains a working
-(but stubbed) workspace that ``cartridge_to_preset()`` can load.
+After this returns, ``summarizer.cartridge/`` contains a loadable
+cartridge draft. The generated tools remain stubs until implemented.
 The agent only needs to fill in the TODO markers.
 
 Files created:
 
-* ``cartridge.json`` — required metadata (one line of JSON)
-* ``config.yaml`` — cartridge contract: max_steps=20, done_tool
-* ``runtime.yaml`` — runtime knobs: max_tokens=2000, temperature=0.7
-* ``prompts/system.md`` — stub with TODO markers
+* ``cartridge.json`` - required metadata (one line of JSON)
+* ``config.yaml`` - cartridge contract: max_steps=20, done_tool
+* ``runtime.yaml`` - runtime knobs: max_tokens=2000, temperature=0.7
+* ``prompts/system.md`` - stub with TODO markers
 * ``tools/<name>/{tool.yaml,execute.py}`` for each tool requested
-* ``tools/done/{tool.yaml,execute.py}`` — the standard finalizer
+* ``tools/done/{tool.yaml,execute.py}`` - the standard finalizer
   (always added; every agent needs it)
 """
 
@@ -41,20 +41,20 @@ from pathlib import Path
 # ── file templates ───────────────────────────────────────────────
 
 
-# ``{name_json}`` is filled with ``json.dumps(name)`` — produces
+# ``{name_json}`` is filled with ``json.dumps(name)`` - produces
 # valid JSON (double-quoted), unlike ``{name!r}`` which emits Python
-# repr (single-quoted) and breaks ``json.loads(workspace.json)``.
-_WORKSPACE_JSON = '{{"name": {name_json}, "schema_version": 2}}\n'
+# repr (single-quoted) and breaks ``json.loads(cartridge.json)``.
+_CARTRIDGE_JSON = '{{"name": {name_json}, "schema_version": 2}}\n'
 
 _CONFIG_YAML = """\
-# Cartridge contract — what the agent does. Runtime knobs (sampling,
+# Cartridge contract - what the agent does. Runtime knobs (sampling,
 # context window, compaction) live in the sibling ``runtime.yaml``.
 max_steps: 20
 done_tool: done
 """
 
 _RUNTIME_YAML = """\
-# Runtime configuration — how this host runs the agent. Move any
+# Runtime configuration - how this host runs the agent. Move any
 # of these knobs to a per-deployment override file as needed.
 max_tokens: 2000
 temperature: 0.7
@@ -63,7 +63,7 @@ temperature: 0.7
 _SYSTEM_MD = """\
 # {title} Agent
 
-<TODO: one-paragraph mission statement — what does this agent do?>
+<TODO: one-paragraph mission statement - what does this agent do?>
 
 ## Workflow
 
@@ -74,7 +74,7 @@ _SYSTEM_MD = """\
 ## Tools
 
 {tool_list_md}
-- `done(summary)` — signals task completion.
+- `done(summary)` - signals task completion.
 """
 
 _TOOL_YAML = """\
@@ -106,7 +106,7 @@ parameters:
 """
 
 _DONE_EXECUTE = '''\
-"""done tool — completion sentinel."""
+"""done tool - completion sentinel."""
 
 
 def execute(*, summary: str) -> dict:
@@ -125,7 +125,7 @@ def scaffold_cartridge(
     tools: list[str],
     overwrite: bool = False,
 ) -> Path:
-    """Create a workspace skeleton at ``path``.
+    """Create a cartridge skeleton at ``path``.
 
     Args:
         path: Directory to create (created if missing). Refuses to
@@ -141,7 +141,7 @@ def scaffold_cartridge(
             survive a re-scaffold). Default False.
 
     Returns:
-        The absolute path to the workspace.
+        The absolute path to the cartridge.
 
     Raises:
         FileExistsError: If ``path`` exists and is non-empty and
@@ -152,12 +152,12 @@ def scaffold_cartridge(
     root = Path(path)
     if root.exists() and any(root.iterdir()) and not overwrite:
         raise FileExistsError(
-            f"workspace path {root} already exists and is non-empty. "
+            f"cartridge path {root} already exists and is non-empty. "
             f"Pass overwrite=True to scaffold into it (existing files "
             f"will be preserved)."
         )
 
-    # Validate tool names — they become directory names AND yaml
+    # Validate tool names - they become directory names AND yaml
     # ``name:`` fields. Reject anything that wouldn't survive both.
     for t in tools:
         if not t:
@@ -168,13 +168,13 @@ def scaffold_cartridge(
                 f"(used as both a directory name and a yaml key)"
             )
 
-    # Make sure ``done`` is in the set — every agent needs it.
+    # Make sure ``done`` is in the set - every agent needs it.
     tool_set = list(dict.fromkeys([*tools, "done"]))
 
     root.mkdir(parents=True, exist_ok=True)
     _write_if_absent(
         root / "cartridge.json",
-        _WORKSPACE_JSON.format(name_json=json.dumps(name)),
+        _CARTRIDGE_JSON.format(name_json=json.dumps(name)),
     )
     _write_if_absent(root / "config.yaml", _CONFIG_YAML)
     _write_if_absent(root / "runtime.yaml", _RUNTIME_YAML)
@@ -189,7 +189,7 @@ def scaffold_cartridge(
         )
         or "1. <TODO: first step>"
     )
-    tool_list_md = "\n".join(f"- `{t}(...)` — <TODO: describe>" for t in tool_set if t != "done")
+    tool_list_md = "\n".join(f"- `{t}(...)` - <TODO: describe>" for t in tool_set if t != "done")
     _write_if_absent(
         prompts_dir / "system.md",
         _SYSTEM_MD.format(
@@ -227,5 +227,5 @@ def _write_if_absent(path: Path, content: str) -> None:
 __all__ = ["scaffold_cartridge"]
 
 
-# Back-compat alias — see SPEC.md "Cartridge aliases" section.
+# Back-compat alias - see SPEC.md "Cartridge aliases" section.
 scaffold_cartridge = scaffold_cartridge

@@ -12,7 +12,7 @@ The crux these tests exercise: ``cmd_run`` runs ``composable_loop``
 *synchronously* on the calling thread, so the cancel cannot be observed
 by re-reading stdin on that same thread. The server reads stdin on a
 small background reader thread during the run and flips the token the
-loop already holds — ``composable_loop`` itself is never modified.
+loop already holds - ``composable_loop`` itself is never modified.
 
 Determinism: a scripted backend blocks inside ``generate()`` at a chosen
 turn so a known number of steps have streamed before the cancel is
@@ -42,7 +42,7 @@ class _BlockingBackend:
     """Emits a ``greet`` tool call every turn (never ``done``) so the loop
     would otherwise run to ``max_steps``. On the ``block_call``-th
     ``generate()`` it signals ``reached`` and waits on ``release`` before
-    returning — pinning the run mid-flight so a cancel can be injected at a
+    returning - pinning the run mid-flight so a cancel can be injected at a
     known step boundary.
     """
 
@@ -134,7 +134,7 @@ def test_cancel_command_mid_run_emits_cancelled(tmp_path: Path) -> None:
     assert backend.reached.wait(timeout=5.0), "backend never reached the block point"
 
     # Inject the cancel over the wire and wait for the server's reader thread
-    # to observe it and trip the token — no direct token.cancel() here.
+    # to observe it and trip the token - no direct token.cancel() here.
     write_stream.write(json.dumps({"cmd": "cancel"}) + "\n")
     write_stream.flush()
 

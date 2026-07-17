@@ -1,10 +1,10 @@
-# 08 — Cross-runtime portability
+# 08 - Cross-runtime portability
 
 The same cartridge runs three ways:
 
-1. **Local Python loop** — `composable_loop(...)` directly.
-2. **Sub-agent** — invoked from another loop via `run_sub_loop(...)`.
-3. **Replay** — a recorded trajectory is paired with the cartridge and
+1. **Local Python loop** - `composable_loop(...)` directly.
+2. **Sub-agent** - invoked from another loop via `run_sub_loop(...)`.
+3. **Replay** - a recorded trajectory is paired with the cartridge and
    re-executed against a `MockLLMBackend` to reproduce the run
    without the LLM.
 

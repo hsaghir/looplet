@@ -1,4 +1,4 @@
-"""Inlined v1 ``dep_doctor`` agent code — package registry, license
+"""Inlined v1 ``dep_doctor`` agent code - package registry, license
 compat data, and the 5 tool functions previously hosted at
 ``examples/dep_doctor/agent.py``.
 """
@@ -52,7 +52,7 @@ PACKAGE_DB = {
         "weekly_downloads": 35_000_000,
         "cves": [],
         "status": "warning",
-        "description": "YAML parser — single maintainer risk",
+        "description": "YAML parser - single maintainer risk",
     },
     "cryptography": {
         "latest_version": "44.0.0",
@@ -143,7 +143,7 @@ PACKAGE_DB = {
         "weekly_downloads": 50_000_000,
         "cves": [],
         "status": "warning",
-        "description": "Utility library — no updates since 2021",
+        "description": "Utility library - no updates since 2021",
     },
     "event-stream": {
         "latest_version": "4.0.1",
@@ -163,7 +163,7 @@ LICENSE_COMPATIBILITY = {
     "Apache-2.0": {"compatible_with": ["MIT", "BSD-3-Clause", "Apache-2.0"]},
     "GPL-3.0": {
         "compatible_with": ["GPL-3.0", "AGPL-3.0"],
-        "note": "Copyleft — may require open-sourcing your code",
+        "note": "Copyleft - may require open-sourcing your code",
     },
     "LGPL-3.0": {"compatible_with": ["GPL-3.0", "LGPL-3.0", "AGPL-3.0"], "note": "Weak copyleft"},
 }

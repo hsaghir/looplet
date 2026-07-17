@@ -1,7 +1,7 @@
 """LLM parity: portable twins (via the Model Gateway) match the originals.
 
-The three portable twins — ``dep_doctor_portable``, ``threat_intel_portable``,
-``git_detective_portable`` — serve their tools out of process over MCP. The
+The three portable twins - ``dep_doctor_portable``, ``threat_intel_portable``,
+``git_detective_portable`` - serve their tools out of process over MCP. The
 LLM-backed tools (``find_alternatives``, ``extract_iocs`` / ``assess_risk``,
 ``commit_patterns``) used to *degrade* because an out-of-process server had no
 handle on the host's ``ctx.llm``. The **Model Gateway (MGP)** closes that gap:
@@ -11,11 +11,11 @@ connects to it and calls back into the *same* model.
 
 Each test here proves two things against the *same scripted backend*:
 
-1. **Functional + qualitative parity** — with a backend bound to the twin's
+1. **Functional + qualitative parity** - with a backend bound to the twin's
    gateway, the portable tool returns the identical LLM-derived field/value
    that the in-process original returns when handed the backend via
    ``ctx.llm``.
-2. **Graceful degradation** — with no backend bound (the load-time default,
+2. **Graceful degradation** - with no backend bound (the load-time default,
    e.g. a headless dispatch before any run), the portable tool falls back to
    exactly the ``ctx.llm is None`` branch.
 

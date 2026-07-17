@@ -105,7 +105,7 @@ for spec in adapter.list_tools():
     reg.register(spec)
 ```
 
-No MCP SDK required — `looplet` speaks JSON-RPC over stdio directly.
+No MCP SDK required - `looplet` speaks JSON-RPC over stdio directly.
 
 ## Cost accounting on top of provenance
 
@@ -197,4 +197,4 @@ result = run_sub_loop(
 ---
 
 Have a recipe we should add? Open a PR against
-[`docs/recipes.md`](recipes.md) — recipes under ~40 lines are welcome.
+[`docs/recipes.md`](recipes.md) - recipes under ~40 lines are welcome.

@@ -1,4 +1,4 @@
-"""RegistryGuard — a portable ``kind: lep`` permission policy.
+"""RegistryGuard - a portable ``kind: lep`` permission policy.
 
 This hook runs *out of process* over the Loop Effect Protocol (LEP).
 The host ships only the declared view (``tool`` + ``args``) over
@@ -11,7 +11,7 @@ useful data, so the guard short-circuits it before dispatch.
 
 Because the decision is a pure function of the declared view, the hook
 is classified ``portable`` and round-trips losslessly as a declarative
-``kind: lep`` block — no Python source needs to be vendored beyond this
+``kind: lep`` block - no Python source needs to be vendored beyond this
 self-contained server.
 """
 

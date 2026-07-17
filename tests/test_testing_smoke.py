@@ -44,7 +44,7 @@ class TestMockLLMBackendSmoke:
         assert llm.last_system_prompt == "sys"
 
 
-# ── MockLLMBackend(cycle=False) — outcome-side ergonomics ──
+# ── MockLLMBackend(cycle=False) - outcome-side ergonomics ──
 
 
 def test_mock_backend_default_still_cycles() -> None:

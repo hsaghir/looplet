@@ -81,7 +81,7 @@ def test_unknown_top_level_config_key_warns_when_not_strict(
 
 def test_top_level_output_schema_in_config_yaml_raises_strict(tmp_path: Path) -> None:
     """``output_schema:`` belongs in ``tools/done/tool.yaml``, not in
-    ``config.yaml`` — putting it at the top level is a common mistake
+    ``config.yaml`` - putting it at the top level is a common mistake
     that previously left a raw dict on LoopConfig.output_schema."""
     extra = (
         "output_schema:\n"
@@ -140,7 +140,7 @@ def test_register_same_toolspec_twice_does_not_warn(
     spec = next(iter(tools_from([my_tool])._tools.values()))
     registry.register(spec)
     with caplog.at_level(logging.WARNING, logger="looplet.tools"):
-        registry.register(spec)  # same object — must NOT warn
+        registry.register(spec)  # same object - must NOT warn
     msgs = [r.getMessage() for r in caplog.records if "already registered" in r.getMessage()]
     assert not msgs, f"unexpected warning(s): {msgs}"
 
@@ -149,7 +149,7 @@ def test_register_different_toolspec_with_same_name_still_warns(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Sanity: actual collisions (different ToolSpec objects, same
-    name) MUST still warn — that's the original purpose of the message.
+    name) MUST still warn - that's the original purpose of the message.
     """
     from looplet import tool, tools_from
     from looplet.tools import BaseToolRegistry

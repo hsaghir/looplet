@@ -124,13 +124,13 @@ def test_git_detective_portable_cross_process_composition(tmp_path: Path) -> Non
                 assert cs.data["contributor_count"] == 1
                 assert cs.data["total_commits"] == 2
 
-                # (4) MCP file_hotspots — a.py and b.py both changed twice.
+                # (4) MCP file_hotspots - a.py and b.py both changed twice.
                 fh = preset.tools.dispatch(ToolCall(tool="file_hotspots", args={"top_n": "5"}))
                 assert fh.error is None
                 hotspot_files = {h["file"] for h in fh.data["hotspots"]}
                 assert {"a.py", "b.py"} <= hotspot_files
 
-                # (5) MCP coupled_files — a.py and b.py co-change.
+                # (5) MCP coupled_files - a.py and b.py co-change.
                 cf = preset.tools.dispatch(
                     ToolCall(tool="coupled_files", args={"min_coupling": "2"})
                 )

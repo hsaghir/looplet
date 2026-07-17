@@ -1,4 +1,4 @@
-"""Dependency-footprint benchmark — count transitive deps per framework.
+"""Dependency-footprint benchmark - count transitive deps per framework.
 
 Creates a fresh venv per framework, installs the package, and counts
 how many third-party packages ended up installed. A proxy for "how

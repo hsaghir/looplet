@@ -1,7 +1,7 @@
 """Resolve the *target project root* from a cartridge runtime dict.
 
-The "project root" is the directory the agent operates on — typically
-the user's repository — distinct from the cartridge directory itself.
+The "project root" is the directory the agent operates on - typically
+the user's repository - distinct from the cartridge directory itself.
 Cartridges that need it (coder, dep_doctor, git_detective, ...) used
 to require the host to pass ``runtime["workspace"]`` explicitly. That
 is fragile (host-specific) and overloads the term "workspace" which
@@ -9,8 +9,8 @@ this codebase reserves for the legacy cartridge name.
 
 Resolution order (first wins):
 
-1. ``runtime["project_root"]`` — the canonical key.
-2. ``runtime["workspace"]`` — back-compat with pre-rename callers.
+1. ``runtime["project_root"]`` - the canonical key.
+2. ``runtime["workspace"]`` - back-compat with pre-rename callers.
 3. ``$LOOPLET_PROJECT_ROOT`` env var.
 4. ``git rev-parse --show-toplevel`` (if cwd is inside a git repo).
 5. ``Path.cwd()``.
@@ -47,7 +47,7 @@ def resolve_project_root(runtime: dict[str, Any] | None = None) -> str:
     if env_val:
         return str(Path(env_val).expanduser().resolve())
 
-    # 4: git toplevel — quiet, swallow any error and fall through.
+    # 4: git toplevel - quiet, swallow any error and fall through.
     try:
         out = subprocess.run(
             ["git", "rev-parse", "--show-toplevel"],

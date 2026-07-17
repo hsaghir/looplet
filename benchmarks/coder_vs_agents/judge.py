@@ -67,7 +67,7 @@ def _parse(text: str) -> dict | None:
 
 _RUBRIC = """You are an impartial senior engineer evaluating two AI assistant \
 responses to the same task. Judge only on merit; do not reward length for its \
-own sake. Be critical and discriminating — use the full 1-5 range.
+own sake. Be critical and discriminating - use the full 1-5 range.
 
 TASK:
 {task}

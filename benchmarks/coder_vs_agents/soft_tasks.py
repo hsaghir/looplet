@@ -96,7 +96,7 @@ TASKS = [
             "seconds under normal load. Walk through how you would diagnose and "
             "fix this tail-latency problem. List the most likely hypotheses "
             "(with reasoning), how you would test or measure each one, and the "
-            "likely fixes — prioritized by expected impact and effort. Be "
+            "likely fixes - prioritized by expected impact and effort. Be "
             "specific rather than generic." + _SUFFIX
         ),
         "seed": {},

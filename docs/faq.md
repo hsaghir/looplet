@@ -66,7 +66,7 @@ want graph-native checkpointing and visualization. That is a stronger fit
 than Looplet.
 
 Use Looplet when one model repeatedly calls tools until completion and you
-want that loop—not a graph runtime—to remain the reviewable unit. Hooks handle
+want that loop, rather than a graph runtime, to remain the reviewable unit. Hooks handle
 cross-cutting behavior; cartridges package the harness; collectors and graders
 test its outcomes.
 
@@ -89,9 +89,10 @@ tools, hook declarations, resources, memory, config, and optionally a colocated
 self-test bundle. It loads into the same `AgentPreset` and loop used by the
 Python API.
 
-Think "deployable harness source," not "agent personality file." External,
-host-owned holdouts should remain outside the cartridge so a candidate cannot
-edit the oracle that promotes it.
+Think "deployable harness source," not "agent personality file." External
+holdouts need a host-owned runner that withholds oracle data and capabilities
+from the candidate. Separate directories alone are not a security boundary for
+arbitrary code with the same filesystem authority.
 
 ## Is replay deterministic?
 

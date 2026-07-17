@@ -10,7 +10,7 @@ runs, and gate harness changes with outcome evals.
 
 ## Short post
 
-Your agent works. Then a prompt, tool, or model changes—what actually broke?
+Your agent works. Then a prompt, tool, or model changes. What actually broke?
 
 Looplet is test-driven harness engineering for Python agents: an owned loop,
 reviewable harness files, readable run evidence, captured-response replay, and
@@ -37,8 +37,8 @@ or network.
 **4/** Replay caveat: model responses are fixed; tools, clocks, networks, and
 side effects execute again. Prompt/model changes require fresh sampled runs.
 
-**5/** The harness can live as ordinary files—prompt, tools, hooks, resources,
-cases, collectors, graders—and the loop still yields every `Step` to Python.
+**5/** The harness can live as ordinary files: prompt, tools, hooks, resources,
+cases, collectors, and graders. The loop still yields every `Step` to Python.
 
 **6/** This is for a real single-loop harness after the prototype stage. Use a
 graph runtime for a real graph, a hosted eval platform for annotation and
@@ -99,8 +99,9 @@ Proof/source: https://hsaghir.github.io/looplet/regression-demo/
 now leads with a network-free red-to-green proof: capture fixed model
 responses, change one tool implementation, independently collect the fresh
 artifact, and enforce the outcome with a required grader. It deliberately
-targets single-loop agents—not graph orchestration or hosted eval analytics—and
-keeps zero third-party dependencies in core. [Run the proof](https://hsaghir.github.io/looplet/regression-demo/).
+targets single-loop agents rather than graph orchestration or hosted eval
+analytics, and keeps zero third-party dependencies in core.
+[Run the proof](https://hsaghir.github.io/looplet/regression-demo/).
 
 ## Copy to avoid
 
@@ -109,7 +110,7 @@ keeps zero third-party dependencies in core. [Run the proof](https://hsaghir.git
 - "Automatically optimize/evolve your agent"
 - "A replacement for LangGraph"
 - "The fastest/most accurate agent framework"
-- "Evals the agent cannot game" (only host-owned protected holdouts support
-  that narrower claim)
+- "Evals the agent cannot game" (only a host-owned runner with an explicit
+  isolation boundary can support that narrower claim)
 - "No dependencies" without saying **core runtime** and acknowledging optional
   provider extras

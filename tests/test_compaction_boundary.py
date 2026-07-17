@@ -16,7 +16,7 @@ Invariants:
 2. The metadata carries the summary plus the ``(first, last)`` step
    range that was compacted out.
 3. ``Conversation.find_compaction_boundaries()`` returns them in order.
-4. The boundary must never be dropped by subsequent compactions —
+4. The boundary must never be dropped by subsequent compactions -
    ``Conversation.compact()`` skips over them.
 """
 
@@ -74,7 +74,7 @@ class TestCompactionBoundary:
             conv.append(Message(role=MessageRole.USER, content=f"user-{i}"))
         # Compact aggressively (keep only last 5 messages)
         conv.compact(keep_recent=5)
-        # Boundary must still be present — plus the new summary message
+        # Boundary must still be present - plus the new summary message
         # from compact() itself is now also marked as a boundary, so we
         # expect 2: the original 'keep-me' + the compact-generated one.
         boundaries = conv.find_compaction_boundaries()

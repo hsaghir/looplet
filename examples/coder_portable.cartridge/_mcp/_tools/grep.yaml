@@ -12,9 +12,9 @@ description: |-
   - Use `head_limit` and `offset` to page through large results. Default cap is 250 results.
 
   Examples:
-  - `grep(pattern="def authenticate", glob="*.py", output_mode="content")` — find Python defs of authenticate
-  - `grep(pattern="TODO|FIXME", path="src/", output_mode="files_with_matches")` — find files with TODOs in src/
-  - `grep(pattern="class User", type="py", context=2)` — show matches with two lines of context
+  - `grep(pattern="def authenticate", glob="*.py", output_mode="content")` - find Python defs of authenticate
+  - `grep(pattern="TODO|FIXME", path="src/", output_mode="files_with_matches")` - find files with TODOs in src/
+  - `grep(pattern="class User", type="py", context=2)` - show matches with two lines of context
 parameters:
   pattern:
     type: string

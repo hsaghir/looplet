@@ -1,4 +1,4 @@
-"""End-to-end integration tests for looplet — all components working together.
+"""End-to-end integration tests for looplet - all components working together.
 
 Each test scenario exercises multiple looplet components simultaneously to
 verify correct composition and cross-module integration.
@@ -193,7 +193,7 @@ def test_full_loop_with_all_capabilities():
         checkpoint_files = list(Path(tmpdir).glob("*.json"))
         assert len(checkpoint_files) >= 1
 
-    # No error — loop completed
+    # No error - loop completed
     assert len(steps) >= 1
 
     # Metrics recorded via custom hook
@@ -256,7 +256,7 @@ def test_checkpoint_resume():
         assert loaded is not None
         assert loaded.step_number == completed_steps
 
-        # Resume — step_offset should be > 0
+        # Resume - step_offset should be > 0
         resume_state = resume_loop_state(loaded)
         assert resume_state["step_offset"] > 0
         assert resume_state["step_offset"] == completed_steps
@@ -343,7 +343,7 @@ def test_validation_rejects_bad_done():
     # Mock LLM: returns done without required 'summary' field, then valid done
     llm = _ScriptedLLM(
         [
-            _tool_response("done"),  # missing 'summary' — should fail validation
+            _tool_response("done"),  # missing 'summary' - should fail validation
             _tool_response("done", summary="ok"),  # valid done
         ]
     )

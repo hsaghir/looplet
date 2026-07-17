@@ -1,4 +1,4 @@
-"""Tests for looplet.cost — token + cost tracking."""
+"""Tests for looplet.cost - token + cost tracking."""
 
 from __future__ import annotations
 
@@ -207,7 +207,7 @@ def test_char_fallback_with_native_tool_block_list_dict_shape() -> None:
             raw_response=blocks,
         )
     )
-    # Response chars must NOT be zero — native-tool blocks have measurable
+    # Response chars must NOT be zero - native-tool blocks have measurable
     # length (text + tool name + JSON-serialized args).
     assert t.response_chars > 0
     expected = (

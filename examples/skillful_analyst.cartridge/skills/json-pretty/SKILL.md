@@ -13,7 +13,7 @@ reading.
 
 1. Use `read_text(path=<json>)` to load the file.
 2. Parse it with `json.loads`. If parsing fails, write the parse
-   error to `<stem>.parse_error.txt` and stop — do not write a
+   error to `<stem>.parse_error.txt` and stop - do not write a
    partial output.
 3. Re-emit with `json.dumps(obj, indent=2, sort_keys=True,
    ensure_ascii=False)`.

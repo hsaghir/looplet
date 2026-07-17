@@ -31,10 +31,10 @@ portability). A cartridge is in the **portable profile** when it has
 
 | Tier | Symbol | Meaning | Blocker? |
 |------|--------|---------|----------|
-| `PROTOCOL` | ● | Pure data or out-of-process protocol — `config.yaml`, `prompts/`, `mcp_servers:` tools, `kind: lep` hooks. Runs on any conforming loader with no shared code. | no |
+| `PROTOCOL` | ● | Pure data or out-of-process protocol - `config.yaml`, `prompts/`, `mcp_servers:` tools, `kind: lep` hooks. Runs on any conforming loader with no shared code. | no |
 | `STDLIB` | ◐ | Declarative reference to a looplet-shipped archetype (`builtin_tools:` / `builtin_hooks:`). No Python body in the cartridge. | no |
 | `RUNTIME` | ◈ | A `resources/*.py` whose only job is to wrap a host-provided *service* (compaction, the skill manager) via a looplet factory like `default_compact_service`. The service is a host responsibility every loader ships its own equivalent of. | no |
-| `INPROCESS` | ○ | A Python body or author-owned shared object that pins the cartridge to a Python host — `tools/<n>/execute.py`, single-file `tools/<n>.py`, `hooks/<n>/` class hooks, author-owned `resources/*.py` (`@ref` shared mutable state). | **yes** |
+| `INPROCESS` | ○ | A Python body or author-owned shared object that pins the cartridge to a Python host - `tools/<n>/execute.py`, single-file `tools/<n>.py`, `hooks/<n>/` class hooks, author-owned `resources/*.py` (`@ref` shared mutable state). | **yes** |
 
 `extends:` is resolved transitively: a child cartridge inherits its
 parent's components (and therefore its parent's blockers), tagged
@@ -76,7 +76,7 @@ behaviour-faithful to its in-process original, but classifies as
 
 Porting an in-process cartridge to a portable twin is a fixed procedure:
 
-1. **Fold every `tools/<n>/execute.py` body into one `_mcp/tools_server.py`** —
+1. **Fold every `tools/<n>/execute.py` body into one `_mcp/tools_server.py`** -
    a stdlib-only stdio MCP server. Vendor any data tables (package DBs,
    threat feeds) into the server. Wire it in `config.yaml`:
 
@@ -86,19 +86,19 @@ Porting an in-process cartridge to a portable twin is a fixed procedure:
        command: "python3 ${runtime.cartridge_root}/_mcp/tools_server.py"
    ```
 
-2. **Keep `kind: lep` hooks verbatim** — they are already PROTOCOL-tier.
+2. **Keep `kind: lep` hooks verbatim** - they are already PROTOCOL-tier.
 
-3. **Keep `builtin_tools:` / `builtin_hooks:`** — already STDLIB-tier.
+3. **Keep `builtin_tools:` / `builtin_hooks:`** - already STDLIB-tier.
 
-4. **Keep `resources/compact_service.py` (and similar)** — already
+4. **Keep `resources/compact_service.py` (and similar)** - already
    RUNTIME-tier (host service), not a blocker.
 
-5. **Replace author-owned INPROCESS resources** — e.g.
+5. **Replace author-owned INPROCESS resources** - e.g.
    `git_detective`'s `repo_config` (a shared path) becomes a
    `$LOOPLET_PROJECT_ROOT` env lookup inside the server; genuine shared
    *mutable* state would move to an SSP service instead.
 
-6. **Anchor relative paths to the host root** — the MCP subprocess
+6. **Anchor relative paths to the host root** - the MCP subprocess
    resolves relative paths against `os.getcwd()` (the host project
    root), the portable equivalent of `resolve_project_root(runtime)`.
 
@@ -109,7 +109,7 @@ Porting an in-process cartridge to a portable twin is a fixed procedure:
     `find_alternatives` → empty list, `assess_risk` → severity-only
     summary). Deterministic logic (regex extraction, git statistics) is
     preserved in full. True host-LLM access from a server would require
-    MCP `sampling/createMessage` callbacks — out of scope for v1.x.
+    MCP `sampling/createMessage` callbacks - out of scope for v1.x.
 
 ## Inherently python-host cartridges
 
@@ -126,7 +126,7 @@ mutable state, and the tools execute arbitrary code in the host
 environment. The mechanical recipe above *would* apply tool-by-tool
 (bodies → an MCP server, class hooks → LEP, shared state → SSP), but the
 result would still need a host that can run a shell and edit a live
-workspace — the very thing that makes it useful. Porting it buys no
+workspace - the very thing that makes it useful. Porting it buys no
 portability; it stays python-host by design.
 
 ### `agent_factory`
@@ -135,7 +135,7 @@ portability; it stays python-host by design.
 reports its blockers as **its own** (`validate_workspace`) **plus all of
 `coder`'s** (tagged `(inherited)`). Its one bespoke tool,
 `validate_workspace`, exists to *import and validate a Python workspace*
-— it is python-host by definition. Like `coder`, it is documented as
+and is python-host by definition. Like `coder`, it is documented as
 inherently python-host rather than ported.
 
 ```python

@@ -28,7 +28,7 @@ class TestCloneToolsExcludingTypo:
         with caplog.at_level(logging.WARNING, logger="looplet.subagent"):
             sub = clone_tools_excluding(parent, ["finish"])  # typo: should be "finalize"
         assert any("not registered on the parent" in rec.message for rec in caplog.records)
-        # And the state-mutating tool is still present — this is the real footgun
+        # And the state-mutating tool is still present - this is the real footgun
         # the warning is trying to surface.
         assert "finalize" in sub._tools
         assert "search" in sub._tools

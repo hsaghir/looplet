@@ -27,7 +27,7 @@ colorised, and a sticky footer tracks step count + elapsed time.
   not truncated mid-string. Use the ``--trace`` directory if you need
   the full content.
 
-The printer is a *consumer* of looplet ``Step`` objects, not a hook —
+The printer is a *consumer* of looplet ``Step`` objects, not a hook -
 it lives in the CLI layer so the loop engine stays uncluttered.
 """
 
@@ -144,7 +144,7 @@ def _format_args(args: dict[str, Any], width: int) -> str:
     rendered = ", ".join(parts)
     if len(rendered) <= width:
         return rendered
-    # Too wide — keep the first key=value, drop the rest, show count.
+    # Too wide - keep the first key=value, drop the rest, show count.
     first = parts[0]
     rest_count = len(args) - 1
     if rest_count <= 0:
@@ -168,7 +168,7 @@ def _format_result(data: Any, error: str | None) -> str:
         for k in ("summary", "result", "count", "n_tools", "tools", "valid"):
             if k in data:
                 return _grey(f"→ {k}={_summarize_value(data[k], max_chars=60)}")
-        # Fallback — just show the shape.
+        # Fallback - just show the shape.
         return _grey(
             f"→ {{{len(data)} keys: {', '.join(list(data)[:3])}{'…' if len(data) > 3 else ''}}}"
         )
@@ -236,7 +236,7 @@ class PrettyPrinter:
         """Print the trailing summary box."""
         elapsed = time.time() - self._t0
         glyph = _green("✓") if success else _red("✗")
-        stats = f"in {elapsed:.1f}s — {self._n_steps} steps, {self._n_denies} denies, {self._n_errors} errors"
+        stats = f"in {elapsed:.1f}s - {self._n_steps} steps, {self._n_denies} denies, {self._n_errors} errors"
         print()
         print(f"{glyph} {_bold('done')} {_dim(stats)}")
         if summary:
@@ -253,7 +253,7 @@ class PrettyPrinter:
         tc = getattr(step, "tool_call", None)
         tr = getattr(step, "tool_result", None)
         if tc is None:
-            # Recovery / no-op step — surface it briefly.
+            # Recovery / no-op step - surface it briefly.
             print(_dim(f"  · step {self._n_steps:>2}  (no tool call)"))
             return
 

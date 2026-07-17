@@ -17,13 +17,13 @@ immediately, no per-cartridge edit needed.
 
 Currently shipped built-ins:
 
-* ``subagent`` — invoke another cartridge as a synchronous sub-loop.
-* ``scaffold_cartridge`` — create a stubbed cartridge skeleton in one
+* ``subagent`` - invoke another cartridge as a synchronous sub-loop.
+* ``scaffold_cartridge`` - create a stubbed cartridge skeleton in one
   call (agent-callable wrapper around
   :func:`looplet.cartridge.scaffold.scaffold_cartridge`).
-* ``search_skills`` — list installed agentskills.io SKILL.md bundles by
+* ``search_skills`` - list installed agentskills.io SKILL.md bundles by
   task description without loading them.
-* ``activate_skill`` — load one SKILL.md body into subsequent prompts.
+* ``activate_skill`` - load one SKILL.md body into subsequent prompts.
 
 Adding a new built-in: write a small module exposing a ``SPEC``
 :class:`looplet.tools.ToolSpec`, then list its ``name`` in

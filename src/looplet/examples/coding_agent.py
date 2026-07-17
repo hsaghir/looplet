@@ -1,19 +1,19 @@
-"""Coding agent — a complete example of building with looplet.
+"""Coding agent - a complete example of building with looplet.
 
 Demonstrates how a well-structured agent harness works:
 
-1. **Native tool calling** — uses the provider's native tool protocol
+1. **Native tool calling** - uses the provider's native tool protocol
    (OpenAI function calling, Anthropic tool_use) for reliable dispatch.
-2. **Just-in-time context** — don't frontload all instructions. Surface
+2. **Just-in-time context** - don't frontload all instructions. Surface
    requirements when they matter: after the agent writes code, remind
    it about tests. After tests fail, inject targeted fix guidance.
-3. **Run to completion** — the agent keeps going until the job is done.
+3. **Run to completion** - the agent keeps going until the job is done.
    ``should_stop`` returns False; ``check_done`` blocks until tests pass.
-4. **Error messages are prompts** — tool results include actionable
+4. **Error messages are prompts** - tool results include actionable
    remediation steps, so the agent self-corrects without human input.
-5. **Persistent standards** — coding standards are injected via
+5. **Persistent standards** - coding standards are injected via
    ``StaticMemorySource`` and survive all compactions.
-6. **Default compaction** — for long sessions: prune old tool results,
+6. **Default compaction** - for long sessions: prune old tool results,
    summarize older context, then truncate only as a last resort.
 
 This agent:
@@ -64,12 +64,12 @@ from looplet.session import SessionLog
 from looplet.types import ToolCall, ToolResult
 
 # ═══════════════════════════════════════════════════════════════════
-# 1. TOOLS — same core set as Claude Code / Claude Agent SDK
+# 1. TOOLS - same core set as Claude Code / Claude Agent SDK
 #
 # bash, read, write, edit, glob, grep, think, done
 #
 # Each tool has rich error messages with remediation steps.
-# The model sees these messages and self-corrects — error messages
+# The model sees these messages and self-corrects - error messages
 # ARE prompts.
 # ═══════════════════════════════════════════════════════════════════
 
@@ -77,7 +77,7 @@ from looplet.types import ToolCall, ToolResult
 def _bash(*, command: str, workspace: str = "") -> dict:
     """Execute a bash command in the workspace directory.
 
-    This is the most powerful tool — it can run pytest, install
+    This is the most powerful tool - it can run pytest, install
     packages, search files, compile code, and do anything the
     shell can do. Prefer this over specialized tools when the
     task is naturally expressed as a shell command.
@@ -146,7 +146,7 @@ def _write(*, file_path: str, content: str, workspace: str = "") -> dict:
 def _edit(*, file_path: str, old_string: str, new_string: str, workspace: str = "") -> dict:
     """Edit a file by replacing an exact string match.
 
-    Use this for targeted fixes — change one function, fix one line.
+    Use this for targeted fixes - change one function, fix one line.
     For large rewrites, use write instead.
     """
     full = os.path.join(workspace, file_path) if workspace else file_path
@@ -169,7 +169,7 @@ def _edit(*, file_path: str, old_string: str, new_string: str, workspace: str = 
         }
     if count > 1:
         return {
-            "error": f"old_string matches {count} locations — ambiguous",
+            "error": f"old_string matches {count} locations - ambiguous",
             "remediation": "Include more surrounding context in old_string to make it unique.",
         }
     with open(full, "w") as f:
@@ -266,7 +266,7 @@ def build_tools(workspace: str):
 
 
 # ═══════════════════════════════════════════════════════════════════
-# 2. HOOKS — surface instructions at the right time
+# 2. HOOKS - surface instructions at the right time
 #
 # Don't frontload all requirements. Inject context just-in-time:
 # - After each tool call (post_dispatch): review feedback
@@ -325,7 +325,7 @@ class CodingGuardrailHook:
                     return InjectContext(
                         "Tests failed. Read the pytest output carefully. "
                         "Fix the EXACT issue described, then run tests again. "
-                        "Do not rewrite everything — make targeted fixes."
+                        "Do not rewrite everything - make targeted fixes."
                     )
 
         return None
@@ -340,7 +340,7 @@ class CodingGuardrailHook:
         """Quality gate: block done() until tests pass.
 
         The harness enforces completion criteria so no human needs
-        to intervene — the agent runs to completion autonomously.
+        to intervene - the agent runs to completion autonomously.
         """
         if not self._tests_passed:
             return HookDecision(
@@ -350,21 +350,21 @@ class CodingGuardrailHook:
         return None
 
     def should_stop(self, state: Any, step_num: int, new_entities: int) -> bool:
-        """Never stop early — let the agent run to completion."""
+        """Never stop early - let the agent run to completion."""
         return False
 
     # Protocol stubs
 
 
 # ═══════════════════════════════════════════════════════════════════
-# 3. PERSISTENT MEMORY — coding standards
+# 3. PERSISTENT MEMORY - coding standards
 #
 # These survive all compactions. The agent sees them on EVERY
 # turn, even after context is compressed.
 # ═══════════════════════════════════════════════════════════════════
 
 CODING_STANDARDS = StaticMemorySource("""\
-## Coding Standards (persistent — survives compaction)
+## Coding Standards (persistent - survives compaction)
 
 1. **Tests first**: Write test file before or alongside implementation.
 2. **Small files**: Each file under 200 lines. Split if larger.
@@ -375,7 +375,7 @@ CODING_STANDARDS = StaticMemorySource("""\
 """)
 
 # ═══════════════════════════════════════════════════════════════════
-# 4. DEFAULT COMPACTION — prune, summarize, then truncate fallback
+# 4. DEFAULT COMPACTION - prune, summarize, then truncate fallback
 #
 # Long sessions need context management. DefaultCompactService keeps
 # recent steps verbatim, prunes old bulky tool results, summarizes the
@@ -385,12 +385,12 @@ CODING_STANDARDS = StaticMemorySource("""\
 COMPACT_SERVICE = DefaultCompactService(keep_recent=2, keep_recent_tool_results=5)
 
 # ═══════════════════════════════════════════════════════════════════
-# 5. DOMAIN ADAPTER — Bundle domain callables in one object
+# 5. DOMAIN ADAPTER - Bundle domain callables in one object
 # ═══════════════════════════════════════════════════════════════════
 
 
 def _build_briefing(state: Any, session_log: SessionLog, context: Any) -> str:
-    """Dynamic briefing — surfaces progress summary each turn."""
+    """Dynamic briefing - surfaces progress summary each turn."""
     steps = getattr(state, "steps", [])
     if not steps:
         return "No work done yet. Start by understanding the task, then write code and tests."
@@ -447,11 +447,11 @@ DOMAIN = DomainAdapter(
 )
 
 # ═══════════════════════════════════════════════════════════════════
-# 6. EVALS — write eval functions as you debug, they run automatically
+# 6. EVALS - write eval functions as you debug, they run automatically
 #
 # Each eval_* function takes EvalContext and returns a score.
 # These are the same checks you'd do manually when reviewing
-# an agent run — formalized as reusable evaluators.
+# an agent run - formalized as reusable evaluators.
 # ═══════════════════════════════════════════════════════════════════
 
 
@@ -478,7 +478,7 @@ def eval_wrote_tests(ctx: EvalContext) -> bool:
     """Did the agent write test files (not just implementation)?
 
     Found while debugging: some agents write code but skip tests,
-    then call done() — the guardrail hook catches this at runtime,
+    then call done() - the guardrail hook catches this at runtime,
     but the eval catches it in batch scoring.
     """
     for s in ctx.steps:
@@ -529,7 +529,7 @@ def eval_error_recovery(ctx: EvalContext) -> dict:
 CODING_EVALS = [eval_tests_passed, eval_wrote_tests, eval_efficiency, eval_error_recovery]
 
 # ═══════════════════════════════════════════════════════════════════
-# 7. MAIN — Putting it all together
+# 7. MAIN - Putting it all together
 # ═══════════════════════════════════════════════════════════════════
 
 
@@ -591,7 +591,7 @@ def run_coding_agent(
         # Domain adapter bundles the briefing builder (+ prompt override
         # for JSON-text mode when native tools aren't available)
         domain=_domain,
-        # Persistent memory — coding standards survive compaction
+        # Persistent memory - coding standards survive compaction
         memory_sources=[CODING_STANDARDS],
         # Budget: auto-compact at 80% of context window
         # (ThresholdCompactHook fires should_compact when pressure is high)
@@ -610,7 +610,7 @@ def run_coding_agent(
         EvalHook(evaluators=CODING_EVALS, verbose=True),
     ]
 
-    # Trajectory recording — saves full run for replay/debugging
+    # Trajectory recording - saves full run for replay/debugging
     _recorder = None
     if trace_dir:
         from looplet.provenance import TrajectoryRecorder  # noqa: PLC0415
@@ -789,7 +789,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     print("=" * 60)
-    print("looplet — Coding Agent Example")
+    print("looplet - Coding Agent Example")
     print("=" * 60)
     print()
 

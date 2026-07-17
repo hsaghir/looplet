@@ -1,4 +1,4 @@
-"""``python -m looplet`` — CLI entry point.
+"""``python -m looplet`` - CLI entry point.
 
 Subcommands:
     show <trace-dir>              One-page summary of a captured trace directory.
@@ -64,7 +64,7 @@ def _render_show(trace_dir: Path) -> int:
     if not traj and not calls:
         print(
             f"error: {trace_dir} contains no trajectory.json or "
-            "manifest.jsonl — not a trace directory",
+            "manifest.jsonl - not a trace directory",
             file=sys.stderr,
         )
         return 1
@@ -644,7 +644,7 @@ def main(argv: list[str] | None = None) -> int:
 
     parser = argparse.ArgumentParser(
         prog="python -m looplet",
-        description="looplet — own, inspect, and regression-test Python agent harnesses",
+        description="looplet - own, inspect, and regression-test Python agent harnesses",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -842,7 +842,7 @@ def main(argv: list[str] | None = None) -> int:
     handler = getattr(args, "_handler", None)
     if handler is not None:
         return int(handler(args))
-    # Unreachable — argparse rejects unknown commands.
+    # Unreachable - argparse rejects unknown commands.
     return 2
 
 

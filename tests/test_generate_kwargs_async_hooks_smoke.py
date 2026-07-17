@@ -116,7 +116,7 @@ class TestGenerateKwargs:
         tools = BaseToolRegistry()
         register_done_tool(tools)
 
-        # MockLLMBackend.generate doesn't accept 'top_p' — should not crash
+        # MockLLMBackend.generate doesn't accept 'top_p' - should not crash
         config = LoopConfig(
             max_steps=3,
             generate_kwargs={"top_p": 0.9, "nonexistent_kwarg": True},

@@ -1,20 +1,20 @@
 """Stdio MCP server for the git_detective_portable cartridge.
 
 Serves all 10 tools that were in-process ``tools/*/execute.py`` closures
-in the original ``git_detective`` cartridge — ``repo_overview``,
+in the original ``git_detective`` cartridge - ``repo_overview``,
 ``contributor_stats``, ``recent_activity``, ``file_hotspots``,
 ``coupled_files``, ``commit_patterns``, ``directory_structure``,
-``file_age_analysis``, ``think``, ``done`` — over the MCP stdio
+``file_age_analysis``, ``think``, ``done`` - over the MCP stdio
 transport. Moving them out of process is what makes the twin fully
 portable: no Python tool body is required by the host.
 
 The target repository is resolved from ``$LOOPLET_PROJECT_ROOT`` (set by
-the host), falling back to the server's working directory — the portable
+the host), falling back to the server's working directory - the portable
 equivalent of the original's INPROCESS ``repo_config`` resource.
 
 ``commit_patterns`` reaches the host model through the Model Gateway
 (MGP): the loader exports ``LOOPLET_LLM_SOCKET`` and this server connects
-to it lazily, so the tool adds its LLM commit-quality assessment — full
+to it lazily, so the tool adds its LLM commit-quality assessment - full
 parity with the in-process original. When no gateway is present (or no
 backend is bound yet) it omits that field, exactly the branch the
 original takes when ``ctx.llm is None``. The deterministic git statistics
@@ -112,7 +112,7 @@ def _host_llm():
     """Return the host Model Gateway client only when a backend is bound.
 
     Returns ``None`` when there is no reachable gateway *or* no backend is
-    currently bound — i.e. exactly the cases where the in-process original
+    currently bound - i.e. exactly the cases where the in-process original
     sees ``ctx.llm is None`` and degrades.
     """
     global _HOST_LLM, _HOST_LLM_TRIED
@@ -292,7 +292,7 @@ def commit_patterns():
     }
 
     # Use the host LLM (via the Model Gateway) to assess commit quality if
-    # reachable — same branch the in-process original takes with ctx.llm.
+    # reachable - same branch the in-process original takes with ctx.llm.
     llm = _host_llm()
     if llm is not None:
         try:

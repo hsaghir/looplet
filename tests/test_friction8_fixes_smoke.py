@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+import time
+
 import pytest
 
 from looplet import BaseToolRegistry, DefaultState, LoopConfig, composable_loop
@@ -88,13 +93,64 @@ class TestBudgetTelemetryUsesConversation:
 
 
 class TestMCPStartupCleanup:
-    def test_bad_command_does_not_leak_subprocess(self, tmp_path):
+    def test_bad_command_does_not_leak_subprocess(self):
         from looplet.mcp import MCPToolAdapter
 
-        # Spawn a shell that exits immediately — init will fail since
-        # the server never replies. The adapter must clean up the proc.
-        adapter = MCPToolAdapter("true", timeout=1.0)
+        # Spawn a shell that exits immediately - init will fail since
+        # the server never replies. Repeat to cover both EOF and the
+        # early-exit BrokenPipe race; neither may leak a process/stream.
+        for _ in range(10):
+            adapter = MCPToolAdapter("true", timeout=1.0)
+            with pytest.raises(RuntimeError, match="failed to initialize"):
+                adapter._ensure_started()
+            assert adapter._proc is None
+
+    @pytest.mark.parametrize("output", ["", "not-json\n"])
+    def test_live_unresponsive_server_honors_timeout(
+        self,
+        output: str,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path,
+    ):
+        from looplet import mcp
+        from looplet.mcp import MCPToolAdapter
+
+        server = tmp_path / "unresponsive.py"
+        pid_file = tmp_path / "child.pid"
+        server.write_text(
+            f"import os, sys, time\n"
+            f"open({str(pid_file)!r}, 'w').write(str(os.getpid()))\n"
+            f"sys.stdout.write({output!r})\n"
+            "sys.stdout.flush()\n"
+            "time.sleep(30)\n"
+        )
+        spawned: list[subprocess.Popen] = []
+        real_popen = subprocess.Popen
+
+        def capture_popen(*args, **kwargs):
+            proc = real_popen(*args, **kwargs)
+            spawned.append(proc)
+            return proc
+
+        monkeypatch.setattr(mcp.subprocess, "Popen", capture_popen)
+        adapter = MCPToolAdapter(f'"{sys.executable}" "{server}"', timeout=0.1)
+        started = time.monotonic()
+
         with pytest.raises(RuntimeError, match="failed to initialize"):
             adapter._ensure_started()
-        # After the failed start, _proc is None (was cleaned up).
+
+        assert time.monotonic() - started < 2.0
         assert adapter._proc is None
+        assert len(spawned) == 1
+        assert spawned[0].poll() is not None
+        if os.name == "posix":
+            child_pid = int(pid_file.read_text())
+            deadline = time.monotonic() + 1.0
+            while time.monotonic() < deadline:
+                try:
+                    os.kill(child_pid, 0)
+                except ProcessLookupError:
+                    break
+                time.sleep(0.01)
+            else:
+                pytest.fail(f"MCP child process {child_pid} survived timeout cleanup")

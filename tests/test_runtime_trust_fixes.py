@@ -5,7 +5,7 @@
    tool's ``execute.py`` and reuses that bytecode whenever the source
    mtime matches the value stored in the ``.pyc`` header. The mtime is
    recorded with **second** resolution, so two writes within the same
-   wall-clock second silently re-use the old bytecode — a cartridge
+   wall-clock second silently re-use the old bytecode - a cartridge
    reloaded after a fast edit returned the previous tool body.
    ``_import_module_from_path`` now reads the source verbatim and
    ``compile`` + ``exec`` it directly, so the cache is bypassed and
@@ -69,7 +69,7 @@ def test_workspace_reload_picks_up_edited_tool_body(tmp_path: Path) -> None:
     out1 = preset1.tools.dispatch(ToolCall(tool="stamp", args={}, reasoning="x", call_id="1")).data
     assert (out1 or {}).get("version") == 1
 
-    # Edit immediately — must NOT depend on mtime ticking past one second.
+    # Edit immediately - must NOT depend on mtime ticking past one second.
     (ws / "tools" / "stamp" / "execute.py").write_text(
         "def execute(ctx) -> dict:\n    return {'version': 2}\n"
     )
@@ -85,7 +85,7 @@ def test_workspace_reload_picks_up_edited_tool_body(tmp_path: Path) -> None:
 def test_workspace_load_does_not_pollute_cartridge_with_pycache(tmp_path: Path) -> None:
     """Loading a workspace must not create __pycache__/ inside the cartridge.
 
-    The cartridge boundary promises 'just files' — leaving compiled
+    The cartridge boundary promises 'just files' - leaving compiled
     bytecode in tools/<name>/__pycache__/ violates that promise (and
     surfaces in `git status`, breaks `find . -type f` listings, etc.).
     """
@@ -231,7 +231,7 @@ def test_fingerprint_detects_content_edit_with_same_mtime(tmp_path: Path) -> Non
     # Two writes back-to-back can collide on mtime even with ns precision
     # on tmpfs. We cannot reliably *force* the collision in a unit test,
     # but we *can* verify that fingerprint changes whenever the content
-    # changes — which is the property we actually care about.
+    # changes - which is the property we actually care about.
     src.write_text("def execute(ctx) -> dict:\n    return {'ver': 2}\n")
     fp2 = fingerprint_workspace(ws)
 
@@ -453,7 +453,7 @@ def test_loader_clean_error_when_tool_parameters_is_a_list(tmp_path: Path) -> No
 
     Before the fix, the loader called ``dict(...)`` on the list and
     surfaced ``ValueError: dictionary update sequence element #0 has
-    length 1; 2 is required`` — a Python implementation detail with no
+    length 1; 2 is required`` - a Python implementation detail with no
     pointer to the offending file. Now the loader names the tool, file
     path, and expected shape.
     """
@@ -713,7 +713,7 @@ def test_composable_loop_helpful_error_when_tools_is_a_list() -> None:
 
 def test_permission_deny_message_includes_canonical_prefix(tmp_path: Path) -> None:
     """Before the fix, a deny rule with ``reason: 'forbidden'`` produced
-    ``error='forbidden'`` — losing the canonical 'Permission denied for
+    ``error='forbidden'`` - losing the canonical 'Permission denied for
     tool X' phrase entirely. Builders grepping ``tool_result.error`` for
     'denied' or 'permission' missed it. Now the canonical prefix is
     always present and the rule reason is appended as context.
@@ -928,7 +928,7 @@ def test_loop_isolates_memory_source_that_raises(tmp_path: Path) -> None:
         memory_sources=[CallableMemorySource(fn=broken_load)],
     )
     state = DefaultState(max_steps=2)
-    # The loop must not raise — memory source crash is isolated.
+    # The loop must not raise - memory source crash is isolated.
     steps = list(
         composable_loop(
             llm=backend,
@@ -949,7 +949,7 @@ def test_loop_does_not_retry_mock_exhaustion(tmp_path: Path) -> None:
     """MockLLMBackend(cycle=False) raises LLMResponsesExhausted when a
     test scripted fewer responses than the loop asked for. Before the
     fix, the retry-with-backoff loop in scaffolding waited 1s + 2s
-    before giving up — making test failures slow and noisy. The new
+    before giving up - making test failures slow and noisy. The new
     type-name check short-circuits the retry, surfacing the clear
     error immediately.
     """
@@ -995,7 +995,7 @@ def test_loop_does_not_retry_mock_exhaustion(tmp_path: Path) -> None:
         f"the retry-with-backoff path probably ran (regressed)."
     )
     # The loop should still surface the error as a step (existing
-    # behaviour) — we only changed how fast.
+    # behaviour) - we only changed how fast.
     assert any(s.tool_call.tool == "__llm_error__" for s in steps), (
         f"expected an __llm_error__ step; got tools {[s.tool_call.tool for s in steps]}"
     )

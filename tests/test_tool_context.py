@@ -1,4 +1,4 @@
-"""Tests for ToolContext — typed per-call context passed to tool execute.
+"""Tests for ToolContext - typed per-call context passed to tool execute.
 
 ToolContext carries cwd, cancellation, progress callback, and arbitrary
 metadata. It is opt-in: tools that accept a ``ctx`` kwarg receive it;

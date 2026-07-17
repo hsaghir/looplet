@@ -1,4 +1,4 @@
-"""Tests for looplet.streaming — structured event emission for agent observability."""
+"""Tests for looplet.streaming - structured event emission for agent observability."""
 
 from __future__ import annotations
 

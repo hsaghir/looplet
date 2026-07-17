@@ -1,4 +1,4 @@
-# 02 — Cartridge ablation
+# 02 - Cartridge ablation
 
 An *ablation matrix* sweeps several cartridge mutations across several
 tasks and records what changes. With agents-as-files, each cell is a

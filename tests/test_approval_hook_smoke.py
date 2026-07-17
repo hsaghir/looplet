@@ -1,4 +1,4 @@
-"""Smoke tests for ApprovalHook — async approval pattern."""
+"""Smoke tests for ApprovalHook - async approval pattern."""
 
 from __future__ import annotations
 

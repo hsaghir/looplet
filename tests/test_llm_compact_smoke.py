@@ -74,7 +74,7 @@ class TestLLMCompact:
             step_num=5,
             reason="test",
         )
-        # Fallback mode — no summary entry, but deterministic keep_recent ran.
+        # Fallback mode - no summary entry, but deterministic keep_recent ran.
         assert out.extra["mode"] == "llm_fallback"
         summary_entries = [e for e in log.entries if e.tool == "__compact_summary__"]
         assert summary_entries == []

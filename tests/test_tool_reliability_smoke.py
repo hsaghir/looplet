@@ -1,4 +1,4 @@
-"""Tool reliability features — timeout enforcement & large-output persistence.
+"""Tool reliability features - timeout enforcement & large-output persistence.
 
 Tests for the platform-level reliability improvements inspired by
 Claude Code's tool implementation patterns:

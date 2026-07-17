@@ -1,4 +1,4 @@
-"""worktree tool — managed git worktree helper."""
+"""worktree tool - managed git worktree helper."""
 
 from __future__ import annotations
 

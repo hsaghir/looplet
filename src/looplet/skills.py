@@ -1,4 +1,4 @@
-"""Skills — composable bundles of tools + context + instructions.
+"""Skills - composable bundles of tools + context + instructions.
 
 A skill is the unit of agent capability. Instead of building one
 monolithic agent with 40 tools and a massive prompt, build small
@@ -18,7 +18,7 @@ skills and compose them::
         memory_sources=[python_skill.memory],
     )
 
-Skills are discoverable — the agent can list available skills and
+Skills are discoverable - the agent can list available skills and
 load them on demand via a hook or tool.
 
 This follows Anthropic's "build skills, not agents" pattern from
@@ -53,7 +53,7 @@ class Skill:
     Args:
         name: Short identifier (e.g. "python", "security", "data").
         tools: List of ToolSpec instances this skill provides.
-        instructions: System prompt fragment — appended to the
+        instructions: System prompt fragment - appended to the
             agent's system prompt when this skill is active.
         memory: Optional PersistentMemorySource that carries
             domain knowledge surviving all compactions.
@@ -127,7 +127,7 @@ class Skill:
         """One-line summary for skill discovery listings."""
         tools = ", ".join(self.tool_names()) or "(no tools)"
         desc = self.description or self.instructions[:80]
-        return f"[{self.name}] {desc} — tools: {tools}"
+        return f"[{self.name}] {desc} - tools: {tools}"
 
     def card(self) -> "SkillCard":
         """Return a lightweight discovery card for this skill."""
@@ -351,7 +351,7 @@ def install_skills(
     Without this helper users have to (a) call ``skill.register(registry)``
     for each skill, (b) concatenate the skill instructions onto the
     system prompt themselves, and (c) extend the memory_sources list
-    — forgetting any of the three silently drops part of the skill.
+    because forgetting any of the three silently drops part of the skill.
 
     Returns a dict with ``system_prompt`` and ``memory_sources`` keys,
     suitable for ``LoopConfig(**install_skills(...))`` or merging into
@@ -473,7 +473,7 @@ def build_skill_manager_for_workspace(
 
     Resolves the skills directory (``<project_root>/<skills_subdir>``)
     via :func:`looplet.cartridge.runtime_helpers.resolve_project_root`
-    — so a host running the agent from inside the target project
+    so a host running the agent from inside the target project
     doesn't have to pass any runtime kwargs. Override with
     ``workspace_dir`` if you call this manually.
 

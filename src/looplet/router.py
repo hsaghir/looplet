@@ -13,7 +13,7 @@ Typical usage::
     }
     router = SimpleRouter(profiles, default_profile=profiles["reasoning"])
     llm = RoutingLLMBackend(router)
-    # Use llm as a drop-in LLMBackend — it routes internally.
+    # Use llm as a drop-in LLMBackend - it routes internally.
 """
 
 from __future__ import annotations
@@ -212,7 +212,7 @@ class CostTracker:
         cost_per_1k_output: float = 0.0,
     ) -> None:
         if backend is None:
-            raise TypeError("CostTracker(backend=..., ...) — backend is required")
+            raise TypeError("CostTracker(backend=..., ...) - backend is required")
         self._backend = backend
         self._cost_per_1k_input = cost_per_1k_input
         self._cost_per_1k_output = cost_per_1k_output

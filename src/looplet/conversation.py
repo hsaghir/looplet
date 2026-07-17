@@ -37,13 +37,13 @@ class MessageRole(str, Enum):
 class ContentBlock:
     """One block of multimodal message content.
 
-    ``kind`` is a free-form discriminator — common values are ``"text"``,
+    ``kind`` is a free-form discriminator - common values are ``"text"``,
     ``"image"``, ``"tool_use"``, ``"tool_result"``. ``data`` holds the
     payload in a shape native to the block kind (``{"text": "..."}`` for
     text, ``{"url": "...", "media_type": "image/png"}`` for images, etc.).
 
-    Keeping this deliberately loose — providers disagree on exact
-    shapes — so the loop remains vendor-agnostic.
+    Keeping this deliberately loose - providers disagree on exact
+    shapes - so the loop remains vendor-agnostic.
     """
 
     kind: str
@@ -103,7 +103,7 @@ class Message:
         return list(self.content)
 
     def text_blocks(self) -> list[ContentBlock]:
-        """Return only the text blocks — useful when stripping images
+        """Return only the text blocks - useful when stripping images
         for summarisation or for backends that don't support multimodal."""
         return [b for b in self.blocks if b.kind == "text"]
 
@@ -175,7 +175,7 @@ class Conversation:
         are replaced by a deterministic or LLM-refined summary.
 
         Compaction boundary messages (``metadata["kind"] ==
-        "compaction_boundary"``) are preserved verbatim — dropping them
+        "compaction_boundary"``) are preserved verbatim - dropping them
         would silently erase the record of earlier compactions.
 
         Args:
@@ -202,7 +202,7 @@ class Conversation:
             if msg.role == MessageRole.USER:
                 last_user_in_compact = msg
 
-        # Preserve every compaction boundary — they must survive re-compaction
+        # Preserve every compaction boundary - they must survive re-compaction
         boundaries_to_keep = [
             m for m in to_compact if m.metadata.get("kind") == "compaction_boundary"
         ]
@@ -328,7 +328,7 @@ class Conversation:
 
 
 LARGE_CONTENT_TYPES: frozenset[str] = frozenset({"image", "audio", "video", "binary"})
-"""Block kinds stripped before summarization — large payloads that
+"""Block kinds stripped before summarization - large payloads that
 shouldn't be sent to a text summarizer. This is a ``frozenset`` and
 cannot be mutated in place. To customize, reassign the module attribute
 with a new frozenset::
@@ -371,7 +371,7 @@ def _strip_large_content(msg: Message) -> Message:
 
 
 def default_summarizer(messages: list[Message]) -> str:
-    """Deterministic summarizer — no LLM required.
+    """Deterministic summarizer - no LLM required.
 
     Counts messages by role, lists tools called, and preserves the last
     user request if present.

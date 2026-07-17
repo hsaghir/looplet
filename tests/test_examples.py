@@ -1,4 +1,4 @@
-"""Tests for looplet example agents — verify they run without errors."""
+"""Tests for looplet example agents - verify they run without errors."""
 
 from __future__ import annotations
 

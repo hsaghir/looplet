@@ -77,7 +77,7 @@ class TestExtractView:
         result = ToolResult(tool="ls", args_summary="ls", data=["a", "b"])
         view = extract_view(spec, tool_result=result)
         assert "tool_result" in view
-        # JSON-safe — must serialise without error.
+        # JSON-safe - must serialise without error.
         json.dumps(view)
 
     def test_payload_is_json_safe(self):

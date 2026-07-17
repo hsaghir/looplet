@@ -1,4 +1,4 @@
-"""PolitenessGate hook — refuses done() until at least one greeting
+"""PolitenessGate hook - refuses done() until at least one greeting
 has been recorded in the shared greeting log.
 
 Demonstrates @ref shared-resource composition: this hook reads the
@@ -8,7 +8,7 @@ SAME log instance the greet tool wrote to.
 
 class PolitenessGate:
     def __init__(self, *, log) -> None:
-        # ``log`` arrives from the @ref-resolved resource registry —
+        # ``log`` arrives from the @ref-resolved resource registry -
         # the same instance the greet tool will mutate at runtime.
         self.log = log
 

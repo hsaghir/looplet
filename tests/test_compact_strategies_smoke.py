@@ -168,7 +168,7 @@ class TestPruneToolResults:
         out2 = svc.compact(
             state=None, session_log=None, llm=None, conversation=conv, step_num=4, reason="2nd"
         )
-        # Already cleared — nothing new to clear
+        # Already cleared - nothing new to clear
         assert out2.extra["cleared"] == 0
 
 

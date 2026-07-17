@@ -87,7 +87,7 @@ class TestStagnationHookBasic:
         st = DefaultState()
         for i in range(3):
             hook.post_dispatch(st, None, _call("search", q="x"), _result("search"), i + 1)
-        # Next step same — should NOT fire again immediately
+        # Next step same - should NOT fire again immediately
         r = hook.post_dispatch(st, None, _call("search", q="x"), _result("search"), 4)
         assert r is None
 
@@ -149,7 +149,7 @@ class TestProgressCounter:
 
         hook = StagnationHook(threshold=2, nudge="X", progress=bad)
         st = DefaultState()
-        # Should not raise — defensive
+        # Should not raise - defensive
         hook.post_dispatch(st, None, _call("s", q=1), _result("s"), 1)
         r = hook.post_dispatch(st, None, _call("s", q=1), _result("s"), 2)
         assert r == "X"
@@ -201,7 +201,7 @@ class TestCustomFingerprint:
         hook.post_dispatch(st, None, _call("s"), _result("s"), 1)
         r2 = hook.post_dispatch(st, None, _call("s"), _result("s"), 2)
         assert r2 == "X"
-        # Fingerprint returns None on step 3 — streak resets
+        # Fingerprint returns None on step 3 - streak resets
         r3 = hook.post_dispatch(st, None, _call("s"), _result("s"), 3)
         assert r3 is None
         assert hook.stagnant_steps == 0

@@ -1,4 +1,4 @@
-"""Portability classifier — label a hook ``portable`` or ``inprocess``.
+"""Portability classifier - label a hook ``portable`` or ``inprocess``.
 
 The honest version of "100% lossless cartridge⇄library" (see
 HOOK_CARTRIDGE_DESIGN.md §9.0) is: *every* library hook has a faithful
@@ -12,7 +12,7 @@ Python is undecidable, so anything not *positively* known to be portable
 is labelled ``inprocess`` (faithful, Python-pinned). Positive evidence of
 portability is one of:
 
-* the hook is an :class:`looplet.lep.LEPHookAdapter` — already
+* the hook is an :class:`looplet.lep.LEPHookAdapter` - already
   out-of-process by construction, hence portable by definition;
 * the hook came from the stdlib archetype registry with a declared
   view (``builtin_hooks``/``use: stdlib/*``);
@@ -21,7 +21,7 @@ portability is one of:
 
 Negative evidence (forces ``inprocess`` even with an opt-in):
 
-* a ``bind`` method — the hook subscribes to live loop ``ctx`` and thus
+* a ``bind`` method - the hook subscribes to live loop ``ctx`` and thus
   reads outside any serialisable view (hazard H2/H3).
 """
 
@@ -71,7 +71,7 @@ def classify(
             if it came through ``use: stdlib/*`` / ``builtin_hooks``.
     """
     # Avoid an import cycle: looplet.lep imports nothing from here, but
-    # importing it at module scope would still be fine — keep it local
+    # importing it at module scope would still be fine - keep it local
     # for clarity.
     from looplet.lep import LEPHookAdapter
 
@@ -87,7 +87,7 @@ def classify(
     if _has_bind(hook):
         return Classification(
             INPROCESS,
-            ("declares bind() — reads live loop ctx outside any serialisable view",),
+            ("declares bind() - reads live loop ctx outside any serialisable view",),
             declared_view,
         )
 
@@ -105,7 +105,7 @@ def classify(
             declared_view,
         )
 
-    reasons = ["arbitrary Python hook — no positive portability evidence"]
+    reasons = ["arbitrary Python hook - no positive portability evidence"]
     if declared_view is None:
         reasons.append("no declared view")
     return Classification(INPROCESS, tuple(reasons), declared_view)
@@ -115,7 +115,7 @@ def classify_preset_hooks(preset: Any) -> list[tuple[str, Classification]]:
     """Classify every hook on an :class:`~looplet.preset.AgentPreset`.
 
     Returns a list of ``(hook_type_name, Classification)`` pairs in hook
-    order. Pure inspection — it does **not** mutate ``preset`` (so it is
+    order. Pure inspection - it does **not** mutate ``preset`` (so it is
     safe to call inside round-trip / serialise tests).
     """
     hooks = list(getattr(preset, "hooks", None) or [])

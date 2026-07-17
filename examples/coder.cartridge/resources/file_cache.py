@@ -1,4 +1,4 @@
-"""Shared file_cache — content cache for write/read coordination.
+"""Shared file_cache - content cache for write/read coordination.
 
 The coder agent's read_file tool stores file content here; write_file
 and edit_file evict / refresh entries. StaleFileHook reads the same

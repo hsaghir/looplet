@@ -1,8 +1,8 @@
 """Stdio MCP server for the threat_intel_portable cartridge.
 
 Serves all 7 tools that were in-process ``tools/*/execute.py`` bodies in
-the original ``threat_intel`` cartridge — ``fetch_feed``, ``search_cve``,
-``extract_iocs``, ``map_mitre``, ``assess_risk``, ``think``, ``done`` —
+the original ``threat_intel`` cartridge - ``fetch_feed``, ``search_cve``,
+``extract_iocs``, ``map_mitre``, ``assess_risk``, ``think``, ``done`` -
 over the MCP stdio transport. Moving them out of process is what makes
 the twin fully portable: no Python tool body is required by the host.
 
@@ -12,7 +12,7 @@ table are vendored here verbatim from the original ``threat_intel_lib``.
 LLM-backed behaviour reaches the host model through the Model Gateway
 (MGP): the loader exports ``LOOPLET_LLM_SOCKET`` and this server connects
 to it lazily, so ``extract_iocs`` can add its ``llm_severity`` field and
-``assess_risk`` can return a real analyst assessment — full parity with
+``assess_risk`` can return a real analyst assessment - full parity with
 the in-process original. When no gateway is present (or no backend is
 bound yet) the calls degrade to exactly the branches the originals take
 when ``ctx.llm is None``.
@@ -107,7 +107,7 @@ def _host_llm():
     """Return the host Model Gateway client only when a backend is bound.
 
     Returns ``None`` when there is no reachable gateway *or* no backend is
-    currently bound — i.e. exactly the cases where the in-process original
+    currently bound - i.e. exactly the cases where the in-process original
     sees ``ctx.llm is None`` and degrades.
     """
     global _HOST_LLM, _HOST_LLM_TRIED
@@ -268,7 +268,7 @@ def extract_iocs(text):
     }
 
     # Use the host LLM (via the Model Gateway) to classify severity if
-    # reachable — same branch the in-process original takes with ctx.llm.
+    # reachable - same branch the in-process original takes with ctx.llm.
     llm = _host_llm()
     if llm is not None and result["total_iocs"] > 0:
         try:

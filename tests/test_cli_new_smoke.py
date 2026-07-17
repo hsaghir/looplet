@@ -1,7 +1,7 @@
 """Smoke tests for ``looplet new`` and ``looplet run-cartridge`` CLI.
 
-The CLI's job is straightforward plumbing — load the factory, run a
-loop, surface results — so most of these tests exercise UX paths
+The CLI's job is straightforward plumbing - load the factory, run a
+loop, surface results - so most of these tests exercise UX paths
 (missing env vars, bad cartridge path, factory location lookup)
 without spinning up a real LLM.
 
@@ -37,6 +37,27 @@ def test_run_cartridge_help() -> None:
 def test_run_workspace_alias_help() -> None:
     with pytest.raises(SystemExit) as exc, patch("sys.stdout", new=io.StringIO()):
         main(["run-workspace", "--help"])
+    assert exc.value.code == 0
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["show", "--help"],
+        ["doctor", "--help"],
+        ["describe", "--help"],
+        ["diff", "--help"],
+        ["hash", "--help"],
+        ["portability", "--help"],
+        ["eval", "--help"],
+        ["eval", "run", "--help"],
+    ],
+    ids=lambda argv: "-".join(argv[:-1]),
+)
+def test_documented_command_help(argv: list[str]) -> None:
+    """Every command copied into launch docs must remain parseable."""
+    with pytest.raises(SystemExit) as exc, patch("sys.stdout", new=io.StringIO()):
+        main(argv)
     assert exc.value.code == 0
 
 
@@ -150,6 +171,26 @@ def test_factory_workspace_path_resolves_in_repo() -> None:
     assert p.is_dir()
     assert (p / "cartridge.json").is_file()
     assert (p / "config.yaml").is_file()
+
+
+def test_factory_workspace_path_resolves_installed_bundle(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """An installed wheel resolves package data without a repo checkout."""
+    from looplet.cli import factory_commands
+
+    package_root = tmp_path / "site-packages" / "looplet"
+    fake_module = package_root / "cli" / "factory_commands.py"
+    factory = package_root / "_bundled" / "agent_factory.cartridge"
+    fake_module.parent.mkdir(parents=True)
+    factory.mkdir(parents=True)
+    (factory / "cartridge.json").write_text('{"schema_version": 2, "name": "factory"}')
+
+    monkeypatch.delenv("LOOPLET_FACTORY_DIR", raising=False)
+    monkeypatch.setattr(factory_commands, "__file__", str(fake_module))
+
+    assert factory_commands._factory_workspace_path() == factory
 
 
 def test_new_command_registered_on_top_level() -> None:
@@ -282,7 +323,7 @@ def test_new_invalid_output_uses_cartridge_language(
 
 def test_pretty_printer_renders_steps_without_ansi_when_not_tty() -> None:
     """``PrettyPrinter`` should emit plain text (no escape sequences)
-    when stdout isn't a TTY — keeps CI logs and ``tee`` clean."""
+    when stdout isn't a TTY - keeps CI logs and ``tee`` clean."""
     import io as _io
     from types import SimpleNamespace as NS
 

@@ -40,7 +40,7 @@ class TestRuleMatching:
             decision=PermissionDecision.DENY,
             arg_matcher=lambda a: 1 / 0,
         )
-        # Fail closed: rule matches even though matcher raised — safe for DENY rules.
+        # Fail closed: rule matches even though matcher raised - safe for DENY rules.
         assert r.matches(ToolCall(tool="bash", args={})) is True
 
     def test_buggy_matcher_on_allow_rule_does_not_grant(self):

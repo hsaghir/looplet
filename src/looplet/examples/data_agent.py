@@ -1,31 +1,31 @@
-"""Data-agent example — approval + compact + checkpoints, all wired together.
+"""Data-agent example - approval + compact + checkpoints, all wired together.
 
 The three capabilities that distinguish ``looplet`` from most
 frameworks, shown as one agent that actually needs them:
 
-* **Approval** — the agent can describe, head, and group-by a CSV
+* **Approval** - the agent can describe, head, and group-by a CSV
   freely, but calling ``delete_rows`` must get human sign-off. The
   sync handler blocks on ``input()`` until you approve / deny.
 
-* **Compact** — ``DefaultCompactService`` fires whenever the session
+* **Compact** - ``DefaultCompactService`` fires whenever the session
     grows past a tiny 4 000-token budget, so you'll actually watch it
     happen on a normal-sized run. This example disables the summary LLM
     call so scripted/offline runs stay deterministic.
 
-* **Checkpoints** — every step is serialised to
+* **Checkpoints** - every step is serialised to
   ``./checkpoints/data_agent/``. Kill the script (Ctrl-C) mid-run
-  and re-run it — it resumes from the last step with session log
+  and re-run it - it resumes from the last step with session log
   intact.
 
 Run::
 
-    # Real LLM (default) — reads OPENAI_BASE_URL / OPENAI_API_KEY /
+    # Real LLM (default) - reads OPENAI_BASE_URL / OPENAI_API_KEY /
     # OPENAI_MODEL. Works with OpenAI, Ollama, Together, Groq, vLLM, …
     python -m looplet.examples.data_agent
     python -m looplet.examples.data_agent --resume   # resume latest ckpt
     python -m looplet.examples.data_agent --clean    # wipe checkpoints
 
-    # Scripted MockLLMBackend (for CI / offline testing) — the LLM is
+    # Scripted MockLLMBackend (for CI / offline testing) - the LLM is
     # fixed so the tool sequence is identical every run.
     python -m looplet.examples.data_agent --scripted --auto-approve
 
@@ -62,7 +62,7 @@ from looplet.types import ToolContext
 CHECKPOINT_DIR = Path("./checkpoints/data_agent")
 
 
-# ── 1. Tools — read-only + one dangerous one ─────────────────────
+# ── 1. Tools - read-only + one dangerous one ─────────────────────
 
 
 def _make_sample_csv() -> Path:
@@ -84,7 +84,7 @@ def _make_sample_csv() -> Path:
 
 @tool(description="Return row count and columns for a CSV path.", concurrent_safe=True)
 def describe_csv(*, path: str) -> dict:
-    """Return row and column counts — cheap and safe."""
+    """Return row and column counts - cheap and safe."""
     with open(path, newline="") as f:
         rows = list(csv.DictReader(f))
     return {
@@ -95,7 +95,7 @@ def describe_csv(*, path: str) -> dict:
 
 @tool(description="Return the first N rows of a CSV.", concurrent_safe=True)
 def head_csv(*, path: str, n: int = 3) -> dict:
-    """Return the first N rows — cheap and safe."""
+    """Return the first N rows - cheap and safe."""
     with open(path, newline="") as f:
         rows = list(csv.DictReader(f))
     return {"head": rows[:n]}
@@ -103,7 +103,7 @@ def head_csv(*, path: str, n: int = 3) -> dict:
 
 @tool(description="Count rows grouped by a column.", concurrent_safe=True)
 def groupby_count(*, path: str, column: str) -> dict:
-    """Count rows grouped by the given column — cheap and safe."""
+    """Count rows grouped by the given column - cheap and safe."""
     counts: dict[str, int] = {}
     with open(path, newline="") as f:
         for row in csv.DictReader(f):
@@ -114,7 +114,7 @@ def groupby_count(*, path: str, column: str) -> dict:
 
 @tool(description="Delete rows matching a status. Requires approval.")
 def delete_rows(*, path: str, where_status: str, ctx: ToolContext | None = None) -> dict:
-    """Delete rows matching a status — **requires approval**.
+    """Delete rows matching a status - **requires approval**.
 
     Two paths:
 
@@ -134,7 +134,7 @@ def delete_rows(*, path: str, where_status: str, ctx: ToolContext | None = None)
     )
 
     if reply is None:
-        # Async path — tell ApprovalHook to stop the loop.
+        # Async path - tell ApprovalHook to stop the loop.
         return {
             "needs_approval": True,
             "approval_description": (f"delete_rows(path={path!r}, where_status={where_status!r})"),
@@ -160,7 +160,7 @@ def build_tools():
     )
 
 
-# ── 2. Scripted LLM script — drives the same sequence every run ──
+# ── 2. Scripted LLM script - drives the same sequence every run ──
 
 
 def _tool_call(tool_name: str, args: dict, reasoning: str) -> str:
@@ -191,7 +191,7 @@ def scripted_llm(csv_path: str) -> MockLLMBackend:
     )
 
 
-# ── 3. Sync approval handler — blocks on stdin ──────────────────
+# ── 3. Sync approval handler - blocks on stdin ──────────────────
 
 
 def cli_approval_handler(prompt: str, options: list[str] | None) -> str | None:
@@ -199,7 +199,7 @@ def cli_approval_handler(prompt: str, options: list[str] | None) -> str | None:
     try:
         return input(f"\n  ⚠  APPROVAL NEEDED: {prompt}  [{opt_str}] > ").strip()
     except EOFError:
-        # Non-interactive — defer to async path.
+        # Non-interactive - defer to async path.
         return None
 
 
@@ -274,7 +274,7 @@ def main(argv: list[str] | None = None) -> int:
             from looplet.backends import OpenAIBackend
         except ImportError:  # pragma: no cover
             raise SystemExit(
-                "openai not installed — run `pip install 'looplet[openai]'`, "
+                "openai not installed - run `pip install 'looplet[openai]'`, "
                 "or re-run with --scripted for a scripted demo."
             ) from None
 
@@ -329,7 +329,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print()
     print(f"# checkpoints saved to: {CHECKPOINT_DIR}")
-    print(f"# compact fired at steps: {threshold_hook.fired_at or '—'}")
+    print(f"# compact fired at steps: {threshold_hook.fired_at or ' - '}")
     print(
         "# run again with --resume to continue from the last saved step, or --clean to start over."
     )

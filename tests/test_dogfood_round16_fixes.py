@@ -2,12 +2,12 @@
 
 Round 16 surfaced two real loader gaps via the soc_triage cartridge:
 
-* **setup.py was unnecessary** — the existing ``@<name>`` ref grammar
+* **setup.py was unnecessary** - the existing ``@<name>`` ref grammar
   in hook ``kwargs`` already injects resources. The dogfood originally
   wrote a setup.py because the ref grammar wasn't visible enough; it's
   documented now, and the cartridge dropped setup.py.
 
-* **No declarative ``context_window_steps``** — the env-default of
+* **No declarative ``context_window_steps``** - the env-default of
   5 recent steps caused chained-tool-use cartridges (SOC triage:
   step 1 get_alert → step 8 lookup_user) to lose the source-of-truth
   payload before the LLM needed it again, producing hallucinated

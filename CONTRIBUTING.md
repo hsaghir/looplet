@@ -53,10 +53,10 @@ Run it before every push, or let the pre-push hook do it for you.
   have the equivalent in `async_composable_loop`, and vice-versa. Add
   tests for both paths.
 - **Avoid bare `except`**: catch the narrowest exception you can.
-- **No new runtime dependencies without discussion** — the core runtime
+- **No new runtime dependencies without discussion** - the core runtime
   depends only on the standard library. Optional extras are
   fine under `[project.optional-dependencies]`.
-- **Public API surface** — if you add a public symbol, export it from
+- **Public API surface** - if you add a public symbol, export it from
   `looplet/__init__.py`, document it with a docstring, and add a
   test.
 
@@ -93,7 +93,7 @@ Open an issue on GitHub with:
 
 - What you expected to happen.
 - What actually happened (stack trace, log output).
-- A minimal reproduction — ideally a single `pytest` test case.
+- A minimal reproduction - ideally a single `pytest` test case.
 - Your Python version and `looplet` version.
 
 ## Security issues

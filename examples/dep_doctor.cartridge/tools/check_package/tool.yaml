@@ -1,5 +1,5 @@
 name: check_package
-description: Check a package's health — latest version, release date, CVEs, license, maintainer activity.
+description: Check a package's health - latest version, release date, CVEs, license, maintainer activity.
 parameters:
   package_name:
     type: string

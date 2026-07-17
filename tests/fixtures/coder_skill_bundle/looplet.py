@@ -89,7 +89,7 @@ def _load_sibling(name: str) -> ModuleType:
 
 _ensure_parent_package()
 _tools = _load_sibling("tools")
-_hooks = _load_sibling("hooks")  # noqa: F841 — preloaded so wiring import works
+_hooks = _load_sibling("hooks")  # noqa: F841 - preloaded so wiring import works
 _wiring = _load_sibling("wiring")
 
 FileCache = _tools.FileCache
@@ -297,7 +297,7 @@ def _render_original_step(step: Any) -> str:
         return (
             f"  {'✏️ ' if not error else '✗ '}#{step.number} edit: "
             f"{step.tool_call.args.get('file_path', '?')}"
-            f"{' ✓' if not error else ' — ' + str(error)[:50]}"
+            f"{' ✓' if not error else ' - ' + str(error)[:50]}"
         )
     if tool_name == "list_dir":
         return f"  📂 #{step.number} list_dir: {data.get('count', '?')} entries"

@@ -1,4 +1,4 @@
-"""Hello world — the simplest possible looplet agent.
+"""Hello world - the simplest possible looplet agent.
 
 This is the starting point. One tool. Real LLM or scripted local run. With eval.
 

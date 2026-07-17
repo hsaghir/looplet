@@ -29,13 +29,13 @@ def _import_module_from_path(path: Path, module_name: str) -> Any:
        source mtime matches the value stored in the ``.pyc`` header.
        That mtime is recorded with **second** resolution, so two
        writes within the same wall-clock second silently re-use the
-       old bytecode — which means a cartridge reloaded after a fast
+       old bytecode - which means a cartridge reloaded after a fast
        edit returns the previous tool body. Reading the source
        directly each time avoids the cache entirely.
 
     2. *Cartridge cleanliness.* ``SourceFileLoader`` litters the
        cartridge directory with ``__pycache__/`` folders, which makes
-       \"the cartridge is just files\" demonstrably untrue — a
+       \"the cartridge is just files\" demonstrably untrue - a
        reviewer doing ``ls`` sees engine artefacts mixed with the
        agent's contract.
 

@@ -1,4 +1,4 @@
-"""list_dir tool — tree view of a workspace path.
+"""list_dir tool - tree view of a workspace path.
 
 Receives the workspace_config resource through ``ctx.resources``;
 ``tool.yaml`` declares ``requires: [workspace_config]``.

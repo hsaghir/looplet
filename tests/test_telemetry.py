@@ -1,4 +1,4 @@
-"""Tests for looplet.telemetry — spans, tracer, metrics, and hooks."""
+"""Tests for looplet.telemetry - spans, tracer, metrics, and hooks."""
 
 from __future__ import annotations
 

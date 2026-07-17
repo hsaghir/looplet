@@ -31,7 +31,7 @@ body:
     attributes:
       label: Proposed solution
       description: |
-        Sketch an API or design. Be concrete — we iterate fastest on
+        Sketch an API or design. Be concrete because we iterate fastest on
         specific proposals.
       render: python
     validations:

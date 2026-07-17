@@ -1,4 +1,4 @@
-"""web_search tool — dependency-free web search with pluggable backends.
+"""web_search tool - dependency-free web search with pluggable backends.
 
 Mirrors ``web_fetch``'s zero-dependency style: the default backend is
 DuckDuckGo's no-key HTML endpoint, parsed with the standard library so the

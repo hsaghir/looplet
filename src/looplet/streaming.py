@@ -1,8 +1,8 @@
 """Structured event emission for real-time observability of agent execution.
 
 Events are dataclasses emitted at key points during a loop run.  Consumers
-attach one or more ``EventEmitter`` implementations — callbacks, queues, or
-composites — and receive a typed stream of events without coupling to loop
+attach one or more ``EventEmitter`` implementations - callbacks, queues, or
+composites - and receive a typed stream of events without coupling to loop
 internals.
 
 Typical usage::
@@ -203,15 +203,15 @@ class ContextPressureEvent(Event):
     """Emitted when the estimated context usage crosses a tier threshold.
 
     ``level`` is one of ``"ok"``, ``"warning"``, ``"compact"``,
-    ``"blocking"`` — matching ``ContextPressureHook``'s 4-tier budget.
+    ``"blocking"`` - matching ``ContextPressureHook``'s 4-tier budget.
 
     Consumers typically:
 
-    * ``ok`` — clear any "context almost full" UI indicator.
-    * ``warning`` — display a soft notice to the user.
-    * ``compact`` — the loop will compact automatically; a debug UI can
+    * ``ok`` - clear any "context almost full" UI indicator.
+    * ``warning`` - display a soft notice to the user.
+    * ``compact`` - the loop will compact automatically; a debug UI can
       surface the action.
-    * ``blocking`` — emergency compaction was forced; expect to see a
+    * ``blocking`` - emergency compaction was forced; expect to see a
       ``compaction_boundary`` message shortly after.
     """
 
@@ -336,7 +336,7 @@ class StreamingHook:
 
         Reads ``max_steps`` from ``state`` (``DefaultState`` carries it).
         When using the loop's ``stream=`` parameter *and* a
-        ``StreamingHook`` in ``hooks``, the event will fire twice — prefer
+        ``StreamingHook`` in ``hooks``, the event will fire twice - prefer
         one mechanism, not both.
         """
         task_summary = getattr(state, "task_summary", "")
@@ -375,7 +375,7 @@ class StreamingHook:
         return None
 
     def check_permission(self, tool_call: ToolCall, state: AgentState) -> bool:
-        """StreamingHook never blocks — always returns True."""
+        """StreamingHook never blocks - always returns True."""
         return True
 
     def post_dispatch(
@@ -466,5 +466,5 @@ class StreamingHook:
         return 0
 
     def on_event(self, payload: Any) -> None:
-        """No-op — :class:`StreamingHook` uses the per-method API."""
+        """No-op - :class:`StreamingHook` uses the per-method API."""
         return None

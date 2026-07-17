@@ -8,13 +8,13 @@ that protect that work:
    symbol from its old import path.
 2. **Dependency direction**: the cartridge package depends only on
    *public* looplet types (LoopConfig, AgentPreset, ToolSpec,
-   LoopHook, OutputSchema, MemorySource, ...) — never on internal
+   LoopHook, OutputSchema, MemorySource, ...) - never on internal
    machinery (loop body, scaffolding helpers, recovery internals,
    async loop, context).
 
 If a future change adds a dep from the cartridge package to e.g.
 ``looplet.scaffolding`` (the LLM-call retry helpers), this test
-fails — keeping the cartridge separable from the loop runtime in
+fails - keeping the cartridge separable from the loop runtime in
 preparation for a future ``looplet-cartridge`` package extraction.
 """
 
@@ -228,7 +228,7 @@ def test_cartridge_package_does_not_self_import_via_umbrella() -> None:
             stripped = line.lstrip()
             indent = len(line) - len(stripped)
             if indent > 0:
-                continue  # inside a function or class — fine
+                continue  # inside a function or class - fine
             if re.match(r"from\s+looplet\s+import\b", stripped):
                 bad.append(
                     (str(py.relative_to(cartridge_root.parent.parent)), lineno, line.strip())

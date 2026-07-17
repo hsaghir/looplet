@@ -4,11 +4,11 @@ cartridge slot and is discovered by a single ``load_cartridge_evals``.
 Extends the case-only round-trip (``test_cartridge_evals_roundtrip.py``)
 with the grader + collector discovery that completes "evals ship with
 the agent version": ``evals/eval_*.py`` (graders), ``evals/collect_*.py``
-(collectors), ``evals/cases/*.json`` (cases) — all under one ``evals/``
+(collectors), ``evals/cases/*.json`` (cases) - all under one ``evals/``
 directory, all returned by one call. This is the slice that removes the
 hand-wiring the dogfood exposed (importing the collector by path).
 
-Like the case slot, this lives entirely in ``looplet.evals`` — the
+Like the case slot, this lives entirely in ``looplet.evals`` - the
 cartridge package never learns about evals.
 """
 
@@ -37,7 +37,7 @@ def _helper_not_a_grader(ctx):
 
 COLLECTORS_PY = """\
 def collect_static(state):
-    # No runtime needed — fixed outcome.
+    # No runtime needed - fixed outcome.
     return {"saw_state": state is not None}
 
 def collect_with_runtime(state, runtime):
@@ -113,7 +113,7 @@ def test_graders_are_case_agnostic_reused_across_cases(tmp_path: Path) -> None:
     _seed_eval_bundle(cartridge)
 
     bundle = load_cartridge_evals(cartridge)
-    # graders carry no per-case state — the same callables apply to every case.
+    # graders carry no per-case state - the same callables apply to every case.
     assert all(callable(g) for g in bundle.graders)
     assert len(bundle.graders) == 2
     assert len(bundle.cases) == 2

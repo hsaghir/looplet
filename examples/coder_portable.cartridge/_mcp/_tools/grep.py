@@ -1,4 +1,4 @@
-"""grep tool — rg-first recursive search with workspace-relative output paths.
+"""grep tool - rg-first recursive search with workspace-relative output paths.
 
 Receives the workspace_config resource through ``ctx.resources``;
 ``tool.yaml`` declares ``requires: [workspace_config]``.

@@ -1,4 +1,4 @@
-"""ctx.llm — tool-internal LLM access + nested provenance scoping."""
+"""ctx.llm - tool-internal LLM access + nested provenance scoping."""
 
 from __future__ import annotations
 
@@ -54,7 +54,7 @@ class TestCtxLlmAvailable:
         assert received_llm[0] is not None
 
     def test_ctx_llm_can_generate(self):
-        """ctx.llm.generate() works — the tool can use the LLM internally."""
+        """ctx.llm.generate() works - the tool can use the LLM internally."""
         internal_results = []
 
         def summarize_tool(*, text: str, ctx: ToolContext) -> dict:

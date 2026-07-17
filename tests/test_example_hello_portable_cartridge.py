@@ -1,7 +1,7 @@
 """End-to-end dogfood of the fully-portable ``hello_portable`` cartridge.
 
 This is the cross-runtime twin of ``hello``: every component lives out
-of process behind a protocol —
+of process behind a protocol -
 
 * greet + done ........ MCP stdio server   (``_mcp/tools_server.py``)
 * shared greeting log .. State Service      (``_state/greeting_log.py``)
@@ -9,10 +9,10 @@ of process behind a protocol —
 * NameGuard ............ ``kind: lep`` hook
 
 The test loads the cartridge to a live preset (spawning the MCP server,
-the state service, and the two LEP hook servers — four separate
+the state service, and the two LEP hook servers - four separate
 processes) and witnesses that they compose: the MCP greet tool's writes
-land in the state service, and the LEP PolitenessGate hook — a DIFFERENT
-process — reads that same state across the boundary to gate ``done()``.
+land in the state service, and the LEP PolitenessGate hook - a DIFFERENT
+process - reads that same state across the boundary to gate ``done()``.
 This reproduces the original in-process ``@ref`` sharing with zero shared
 Python objects, proving the State Service primitive closes the
 portability gap.

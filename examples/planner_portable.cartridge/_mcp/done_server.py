@@ -3,7 +3,7 @@
 Serving ``done`` from an out-of-process MCP server (instead of an
 in-process ``tools/done/execute.py``) is what makes this cartridge fully
 portable: any conforming loader spawns this command and registers the
-tool over the MCP stdio transport — no Python tool body required by the
+tool over the MCP stdio transport - no Python tool body required by the
 host.
 
 Standard-library only. Teaching artifact for the MCP wire format.

@@ -1,7 +1,7 @@
 """Tests for the turnkey ``make_backend`` factory (RPC ``set_backend`` wire).
 
 Monkeypatches the provider ``from_env`` classmethods so no SDK or API key is
-needed — we only assert provider resolution/routing and the error path.
+needed - we only assert provider resolution/routing and the error path.
 """
 
 from __future__ import annotations

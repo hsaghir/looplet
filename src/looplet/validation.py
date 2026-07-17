@@ -1,4 +1,4 @@
-"""Validation — schema enforcement for tool call arguments and done() payloads.
+"""Validation - schema enforcement for tool call arguments and done() payloads.
 
 Provides:
   - FieldSpec: description of one field in a schema
@@ -38,7 +38,7 @@ class FieldSpec:
 
     Args:
         name: Field name (must match the arg key).
-        field_type: Type tag — one of 'str'|'int'|'float'|'bool'|'list'|'dict'|'any'.
+        field_type: Type tag - one of 'str'|'int'|'float'|'bool'|'list'|'dict'|'any'.
         required: Whether the field must be present.
         description: Human-readable description for documentation.
         allowed_values: Restrict to a fixed set of string values (enum-like).
@@ -115,7 +115,7 @@ def validate_args(schema: OutputSchema, args: dict[str, Any]) -> ValidationResul
         if spec.field_type != "any":
             expected = _TYPE_MAP.get(spec.field_type)
             if expected is not None:
-                # bool is a subclass of int — check bool before int to avoid false positives
+                # bool is a subclass of int - check bool before int to avoid false positives
                 if spec.field_type == "int" and isinstance(value, bool):
                     errors.append(f"field {name!r}: expected int, got {type(value).__name__}")
                 elif not isinstance(value, expected):

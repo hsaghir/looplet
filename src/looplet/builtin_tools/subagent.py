@@ -1,14 +1,14 @@
-"""``subagent`` built-in tool — invoke another workspace as a sub-loop.
+"""``subagent`` built-in tool for invoking another cartridge as a sub-loop.
 
-A workspace opts in by listing ``subagent`` in its ``config.yaml``::
+A cartridge opts in by listing ``subagent`` in its ``config.yaml``::
 
     builtin_tools:
       - subagent
 
-The agent can then dispatch a sub-task to any other workspace::
+The agent can then dispatch a sub-task to another cartridge::
 
     subagent(
-        workspace="./researcher.workspace",
+        workspace="./researcher.cartridge",
         task="find recent CVEs for the openssl 3.x line",
         max_steps=10,                # OPTIONAL, defaults to remaining parent budget
     )
@@ -26,7 +26,7 @@ result (typically the ``done`` summary).
 A small ``contextvars.ContextVar`` counter increments on each sub-loop
 entry and decrements on exit. If it exceeds ``max_depth`` (default 5)
 the call is refused with a structured error pointing the agent at the
-depth budget. Threadsafe and per-async-task — two parallel parent
+depth budget. Threadsafe and per-async-task - two parallel parent
 loops in the same process don't share the counter.
 
 ## Why no parallel fan-out
@@ -47,7 +47,7 @@ from typing import Any
 from looplet.tools import ToolSpec
 from looplet.types import DefaultState, ToolContext
 
-# Per-task recursion depth — threadsafe and per-async-task, unlike a
+# Per-task recursion depth - threadsafe and per-async-task, unlike a
 # process-global env var. ``ContextVar.set`` returns a token used by
 # ``reset`` so nested sub-loops restore depth precisely on exit.
 _DEPTH_VAR: contextvars.ContextVar[int] = contextvars.ContextVar(
@@ -116,7 +116,7 @@ def _execute(
         if host_ws_str:
             runtime["project_root"] = host_ws_str
         else:
-            # No parent workspace_config and no explicit metadata.runtime —
+            # No parent workspace_config and no explicit metadata.runtime -
             # the resolver in the sub-loop will fall back to git toplevel
             # / cwd. Flag it so the host knows the sub-loop is rooted in
             # whichever dir the process happens to be running from.
@@ -175,7 +175,7 @@ def _execute(
     if fallback_used:
         result["warning"] = (
             "no workspace_config resource on the parent and no "
-            "ctx.metadata['runtime'] — sub-loop's project root will be "
+            "ctx.metadata['runtime'] - sub-loop's project root will be "
             "resolved from $LOOPLET_PROJECT_ROOT, git toplevel, or cwd. "
             "Pass runtime={'project_root': '...'} to cartridge_to_preset "
             "for the parent, or set ctx.metadata['runtime'] before calling."
@@ -186,18 +186,18 @@ def _execute(
 SPEC = ToolSpec(
     name="subagent",
     description=(
-        "Invoke another looplet workspace as a sub-agent. The sub-agent "
-        "shares this agent's LLM and inherits the parent's workspace "
+        "Invoke another Looplet cartridge as a sub-agent. The sub-agent "
+        "shares this agent's LLM and inherits the parent's project "
         "path, runs to its own ``done`` "
         "tool, and returns the final result. Use this for hierarchical "
-        "task decomposition: dispatch a focused sub-task to a workspace "
+        "task decomposition: dispatch a focused sub-task to a cartridge "
         "that specializes in it, then continue with the result.\n\n"
         "Args:\n"
-        "  workspace (str): path to a workspace directory (absolute or "
-        "relative to the host workspace root).\n"
+        "  workspace (str): path to a cartridge directory (absolute or "
+        "relative to the host cartridge root).\n"
         "  task (str): natural-language task to give the sub-agent.\n"
         "  max_steps (int, optional): cap on sub-loop steps. Defaults to "
-        "the sub-workspace's own ``max_steps`` from its config.yaml.\n"
+        "the child cartridge's own ``max_steps`` from its config.yaml.\n"
         "  max_depth (int, optional): recursion limit (default 5).\n\n"
         "Returns: ``{summary, result, final_tool, steps_used, ...}``."
     ),
@@ -206,7 +206,7 @@ SPEC = ToolSpec(
         "properties": {
             "workspace": {
                 "type": "string",
-                "description": "Path to the sub-agent workspace (absolute or relative to host).",
+                "description": "Path to the child cartridge (absolute or relative to host).",
             },
             "task": {
                 "type": "string",

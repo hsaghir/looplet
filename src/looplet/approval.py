@@ -10,7 +10,7 @@ The pattern:
      the generator terminates.
   4. An external system (webhook, Slack bot, email, human on CLI)
      records the approval.
-  5. The caller restarts the loop — ``checkpoint_dir`` auto-resumes
+  5. The caller restarts the loop - ``checkpoint_dir`` auto-resumes
      from the last step, and the approval is injected into context
      via a ``StaticMemorySource`` or ``pre_prompt`` hook.
 
@@ -29,7 +29,7 @@ For **sync approval** (blocks until human responds)::
     config = LoopConfig(
         approval_handler=lambda prompt, opts: input(f"{prompt} {opts}: "),
     )
-    # No ApprovalHook needed — tools call ctx.approve() inline.
+    # No ApprovalHook needed - tools call ctx.approve() inline.
 
 For **async approval** (suspend → external approval → resume)::
 
@@ -80,7 +80,7 @@ class ApprovalHook:
     approval before the loop resumes.
 
     When the loop stops, ``self.pending`` contains the
-    :class:`ApprovalRequest` — use it to send a notification,
+    :class:`ApprovalRequest` - use it to send a notification,
     create a webhook, or prompt a human.
 
     Combine with ``LoopConfig(checkpoint_dir=...)`` for full

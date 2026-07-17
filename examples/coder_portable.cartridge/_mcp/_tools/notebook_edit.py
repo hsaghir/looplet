@@ -1,4 +1,4 @@
-"""notebook_edit tool — structural JSON edits for .ipynb files."""
+"""notebook_edit tool - structural JSON edits for .ipynb files."""
 
 from __future__ import annotations
 

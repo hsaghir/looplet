@@ -123,7 +123,7 @@ class TestLoadCases:
         """Regression: when ``path`` is a string ending in a path
         separator (the obvious "I want a directory" convention shown
         in docs/evals.md), ``save_case`` must create the directory
-        and write ``<dir>/<id>.json`` — even if the directory does
+        and write ``<dir>/<id>.json`` - even if the directory does
         not yet exist. Previously the trailing-slash path was treated
         as a file because ``Path.exists()`` was False, so the case
         landed at e.g. ``evals/cases`` (a file named "cases" with
@@ -164,7 +164,7 @@ class TestPytestParamCases:
         params = pytest_param_cases([c1, c2])
         assert [p.id for p in params] == ["alpha", "beta"]
         assert params[0].values[0] is c1
-        # Marks survive — pytest stores them as MarkDecorator instances
+        # Marks survive - pytest stores them as MarkDecorator instances
         assert any("smoke" in repr(m) for m in params[0].marks)
         assert any("regression" in repr(m) for m in params[1].marks)
 
@@ -264,7 +264,7 @@ def _eval_failing(ctx: EvalContext) -> bool:
     return False
 
 
-_eval_failing.__doc__ = "Always fails — for assert_evals_pass tests."
+_eval_failing.__doc__ = "Always fails - for assert_evals_pass tests."
 
 
 class TestAssertEvalsPass:
@@ -282,7 +282,7 @@ class TestAssertEvalsPass:
     def test_path_arg_uses_eval_discover(self, tmp_path: Path) -> None:
         eval_file = tmp_path / "eval_demo.py"
         eval_file.write_text("def eval_always_pass(ctx):\n    return True\n")
-        # Should not raise — discovers and runs the single passing eval.
+        # Should not raise - discovers and runs the single passing eval.
         assert_evals_pass(self._ctx(), tmp_path)
 
 

@@ -1,10 +1,10 @@
-# Demo script — optional GIF recording
+# Demo script - optional GIF recording
 
 The relaunched homepage uses the executable text proof, not a GIF. If a
 secondary article needs a terminal recording, generate it from the scripted
-pretty trace in `examples/pretty_demo.py`—no API key, network, or flaky model
-timing. Re-record whenever CLI language changes; do not reuse workspace-era
-assets.
+pretty trace in `examples/pretty_demo.py` - no API key, network, or flaky model
+timing. Re-record whenever CLI language changes, and reject any recording that
+shows retired command names or positioning.
 
 ## Prep
 
@@ -63,7 +63,7 @@ asciinema rec docs/demo.cast --overwrite --cols 100 --rows 16 \
 ```
 
 Requires `OPENAI_BASE_URL`, `OPENAI_MODEL`, `OPENAI_API_KEY` and a fast
-(< 2 s/step) model. Timings won't be deterministic — expect slight
+(< 2 s/step) model. Timings won't be deterministic - expect slight
 variation between runs.
 
 ## Re-record checklist

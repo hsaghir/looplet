@@ -1,4 +1,4 @@
-"""Project-context CallableMemorySource — inline so the closure's
+"""Project-context CallableMemorySource - inline so the closure's
 ``__module__`` becomes ``_chw_resource_project_memory`` and the
 workspace round-trip can copy this builder verbatim instead of trying
 to re-import a lambda from coder_lib_wiring.
@@ -48,7 +48,7 @@ def build(runtime=None) -> CallableMemorySource:
     # The lambda closes over project_ctx + max_steps. Because this
     # function lives in ``resources/project_memory.py``, the closure's
     # ``__module__`` is ``_chw_resource_project_memory`` on workspace
-    # load — so the round-trip writer recognises it and copies THIS
+    # load - so the round-trip writer recognises it and copies THIS
     # file verbatim instead of warning about a non-importable lambda.
     #
     # Keep this line STATIC across turns: it sits in the cached prompt

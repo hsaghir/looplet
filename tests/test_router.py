@@ -1,4 +1,4 @@
-"""Tests for looplet.router — multi-model routing and cost tracking."""
+"""Tests for looplet.router - multi-model routing and cost tracking."""
 
 from __future__ import annotations
 

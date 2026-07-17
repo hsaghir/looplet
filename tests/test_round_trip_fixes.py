@@ -5,23 +5,23 @@ Exercising ``cartridge_to_preset`` → ``preset_to_cartridge`` →
 multi-cartridge dogfood surfaced four real round-trip lossiness
 bugs:
 
-1. **Tool ``tags`` were dropped** — v1.1 added ``tags: list[str]`` to
+1. **Tool ``tags`` were dropped** - v1.1 added ``tags: list[str]`` to
    ``ToolSpec`` but ``_write_tool`` didn't emit them. Round-trip
    produced ``tools/<n>/tool.yaml`` without the original tags, so the
    reload had ``spec.tags == []`` for every tool.
 
-2. **Tool ``render`` hints were dropped** — same root cause as #1.
+2. **Tool ``render`` hints were dropped** - same root cause as #1.
 
-3. **PermissionEngine rules with ``contains:`` matchers were dropped**
-   — ``compile_permissions_block`` produces a closure
+3. **PermissionEngine rules with ``contains:`` matchers were dropped.**
+    ``compile_permissions_block`` produces a closure
    (``_make_arg_matcher.<locals>._match``) per rule. The dataclass
    round-trip serialiser correctly identified the closure as
    non-importable and fell through to a "fresh PermissionEngine()"
-   stub — losing every rule. Fix: stamp the closure with its source
+   stub - losing every rule. Fix: stamp the closure with its source
    spec dict, recognise the stamp in the renderer, and re-emit a call
    to ``_make_arg_matcher({...})``.
 
-4. **Resources required by tools were not written back** — the
+4. **Resources required by tools were not written back** - the
    serialiser walked hook ``to_config()`` outputs to find ``@<name>``
    refs, but never collected resources referenced via tool
    ``requires:``. A round-tripped cartridge with ``tools/foo/tool.yaml:
@@ -29,7 +29,7 @@ bugs:
    so the reloaded tool received ``ctx.resources["my_resource"] =
    None`` and crashed at dispatch.
 
-5. **Hook kwargs without ``to_config`` were dropped** — hooks that
+5. **Hook kwargs without ``to_config`` were dropped** - hooks that
    take resource kwargs in ``__init__`` (the canonical v1.1
    declarative pattern, e.g. ``AuditLogHook(*, audit_log=None)``)
    round-tripped to ``kwargs: {}`` because the writer's fallback
@@ -274,7 +274,7 @@ def test_hook_kwargs_inferred_from_init_when_no_to_config(tmp_path: Path) -> Non
 def test_round_trip_preserves_summary_for_every_shipped_example() -> None:
     """The seven shipped example cartridges all round-trip with an
     EXACT spec-pinned summary match. Pins the comprehensive integration
-    surface — if any single example breaks, this catches it before
+    surface - if any single example breaks, this catches it before
     release."""
     failures = []
     for cart in sorted((REPO / "examples").glob("*.cartridge")):

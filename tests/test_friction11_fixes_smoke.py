@@ -62,7 +62,7 @@ class TestHasRecipe:
         # Exhaust
         for _ in range(2):
             reg.attempt_recovery(FailureScenario.TOOL_ERROR, {})
-        # Still registered, just exhausted — previously indistinguishable from
+        # Still registered, just exhausted - previously indistinguishable from
         # "never registered". Now callers can check has_recipe.
         assert reg.attempt_recovery(FailureScenario.TOOL_ERROR, {}) is None
         assert reg.has_recipe(FailureScenario.TOOL_ERROR)

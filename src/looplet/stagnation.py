@@ -1,8 +1,8 @@
 """Generic stagnation detection hook.
 
 Agents often loop on the same tool-call pattern or stop making
-progress — re-issuing the same search, circling the same entity,
-re-asking the same question — without actually closing on the task.
+progress - re-issuing the same search, circling the same entity,
+re-asking the same question - without actually closing on the task.
 Every consumer writes a variant of "if nothing new for N steps, nudge
 the LLM."  :class:`StagnationHook` packages the pattern with no
 domain assumptions.
@@ -17,7 +17,7 @@ The hook is parameterized by two caller-provided callables:
 
 - ``progress(state) -> int | None`` (optional) returns a monotonic
   counter of real progress (findings, artifacts, distinct entities,
-  lines of code written — anything).  When the counter increases
+  lines of code written - anything).  When the counter increases
   between steps, stagnation resets even if the fingerprint matched.
 
 When stagnation exceeds ``threshold`` consecutive steps, the hook
@@ -87,7 +87,7 @@ def result_size_fingerprint(
     Includes a coarse content signature alongside the tool+args so
     that calls returning different-sized results are not treated as
     identical.  Useful when a tool returns ``{"hits": []}``
-    repeatedly with different args — the args vary but nothing is
+    repeatedly with different args - the args vary but nothing is
     being learned.
     """
     base = tool_call_fingerprint(state, tool_call, tool_result)
@@ -130,7 +130,7 @@ class StagnationHook:
             If ``False``, the nudge fires on every subsequent step
             while still stagnant.
         ignore_tools: Tool names that never count toward stagnation
-            (e.g. ``{"done", "note"}``).  The step is skipped — the
+            (e.g. ``{"done", "note"}``).  The step is skipped - the
             prior fingerprint is preserved.
     """
 
@@ -169,7 +169,7 @@ class StagnationHook:
         return self._streak
 
     def reset(self) -> None:
-        """Clear internal state — useful between runs."""
+        """Clear internal state - useful between runs."""
         self._last_fingerprint = None
         self._streak = 0
         self._last_progress = None
@@ -213,7 +213,7 @@ class StagnationHook:
         if self._progress_fn is not None:
             try:
                 current = int(self._progress_fn(state))
-            except Exception:  # noqa: BLE001 — defensive: bad counter shouldn't break loop
+            except Exception:  # noqa: BLE001 - defensive: bad counter shouldn't break loop
                 current = self._last_progress if self._last_progress is not None else 0
             if self._last_progress is not None and current > self._last_progress:
                 self._streak = 0
@@ -224,7 +224,7 @@ class StagnationHook:
 
         fp = self._fingerprint_fn(state, tool_call, tool_result)
         if fp is None:
-            # Caller declared explicit progress — reset.
+            # Caller declared explicit progress - reset.
             self._streak = 0
             self._last_fingerprint = None
             return None

@@ -1,4 +1,4 @@
-"""Inlined v1 ``threat_intel`` agent code — the underlying data and
+"""Inlined v1 ``threat_intel`` agent code - the underlying data and
 tool functions previously hosted at ``examples/threat_intel/agent.py``.
 
 Each plain ``def`` here is wired to the workspace by a thin

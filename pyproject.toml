@@ -43,8 +43,8 @@ openai = ["openai>=1.30"]
 all = ["anthropic>=0.34", "openai>=1.30"]
 
 [project.urls]
-Homepage = "https://hsaghir.github.io/looplet/"
-Documentation = "https://hsaghir.github.io/looplet/"
+Homepage = "https://hsaghir.com/looplet/"
+Documentation = "https://hsaghir.com/looplet/"
 Repository = "https://github.com/hsaghir/looplet"
 Issues = "https://github.com/hsaghir/looplet/issues"
 Changelog = "https://github.com/hsaghir/looplet/blob/master/CHANGELOG.md"

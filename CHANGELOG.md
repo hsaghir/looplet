@@ -6,6 +6,19 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Task-oriented documentation.** New guides cover installation, migration
+  from a private tool loop, troubleshooting, experiment selection, runtime
+  operations, the CLI and Python API surfaces, and saved artifact layouts.
+
+### Changed
+
+- **Documentation front door and navigation.** The site now routes readers by
+  task, uses the custom domain as its canonical URL, preserves the
+  network-free regression proof as the primary demonstration, and adopts a
+  restrained engineering-focused visual system.
+
 ## [0.3.0] - 2026-07-16
 
 ### Added

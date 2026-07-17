@@ -1,61 +1,59 @@
 ---
+title: Test-driven harness engineering for Python agents
+description: Own, inspect, and regression-test Python agent harnesses with reviewable files, captured evidence, and outcome-based release gates.
 hide:
   - navigation
   - toc
 ---
 
-<div class="hero" markdown>
+<!-- markdownlint-disable MD025 MD033 MD036 -->
+
+<section class="hero" markdown>
 
 <p class="hero-eyebrow">Test-driven harness engineering for Python agents</p>
 
-# Own the loop. Test every change.
+# Looplet
+
+<p class="hero-kicker">Own the loop. Test every change.</p>
 
 <p class="hero-sub" markdown>
-Looplet keeps prompts, tools, hooks, memory, and evals in reviewable
-files. Capture what the model saw, replay recorded responses against
-fresh harness code, and gate changes with outcome-based pytest evals.
-No graph DSL or hosted platform is required.
-</p>
-
-<p class="hero-badges" markdown>
-[![PyPI](https://img.shields.io/pypi/v/looplet?label=pypi&color=4F46E5)](https://pypi.org/project/looplet/)
-[![Python](https://img.shields.io/pypi/pyversions/looplet?color=4F46E5)](https://pypi.org/project/looplet/)
-[![License](https://img.shields.io/badge/license-Apache%202.0-4F46E5)](https://github.com/hsaghir/looplet/blob/master/LICENSE)
-[![CI](https://img.shields.io/github/actions/workflow/status/hsaghir/looplet/ci.yml?branch=master&label=CI&color=4F46E5)](https://github.com/hsaghir/looplet/actions)
+Keep prompts, tools, hooks, cases, and graders in code and files your team can
+review. Capture a failure, inspect the resulting world, and turn the behavior
+into a required pytest or CI contract.
 </p>
 
 <div class="hero-cta">
-  <a href="regression-demo/" class="md-button md-button--primary">See a failed run become a regression test</a>
-  <a href="quickstart/" class="md-button">Build your first harness</a>
+  <a href="regression-demo/" class="md-button md-button--primary">Run the network-free proof</a>
+  <a href="install/" class="md-button">Install and configure</a>
   <a href="https://github.com/hsaghir/looplet" class="md-button">GitHub</a>
 </div>
 
-</div>
+</section>
 
 <div class="proof-strip" markdown>
 
 <div class="proof-item" markdown>
 **Reviewable**
 
-Prompts, tools, hooks, cases, and graders are files.
+Harness changes are ordinary Python, YAML, Markdown, and JSON.
 </div>
 
 <div class="proof-item" markdown>
 **Observable**
 
-Every model call and tool dispatch can become durable evidence.
+Model calls and tool dispatches can become durable evidence.
 </div>
 
 <div class="proof-item" markdown>
 **Re-executable**
 
-Captured responses can drive fresh harness code without another model call.
+Recorded responses can exercise fresh tool and hook code.
 </div>
 
 <div class="proof-item" markdown>
 **Gateable**
 
-Host-observed outcomes become required pytest and CI contracts.
+Host-observed outcomes become required release checks.
 </div>
 
 </div>
@@ -66,7 +64,6 @@ Host-observed outcomes become required pytest and CI contracts.
 
 ```text
 1. CAPTURE v1 with fixed model responses
-   model decisions: publish_report -> done
    collected profit: 200
    required eval: FAIL (0.00)
 
@@ -74,8 +71,8 @@ Host-observed outcomes become required pytest and CI contracts.
    - "profit": revenue + cost,
    + "profit": revenue - cost,
 
-3. REPLAY captured responses with fresh v2 tool execution
-   same decisions: true
+3. REPLAY with fresh v2 tool execution
+   same model decisions: true
    collected profit: 40
    required eval: PASS (1.00)
 ```
@@ -83,29 +80,51 @@ Host-observed outcomes become required pytest and CI contracts.
 </div>
 
 <p class="proof-caption" markdown>
-No API key. No network. One captured model decision stream, one fresh
-tool execution, one independently collected outcome. [Read exactly
-what the demo proves and what it does not.](regression-demo.md)
+No API key and no network. The response sequence stays fixed while changed
+tool code executes again and an independent collector checks the output.
+[Read the proof and its limits.](regression-demo.md)
 </p>
 
----
+## Start with the job in front of you
 
-## The problem starts after the prototype
+<div class="home-paths" markdown>
 
-Your agent runs. Then the harness starts moving:
+<div class="home-path" markdown>
 
-- a prompt edit fixes one case and silently breaks another;
-- a model upgrade chooses a different path;
-- a tool changes its side effects;
-- a permission or compaction hook alters what the model can do or see;
-- a successful-looking completion message hides a wrong world state.
+### I have a private tool loop
 
-At that point, `agent.run(task)` is not enough. You need an answer to:
+Adapt one tool, replace only the control loop, and establish parity before
+adding hooks or cartridges.
 
-> **What changed, what actually happened, and what evidence makes it safe to ship?**
+[Migrate an existing loop](migrate.md) | [Build the first loop](quickstart.md)
 
-Looplet connects the low-level loop to a local regression workflow
-without turning either into a platform.
+</div>
+
+<div class="home-path" markdown>
+
+### I have a failure worth preserving
+
+Capture the run, collect the real outcome, and decide whether replay, a mock,
+or fresh model samples answer the question.
+
+[Failure to regression](regression-demo.md) | [Choose an experiment](experiments.md)
+
+</div>
+
+<div class="home-path" markdown>
+
+### I need the exact interface
+
+Find commands, Python entry points, artifact files, and operational controls
+without reading the package source.
+
+[CLI](cli.md) | [Python API](api.md) | [Saved artifacts](artifacts.md)
+
+</div>
+
+</div>
+
+## One workflow from prototype to release
 
 <div class="workflow" markdown>
 
@@ -114,7 +133,7 @@ without turning either into a platform.
 
 **Build**
 
-Write normal Python or keep the harness in a cartridge that Git can diff.
+Own the model, tools, state, and dispatch loop in Python or a cartridge.
 </div>
 
 <div class="workflow-step" markdown>
@@ -130,7 +149,7 @@ Persist prompts, responses, steps, stop reasons, and metadata as readable files.
 
 **Test**
 
-Collect world state after the run and grade outcomes with grader-only expectations.
+Collect resulting world state and compare it with grader-only expectations.
 </div>
 
 <div class="workflow-step" markdown>
@@ -143,264 +162,95 @@ Make required graders and thresholds fail closed in pytest or CI.
 
 </div>
 
----
+## The execution boundary stays visible
 
-## One loop you can actually intercept
-
-```python
+```python title="owner_lookup.py"
 from looplet import OpenAIBackend, composable_loop, tool, tools_from
 
 
-@tool(description="Look up one fact by key.")
-def lookup(key: str) -> dict:
-    return {"key": key, "value": {"owner": "platform"}.get(key)}
+@tool(description="Look up one service owner by name.")
+def lookup_owner(service: str) -> dict:
+    owners = {"payments": "fintech-platform", "search": "discovery"}
+    return {"service": service, "owner": owners.get(service)}
 
-
-tools = tools_from([lookup], include_done=True)
 
 for step in composable_loop(
     llm=OpenAIBackend.from_env(),
-    tools=tools,
-    task={"goal": "Find the owner, then finish."},
+    tools=tools_from([lookup_owner], include_done=True),
+    task={"goal": "Find the owner of payments, then finish."},
     max_steps=5,
 ):
     print(step.pretty())
-    if should_pause(step):
-        break
 ```
 
-Every tool call is a `Step` object returned to your code. Hooks can
-intercept the prompt, dispatch, result, stop decision, and lifecycle
-without mandatory inheritance. The loop stays an iterator rather than a graph
-you must compile or a runtime you must surrender.
+Every dispatch returns to the caller as a typed `Step`. Hooks can observe or
+steer prompt construction, permissions, dispatch, completion, compaction, and
+lifecycle events without requiring a graph runtime. Cartridges are optional;
+they package the same harness as reviewable files when that helps distribution
+or code review.
 
-```mermaid
-flowchart LR
-    accTitle: One tool-calling loop with hooks and outcome collection
-    T[Task] --> P[Build prompt]
-    P --> M[Model proposes tool]
-    M --> D[Validate + dispatch]
-    D --> S[Yield Step]
-    S --> C{Done?}
-    C -- no --> P
-    C -- yes --> O[Outcome collectors]
-    H[Hooks] -. pre_prompt .-> P
-    H -. pre/post_dispatch .-> D
-    H -. check_done .-> C
-```
+[Follow the quickstart](quickstart.md) | [Read the hook protocol](hooks.md) |
+[Inspect cartridge boundaries](cartridge.md)
 
-[Understand the design →](why-looplet.md){ .md-button }
-[Learn hooks →](hooks.md){ .md-button }
+## Evidence has different jobs
 
----
+| Evidence | Use it for | Do not claim |
+| --- | --- | --- |
+| Yielded `Step` stream | Live routing, approval, display, and instrumentation | Independent product correctness |
+| Provenance trace | What the model saw, returned, and dispatched | That recorded prompts are safe to publish |
+| Captured-response replay | Tool, hook, permission, state, and dispatch changes under fixed model responses | Better future model decisions |
+| Outcome collector and grader | Whether the resulting file, command, record, or service state is correct | Isolation when the candidate owns the runner |
+| Fresh sampled cases | Prompt, model, schema, and context changes that affect decisions | Universal performance from one sample |
 
-## The harness is the review unit
+Looplet calls replay **captured-response replay** because tools, clocks,
+networks, randomness, and side effects execute again. Protected promotion
+oracles belong in a host-owned runner; arbitrary untrusted code also requires
+OS or process isolation.
 
-A cartridge is the optional file-native form of the runnable harness:
+[Capture and replay](provenance.md) | [Behavioral evals](evals.md) |
+[Saved artifact reference](artifacts.md)
 
-```text
-agent.cartridge/
-├── cartridge.json
-├── config.yaml
-├── runtime.yaml
-├── prompts/system.md
-├── tools/<name>/{tool.yaml, execute.py}
-├── hooks/<order>_<name>/{config.yaml, hook.py}
-├── resources/<name>.py
-├── memory/*.md
-└── evals/
-    ├── cases/*.json
-    ├── collect_*.py
-    └── eval_*.py
-```
-
-```bash
-looplet describe ./agent.cartridge
-looplet diff ./agent-v1.cartridge ./agent-v2.cartridge --show
-looplet hash ./agent.cartridge
-looplet eval run ./agent.cartridge --out ./eval-runs --threshold 1.0
-```
-
-The prompt or tool change sits beside the case and grader that cover it.
-Cartridge evals are versioned self-tests. A promotion oracle must remain in a
-host-owned runner and outside every task, runtime value, resource, tool, and
-file available to the candidate.
-
-[Cartridge layout and boundaries →](cartridge.md){ .md-button .md-button--primary }
-
----
-
-## Evidence has layers
-
-<div class="grid cards" markdown>
-
--   :material-console-line:{ .lg .middle } **Step stream**
-
-    ---
-
-    Print, route, approve, stop, or instrument each dispatch while the
-    loop is live.
-
-    [:octicons-arrow-right-24: Quickstart](quickstart.md)
-
--   :material-file-eye:{ .lg .middle } **Provenance**
-
-    ---
-
-    Save exact model inputs and outputs, tool steps, stop reasons, and
-    metadata to diff-friendly files.
-
-    [:octicons-arrow-right-24: Capture and replay](provenance.md)
-
--   :material-refresh:{ .lg .middle } **Captured-response replay**
-
-    ---
-
-    Hold model responses constant while fresh tools, hooks, state, and
-    permissions execute again.
-
-    [:octicons-arrow-right-24: Run the proof](regression-demo.md)
-
--   :material-test-tube:{ .lg .middle } **Behavioral contracts**
-
-    ---
-
-    Collect actual world state, keep expectations grader-only, and make
-    required evals fail CI.
-
-    [:octicons-arrow-right-24: Evals](evals.md)
-
-</div>
-
-!!! info "Replay is intentionally not called deterministic"
-    It holds recorded model responses constant. Tools and side effects execute
-    again. Use mocks or sandboxes when the world also needs to be
-    controlled. Use new sampled runs, not replay, to measure whether a
-    prompt or model change improves decisions.
-
----
-
-## Outcome-grounded by default
-
-Do not freeze yesterday's model trajectory as tomorrow's quality
-ceiling. A better model may use different tools and still produce a
-better result.
-
-```python
-def collect_tests(state):
-    result = subprocess.run(["pytest", "-q"], check=False)
-    return {"tests_passing": result.returncode == 0}
-
-
-@eval_mark("required")
-def eval_tests_pass(ctx):
-    return ctx.artifacts["tests_passing"]
-```
-
-Collectors inspect the world after the run. Evals grade that evidence.
-Trajectory assertions remain useful for harness mechanics, including whether a
-permission rule fired or the right stop reason was recorded, but not as
-a default proxy for product quality.
-
-[Learn the eval philosophy →](evals.md){ .md-button .md-button--primary }
-
----
-
-## Built for a specific team and stage
+## Designed for a specific team and stage
 
 <div class="fit-grid" markdown>
 
 <div class="fit-panel fit-panel--yes" markdown>
 
-### Use Looplet when
+### Looplet is a good fit when
 
 - one model calls tools until it is done;
-- you already review Python, files, pytest, and CI;
-- prompt, model, tool, or hook changes need regression evidence;
-- exact interception points matter;
-- local artifacts matter more than a hosted dashboard.
+- your team already reviews Python, files, pytest, and CI;
+- prompt, tool, model, or hook changes need regression evidence;
+- exact interception points and local artifacts matter;
+- you want to own execution rather than adopt a hosted control plane.
 
 </div>
 
 <div class="fit-panel fit-panel--no" markdown>
 
-### Choose something else when
+### Choose another layer when
 
-- the system is naturally a durable branching graph;
+- the workflow is naturally a durable branching graph;
 - a managed control plane should be the source of truth;
-- you want a turnkey assistant rather than a toolkit;
-- you do not want to own execution or the test contract.
+- you need a finished assistant, sandbox, or annotation product;
+- your main need is fleet analytics or a hosted experiment dashboard;
+- a small disposable loop is still enough.
 
 </div>
 
 </div>
 
-Looplet can run inside a workflow engine and export to observability
-services. It does not try to become either one. Core uses only the
-Python standard library; provider SDKs are optional extras.
+Looplet can run inside a workflow engine and export to observability systems.
+It does not try to replace either one. Core uses only the Python standard
+library; provider SDKs are optional extras.
 
-[Read the selection guide →](why-looplet.md){ .md-button }
-[Read the honest FAQ →](faq.md){ .md-button }
-
----
-
-## Start where you are
-
-<div class="grid cards" markdown>
-
--   :material-flask-outline:{ .lg .middle } **[Run the proof](regression-demo.md)**
-
-    ---
-
-    See capture → change → replay → collect → gate with no model or network.
-
--   :material-speedometer:{ .lg .middle } **[Quickstart](quickstart.md)**
-
-    ---
-
-    Build one loop, capture it, and add a behavioral contract.
-
--   :material-school:{ .lg .middle } **[Tutorial](tutorial.md)**
-
-    ---
-
-    Turn a small agent into a reviewable, testable harness step by step.
-
--   :material-file-cabinet:{ .lg .middle } **[Cartridges](cartridge.md)**
-
-    ---
-
-    Package prompts, tools, hooks, resources, memory, and evals as files.
-
--   :material-database-eye:{ .lg .middle } **[Provenance](provenance.md)**
-
-    ---
-
-    Capture model calls and re-execute recorded responses through fresh code.
-
--   :material-chart-check:{ .lg .middle } **[Evals](evals.md)**
-
-    ---
-
-    Build outcome collectors, grader-only cases, trust boundaries, and CI gates.
-
-</div>
-
----
-
-## Scaffolding is optional
-
-Already have tools and a prompt? Start in Python or copy a shipped
-cartridge. If an English brief is useful for bootstrapping,
-`looplet new` can scaffold the first version. Treat that output like any
-generated code: inspect it, edit it, and add a contract before shipping.
-
-[Use the agent factory as a scaffold →](agent-factory.md){ .md-button }
-
----
+[Read the selection guide](why-looplet.md) | [Check the FAQ](faq.md) |
+[Operate a production loop](operations.md)
 
 <p class="home-footer" markdown>
 [Run the proof](regression-demo.md){ .md-button .md-button--primary }
-[GitHub](https://github.com/hsaghir/looplet){ .md-button }
-[PyPI](https://pypi.org/project/looplet/){ .md-button }
+[Install Looplet](install.md){ .md-button }
+[Browse the tutorial](tutorial.md){ .md-button }
 </p>
+
+<!-- markdownlint-enable MD025 MD033 MD036 -->

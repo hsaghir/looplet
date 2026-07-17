@@ -1,5 +1,7 @@
 # Release / repository announcement
 
+<!-- markdownlint-disable MD034 MD036 -->
+
 ## Title
 
 **Looplet, relaunched: own the loop, test every harness change**
@@ -60,7 +62,7 @@ harness versions, the captured model-call cassette, fresh workspaces,
 trajectories, independently collected artifacts, grader-only expected data, and
 grader results.
 
-Proof walkthrough: https://hsaghir.github.io/looplet/regression-demo/
+Proof walkthrough: https://hsaghir.com/looplet/regression-demo/
 
 ### An important boundary
 
@@ -82,9 +84,9 @@ core.
 
 Start here:
 
-- Docs: https://hsaghir.github.io/looplet/
-- Selection guide: https://hsaghir.github.io/looplet/why-looplet/
-- Quickstart: https://hsaghir.github.io/looplet/quickstart/
+- Docs: https://hsaghir.com/looplet/
+- Selection guide: https://hsaghir.com/looplet/why-looplet/
+- Quickstart: https://hsaghir.com/looplet/quickstart/
 - Repository: https://github.com/hsaghir/looplet
 
 If you maintain a real harness, open a behavioral-regression issue with a

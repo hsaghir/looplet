@@ -1,5 +1,7 @@
 # Social launch variants
 
+<!-- markdownlint-disable MD034 -->
+
 Use one primary link per post. Prefer the executable proof over the homepage.
 Do not post all variants simultaneously.
 
@@ -17,7 +19,7 @@ reviewable harness files, readable run evidence, captured-response replay, and
 outcome graders for pytest/CI.
 
 Run the proof with no model or network:
-https://hsaghir.github.io/looplet/regression-demo/
+https://hsaghir.com/looplet/regression-demo/
 
 ## Technical thread
 
@@ -44,7 +46,7 @@ cases, collectors, and graders. The loop still yields every `Step` to Python.
 graph runtime for a real graph, a hosted eval platform for annotation and
 analytics, or keep a raw loop while it is enough.
 
-Proof: https://hsaghir.github.io/looplet/regression-demo/
+Proof: https://hsaghir.com/looplet/regression-demo/
 
 ## LinkedIn / engineering-lead version
 
@@ -70,7 +72,7 @@ line changes, and the same required grader goes red → green.
 Captured-response replay is not deterministic simulation; side effects execute
 again. That limitation is part of the design, not buried in fine print.
 
-https://hsaghir.github.io/looplet/regression-demo/
+https://hsaghir.com/looplet/regression-demo/
 
 ## Reddit / forum version
 
@@ -91,7 +93,7 @@ I would value criticism of the experiment boundary and eval trust model,
 especially from teams keeping hidden holdouts outside candidate-editable agent
 files.
 
-Proof/source: https://hsaghir.github.io/looplet/regression-demo/
+Proof/source: https://hsaghir.com/looplet/regression-demo/
 
 ## Newsletter blurb
 
@@ -101,7 +103,7 @@ responses, change one tool implementation, independently collect the fresh
 artifact, and enforce the outcome with a required grader. It deliberately
 targets single-loop agents rather than graph orchestration or hosted eval
 analytics, and keeps zero third-party dependencies in core.
-[Run the proof](https://hsaghir.github.io/looplet/regression-demo/).
+[Run the proof](https://hsaghir.com/looplet/regression-demo/).
 
 ## Copy to avoid
 

@@ -82,9 +82,10 @@ Planned work:
 - improve errors for invalid required graders, malformed bundles, and unsafe
   case paths;
 - make persisted eval runs easy to inspect and attach to pull requests;
-- document clear choices between replay, mocks, and fresh model sampling;
-- publish migration recipes for teams replacing a private raw loop without
-  rewriting their tools.
+- keep the replay, mock, sandbox, and fresh-sampling decision guide aligned
+  with the supported evidence formats;
+- expand the migration guide with verified recipes for teams replacing a
+  private raw loop without rewriting their tools.
 
 ## Priority 2: behavioral contract ergonomics
 

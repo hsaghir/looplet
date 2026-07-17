@@ -1,5 +1,7 @@
 # Looplet relaunch kit
 
+<!-- markdownlint-disable MD034 -->
+
 This directory is the operational source of truth for relaunching Looplet as:
 
 > **Test-driven harness engineering for Python agents.**
@@ -30,9 +32,9 @@ it and inspect its artifacts.
 ## Canonical links
 
 - Repository: https://github.com/hsaghir/looplet
-- Documentation: https://hsaghir.github.io/looplet/
-- Proof: https://hsaghir.github.io/looplet/regression-demo/
-- Selection guide: https://hsaghir.github.io/looplet/why-looplet/
+- Documentation: https://hsaghir.com/looplet/
+- Proof: https://hsaghir.com/looplet/regression-demo/
+- Selection guide: https://hsaghir.com/looplet/why-looplet/
 - PyPI: https://pypi.org/project/looplet/
 
 ## Publication rule

@@ -8,6 +8,7 @@
 
 **Test-driven harness engineering for Python agents.**
 
+<!-- markdownlint-disable-next-line MD026 -->
 ## Own the loop. Test every change.
 
 Looplet is for teams building a tool-calling agent that is fundamentally
@@ -30,10 +31,10 @@ flowchart LR
     E --> G[pytest / CI]
 ```
 
-[Documentation](https://hsaghir.github.io/looplet/) ·
-[Why Looplet](https://hsaghir.github.io/looplet/why-looplet/) ·
-[Failure → regression proof](https://hsaghir.github.io/looplet/regression-demo/) ·
-[Evals](https://hsaghir.github.io/looplet/evals/)
+[Documentation](https://hsaghir.com/looplet/) ·
+[Why Looplet](https://hsaghir.com/looplet/why-looplet/) ·
+[Failure → regression proof](https://hsaghir.com/looplet/regression-demo/) ·
+[Evals](https://hsaghir.com/looplet/evals/)
 
 ---
 
@@ -71,7 +72,7 @@ executes again.
 > Captured model responses are held constant. Tools, clocks, networks, and other
 > side effects are fresh unless you isolate or mock them.
 
-Read the [walkthrough](https://hsaghir.github.io/looplet/regression-demo/) or inspect the
+Read the [walkthrough](https://hsaghir.com/looplet/regression-demo/) or inspect the
 [source](https://github.com/hsaghir/looplet/tree/master/examples/regression_demo).
 
 ---
@@ -134,7 +135,7 @@ For a zero-network first run:
 python -m looplet.examples.hello_world --scripted
 ```
 
-Continue with the [quickstart](https://hsaghir.github.io/looplet/quickstart/).
+Continue with the [quickstart](https://hsaghir.com/looplet/quickstart/).
 
 ---
 
@@ -172,9 +173,9 @@ The prompt, tool, hook, and self-test change live next to the behavioral
 contract they affect. A promotion holdout belongs in a separate host-owned
 runner and requires an isolation boundary outside candidate authority.
 
-See the [cartridge guide](https://hsaghir.github.io/looplet/cartridge/). If a brief is a useful
+See the [cartridge guide](https://hsaghir.com/looplet/cartridge/). If a brief is a useful
 starting point, `looplet new` can scaffold a cartridge. The
-[agent factory](https://hsaghir.github.io/looplet/agent-factory/) is onboarding, not the product
+[agent factory](https://hsaghir.com/looplet/agent-factory/) is onboarding, not the product
 boundary, so review and test what it writes.
 
 ---
@@ -219,7 +220,7 @@ self-tests; a promotion oracle must stay in a host-owned runner and out of the
 candidate task, runtime, resources, tools, and writable files. Arbitrary
 candidate code requires OS or process isolation.
 
-Read [behavioral evals](https://hsaghir.github.io/looplet/evals/).
+Read [behavioral evals](https://hsaghir.com/looplet/evals/).
 
 ---
 
@@ -242,7 +243,7 @@ Use something else when:
 
 Looplet can run inside a workflow engine and export to observability
 services. It does not try to become either one. See the
-[selection guide](https://hsaghir.github.io/looplet/why-looplet/) and [FAQ](https://hsaghir.github.io/looplet/faq/).
+[selection guide](https://hsaghir.com/looplet/why-looplet/) and [FAQ](https://hsaghir.com/looplet/faq/).
 
 ## Shipped examples
 
@@ -254,21 +255,26 @@ services. It does not try to become either one. See the
 - [`regression_demo`](https://github.com/hsaghir/looplet/tree/master/examples/regression_demo): scripted, network-free captured-response replay and eval proof.
 
 Portable twins demonstrate MCP/LEP boundaries where needed; see
-[portability](https://hsaghir.github.io/looplet/portability/) for the exact supported tiers rather
+[portability](https://hsaghir.com/looplet/portability/) for the exact supported tiers rather
 than a blanket runtime-agnostic claim.
 
 ## Documentation
 
 | Start here | Purpose |
 | --- | --- |
-| [Why Looplet](https://hsaghir.github.io/looplet/why-looplet/) | Category, fit, tradeoffs, and boundaries |
-| [Quickstart](https://hsaghir.github.io/looplet/quickstart/) | Build, capture, and test a first loop |
-| [Failure → regression](https://hsaghir.github.io/looplet/regression-demo/) | Run the core claim without a model or network |
-| [Cartridges](https://hsaghir.github.io/looplet/cartridge/) | Reviewable harness layout and round-trip behavior |
-| [Provenance](https://hsaghir.github.io/looplet/provenance/) | Capture and captured-response replay |
-| [Evals](https://hsaghir.github.io/looplet/evals/) | Outcome collectors, grader-only data, trust boundaries, pytest, and CI |
-| [Hooks](https://hsaghir.github.io/looplet/hooks/) | Lifecycle interception and composition |
-| [FAQ](https://hsaghir.github.io/looplet/faq/) | Selection guidance and honest limitations |
+| [Install and configure](https://hsaghir.com/looplet/install/) | Provider extras, environment setup, and network-free verification |
+| [Why Looplet](https://hsaghir.com/looplet/why-looplet/) | Category, fit, tradeoffs, and boundaries |
+| [Quickstart](https://hsaghir.com/looplet/quickstart/) | Build, capture, and test a first loop |
+| [Migrate an existing loop](https://hsaghir.com/looplet/migrate/) | Adopt the loop boundary without rewriting tools or changing providers |
+| [Failure → regression](https://hsaghir.com/looplet/regression-demo/) | Run the core claim without a model or network |
+| [Choose an experiment](https://hsaghir.com/looplet/experiments/) | Decide between replay, scripted backends, sandboxes, and fresh samples |
+| [Cartridges](https://hsaghir.com/looplet/cartridge/) | Reviewable harness layout and round-trip behavior |
+| [Provenance](https://hsaghir.com/looplet/provenance/) | Capture and captured-response replay |
+| [Evals](https://hsaghir.com/looplet/evals/) | Outcome collectors, grader-only data, trust boundaries, pytest, and CI |
+| [Hooks](https://hsaghir.com/looplet/hooks/) | Lifecycle interception and composition |
+| [Runtime operations](https://hsaghir.com/looplet/operations/) | Async loops, retries, compaction, permissions, events, metrics, and checkpoints |
+| [CLI](https://hsaghir.com/looplet/cli/) · [Python API](https://hsaghir.com/looplet/api/) · [Artifacts](https://hsaghir.com/looplet/artifacts/) | Command, interface, and saved-evidence references |
+| [FAQ](https://hsaghir.com/looplet/faq/) | Selection guidance and honest limitations |
 | [Roadmap](https://github.com/hsaghir/looplet/blob/master/ROADMAP.md) | Core boundaries and explicit non-goals |
 
 ## Stability

@@ -29,6 +29,7 @@ The tests prove the twin composes across process boundaries:
 
 from __future__ import annotations
 
+import shutil
 import socket
 from pathlib import Path
 
@@ -75,6 +76,23 @@ def test_coder_portable_static_profile_is_portable() -> None:
     report = analyse_cartridge(_CARTRIDGE)
     assert report.profile == "portable"
     assert report.blockers == ()
+
+
+@pytest.mark.timeout(90)
+def test_coder_portable_loads_from_path_with_spaces(monkeypatch, tmp_path) -> None:
+    project = tmp_path / "project with spaces"
+    project.mkdir()
+    cartridge = tmp_path / "portable coder.cartridge"
+    shutil.copytree(_CARTRIDGE, cartridge)
+    monkeypatch.setenv("LOOPLET_PROJECT_ROOT", str(project))
+
+    preset = cartridge_to_preset(cartridge, strict=True)
+    try:
+        assert len(preset.state_service_handles) == 1
+        assert len(preset.mcp_adapters) == 1
+        assert set(preset.tools.tool_names) == _TOOLS
+    finally:
+        preset.close()
 
 
 @pytest.mark.timeout(90)

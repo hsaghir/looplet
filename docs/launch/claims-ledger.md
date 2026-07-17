@@ -15,6 +15,7 @@ and language that must not be substituted for it.
 | Top-level case expected data is withheld from the live agent task. | Eval runner/persistence implementation and integrity tests. | Candidate runtime and files are not protected; promotion needs a host-owned runner and OS/process isolation against arbitrary code. | "All cartridge evals are hidden." |
 | Required graders and collector/evaluator errors fail the CLI. | Eval CLI implementation and focused integrity suite. | State the exact command/configuration; library users can choose other handling. | "Looplet guarantees no false greens." |
 | Cartridges are reviewable harness directories. | Cartridge format, describe/diff/hash commands, round-trip tests. | Round-trip is defined for supported serializable fields; Python escape hatches remain. | "Lossless serialization of arbitrary Python." |
+| The bundled portable coder has zero in-process analyzer blockers. | `looplet portability`, installed-wheel smoke, cross-process MCP/LEP/SSP/MGP tests. | Loader portability: protocol servers currently use Python, SSP/MGP use Unix sockets, host eval/dynamic memory are omitted, and no full production non-Python loader has run it. | "Runs anywhere," "language-independent coder," or "no Python required." |
 | A compact Looplet coder matched Copilot correctness in recorded small same-model suites. | `benchmarks/coder_vs_agents/*` reports. | Historical, small samples; serving stacks differ; open-ended judging is noisy. | "Looplet beats Copilot" or universal speed/cost claims. |
 | Looplet is appropriate for one model calling tools in a loop. | Architecture and API. | Graph runtimes are a better fit for genuine branching workflows. | "Most/all agents are just loops" or unsupported percentages. |
 
@@ -49,4 +50,5 @@ level 4 into a headline.
 - Say **core runtime**, not whole development environment, for dependency
   claims.
 - Say **can fail closed under the CLI contract**, not guarantees safety.
+- Say **zero in-process analyzer blockers**, not no Python or universal runtime portability.
 - Distinguish a scripted harness regression from sampled model evaluation.

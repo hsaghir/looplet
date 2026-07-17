@@ -46,6 +46,11 @@ cases, collectors, and graders. The loop still yields every `Step` to Python.
 graph runtime for a real graph, a hosted eval platform for annotation and
 analytics, or keep a raw loop while it is enough.
 
+**7/** The bundled portable coder moves 16 tools, five hooks, shared state, and
+model access across MCP, LEP, SSP, and MGP with zero in-process analyzer
+blockers. The servers still use Python/Unix sockets; this is not a universal
+"runs anywhere" claim.
+
 Proof: https://hsaghir.com/looplet/regression-demo/
 
 ## LinkedIn / engineering-lead version

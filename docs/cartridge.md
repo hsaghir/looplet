@@ -30,6 +30,21 @@ for step in composable_loop(
 A cartridge is a normal directory; everything below is plain text or
 Python. Diff-friendly. Git-friendly. Editor-friendly. Agent-friendly.
 
+Cartridges support two honest execution profiles. A **Python-host** cartridge
+may keep tool bodies, hook classes, and shared objects in process. A
+**portable** cartridge keeps the contract in data and moves author-owned
+capabilities behind MCP tools, LEP hooks, SSP state services, and the MGP model
+gateway. `looplet portability <path>` identifies every blocker without
+importing the cartridge.
+
+Looplet ships both profiles of its coding harness. `coder.cartridge` remains
+the agent factory default and includes host-owned eval plus dynamic memory.
+`coder_portable.cartridge` is the bundled protocol reference: 16 tools, five
+hooks, shared file-cache state, and model-backed subagents cross explicit
+process boundaries with zero in-process analyzer blockers. See
+[cross-runtime portability](portability.md#the-portable-coder-reference) for
+the evidence and limitations.
+
 ---
 
 ## Principled exclusions: what cartridges deliberately don't do

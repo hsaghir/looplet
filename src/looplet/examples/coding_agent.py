@@ -82,6 +82,10 @@ def _bash(*, command: str, workspace: str = "") -> dict:
     shell can do. Prefer this over specialized tools when the
     task is naturally expressed as a shell command.
     """
+    env = dict(os.environ)
+    env["PATH"] = os.pathsep.join(
+        part for part in (os.path.dirname(sys.executable), env.get("PATH", "")) if part
+    )
     try:
         result = subprocess.run(
             ["bash", "-c", command],
@@ -89,6 +93,7 @@ def _bash(*, command: str, workspace: str = "") -> dict:
             text=True,
             timeout=60,
             cwd=workspace or None,
+            env=env,
         )
         output = result.stdout.strip()
         err = result.stderr.strip()

@@ -192,6 +192,37 @@ or code review.
 [Follow the quickstart](quickstart.md) | [Read the hook protocol](hooks.md) |
 [Inspect cartridge boundaries](cartridge.md)
 
+## The harness can cross runtime boundaries
+
+The shipped `coder_portable` cartridge is the complete coding-harness
+reference architecture with zero in-process portability blockers:
+
+| Boundary | What crosses it |
+| --- | --- |
+| MCP | All 16 coding tools |
+| LEP | Permission, test, cache, stale-file, and linter hooks |
+| SSP | Shared mutable file-cache state |
+| MGP | Host model access for `web_fetch` and subagents |
+
+```python
+from looplet import bundled_cartridge_path
+from looplet.cartridge import analyse_cartridge
+
+
+coder = bundled_cartridge_path("coder_portable")
+assert analyse_cartridge(coder).profile == "portable"
+```
+
+Portable means the loader does not import author-owned tool, hook, or state
+code. The bundled protocol servers are Python programs launched with the
+active Looplet interpreter, SSP and MGP use Unix sockets, and the full coder
+has not yet run on a production Rust, Go, or TypeScript loader. The Python-host
+coder remains the agent factory default and keeps host-owned eval and
+dynamic-memory behavior that the portable reference deliberately omits.
+
+[Study the portable coder](portability.md#the-portable-coder-reference) |
+[Inspect the cartridge format](cartridge.md)
+
 ## Evidence has different jobs
 
 | Evidence | Use it for | Do not claim |

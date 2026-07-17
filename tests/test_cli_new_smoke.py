@@ -178,17 +178,18 @@ def test_factory_workspace_path_resolves_installed_bundle(
     tmp_path: Path,
 ) -> None:
     """An installed wheel resolves package data without a repo checkout."""
+    from looplet import bundled
     from looplet.cli import factory_commands
 
     package_root = tmp_path / "site-packages" / "looplet"
-    fake_module = package_root / "cli" / "factory_commands.py"
+    fake_module = package_root / "bundled.py"
     factory = package_root / "_bundled" / "agent_factory.cartridge"
     fake_module.parent.mkdir(parents=True)
     factory.mkdir(parents=True)
     (factory / "cartridge.json").write_text('{"schema_version": 2, "name": "factory"}')
 
     monkeypatch.delenv("LOOPLET_FACTORY_DIR", raising=False)
-    monkeypatch.setattr(factory_commands, "__file__", str(fake_module))
+    monkeypatch.setattr(bundled, "__file__", str(fake_module))
 
     assert factory_commands._factory_workspace_path() == factory
 

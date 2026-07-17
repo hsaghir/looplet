@@ -6,5 +6,5 @@ builtin_tools:
 mcp_servers:
   planner_tools:
     # done() served out of process so no Python tool body is required.
-    command: "python3 ${runtime.cartridge_root}/_mcp/done_server.py"
+    command: '"${runtime.python_executable}" "${runtime.cartridge_root}/_mcp/done_server.py"'
     timeout_s: 10

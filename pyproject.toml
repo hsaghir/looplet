@@ -72,7 +72,9 @@ packages = ["src/looplet"]
 [tool.hatch.build.targets.wheel.force-include]
 "examples/agent_factory.cartridge" = "looplet/_bundled/agent_factory.cartridge"
 "examples/coder.cartridge" = "looplet/_bundled/coder.cartridge"
+"examples/coder_portable.cartridge" = "looplet/_bundled/coder_portable.cartridge"
 "tests/fixtures/coder_skill_bundle/SKILL.md" = "tests/fixtures/coder_skill_bundle/SKILL.md"
+"tests/fixtures/coder_skill_bundle/__init__.py" = "tests/fixtures/coder_skill_bundle/__init__.py"
 "tests/fixtures/coder_skill_bundle/looplet.py" = "tests/fixtures/coder_skill_bundle/looplet.py"
 "tests/fixtures/coder_skill_bundle/tools.py" = "tests/fixtures/coder_skill_bundle/tools.py"
 "tests/fixtures/coder_skill_bundle/hooks.py" = "tests/fixtures/coder_skill_bundle/hooks.py"
@@ -90,6 +92,7 @@ include = [
     "docs/skills.md",
     "examples/agent_factory.cartridge",
     "examples/coder.cartridge",
+    "examples/coder_portable.cartridge",
     "tests/fixtures/coder_skill_bundle/SKILL.md",
     "tests/fixtures/coder_skill_bundle/looplet.py",
     "tests/fixtures/coder_skill_bundle/tools.py",

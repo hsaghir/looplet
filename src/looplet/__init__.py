@@ -34,6 +34,7 @@ from looplet.blueprints import (
     wrap_claude_skill_as_bundle,
 )
 from looplet.budget import ContextBudget, ThresholdCompactHook
+from looplet.bundled import bundled_cartridge_path
 from looplet.bundles import (
     BundleCard,
     BundleValidation,
@@ -239,6 +240,7 @@ __all__ = [
     "load_skill_bundle",
     "validate_skill_bundle",
     "run_skill_bundle",
+    "bundled_cartridge_path",
     "blueprint_from_bundle",
     "blueprint_from_preset",
     "compare_blueprints",

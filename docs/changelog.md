@@ -6,19 +6,6 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-### Added
-
-- **Task-oriented documentation.** New guides cover installation, migration
-  from a private tool loop, troubleshooting, experiment selection, runtime
-  operations, the CLI and Python API surfaces, and saved artifact layouts.
-
-### Changed
-
-- **Documentation front door and navigation.** The site now routes readers by
-  task, uses the custom domain as its canonical URL, preserves the
-  network-free regression proof as the primary demonstration, and adopts a
-  restrained engineering-focused visual system.
-
 ## [0.3.0] - 2026-07-16
 
 ### Added
@@ -51,6 +38,14 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - **Public regression proof.** A network-free example captures fixed model
   responses, changes one tool implementation, independently collects the fresh
   artifact, and moves a required grader from red to green.
+- **Task-oriented documentation.** New guides cover installation, migration
+  from a private tool loop, troubleshooting, experiment selection, runtime
+  operations, the CLI and Python API surfaces, and saved artifact layouts.
+- **Bundled portable coder reference.** Wheels and sdists include
+  `coder_portable.cartridge`; `bundled_cartridge_path()` resolves shipped
+  cartridges in source and installed environments. The portable coder moves 16
+  tools, five hooks, shared cache state, and model access behind MCP, LEP, SSP,
+  and MGP with zero in-process analyzer blockers.
 
 ### Changed
 
@@ -72,6 +67,14 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - **Same-model harness evidence is documented with caveats.** Reproducible
   benchmark reports compare harness scaffolding rather than claiming universal
   model or framework superiority.
+- **Documentation front door and navigation.** The site now routes readers by
+  task, uses the custom domain as its canonical URL, preserves the
+  network-free regression proof as the primary demonstration, and adopts a
+  restrained engineering-focused visual system.
+- **Portability claims match the evidence.** The portable coder is a flagship
+  reference architecture while the Python-host coder remains the factory
+  default. Documentation distinguishes loader portability from subprocess
+  language, Unix-socket support, and full non-Python runtime execution.
 
 ### Fixed
 
@@ -103,6 +106,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   CI enforces the no-em-dash rule across tracked UTF-8 files.
 - Release metadata, mirrored documentation, lockfile version, changelog date,
   strict docs build, and publication tag are covered by automated gates.
+- Tag publication creates an idempotent GitHub Release after PyPI succeeds,
+  attaches the built wheel and sdist, and uses the matching changelog section
+  as release notes.
 - The public issue backlog is split into independent evidence, compatibility,
   and provider work with explicit dependencies and non-goals.
 

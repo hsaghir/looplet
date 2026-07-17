@@ -100,6 +100,7 @@ order, method signatures, composition, and error handling.
 | API | Use it for |
 | --- | --- |
 | `AgentPreset` | In-memory composition of backend-independent harness pieces. |
+| `bundled_cartridge_path(name)` | Resolve a reference cartridge shipped in the source tree or installed distribution. |
 | `Cartridge` / `CartridgeLayout` | Parsed file-native harness and its paths. |
 | `cartridge_to_preset(...)` | Load a cartridge into the same preset used by Python callers. |
 | `preset_to_cartridge(...)` | Write a supported preset surface as reviewable files. |

@@ -8,6 +8,8 @@ import sys
 from pathlib import Path
 
 import looplet
+from looplet.bundles import load_skill_bundle
+from looplet.cartridge import analyse_cartridge
 from looplet.cli.factory_commands import _factory_workspace_path
 
 
@@ -18,6 +20,33 @@ def main() -> int:
     assert package_root in factory.parents
     assert factory == package_root / "_bundled" / "agent_factory.cartridge"
     assert (factory.parent / "coder.cartridge" / "cartridge.json").is_file()
+
+    portable_coder = looplet.bundled_cartridge_path("coder_portable").resolve()
+    assert portable_coder == package_root / "_bundled" / "coder_portable.cartridge"
+    portability = analyse_cartridge(portable_coder)
+    assert portability.profile == "portable"
+    assert portability.blockers == ()
+
+    portable_preset = looplet.cartridge_to_preset(portable_coder, strict=True)
+    try:
+        assert len(portable_preset.mcp_adapters) == 1
+        assert len(portable_preset.state_service_handles) == 1
+        assert {
+            "bash",
+            "read_file",
+            "write_file",
+            "edit_file",
+            "grep",
+            "subagent",
+            "done",
+        } <= set(portable_preset.tools.tool_names)
+    finally:
+        portable_preset.close()
+
+    coder_bundle_path = package_root.parent / "tests" / "fixtures" / "coder_skill_bundle"
+    coder_bundle = load_skill_bundle(coder_bundle_path)
+    assert coder_bundle.skill.name == "coder"
+    assert coder_bundle.card.name == "coder"
 
     preset = looplet.cartridge_to_preset(factory)
     try:

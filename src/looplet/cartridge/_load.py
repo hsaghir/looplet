@@ -22,6 +22,7 @@ import logging
 import os
 import re
 import shutil
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -212,15 +213,13 @@ def cartridge_to_preset(
     #   * ``from <resource_name> import helper`` resolves to a
     #     ``resources/<resource_name>.py`` module (lets tools call back
     #     into resource modules without forcing a setup.py shim).
-    import sys as _sys  # noqa: PLC0415
-
     root_str = str(root)
     resources_dir_str = str(root / CartridgeLayout.RESOURCES_DIR)
     pushed_paths: list[str] = []
     for p in (root_str, resources_dir_str):
         if (root / CartridgeLayout.RESOURCES_DIR).is_dir() or p == root_str:
-            if p not in _sys.path:
-                _sys.path.insert(0, p)
+            if p not in sys.path:
+                sys.path.insert(0, p)
                 pushed_paths.append(p)
     try:
         preset = _workspace_to_preset_inner(
@@ -237,7 +236,7 @@ def cartridge_to_preset(
     finally:
         for p in pushed_paths:
             try:
-                _sys.path.remove(p)
+                sys.path.remove(p)
             except ValueError:
                 pass
 
@@ -539,6 +538,9 @@ def _workspace_to_preset_inner(
     from looplet.tools import BaseToolRegistry, ToolSpec  # noqa: PLC0415
     from looplet.types import DefaultState  # noqa: PLC0415
 
+    render_runtime = dict(runtime_dict)
+    render_runtime.setdefault("python_executable", sys.executable)
+
     # ── Spec version gate ──────────────────────────────────────
     # Cartridge spec v2 is the only supported version. v1 cartridges
     # are rejected at load time; upgrade with ``looplet migrate``.
@@ -586,7 +588,7 @@ def _workspace_to_preset_inner(
         raw_cfg_text = cfg_path.read_text(encoding="utf-8")
         # Apply ``${runtime.<key>}`` substitution before YAML parsing so
         # cartridge authors can parameterise config.yaml declaratively.
-        raw_cfg_text = _apply_runtime_substitutions(raw_cfg_text, runtime_dict)
+        raw_cfg_text = _apply_runtime_substitutions(raw_cfg_text, render_runtime)
         cfg_kwargs.update(_load_yaml(raw_cfg_text, source_path=cfg_path) or {})
 
     # ── Schema-v2 sibling ``runtime.yaml`` ──────────────────────
@@ -601,7 +603,7 @@ def _workspace_to_preset_inner(
     runtime_yaml_path = root / "runtime.yaml"
     if runtime_yaml_path.is_file():
         raw_runtime_text = runtime_yaml_path.read_text(encoding="utf-8")
-        raw_runtime_text = _apply_runtime_substitutions(raw_runtime_text, runtime_dict)
+        raw_runtime_text = _apply_runtime_substitutions(raw_runtime_text, render_runtime)
         runtime_yaml_kwargs = _load_yaml(raw_runtime_text, source_path=runtime_yaml_path) or {}
         # Validate: only RUNTIME-tier keys are allowed in runtime.yaml.
         _bad = sorted(
@@ -990,7 +992,7 @@ def _workspace_to_preset_inner(
             yaml_payload = (
                 _load_yaml(
                     _apply_runtime_substitutions(
-                        spec_path.read_text(encoding="utf-8"), runtime_dict
+                        spec_path.read_text(encoding="utf-8"), render_runtime
                     ),
                     source_path=spec_path,
                 )
@@ -1313,7 +1315,7 @@ def _workspace_to_preset_inner(
                     raw = cfg_yaml.read_text(encoding="utf-8")
                     parsed = (
                         _load_yaml(
-                            _apply_runtime_substitutions(raw, runtime_dict),
+                            _apply_runtime_substitutions(raw, render_runtime),
                             source_path=cfg_yaml,
                         )
                         or {}
@@ -1347,7 +1349,7 @@ def _workspace_to_preset_inner(
             hook_cfg = (
                 _load_yaml(
                     _apply_runtime_substitutions(
-                        cfg_yaml.read_text(encoding="utf-8"), runtime_dict
+                        cfg_yaml.read_text(encoding="utf-8"), render_runtime
                     ),
                     source_path=cfg_yaml,
                 )

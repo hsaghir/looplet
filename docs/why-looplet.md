@@ -159,5 +159,11 @@ executable. It captures a failing run, changes one tool line, replays
 the same model decisions against fresh code, and turns an independent
 world-state check from red to green.
 
+If you already own a loop, the
+[migration recipe](migrate.md#run-the-whole-recipe) applies the same proof to
+existing code: it keeps the tool callables, replaces only the loop, and lands
+one required grader that reads world state. It also says when keeping your raw
+loop is the better call.
+
 [Run the proof →](regression-demo.md){ .md-button .md-button--primary }
 [Start with your own loop →](quickstart.md){ .md-button }

@@ -8,6 +8,9 @@ The first useful milestone is small: your existing tools run through
 `composable_loop()`, and every dispatch is returned to your code as a `Step`.
 Capture, hooks, cartridges, and eval gates can follow independently.
 
+The checkpoints below are executable end to end as one network-free example;
+see [run the whole recipe](#run-the-whole-recipe).
+
 ## Map what you already own
 
 | Existing harness responsibility | Looplet surface |
@@ -186,6 +189,95 @@ looplet hash ./agent.cartridge
 Cartridges are a file representation of the same `AgentPreset` used by the
 Python API. They are not required to use the loop, hooks, provenance, replay,
 or eval primitives.
+
+## Run the whole recipe
+
+The steps above are executable as one example. It migrates a tiny on-call
+handoff agent that hands resolved incidents to the next owner as if they were
+still open work. No provider, network call, or cartridge is involved.
+
+```bash
+uv run python -m examples.private_loop_migration
+```
+
+```text
+1. REPLACE the loop, keep the private tools
+   raw loop:        list_incidents -> publish_handoff -> done
+   composable_loop: list_incidents -> publish_handoff -> done
+   private callables that ran: list_incidents -> publish_handoff
+   same tools reused:      true
+   same handoff written:   true
+
+2. CAPTURE the failing run as ordinary files
+   model calls recorded: 3
+
+3. GRADE the outcome the host observed, not the route
+   collected open_count: 4 (expected 2)
+   required eval: FAIL (0.00)
+
+4. FIX one tool implementation and replay the recorded decisions
+   - return list(incidents)
+   + return [incident for incident in incidents if incident["status"] != "resolved"]
+   replayed:                list_incidents -> publish_handoff -> done
+   same recorded decisions: true
+   collected open_count: 2 (expected 2)
+   required eval: PASS (1.00)
+```
+
+Each stage is one change:
+
+1. **Replace the loop.** `tools_from([...], include_done=True)` registers the
+   callables the private loop already dispatched, and `composable_loop()` takes
+   over prompt assembly, parsing, dispatch, and the stop condition. Both loops
+   write the same wrong `handoff.json`, which is the parity check that keeps
+   the loop swap attributable.
+2. **Capture the failure.** `ProvenanceSink` writes the prompts, responses,
+   trajectory, and stop reason as files you can read and attach to an issue.
+3. **Grade the outcome.** An `EvalHook` collector reads `handoff.json` from the
+   run's workspace and a required grader compares it with grader-only expected
+   data. The collector ignores the step list, so a model that reaches the same
+   correct file by another route still passes.
+4. **Fix one implementation.** One selector loses its bug, and `replay_loop()`
+   feeds the recorded responses through the fixed tool in a fresh workspace.
+   The required grader goes green while the model decisions stay identical.
+
+The last stage also asserts that replay consumed the same recorded decisions.
+That assertion is an experiment control, not the product verdict: the verdict
+comes from the collected artifact. Grading the trajectory instead would fail
+the first time a better model reordered two safe reads.
+
+No stage loads a cartridge. Cartridges stay where step 7 puts them: optional
+packaging for review once the harness already has a contract.
+
+The pieces are deliberately separate:
+
+- [`handoff_tools.py`](https://github.com/hsaghir/looplet/blob/master/examples/private_loop_migration/handoff_tools.py)
+  keeps the private tool callables and the one implementation that changes.
+- [`handoff_contract.py`](https://github.com/hsaghir/looplet/blob/master/examples/private_loop_migration/handoff_contract.py)
+  holds the case, the world-state collector, and the required grader.
+- [`run_recipe.py`](https://github.com/hsaghir/looplet/blob/master/examples/private_loop_migration/run_recipe.py)
+  wires the four stages and prints the summary above.
+- [`tests/test_private_loop_migration.py`](https://github.com/hsaghir/looplet/blob/master/tests/test_private_loop_migration.py)
+  is the CI gate: it proves the reuse, the red-to-green contract, and that the
+  four stages stay cartridge-free.
+
+### When the raw loop is still the better choice
+
+Keep the loop you have when:
+
+- it is a few lines around one experiment you expect to delete, and no
+  regression has cost you anything yet;
+- nobody else has to review or change it;
+- the product is naturally a branching, durable, multi-stage workflow, where a
+  graph or workflow runtime fits better than one owned loop (see the
+  [selection guide](why-looplet.md));
+- success can only be judged by reading the transcript. A collector that cannot
+  observe the outcome independently will end up encoding a preferred
+  trajectory, which is a weaker contract than a person reading the trace.
+
+Adopt a stage when it removes work you are already doing by hand. Stopping
+after step 2, with your existing tools running through `composable_loop()` and
+nothing else adopted, is a complete outcome.
 
 ## Migration sequence
 

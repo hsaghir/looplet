@@ -227,6 +227,8 @@ and required graders before shipping.
 
 ## Next
 
+- [Migrate an existing loop](migrate.md#run-the-whole-recipe): keep your tool
+  callables, replace only the loop, and land one required outcome grader.
 - [Tutorial](tutorial.md): build a colocated case, collector, and required grader.
 - [Cartridges](cartridge.md): file layout, refs, inheritance, and boundaries.
 - [Provenance](provenance.md): capture and controlled re-execution.

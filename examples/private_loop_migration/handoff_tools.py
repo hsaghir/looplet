@@ -23,6 +23,11 @@ Selector = Callable[[list[dict[str, Any]]], list[dict[str, Any]]]
 ToolCallable = Callable[..., dict[str, Any]]
 
 
+@dataclass
+class _WorkspaceBinding:
+    path: Path
+
+
 def select_open_incidents_with_bug(incidents: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Original implementation: it never drops the resolved incidents."""
     return list(incidents)
@@ -48,10 +53,18 @@ class ToolSuite:
     rather than a rewritten copy of it.
     """
 
-    workspace: Path
+    _workspace: _WorkspaceBinding
     select_open: Selector
     callables: dict[str, ToolCallable]
     invocations: list[str]
+
+    @property
+    def workspace(self) -> Path:
+        return self._workspace.path
+
+    def bind_workspace(self, workspace: str | Path) -> None:
+        """Point this run's unchanged callables at the next stage workspace."""
+        self._workspace.path = Path(workspace)
 
 
 def build_tool_suite(
@@ -65,31 +78,31 @@ def build_tool_suite(
     taking them as model-visible arguments, which is what keeps the tool
     schemas identical before and after the migration.
     """
-    root = Path(workspace)
+    binding = _WorkspaceBinding(Path(workspace))
     invocations: list[str] = []
 
     def list_incidents() -> dict[str, Any]:
         """List every incident recorded during the finished shift."""
         invocations.append("list_incidents")
-        return {"incidents": read_incidents(root)}
+        return {"incidents": read_incidents(binding.path)}
 
     def publish_handoff(owner: str) -> dict[str, Any]:
         """Write the handoff file for the next on-call owner."""
         invocations.append("publish_handoff")
-        open_incidents = select_open(read_incidents(root))
+        open_incidents = select_open(read_incidents(binding.path))
         handoff = {
             "owner": owner,
             "open_count": len(open_incidents),
             "open_ids": [incident["id"] for incident in open_incidents],
         }
-        (root / HANDOFF_FILE).write_text(
+        (binding.path / HANDOFF_FILE).write_text(
             json.dumps(handoff, indent=2) + "\n",
             encoding="utf-8",
         )
         return {"written": HANDOFF_FILE, "open_count": handoff["open_count"]}
 
     return ToolSuite(
-        workspace=root,
+        _workspace=binding,
         select_open=select_open,
         callables={"list_incidents": list_incidents, "publish_handoff": publish_handoff},
         invocations=invocations,

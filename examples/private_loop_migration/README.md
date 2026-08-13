@@ -13,6 +13,11 @@ Run it from the repository root:
 uv run python -m examples.private_loop_migration
 ```
 
+Without `--out`, each invocation creates a unique evidence directory under
+the system temporary directory, so overlapping runs cannot reset each other.
+Supplying `--out` makes replacement explicit; the recipe only resets a prior
+directory carrying its own marker file.
+
 Expected core output:
 
 ```text
@@ -49,7 +54,9 @@ artifacts, the grader-only expected data, and the grader results.
   owned, plus the one buggy implementation the last stage replaces.
 - `handoff_contract.py`: the case, the collector that reads the
   workspace, and the required grader.
-- `run_recipe.py`: the four stages, the summary, and the CLI.
+- `execution.py`: the raw loop, the owned loop, and captured-response replay.
+- `result.py`: the evidence and identity record returned to callers.
+- `run_recipe.py`: the four-stage orchestration, summary, and CLI.
 
 ## What this proves
 

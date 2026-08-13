@@ -1,5 +1,10 @@
 """Cartridge-free recipe: a private tool loop becomes a regression contract."""
 
+from .execution import (
+    build_registry,
+    run_owned_loop,
+    run_raw_loop,
+)
 from .handoff_contract import (
     CASE,
     build_eval_hook,
@@ -17,13 +22,10 @@ from .handoff_tools import (
     select_open_incidents,
     select_open_incidents_with_bug,
 )
+from .result import MigrationResult
 from .run_recipe import (
-    MigrationResult,
-    build_registry,
     render,
     run_migration,
-    run_owned_loop,
-    run_raw_loop,
 )
 
 __all__ = [

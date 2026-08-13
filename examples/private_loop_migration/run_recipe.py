@@ -1,23 +1,8 @@
 """Migrate a private tool loop to one outcome-grounded regression contract.
 
-Four stages, no cartridge and no provider:
-
-1. the private while-loop is replaced by ``composable_loop()`` while the
-   same tool callables run through one ``tools_from(...)`` registry;
-2. the failing run is captured as readable files with ``ProvenanceSink``;
-3. an ``EvalHook`` collector reads the resulting workspace and a required
-   grader turns that observation into a contract;
-4. one tool implementation is fixed and ``replay_loop()`` re-executes the
-   recorded model decisions against it.
-
-Replay is the right tool only in stage four, because the model responses
-are the variable being held fixed. Tool code executes again, so the
-workspace, the collected artifacts, and the verdict are all fresh.
-
-Two notes on how the stages are wired. The scripted ``MockLLMBackend``
-stands in for the team's provider client so every stage runs offline;
-nothing else about the private harness is a test double. Stages two and
-three share one run, because the contract grades the failure it captured.
+The four offline stages replace the control loop, capture a failed run,
+grade observed world state, and replay fixed tool code while holding the
+recorded model decisions constant. No stage loads a cartridge or provider.
 """
 
 from __future__ import annotations
@@ -30,21 +15,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from looplet import (
-    BaseToolRegistry,
-    DefaultState,
-    EvalHook,
-    LoopConfig,
-    ProvenanceSink,
-    composable_loop,
-    replay_loop,
-    save_eval_run,
-    seed_case_workspace,
-    tools_from,
-)
-from looplet.testing import MockLLMBackend
+from looplet import BaseToolRegistry, EvalHook, ProvenanceSink, save_eval_run, seed_case_workspace
 
-from .handoff_contract import CASE, build_eval_hook, live_task, required_score
+from .execution import (
+    build_registry,
+    replay_with_fixed_tools,
+    run_owned_loop,
+    run_raw_loop,
+)
+from .handoff_contract import CASE, build_eval_hook, required_score
 from .handoff_tools import (
     HANDOFF_FILE,
     ToolSuite,
@@ -52,216 +31,127 @@ from .handoff_tools import (
     changed_implementation_lines,
     select_open_incidents,
 )
+from .result import MigrationResult
 
-DONE_TOOL = "done"
-MAX_STEPS = 4
 MARKER = ".looplet-private-loop-migration"
-SYSTEM_PROMPT = "You hand an on-call shift over. Record the work the next owner still carries."
-
-MODEL_RESPONSES = [
-    json.dumps(
-        {
-            "tool": "list_incidents",
-            "args": {},
-            "reasoning": "read the shift log before writing anything",
-        }
-    ),
-    json.dumps(
-        {
-            "tool": "publish_handoff",
-            "args": {"owner": "day-shift"},
-            "reasoning": "write the handoff file",
-        }
-    ),
-    json.dumps(
-        {
-            "tool": DONE_TOOL,
-            "args": {"summary": "handoff file written for day-shift"},
-            "reasoning": "the requested file exists",
-        }
-    ),
-]
 
 
 @dataclass(frozen=True)
-class MigrationResult:
-    """Evidence produced by :func:`run_migration`."""
-
-    output_dir: Path
+class _Baseline:
+    suite: ToolSuite
+    registry: BaseToolRegistry
     raw_decisions: tuple[str, ...]
     owned_decisions: tuple[str, ...]
-    graded_decisions: tuple[str, ...]
-    replayed_decisions: tuple[str, ...]
     raw_invocations: tuple[str, ...]
     owned_invocations: tuple[str, ...]
     raw_handoff: dict[str, Any]
     owned_handoff: dict[str, Any]
-    before_fix_artifacts: dict[str, Any]
-    after_fix_artifacts: dict[str, Any]
-    before_fix_score: float
-    after_fix_score: float
-    recorded_calls: int
-    failure_run: Path
-    fixed_run: Path
-    changed_lines: tuple[str, str]
-
-    @property
-    def reuses_private_tools(self) -> bool:
-        """True when both loops dispatched the same private callables."""
-        return bool(self.raw_invocations) and self.raw_invocations == self.owned_invocations
-
-    @property
-    def loop_swap_kept_the_outcome(self) -> bool:
-        """True when replacing the loop changed neither decisions nor world state."""
-        return self.raw_decisions == self.owned_decisions and self.raw_handoff == self.owned_handoff
-
-    @property
-    def same_recorded_decisions(self) -> bool:
-        """True when replay consumed the decisions the failing run recorded."""
-        return self.replayed_decisions == self.graded_decisions
 
 
-def build_registry(suite: ToolSuite) -> BaseToolRegistry:
-    """The one ``tools_from(...)`` registry every Looplet stage reuses."""
-    return tools_from(list(suite.callables.values()), include_done=True)
+@dataclass(frozen=True)
+class _Captured:
+    decisions: tuple[str, ...]
+    run_dir: Path
+    hook: EvalHook
 
 
-def run_raw_loop(suite: ToolSuite) -> tuple[str, ...]:
-    """The private while-loop this recipe migrates away from.
-
-    It owns prompt assembly, response parsing, dispatch, and the stop
-    condition, and it has no interception point for capture, permissions,
-    or parse recovery. Those are the responsibilities stage one hands to
-    ``composable_loop()``.
-    """
-    llm = MockLLMBackend(responses=list(MODEL_RESPONSES), cycle=False)
-    task = live_task()
-    decisions: list[str] = []
-    observations: list[str] = []
-    for _ in range(MAX_STEPS):
-        response = llm.generate(_raw_prompt(task, observations), system_prompt=SYSTEM_PROMPT)
-        call = json.loads(response)
-        name = str(call["tool"])
-        decisions.append(name)
-        if name == DONE_TOOL:
-            break
-        result = suite.callables[name](**call.get("args", {}))
-        observations.append(f"{name} -> {json.dumps(result)}")
-    return tuple(decisions)
-
-
-def run_owned_loop(
-    suite: ToolSuite,
-    *,
-    sink: ProvenanceSink | None = None,
-    eval_hook: EvalHook | None = None,
-) -> tuple[str, ...]:
-    """Run the same tools through ``composable_loop()``.
-
-    Passing neither ``sink`` nor ``eval_hook`` is stage one: the loop is
-    the only thing that changed. Stages two and three add each argument
-    without touching the tools.
-    """
-    llm: Any = MockLLMBackend(responses=list(MODEL_RESPONSES), cycle=False)
-    hooks: list[Any] = []
-    if sink is not None:
-        llm = sink.wrap_llm(llm)
-        hooks.append(sink.trajectory_hook())
-    if eval_hook is not None:
-        hooks.append(eval_hook)
-    steps = list(
-        composable_loop(
-            llm=llm,
-            tools=build_registry(suite),
-            hooks=hooks,
-            task=live_task(),
-            config=_loop_config(),
-            state=DefaultState(max_steps=MAX_STEPS),
-        )
-    )
-    if sink is not None:
-        sink.flush()
-    return tuple(step.tool_call.tool for step in steps)
-
-
-def replay_with_fixed_tools(
-    suite: ToolSuite,
-    trace_dir: Path,
-    eval_hook: EvalHook,
-) -> tuple[str, ...]:
-    """Re-execute the recorded decisions against the fixed implementation."""
-    steps = list(
-        replay_loop(
-            trace_dir,
-            tools=build_registry(suite),
-            state=DefaultState(max_steps=MAX_STEPS),
-            hooks=[eval_hook],
-            config=_loop_config(),
-            task=live_task(),
-        )
-    )
-    return tuple(step.tool_call.tool for step in steps)
+@dataclass(frozen=True)
+class _Fixed:
+    decisions: tuple[str, ...]
+    run_dir: Path
+    hook: EvalHook
 
 
 def run_migration(output_dir: str | Path | None = None) -> MigrationResult:
-    """Run the four cartridge-free stages and return their persisted evidence."""
-    root = Path(output_dir or (Path(tempfile.gettempdir()) / "looplet-private-loop-migration"))
-    _reset_output(root)
-    workspaces = root / "workspaces"
-    runs = root / "runs"
+    """Run the four cartridge-free stages and return their evidence."""
+    root = _prepare_output(output_dir)
+    workspaces, runs = root / "workspaces", root / "runs"
+    baseline = _run_baseline(workspaces)
+    captured = _capture_failure(workspaces, runs, baseline)
+    fixed = _replay_fix(workspaces, runs, captured)
+    return _assemble_result(root, baseline, captured, fixed)
 
-    # Stage 1: replace the loop, keep the tools.
-    raw_suite = build_tool_suite(seed_case_workspace(CASE, workspaces / "raw_loop"))
-    raw_decisions = run_raw_loop(raw_suite)
-    owned_suite = build_tool_suite(seed_case_workspace(CASE, workspaces / "composable_loop"))
-    owned_decisions = run_owned_loop(owned_suite)
 
-    # Stages 2 and 3: capture the failing run, then grade what the host sees.
-    failure_workspace = seed_case_workspace(CASE, workspaces / "captured_failure")
-    failure_run = runs / "captured_failure"
-    failure_sink = ProvenanceSink(dir=failure_run)
-    failure_hook = build_eval_hook(failure_workspace)
-    graded_decisions = run_owned_loop(
-        build_tool_suite(failure_workspace),
-        sink=failure_sink,
-        eval_hook=failure_hook,
-    )
-    save_eval_run(
-        failure_run,
-        recorder=failure_sink.trajectory_hook(),
-        eval_hook=failure_hook,
-        case=CASE,
-    )
-
-    # Stage 4: fix one implementation, replay the recorded decisions.
-    fixed_workspace = seed_case_workspace(CASE, workspaces / "replayed_fix")
-    fixed_run = runs / "replayed_fix"
-    fixed_hook = build_eval_hook(fixed_workspace)
-    replayed_decisions = replay_with_fixed_tools(
-        build_tool_suite(fixed_workspace, select_open=select_open_incidents),
-        failure_run,
-        fixed_hook,
-    )
-    save_eval_run(fixed_run, eval_hook=fixed_hook, case=CASE)
-
-    return MigrationResult(
-        output_dir=root,
+def _run_baseline(workspaces: Path) -> _Baseline:
+    raw_workspace = seed_case_workspace(CASE, workspaces / "raw_loop")
+    owned_workspace = seed_case_workspace(CASE, workspaces / "composable_loop")
+    suite = build_tool_suite(raw_workspace)
+    registry = build_registry(suite)
+    raw_decisions = run_raw_loop(suite, registry=registry, workspace=raw_workspace)
+    raw_invocations = tuple(suite.invocations)
+    raw_handoff = _read_json(raw_workspace / HANDOFF_FILE)
+    owned_decisions = run_owned_loop(suite, registry=registry, workspace=owned_workspace)
+    return _Baseline(
+        suite=suite,
+        registry=registry,
         raw_decisions=raw_decisions,
         owned_decisions=owned_decisions,
-        graded_decisions=graded_decisions,
-        replayed_decisions=replayed_decisions,
-        raw_invocations=tuple(raw_suite.invocations),
-        owned_invocations=tuple(owned_suite.invocations),
-        raw_handoff=_read_json(raw_suite.workspace / HANDOFF_FILE),
-        owned_handoff=_read_json(owned_suite.workspace / HANDOFF_FILE),
-        before_fix_artifacts=failure_hook.artifacts,
-        after_fix_artifacts=fixed_hook.artifacts,
-        before_fix_score=required_score(failure_hook.results),
-        after_fix_score=required_score(fixed_hook.results),
-        recorded_calls=_recorded_call_count(failure_run),
-        failure_run=failure_run,
-        fixed_run=fixed_run,
+        raw_invocations=raw_invocations,
+        owned_invocations=tuple(suite.invocations[len(raw_invocations) :]),
+        raw_handoff=raw_handoff,
+        owned_handoff=_read_json(owned_workspace / HANDOFF_FILE),
+    )
+
+
+def _capture_failure(workspaces: Path, runs: Path, baseline: _Baseline) -> _Captured:
+    workspace = seed_case_workspace(CASE, workspaces / "captured_failure")
+    run_dir = runs / "captured_failure"
+    sink = ProvenanceSink(dir=run_dir)
+    hook = build_eval_hook(workspace)
+    decisions = run_owned_loop(
+        baseline.suite,
+        registry=baseline.registry,
+        workspace=workspace,
+        sink=sink,
+        eval_hook=hook,
+    )
+    save_eval_run(run_dir, recorder=sink.trajectory_hook(), eval_hook=hook, case=CASE)
+    return _Captured(decisions=decisions, run_dir=run_dir, hook=hook)
+
+
+def _replay_fix(workspaces: Path, runs: Path, captured: _Captured) -> _Fixed:
+    workspace = seed_case_workspace(CASE, workspaces / "replayed_fix")
+    run_dir = runs / "replayed_fix"
+    hook = build_eval_hook(workspace)
+    suite = build_tool_suite(workspace, select_open=select_open_incidents)
+    decisions = replay_with_fixed_tools(
+        suite,
+        captured.run_dir,
+        hook,
+        registry=build_registry(suite),
+        workspace=workspace,
+    )
+    save_eval_run(run_dir, eval_hook=hook, case=CASE)
+    return _Fixed(decisions=decisions, run_dir=run_dir, hook=hook)
+
+
+def _assemble_result(
+    root: Path,
+    baseline: _Baseline,
+    captured: _Captured,
+    fixed: _Fixed,
+) -> MigrationResult:
+    return MigrationResult(
+        output_dir=root,
+        raw_decisions=baseline.raw_decisions,
+        owned_decisions=baseline.owned_decisions,
+        graded_decisions=captured.decisions,
+        replayed_decisions=fixed.decisions,
+        raw_invocations=baseline.raw_invocations,
+        owned_invocations=baseline.owned_invocations,
+        raw_handoff=baseline.raw_handoff,
+        owned_handoff=baseline.owned_handoff,
+        before_fix_artifacts=captured.hook.artifacts,
+        after_fix_artifacts=fixed.hook.artifacts,
+        before_fix_score=required_score(captured.hook.results),
+        after_fix_score=required_score(fixed.hook.results),
+        recorded_calls=_recorded_call_count(captured.run_dir),
+        failure_run=captured.run_dir,
+        fixed_run=fixed.run_dir,
         changed_lines=changed_implementation_lines(),
+        raw_registry=baseline.registry,
+        owned_registry=baseline.registry,
+        private_callables=baseline.suite.callables,
     )
 
 
@@ -307,35 +197,18 @@ def render(result: MigrationResult) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--out", type=Path, help="Evidence directory (default: system temp)")
+    parser.add_argument(
+        "--out",
+        type=Path,
+        help="Evidence directory (default: a unique directory under system temp)",
+    )
     args = parser.parse_args(argv)
     print(render(run_migration(args.out)))
     return 0
 
 
-def _loop_config() -> LoopConfig:
-    return LoopConfig(
-        max_steps=MAX_STEPS,
-        use_native_tools=False,
-        system_prompt=SYSTEM_PROMPT,
-    )
-
-
-def _raw_prompt(task: dict[str, Any], observations: list[str]) -> str:
-    """Prompt assembly the private loop hand-rolled before the migration."""
-    lines = [
-        f"goal: {task['goal']}",
-        "",
-        "tools: list_incidents(), publish_handoff(owner), done(summary)",
-    ]
-    if observations:
-        lines += ["", "observations:", *observations]
-    lines += ["", 'Reply with {"tool": ..., "args": {...}}.']
-    return "\n".join(lines)
-
-
 def _reset_output(root: Path) -> None:
-    """Reset a prior evidence directory without deleting unrelated data."""
+    """Reset only a caller-supplied prior recipe directory."""
     if root.exists():
         entries = list(root.iterdir())
         if entries and not (root / MARKER).is_file():
@@ -344,6 +217,20 @@ def _reset_output(root: Path) -> None:
             )
         shutil.rmtree(root)
     root.mkdir(parents=True)
+    _write_marker(root)
+
+
+def _prepare_output(output_dir: str | Path | None) -> Path:
+    if output_dir is not None:
+        root = Path(output_dir)
+        _reset_output(root)
+        return root
+    root = Path(tempfile.mkdtemp(prefix="looplet-private-loop-migration-"))
+    _write_marker(root)
+    return root
+
+
+def _write_marker(root: Path) -> None:
     (root / MARKER).write_text(
         "generated by examples/private_loop_migration/run_recipe.py\n",
         encoding="utf-8",

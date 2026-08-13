@@ -255,6 +255,10 @@ The pieces are deliberately separate:
   keeps the private tool callables and the one implementation that changes.
 - [`handoff_contract.py`](https://github.com/hsaghir/looplet/blob/master/examples/private_loop_migration/handoff_contract.py)
   holds the case, the world-state collector, and the required grader.
+- [`execution.py`](https://github.com/hsaghir/looplet/blob/master/examples/private_loop_migration/execution.py)
+  keeps the raw loop, the owned loop, and replay on one inspectable boundary.
+- [`result.py`](https://github.com/hsaghir/looplet/blob/master/examples/private_loop_migration/result.py)
+  records the evidence and object identities checked by the focused test.
 - [`run_recipe.py`](https://github.com/hsaghir/looplet/blob/master/examples/private_loop_migration/run_recipe.py)
   wires the four stages and prints the summary above.
 - [`tests/test_private_loop_migration.py`](https://github.com/hsaghir/looplet/blob/master/tests/test_private_loop_migration.py)

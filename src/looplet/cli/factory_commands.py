@@ -432,9 +432,14 @@ def cmd_run_workspace(args: argparse.Namespace) -> int:
 
     elapsed = time.time() - t0
     if json_output:
+        termination_reason = getattr(state, "_stop_reason", None)
+        if termination_reason is None:
+            termination_reason = getattr(state, "stop_reason", None)
         print(
             json.dumps(
                 {
+                    "completed": termination_reason == "done",
+                    "termination_reason": termination_reason or "unknown",
                     "steps": n_steps,
                     "duration_ms": round(elapsed * 1000, 2),
                     "result": final_data,

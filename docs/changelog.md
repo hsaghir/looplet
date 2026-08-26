@@ -15,6 +15,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   shell pipelines and rejects empty input before starting a run.
 - `looplet show <trace-dir> --json` emits parsed trajectory and manifest
   records for shell pipelines and external tooling.
+- `looplet run-cartridge --parent-trace <dir>` records the parent run ID in
+  trajectory metadata without adding orchestration semantics.
 
 ### Fixed
 

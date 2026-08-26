@@ -316,6 +316,25 @@ def cmd_run_workspace(args: argparse.Namespace) -> int:
     if project_root is not None:
         runtime = {"project_root": str(project_root.expanduser().resolve())}
 
+    trajectory_metadata: dict[str, str] = {}
+    parent_trace = getattr(args, "parent_trace", None)
+    if parent_trace is not None:
+        if getattr(args, "no_trace", False):
+            print(_red("error: --parent-trace cannot be used with --no-trace"), file=sys.stderr)
+            return 1
+        parent_trajectory = parent_trace.expanduser().resolve() / "trajectory.json"
+        try:
+            parent_data = json.loads(parent_trajectory.read_text(encoding="utf-8"))
+            if not isinstance(parent_data, dict):
+                raise ValueError("trajectory.json must contain an object")
+            parent_run_id = parent_data.get("run_id")
+            if not isinstance(parent_run_id, str) or not parent_run_id.strip():
+                raise ValueError("trajectory.json has no run_id")
+        except (OSError, ValueError) as exc:
+            print(_red(f"error: invalid parent trace {parent_trace}: {exc}"), file=sys.stderr)
+            return 1
+        trajectory_metadata["parent_run_id"] = parent_run_id
+
     try:
         backend = _build_backend()
         preset = cartridge_to_preset(str(workspace_path), runtime=runtime)
@@ -338,7 +357,7 @@ def cmd_run_workspace(args: argparse.Namespace) -> int:
                 / "traces"
                 / f"{cartridge_name}-{uuid.uuid4().hex[:12]}"
             )
-        sink = ProvenanceSink(dir=effective_trace_dir)
+        sink = ProvenanceSink(dir=effective_trace_dir, metadata=trajectory_metadata)
         backend = sink.wrap_llm(backend)
 
     hooks = list(preset.hooks)
@@ -540,6 +559,11 @@ def add_subparsers(sub: "argparse._SubParsersAction") -> None:
         "--trace-dir",
         type=Path,
         help="Write provenance trace output here",
+    )
+    run_p.add_argument(
+        "--parent-trace",
+        type=Path,
+        help="Link this run to a parent trace directory",
     )
     run_p.add_argument(
         "--no-trace",

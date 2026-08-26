@@ -32,6 +32,7 @@ def _args(
     task: str = "What is 12345 + 67890?",
     project_root: Path | None = None,
     trace_dir: Path | None = None,
+    parent_trace: Path | None = None,
     no_trace: bool = False,
 ) -> argparse.Namespace:
     return argparse.Namespace(
@@ -40,6 +41,7 @@ def _args(
         max_steps=5,
         project_root=project_root,
         trace_dir=trace_dir,
+        parent_trace=parent_trace,
         no_trace=no_trace,
         quiet=False,
         pretty=False,
@@ -145,3 +147,45 @@ def test_run_cartridge_preserves_explicit_empty_task(monkeypatch, tmp_path):
     assert rc == 0
     trajectory = json.loads((trace_dir / "trajectory.json").read_text())
     assert trajectory["task"]["goal"] == ""
+
+
+@pytest.mark.skipif(not _MCP_DEMO.is_dir(), reason="mcp_demo cartridge not present")
+def test_run_cartridge_records_parent_run_id(monkeypatch, tmp_path):
+    _patch_runtime(monkeypatch)
+    parent_trace = tmp_path / "parent"
+    parent_trace.mkdir()
+    (parent_trace / "trajectory.json").write_text('{"run_id":"parent-123"}')
+    trace_dir = tmp_path / "child"
+
+    rc = factory_commands.cmd_run_workspace(_args(trace_dir=trace_dir, parent_trace=parent_trace))
+
+    assert rc == 0
+    trajectory = json.loads((trace_dir / "trajectory.json").read_text())
+    assert trajectory["metadata"]["parent_run_id"] == "parent-123"
+
+
+@pytest.mark.skipif(not _MCP_DEMO.is_dir(), reason="mcp_demo cartridge not present")
+def test_run_cartridge_rejects_invalid_parent_before_backend(monkeypatch, tmp_path, capsys):
+    _patch_runtime(monkeypatch)
+    monkeypatch.setattr(
+        factory_commands,
+        "_build_backend",
+        lambda: pytest.fail("invalid parent must fail before backend construction"),
+    )
+
+    rc = factory_commands.cmd_run_workspace(
+        _args(parent_trace=tmp_path / "missing", no_trace=False)
+    )
+
+    assert rc == 1
+    assert "invalid parent trace" in capsys.readouterr().err
+
+
+@pytest.mark.skipif(not _MCP_DEMO.is_dir(), reason="mcp_demo cartridge not present")
+def test_run_cartridge_rejects_parent_without_trace(monkeypatch, tmp_path, capsys):
+    _patch_runtime(monkeypatch)
+
+    rc = factory_commands.cmd_run_workspace(_args(parent_trace=tmp_path / "parent", no_trace=True))
+
+    assert rc == 1
+    assert "--parent-trace cannot be used with --no-trace" in capsys.readouterr().err

@@ -826,6 +826,7 @@ class ProvenanceSink:
 
     The sink is safe to reuse across runs - call :meth:`reset` between
     them, or construct a fresh sink per run (cheaper and clearer).
+    ``metadata`` is copied into the trajectory when its hook is created.
     """
 
     def __init__(
@@ -836,12 +837,14 @@ class ProvenanceSink:
         redact: Callable[[str], str] | None = None,
         redact_upstream: bool = True,
         capture_context: bool = True,
+        metadata: dict[str, Any] | None = None,
     ) -> None:
         self._dir = Path(dir)
         self._max_chars = max_chars_per_call
         self._redact = redact
         self._redact_upstream = redact_upstream
         self._capture_context = capture_context
+        self._metadata = dict(metadata or {})
         self._recording_llm: _RecordingBase | None = None
         self._hook: TrajectoryRecorder | None = None
 
@@ -874,6 +877,7 @@ class ProvenanceSink:
                 capture_context=self._capture_context,
                 redact=self._redact,
             )
+            self._hook.trajectory.metadata.update(self._metadata)
         return self._hook
 
     def flush(self) -> Path:

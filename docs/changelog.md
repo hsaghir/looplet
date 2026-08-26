@@ -17,6 +17,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   records for shell pipelines and external tooling.
 - `looplet run-cartridge --parent-trace <dir>` records the parent run ID in
   trajectory metadata without adding orchestration semantics.
+- `looplet run-cartridge --json` emits one machine-readable completion object
+  while suppressing human progress output.
 
 ### Fixed
 

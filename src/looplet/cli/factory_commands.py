@@ -280,6 +280,11 @@ def cmd_run_workspace(args: argparse.Namespace) -> int:
     if _check_env() != 0:
         return 1
 
+    json_output = getattr(args, "json", False)
+    if json_output and getattr(args, "pretty", False):
+        print(_red("error: --json cannot be used with --pretty"), file=sys.stderr)
+        return 1
+
     workspace_path: Path = args.workspace.resolve()
 
     if not workspace_path.is_dir():
@@ -305,10 +310,11 @@ def cmd_run_workspace(args: argparse.Namespace) -> int:
         print(_red(f"error: {exc}"), file=sys.stderr)
         return 1
 
-    print(f"{_bold('looplet run')} {workspace_path}")
-    if not getattr(args, "pretty", False):
-        print(_dim(f"  task:  {task[:100]}{'…' if len(task) > 100 else ''}"))
-        print(_dim(f"  model: {os.environ['OPENAI_MODEL']}"))
+    if not json_output:
+        print(f"{_bold('looplet run')} {workspace_path}")
+        if not getattr(args, "pretty", False):
+            print(_dim(f"  task:  {task[:100]}{'…' if len(task) > 100 else ''}"))
+            print(_dim(f"  model: {os.environ['OPENAI_MODEL']}"))
         print()
 
     project_root = getattr(args, "project_root", None)
@@ -401,7 +407,7 @@ def cmd_run_workspace(args: argparse.Namespace) -> int:
                 continue
             if pretty is not None:
                 pretty.step(step)
-            elif not args.quiet:
+            elif not args.quiet and not json_output:
                 _data = tool_result.data if tool_result else None
                 err = (tool_result and tool_result.error) or (
                     _data.get("error") if isinstance(_data, dict) else None
@@ -420,11 +426,26 @@ def cmd_run_workspace(args: argparse.Namespace) -> int:
             saved_trace_dir = sink.flush()
 
     if interrupted:
-        if saved_trace_dir is not None:
+        if saved_trace_dir is not None and not json_output:
             print(f"  Trace: {saved_trace_dir}")
         return 130
 
     elapsed = time.time() - t0
+    if json_output:
+        print(
+            json.dumps(
+                {
+                    "steps": n_steps,
+                    "duration_ms": round(elapsed * 1000, 2),
+                    "result": final_data,
+                    "trace_dir": str(saved_trace_dir) if saved_trace_dir is not None else None,
+                },
+                indent=2,
+                default=str,
+            )
+        )
+        return 0
+
     print()
     print(f"{_green('✓')} done in {elapsed:.1f}s - {n_steps} steps")
     print()
@@ -575,6 +596,11 @@ def add_subparsers(sub: "argparse._SubParsersAction") -> None:
         "--pretty",
         action="store_true",
         help="Render the run as a live human-friendly trace (boxed header, per-step reasoning + result summary, colored).",
+    )
+    run_p.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit one machine-readable completion object",
     )
     run_p.set_defaults(_handler=cmd_run_workspace)
 

@@ -95,6 +95,13 @@ looplet run-cartridge ./repair.cartridge "Repair the finding" \
   --parent-trace .looplet/traces/review-a1b2c3
 ```
 
+Emit one completion object for a shell pipeline:
+
+```bash
+looplet run-cartridge ./agent.cartridge "Inspect the change" --json \
+  | jq '.result'
+```
+
 `--project-root` controls the directory available to project-aware tools. It
 defaults to `LOOPLET_PROJECT_ROOT`, the current Git repository, or the current
 directory. Each run also writes a provenance trace under
@@ -103,6 +110,10 @@ to choose an explicit location or `--no-trace` to disable capture. Traces may
 contain full prompts, responses, and tool results; inspect them before sharing.
 `--parent-trace` reads the parent's `run_id` and records it as
 `metadata.parent_run_id`; it does not resume, replay, or orchestrate that run.
+`--json` suppresses human progress output and emits `steps`, `duration_ms`, the
+terminal `result`, and `trace_dir` (`null` with `--no-trace`). Errors remain on
+standard error; consumers should tolerate added fields. It cannot be combined
+with `--pretty`.
 `run-workspace` remains a compatibility alias.
 
 ### Review commands

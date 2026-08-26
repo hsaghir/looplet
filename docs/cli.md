@@ -81,7 +81,11 @@ looplet run-cartridge ./agent.cartridge \
 
 `--project-root` controls the directory available to project-aware tools. It
 defaults to `LOOPLET_PROJECT_ROOT`, the current Git repository, or the current
-directory. `run-workspace` remains a compatibility alias.
+directory. Each run also writes a provenance trace under
+`.looplet/traces/<cartridge>-<id>/` in that project root. Pass `--trace-dir`
+to choose an explicit location or `--no-trace` to disable capture. Traces may
+contain full prompts, responses, and tool results; inspect them before sharing.
+`run-workspace` remains a compatibility alias.
 
 ### Review commands
 

@@ -40,6 +40,7 @@ import json
 import os
 import sys
 import time
+import uuid
 from pathlib import Path
 
 from looplet.bundled import bundled_cartridge_path
@@ -287,7 +288,12 @@ def cmd_run_workspace(args: argparse.Namespace) -> int:
         return 1
 
     try:
-        from looplet import cartridge_to_preset, composable_loop  # noqa: PLC0415
+        from looplet import (  # noqa: PLC0415
+            ProvenanceSink,
+            cartridge_to_preset,
+            composable_loop,
+        )
+        from looplet.cartridge.runtime_helpers import resolve_project_root  # noqa: PLC0415
         from looplet.types import DefaultState  # noqa: PLC0415
     except Exception as exc:
         print(_red(f"error: {exc}"), file=sys.stderr)
@@ -314,6 +320,24 @@ def cmd_run_workspace(args: argparse.Namespace) -> int:
     if args.max_steps:
         preset.config.max_steps = args.max_steps
     state = DefaultState(max_steps=args.max_steps or preset.config.max_steps)
+    sink = None
+    effective_trace_dir = None
+    if not getattr(args, "no_trace", False):
+        effective_trace_dir = getattr(args, "trace_dir", None)
+        if effective_trace_dir is None:
+            cartridge_name = workspace_path.name.removesuffix(".cartridge")
+            effective_trace_dir = (
+                Path(resolve_project_root(runtime))
+                / ".looplet"
+                / "traces"
+                / f"{cartridge_name}-{uuid.uuid4().hex[:12]}"
+            )
+        sink = ProvenanceSink(dir=effective_trace_dir)
+        backend = sink.wrap_llm(backend)
+
+    hooks = list(preset.hooks)
+    if sink is not None:
+        hooks.append(sink.trajectory_hook())
     pretty = None
     if getattr(args, "pretty", False) and not args.quiet:
         from looplet.cli._pretty import PrettyPrinter  # noqa: PLC0415
@@ -332,13 +356,15 @@ def cmd_run_workspace(args: argparse.Namespace) -> int:
     n_steps = 0
     final_summary: str | None = None
     final_data: dict | None = None
+    interrupted = False
+    saved_trace_dir = None
     try:
         for step in composable_loop(
             llm=backend,
             config=preset.config,
             tools=preset.tools,
             state=state,
-            hooks=preset.hooks,
+            hooks=hooks,
             task={"goal": task},
         ):
             n_steps += 1
@@ -363,6 +389,14 @@ def cmd_run_workspace(args: argparse.Namespace) -> int:
                 final_summary = str(tool_result.data.get("summary", ""))
     except KeyboardInterrupt:
         print(_red("\ninterrupted"), file=sys.stderr)
+        interrupted = True
+    finally:
+        if sink is not None:
+            saved_trace_dir = sink.flush()
+
+    if interrupted:
+        if saved_trace_dir is not None:
+            print(f"  Trace: {saved_trace_dir}")
         return 130
 
     elapsed = time.time() - t0
@@ -375,6 +409,8 @@ def cmd_run_workspace(args: argparse.Namespace) -> int:
     elif final_data:
         print(_bold("result:"))
         print(json.dumps(final_data, indent=2, default=str)[:2000])
+    if saved_trace_dir is not None:
+        print(f"\n  Trace: {saved_trace_dir}")
     return 0
 
 
@@ -493,6 +529,16 @@ def add_subparsers(sub: "argparse._SubParsersAction") -> None:
             "Defaults to $LOOPLET_PROJECT_ROOT, then the current git repo, "
             "then the current working directory."
         ),
+    )
+    run_p.add_argument(
+        "--trace-dir",
+        type=Path,
+        help="Write provenance trace output here",
+    )
+    run_p.add_argument(
+        "--no-trace",
+        action="store_true",
+        help="Disable default provenance capture",
     )
     run_p.add_argument("--quiet", action="store_true", help="Suppress per-step output")
     run_p.add_argument(

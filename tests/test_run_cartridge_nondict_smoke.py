@@ -30,6 +30,7 @@ _MCP_DEMO = Path(__file__).resolve().parents[1] / "examples" / "mcp_demo.cartrid
 def _args(
     *,
     task: str = "What is 12345 + 67890?",
+    max_steps: int = 5,
     project_root: Path | None = None,
     trace_dir: Path | None = None,
     parent_trace: Path | None = None,
@@ -39,7 +40,7 @@ def _args(
     return argparse.Namespace(
         workspace=_MCP_DEMO,
         task=task,
-        max_steps=5,
+        max_steps=max_steps,
         project_root=project_root,
         trace_dir=trace_dir,
         parent_trace=parent_trace,
@@ -202,6 +203,8 @@ def test_run_cartridge_json_emits_one_completion_object(monkeypatch, tmp_path, c
 
     assert rc == 0
     payload = json.loads(capsys.readouterr().out)
+    assert payload["completed"] is True
+    assert payload["termination_reason"] == "done"
     assert payload["steps"] == 2
     assert payload["duration_ms"] >= 0
     assert payload["result"] == {"status": "completed", "total": 80235}
@@ -232,3 +235,26 @@ def test_run_cartridge_json_without_trace_reports_null(monkeypatch, capsys):
     assert rc == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["trace_dir"] is None
+
+
+@pytest.mark.skipif(not _MCP_DEMO.is_dir(), reason="mcp_demo cartridge not present")
+def test_run_cartridge_json_reports_budget_exhaustion(monkeypatch, capsys):
+    monkeypatch.setenv("OPENAI_MODEL", "mock-model")
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://127.0.0.1:1/v1")
+    monkeypatch.setattr(factory_commands, "_check_env", lambda: 0)
+    monkeypatch.setattr(
+        factory_commands,
+        "_build_backend",
+        lambda: MockLLMBackend(
+            responses=['{"tool":"add","args":{"a":1,"b":2},"reasoning":"add"}'],
+            cycle=False,
+        ),
+    )
+
+    rc = factory_commands.cmd_run_workspace(_args(max_steps=1, no_trace=True, json_output=True))
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["completed"] is False
+    assert payload["termination_reason"] == "budget_exhausted"
+    assert payload["result"] is None

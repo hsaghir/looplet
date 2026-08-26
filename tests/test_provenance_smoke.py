@@ -270,6 +270,15 @@ class TestProvenanceSinkSmoke:
         assert (out / "trajectory.json").exists()
         assert (out / "call_00_prompt.txt").exists()
 
+    def test_seeds_trajectory_metadata(self, tmp_path: Path):
+        metadata = {"parent_run_id": "parent-123"}
+        sink = ProvenanceSink(dir=tmp_path / "run", metadata=metadata)
+        metadata["parent_run_id"] = "changed"
+
+        hook = sink.trajectory_hook()
+
+        assert hook.trajectory.metadata == {"parent_run_id": "parent-123"}
+
     def test_wrap_llm_detects_async(self):
         sink = ProvenanceSink(dir=Path("/tmp/does-not-matter"))
 

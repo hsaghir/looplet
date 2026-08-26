@@ -574,8 +574,15 @@ tools = tools_from([deep_research])
 # Parent loop now sees `deep_research` as a regular tool.
 ```
 
-The parent's `ProvenanceSink` will record only the parent trajectory;
-wire a separate sink inside the sub-agent for parent-child linked traces.
+The parent's `ProvenanceSink` records only the parent trajectory. Wire a
+separate child sink and seed its existing metadata field when lineage matters:
+
+```python
+child_sink = ProvenanceSink(
+    dir="traces/child",
+    metadata={"parent_run_id": parent_sink.trajectory_hook().trajectory.run_id},
+)
+```
 
 ## Recipe 9 - Permissions
 

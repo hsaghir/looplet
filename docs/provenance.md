@@ -85,6 +85,21 @@ Every file is human-readable. `trajectory.json` and `manifest.jsonl` are
 machine-parseable. You can diff, grep, version-control, attach to bug
 reports, or feed to a separate analysis pipeline.
 
+### Link related traces
+
+Seed trajectory metadata when a host wants to record evidence lineage:
+
+```python
+parent_hook = parent_sink.trajectory_hook()
+child_sink = ProvenanceSink(
+    dir="traces/child/",
+    metadata={"parent_run_id": parent_hook.trajectory.run_id},
+)
+```
+
+This is an annotation only. It does not add scheduling, traversal, replay, or
+state inheritance semantics to the loop.
+
 ---
 
 ## LLM-call provenance only

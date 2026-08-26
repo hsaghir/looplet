@@ -88,12 +88,21 @@ Use `-` as the task to read it from standard input:
 git diff | looplet run-cartridge ./review.cartridge - --project-root .
 ```
 
+Link a follow-up run to an earlier trace without changing execution:
+
+```bash
+looplet run-cartridge ./repair.cartridge "Repair the finding" \
+  --parent-trace .looplet/traces/review-a1b2c3
+```
+
 `--project-root` controls the directory available to project-aware tools. It
 defaults to `LOOPLET_PROJECT_ROOT`, the current Git repository, or the current
 directory. Each run also writes a provenance trace under
 `.looplet/traces/<cartridge>-<id>/` in that project root. Pass `--trace-dir`
 to choose an explicit location or `--no-trace` to disable capture. Traces may
 contain full prompts, responses, and tool results; inspect them before sharing.
+`--parent-trace` reads the parent's `run_id` and records it as
+`metadata.parent_run_id`; it does not resume, replay, or orchestrate that run.
 `run-workspace` remains a compatibility alias.
 
 ### Review commands

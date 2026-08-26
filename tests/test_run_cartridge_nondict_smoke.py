@@ -133,3 +133,15 @@ def test_run_cartridge_rejects_empty_stdin(monkeypatch, capsys):
 
     assert rc == 1
     assert "task read from stdin is empty" in capsys.readouterr().err
+
+
+@pytest.mark.skipif(not _MCP_DEMO.is_dir(), reason="mcp_demo cartridge not present")
+def test_run_cartridge_preserves_explicit_empty_task(monkeypatch, tmp_path):
+    _patch_runtime(monkeypatch)
+    trace_dir = tmp_path / "trace"
+
+    rc = factory_commands.cmd_run_workspace(_args(task="", trace_dir=trace_dir))
+
+    assert rc == 0
+    trajectory = json.loads((trace_dir / "trajectory.json").read_text())
+    assert trajectory["task"]["goal"] == ""

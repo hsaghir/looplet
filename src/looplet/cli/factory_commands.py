@@ -286,10 +286,12 @@ def cmd_run_workspace(args: argparse.Namespace) -> int:
         print(_red(f"error: cartridge not found at {workspace_path}"), file=sys.stderr)
         return 1
 
-    task: str = sys.stdin.read() if args.task == "-" else args.task
-    if not task.strip():
-        print(_red("error: task read from stdin is empty"), file=sys.stderr)
-        return 1
+    task: str = args.task
+    if task == "-":
+        task = sys.stdin.read()
+        if not task.strip():
+            print(_red("error: task read from stdin is empty"), file=sys.stderr)
+            return 1
 
     try:
         from looplet import (  # noqa: PLC0415

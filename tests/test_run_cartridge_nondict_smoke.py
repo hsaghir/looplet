@@ -34,6 +34,7 @@ def _args(
     trace_dir: Path | None = None,
     parent_trace: Path | None = None,
     no_trace: bool = False,
+    json_output: bool = False,
 ) -> argparse.Namespace:
     return argparse.Namespace(
         workspace=_MCP_DEMO,
@@ -45,6 +46,7 @@ def _args(
         no_trace=no_trace,
         quiet=False,
         pretty=False,
+        json=json_output,
     )
 
 
@@ -189,3 +191,44 @@ def test_run_cartridge_rejects_parent_without_trace(monkeypatch, tmp_path, capsy
 
     assert rc == 1
     assert "--parent-trace cannot be used with --no-trace" in capsys.readouterr().err
+
+
+@pytest.mark.skipif(not _MCP_DEMO.is_dir(), reason="mcp_demo cartridge not present")
+def test_run_cartridge_json_emits_one_completion_object(monkeypatch, tmp_path, capsys):
+    _patch_runtime(monkeypatch)
+    trace_dir = tmp_path / "trace"
+
+    rc = factory_commands.cmd_run_workspace(_args(trace_dir=trace_dir, json_output=True))
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["steps"] == 2
+    assert payload["duration_ms"] >= 0
+    assert payload["result"] == {"status": "completed", "total": 80235}
+    assert payload["trace_dir"] == str(trace_dir)
+    trajectory = json.loads((trace_dir / "trajectory.json").read_text())
+    assert len(trajectory["steps"]) == 2
+
+
+def test_run_cartridge_rejects_json_with_pretty(monkeypatch, capsys):
+    _patch_runtime(monkeypatch)
+    args = _args(no_trace=True, json_output=True)
+    args.pretty = True
+
+    rc = factory_commands.cmd_run_workspace(args)
+
+    assert rc == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "--json cannot be used with --pretty" in captured.err
+
+
+@pytest.mark.skipif(not _MCP_DEMO.is_dir(), reason="mcp_demo cartridge not present")
+def test_run_cartridge_json_without_trace_reports_null(monkeypatch, capsys):
+    _patch_runtime(monkeypatch)
+
+    rc = factory_commands.cmd_run_workspace(_args(no_trace=True, json_output=True))
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["trace_dir"] is None

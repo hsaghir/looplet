@@ -40,6 +40,14 @@ def test_run_workspace_alias_help() -> None:
     assert exc.value.code == 0
 
 
+def test_show_help_advertises_json() -> None:
+    captured = io.StringIO()
+    with pytest.raises(SystemExit) as exc, patch.object(sys, "stdout", captured):
+        main(["show", "--help"])
+    assert exc.value.code == 0
+    assert "--json" in captured.getvalue()
+
+
 @pytest.mark.parametrize(
     "argv",
     [

@@ -122,6 +122,20 @@ class TestShowCLISmoke:
         assert "LLM:" in out
         assert "add" in out
 
+    def test_show_json_preserves_trace_artifacts(self, tmp_path: Path, capsys):
+        trace_dir = _captured_dir(tmp_path)
+
+        rc = cli_main(["show", str(trace_dir), "--json"])
+
+        assert rc == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["trajectory"] == json.loads((trace_dir / "trajectory.json").read_text())
+        assert payload["manifest"] == [
+            json.loads(line)
+            for line in (trace_dir / "manifest.jsonl").read_text().splitlines()
+            if line.strip()
+        ]
+
     def test_show_missing_dir(self, tmp_path: Path, capsys):
         rc = cli_main(["show", str(tmp_path / "no-such-dir")])
         assert rc == 1
@@ -144,6 +158,17 @@ class TestShowCLISmoke:
         assert rc == 0
         out = capsys.readouterr().out
         assert "LLM:" in out
+
+    def test_show_json_tolerates_missing_trajectory(self, tmp_path: Path, capsys):
+        trace_dir = _captured_dir(tmp_path)
+        (trace_dir / "trajectory.json").unlink()
+
+        rc = cli_main(["show", str(trace_dir), "--json"])
+
+        assert rc == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["trajectory"] is None
+        assert len(payload["manifest"]) == 3
 
 
 class TestDoctorCLISmoke:

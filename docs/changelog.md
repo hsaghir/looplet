@@ -13,6 +13,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   choose a location or `--no-trace` to opt out.
 - `looplet run-cartridge <cartridge> -` reads the task from standard input for
   shell pipelines and rejects empty input before starting a run.
+- `looplet show <trace-dir> --json` emits parsed trajectory and manifest
+  records for shell pipelines and external tooling.
 
 ### Fixed
 

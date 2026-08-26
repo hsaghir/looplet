@@ -12,6 +12,11 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   project's `.looplet/traces/` directory by default. Use `--trace-dir` to
   choose a location or `--no-trace` to opt out.
 
+### Fixed
+
+- Legacy `check_done` hooks no longer intermittently receive an unsupported
+  `tool_call` keyword after short-lived hook classes are collected.
+
 ## [0.3.0] - 2026-07-16
 
 ### Added

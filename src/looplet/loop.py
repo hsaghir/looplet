@@ -11,6 +11,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from dataclasses import replace as _dc_replace
 from typing import TYPE_CHECKING, Any, Callable, Generator, Protocol, runtime_checkable
+from weakref import WeakKeyDictionary
 
 from looplet.checkpoint import (
     Checkpoint as _Checkpoint,
@@ -1046,29 +1047,31 @@ _init_event_method_equiv()
 
 # ── check_done dispatch (backward-compatible tool_call kwarg) ───
 
-_CHECK_DONE_ACCEPTS_TOOL_CALL: dict[int, bool] = {}
-"""Cache mapping ``id(method.__func__)`` (i.e. the unbound function on the
-class) to whether ``check_done`` accepts a ``tool_call`` keyword argument.
+_CHECK_DONE_ACCEPTS_TOOL_CALL: WeakKeyDictionary[Any, bool] = WeakKeyDictionary()
+"""Weak cache mapping the unbound ``check_done`` function to whether it
+accepts a ``tool_call`` keyword argument.
 
 Bound methods are ephemeral in CPython - ``obj.check_done`` creates a
 fresh bound-method object on each access, so caching by
 ``id(bound_method)`` is unsound: bound methods get garbage-collected
 and their ids get reused for unrelated methods on other classes,
-poisoning the cache. ``method.__func__`` (the underlying class
-attribute) has stable identity and is safe to key on. For plain
-callables that lack ``__func__`` (rare - e.g. lambdas attached as
-attributes), we fall back to ``id`` of the callable itself.
+poisoning the cache. Integer ids of unbound functions have the same
+problem when local hook classes are collected. Weak keys preserve the
+callable's identity without retaining short-lived hook classes.
 """
 
 
-def _cache_key(method: Any) -> int:
-    """Stable cache key for a (possibly bound) callable."""
-    return id(getattr(method, "__func__", method))
+def _cache_key(method: Any) -> Any:
+    """Return the underlying callable for a possibly bound method."""
+    return getattr(method, "__func__", method)
 
 
 def _accepts_tool_call_kwarg(method: Any) -> bool:
     key = _cache_key(method)
-    cached = _CHECK_DONE_ACCEPTS_TOOL_CALL.get(key)
+    try:
+        cached = _CHECK_DONE_ACCEPTS_TOOL_CALL.get(key)
+    except TypeError:
+        cached = None
     if cached is not None:
         return cached
     import inspect  # noqa: PLC0415
@@ -1082,7 +1085,10 @@ def _accepts_tool_call_kwarg(method: Any) -> bool:
         accepts = "tool_call" in params or any(
             p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
         )
-    _CHECK_DONE_ACCEPTS_TOOL_CALL[key] = accepts
+    try:
+        _CHECK_DONE_ACCEPTS_TOOL_CALL[key] = accepts
+    except TypeError:
+        pass
     return accepts
 
 

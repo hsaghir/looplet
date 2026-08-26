@@ -79,6 +79,12 @@ looplet run-cartridge ./agent.cartridge \
   --max-steps 20
 ```
 
+Use `-` as the task to read it from standard input:
+
+```bash
+git diff | looplet run-cartridge ./review.cartridge - --project-root .
+```
+
 `--project-root` controls the directory available to project-aware tools. It
 defaults to `LOOPLET_PROJECT_ROOT`, the current Git repository, or the current
 directory. Each run also writes a provenance trace under

@@ -11,6 +11,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - `looplet run-cartridge` now captures a provenance trace under the target
   project's `.looplet/traces/` directory by default. Use `--trace-dir` to
   choose a location or `--no-trace` to opt out.
+- `looplet run-cartridge <cartridge> -` reads the task from standard input for
+  shell pipelines and rejects empty input before starting a run.
 
 ### Fixed
 

@@ -281,11 +281,17 @@ def cmd_run_workspace(args: argparse.Namespace) -> int:
         return 1
 
     workspace_path: Path = args.workspace.resolve()
-    task: str = args.task
 
     if not workspace_path.is_dir():
         print(_red(f"error: cartridge not found at {workspace_path}"), file=sys.stderr)
         return 1
+
+    task: str = args.task
+    if task == "-":
+        task = sys.stdin.read()
+        if not task.strip():
+            print(_red("error: task read from stdin is empty"), file=sys.stderr)
+            return 1
 
     try:
         from looplet import (  # noqa: PLC0415
@@ -514,7 +520,7 @@ def add_subparsers(sub: "argparse._SubParsersAction") -> None:
         type=Path,
         help="Path to a cartridge directory",
     )
-    run_p.add_argument("task", help="Task to give the agent")
+    run_p.add_argument("task", help="Task to give the agent, or '-' to read it from stdin")
     run_p.add_argument(
         "--max-steps",
         type=int,

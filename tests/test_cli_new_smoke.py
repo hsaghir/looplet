@@ -403,3 +403,4 @@ def test_run_cartridge_help_advertises_runtime_options() -> None:
     assert "--pretty" in out
     assert "--trace-dir" in out
     assert "--no-trace" in out
+    assert "read it from stdin" in out

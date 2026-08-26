@@ -33,7 +33,7 @@ def _fmt_ms(ms: float | int | None) -> str:
     return f"{int(ms):>5}ms"
 
 
-def _render_show(trace_dir: Path) -> int:
+def _render_show(trace_dir: Path, *, json_output: bool = False) -> int:
     if not trace_dir.exists():
         print(f"error: {trace_dir} does not exist", file=sys.stderr)
         return 1
@@ -68,6 +68,10 @@ def _render_show(trace_dir: Path) -> int:
             file=sys.stderr,
         )
         return 1
+
+    if json_output:
+        print(json.dumps({"trajectory": traj or None, "manifest": calls}, indent=2))
+        return 0
 
     # ── Header ──────────────────────────────────────────────────
     run_id = traj.get("run_id") or trace_dir.name
@@ -653,6 +657,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Show a one-page summary of a captured trace directory",
     )
     show.add_argument("trace_dir", type=Path, help="Path to a trace directory")
+    show.add_argument("--json", action="store_true", help="Emit the parsed trace artifacts as JSON")
 
     doctor = sub.add_parser(
         "doctor",
@@ -783,7 +788,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "show":
-        return _render_show(args.trace_dir)
+        return _render_show(args.trace_dir, json_output=args.json)
     if args.command == "doctor":
         return _render_doctor(
             probe_backend=not args.no_backend,

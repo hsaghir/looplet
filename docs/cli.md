@@ -44,10 +44,13 @@ steps, failures, LLM-call counts, and timing when recorded.
 
 ```bash
 looplet show traces/incident-42
+looplet show traces/incident-42 --json | jq '.trajectory.termination_reason'
 ```
 
 The command returns non-zero for a missing, malformed, or empty trace
-directory. Read [saved artifacts](artifacts.md) for the complete layout.
+directory. JSON output contains the parsed `trajectory.json` object and
+`manifest.jsonl` records; consumers should tolerate added fields. Read
+[saved artifacts](artifacts.md) for the complete layout.
 
 ## Build and run cartridges
 

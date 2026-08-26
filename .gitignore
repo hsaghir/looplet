@@ -65,6 +65,7 @@ scratch/
 # Example runtime artifacts
 /checkpoints/
 /.benchmarks/
+/.looplet/
 /traces/
 site/
 

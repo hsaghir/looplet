@@ -6,6 +6,12 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### CLI
+
+- `looplet run-cartridge` now captures a provenance trace under the target
+  project's `.looplet/traces/` directory by default. Use `--trace-dir` to
+  choose a location or `--no-trace` to opt out.
+
 ## [0.3.0] - 2026-07-16
 
 ### Added

@@ -393,10 +393,13 @@ def test_new_help_advertises_pretty() -> None:
     assert "--pretty" in captured.getvalue()
 
 
-def test_run_cartridge_help_advertises_pretty() -> None:
-    """``looplet run-cartridge --help`` should mention the --pretty flag."""
+def test_run_cartridge_help_advertises_runtime_options() -> None:
+    """``looplet run-cartridge --help`` should name its runtime controls."""
     captured = io.StringIO()
     with pytest.raises(SystemExit) as exc, patch.object(sys, "stdout", captured):
         main(["run-cartridge", "--help"])
     assert exc.value.code == 0
-    assert "--pretty" in captured.getvalue()
+    out = captured.getvalue()
+    assert "--pretty" in out
+    assert "--trace-dir" in out
+    assert "--no-trace" in out

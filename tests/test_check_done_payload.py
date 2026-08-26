@@ -9,6 +9,8 @@ working unchanged while new quality gates can inspect the candidate
 
 from __future__ import annotations
 
+import gc
+import weakref
 from typing import Any
 
 from looplet import (
@@ -188,5 +190,25 @@ def test_signature_cache_keys_on_func_not_bound_method_id() -> None:
 
     # Two distinct cache entries (one per class), not one per
     # short-lived bound-method object.
-    func_keys = {id(WithKwarg.check_done), id(WithoutKwarg.check_done)}
+    func_keys = {WithKwarg.check_done, WithoutKwarg.check_done}
     assert func_keys.issubset(_CHECK_DONE_ACCEPTS_TOOL_CALL.keys())
+
+
+def test_signature_cache_does_not_retain_local_hook_functions() -> None:
+    from looplet.loop import _CHECK_DONE_ACCEPTS_TOOL_CALL, _accepts_tool_call_kwarg
+
+    class LocalHook:
+        def check_done(self, state, session_log, context, step_num, tool_call=None):
+            return None
+
+    hook = LocalHook()
+    function = LocalHook.check_done
+    function_ref = weakref.ref(function)
+
+    assert _accepts_tool_call_kwarg(hook.check_done) is True
+    assert function in _CHECK_DONE_ACCEPTS_TOOL_CALL
+
+    del hook, function, LocalHook
+    gc.collect()
+
+    assert function_ref() is None

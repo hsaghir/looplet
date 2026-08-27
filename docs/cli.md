@@ -104,7 +104,7 @@ looplet run-cartridge ./agent.cartridge "Inspect the change" --json \
 
 `--project-root` controls the directory available to project-aware tools. It
 defaults to `LOOPLET_PROJECT_ROOT`, the current Git repository, or the current
-directory. Each run also writes a provenance trace under
+directory, and must already exist. Each run also writes a provenance trace under
 `.looplet/traces/<cartridge>-<id>/` in that project root. Pass `--trace-dir`
 to choose an explicit location or `--no-trace` to disable capture. Traces may
 contain full prompts, responses, and tool results; inspect them before sharing.
@@ -114,7 +114,8 @@ contain full prompts, responses, and tool results; inspect them before sharing.
 `termination_reason`, `steps`, `duration_ms`, the terminal `result`, and
 `trace_dir` (`null` with `--no-trace`). `completed` is true only when the agent
 reaches `done`; budget and hook stops remain successful CLI executions but are
-reported as incomplete. Errors remain on standard error; consumers should
+reported as incomplete. Human output likewise prints `stopped (<reason>)`
+instead of `done` for incomplete runs. Errors remain on standard error; consumers should
 tolerate added fields. It cannot be combined with `--pretty`.
 `run-workspace` remains a compatibility alias.
 

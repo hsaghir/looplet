@@ -42,6 +42,7 @@ import sys
 import time
 import uuid
 from pathlib import Path
+from typing import Any
 
 from looplet.bundled import bundled_cartridge_path
 
@@ -310,17 +311,24 @@ def cmd_run_workspace(args: argparse.Namespace) -> int:
         print(_red(f"error: {exc}"), file=sys.stderr)
         return 1
 
+    project_root = getattr(args, "project_root", None)
+    runtime: dict | None = None
+    if project_root is not None:
+        runtime = {"project_root": str(project_root.expanduser().resolve())}
+    effective_project_root = Path(resolve_project_root(runtime))
+    if not effective_project_root.is_dir():
+        print(
+            _red(f"error: project root is not a directory: {effective_project_root}"),
+            file=sys.stderr,
+        )
+        return 1
+
     if not json_output:
         print(f"{_bold('looplet run')} {workspace_path}")
         if not getattr(args, "pretty", False):
             print(_dim(f"  task:  {task[:100]}{'…' if len(task) > 100 else ''}"))
             print(_dim(f"  model: {os.environ['OPENAI_MODEL']}"))
         print()
-
-    project_root = getattr(args, "project_root", None)
-    runtime: dict | None = None
-    if project_root is not None:
-        runtime = {"project_root": str(project_root.expanduser().resolve())}
 
     trajectory_metadata: dict[str, str] = {}
     parent_trace = getattr(args, "parent_trace", None)
@@ -351,6 +359,7 @@ def cmd_run_workspace(args: argparse.Namespace) -> int:
     if args.max_steps:
         preset.config.max_steps = args.max_steps
     state = DefaultState(max_steps=args.max_steps or preset.config.max_steps)
+    terminal_tools = {preset.config.done_tool, *preset.config.done_tools}
     sink = None
     effective_trace_dir = None
     if not getattr(args, "no_trace", False):
@@ -358,7 +367,7 @@ def cmd_run_workspace(args: argparse.Namespace) -> int:
         if effective_trace_dir is None:
             cartridge_name = workspace_path.name.removesuffix(".cartridge")
             effective_trace_dir = (
-                Path(resolve_project_root(runtime))
+                effective_project_root
                 / ".looplet"
                 / "traces"
                 / f"{cartridge_name}-{uuid.uuid4().hex[:12]}"
@@ -386,7 +395,7 @@ def cmd_run_workspace(args: argparse.Namespace) -> int:
     t0 = time.time()
     n_steps = 0
     final_summary: str | None = None
-    final_data: dict | None = None
+    final_data: Any = None
     interrupted = False
     saved_trace_dir = None
     try:
@@ -415,15 +424,19 @@ def cmd_run_workspace(args: argparse.Namespace) -> int:
                 tag = _red("✗") if err else _green("✓")
                 short = json.dumps(tool_call.args, default=str)[:80]
                 print(f"  {tag} step {n_steps:>2}: {tool_call.tool}({short})")
-            if tool_call.tool == "done" and tool_result and isinstance(tool_result.data, dict):
-                final_data = dict(tool_result.data)
-                final_summary = str(tool_result.data.get("summary", ""))
+            if tool_call.tool in terminal_tools and tool_result is not None:
+                final_data = tool_result.data
+                if isinstance(final_data, dict):
+                    final_summary = str(final_data.get("summary", ""))
     except KeyboardInterrupt:
         print(_red("\ninterrupted"), file=sys.stderr)
         interrupted = True
     finally:
-        if sink is not None:
-            saved_trace_dir = sink.flush()
+        try:
+            if sink is not None:
+                saved_trace_dir = sink.flush()
+        finally:
+            preset.close()
 
     if interrupted:
         if saved_trace_dir is not None and not json_output:
@@ -431,10 +444,10 @@ def cmd_run_workspace(args: argparse.Namespace) -> int:
         return 130
 
     elapsed = time.time() - t0
+    termination_reason = getattr(state, "_stop_reason", None)
+    if termination_reason is None:
+        termination_reason = getattr(state, "stop_reason", None)
     if json_output:
-        termination_reason = getattr(state, "_stop_reason", None)
-        if termination_reason is None:
-            termination_reason = getattr(state, "stop_reason", None)
         print(
             json.dumps(
                 {
@@ -452,12 +465,16 @@ def cmd_run_workspace(args: argparse.Namespace) -> int:
         return 0
 
     print()
-    print(f"{_green('✓')} done in {elapsed:.1f}s - {n_steps} steps")
+    if termination_reason == "done":
+        status = _green("✓ done")
+    else:
+        status = _dim(f"· stopped ({termination_reason or 'unknown'})")
+    print(f"{status} in {elapsed:.1f}s - {n_steps} steps")
     print()
     if final_summary:
         print(_bold("result:"))
         print(final_summary)
-    elif final_data:
+    elif final_data is not None:
         print(_bold("result:"))
         print(json.dumps(final_data, indent=2, default=str)[:2000])
     if saved_trace_dir is not None:

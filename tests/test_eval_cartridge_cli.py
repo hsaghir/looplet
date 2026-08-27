@@ -314,6 +314,57 @@ def test_cli_run_without_judge_skips_judge_grader(tmp_path: Path, monkeypatch) -
     assert by["eval_judge_quality"].label == "skipped"
 
 
+def test_cli_run_json_emits_one_eval_report(tmp_path: Path, monkeypatch, capsys) -> None:
+    cart = _make_cartridge(tmp_path)
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://x")
+    import looplet.backends as _backends
+
+    monkeypatch.setattr(
+        _backends,
+        "OpenAIBackend",
+        lambda **kw: MockLLMBackend(responses=_scripted()),
+    )
+    out = tmp_path / "runs"
+
+    rc = eval_cli(["run", str(cart), "--out", str(out), "--threshold", "1.0", "--json"])
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["passed"] is True
+    assert payload["threshold"] == 1.0
+    assert payload["output_dir"] == str(out)
+    assert payload["integrity_failures"] == []
+    assert payload["cases"][0]["id"] == "make_greeting"
+    assert payload["cases"][0]["completed"] is True
+    assert {result["name"] for result in payload["cases"][0]["results"]} >= {
+        "eval_completed",
+        "eval_wrote_file",
+    }
+
+
+def test_cli_run_json_preserves_threshold_failure_exit(tmp_path: Path, monkeypatch, capsys) -> None:
+    cart = _make_cartridge(tmp_path)
+    (cart / "evals" / "eval_zero.py").write_text("def eval_zero(ctx):\n    return 0.0\n")
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://x")
+    import looplet.backends as _backends
+
+    monkeypatch.setattr(
+        _backends,
+        "OpenAIBackend",
+        lambda **kw: MockLLMBackend(responses=_scripted()),
+    )
+
+    rc = eval_cli(["run", str(cart), "--threshold", "1.0", "--json"])
+
+    assert rc == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["passed"] is False
+    zero = next(
+        result for result in payload["cases"][0]["results"] if result["name"] == "eval_zero"
+    )
+    assert zero["score"] == 0.0
+
+
 def test_cli_run_unknown_case_returns_failure(tmp_path: Path, monkeypatch) -> None:
     cart = _make_cartridge(tmp_path)
     monkeypatch.setenv("OPENAI_BASE_URL", "http://x")
@@ -402,6 +453,13 @@ def test_cli_run_fails_on_collector_error(tmp_path: Path, monkeypatch) -> None:
 
 
 # ── CLI preflight / error paths (no live model needed) ───────────
+
+
+def test_cli_run_help_advertises_json(capsys) -> None:
+    with pytest.raises(SystemExit) as exc:
+        eval_cli(["run", "--help"])
+    assert exc.value.code == 0
+    assert "--json" in capsys.readouterr().out
 
 
 def test_cli_run_missing_cartridge() -> None:

@@ -141,7 +141,8 @@ Always run `migrate --dry-run` first and review the resulting files.
 ```bash
 looplet eval run ./agent.cartridge \
   --out ./eval-runs \
-  --threshold 1.0
+  --threshold 1.0 \
+  --json | jq -e '.passed'
 ```
 
 Notable options:
@@ -155,10 +156,15 @@ Notable options:
 | `--judge-model NAME` | Use a separate judge model and imply `--judge`. |
 | `--out DIR` | Persist each case under `DIR/<case-id>/`. |
 | `--threshold VALUE` | Fail when any scored grader falls below the value. |
+| `--json` | Emit one report with the overall verdict and per-case grader results. |
 
 Required graders, explicit failures, collector errors, malformed records,
 unknown cases, and empty required suites also fail the command. Persisted case
-runs use the [eval artifact layout](artifacts.md#persisted-eval-run).
+runs use the [eval artifact layout](artifacts.md#persisted-eval-run). JSON output
+contains the threshold verdict, case completion state, serialized grader
+results, integrity failures, and output directory. It deliberately omits
+artifacts and grader-only expected data; read those through the persisted run.
+Consumers should tolerate added fields.
 
 ### Grade saved trajectories
 

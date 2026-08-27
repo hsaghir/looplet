@@ -95,11 +95,21 @@ class TestRecordingLLMBackendSmoke:
         rec = RecordingLLMBackend(MockLLMBackend(responses=["r1", "r2"]))
         rec.generate("p1", system_prompt="sys")
         rec.generate("p2")
-        out = rec.save(tmp_path / "traces")
+        trace_dir = tmp_path / "traces"
+        trace_dir.mkdir()
+        stale = trace_dir / "call_99_prompt.txt"
+        unrelated = trace_dir / "call_notes_prompt.txt"
+        stale.write_text("old")
+        unrelated.write_text("keep")
+
+        out = rec.save(trace_dir)
+
         assert (out / "call_00_prompt.txt").exists()
         assert (out / "call_00_response.txt").exists()
         assert (out / "call_01_prompt.txt").exists()
         assert (out / "manifest.jsonl").exists()
+        assert not stale.exists()
+        assert unrelated.read_text() == "keep"
         text = (out / "call_00_prompt.txt").read_text()
         assert "p1" in text and "sys" in text
         # manifest has one line per call
@@ -207,9 +217,26 @@ class TestTrajectoryRecorderSmoke:
         hook.post_dispatch(state, None, step.tool_call, step.tool_result, step_num=1)
         hook.on_loop_end(state, None, None, None)
 
-        out = hook.save(tmp_path / "traj")
+        trace_dir = tmp_path / "traj"
+        steps_dir = trace_dir / "steps"
+        steps_dir.mkdir(parents=True)
+        stale = steps_dir / "step_99.json"
+        unrelated = steps_dir / "step_notes.json"
+        stale_call = trace_dir / "call_99_prompt.txt"
+        stale_manifest = trace_dir / "manifest.jsonl"
+        stale.write_text("old")
+        unrelated.write_text("keep")
+        stale_call.write_text("old")
+        stale_manifest.write_text('{"index":99}\n')
+
+        out = hook.save(trace_dir)
+
         assert (out / "trajectory.json").exists()
         assert (out / "steps" / "step_01.json").exists()
+        assert not stale.exists()
+        assert not stale_call.exists()
+        assert not stale_manifest.exists()
+        assert unrelated.read_text() == "keep"
         doc = json.loads((out / "trajectory.json").read_text())
         assert doc["step_count"] == 1
         assert doc["termination_reason"] == "done"

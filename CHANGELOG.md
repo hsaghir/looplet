@@ -27,6 +27,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 - Legacy `check_done` hooks no longer intermittently receive an unsupported
   `tool_call` keyword after short-lived hook classes are collected.
+- `looplet run-cartridge` now rejects missing project roots before execution,
+  preserves results from custom terminal tools, reports incomplete human runs
+  honestly, and closes cartridge-owned subprocesses before returning.
 
 ## [0.3.0] - 2026-07-16
 

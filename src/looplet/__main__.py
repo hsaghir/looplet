@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import platform
 import sys
@@ -33,6 +34,56 @@ def _fmt_ms(ms: float | int | None) -> str:
     return f"{int(ms):>5}ms"
 
 
+def _is_finite_number(value: Any) -> bool:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
+def _trace_shape_error(
+    trajectory: dict[str, Any],
+    calls: list[dict[str, Any]],
+) -> str | None:
+    for field in ("run_id", "termination_reason"):
+        value = trajectory.get(field)
+        if value is not None and not isinstance(value, str):
+            return f"trajectory.{field} must be a string"
+    for field in ("step_count", "llm_call_count"):
+        value = trajectory.get(field)
+        if value is not None and (
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+        ):
+            return f"trajectory.{field} must be a non-negative integer"
+    steps = trajectory.get("steps", [])
+    if not isinstance(steps, list):
+        return "trajectory.steps must be an array"
+    for index, step in enumerate(steps):
+        if not isinstance(step, dict):
+            return f"trajectory.steps[{index}] must be an object"
+        for field in ("tool_call", "tool_result"):
+            value = step.get(field)
+            if value is not None and not isinstance(value, dict):
+                return f"trajectory.steps[{index}].{field} must be an object"
+        linked = step.get("llm_call_indices")
+        if linked is not None and not isinstance(linked, list):
+            return f"trajectory.steps[{index}].llm_call_indices must be an array"
+        duration = step.get("duration_ms")
+        if duration is not None and not _is_finite_number(duration):
+            return f"trajectory.steps[{index}].duration_ms must be a finite number"
+    failure_modes = trajectory.get("failure_modes")
+    if failure_modes is not None and not isinstance(failure_modes, list):
+        return "trajectory.failure_modes must be an array"
+    for index, call in enumerate(calls):
+        for field in ("duration_ms", "prompt_chars", "response_chars"):
+            value = call.get(field)
+            if value is not None and not _is_finite_number(value):
+                return f"manifest[{index}].{field} must be a finite number"
+    return None
+
+
 def _render_show(trace_dir: Path, *, json_output: bool = False) -> int:
     if not trace_dir.exists():
         print(f"error: {trace_dir} does not exist", file=sys.stderr)
@@ -44,22 +95,39 @@ def _render_show(trace_dir: Path, *, json_output: bool = False) -> int:
     traj: dict[str, Any] = {}
     if traj_path.exists():
         try:
-            traj = json.loads(traj_path.read_text(encoding="utf-8"))
+            parsed_traj = json.loads(traj_path.read_text(encoding="utf-8"))
         except Exception as exc:
             print(f"error: could not parse {traj_path}: {exc}", file=sys.stderr)
             return 1
+        if not isinstance(parsed_traj, dict):
+            print(f"error: expected a JSON object in {traj_path}", file=sys.stderr)
+            return 1
+        traj = parsed_traj
 
     # ── manifest.jsonl (optional) ────────────────────────────────
     calls: list[dict[str, Any]] = []
     if manifest_path.exists():
-        for line in manifest_path.read_text(encoding="utf-8").splitlines():
+        for line_number, line in enumerate(
+            manifest_path.read_text(encoding="utf-8").splitlines(), start=1
+        ):
             line = line.strip()
             if not line:
                 continue
             try:
-                calls.append(json.loads(line))
-            except Exception:
-                continue
+                call = json.loads(line)
+            except Exception as exc:
+                print(
+                    f"error: could not parse {manifest_path} line {line_number}: {exc}",
+                    file=sys.stderr,
+                )
+                return 1
+            if not isinstance(call, dict):
+                print(
+                    f"error: expected a JSON object in {manifest_path} line {line_number}",
+                    file=sys.stderr,
+                )
+                return 1
+            calls.append(call)
 
     if not traj and not calls:
         print(
@@ -67,6 +135,11 @@ def _render_show(trace_dir: Path, *, json_output: bool = False) -> int:
             "manifest.jsonl - not a trace directory",
             file=sys.stderr,
         )
+        return 1
+
+    shape_error = _trace_shape_error(traj, calls)
+    if shape_error is not None:
+        print(f"error: invalid trace shape: {shape_error}", file=sys.stderr)
         return 1
 
     if json_output:

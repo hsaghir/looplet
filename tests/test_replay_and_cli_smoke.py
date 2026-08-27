@@ -110,6 +110,89 @@ class TestReplayLoopSmoke:
         steps = list(replay_loop(trace_dir, tools=_make_tools()))
         assert len(steps) == 3
 
+    @pytest.mark.parametrize(
+        "manifest, expected",
+        [
+            ("not-json\n", "invalid"),
+            ("42\n", "expected an object"),
+            ('{"method":"generate"}\n', "expected index 0"),
+            (
+                '{"index":0,"method":"generate"}\n{"index":0,"method":"generate"}\n',
+                "expected index 1",
+            ),
+            ('{"index":0,"method":"unknown"}\n', "unsupported method"),
+        ],
+    )
+    def test_replay_rejects_invalid_manifest(
+        self,
+        tmp_path: Path,
+        manifest: str,
+        expected: str,
+    ):
+        trace_dir = tmp_path / "trace"
+        trace_dir.mkdir()
+        (trace_dir / "manifest.jsonl").write_text(manifest)
+        (trace_dir / "call_00_response.txt").write_text("response")
+
+        with pytest.raises(ValueError, match=expected):
+            list(replay_loop(trace_dir, tools=_make_tools()))
+
+    def test_replay_rejects_missing_manifest_response(self, tmp_path: Path):
+        trace_dir = tmp_path / "trace"
+        trace_dir.mkdir()
+        (trace_dir / "manifest.jsonl").write_text('{"index":0,"method":"generate"}\n')
+
+        with pytest.raises(FileNotFoundError, match="call_00_response.txt"):
+            list(replay_loop(trace_dir, tools=_make_tools()))
+
+    @pytest.mark.parametrize("payload", ["not-json", "[42]"])
+    def test_replay_rejects_malformed_native_response(self, tmp_path: Path, payload: str):
+        trace_dir = tmp_path / "trace"
+        trace_dir.mkdir()
+        (trace_dir / "manifest.jsonl").write_text('{"index":0,"method":"generate_with_tools"}\n')
+        (trace_dir / "call_00_response.txt").write_text(
+            f"# call 00 - method=generate_with_tools\n\n## RESPONSE (content blocks)\n{payload}\n"
+        )
+
+        with pytest.raises(ValueError, match="invalid recorded response"):
+            list(replay_loop(trace_dir, tools=_make_tools()))
+
+    def test_replays_valid_native_responses(self, tmp_path: Path):
+        trace_dir = tmp_path / "trace"
+        trace_dir.mkdir()
+        (trace_dir / "manifest.jsonl").write_text(
+            '{"index":0,"method":"generate_with_tools"}\n'
+            '{"index":1,"method":"generate_with_tools"}\n'
+        )
+        responses = [
+            [{"type": "tool_use", "id": "t1", "name": "add", "input": {"a": 1, "b": 2}}],
+            [
+                {
+                    "type": "tool_use",
+                    "id": "t2",
+                    "name": "done",
+                    "input": {"answer": "3"},
+                }
+            ],
+        ]
+        for index, response in enumerate(responses):
+            (trace_dir / f"call_{index:02d}_response.txt").write_text(
+                f"# call {index:02d} - method=generate_with_tools\n\n"
+                "## RESPONSE (content blocks)\n"
+                f"{json.dumps(response)}\n"
+            )
+
+        steps = list(
+            replay_loop(
+                trace_dir,
+                tools=_make_tools(),
+                state=DefaultState(max_steps=3),
+                config=LoopConfig(max_steps=3, use_native_tools=True),
+            )
+        )
+
+        assert [step.tool_call.tool for step in steps] == ["add", "done"]
+
 
 class TestShowCLISmoke:
     def test_show_renders_summary(self, tmp_path: Path, capsys):
@@ -169,6 +252,116 @@ class TestShowCLISmoke:
         payload = json.loads(capsys.readouterr().out)
         assert payload["trajectory"] is None
         assert len(payload["manifest"]) == 3
+
+    def test_show_rejects_nonobject_trajectory(self, tmp_path: Path, capsys):
+        trace_dir = tmp_path / "trace"
+        trace_dir.mkdir()
+        (trace_dir / "trajectory.json").write_text("[1]\n")
+
+        rc = cli_main(["show", str(trace_dir)])
+
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert "expected a JSON object" in captured.err
+
+    def test_show_rejects_malformed_manifest_line(self, tmp_path: Path, capsys):
+        trace_dir = tmp_path / "trace"
+        trace_dir.mkdir()
+        (trace_dir / "manifest.jsonl").write_text('{"index": 0}\nnot-json\n')
+
+        rc = cli_main(["show", str(trace_dir), "--json"])
+
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert "manifest.jsonl line 2" in captured.err
+        assert captured.out == ""
+
+    def test_show_rejects_nonobject_manifest_record(self, tmp_path: Path, capsys):
+        trace_dir = tmp_path / "trace"
+        trace_dir.mkdir()
+        (trace_dir / "manifest.jsonl").write_text("42\n")
+
+        rc = cli_main(["show", str(trace_dir), "--json"])
+
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert "expected a JSON object" in captured.err
+        assert captured.out == ""
+
+    @pytest.mark.parametrize(
+        "trajectory, expected",
+        [
+            ({"run_id": "r", "steps": 1}, "trajectory.steps must be an array"),
+            ({"run_id": "r", "steps": [42]}, "trajectory.steps[0] must be an object"),
+            (
+                {"run_id": "r", "steps": [{"tool_call": 42}]},
+                "trajectory.steps[0].tool_call must be an object",
+            ),
+            (
+                {"run_id": "r", "steps": [{"tool_result": 42}]},
+                "trajectory.steps[0].tool_result must be an object",
+            ),
+            (
+                {"run_id": "r", "steps": [{"llm_call_indices": 1}]},
+                "trajectory.steps[0].llm_call_indices must be an array",
+            ),
+            (
+                {"run_id": "r", "steps": [{"duration_ms": "slow"}]},
+                "trajectory.steps[0].duration_ms must be a finite number",
+            ),
+            (
+                {"run_id": "r", "termination_reason": {}, "steps": []},
+                "trajectory.termination_reason must be a string",
+            ),
+            (
+                {"run_id": "r", "step_count": [], "steps": []},
+                "trajectory.step_count must be a non-negative integer",
+            ),
+            (
+                {"run_id": "r", "failure_modes": 1, "steps": []},
+                "trajectory.failure_modes must be an array",
+            ),
+            (
+                {"run_id": "r", "steps": [{"duration_ms": 10**1000}]},
+                "trajectory.steps[0].duration_ms must be a finite number",
+            ),
+        ],
+    )
+    @pytest.mark.parametrize("json_mode", [False, True])
+    def test_show_rejects_malformed_nested_trajectory(
+        self,
+        tmp_path: Path,
+        capsys,
+        trajectory,
+        expected: str,
+        json_mode: bool,
+    ):
+        trace_dir = tmp_path / "trace"
+        trace_dir.mkdir()
+        (trace_dir / "trajectory.json").write_text(json.dumps(trajectory))
+        args = ["show", str(trace_dir)]
+        if json_mode:
+            args.append("--json")
+
+        rc = cli_main(args)
+
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert expected in captured.err
+        assert "traceback" not in captured.err.lower()
+        assert captured.out == ""
+
+    def test_show_rejects_malformed_manifest_summary(self, tmp_path: Path, capsys):
+        trace_dir = tmp_path / "trace"
+        trace_dir.mkdir()
+        (trace_dir / "manifest.jsonl").write_text('{"duration_ms":"slow"}\n')
+
+        rc = cli_main(["show", str(trace_dir)])
+
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert "manifest[0].duration_ms must be a finite number" in captured.err
+        assert "traceback" not in captured.err.lower()
 
 
 class TestDoctorCLISmoke:

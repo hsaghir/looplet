@@ -85,6 +85,16 @@ Every file is human-readable. `trajectory.json` and `manifest.jsonl` are
 machine-parseable. You can diff, grep, version-control, attach to bug
 reports, or feed to a separate analysis pipeline.
 
+Saving to an existing trace directory replaces Looplet-owned call and step
+files from the prior run. Files that do not match those exact artifact names
+are preserved. Do not use one explicit trace directory for concurrent writers.
+
+`looplet show` and `replay_loop()` fail before rendering or execution when the
+evidence structures they consume are malformed. Replay also requires
+contiguous manifest indices and the corresponding response file for every
+manifest record. These checks protect one run from mixed or corrupt evidence;
+they do not make the pre-1.0 artifact format a frozen schema.
+
 ### Link related traces
 
 Seed trajectory metadata when a host wants to record evidence lineage:

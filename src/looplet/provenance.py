@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -55,6 +56,17 @@ if TYPE_CHECKING:
     pass
 
 logger = logging.getLogger(__name__)
+
+_CALL_ARTIFACT = re.compile(r"call_\d+_(?:prompt|response)\.txt")
+_STEP_ARTIFACT = re.compile(r"step_\d+\.json")
+
+
+def _clear_call_artifacts(root: Path) -> None:
+    for path in root.iterdir():
+        if path.is_file() and _CALL_ARTIFACT.fullmatch(path.name):
+            path.unlink()
+    (root / "manifest.jsonl").unlink(missing_ok=True)
+
 
 __all__ = [
     "LLMCall",
@@ -211,6 +223,7 @@ class _RecordingBase:
         """
         root = Path(directory)
         root.mkdir(parents=True, exist_ok=True)
+        _clear_call_artifacts(root)
         manifest = root / "manifest.jsonl"
         with manifest.open("w", encoding="utf-8") as mf:
             for c in self.calls:
@@ -791,12 +804,16 @@ class TrajectoryRecorder:
         """
         root = Path(directory)
         root.mkdir(parents=True, exist_ok=True)
+        _clear_call_artifacts(root)
         traj_text = json.dumps(self.trajectory.to_dict(), indent=2, default=str)
         if self._redact is not None:
             traj_text = self._redact(traj_text)
         (root / "trajectory.json").write_text(traj_text, encoding="utf-8")
         steps_dir = root / "steps"
         steps_dir.mkdir(exist_ok=True)
+        for path in steps_dir.iterdir():
+            if path.is_file() and _STEP_ARTIFACT.fullmatch(path.name):
+                path.unlink()
         for s in self.trajectory.steps:
             step_text = json.dumps(s.to_dict(), indent=2, default=str)
             if self._redact is not None:
@@ -985,23 +1002,51 @@ def _load_trace_calls(trace_dir: Path) -> list[dict[str, Any]]:
     manifest = trace_dir / "manifest.jsonl"
     calls: list[dict[str, Any]] = []
     if manifest.exists():
-        for line in manifest.read_text(encoding="utf-8").splitlines():
+        for line_number, line in enumerate(
+            manifest.read_text(encoding="utf-8").splitlines(), start=1
+        ):
             line = line.strip()
             if not line:
                 continue
-            entry = json.loads(line)
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"invalid {manifest} line {line_number}: {exc}") from exc
+            if not isinstance(entry, dict):
+                raise ValueError(f"invalid {manifest} line {line_number}: expected an object")
             idx = entry.get("index")
+            expected_index = len(calls)
+            if isinstance(idx, bool) or not isinstance(idx, int) or idx != expected_index:
+                raise ValueError(
+                    f"invalid {manifest} line {line_number}: "
+                    f"expected index {expected_index}, got {idx!r}"
+                )
+            method = entry.get("method", "generate")
+            if method not in {"generate", "generate_with_tools"}:
+                raise ValueError(
+                    f"invalid {manifest} line {line_number}: unsupported method {method!r}"
+                )
             response_txt = _read_call_body(trace_dir, idx)
-            if entry.get("method") == "generate_with_tools":
+            if response_txt is None:
+                raise FileNotFoundError(
+                    f"missing recorded response for {manifest} line {line_number}: "
+                    f"call_{idx:02d}_response.txt"
+                )
+            if method == "generate_with_tools":
                 # The on-disk .txt file contains a JSON content-block
                 # dump after the "## RESPONSE (content blocks)" header.
-                response: Any = _extract_content_blocks(response_txt)
+                try:
+                    response: Any = _extract_content_blocks(response_txt)
+                except ValueError as exc:
+                    raise ValueError(
+                        f"invalid recorded response for {manifest} line {line_number}: {exc}"
+                    ) from exc
             else:
                 response = _extract_response_text(response_txt)
             calls.append(
                 {
                     "index": idx,
-                    "method": entry.get("method", "generate"),
+                    "method": method,
                     "response": response,
                 }
             )
@@ -1053,16 +1098,18 @@ def _extract_response_text(body: str | None) -> str:
 
 def _extract_content_blocks(body: str | None) -> list[dict[str, Any]]:
     if not body:
-        return []
+        raise ValueError("content-block response is empty")
     marker = "## RESPONSE (content blocks)\n"
-    if marker in body:
-        payload = body.split(marker, 1)[1].strip()
-        try:
-            decoded = json.loads(payload)
-            return decoded if isinstance(decoded, list) else []
-        except Exception:
-            return []
-    return []
+    if marker not in body:
+        raise ValueError("content-block response header is missing")
+    payload = body.split(marker, 1)[1].strip()
+    try:
+        decoded = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"content blocks are not valid JSON: {exc}") from exc
+    if not isinstance(decoded, list) or any(not isinstance(block, dict) for block in decoded):
+        raise ValueError("content blocks must be an array of objects")
+    return decoded
 
 
 def replay_loop(

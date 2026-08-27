@@ -20,6 +20,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - `looplet run-cartridge --json` emits one machine-readable completion object,
   including explicit `completed` and `termination_reason` fields, while
   suppressing human progress output.
+- `looplet eval run --json` emits the existing threshold and integrity verdict
+  with per-case completion and grader results.
 
 ### Fixed
 

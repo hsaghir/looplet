@@ -2330,6 +2330,11 @@ def _run_cartridge_cli(args: list[str]) -> int:
         default=0.0,
         help="Fail (exit 1) if any scored grader is below this on any case.",
     )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit one machine-readable eval report",
+    )
     parsed = parser.parse_args(args)
     if not math.isfinite(parsed.threshold) or not 0.0 <= parsed.threshold <= 1.0:
         print("error: --threshold must be finite and between 0 and 1", file=sys.stderr)
@@ -2384,11 +2389,12 @@ def _run_cartridge_cli(args: list[str]) -> int:
         else:
             judge_llm = llm
 
-    print(
-        f"running {cdir.name}: {len(overview.cases)} case(s), "
-        f"{len(overview.graders)} grader(s), {len(overview.collectors)} collector(s)"
-        f"{'  [judge on]' if judge_llm is not None else ''}\n"
-    )
+    if not parsed.json:
+        print(
+            f"running {cdir.name}: {len(overview.cases)} case(s), "
+            f"{len(overview.graders)} grader(s), {len(overview.collectors)} collector(s)"
+            f"{'  [judge on]' if judge_llm is not None else ''}\n"
+        )
     try:
         records = run_cartridge_evals(
             cdir,
@@ -2404,10 +2410,12 @@ def _run_cartridge_cli(args: list[str]) -> int:
 
     grader_names = sorted(g.__name__ for g in overview.graders)
     header = f"{'case':22}" + "".join(f"{n:22}" for n in grader_names)
-    print(header)
-    print("-" * len(header))
+    if not parsed.json:
+        print(header)
+        print("-" * len(header))
     below_threshold = False
     integrity_failures: list[str] = []
+    case_reports: list[dict[str, Any]] = []
     required_names = {
         grader.__name__ for grader in overview.graders if _REQUIRED_EVAL_MARK in _get_marks(grader)
     }
@@ -2428,7 +2436,8 @@ def _run_cartridge_cli(args: list[str]) -> int:
             else:
                 cells += f"{(r.label or '-'):22}"
         case_id = rec.case.id if rec.case is not None else "?"
-        print(f"{case_id:22}{cells}")
+        if not parsed.json:
+            print(f"{case_id:22}{cells}")
         for result in rec.results:
             if _result_is_integrity_failure(
                 result,
@@ -2437,17 +2446,37 @@ def _run_cartridge_cli(args: list[str]) -> int:
                 integrity_failures.append(
                     f"{case_id}/{result.name}: {result.label or 'invalid result'}"
                 )
+        case_reports.append(
+            {
+                "id": case_id,
+                "completed": rec.context.completed,
+                "results": [result.to_dict() for result in rec.results],
+            }
+        )
 
-    if parsed.out:
+    failed = below_threshold or bool(integrity_failures)
+    if parsed.json:
+        print(
+            json.dumps(
+                {
+                    "passed": not failed,
+                    "threshold": parsed.threshold,
+                    "cases": case_reports,
+                    "integrity_failures": integrity_failures,
+                    "output_dir": str(parsed.out) if parsed.out else None,
+                },
+                indent=2,
+            )
+        )
+    elif parsed.out:
         print(f"\npersisted {len(records)} run(s) under {parsed.out}/")
-    if integrity_failures:
+    if integrity_failures and not parsed.json:
         print("\nintegrity failures:")
         for failure in integrity_failures:
             print(f"  - {failure}")
-    if parsed.threshold > 0:
-        failed = below_threshold or bool(integrity_failures)
+    if parsed.threshold > 0 and not parsed.json:
         print(f"threshold {parsed.threshold:.2f} → {'FAIL' if failed else 'PASS'}")
-    return 1 if below_threshold or integrity_failures else 0
+    return 1 if failed else 0
 
 
 def _cases_cli(args: list[str]) -> int:

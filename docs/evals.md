@@ -398,3 +398,38 @@ looplet eval traces/ --evals eval_agent.py --threshold 0.7 -v
   overall: 0.81
   threshold: 0.70  → PASS
 ```
+
+For a cartridge's colocated cases, `--json` emits the stable transient CI
+schema `looplet.eval-summary` version 1:
+
+```bash
+looplet eval run ./agent.cartridge --threshold 0.7 --json > eval-summary.json
+jq -e '.schema == "looplet.eval-summary" and .version == 1 and .passed' \
+    eval-summary.json
+```
+
+The command itself exits non-zero exactly when `passed` is false. The report
+includes the trusted pre-run `grader_manifest`, case IDs and marks, and one
+result record per expected grader. Each result carries its grader marks,
+`required`, `required_status`, and one closed `state` value:
+
+| State | Meaning |
+| --- | --- |
+| `pass` | The result meets its required boundary and the CLI threshold. |
+| `explicit_fail` | The grader returned a failing label, an invalid empty result, or a required numeric score below $0.5$. |
+| `threshold_fail` | A numeric score is valid but below `--threshold`. |
+| `skipped` | The grader did not run, normally because no judge model was configured. Required skipped graders fail the report. |
+| `missing` | A grader discovered before execution has no run result. This is an integrity failure even when candidate-editable output omits it. |
+| `collector_error` | An outcome collector raised or returned the wrong shape. |
+| `grader_error` | A grader raised. |
+| `metric_only` | The grader emitted metrics but no pass/fail score or label. Required metric-only graders fail the report. |
+
+`required_status` is `not_required`, `satisfied`, or `failed`. A required score
+can satisfy the ordinary $0.5$ required boundary while still receiving
+`threshold_fail` under a stricter CLI threshold. Collector and grader errors
+include an `error` string and can never serialize as passing.
+
+This summary is a decision report, not a persisted run format. Use
+`save_eval_run()` / `--out` for durable evidence and preserve its sibling
+`artifact.json` descriptor. The JSON report intentionally omits task data,
+expected data, prompts, responses, and artifact values.

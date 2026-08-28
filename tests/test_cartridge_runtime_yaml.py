@@ -1,6 +1,4 @@
-"""Tests for the cartridge spec v2 prep work: sibling ``runtime.yaml``,
-field tiering, and the deprecation warning on stray runtime keys in
-``config.yaml``.
+"""Tests for cartridge-spec v2 runtime field tiering.
 
 See ``paper/principled_cartridge_v2.md`` for design rationale.
 """
@@ -63,17 +61,17 @@ def test_runtime_yaml_loads_runtime_keys(tmp_path: Path) -> None:
     assert preset.config.max_steps == 5
 
 
-def test_runtime_yaml_overrides_config_yaml_for_runtime_keys(tmp_path: Path) -> None:
-    """Precedence: runtime.yaml wins over config.yaml for runtime keys."""
+def test_runtime_yaml_does_not_mask_runtime_keys_in_config_yaml(tmp_path: Path) -> None:
+    """A duplicate runtime key does not make an invalid config valid."""
     _write_minimal_cartridge(
         tmp_path,
         config_text="max_steps: 5\ndone_tool: done\nmax_tokens: 100\n",
         runtime_text="max_tokens: 999\n",
     )
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DeprecationWarning)
-        preset = cartridge_to_preset(str(tmp_path))
-    assert preset.config.max_tokens == 999
+    with pytest.raises(Exception) as exc_info:
+        cartridge_to_preset(str(tmp_path))
+    assert "runtime-tier" in str(exc_info.value)
+    assert "max_tokens" in str(exc_info.value)
 
 
 def test_runtime_yaml_present_silences_warning(tmp_path: Path) -> None:
@@ -103,6 +101,32 @@ def test_runtime_yaml_rejects_contract_tier_keys(tmp_path: Path) -> None:
         cartridge_to_preset(str(tmp_path), strict=True)
     assert "runtime.yaml" in str(exc_info.value)
     assert "max_steps" in str(exc_info.value)
+
+
+@pytest.mark.parametrize("target", ["config", "runtime"])
+def test_cartridge_files_reject_host_only_keys(tmp_path: Path, target: str) -> None:
+    config = "max_steps: 5\ndone_tool: done\n"
+    runtime = None
+    if target == "config":
+        config += "approval_handler: unsafe\n"
+    else:
+        runtime = "approval_handler: unsafe\n"
+    _write_minimal_cartridge(tmp_path, config_text=config, runtime_text=runtime)
+
+    with pytest.raises(Exception) as exc_info:
+        cartridge_to_preset(tmp_path, strict=True)
+    assert "approval_handler" in str(exc_info.value)
+    assert "host-only" in str(exc_info.value) or "non-runtime" in str(exc_info.value)
+
+
+def test_llm_gateway_requires_boolean(tmp_path: Path) -> None:
+    _write_minimal_cartridge(
+        tmp_path,
+        config_text="max_steps: 5\ndone_tool: done\nllm_gateway: 1\n",
+    )
+
+    with pytest.raises(Exception, match="llm_gateway.*boolean"):
+        cartridge_to_preset(tmp_path, strict=True)
 
 
 def test_extends_inherits_parent_runtime_yaml(tmp_path: Path) -> None:

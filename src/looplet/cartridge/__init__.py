@@ -27,7 +27,6 @@ The loader accepts schema version 2 only. Contract fields belong in
 one explicit grammar:
 
 * ``${ref:name}`` resolves a resource built from ``resources/name.py``.
-* ``${py:module:symbol}`` imports a Python object.
 * ``${runtime.field}`` reads host-supplied runtime data and supports defaults.
 
 The historical ``@name`` spelling remains an alias for ``${ref:name}``.

@@ -5,11 +5,10 @@ becomes a behavioral contract.
 
 ## 1. Run the whole claim first
 
-If you cloned the repository, start with the network-free proof:
+Start with the network-free proof in an isolated package environment:
 
 ```bash
-uv sync
-uv run python examples/regression_demo/run_demo.py
+uvx --from looplet==0.4.0 looplet-proof
 ```
 
 It holds two model responses constant, changes one tool line, executes

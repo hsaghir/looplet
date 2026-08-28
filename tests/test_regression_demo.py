@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from examples.regression_demo import run_demo
+from looplet.examples.regression_demo import run_demo
 
 
 def test_regression_demo_replays_same_decisions_to_green(tmp_path: Path) -> None:

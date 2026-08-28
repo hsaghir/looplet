@@ -1,8 +1,9 @@
 # Cartridges: the harness as reviewable files
 
 `looplet.cartridge` makes the agent harness an editable, testable artifact on
-disk. A cartridge round-trips with an `AgentPreset` for the JSON-able subset
-of the harness and provides a clean Python escape hatch for the rest.
+disk. A cartridge round-trips with an `AgentPreset` for the supported subset
+of the harness and keeps explicit Python bodies in tools, hooks, resources,
+and dynamic memory sources.
 
 This is the review unit for test-driven harness engineering. Prompt changes,
 tool implementations, hook policy, runtime wiring, and self-test cases become
@@ -76,12 +77,11 @@ exclusion stance, update this table first and propagate.
 | **Wider context window / cache policy / compaction knobs in the cartridge** | Two hosts can legitimately disagree about token budgets, retention, and cache TTLs without changing what the agent does. | Sibling `runtime.yaml` carries every RUNTIME-tier knob (`context_window`, `max_tokens`, `cache_policy`, `compact_service`, etc.); the same cartridge runs unchanged on a 32k-window host and a 1M-window host. | [`examples/coder.cartridge/runtime.yaml`](https://github.com/hsaghir/looplet/blob/master/examples/coder.cartridge/runtime.yaml) |
 | **Magic prompt files** (`prompts/briefing.md`, `prompts/recovery.md` auto-loaded by filename) | Magic filenames create hidden behaviour discovered only by reading the loader. Every hook a cartridge installs should be visible in `config.yaml`. | Declare the file via `builtin_hooks: - static_briefing: { path: ... }` / `recovery_hint`. Hard-rejected in v2 unless declared. | [docs below: `static_briefing` / `recovery_hint`](#builtin-hooks) |
 | **Tool `tags:` for cross-tool filtering** (treating tags as routing input) | Tags spread categorisation across every `tool.yaml`; the consuming hook should own its categorisation so tools stay decoupled. | Put the tool list in the hook's `kwargs:` (`enrichment_tools: [a, b, c]`). Tools advertise capabilities via their schema, not labels. | (any hook with a `kwargs.<role>_tools:` field) |
-| **Render / truncation hints on tool schemas** | Two hosts can legitimately disagree on truncation policy. The cartridge should not pre-decide. | Tool body returns small-by-default plus an `expand` parameter; the agent learns the affordance from the result. Per-host truncation overrides live in `runtime.yaml: tool_render_hints:`. | (see `docs/recipes.md`) |
 | **Multi-`extends:`** (`extends: [a, b]`) | Diamond-inheritance / C3 linearisation buys nothing in practice; cartridges that "extend two parents" are composing two concerns. | Single `extends:` chain + `builtin_hooks:` + a shared `resources/` module. For genuinely independent concerns, host the two cartridges side-by-side. | [`examples/snippets/01_inheritance/`](https://github.com/hsaghir/looplet/blob/master/examples/snippets/01_inheritance/) |
-| **Polyglot tool bodies in one cartridge** (Python + TypeScript + Rust under one `tools/<name>/`) | A runtime cannot execute tool bodies in a language it does not host; mixing languages forecloses portability instead of enabling it. | Pick one body language per cartridge. Two-runtime portability ships the *same-language* cartridge to both runtimes; cross-language reuse is a registry concern. | (out of scope for v1.x) |
-| **Signed cartridges** (signature embedded in the cartridge body) | Signing is a registry concern; the cartridge must remain content-addressable so the signature can target a stable hash. | Sibling `<name>.cartridge.sig` over the canonical content hash from [SPEC.md §"Cartridge identity"](https://github.com/hsaghir/looplet/blob/master/SPEC.md#cartridge-identity-v2-prep). Computed by the registry / signer, not by the loader. | (out of scope for v1.x) |
+| **Polyglot tool bodies in one cartridge** (Python + TypeScript + Rust under one `tools/<name>/`) | A runtime cannot execute tool bodies in a language it does not host; mixing languages forecloses portability instead of enabling it. | Pick one body language per cartridge. Cross-language reuse belongs behind a protocol boundary. | (out of scope) |
+| **Signed cartridges** (signature embedded in the cartridge body) | Signing is a registry concern; the cartridge must remain content-addressable so the signature can target a stable hash. | Sibling `<name>.cartridge.sig` over the [canonical content hash](https://github.com/hsaghir/looplet/blob/master/SPEC.md#content-identity). Computed by the registry or signer, not by the loader. | (out of scope) |
 | **Host-owned release holdouts inside candidate inputs** | Colocated evals are useful self-tests, but a candidate that can edit or inspect its promotion oracle can manufacture a false green. | Ship versioned self-tests under `evals/`; keep promotion collectors, graders, expected data, and capabilities in a host-owned runner and out of candidate task/runtime/resources/tools/files. | [Issue #100: holdout boundary recipe](https://github.com/hsaghir/looplet/issues/100) |
-| **API keys / model secrets / approval handlers / cancel tokens / trajectory sinks** | These are HOST-tier and are never serialised. The cartridge declares *intent* (`model:`, `permissions: ask:`); the host supplies *capability*. | API keys via host env. Approval handlers via `runtime={"ask_handler": fn}` (load-time fail-loud if `ask:` rules are present without one). Trajectory sinks via `ProvenanceSink` in the runner. | [SPEC.md §"Permissions"](https://github.com/hsaghir/looplet/blob/master/SPEC.md#permissions-v10-slot) |
+| **API keys / model secrets / approval handlers / cancel tokens / trajectory sinks** | These are HOST-tier and are never serialised. The cartridge declares *intent* (`model:`, `permissions: ask:`); the host supplies *capability*. | API keys via host env. Approval handlers via `runtime={"ask_handler": fn}` (load-time fail-loud if `ask:` rules are present without one). Trajectory sinks via `ProvenanceSink` in the runner. | [SPEC.md configuration tiers](https://github.com/hsaghir/looplet/blob/master/SPEC.md#configuration-tiers) |
 
 If a feature in this table turns out to be wrong, the bar to add it
 to the format is: (a) it cannot be expressed as a hook / tool /
@@ -145,14 +145,12 @@ use OS, container, or process isolation for that threat. See
 
 ## Reference grammar
 
-Any string value in `config.yaml`, hook `config.yaml`, or `tool.yaml`
-can use the cartridge reference grammar to resolve to a Python
-object at load time. Three forms, one resolver, one mental model:
+String values in `config.yaml` and hook `config.yaml` can use the
+cartridge reference grammar. Two explicit forms share one resolver:
 
 | Form | Resolves to |
 | --- | --- |
 | `${ref:name}` | The resource built by `resources/name.py::build()` |
-| `${py:module:symbol}` | `importlib.import_module(module).symbol` (dotted symbols allowed: `${py:my.app:Class.factory}`) |
 | `${runtime.field}` | The value of `runtime[field]` passed to `cartridge_to_preset(cartridge_path, runtime=...)`. Supports nested lookup (`${runtime.a.b.c}`) and defaults (`${runtime.x:-15}`) |
 
 The legacy `"@name"` form is still accepted as an alias for
@@ -164,16 +162,20 @@ References work uniformly:
 # config.yaml
 max_steps: ${runtime.max_steps:-15}
 compact_service: ${ref:compact_service}
-state: ${py:my.app.state:MyAgentState}
+state: ${ref:agent_state}
 memory_sources:
   - ${ref:project_memory}
 
 # hooks/00_MyHook/config.yaml
-class: ${py:my.app.hooks:MyHook}
+class_name: MyHook
 kwargs:
   llm: ${ref:llm}
   threshold: ${runtime.threshold:-0.85}
 ```
+
+Schema v2 rejects `${py:module:symbol}` references. Put the import in a
+small `resources/<name>.py` builder and use `${ref:name}` so the code
+boundary remains visible in the cartridge tree.
 
 After load, every built resource is exposed on `preset.resources`
 keyed by name, so callers (benchmarks, evidence-bundle writers, SDK
@@ -199,9 +201,9 @@ shared resources for orthogonal concerns instead of diamond inheritance.
 
 ## Built-in registries { #built-in-registries }
 
-`builtin_tools:` and `builtin_hooks:` are spec-portable directives
-(part of v1.0) but the **contents** of each registry are
-runtime-defined. The looplet runtime ships the following.
+`builtin_tools:` and `builtin_hooks:` are schema-v2 directives, but the
+**contents** of each registry are runtime-defined. The Looplet runtime
+ships the following.
 
 ### `builtin_tools:` (looplet) { #builtin-tools }
 
@@ -232,8 +234,8 @@ canonical list lives at `looplet.builtin_tools.AVAILABLE`.
 | `stagnation` | Stops the loop with a structured reason when the same `(tool, args)` pair repeats N times in a row (`threshold:`, `ignore_tools:`). The principled alternative to baking "are we stuck?" detection into the loop. |
 | `per_tool_limit` | Blocks further calls to a named tool once a per-tool budget is exhausted (`limits: { write: 50 }`); returns `Block(...)` with the limit in the reason so the model can self-correct. |
 | `threshold_compact` | Triggers compaction when prompt tokens cross a fraction of the context window. Pairs with `compact_service:` in `runtime.yaml`. |
-| `static_briefing` | Loads a fixed file (e.g. `prompts/briefing.md`) and prepends it to every step's prompt. The explicit replacement for the v1.x magic `prompts/briefing.md` auto-load (which is hard-rejected in v2). |
-| `recovery_hint` | Loads a fixed file (e.g. `prompts/recovery.md`) and injects it after a tool error. The explicit replacement for the v1.x magic `prompts/recovery.md` auto-load (hard-rejected in v2). |
+| `static_briefing` | Loads a fixed file (e.g. `prompts/briefing.md`) and prepends it to every step's prompt. The file is rejected when this explicit declaration is absent. |
+| `recovery_hint` | Loads a fixed file (e.g. `prompts/recovery.md`) and injects it after a tool error. The file is rejected when this explicit declaration is absent. |
 
 Opt in with optional kwargs:
 
@@ -268,8 +270,8 @@ dict (`name: kwargs`). Unknown names raise
 
 | Component | How |
 | --- | --- |
-| CONTRACT-tier `LoopConfig` fields (`max_steps`, `done_tool`, `done_tools`, `permissions`, `memory`, `model`, `extends`, `builtin_tools`, `builtin_hooks`; plus `tool_metadata` auto-populated by the loader) | Serialised via `config.yaml` |
-| RUNTIME-tier `LoopConfig` fields (`max_tokens`, `temperature`, `recovery_temperature`, `max_turn_continuations`, `generate_kwargs`, `use_native_tools`, `concurrent_dispatch`, `reactive_recovery`, `context_window`, `max_briefing_tokens`, `compact_service`, `cache_policy`, `checkpoint_dir`, `initial_checkpoint`, `tool_result_persist_dir`, `router`, `tracer`, `recovery_registry`) | Serialised via sibling `runtime.yaml` (spec v2). v1.x cartridges placing these in `config.yaml` continue to load with a `DeprecationWarning`; v2.0 will hard-fail. |
+| CONTRACT-tier fields (`max_steps`, `done_tool`, `permissions`, `memory`, `model`, `extends`, `builtin_tools`, `builtin_hooks`; plus loader-populated metadata) | Serialised via `config.yaml` |
+| RUNTIME-tier fields (`max_tokens`, `temperature`, `recovery_temperature`, `max_turn_continuations`, `generate_kwargs`, `use_native_tools`, `concurrent_dispatch`, `reactive_recovery`, `context_window`, `max_briefing_tokens`, `compact_service`, `cache_policy`, `checkpoint_dir`, `initial_checkpoint`, `tool_result_persist_dir`, `router`, `tracer`, `recovery_registry`) | Serialised via sibling `runtime.yaml`; schema v2 rejects these fields in `config.yaml`. |
 | `system_prompt` | Written to `prompts/system.md` |
 | Tools whose `execute` is a top-level function | `tools/<name>/{tool.yaml, execute.py}`; the source is preserved verbatim and an `execute = <orig_name>` alias is appended so the loader finds it under the canonical name |
 | Hooks with an opt-in `to_config(self) -> dict` method | `hooks/NN_<ClassName>/{hook.py, config.yaml}`; class source is preserved, kwargs come from `to_config()` |
@@ -404,6 +406,6 @@ print(cartridge.name, cartridge.description, cartridge.schema_version)
 ## Schema versioning
 
 `cartridge.json` carries a `schema_version` integer. The current
-schema is `1`. Forward-incompatible layout changes will bump this; a
-loader can detect the version before reading and choose how to handle
-mismatches.
+schema is `2`. Looplet loads version 2 only and fails before importing
+bodies when another version is declared. Use `looplet migrate` to
+upgrade a legacy version-1 directory.

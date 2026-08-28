@@ -19,6 +19,7 @@ module to get the dataclass type).
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -29,6 +30,7 @@ if TYPE_CHECKING:
 from looplet.cartridge._layout import (
     SCHEMA_VERSION,
     CartridgeLayout,
+    CartridgeSerializationError,
 )
 
 # ── Data class ──────────────────────────────────────────────────
@@ -54,25 +56,60 @@ def _manifest_present(root: Path) -> bool:
     return _manifest_path(root) is not None
 
 
+def _read_manifest_data(root: Path) -> dict[str, Any]:
+    """Read and validate the common cartridge manifest shape."""
+    meta_path = _manifest_path(root)
+    if meta_path is None:
+        raise FileNotFoundError(
+            f"cartridge metadata not found at {root / CartridgeLayout.CARTRIDGE_JSON}"
+        )
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CartridgeSerializationError(f"invalid JSON in {meta_path}: {exc}") from exc
+    if not isinstance(meta, dict):
+        raise CartridgeSerializationError(
+            f"invalid cartridge manifest at {meta_path}: top-level value must be an object"
+        )
+
+    name = meta.get("name")
+    if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+", name):
+        raise CartridgeSerializationError(
+            f"invalid cartridge manifest at {meta_path}: "
+            "'name' is required and must match [A-Za-z0-9_.-]+"
+        )
+    version = meta.get("schema_version")
+    if isinstance(version, bool) or not isinstance(version, int):
+        raise CartridgeSerializationError(
+            f"invalid cartridge manifest at {meta_path}: "
+            "'schema_version' is required and must be an integer"
+        )
+    for field_name in ("description", "version"):
+        if field_name in meta and not isinstance(meta[field_name], str):
+            raise CartridgeSerializationError(
+                f"invalid cartridge manifest at {meta_path}: "
+                f"'{field_name}' must be a string when present"
+            )
+    language = meta.get("language", "python")
+    if not isinstance(language, str) or not language.strip():
+        raise CartridgeSerializationError(
+            f"invalid cartridge manifest at {meta_path}: "
+            "'language' must be a non-empty string when present"
+        )
+    if "metadata" in meta and not isinstance(meta["metadata"], dict):
+        raise CartridgeSerializationError(
+            f"invalid cartridge manifest at {meta_path}: 'metadata' must be an object"
+        )
+    return meta
+
+
 def _read_schema_version(root: Path) -> int:
     """Read the cartridge's ``schema_version`` from its manifest.
 
-    Returns ``SCHEMA_VERSION`` (the latest known version) when the
-    manifest is missing or unparseable; callers that have already
-    verified the manifest exists will get the actual value. The loader accepts
-    schema version 2 only and rejects all other declared versions.
+    The loader accepts schema version 2 only and rejects all other declared
+    versions. Malformed or incomplete manifests fail before body imports.
     """
-    meta_path = _manifest_path(root)
-    if meta_path is None:
-        return SCHEMA_VERSION
-    try:
-        meta = json.loads(meta_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return SCHEMA_VERSION
-    try:
-        return int(meta.get("schema_version", SCHEMA_VERSION))
-    except (TypeError, ValueError):
-        return SCHEMA_VERSION
+    return int(_read_manifest_data(root)["schema_version"])
 
 
 def _read_manifest_language(root: Path) -> str:
@@ -91,16 +128,9 @@ def _read_manifest_language(root: Path) -> str:
     ``language: python`` and reject cleanly instead of crashing on
     ``import``.
     """
-    meta_path = _manifest_path(root)
-    if meta_path is None:
-        return "python"
-    try:
-        meta = json.loads(meta_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return "python"
+    meta = _read_manifest_data(root)
     val = meta.get("language", "python")
-    if not isinstance(val, str) or not val.strip():
-        return "python"
+    assert isinstance(val, str)
     return val.strip().lower()
 
 
@@ -119,6 +149,7 @@ class Cartridge:
     language: str = "python"
     metadata: dict[str, Any] = field(default_factory=dict)
     serialization_warnings: list[str] = field(default_factory=list)
+    version: str = ""
 
     # ── classmethod builders ───────────────────────────────────
 
@@ -139,13 +170,14 @@ class Cartridge:
                 f"{root / CartridgeLayout.CARTRIDGE_JSON} "
                 f"(or {CartridgeLayout.WORKSPACE_JSON}); is this a Cartridge directory?"
             )
-        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        meta = _read_manifest_data(root)
         return cls(
             path=root,
             name=str(meta.get("name", root.name)),
             description=str(meta.get("description", "")),
             schema_version=int(meta.get("schema_version", SCHEMA_VERSION)),
             language=_read_manifest_language(root),
+            version=str(meta.get("version", "")),
             metadata=dict(meta.get("metadata", {})),
         )
 
@@ -153,19 +185,17 @@ class Cartridge:
 
     def write_metadata(self) -> None:
         self.path.mkdir(parents=True, exist_ok=True)
+        payload: dict[str, Any] = {
+            "schema_version": self.schema_version,
+            "name": self.name,
+            "description": self.description,
+            "language": self.language,
+            "metadata": dict(self.metadata),
+        }
+        if self.version:
+            payload["version"] = self.version
         (self.path / CartridgeLayout.CARTRIDGE_JSON).write_text(
-            json.dumps(
-                {
-                    "schema_version": self.schema_version,
-                    "name": self.name,
-                    "description": self.description,
-                    "language": self.language,
-                    "metadata": dict(self.metadata),
-                },
-                indent=2,
-                sort_keys=True,
-            )
-            + "\n",
+            json.dumps(payload, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
 

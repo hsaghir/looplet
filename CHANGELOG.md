@@ -6,6 +6,43 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-28
+
+### Added
+
+- `looplet-proof` runs the complete network-free failure-to-regression
+  workflow from an installed wheel; its cartridge, collector, grader, and
+  before/after tool assets now ship in both distribution formats.
+- Saved trace and eval directories now carry a versioned `artifact.json`
+  descriptor with producer and required-component metadata. Readers retain
+  explicit compatibility with the supported descriptor-free legacy shape.
+- `looplet conform` now ships its schema-v2 fixtures in the wheel and checks
+  both successful loads and required rejection cases without a source checkout.
+
+### Changed
+
+- The public README now follows one Python-first adoption path, uses the
+  installed proof as its primary action, and moves protocol and skill-bundle
+  details into advanced guides. Removing the Mermaid block also prevents PyPI
+  from displaying raw diagram source.
+- Cartridge Spec v2 and its machine-readable manifest schema now match the
+  v2-only loader. Stale v1, `setup.py`, `${py:...}`, plural-sentinel, and field
+  tier guidance has been removed from the current contract.
+- Schema-v2 cartridges now reject runtime keys in `config.yaml` even when the
+  same key appears in `runtime.yaml`; there is one unambiguous file boundary.
+- Host-only approval, cancellation, and message-render capabilities are now
+  rejected from cartridge files and omitted with a warning during loose
+  serialization instead of being converted into resource stubs.
+- `preset_to_cartridge()` no longer writes non-empty host-only `done_tools`
+  configuration that the schema-v2 loader would reject.
+- Programmatic tool tags now produce a clear serialization warning, or a
+  strict-mode error, instead of writing a `tags:` field rejected by schema v2.
+- State-service declarations and an explicit `llm_gateway: false` now survive
+  cartridge round trips without generating resource stubs for service clients.
+- Obsolete generated demo recordings that showed retired `.workspace` paths
+  and `run-workspace` commands were removed; maintained scripts can regenerate
+  current recordings when needed.
+
 ### CLI
 
 - `looplet run-cartridge` now captures a provenance trace under the target
@@ -25,6 +62,25 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Cartridge manifests now reject malformed JSON, non-object values, invalid
+  names, missing required fields, and invalid field types before any body is
+  imported. `Cartridge` also preserves the optional opaque artifact version
+  across metadata reads and writes.
+- Cartridge load failures now close model gateways, state services, and MCP
+  adapters already started during that load. `looplet describe` and
+  `looplet conform` also close successfully loaded presets after inspection,
+  and explicit preset close now terminates LEP hook processes.
+- State-service startup failures now reap their child and temporary socket
+  directory, and failed connection retries close their sockets. State-service
+  and model-gateway close now restore any prior exported socket value instead
+  of clobbering caller environment state.
+- MCP server `env` entries now extend the host environment, preserving PATH and
+  Looplet model/state socket variables required by portable tool servers.
+- Model-gateway startup now fails and cleans its temporary directory when the
+  server thread does not create a usable socket.
+- Default and explicitly selected long-term memory files now load once instead
+  of also being included as generic ordered Markdown memory. Explicit paths
+  must exist inside the cartridge root.
 - Legacy `check_done` hooks no longer intermittently receive an unsupported
   `tool_call` keyword after short-lived hook classes are collected.
 - Trace inspection and replay now reject malformed structures, invalid replay

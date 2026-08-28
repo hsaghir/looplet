@@ -160,13 +160,18 @@ class MCPToolAdapter:
         elif os.name == "nt":
             process_options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
 
+        child_env = None
+        if self._env is not None:
+            child_env = dict(os.environ)
+            child_env.update(self._env)
+
         self._proc = subprocess.Popen(
             self._command,
             shell=True,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            env=self._env,
+            env=child_env,
             **process_options,
         )
         try:

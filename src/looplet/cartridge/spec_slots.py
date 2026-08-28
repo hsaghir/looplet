@@ -1,4 +1,4 @@
-"""Compilers for the v1.0 declarative slots in ``config.yaml``.
+"""Compilers for declarative schema-v2 slots in ``config.yaml``.
 
 These functions translate the declarative ``model:``, ``permissions:``,
 and ``memory:`` blocks documented in ``SPEC.md`` into the live
@@ -171,8 +171,8 @@ def compile_model_block(block: dict[str, Any], *, existing_cfg: dict[str, Any]) 
     (e.g. ``temperature: 0.2`` at the top level) are present, the
     structured block wins.
 
-    Provider / model name / reasoning effort / extras are *not* part
-    of the v1.0 ``LoopConfig`` surface; they are surfaced through
+    Provider / model name / reasoning effort / extras are *not* direct
+    ``LoopConfig`` fields; they are surfaced through
     ``tool_metadata['model']`` so that downstream tooling (cost
     estimators, routers, governance) can read them without parsing
     the cartridge again.
@@ -241,7 +241,7 @@ def compile_output_schema(block: dict[str, Any]) -> OutputSchema:
     if block_type != "object":
         raise ValueError(
             f"output_schema.type must be 'object' (got {block_type!r}); "
-            f"flat schemas are out of scope for v1.0"
+            f"only the schema-v2 object subset is supported"
         )
 
     properties = block.get("properties") or {}

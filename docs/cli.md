@@ -233,5 +233,5 @@ searchable tags. Validate and run the output before distributing it.
   does not expose as JSON.
 
 Before `1.0`, command options and machine-readable fields may change in a minor
-release. Pin `looplet>=0.3,<0.4` and review the [changelog](changelog.md) when
+release. Pin `looplet>=0.4,<0.5` and review the [changelog](changelog.md) when
 upgrading.

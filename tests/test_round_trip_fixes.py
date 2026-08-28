@@ -1,42 +1,4 @@
-"""Regression tests for cartridge round-trip fixes (round 18).
-
-Exercising ``cartridge_to_preset`` → ``preset_to_cartridge`` →
-``cartridge_to_preset`` over every shipped example and the
-multi-cartridge dogfood surfaced four real round-trip lossiness
-bugs:
-
-1. **Tool ``tags`` were dropped** - v1.1 added ``tags: list[str]`` to
-   ``ToolSpec`` but ``_write_tool`` didn't emit them. Round-trip
-   produced ``tools/<n>/tool.yaml`` without the original tags, so the
-   reload had ``spec.tags == []`` for every tool.
-
-2. **Tool ``render`` hints were dropped** - same root cause as #1.
-
-3. **PermissionEngine rules with ``contains:`` matchers were dropped.**
-    ``compile_permissions_block`` produces a closure
-   (``_make_arg_matcher.<locals>._match``) per rule. The dataclass
-   round-trip serialiser correctly identified the closure as
-   non-importable and fell through to a "fresh PermissionEngine()"
-   stub - losing every rule. Fix: stamp the closure with its source
-   spec dict, recognise the stamp in the renderer, and re-emit a call
-   to ``_make_arg_matcher({...})``.
-
-4. **Resources required by tools were not written back** - the
-   serialiser walked hook ``to_config()`` outputs to find ``@<name>``
-   refs, but never collected resources referenced via tool
-   ``requires:``. A round-tripped cartridge with ``tools/foo/tool.yaml:
-   requires: [my_resource]`` had no ``resources/my_resource.py``,
-   so the reloaded tool received ``ctx.resources["my_resource"] =
-   None`` and crashed at dispatch.
-
-5. **Hook kwargs without ``to_config`` were dropped** - hooks that
-   take resource kwargs in ``__init__`` (the canonical v1.1
-   declarative pattern, e.g. ``AuditLogHook(*, audit_log=None)``)
-   round-tripped to ``kwargs: {}`` because the writer's fallback
-   was empty. Fix: when ``to_config`` is absent, infer kwargs by
-   introspecting ``__init__`` and reading matching attributes off
-   the instance, re-emitting resource refs as ``@<name>``.
-"""
+"""Regression tests for cartridge serializer and loader symmetry."""
 
 from __future__ import annotations
 
@@ -48,6 +10,71 @@ import looplet
 from looplet import cartridge_to_preset, preset_to_cartridge
 
 REPO = Path(__file__).resolve().parents[1]
+
+
+def _uses_cache(ctx):
+    return {"cache": ctx.resources["cache"]}
+
+
+def test_nonempty_done_tools_are_not_serialized_into_v2_cartridge(tmp_path: Path) -> None:
+    preset = looplet.minimal_preset()
+    preset.config.done_tools = ["escalate"]
+
+    cartridge = preset_to_cartridge(preset, tmp_path / "agent.cartridge")
+
+    assert any("done_tools is host-only" in warning for warning in cartridge.serialization_warnings)
+    assert "done_tools" not in (cartridge.path / "config.yaml").read_text()
+
+
+def test_host_only_config_is_not_serialized_into_v2_cartridge(tmp_path: Path) -> None:
+    preset = looplet.minimal_preset()
+    preset.config.approval_handler = lambda _prompt, _choices=None: "yes"
+
+    cartridge = preset_to_cartridge(preset, tmp_path / "agent.cartridge")
+
+    assert any(
+        "approval_handler is host-only" in warning for warning in cartridge.serialization_warnings
+    )
+    assert "approval_handler" not in (cartridge.path / "config.yaml").read_text()
+
+
+def test_tool_tags_are_not_serialized_into_v2_cartridge(tmp_path: Path) -> None:
+    tool = looplet.ToolSpec(
+        name="tagged",
+        description="Tagged host-side tool.",
+        parameters={},
+        execute=lambda: {},
+        tags=["host-category"],
+    )
+    preset = looplet.minimal_preset(tools=[tool])
+
+    cartridge = preset_to_cartridge(preset, tmp_path / "agent.cartridge")
+
+    assert any("host-side tags" in warning for warning in cartridge.serialization_warnings)
+    assert "tags:" not in (cartridge.path / "tools" / "tagged" / "tool.yaml").read_text()
+
+
+def test_service_directives_and_disabled_gateway_round_trip(tmp_path: Path) -> None:
+    cached_tool = looplet.ToolSpec(
+        name="cached",
+        description="Use shared state.",
+        parameters={},
+        execute=_uses_cache,
+        requires=["cache"],
+    )
+    preset = looplet.minimal_preset(tools=[cached_tool])
+    preset.mcp_servers = {"tools": {"command": "fake-mcp"}}
+    preset.state_services = {"cache": {"command": "fake-state"}}
+    preset.llm_gateway_enabled = False
+    preset.resources["cache"] = object()
+
+    cartridge = preset_to_cartridge(preset, tmp_path / "agent.cartridge")
+    config = (cartridge.path / "config.yaml").read_text()
+
+    assert "mcp_servers:" in config
+    assert "state_services:" in config
+    assert "llm_gateway: false" in config
+    assert not (cartridge.path / "resources" / "cache.py").exists()
 
 
 def _summary(preset) -> dict:
@@ -289,22 +316,28 @@ def test_round_trip_preserves_summary_for_every_shipped_example() -> None:
         except Exception as e:
             failures.append((cart.name, f"load_a: {e}"))
             continue
-        s1 = _summary(p1)
-        with tempfile.TemporaryDirectory(prefix=f"rt_{cart.name}_") as tmp:
-            out = Path(tmp) / "rt.cartridge"
-            try:
-                preset_to_cartridge(p1, out, strict=False)
-                p2 = cartridge_to_preset(str(out), strict=False, runtime=runtime)
-            except Exception as e:
-                failures.append((cart.name, f"write/load_b: {e}"))
-                continue
-            s2 = _summary(p2)
-            if s1 != s2:
-                diffs = []
-                for k in sorted(set(s1) | set(s2)):
-                    if s1.get(k) != s2.get(k):
-                        diffs.append(k)
-                failures.append((cart.name, f"summary differs in: {diffs}"))
+        p2 = None
+        try:
+            s1 = _summary(p1)
+            with tempfile.TemporaryDirectory(prefix=f"rt_{cart.name}_") as tmp:
+                out = Path(tmp) / "rt.cartridge"
+                try:
+                    preset_to_cartridge(p1, out, strict=False)
+                    p2 = cartridge_to_preset(str(out), strict=False, runtime=runtime)
+                except Exception as e:
+                    failures.append((cart.name, f"write/load_b: {e}"))
+                    continue
+                s2 = _summary(p2)
+                if s1 != s2:
+                    diffs = []
+                    for k in sorted(set(s1) | set(s2)):
+                        if s1.get(k) != s2.get(k):
+                            diffs.append(k)
+                    failures.append((cart.name, f"summary differs in: {diffs}"))
+        finally:
+            if p2 is not None:
+                p2.close()
+            p1.close()
     assert not failures, (
         f"{len(failures)} cartridge(s) failed lossless round-trip:\n  "
         + "\n  ".join(f"{n}: {m}" for n, m in failures)

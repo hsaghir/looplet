@@ -1,19 +1,9 @@
-"""Regression tests for Cartridge Spec v1.1 additions.
+"""Schema-v2 regressions for features first explored during v1.1.
 
-Five additive features, each tested both at the loader level and
-end-to-end with the loop:
-
-1. Tool ``tags:`` (declarative metadata, advisory).
-2. Tool ``render:`` hints (advisory rendering hints).
-3. Single-file tool form (``tools/<name>.py``).
-4. ``done_tools: [a, b]`` (additional terminal sentinels).
-5. ``prompts/briefing.md`` + ``prompts/recovery.md`` auto-attached hooks.
-
-Plus one parser bug surfaced while writing the dogfood cartridge:
-
-6. Inline YAML comments must be stripped from values
-   (``done_tool: done  # foo`` → registered name was the literal
-   string ``"done  # foo"``).
+The module retains its historical filename but now protects the current
+contract: valid render hints and simple single-file tools still load; tool
+tags, resource-bearing single-file tools, cartridge ``done_tools``, and magic
+prompt files are rejected; explicit alternatives and YAML parsing still work.
 """
 
 from __future__ import annotations
@@ -42,7 +32,7 @@ def _write_minimal(root: Path) -> None:
     (root / "prompts" / "system.md").write_text("test agent")
 
 
-# ── 1. tool tags ─────────────────────────────────────────────────
+# ── tool render hints ─────────────────────────────────────────────
 
 
 def test_tool_render_hints_round_trip(tmp_path: Path) -> None:

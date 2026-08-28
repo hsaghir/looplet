@@ -149,6 +149,31 @@ def test_extends_missing_parent_raises(tmp_path: Path) -> None:
         cartridge_to_preset(child)
 
 
+@pytest.mark.parametrize(
+    "parent_manifest",
+    [
+        "{not json",
+        '{"name":"parent","schema_version":1}',
+        '{"name":"parent","schema_version":2,"language":"rust"}',
+    ],
+)
+def test_extends_validates_parent_manifest(tmp_path: Path, parent_manifest: str) -> None:
+    parent_files = dict(PARENT_FILES)
+    parent_files["cartridge.json"] = parent_manifest
+    parent = _make_workspace(tmp_path, "parent.workspace", parent_files)
+    child = _make_workspace(
+        tmp_path,
+        "child.workspace",
+        {
+            "cartridge.json": '{"name":"child","schema_version":2}\n',
+            "config.yaml": f"extends: {parent}\n",
+        },
+    )
+
+    with pytest.raises(CartridgeSerializationError):
+        cartridge_to_preset(child)
+
+
 def test_agent_factory_workspace_loads() -> None:
     """examples/agent_factory.cartridge must extend coder.cartridge
     successfully and add a validate_workspace tool."""

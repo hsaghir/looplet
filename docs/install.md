@@ -16,7 +16,7 @@ adapter you plan to use.
 Use a virtual environment and pin the current minor line in applications:
 
 ```toml title="pyproject.toml"
-dependencies = ["looplet>=0.3,<0.4"]
+dependencies = ["looplet>=0.4,<0.5"]
 ```
 
 Before `1.0`, a minor release may include breaking changes. Read the
@@ -31,12 +31,11 @@ key or network connection:
 python -m looplet.examples.hello_world --scripted
 ```
 
-For the complete capture, change, replay, and gate workflow, clone the
-repository and run the network-free [regression proof](regression-demo.md):
+For the complete capture, change, replay, and gate workflow, run the
+network-free [regression proof](regression-demo.md) from the installed package:
 
 ```bash
-uv sync
-uv run python examples/regression_demo/run_demo.py
+looplet-proof
 ```
 
 ## Configure OpenAI

@@ -154,7 +154,7 @@ class CartridgeLayout:
         """Fields that legitimately live in ``config.yaml``.
 
         Computed as everything serialisable that isn't tagged
-        RUNTIME, plus the v1.0 declarative slots and the system
+        RUNTIME, plus the declarative slots and the system
         prompt that the loader populates from ``prompts/system.md``.
         """
         return frozenset(cls.SERIALIZABLE_CONFIG_FIELDS) - cls.RUNTIME_TIER_FIELDS

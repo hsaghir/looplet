@@ -10,7 +10,7 @@ else, import from the relevant submodule::
     from looplet.cache import CacheBreakDetector, compute_breakpoints
 """
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 # ── Public re-exports (one import per submodule, alphabetical) ──────────
 # ruff: noqa: F401 - __init__.py intentionally re-exports for `from looplet import X`
@@ -306,7 +306,7 @@ __all__ = [
     "ProvenanceSink",
     "replay_loop",
     "serialize_harness",
-    # ── CARTRIDGE FORMAT (canonical; SPEC.md v1.0) ──────────────
+    # ── CARTRIDGE FORMAT (canonical; SPEC.md v2.0) ──────────────
     "Cartridge",
     "CartridgeLayout",
     "CartridgeSerializationError",

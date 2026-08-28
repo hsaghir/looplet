@@ -4,7 +4,7 @@ Three small commands that operationalise three of the SPEC.md / paper
 promises into something a reader can type and see.
 
 * ``looplet conform [path-to-fixtures]``
-    Run cartridge-spec v1.0 conformance fixtures against this
+    Run cartridge-spec v2.0 conformance fixtures against this
     repository's loader. Prints per-fixture pass/fail and exits
     non-zero on any mismatch. Intended to be runnable against
     *any* loader implementation in the future by importing this
@@ -62,12 +62,13 @@ def _yellow(s: str) -> str:
 def _default_fixtures_dir() -> Path:
     """Locate the bundled conformance fixtures.
 
-    The fixtures live under ``tests/conformance/fixtures/`` in this
-    repository. When looplet is installed via pip the tests directory
-    is not shipped, so the fixtures path is required as an argument
-    in that case (``looplet conform <path>``).
+    Source checkouts keep fixtures under ``tests/conformance/fixtures/``.
+    Wheels install the same files under ``looplet/_bundled/conformance``.
     """
     here = Path(__file__).resolve()
+    installed = here.parents[1] / "_bundled" / "conformance"
+    if installed.is_dir():
+        return installed
     for parent in (here.parent, *here.parents):
         candidate = parent / "tests" / "conformance" / "fixtures"
         if candidate.is_dir():
@@ -137,6 +138,7 @@ def cmd_conform(args: argparse.Namespace) -> int:
     1 if any mismatched, 2 if no fixtures found.
     """
     from looplet.cartridge import cartridge_to_preset  # noqa: PLC0415
+    from looplet.permissions import PermissionDecision  # noqa: PLC0415
 
     fixtures_dir = Path(args.fixtures or _default_fixtures_dir())
     if not fixtures_dir.is_dir():
@@ -157,28 +159,56 @@ def cmd_conform(args: argparse.Namespace) -> int:
         return 2
 
     loader: Callable[..., Any] = cartridge_to_preset
-    print(_bold(f"Cartridge Spec v1.0 conformance - {len(fixtures)} fixture(s)"))
+    print(_bold(f"Cartridge Spec v2.0 conformance - {len(fixtures)} fixture(s)"))
     print(_dim(f"  fixtures: {fixtures_dir}"))
     print()
 
     failures: list[tuple[str, str]] = []
+    checked = 0
     for fix in fixtures:
         expected_path = fix / "expected.json"
+        expected_error_path = fix / "expected_error.json"
         cartridge = fix / "cartridge"
-        if not expected_path.is_file():
-            print(f"  {_yellow('SKIP')} {fix.name} (no expected.json)")
+        if not expected_path.is_file() and not expected_error_path.is_file():
+            print(f"  {_yellow('SKIP')} {fix.name} (no expected result)")
             continue
+        checked += 1
         if not cartridge.is_dir():
             failures.append((fix.name, "missing cartridge/ subdir"))
             print(f"  {_red('FAIL')} {fix.name} - missing cartridge/")
             continue
         try:
-            preset = loader(str(cartridge), strict=True)
+            preset = loader(
+                str(cartridge),
+                strict=True,
+                runtime={
+                    "ask_handler": lambda _call, _rule: PermissionDecision.DENY,
+                },
+            )
         except Exception as e:  # noqa: BLE001
+            if expected_error_path.is_file():
+                expected_error = json.loads(expected_error_path.read_text())
+                expected_class = str(expected_error.get("error_class") or "")
+                expected_message = str(expected_error.get("message_contains") or "")
+                if type(e).__name__ == expected_class and expected_message in str(e):
+                    print(f"  {_green('PASS')} {fix.name} (required rejection)")
+                    continue
             failures.append((fix.name, f"{type(e).__name__}: {e}"))
             print(f"  {_red('FAIL')} {fix.name} - load error: {type(e).__name__}: {e}")
             continue
-        actual = _summarise_preset(preset)
+        if expected_error_path.is_file():
+            closer = getattr(preset, "close", None)
+            if callable(closer):
+                closer()
+            failures.append((fix.name, "expected load rejection"))
+            print(f"  {_red('FAIL')} {fix.name} - expected load rejection")
+            continue
+        try:
+            actual = _summarise_preset(preset)
+        finally:
+            closer = getattr(preset, "close", None)
+            if callable(closer):
+                closer()
         expected = json.loads(expected_path.read_text())
         if actual != expected:
             failures.append((fix.name, "summary mismatch"))
@@ -194,7 +224,7 @@ def cmd_conform(args: argparse.Namespace) -> int:
         for name, why in failures:
             print(f"  - {name}: {why}")
         return 1
-    print(_green(f"all {len(fixtures)} fixture(s) passed"))
+    print(_green(f"all {checked} checked fixture(s) passed"))
     return 0
 
 
@@ -229,6 +259,14 @@ def cmd_describe(args: argparse.Namespace) -> int:
         print(_red(f"error loading cartridge: {type(e).__name__}: {e}"), file=sys.stderr)
         return 1
 
+    try:
+        return _render_description(preset, cartridge_path)
+    finally:
+        preset.close()
+
+
+def _render_description(preset: Any, cartridge_path: Path) -> int:
+    """Render one already-loaded cartridge without taking ownership of it."""
     cfg = preset.config
     print(_bold(f"{cartridge_path.name}"))
     if cfg.system_prompt:
@@ -634,7 +672,7 @@ def add_subparsers(sub: "argparse._SubParsersAction") -> None:
     """Register ``conform``, ``describe``, ``diff``, ``hash`` on the top-level parser."""
     conform_p = sub.add_parser(
         "conform",
-        help="Run Cartridge Spec v1.0 conformance fixtures against the loader",
+        help="Run Cartridge Spec v2.0 conformance fixtures against the loader",
         description=(
             "Run the bundled conformance fixtures (or any directory of them) "
             "against the reference loader and print per-fixture pass/fail. "

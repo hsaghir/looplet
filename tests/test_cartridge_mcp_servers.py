@@ -131,6 +131,39 @@ def test_mcp_servers_tools_allowlist_filters_registration(
     assert "filesystem_write" not in names
 
 
+def test_mcp_servers_empty_allowlist_registers_no_discovered_tools(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("looplet.mcp.MCPToolAdapter", _FakeAdapter)
+    root = tmp_path / "x.cartridge"
+    _write_minimal_cartridge(
+        root,
+        mcp_servers_yaml=('mcp_servers:\n  fs:\n    command: "filesystem /tmp"\n    tools: []\n'),
+    )
+
+    preset = cartridge_to_preset(str(root), strict=True)
+    try:
+        assert set(preset.tools.tool_names) == {"done"}
+    finally:
+        preset.close()
+
+
+@pytest.mark.parametrize(
+    "mcp_yaml",
+    [
+        "mcp_servers: []\n",
+        'mcp_servers:\n  fs:\n    command: "filesystem /tmp"\n    tools: all\n',
+        'mcp_servers:\n  fs:\n    command: "filesystem /tmp"\n    env:\n      PORT: 1234\n',
+    ],
+)
+def test_mcp_servers_reject_malformed_blocks(tmp_path: Path, mcp_yaml: str) -> None:
+    root = tmp_path / "x.cartridge"
+    _write_minimal_cartridge(root, mcp_servers_yaml=mcp_yaml)
+
+    with pytest.raises(CartridgeSerializationError):
+        cartridge_to_preset(str(root), strict=True)
+
+
 def test_preset_close_terminates_mcp_adapters(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import tomllib
 from datetime import date
 from pathlib import Path
@@ -74,6 +75,34 @@ def test_portable_coder_is_in_both_distribution_formats() -> None:
         wheel_files["tests/fixtures/coder_skill_bundle/__init__.py"]
         == "tests/fixtures/coder_skill_bundle/__init__.py"
     )
+
+
+def test_regression_proof_is_in_both_distribution_formats() -> None:
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text())
+    scripts = project["project"]["scripts"]
+    wheel_files = project["tool"]["hatch"]["build"]["targets"]["wheel"]["force-include"]
+    sdist_files = project["tool"]["hatch"]["build"]["targets"]["sdist"]["include"]
+
+    assert scripts["looplet-proof"] == "looplet.examples.regression_demo:main"
+    assert (
+        wheel_files["examples/regression_demo/report_agent.cartridge"]
+        == "looplet/_bundled/regression_demo/report_agent.cartridge"
+    )
+    assert (
+        wheel_files["examples/regression_demo/before_publish_report.py"]
+        == "looplet/_bundled/regression_demo/before_publish_report.py"
+    )
+    assert wheel_files["tests/conformance/fixtures"] == "looplet/_bundled/conformance"
+    assert "examples/regression_demo" in sdist_files
+    assert "SPEC.md" in sdist_files
+    assert "cartridge.schema.json" in sdist_files
+
+
+def test_manifest_schema_matches_supported_cartridge_version() -> None:
+    from looplet.cartridge._layout import SCHEMA_VERSION
+
+    schema = json.loads((ROOT / "cartridge.schema.json").read_text())
+    assert schema["properties"]["schema_version"]["const"] == SCHEMA_VERSION
 
 
 def test_tag_publish_creates_a_github_release_from_built_artifacts() -> None:

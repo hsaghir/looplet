@@ -390,7 +390,7 @@ def load_cartridge(root: Path) -> TinyCartridge:
                 output_schema=schema if isinstance(schema, dict) else None,
             )
 
-    # ── v1.0 declarative slots ──────────────────────────────────
+    # ── declarative model, permissions, and memory slots ────────
     permissions = _normalise_permissions(config.get("permissions"))
     model = config.get("model") if isinstance(config.get("model"), dict) else None
     # Hoist model.{max_tokens,temperature} into the flat config so
@@ -399,29 +399,29 @@ def load_cartridge(root: Path) -> TinyCartridge:
         for hoist in ("max_tokens", "temperature"):
             if hoist in model and hoist not in config:
                 config[hoist] = model[hoist]
+    mem_block = config.get("memory") if isinstance(config.get("memory"), dict) else None
+    selected_long_term: Path | None = None
+    if mem_block and isinstance(mem_block.get("long_term"), str):
+        candidate = (root / mem_block["long_term"]).resolve()
+        if candidate.is_file():
+            selected_long_term = candidate
+    if selected_long_term is None:
+        candidate = (root / "memory" / "long_term.md").resolve()
+        if candidate.is_file():
+            selected_long_term = candidate
+
     memory_sources: list[str] = []
     memory_dir = root / "memory"
     if memory_dir.is_dir():
         for p in sorted(memory_dir.iterdir()):
-            if p.is_file() and p.suffix in (".md", ".txt", ".py"):
+            if (
+                p.is_file()
+                and p.suffix in (".md", ".txt", ".py")
+                and p.resolve() != selected_long_term
+            ):
                 memory_sources.append(p.name)
-    # Mirror the reference loader's long-term-memory auto-load:
-    # an explicit ``memory: { long_term: <path> }`` in config OR an
-    # auto-discovered ``memory/long_term.md`` appends one ADDITIONAL
-    # source on top of the file scan above. This matches the count
-    # produced by ``cartridge_to_preset`` for conformance fixture 04.
-    mem_block = config.get("memory") if isinstance(config.get("memory"), dict) else None
-    long_term_extra: Path | None = None
-    if mem_block and isinstance(mem_block.get("long_term"), str):
-        cand = (root / mem_block["long_term"]).resolve()
-        if cand.is_file():
-            long_term_extra = cand
-    if long_term_extra is None:
-        cand = root / "memory" / "long_term.md"
-        if cand.is_file():
-            long_term_extra = cand
-    if long_term_extra is not None:
-        memory_sources.append(f"@long_term:{long_term_extra.name}")
+    if selected_long_term is not None:
+        memory_sources.append(f"@long_term:{selected_long_term.name}")
 
     return TinyCartridge(
         name=str(manifest.get("name", root.name)),

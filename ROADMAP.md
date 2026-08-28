@@ -9,7 +9,7 @@ own. The roadmap is organized around one question:
 This is a direction document, not a dated promise. Shipped behavior is
 specified by the code, tests, and changelog.
 
-## Current status: 0.3.0 (Beta)
+## Current status: 0.4.0 (Beta)
 
 The foundation is in place:
 

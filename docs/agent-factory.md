@@ -41,8 +41,9 @@ For each `looplet new` invocation, the produced cartridge contains:
 
 ```text
 my_agent.cartridge/
-├── cartridge.json          # {"name": "my_agent", "schema_version": 1}
-├── config.yaml             # max_steps, max_tokens, temperature, done_tool
+├── cartridge.json          # {"name": "my_agent", "schema_version": 2}
+├── config.yaml             # max_steps, done_tool, tools, hooks, permissions
+├── runtime.yaml            # max_tokens, temperature, provider/runtime knobs
 ├── prompts/system.md       # role + tools + workflow + when to call done
 ├── tools/<name>/
 │   ├── tool.yaml           # name, description, parameters, requires
@@ -65,7 +66,7 @@ Generate a cartridge from a brief.
 
 | Flag | Default | Purpose |
 | --- | --- | --- |
-| `target` (positional) | `./agent.cartridge` | Where to write the produced cartridge |
+| `target` (positional) | `./agent.cartridge` | User output directory; distinct from the bundled factory cartridge |
 | `--name` | derived from `target` | Cartridge name (becomes `cartridge.json.name`) |
 | `--tool TOOL` | _(none)_ | Pre-scaffold a tool by name (repeatable). When omitted, the agent picks tools from the brief. |
 | `--max-steps N` | `80` | Override the factory's max steps |

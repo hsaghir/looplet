@@ -194,7 +194,9 @@ or eval primitives.
 
 The steps above are executable as one example. It migrates a tiny on-call
 handoff agent that hands resolved incidents to the next owner as if they were
-still open work. No provider, network call, or cartridge is involved.
+still open work. No provider, network call, or cartridge is involved. The module
+command below is a source checkout command; sdists include the recipe so the
+focused tests can run from an extracted source distribution.
 
 ```bash
 uv run python -m examples.private_loop_migration

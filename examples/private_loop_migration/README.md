@@ -7,7 +7,7 @@ four stages with no provider, no network call, and no cartridge.
 The agent has a bug worth catching: it hands resolved incidents to the
 next owner as if they were still open work.
 
-Run it from the repository root:
+Run it from a source checkout repository root:
 
 ```bash
 uv run python -m examples.private_loop_migration

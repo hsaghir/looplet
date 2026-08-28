@@ -98,6 +98,15 @@ def test_regression_proof_is_in_both_distribution_formats() -> None:
     assert "cartridge.schema.json" in sdist_files
 
 
+def test_private_loop_migration_recipe_is_available_to_sdist_tests() -> None:
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text())
+    sdist_files = project["tool"]["hatch"]["build"]["targets"]["sdist"]["include"]
+    migrate = (ROOT / "docs" / "migrate.md").read_text()
+
+    assert "examples/private_loop_migration" in sdist_files
+    assert "source checkout" in migrate
+
+
 def test_manifest_schema_matches_supported_cartridge_version() -> None:
     from looplet.cartridge._layout import SCHEMA_VERSION
 

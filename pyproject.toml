@@ -99,6 +99,7 @@ include = [
     "examples/agent_factory.cartridge",
     "examples/coder.cartridge",
     "examples/coder_portable.cartridge",
+    "examples/private_loop_migration",
     "examples/regression_demo",
     "tests/fixtures/coder_skill_bundle/SKILL.md",
     "tests/fixtures/coder_skill_bundle/looplet.py",

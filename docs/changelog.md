@@ -6,6 +6,14 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Private-loop migration recipe.** `examples/private_loop_migration/` evolves
+  one tiny agent from a hand-written loop to `composable_loop()`, captured
+  provenance, and a required outcome grader, with no provider, network call, or
+  cartridge in any of the four stages. `docs/migrate.md` walks the stages and
+  states when the original raw loop remains the better choice.
+
 ## [0.4.0] - 2026-08-28
 
 ### Added

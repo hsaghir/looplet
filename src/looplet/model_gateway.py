@@ -363,11 +363,13 @@ class ModelGatewayHandle:
         socket_path: str,
         socket_dir: str,
         thread: threading.Thread,
+        env_restore: tuple[bool, str | None] | None = None,
     ) -> None:
         self.server = server
         self.socket_path = socket_path
         self._socket_dir = socket_dir
         self._thread = thread
+        self._env_restore = env_restore
 
     @classmethod
     def start(cls, *, backend: Any = None, export_env: bool = True) -> "ModelGatewayHandle":
@@ -391,9 +393,22 @@ class ModelGatewayHandle:
         deadline = time.monotonic() + 5.0
         while time.monotonic() < deadline and not os.path.exists(socket_path):
             time.sleep(0.01)
+        if not os.path.exists(socket_path):
+            server.stop()
+            thread.join(timeout=2.0)
+            try:
+                os.rmdir(socket_dir)
+            except OSError:  # pragma: no cover - best effort
+                pass
+            raise ModelGatewayError("model gateway failed to create its socket")
+        env_restore: tuple[bool, str | None] | None = None
         if export_env:
+            env_restore = (
+                LLM_SOCKET_ENV_VAR in os.environ,
+                os.environ.get(LLM_SOCKET_ENV_VAR),
+            )
             os.environ[LLM_SOCKET_ENV_VAR] = socket_path
-        return cls(server, socket_path, socket_dir, thread)
+        return cls(server, socket_path, socket_dir, thread, env_restore)
 
     def set_backend(self, backend: Any) -> None:
         """Bind the live LLM backend the gateway exposes to its clients."""
@@ -405,9 +420,15 @@ class ModelGatewayHandle:
             self._thread.join(timeout=2.0)
         except Exception:  # pragma: no cover - best effort
             pass
-        # Drop the env var if it still points at our socket.
-        if os.environ.get(LLM_SOCKET_ENV_VAR) == self.socket_path:
-            os.environ.pop(LLM_SOCKET_ENV_VAR, None)
+        # Restore the caller's env only while this handle still owns the slot.
+        if self._env_restore is not None and os.environ.get(LLM_SOCKET_ENV_VAR) == self.socket_path:
+            existed, previous = self._env_restore
+            if existed:
+                assert previous is not None
+                os.environ[LLM_SOCKET_ENV_VAR] = previous
+            else:
+                os.environ.pop(LLM_SOCKET_ENV_VAR, None)
+        self._env_restore = None
         for p in (self.socket_path, self._socket_dir):
             try:
                 if os.path.isdir(p):

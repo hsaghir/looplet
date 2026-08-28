@@ -3,8 +3,11 @@
 
 from __future__ import annotations
 
+import importlib.metadata
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import looplet
@@ -63,6 +66,36 @@ def main() -> int:
     )
     assert result.returncode == 0, result.stderr
     assert "Scaffold a reviewable Looplet cartridge draft" in result.stdout
+
+    conform = subprocess.run(
+        [sys.executable, "-m", "looplet", "conform"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert conform.returncode == 0, conform.stderr or conform.stdout
+    assert "Cartridge Spec v2.0 conformance" in conform.stdout
+
+    proof_entry_points = importlib.metadata.entry_points(
+        group="console_scripts", name="looplet-proof"
+    )
+    assert len(proof_entry_points) == 1
+    proof_command = shutil.which("looplet-proof", path=str(Path(sys.executable).parent))
+    assert proof_command is not None
+    with tempfile.TemporaryDirectory() as temp_dir:
+        proof = subprocess.run(
+            [
+                proof_command,
+                "--out",
+                str(Path(temp_dir) / "proof"),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    assert proof.returncode == 0, proof.stderr
+    assert "required eval: FAIL (0.00)" in proof.stdout
+    assert "required eval: PASS (1.00)" in proof.stdout
     print(f"Installed wheel smoke passed: looplet {looplet.__version__}")
     return 0
 

@@ -117,6 +117,16 @@ def preset_to_cartridge(
         if not hasattr(cfg, fname):
             continue
         value = getattr(cfg, fname)
+        if fname == "done_tools":
+            if value:
+                msg = (
+                    "config.done_tools is host-only in cartridge spec v2; "
+                    "use one done_tool with a payload-discriminated output schema"
+                )
+                if strict:
+                    raise CartridgeSerializationError(msg)
+                warnings.append(msg)
+            continue
         try:
             json.dumps(value)
         except TypeError:
@@ -140,6 +150,12 @@ def preset_to_cartridge(
         value = getattr(cfg, fname)
         if value is None:
             continue
+        if fname in CartridgeLayout.HOST_TIER_FIELDS:
+            msg = f"config.{fname} is host-only and cannot be serialized into a cartridge"
+            if strict:
+                raise CartridgeSerializationError(msg)
+            warnings.append(msg)
+            continue
         # Round-trip via ``@<fname>`` ref + auto-generated resource stub.
         # The user can replace the stub with a real builder later; for
         # in-process snapshot+reload (harness search / GEPA evolution)
@@ -159,7 +175,19 @@ def preset_to_cartridge(
         serialized_cfg["builtin_tools"] = builtin_tool_names
     mcp_servers = dict(getattr(preset, "mcp_servers", None) or {})
     if mcp_servers:
-        serialized_cfg["mcp_servers"] = _relativise_mcp_servers(mcp_servers, preset, root, warnings)
+        serialized_cfg["mcp_servers"] = _relativise_server_commands(
+            mcp_servers, preset, root, warnings
+        )
+    state_services = dict(getattr(preset, "state_services", None) or {})
+    if state_services:
+        serialized_cfg["state_services"] = _relativise_server_commands(
+            state_services,
+            preset,
+            root,
+            warnings,
+        )
+    if preset.llm_gateway_enabled is not None:
+        serialized_cfg["llm_gateway"] = preset.llm_gateway_enabled
 
     if serialized_cfg:
         # ── Cartridge spec v2 split: contract → config.yaml,
@@ -275,12 +303,15 @@ def preset_to_cartridge(
     # ``None`` from ``ctx.resources["support_data"]``.
     tool_required_refs: dict[str, Any] = {}
     source_resources = dict(getattr(preset, "resources", {}) or {})
+    state_service_names = set(state_services)
     for spec in _iter_tool_specs(preset.tools):
         for req_name in getattr(spec, "requires", []) or []:
             if req_name in tool_required_refs:
                 continue
             if req_name in ("runtime",):
                 continue  # reserved; auto-injected from runtime dict
+            if req_name in state_service_names:
+                continue  # recreated from the preserved state_services directive
             inst = source_resources.get(req_name)
             if inst is not None:
                 tool_required_refs[req_name] = inst
@@ -327,13 +358,13 @@ def _is_mcp_tool(spec: Any) -> bool:
     return "MCPToolAdapter" in qualname and "_make_executor" in qualname
 
 
-def _relativise_mcp_servers(
-    mcp_servers: dict[str, Any],
+def _relativise_server_commands(
+    servers: dict[str, Any],
     preset: Any,
     dest_root: Path,
     warnings: list[str],
 ) -> dict[str, Any]:
-    """Re-template resolved ``mcp_servers`` commands back to
+    """Re-template resolved out-of-process service commands back to
     ``${runtime.cartridge_root}`` and vendor any bundled server files.
 
     The loader resolves ``${runtime.cartridge_root}`` to the source
@@ -347,7 +378,7 @@ def _relativise_mcp_servers(
     """
     src_root = _preset_origin_root(preset)
     out: dict[str, Any] = {}
-    for name, cfg in mcp_servers.items():
+    for name, cfg in servers.items():
         if not isinstance(cfg, dict) or src_root is None:
             out[name] = cfg
             continue
@@ -809,12 +840,20 @@ def _write_tool(spec: Any, tools_root: Path, warnings: list[str], strict: bool) 
     requires = getattr(spec, "requires", None) or []
     if requires:
         yaml_payload["requires"] = list(requires)
-    # Round-trip v1.1 advisory metadata (tags + render hints). Both
-    # default to empty; emit only when non-empty so absent metadata
-    # round-trips as absent (not as ``tags: []``).
+    # Schema v2 keeps cross-tool categorisation with the consuming policy,
+    # not on each tool. Programmatic ToolSpecs may still carry host-side tags,
+    # but a cartridge cannot represent them.
     tags = getattr(spec, "tags", None) or []
     if tags:
-        yaml_payload["tags"] = list(tags)
+        msg = (
+            f"tool {name!r} has host-side tags that cartridge spec v2 cannot serialize; "
+            "move categorisation into the consuming hook configuration"
+        )
+        if strict:
+            raise CartridgeSerializationError(msg)
+        warnings.append(msg)
+    # Render hints remain valid tool defaults and can be overridden per host
+    # through runtime.yaml:tool_render_hints.
     render = getattr(spec, "render", None) or {}
     if render:
         yaml_payload["render"] = dict(render)
@@ -971,9 +1010,9 @@ def _write_hook(hook: Any, hooks_root: Path, index: int, warnings: list[str], st
 
     # Constructor kwargs: prefer hook.to_config(); else introspect
     # the __init__ signature and read matching attributes off the
-    # instance. Without this, hooks that take resource kwargs (the
-    # canonical v1.1 declarative pattern) lose all their configuration
-    # on round-trip because the writer falls back to ``kwargs: {}``.
+    # instance. Without this, hooks that take resource kwargs lose all their
+    # configuration on round-trip because the writer falls back to
+    # ``kwargs: {}``.
     cfg_payload: dict[str, Any] = {"class_name": cls_name}
     if hasattr(hook, "to_config") and callable(hook.to_config):
         try:

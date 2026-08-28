@@ -184,7 +184,7 @@ def main(argv: list[str] | None = None) -> int:
         fast=fast,
     )
     run_printer = PrettyPrinter(
-        title="looplet run \u00b7 url_summarizer.cartridge",
+        title="looplet run-cartridge \u00b7 url_summarizer.cartridge",
         max_steps=len(_run_steps()),
     )
     run_printer.header(

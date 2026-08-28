@@ -1,16 +1,19 @@
 # From failed run to regression contract
 
-The fastest way to understand Looplet's position is to run one small,
-controlled proof.
+The fastest way to understand Looplet's mechanism is to run one small,
+controlled proof from the installed package.
 
 ```bash
-git clone https://github.com/hsaghir/looplet
-cd looplet
-uv sync
-uv run python examples/regression_demo/run_demo.py
+uvx --from looplet==0.4.0 looplet-proof
 ```
 
 No API key or network call is required.
+
+From a source checkout, the equivalent command is:
+
+```bash
+uv run python examples/regression_demo/run_demo.py
+```
 
 ```text
 Looplet: one failed run -> one regression contract

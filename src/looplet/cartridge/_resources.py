@@ -219,7 +219,6 @@ def _load_single_file_tool(
     tool_file: Path,
     *,
     strict: bool,
-    tool_modules: dict[str, Any],
     is_v2: bool = False,
 ) -> Any:
     """Load a single-file tool (``tools/<name>.py``) into a ToolSpec.
@@ -239,7 +238,7 @@ def _load_single_file_tool(
     tool is rejected at load time. Use the multi-file form
     (``tools/<name>/{tool.yaml, execute.py}``) for any tool that needs
     a shared resource. Two ways to express the same thing was a
-    legibility failure of v1.1.
+    legibility failure in the earlier format.
 
     Returns ``None`` (with a warning) when ``strict=False`` and the
     module is malformed; raises ``CartridgeSerializationError`` under
@@ -249,7 +248,6 @@ def _load_single_file_tool(
 
     name_stem = tool_file.stem
     module = _import_module_from_path(tool_file, f"_chw_tool_{name_stem}")
-    tool_modules[name_stem] = module
     execute_fn = getattr(module, "execute", None)
     if not callable(execute_fn):
         msg = (

@@ -17,6 +17,8 @@ These tests witness the two properties the primitive must guarantee:
 
 from __future__ import annotations
 
+import os
+import tempfile
 import textwrap
 from pathlib import Path
 
@@ -140,11 +142,67 @@ def test_reserved_methods_are_not_exposed(tmp_path: Path) -> None:
         handle.close()
 
 
-def test_close_terminates_server_and_cleans_socket(tmp_path: Path) -> None:
+@pytest.mark.parametrize("previous", [None, "/caller/service.sock"])
+def test_close_terminates_server_and_cleans_socket_and_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, previous: str | None
+) -> None:
+    env_name = "LOOPLET_STATE_COUNTER"
+    if previous is None:
+        monkeypatch.delenv(env_name, raising=False)
+    else:
+        monkeypatch.setenv(env_name, previous)
     server = _write_server(tmp_path, _COUNTER_BODY)
     handle = StateServiceHandle.spawn(state_server_argv(str(server)), name="counter")
     socket_path = handle.socket_path
     assert Path(socket_path).exists()
+    handle.export_env()
+    assert os.environ[env_name] == socket_path
     handle.close()
     # Socket file is removed on close.
     assert not Path(socket_path).exists()
+    if previous is None:
+        assert env_name not in os.environ
+    else:
+        assert os.environ[env_name] == previous
+
+
+def test_spawn_failure_cleans_socket_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    socket_dir = tmp_path / "state-socket"
+
+    def fake_mkdtemp(*, prefix: str) -> str:
+        assert prefix.startswith("looplet-state-missing-")
+        socket_dir.mkdir()
+        return str(socket_dir)
+
+    monkeypatch.setattr(tempfile, "mkdtemp", fake_mkdtemp)
+
+    with pytest.raises(FileNotFoundError):
+        StateServiceHandle.spawn(["/definitely/missing/state-server"], name="missing")
+    assert not socket_dir.exists()
+
+
+def test_failed_connection_attempt_closes_socket(monkeypatch: pytest.MonkeyPatch) -> None:
+    closed: list[bool] = []
+
+    class FakeSocket:
+        def connect(self, path: str) -> None:
+            raise OSError(f"missing {path}")
+
+        def close(self) -> None:
+            closed.append(True)
+
+    times = iter([0.0, 0.0, 2.0])
+    monkeypatch.setattr("looplet.state_service.time.monotonic", lambda: next(times))
+    monkeypatch.setattr("looplet.state_service.time.sleep", lambda _seconds: None)
+    monkeypatch.setattr("looplet.state_service.socket.socket", lambda *_args: FakeSocket())
+
+    with pytest.raises(StateServiceError, match="could not connect"):
+        StateServiceClient._connect("/missing.sock", 1.0)
+    assert closed == [True]
+
+
+def test_spawn_rejects_nonpositive_timeout() -> None:
+    with pytest.raises(StateServiceError, match="greater than zero"):
+        StateServiceHandle.spawn(["unused"], name="counter", timeout_s=0)

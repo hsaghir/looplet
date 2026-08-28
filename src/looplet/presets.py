@@ -150,14 +150,32 @@ class AgentPreset:
     or when ``llm_gateway: false`` is set.
     """
 
+    llm_gateway_enabled: bool | None = None
+    """Explicit cartridge ``llm_gateway:`` value for round-trip output.
+
+    ``None`` means the cartridge omitted the directive and the loader default
+    applies. Presets constructed directly in code also leave this unset.
+    """
+
     def close(self) -> None:
         """Terminate all subprocesses owned by this preset.
 
-        Covers both ``mcp_servers:`` adapters and ``state_services:``
-        handles. Safe to call multiple times. Exceptions during close are
-        logged and swallowed so one misbehaving server cannot block the
-        rest.
+        Covers LEP hooks, ``mcp_servers:`` adapters, ``state_services:``
+        handles, and the model gateway. Safe to call multiple times.
+        Exceptions during close are logged and swallowed so one misbehaving
+        server cannot block the rest.
         """
+        from looplet.lep import LEPHookAdapter  # noqa: PLC0415
+
+        for hook in self.hooks:
+            if not isinstance(hook, LEPHookAdapter):
+                continue
+            try:
+                hook.close()
+            except Exception:  # pragma: no cover - defensive
+                import logging  # noqa: PLC0415
+
+                logging.getLogger(__name__).warning("error closing LEP hook", exc_info=True)
         for adapter in self.mcp_adapters:
             try:
                 adapter.close()

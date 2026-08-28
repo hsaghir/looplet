@@ -461,7 +461,7 @@ class LoopConfig:
     done_tool: str = "done"
 
     done_tools: list[str] = field(default_factory=list)
-    """Additional terminal sentinel tools (cartridge-spec v1.1).
+    """Additional terminal sentinel tools for host-side configuration.
 
     By default the loop ends only when the agent invokes the single
     ``done_tool``. Cartridges that need multiple distinct outcomes
@@ -471,7 +471,7 @@ class LoopConfig:
 
     The legacy ``done_tool`` is always treated as terminal too;
     ``done_tools`` is *additive*. Empty list (the default) preserves
-    pre-v1.1 single-sentinel behaviour exactly.
+    single-sentinel behaviour exactly.
     """
 
     done_tool_schemas: dict[str, OutputSchema] = field(default_factory=dict)
@@ -482,7 +482,7 @@ class LoopConfig:
     entry exists here, the loop validates the call's args against the
     matching schema with the same quality-gate behaviour as
     :attr:`output_schema` on the primary :attr:`done_tool`. Sentinels
-    without an entry are unvalidated (behaviour preserved from v1.1).
+    without an entry are unvalidated.
 
     Populated by the cartridge loader from each sentinel's
     ``tool.yaml: output_schema:`` block; can also be set directly on
@@ -2293,7 +2293,7 @@ def composable_loop(
         all_step_entities: list[str] = []
 
         # Effective set of terminal sentinels: legacy ``done_tool``
-        # plus the v1.1 ``done_tools`` list. The first one the agent
+        # plus the host-side ``done_tools`` list. The first one the agent
         # invokes ends the loop; the legacy field stays the canonical
         # name used in error messages and pretty-printers.
         done_tool_name = config.done_tool
@@ -2500,7 +2500,7 @@ def composable_loop(
                         break
 
             # Output schema validation - reject done() if payload is invalid.
-            # Cartridge Spec v1.1 attached ``output_schema`` only to the
+            # Cartridge output schemas attach validation to the
             # PRIMARY ``done_tool``. v2 extends this to *every* sentinel
             # via :attr:`LoopConfig.done_tool_schemas` (populated by the
             # cartridge loader from each sentinel's ``tool.yaml:

@@ -43,8 +43,12 @@ class _ScriptedLLM:
         return self._replies.pop(0) if self._replies else "DONE"
 
 
-def test_handle_exports_socket_env_var():
-    prior = os.environ.get(LLM_SOCKET_ENV_VAR)
+@pytest.mark.parametrize("prior", [None, "/caller/gateway.sock"])
+def test_handle_exports_socket_env_var(monkeypatch, prior):
+    if prior is None:
+        monkeypatch.delenv(LLM_SOCKET_ENV_VAR, raising=False)
+    else:
+        monkeypatch.setenv(LLM_SOCKET_ENV_VAR, prior)
     handle = ModelGatewayHandle.start()
     try:
         assert os.environ[LLM_SOCKET_ENV_VAR] == handle.socket_path
@@ -167,3 +171,24 @@ def test_unknown_method_returns_error():
         sock.close()
     finally:
         handle.close()
+
+
+def test_start_fails_when_server_never_binds(monkeypatch, tmp_path):
+    socket_dir = tmp_path / "gateway"
+    socket_dir.mkdir()
+
+    class DeadThread:
+        def start(self):
+            return None
+
+        def join(self, timeout):
+            assert timeout == 2.0
+
+    times = iter([0.0, 6.0])
+    monkeypatch.setattr("looplet.model_gateway.tempfile.mkdtemp", lambda **_kwargs: str(socket_dir))
+    monkeypatch.setattr("looplet.model_gateway.threading.Thread", lambda **_kwargs: DeadThread())
+    monkeypatch.setattr("looplet.model_gateway.time.monotonic", lambda: next(times))
+
+    with pytest.raises(ModelGatewayError, match="failed to create"):
+        ModelGatewayHandle.start()
+    assert not socket_dir.exists()

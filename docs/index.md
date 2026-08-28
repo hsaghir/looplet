@@ -60,7 +60,7 @@ Host-observed outcomes become required release checks.
 
 <div class="proof-terminal" markdown>
 
-<div class="proof-terminal__title">$ uv run python examples/regression_demo/run_demo.py</div>
+<div class="proof-terminal__title">$ uvx --from looplet==0.4.0 looplet-proof</div>
 
 ```text
 1. CAPTURE v1 with fixed model responses
@@ -192,36 +192,14 @@ or code review.
 [Follow the quickstart](quickstart.md) | [Read the hook protocol](hooks.md) |
 [Inspect cartridge boundaries](cartridge.md)
 
-## The harness can cross runtime boundaries
+## Advanced boundaries stay optional
 
-The shipped `coder_portable` cartridge is the complete coding-harness
-reference architecture with zero in-process portability blockers:
+Teams that need process or runtime boundaries can move tools, hooks, shared
+state, and model access behind explicit protocols. That architecture is not
+part of the first adoption path; start with the Python loop and introduce a
+boundary only when deployment or portability requires it.
 
-| Boundary | What crosses it |
-| --- | --- |
-| MCP | All 16 coding tools |
-| LEP | Permission, test, cache, stale-file, and linter hooks |
-| SSP | Shared mutable file-cache state |
-| MGP | Host model access for `web_fetch` and subagents |
-
-```python
-from looplet import bundled_cartridge_path
-from looplet.cartridge import analyse_cartridge
-
-
-coder = bundled_cartridge_path("coder_portable")
-assert analyse_cartridge(coder).profile == "portable"
-```
-
-Portable means the loader does not import author-owned tool, hook, or state
-code. The bundled protocol servers are Python programs launched with the
-active Looplet interpreter, SSP and MGP use Unix sockets, and the full coder
-has not yet run on a production Rust, Go, or TypeScript loader. The Python-host
-coder remains the agent factory default and keeps host-owned eval and
-dynamic-memory behavior that the portable reference deliberately omits.
-
-[Study the portable coder](portability.md#the-portable-coder-reference) |
-[Inspect the cartridge format](cartridge.md)
+[Study portability](portability.md) | [Inspect the cartridge format](cartridge.md)
 
 ## Evidence has different jobs
 

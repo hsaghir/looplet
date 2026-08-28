@@ -11,12 +11,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from looplet import cartridge_to_preset
 from looplet.cartridge._load import CartridgeSerializationError
-from looplet.cli.spec_commands import cartridge_migrate
+from looplet.cli.spec_commands import cartridge_migrate, cmd_migrate
 
 
 def _write_v_cartridge(root: Path, schema_version: int, *, config_text: str) -> None:
@@ -173,6 +174,19 @@ def test_migrate_is_idempotent(tmp_path: Path) -> None:
     assert report["moved_runtime_keys"] == []
     assert report["added_builtin_hooks"] == []
     assert report["schema_version_after"] == 2
+    assert report["changed"] is False
+    assert report["wrote_files"] == []
+
+
+def test_migrate_cli_reports_already_current(tmp_path: Path, capsys) -> None:
+    _write_v_cartridge(
+        tmp_path,
+        schema_version=2,
+        config_text="max_steps: 3\ndone_tool: done\n",
+    )
+
+    assert cmd_migrate(SimpleNamespace(cartridge=tmp_path, dry_run=False)) == 0
+    assert "already current" in capsys.readouterr().out
 
 
 def test_migrate_dry_run_does_not_write(tmp_path: Path) -> None:

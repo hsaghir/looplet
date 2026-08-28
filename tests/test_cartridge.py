@@ -142,10 +142,17 @@ def test_workspace_metadata_round_trips(tmp_path: Path) -> None:
         name="demo",
         description="just a test",
     )
+    manifest_path = tmp_path / "ws" / "cartridge.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["version"] = "1.2.3"
+    manifest_path.write_text(json.dumps(manifest))
     loaded = Cartridge.from_directory(tmp_path / "ws")
     assert loaded.name == "demo"
     assert loaded.description == "just a test"
     assert loaded.schema_version == 2
+    assert loaded.version == "1.2.3"
+    loaded.write_metadata()
+    assert json.loads(manifest_path.read_text())["version"] == "1.2.3"
 
 
 def test_missing_metadata_raises(tmp_path: Path) -> None:
@@ -156,6 +163,28 @@ def test_missing_metadata_raises(tmp_path: Path) -> None:
         Cartridge.from_directory(out)
     with pytest.raises(FileNotFoundError):
         cartridge_to_preset(out)
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        ("{not json", "invalid JSON"),
+        ("[]", "top-level value must be an object"),
+        ('{"schema_version": 2}', "'name' is required"),
+        ('{"name": "demo"}', "'schema_version' is required"),
+        ('{"name": "bad name", "schema_version": 2}', "must match"),
+        ('{"name": "demo", "schema_version": true}', "must be an integer"),
+        ('{"name": "demo", "schema_version": 2, "language": null}', "'language'"),
+        ('{"name": "demo", "schema_version": 2, "metadata": null}', "'metadata'"),
+    ],
+)
+def test_invalid_manifest_fails_before_loading(tmp_path: Path, payload: str, message: str) -> None:
+    root = tmp_path / "invalid.cartridge"
+    root.mkdir()
+    (root / "cartridge.json").write_text(payload)
+
+    with pytest.raises(CartridgeSerializationError, match=message):
+        cartridge_to_preset(root, strict=True)
 
 
 # ── round-trip preset structure ─────────────────────────────────
@@ -1450,7 +1479,7 @@ def test_chw_resource_round_trip_copies_original_source(tmp_path: Path) -> None:
     ``GreetingLog`` in the hello example)."""
     src = tmp_path / "src_ws"
     src.mkdir()
-    (src / "cartridge.json").write_text('{"name": "src_ws"}')
+    (src / "cartridge.json").write_text('{"name": "src_ws", "schema_version": 2}')
     (src / "config.yaml").write_text("max_steps: 3\ndone_tool: done\n")
     (src / "tools" / "done").mkdir(parents=True)
     (src / "tools/done/tool.yaml").write_text(
@@ -1502,7 +1531,7 @@ def test_chw_hook_inline_class_round_trips(tmp_path: Path) -> None:
     back to ``class X: pass``."""
     src = tmp_path / "src_ws"
     src.mkdir()
-    (src / "cartridge.json").write_text('{"name": "src_ws"}')
+    (src / "cartridge.json").write_text('{"name": "src_ws", "schema_version": 2}')
     (src / "config.yaml").write_text("max_steps: 3\ndone_tool: done\n")
     (src / "tools" / "done").mkdir(parents=True)
     (src / "tools/done/tool.yaml").write_text(
@@ -1541,7 +1570,7 @@ def test_memory_sources_yaml_ref_resolves_via_resource_registry(tmp_path: Path) 
     the same resource-builder mechanism the hook kwargs use."""
     src = tmp_path / "ws"
     src.mkdir()
-    (src / "cartridge.json").write_text('{"name": "w"}')
+    (src / "cartridge.json").write_text('{"name": "w", "schema_version": 2}')
     (src / "config.yaml").write_text(
         'max_steps: 3\ndone_tool: done\nmemory_sources:\n  - "@dyn_memory"\n'
     )
@@ -1573,7 +1602,7 @@ def test_callable_memory_via_chw_resource_round_trips_losslessly(tmp_path: Path)
     not warn about a non-importable lambda."""
     src = tmp_path / "ws"
     src.mkdir()
-    (src / "cartridge.json").write_text('{"name": "w"}')
+    (src / "cartridge.json").write_text('{"name": "w", "schema_version": 2}')
     (src / "config.yaml").write_text(
         'max_steps: 3\ndone_tool: done\nmemory_sources:\n  - "@dyn_memory"\n'
     )
@@ -1611,7 +1640,7 @@ def test_workspace_helpers_are_copied_into_snapshot(tmp_path: Path) -> None:
     so cross-process reload doesn't crash with ModuleNotFoundError."""
     src = tmp_path / "ws"
     src.mkdir()
-    (src / "cartridge.json").write_text('{"name": "w"}')
+    (src / "cartridge.json").write_text('{"name": "w", "schema_version": 2}')
     (src / "config.yaml").write_text("max_steps: 3\ndone_tool: done\n")
     (src / "tools" / "done").mkdir(parents=True)
     (src / "tools/done/tool.yaml").write_text(
@@ -1637,7 +1666,7 @@ def test_two_pass_round_trip_is_byte_identical(tmp_path: Path) -> None:
     and other normalization gaps."""
     src = tmp_path / "ws"
     src.mkdir()
-    (src / "cartridge.json").write_text('{"name": "w"}')
+    (src / "cartridge.json").write_text('{"name": "w", "schema_version": 2}')
     (src / "config.yaml").write_text("max_steps: 3\ndone_tool: done\n")
     (src / "tools" / "done").mkdir(parents=True)
     (src / "tools/done/tool.yaml").write_text(
@@ -1693,7 +1722,7 @@ def test_tool_requires_round_trips_via_yaml(tmp_path: Path) -> None:
     instances via ``ctx.resources[name]``."""
     src = tmp_path / "ws"
     src.mkdir()
-    (src / "cartridge.json").write_text('{"name": "w"}')
+    (src / "cartridge.json").write_text('{"name": "w", "schema_version": 2}')
     (src / "config.yaml").write_text("max_steps: 3\ndone_tool: done\n")
     (src / "tools" / "done").mkdir(parents=True)
     (src / "tools/done/tool.yaml").write_text(
@@ -1776,7 +1805,7 @@ def test_resource_ref_for_preserves_original_ref_name(tmp_path: Path) -> None:
     returned ``"@engine"`` instead of ``"@sql_permissions"``."""
     src = tmp_path / "ws"
     src.mkdir()
-    (src / "cartridge.json").write_text('{"name": "w"}')
+    (src / "cartridge.json").write_text('{"name": "w", "schema_version": 2}')
     (src / "config.yaml").write_text("max_steps: 3\ndone_tool: done\n")
     (src / "tools" / "done").mkdir(parents=True)
     (src / "tools/done/tool.yaml").write_text(
@@ -1831,7 +1860,7 @@ def test_workspace_root_resources_dir_is_on_sys_path(tmp_path: Path) -> None:
     for the duration of the load."""
     src = tmp_path / "ws"
     src.mkdir()
-    (src / "cartridge.json").write_text('{"name": "w"}')
+    (src / "cartridge.json").write_text('{"name": "w", "schema_version": 2}')
     (src / "config.yaml").write_text("max_steps: 3\ndone_tool: done\n")
     (src / "tools" / "done").mkdir(parents=True)
     (src / "tools/done/tool.yaml").write_text(
@@ -1872,7 +1901,7 @@ def test_tool_requires_unknown_resource_warns_in_loose_mode(tmp_path: Path, capl
 
     src = tmp_path / "ws"
     src.mkdir()
-    (src / "cartridge.json").write_text('{"name": "w"}')
+    (src / "cartridge.json").write_text('{"name": "w", "schema_version": 2}')
     (src / "config.yaml").write_text("max_steps: 3\ndone_tool: done\n")
     (src / "tools" / "done").mkdir(parents=True)
     (src / "tools/done/tool.yaml").write_text(
@@ -1900,7 +1929,7 @@ def test_tool_requires_unknown_resource_raises_in_strict_mode(tmp_path: Path) ->
     loop ever runs."""
     src = tmp_path / "ws"
     src.mkdir()
-    (src / "cartridge.json").write_text('{"name": "w"}')
+    (src / "cartridge.json").write_text('{"name": "w", "schema_version": 2}')
     (src / "config.yaml").write_text("max_steps: 3\ndone_tool: done\n")
     (src / "tools" / "done").mkdir(parents=True)
     (src / "tools/done/tool.yaml").write_text(
@@ -2394,7 +2423,7 @@ class TestHookEnabledDirective:
 
         ws = tmp_path / "ws"
         (ws / CartridgeLayout.HOOKS_DIR).mkdir(parents=True)
-        (ws / "cartridge.json").write_text('{"name": "t"}')
+        (ws / "cartridge.json").write_text('{"name": "t", "schema_version": 2}')
         for name in ("a_hook", "b_hook"):
             d = ws / CartridgeLayout.HOOKS_DIR / name
             d.mkdir()
@@ -2484,7 +2513,7 @@ class TestHookConstructorErrorContext:
         ws = tmp_path / "ws"
         d = ws / CartridgeLayout.HOOKS_DIR / "bad_hook"
         d.mkdir(parents=True)
-        (ws / "cartridge.json").write_text('{"name": "t"}')
+        (ws / "cartridge.json").write_text('{"name": "t", "schema_version": 2}')
         # Hook with a constructor that requires ``required_arg``.
         (d / "hook.py").write_text(
             textwrap.dedent("""

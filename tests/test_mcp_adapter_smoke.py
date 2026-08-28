@@ -221,6 +221,31 @@ class TestMCPToolAdapter:
         assert options["creationflags"] == 512
         assert adapter._started is True
 
+    def test_server_env_extends_host_environment(self, monkeypatch):
+        from looplet import mcp
+
+        options = {}
+        proc = SimpleNamespace(stdin=object(), stdout=object(), stderr=object())
+
+        def fake_popen(*_args, **kwargs):
+            options.update(kwargs)
+            return proc
+
+        monkeypatch.setenv("LOOPLET_LLM_SOCKET", "/tmp/gateway.sock")
+        adapter = MCPToolAdapter("echo test", env={"EXTRA": "value"})
+        monkeypatch.setattr(mcp.subprocess, "Popen", fake_popen)
+        monkeypatch.setattr(
+            adapter,
+            "_send_request",
+            lambda method, _params: {"tools": []} if method == "tools/list" else {"ok": True},
+        )
+        monkeypatch.setattr(adapter, "_send_notification", lambda *_args: None)
+
+        adapter._ensure_started()
+
+        assert options["env"]["LOOPLET_LLM_SOCKET"] == "/tmp/gateway.sock"
+        assert options["env"]["EXTRA"] == "value"
+
     def test_stop_process_tree_falls_back_to_process_methods(self, monkeypatch):
         from looplet import mcp
 

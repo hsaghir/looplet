@@ -33,12 +33,12 @@ Currently shipped built-ins:
   with an inline ``budget:`` dict (parsed into
   :class:`looplet.budget.ContextBudget`).
 * ``static_briefing`` - :class:`looplet.cartridge.prompt_files.StaticBriefingHook`.
-  Inline replacement for the v1.x magic ``prompts/briefing.md`` file:
+    Explicit replacement for magic ``prompts/briefing.md`` loading:
   declare ``text:`` (inline body) xor ``path:`` (relative to cartridge
   root). Spec v2 prefers this declarative form so the briefing source
   is visible in ``config.yaml`` rather than auto-discovered by filename.
 * ``recovery_hint`` - :class:`looplet.cartridge.prompt_files.RecoveryHintHook`.
-  Inline replacement for the v1.x magic ``prompts/recovery.md`` file;
+    Explicit replacement for magic ``prompts/recovery.md`` loading;
   same ``text:`` / ``path:`` kwargs as ``static_briefing``.
 
 Adding a new built-in: write a small builder ``def build(*,

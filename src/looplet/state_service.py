@@ -272,11 +272,12 @@ class StateServiceClient:
         deadline = time.monotonic() + timeout
         last_exc: Exception | None = None
         while time.monotonic() < deadline:
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             try:
-                sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
                 sock.connect(path)
                 return sock
             except OSError as exc:
+                sock.close()
                 last_exc = exc
                 time.sleep(0.02)
         raise StateServiceError(f"could not connect to state service at {path!r}: {last_exc}")
@@ -348,6 +349,14 @@ class StateServiceHandle:
         self.client = client
         self.socket_path = socket_path
         self._socket_dir = socket_dir
+        self._exported_env: tuple[str, bool, str | None] | None = None
+
+    def export_env(self) -> None:
+        """Expose this service to child processes until :meth:`close`."""
+        env_name = f"{PER_SERVICE_ENV_PREFIX}{self.name.upper()}"
+        if self._exported_env is None:
+            self._exported_env = (env_name, env_name in os.environ, os.environ.get(env_name))
+        os.environ[env_name] = self.socket_path
 
     @staticmethod
     def _server_env(socket_path: str, extra: dict[str, str] | None = None) -> dict[str, str]:
@@ -385,23 +394,46 @@ class StateServiceHandle:
         argv = shlex.split(command) if isinstance(command, str) else list(command)
         if not argv:
             raise StateServiceError(f"state service {name!r} has an empty command")
+        if timeout_s <= 0:
+            raise StateServiceError("timeout_s must be greater than zero")
         socket_dir = tempfile.mkdtemp(prefix=f"looplet-state-{name}-")
         socket_path = os.path.join(socket_dir, f"{name}.sock")
-        proc = subprocess.Popen(  # noqa: S603 - argv is operator-supplied
-            argv,
-            stdin=subprocess.DEVNULL,
-            env=cls._server_env(socket_path, env),
-        )
+        try:
+            proc = subprocess.Popen(  # noqa: S603 - argv is operator-supplied
+                argv,
+                stdin=subprocess.DEVNULL,
+                env=cls._server_env(socket_path, env),
+            )
+        except BaseException:
+            try:
+                os.rmdir(socket_dir)
+            except OSError:  # pragma: no cover - best effort
+                pass
+            raise
         try:
             client = StateServiceClient(socket_path, connect_timeout=timeout_s)
         except StateServiceError:
-            proc.terminate()
+            try:
+                proc.terminate()
+                proc.wait(timeout=5)
+            except Exception:  # pragma: no cover - best effort
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+            for path in (socket_path, socket_dir):
+                try:
+                    if os.path.isdir(path):
+                        os.rmdir(path)
+                    elif os.path.exists(path):
+                        os.unlink(path)
+                except OSError:  # pragma: no cover - best effort
+                    pass
             raise
         return cls(name, proc, client, socket_path, socket_dir)
 
     def close(self) -> None:
         try:
-            self.client.call  # noqa: B018 - touch to ensure attr exists
             self.client._rpc("state/shutdown", {})  # noqa: SLF001
         except Exception:  # pragma: no cover - best effort
             pass
@@ -418,6 +450,15 @@ class StateServiceHandle:
                 proc.kill()
             except Exception:
                 pass
+        if self._exported_env is not None:
+            env_name, existed, previous = self._exported_env
+            if os.environ.get(env_name) == self.socket_path:
+                if existed:
+                    assert previous is not None
+                    os.environ[env_name] = previous
+                else:
+                    os.environ.pop(env_name, None)
+            self._exported_env = None
         for p in (self.socket_path, self._socket_dir):
             try:
                 if os.path.isdir(p):

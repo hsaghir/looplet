@@ -22,7 +22,7 @@ def main() -> int:
     for path in repository_files():
         try:
             text = path.read_text(encoding="utf-8")
-        except UnicodeDecodeError:
+        except (OSError, UnicodeDecodeError):
             continue
         for line_number, line in enumerate(text.splitlines(), 1):
             if FORBIDDEN_EM_DASH in line:

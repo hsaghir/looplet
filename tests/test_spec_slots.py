@@ -1,4 +1,4 @@
-"""Tests for the v1.0 declarative slots: model, permissions, memory, output_schema.
+"""Tests for declarative model, permissions, memory, and output schemas.
 
 Each block has a small unit test plus an integration test that goes
 through ``cartridge_to_preset`` end-to-end on a tmp cartridge.
@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from looplet.cartridge import cartridge_to_preset
+from looplet.cartridge import CartridgeSerializationError, cartridge_to_preset
 from looplet.cartridge.spec_slots import (
     compile_model_block,
     compile_output_schema,
@@ -283,8 +283,10 @@ def test_loader_auto_loads_long_term_memory(tmp_path: Path) -> None:
     (tmp_path / "memory").mkdir(exist_ok=True)
     (tmp_path / "memory" / "long_term.md").write_text("REMEMBER: always test in tmp.\n")
     preset = cartridge_to_preset(str(tmp_path))
-    rendered = "\n".join(s.text for s in preset.config.memory_sources if hasattr(s, "text"))
+    texts = [s.text for s in preset.config.memory_sources if hasattr(s, "text")]
+    rendered = "\n".join(texts)
     assert "REMEMBER" in rendered
+    assert sum("REMEMBER" in text for text in texts) == 1
 
 
 def test_loader_explicit_memory_long_term_path(tmp_path: Path) -> None:
@@ -302,6 +304,61 @@ def test_loader_explicit_memory_long_term_path(tmp_path: Path) -> None:
     preset = cartridge_to_preset(str(tmp_path))
     rendered = "\n".join(s.text for s in preset.config.memory_sources if hasattr(s, "text"))
     assert "THE-BIG-NOTE" in rendered
+
+
+def test_explicit_long_term_inside_memory_directory_loads_once(tmp_path: Path) -> None:
+    _write_minimal_workspace(
+        tmp_path,
+        config_yaml="memory:\n  long_term: memory/selected.md\n",
+    )
+    (tmp_path / "memory").mkdir(exist_ok=True)
+    (tmp_path / "memory" / "selected.md").write_text("SELECTED-NOTE\n")
+    preset = cartridge_to_preset(str(tmp_path))
+
+    texts = [s.text for s in preset.config.memory_sources if hasattr(s, "text")]
+    assert sum("SELECTED-NOTE" in text for text in texts) == 1
+
+
+@pytest.mark.parametrize("long_term", ["../outside.md", "memory/missing.md"])
+def test_explicit_long_term_must_be_present_inside_cartridge(
+    tmp_path: Path, long_term: str
+) -> None:
+    _write_minimal_workspace(
+        tmp_path,
+        config_yaml=f"memory:\n  long_term: {long_term}\n",
+    )
+    (tmp_path.parent / "outside.md").write_text("OUTSIDE\n")
+
+    with pytest.raises(CartridgeSerializationError, match="memory.long_term"):
+        cartridge_to_preset(str(tmp_path), strict=True)
+
+
+def test_missing_explicit_long_term_does_not_fall_back_in_loose_mode(tmp_path: Path) -> None:
+    _write_minimal_workspace(
+        tmp_path,
+        config_yaml="memory:\n  long_term: memory/missing.md\n",
+    )
+    (tmp_path / "memory").mkdir(exist_ok=True)
+    (tmp_path / "memory" / "long_term.md").write_text("UNSELECTED-DEFAULT\n")
+
+    preset = cartridge_to_preset(str(tmp_path), strict=False)
+    texts = [s.text for s in preset.config.memory_sources if hasattr(s, "text")]
+    assert all("UNSELECTED-DEFAULT" not in text for text in texts)
+
+
+@pytest.mark.parametrize(
+    "memory_yaml",
+    [
+        "memory: []\n",
+        "memory:\n  long_term: null\n",
+        "memory:\n  include: [memory/extra.md]\n",
+    ],
+)
+def test_invalid_memory_block_fails_in_strict_mode(tmp_path: Path, memory_yaml: str) -> None:
+    _write_minimal_workspace(tmp_path, config_yaml=memory_yaml)
+
+    with pytest.raises(CartridgeSerializationError, match="invalid 'memory' block"):
+        cartridge_to_preset(str(tmp_path), strict=True)
 
 
 def test_loader_installs_output_schema_from_done_tool(tmp_path: Path) -> None:

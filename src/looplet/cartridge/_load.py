@@ -19,8 +19,6 @@ from __future__ import annotations
 
 import inspect
 import logging
-import os
-import re
 import shutil
 import sys
 from pathlib import Path
@@ -125,6 +123,63 @@ def _build_lep_hook(
         return None
 
 
+class _LoadResourceTracker:
+    """Own load-time handles until they transfer to an ``AgentPreset``."""
+
+    def __init__(self) -> None:
+        self.mcp_adapters: list[Any] = []
+        self.state_service_handles: list[Any] = []
+        self.model_gateway: Any = None
+
+    def close(self) -> None:
+        for resource in reversed(self.mcp_adapters):
+            try:
+                resource.close()
+            except Exception:  # pragma: no cover - best effort
+                logger.warning("error closing MCP adapter after load failure", exc_info=True)
+        for resource in reversed(self.state_service_handles):
+            try:
+                resource.close()
+            except Exception:  # pragma: no cover - best effort
+                logger.warning("error closing state service after load failure", exc_info=True)
+        if self.model_gateway is not None:
+            try:
+                self.model_gateway.close()
+            except Exception:  # pragma: no cover - best effort
+                logger.warning("error closing model gateway after load failure", exc_info=True)
+        self.disarm()
+
+    def disarm(self) -> None:
+        """Release ownership after handles have been attached to a preset."""
+        self.mcp_adapters = []
+        self.state_service_handles = []
+        self.model_gateway = None
+
+
+def _validate_supported_manifest(root: Path) -> None:
+    """Validate one manifest before resolving or importing its cartridge."""
+    try:
+        schema_version = _read_schema_version(root)
+    except FileNotFoundError as exc:
+        raise CartridgeSerializationError(f"cartridge manifest not found in {root}") from exc
+    if schema_version != 2:
+        raise CartridgeSerializationError(
+            f"Cartridge {root} declares schema_version={schema_version}; "
+            f"this loader only supports schema_version=2. v1 support was "
+            f"removed; run ``looplet migrate <cartridge>`` to upgrade or "
+            f'set ``"schema_version": 2`` in cartridge.json.'
+        )
+    declared_language = _read_manifest_language(root)
+    if declared_language != "python":
+        raise CartridgeSerializationError(
+            f"Cartridge {root} declares ``language: {declared_language!r}`` "
+            f"in cartridge.json but this runtime (looplet's Python loader) "
+            f"only executes ``language: python`` cartridges. Use a runtime "
+            f"that ships a {declared_language!r} loader, or change the "
+            f"manifest if the bodies are actually Python."
+        )
+
+
 def cartridge_to_preset(
     workspace_dir: str | Path,
     *,
@@ -221,17 +276,27 @@ def cartridge_to_preset(
             if p not in sys.path:
                 sys.path.insert(0, p)
                 pushed_paths.append(p)
+    load_resources = _LoadResourceTracker()
     try:
-        preset = _workspace_to_preset_inner(
-            root, runtime_dict, state_factory=state_factory, strict=strict
-        )
-        # Stamp the preset with its origin so a subsequent
-        # ``preset_to_cartridge`` call can copy any top-level ``*.py``
-        # helper modules from the source workspace into the snapshot.
-        # Tracked in a module-level WeakKey-style dict (keyed by
-        # ``id(preset)`` with a finalizer) so the public AgentPreset
-        # dataclass surface stays clean.
-        _stamp_preset_origin(preset, root)
+        try:
+            preset = _workspace_to_preset_inner(
+                root,
+                runtime_dict,
+                state_factory=state_factory,
+                strict=strict,
+                load_resources=load_resources,
+            )
+            # Stamp the preset with its origin so a subsequent
+            # ``preset_to_cartridge`` call can copy any top-level ``*.py``
+            # helper modules from the source workspace into the snapshot.
+            # Tracked in a module-level WeakKey-style dict (keyed by
+            # ``id(preset)`` with a finalizer) so the public AgentPreset
+            # dataclass surface stays clean.
+            _stamp_preset_origin(preset, root)
+        except BaseException:
+            load_resources.close()
+            raise
+        load_resources.disarm()
         return preset
     finally:
         for p in pushed_paths:
@@ -287,6 +352,7 @@ def _resolve_extends(root: Path, *, _seen: set[Path] | None = None) -> Path:
     modules may continue importing from it) and is then cleaned up
     via the module-level ``atexit`` hook.
     """
+    _validate_supported_manifest(root)
     cfg_path = root / CartridgeLayout.CONFIG_YAML
     if not cfg_path.is_file():
         return root
@@ -361,7 +427,7 @@ def _resolve_extends(root: Path, *, _seen: set[Path] | None = None) -> Path:
     merged_cfg_path = merged / CartridgeLayout.CONFIG_YAML
     merged_cfg_path.write_text(_dump_yaml(merged_cfg) + "\n", encoding="utf-8")
 
-    # ── Cartridge spec v2 prep: also merge ``runtime.yaml`` ─────
+    # ── Cartridge spec v2: merge ``runtime.yaml`` ───────────────
     # The parent's runtime defaults inherit into the child the same
     # way contract keys do; the child can override any individual
     # field in its own ``runtime.yaml``. Without this, splitting
@@ -407,26 +473,10 @@ def _check_v2_runtime_tier_keys(
     """Hard-fail when v2 ``config.yaml`` declares runtime-tier keys.
 
     Runtime-tier keys (``max_tokens``, ``temperature``, ``compact_service``,
-    ...) belong in a sibling ``runtime.yaml``. Keys also present in
-    ``runtime.yaml`` are tolerated as overrides; only stray declarations
-    in ``config.yaml`` are rejected. Mirrors the v1 ``DeprecationWarning``
-    in :mod:`looplet.cartridge._v1_compat`.
+    ...) belong in a sibling ``runtime.yaml``. Duplicate declarations are
+    rejected instead of silently establishing a second precedence rule.
     """
-    if runtime_yaml_path.is_file():
-        runtime_yaml_keys = set(
-            _load_yaml(
-                runtime_yaml_path.read_text(encoding="utf-8"),
-                source_path=runtime_yaml_path,
-            )
-            or {}
-        )
-        stray = sorted(
-            k
-            for k in cfg_kwargs
-            if k in CartridgeLayout.RUNTIME_TIER_FIELDS and k not in runtime_yaml_keys
-        )
-    else:
-        stray = sorted(k for k in cfg_kwargs if k in CartridgeLayout.RUNTIME_TIER_FIELDS)
+    stray = sorted(k for k in cfg_kwargs if k in CartridgeLayout.RUNTIME_TIER_FIELDS)
     if stray:
         raise CartridgeSerializationError(
             f"config.yaml at {cfg_path} declares runtime-tier key(s) "
@@ -438,10 +488,22 @@ def _check_v2_runtime_tier_keys(
         )
 
 
+def _check_v2_host_tier_keys(cfg_kwargs: dict[str, Any], source_path: Path) -> None:
+    """Reject host-supplied capabilities from authored cartridge files."""
+    host_keys = sorted(k for k in cfg_kwargs if k in CartridgeLayout.HOST_TIER_FIELDS)
+    if host_keys:
+        raise CartridgeSerializationError(
+            f"{source_path} declares host-only key(s) {host_keys}. "
+            "Approval handlers, cancellation tokens, and message renderers "
+            "must be supplied by host code and are never cartridge data."
+        )
+
+
 def _load_file_memory_sources(
     root: Path,
     *,
     strict: bool,
+    exclude_paths: set[Path] | None = None,
 ) -> list["PersistentMemorySource"]:
     """Load ``memory/*.md`` and ``memory/*.py`` into memory sources.
 
@@ -460,8 +522,11 @@ def _load_file_memory_sources(
         StaticMemorySource,
     )
 
+    excluded = exclude_paths or set()
     memory_files = sorted(
-        p for p in memory_dir.iterdir() if p.is_file() and p.suffix in (".md", ".py")
+        p
+        for p in memory_dir.iterdir()
+        if p.is_file() and p.suffix in (".md", ".py") and p.resolve() not in excluded
     )
     for memory_file in memory_files:
         if memory_file.suffix == ".md":
@@ -488,7 +553,7 @@ def _check_v2_briefing_recovery_declared(
     """Hard-fail when v2 cartridge ships a magic prompt file but does
     not declare the matching ``builtin_hooks:`` entry.
 
-    v1.x auto-attached ``prompts/briefing.md`` and ``prompts/recovery.md``
+    Earlier cartridges auto-attached ``prompts/briefing.md`` and ``prompts/recovery.md``
     via :mod:`looplet.cartridge._v1_compat`; v2 requires explicit
     declaration so the hook list is fully visible in ``config.yaml``.
     """
@@ -527,6 +592,7 @@ def _workspace_to_preset_inner(
     *,
     state_factory: Callable[[int], Any] | None,
     strict: bool,
+    load_resources: _LoadResourceTracker,
 ) -> "AgentPreset":
     """Inner cartridge loader. Assumes ``sys.path`` already includes
     the cartridge root so co-located ``lib.py`` modules import cleanly.
@@ -541,37 +607,18 @@ def _workspace_to_preset_inner(
     render_runtime = dict(runtime_dict)
     render_runtime.setdefault("python_executable", sys.executable)
 
-    # ── Spec version gate ──────────────────────────────────────
-    # Cartridge spec v2 is the only supported version. v1 cartridges
-    # are rejected at load time; upgrade with ``looplet migrate``.
-    # The variable is kept (and pinned True) so internal helpers that
-    # accept ``is_v2: bool`` keep their explicit-call-site form.
-    schema_version = _read_schema_version(root)
-    if schema_version != 2:
-        raise CartridgeSerializationError(
-            f"Cartridge {root} declares schema_version={schema_version}; "
-            f"this loader only supports schema_version=2. v1 support was "
-            f"removed; run ``looplet migrate <cartridge>`` to upgrade or "
-            f'set ``"schema_version": 2`` in cartridge.json.'
-        )
+    # Manifest validation also runs before inheritance resolution so every
+    # ancestor is checked. Revalidate the materialized overlay defensively.
+    _validate_supported_manifest(root)
     is_v2 = True
 
-    # ── Body-language gate ────────────────────────────────────
-    # ``cartridge.json: language:`` declares the body language of
-    # ``tools/`` and ``hooks/`` (default "python"). Any conformant
-    # runtime refuses cartridges whose declared language it cannot
-    # execute, *before* trying to import the bodies. This is the
-    # paper's "decidable" property in code form: a future TS/Go/etc.
-    # loader can read the same field and reject cleanly. Today the
-    # only shipped runtime is Python.
-    declared_language = _read_manifest_language(root)
-    if declared_language != "python":
+    setup_path = root / CartridgeLayout.SETUP_PY
+    if setup_path.is_file():
         raise CartridgeSerializationError(
-            f"Cartridge {root} declares ``language: {declared_language!r}`` "
-            f"in cartridge.json but this runtime (looplet's Python loader) "
-            f"only executes ``language: python`` cartridges. Use a runtime "
-            f"that ships a {declared_language!r} loader, or change the "
-            f"manifest if the bodies are actually Python."
+            f"Cartridge {root} (schema_version=2): ``setup.py`` is not "
+            f"supported. Express the wiring declaratively via ``resources/`` "
+            f"+ ``builtin_hooks:`` + ``hooks/`` + ``${{ref:...}}`` strings "
+            f"in config.yaml."
         )
 
     resources = _load_resources(root, runtime_dict)
@@ -591,16 +638,18 @@ def _workspace_to_preset_inner(
         raw_cfg_text = _apply_runtime_substitutions(raw_cfg_text, render_runtime)
         cfg_kwargs.update(_load_yaml(raw_cfg_text, source_path=cfg_path) or {})
 
+    runtime_yaml_path = root / "runtime.yaml"
+
+    # Validate the contract file before runtime values are merged into the
+    # effective LoopConfig mapping.
+    _check_v2_runtime_tier_keys(cfg_kwargs, cfg_path, runtime_yaml_path)
+    _check_v2_host_tier_keys(cfg_kwargs, cfg_path)
+
     # ── Schema-v2 sibling ``runtime.yaml`` ──────────────────────
     # ``runtime.yaml`` is the home for runtime-tier knobs
     # (sampling, context window sizing, compaction strategy,
     # caching, telemetry). Schema v2 requires those keys to live there.
     #
-    # Precedence: ``config.yaml`` < ``runtime.yaml``. The host's
-    # runtime file overrides whatever defaults the cartridge author
-    # baked into ``config.yaml`` so a single cartridge can be
-    # operated under different runtime profiles without forking.
-    runtime_yaml_path = root / "runtime.yaml"
     if runtime_yaml_path.is_file():
         raw_runtime_text = runtime_yaml_path.read_text(encoding="utf-8")
         raw_runtime_text = _apply_runtime_substitutions(raw_runtime_text, render_runtime)
@@ -610,7 +659,6 @@ def _workspace_to_preset_inner(
             k
             for k in runtime_yaml_kwargs
             if k not in CartridgeLayout.RUNTIME_TIER_FIELDS
-            and k not in CartridgeLayout.HOST_TIER_FIELDS
             and k not in CartridgeLayout.RUNTIME_TIER_OVERRIDES
         )
         if _bad:
@@ -629,10 +677,6 @@ def _workspace_to_preset_inner(
                 runtime_yaml_kwargs.pop(k, None)
         cfg_kwargs.update(runtime_yaml_kwargs)
 
-    # ── Stray runtime keys in config.yaml ──────────────────────
-    # v2 hard-fails (delegated to :func:`_check_v2_runtime_tier_keys`).
-    _check_v2_runtime_tier_keys(cfg_kwargs, cfg_path, runtime_yaml_path)
-
     sys_prompt_path = root / CartridgeLayout.SYSTEM_PROMPT_MD
     if sys_prompt_path.is_file():
         cfg_kwargs["system_prompt"] = sys_prompt_path.read_text(encoding="utf-8")
@@ -642,7 +686,17 @@ def _workspace_to_preset_inner(
     # entries (still as ref strings here) get appended after, then
     # both pass through ``_resolve_refs`` below which converts the
     # refs into live :class:`PersistentMemorySource` instances.
-    file_memory_sources = _load_file_memory_sources(root, strict=strict)
+    excluded_memory_paths = {(root / "memory" / "long_term.md").resolve()}
+    memory_config = cfg_kwargs.get("memory")
+    if isinstance(memory_config, dict):
+        explicit_long_term = memory_config.get("long_term")
+        if isinstance(explicit_long_term, str) and explicit_long_term:
+            excluded_memory_paths.add((root / explicit_long_term).resolve())
+    file_memory_sources = _load_file_memory_sources(
+        root,
+        strict=strict,
+        exclude_paths=excluded_memory_paths,
+    )
     yaml_declared_memory = cfg_kwargs.get("memory_sources") or []
     if yaml_declared_memory or file_memory_sources:
         cfg_kwargs["memory_sources"] = list(file_memory_sources) + list(yaml_declared_memory)
@@ -675,8 +729,7 @@ def _workspace_to_preset_inner(
             f"plural terminal sentinels. Use one ``done_tool`` with an "
             f"``output_schema:`` whose payload carries an ``outcome:`` enum "
             f'discriminating the branches (see SPEC.md "One done, one '
-            f'schema, payload-discriminated outcome"). v1.x continues to '
-            f"accept ``done_tools:``; v2.0 does not."
+            f'schema, payload-discriminated outcome").'
         )
 
     # ``builtin_tools:`` is a cartridge-loader directive, not a
@@ -709,7 +762,12 @@ def _workspace_to_preset_inner(
     # Adapters are spawned eagerly and stashed on ``preset.mcp_adapters``
     # so the caller can ``preset.close()`` (or use the preset as a
     # context manager) to terminate the subprocesses cleanly.
-    _mcp_servers_block: dict[str, Any] = dict(cfg_kwargs.pop("mcp_servers", None) or {})
+    raw_mcp_servers = cfg_kwargs.pop("mcp_servers", None)
+    if raw_mcp_servers is not None and not isinstance(raw_mcp_servers, dict):
+        raise CartridgeSerializationError(
+            f"mcp_servers in {cfg_path} must be a mapping, got {type(raw_mcp_servers).__name__}"
+        )
+    _mcp_servers_block: dict[str, Any] = dict(raw_mcp_servers or {})
 
     # ``state_services:`` declares out-of-process shared-mutable-state
     # servers (State Service Protocol). Sibling of ``mcp_servers:``: each
@@ -720,7 +778,13 @@ def _workspace_to_preset_inner(
     # state unchanged. Handles are stashed on ``preset.state_service_handles``
     # for caller-side cleanup. Spawned below, after the resource registry
     # exists.
-    _state_services_block: dict[str, Any] = dict(cfg_kwargs.pop("state_services", None) or {})
+    raw_state_services = cfg_kwargs.pop("state_services", None)
+    if raw_state_services is not None and not isinstance(raw_state_services, dict):
+        raise CartridgeSerializationError(
+            f"state_services in {cfg_path} must be a mapping, "
+            f"got {type(raw_state_services).__name__}"
+        )
+    _state_services_block: dict[str, Any] = dict(raw_state_services or {})
 
     # ``llm_gateway:`` (default on whenever there are out-of-process tool
     # servers) starts a host-resident Model Gateway (MGP): a 1:N socket
@@ -731,7 +795,13 @@ def _workspace_to_preset_inner(
     # is spawned so the ``LOOPLET_LLM_SOCKET`` env var is inherited; the
     # backend is bound later at run time (``AgentPreset.run(llm)``). Set
     # ``llm_gateway: false`` to opt out.
-    _llm_gateway_enabled = bool(cfg_kwargs.pop("llm_gateway", True))
+    _llm_gateway_declared = "llm_gateway" in cfg_kwargs
+    raw_llm_gateway = cfg_kwargs.pop("llm_gateway", True)
+    if not isinstance(raw_llm_gateway, bool):
+        raise CartridgeSerializationError(
+            f"llm_gateway in {cfg_path} must be a boolean, got {type(raw_llm_gateway).__name__}"
+        )
+    _llm_gateway_enabled = raw_llm_gateway
     _model_gateway: Any = None
     if _llm_gateway_enabled and _mcp_servers_block:
         from looplet.model_gateway import (  # noqa: PLC0415
@@ -741,6 +811,7 @@ def _workspace_to_preset_inner(
 
         try:
             _model_gateway = ModelGatewayHandle.start()
+            load_resources.model_gateway = _model_gateway
         except (ModelGatewayError, OSError) as exc:
             logger.warning(
                 "could not start model gateway (out-of-process tools will "
@@ -757,10 +828,9 @@ def _workspace_to_preset_inner(
     # before YAML parse). The per-service socket path is also exported as
     # ``LOOPLET_STATE_<NAME>`` so out-of-process MCP tool / LEP hook
     # servers spawned afterwards can connect to the same state.
-    _state_service_handles: list[Any] = []
+    _state_service_handles = load_resources.state_service_handles
     if _state_services_block:
         from looplet.state_service import (  # noqa: PLC0415
-            PER_SERVICE_ENV_PREFIX,
             StateServiceError,
             StateServiceHandle,
         )
@@ -783,19 +853,26 @@ def _workspace_to_preset_inner(
                     raise CartridgeSerializationError(msg)
                 logger.warning("%s; skipping", msg)
                 continue
+            _svc_env = _svc_cfg.get("env")
+            if _svc_env is not None and (
+                not isinstance(_svc_env, dict)
+                or any(
+                    not isinstance(k, str) or not isinstance(v, str) for k, v in _svc_env.items()
+                )
+            ):
+                msg = f"state_services.{_svc_name}.env must be a string mapping"
+                if strict:
+                    raise CartridgeSerializationError(msg)
+                logger.warning("%s; skipping service", msg)
+                continue
             try:
                 _handle = StateServiceHandle.spawn(
                     _svc_cmd,
                     name=_svc_name,
                     timeout_s=float(_svc_cfg.get("timeout_s", 10.0)),
-                    env=_svc_cfg.get("env"),
+                    env=_svc_env,
                 )
-            except (StateServiceError, OSError) as exc:
-                for _h in _state_service_handles:
-                    try:
-                        _h.close()
-                    except Exception:
-                        pass
+            except (StateServiceError, OSError, TypeError, ValueError) as exc:
                 msg = f"state_services.{_svc_name}: failed to start ({_svc_cmd!r}): {exc}"
                 if strict:
                     raise CartridgeSerializationError(msg) from exc
@@ -805,22 +882,40 @@ def _workspace_to_preset_inner(
             # resolve to it, and export the socket path for sibling
             # out-of-process servers.
             resources[_svc_name] = _handle.client
-            os.environ[f"{PER_SERVICE_ENV_PREFIX}{_svc_name.upper()}"] = _handle.socket_path
             _state_service_handles.append(_handle)
+            _handle.export_env()
 
-    # describe the state object declaratively (any reference: a
-    # ``${ref:...}`` resource, a ``${py:...}`` factory callable, or a
-    # pre-resolved instance from ``_resolve_refs``). Falls back to the
+    # Describe the state object declaratively as a ``${ref:...}`` resource
+    # or a pre-resolved instance from ``_resolve_refs``. Falls back to the
     # ``state_factory`` constructor arg, and finally to ``DefaultState``.
     _state_directive = cfg_kwargs.pop("state", None)
 
-    # ── v1.0 declarative slots (SPEC.md): model, permissions, memory.
+    # Declarative model, permissions, and memory slots.
     # Each is consumed here, *not* by ``LoopConfig``. We pop them off
     # cfg_kwargs so the LoopConfig constructor doesn't see unknown
     # kwargs, then process them after the config is built.
     _model_block = cfg_kwargs.pop("model", None)
     _permissions_block = cfg_kwargs.pop("permissions", None)
     _memory_block = cfg_kwargs.pop("memory", None)
+    if _memory_block is not None:
+        memory_error = ""
+        if not isinstance(_memory_block, dict):
+            memory_error = f"memory must be a mapping, got {type(_memory_block).__name__}"
+        else:
+            unknown_memory_keys = sorted(set(_memory_block) - {"long_term"})
+            if unknown_memory_keys:
+                memory_error = f"memory contains unknown key(s): {unknown_memory_keys}"
+            elif "long_term" in _memory_block and (
+                not isinstance(_memory_block["long_term"], str)
+                or not _memory_block["long_term"].strip()
+            ):
+                memory_error = "memory.long_term must be a non-empty string"
+        if memory_error:
+            msg = f"invalid 'memory' block in {cfg_path}: {memory_error}"
+            if strict:
+                raise CartridgeSerializationError(msg)
+            logger.warning("%s; ignoring memory block", msg)
+            _memory_block = None
 
     # ``output_schema:`` belongs inside ``tools/done/tool.yaml`` per
     # SPEC.md; declaring it at the top of ``config.yaml`` is a common
@@ -865,7 +960,7 @@ def _workspace_to_preset_inner(
     # ``LoopConfig`` constructor would silently raise an obscure
     # ``TypeError`` (or, worse, the loader would silently drop them
     # because the known-directive list missed them). Anything left in
-    # ``cfg_kwargs`` after the v1.0 slot pops above MUST correspond to
+    # ``cfg_kwargs`` after the directive pops above MUST correspond to
     # a real ``LoopConfig`` field; otherwise it's an authoring mistake.
     # In practice this catches ``output_schema:`` placed at the top
     # level instead of inside ``tools/done/tool.yaml``, hand-rolled
@@ -885,9 +980,10 @@ def _workspace_to_preset_inner(
     if _unknown:
         msg = (
             f"unknown top-level key(s) in {cfg_path}: {_unknown}. "
-            f"Recognized v1.0 slots: ``model:``, ``permissions:``, "
+            f"Recognized schema-v2 slots: ``model:``, ``permissions:``, "
             f"``memory:``, ``builtin_tools:``, ``builtin_hooks:``, "
-            f"``state:``, ``extends:`` plus LoopConfig fields. "
+            f"``state:``, ``extends:``, ``mcp_servers:``, "
+            f"``state_services:``, ``llm_gateway:`` plus LoopConfig fields. "
             f"Note ``output_schema:`` belongs inside ``tools/done/tool.yaml``, "
             f"not in config.yaml."
         )
@@ -907,11 +1003,6 @@ def _workspace_to_preset_inner(
     }
 
     config = LoopConfig(**cfg_kwargs)
-
-    # Track tool + hook modules so setup.py can wire shared resources
-    # into them after the declarative load (see ``setup.py`` block below).
-    tool_modules: dict[str, Any] = {}
-    hook_modules: dict[str, Any] = {}
 
     # Tools
     registry = BaseToolRegistry()
@@ -947,15 +1038,12 @@ def _workspace_to_preset_inner(
             # walk doesn't pick them up downstream.
             multi_file_names -= set(collisions)
 
-        # ── v1.1 single-file tool form ────────────────────────
+        # ── schema-v2 single-file tool form ───────────────────
         # ``tools/<name>.py`` (no surrounding directory) is a tool
         # whose metadata lives in module-level dunders:
         #   __name__         (defaults to the file stem)
         #   __description__  (defaults to first docstring line)
         #   __parameters__   (dict; defaults to {} = no params)
-        #   __tags__         (list[str]; optional, v1.1)
-        #   __render__       (dict; optional, v1.1 render hints)
-        #   __requires__     (list[str]; optional)
         #   __concurrent_safe__, __free__, __timeout_s__ (optional)
         # The module MUST export a callable named ``execute``.
         # Cuts boilerplate for trivial tools without changing the
@@ -966,9 +1054,7 @@ def _workspace_to_preset_inner(
             for p in tools_dir.iterdir()
             if p.is_file() and p.suffix == ".py" and not p.name.startswith("_")
         ):
-            spec = _load_single_file_tool(
-                tool_file, strict=strict, tool_modules=tool_modules, is_v2=is_v2
-            )
+            spec = _load_single_file_tool(tool_file, strict=strict, is_v2=is_v2)
             if spec is not None:
                 registry.register(spec)
 
@@ -999,7 +1085,6 @@ def _workspace_to_preset_inner(
                 or {}
             )
             module = _import_module_from_path(execute_path, f"_chw_tool_{tool_dir.name}")
-            tool_modules[tool_dir.name] = module
             execute_fn = getattr(module, "execute", None)
             if execute_fn is None:
                 # Fall back to the function whose name matches the YAML name.
@@ -1146,11 +1231,11 @@ def _workspace_to_preset_inner(
                     logger.warning("%s", msg)
             registry.register(spec)
 
-            # v1.0: ``output_schema:`` on the done tool installs an
+            # ``output_schema:`` on the done tool installs an
             # OutputSchema validator on the LoopConfig so the loop
             # validates the agent's done() args before terminating.
             # The primary ``done_tool`` populates ``config.output_schema``;
-            # secondary v1.1 ``done_tools`` populate
+            # host-configured secondary ``done_tools`` populate
             # ``config.done_tool_schemas[<sentinel>]`` so the loop can
             # validate each sentinel's payload against its own schema
             # (per principled-cartridge-v2 §"Per-sentinel output schema").
@@ -1198,7 +1283,7 @@ def _workspace_to_preset_inner(
     # server's tools and registers them as ``ToolSpec`` instances. The
     # adapters are stashed on ``preset.mcp_adapters`` for caller-side
     # cleanup (``preset.close()`` or ``with preset: ...``).
-    _mcp_adapters: list[Any] = []
+    _mcp_adapters = load_resources.mcp_adapters
     if _mcp_servers_block:
         from looplet.mcp import MCPToolAdapter  # noqa: PLC0415
 
@@ -1221,13 +1306,31 @@ def _workspace_to_preset_inner(
                 logger.warning("%s; skipping", msg)
                 continue
             _allow = _srv_cfg.get("tools")
+            if _allow is not None and not isinstance(_allow, list):
+                msg = f"mcp_servers.{_srv_name}.tools must be a list"
+                if strict:
+                    raise CartridgeSerializationError(msg)
+                logger.warning("%s; skipping server", msg)
+                continue
             _allow_set: set[str] | None = (
-                {str(t) for t in _allow} if isinstance(_allow, list) and _allow else None
+                {str(t) for t in _allow} if isinstance(_allow, list) else None
             )
+            _srv_env = _srv_cfg.get("env")
+            if _srv_env is not None and (
+                not isinstance(_srv_env, dict)
+                or any(
+                    not isinstance(k, str) or not isinstance(v, str) for k, v in _srv_env.items()
+                )
+            ):
+                msg = f"mcp_servers.{_srv_name}.env must be a string mapping"
+                if strict:
+                    raise CartridgeSerializationError(msg)
+                logger.warning("%s; skipping server", msg)
+                continue
             try:
                 _adapter = MCPToolAdapter(
                     _cmd,
-                    env=_srv_cfg.get("env"),
+                    env=_srv_env,
                     timeout=float(_srv_cfg.get("timeout_s", 30.0)),
                 )
                 for _spec in _adapter.tools():
@@ -1236,12 +1339,6 @@ def _workspace_to_preset_inner(
                     registry.register(_spec)
                 _mcp_adapters.append(_adapter)
             except Exception as exc:
-                # Clean up any adapters started before this one failed.
-                for _a in _mcp_adapters:
-                    try:
-                        _a.close()
-                    except Exception:
-                        pass
                 msg = f"mcp_servers.{_srv_name}: failed to start MCP server ({_cmd!r}): {exc}"
                 if strict:
                     raise CartridgeSerializationError(msg) from exc
@@ -1374,7 +1471,6 @@ def _workspace_to_preset_inner(
                 logger.warning("skipping %s", msg)
                 continue
             module = _import_module_from_path(hook_py, f"_chw_hook_{hook_dir.name}")
-            hook_modules[hook_dir.name] = module
             class_name = str(hook_cfg.get("class_name") or "")
             if not class_name:
                 # Pick the first class defined in the module.
@@ -1510,7 +1606,7 @@ def _workspace_to_preset_inner(
     # it; this warning lets a builder catch the typo at load time
     # without breaking those use cases.
     if config.done_tool and config.done_tool not in registry.tool_names:
-        # Suppress the warning when v1.1 ``done_tools:`` is in play -
+        # Suppress the warning when host-side ``done_tools`` is in play -
         # the cartridge has explicitly opted into a different terminal
         # set, and the legacy default ``done`` may be irrelevant.
         if not config.done_tools:
@@ -1522,8 +1618,7 @@ def _workspace_to_preset_inner(
                 f"done() call."
             )
             logger.warning("%s", msg)
-    # v1.1 ``done_tools:`` plural - same sanity check applied to each
-    # extra terminal sentinel.
+    # Apply the same sanity check to host-configured extra sentinels.
     for extra_done in config.done_tools:
         if extra_done and extra_done not in registry.tool_names:
             logger.warning(
@@ -1576,6 +1671,8 @@ def _workspace_to_preset_inner(
         preset.state_service_handles = list(_state_service_handles)
     if _model_gateway is not None:
         preset.model_gateway = _model_gateway
+    if _llm_gateway_declared:
+        preset.llm_gateway_enabled = _llm_gateway_enabled
     # Record declarative tool provenance so ``preset_to_cartridge`` can
     # re-emit the ``builtin_tools:`` / ``mcp_servers:`` directives rather
     # than trying to serialise loader-built specs (builtin tools need
@@ -1588,13 +1685,11 @@ def _workspace_to_preset_inner(
     if _state_services_block:
         preset.state_services = dict(_state_services_block)
 
-    # ── v1.0 declarative slots: permissions, memory.long_term ───────
+    # Declarative permissions and memory.long_term slots.
     # Both are processed AFTER hooks/state/preset are built so the
     # auto-installed hook lands at the end of the hook list (after any
     # user-defined permission policy in ``hooks/``) and the long-term
     # memory file appends to file-based memory sources already loaded.
-    # ``setup.py`` (below) can still override either, by design.
-
     if _permissions_block is not None:
         from looplet.cartridge.spec_slots import compile_permissions_block  # noqa: PLC0415
         from looplet.permissions import PermissionDecision  # noqa: PLC0415
@@ -1649,11 +1744,24 @@ def _workspace_to_preset_inner(
     # the existing memory_sources so existing static files are not
     # disturbed.
     long_term_path: Path | None = None
+    explicit_long_term_declared = False
     if isinstance(_memory_block, dict):
         explicit = _memory_block.get("long_term")
         if isinstance(explicit, str) and explicit:
-            long_term_path = (root / explicit).resolve()
-    if long_term_path is None:
+            explicit_long_term_declared = True
+            candidate = (root / explicit).resolve()
+            if not candidate.is_relative_to(root.resolve()):
+                raise CartridgeSerializationError(
+                    f"memory.long_term in {cfg_path} escapes the cartridge root: {explicit!r}"
+                )
+            if not candidate.is_file():
+                msg = f"memory.long_term in {cfg_path} does not exist: {explicit!r}"
+                if strict:
+                    raise CartridgeSerializationError(msg)
+                logger.warning("%s; ignoring", msg)
+            else:
+                long_term_path = candidate
+    if long_term_path is None and not explicit_long_term_declared:
         from looplet.cartridge.spec_slots import default_long_term_memory_path  # noqa: PLC0415
 
         candidate = root / default_long_term_memory_path()
@@ -1668,49 +1776,6 @@ def _workspace_to_preset_inner(
         if preset.config.memory_sources is None:
             preset.config.memory_sources = []
         preset.config.memory_sources = list(preset.config.memory_sources) + [long_term_source]
-
-    # ``setup.py`` escape hatch - runs after the declarative load to
-    # let the workspace attach callable / opaque fields that don't
-    # round-trip via JSON (e.g. ``LoopConfig.tracer``,
-    # ``LoopConfig.compact_service``, custom domain adapters), or
-    # inject shared resources into top-level tool/hook modules.
-    setup_path = root / CartridgeLayout.SETUP_PY
-    if setup_path.is_file():
-        if is_v2:
-            raise CartridgeSerializationError(
-                f"Cartridge {root} (schema_version=2): ``setup.py`` escape "
-                f"hatch is removed. Express the same wiring declaratively "
-                f"via ``resources/`` + ``builtin_hooks:`` + ``hooks/`` + "
-                f"``@ref`` strings in config.yaml. v1.x continues to accept "
-                f"setup.py; v2.0 does not."
-            )
-        # Module name is derived from the workspace directory so two
-        # workspaces loaded in the same process don't collide in
-        # ``sys.modules`` (the legacy ``_chw_setup`` constant did).
-        ws_slug = re.sub(r"\W+", "_", root.name).strip("_") or "workspace"
-        module = _import_module_from_path(setup_path, f"looplet_setup_{ws_slug}")
-        setup_fn = getattr(module, "setup", None)
-        if not callable(setup_fn):
-            raise CartridgeSerializationError(
-                f"workspace setup.py at {setup_path} must define "
-                f"`def setup(preset, resources, tool_modules, hook_modules)`"
-            )
-        # Modern signature accepts (preset, resources, tool_modules,
-        # hook_modules); the older 2-arg signature still works for
-        # forward compatibility - inspect.signature picks the right one.
-        import inspect as _i  # noqa: PLC0415
-
-        sig_params = _i.signature(setup_fn).parameters
-        kwargs: dict[str, Any] = {}
-        if "tool_modules" in sig_params:
-            kwargs["tool_modules"] = tool_modules
-        if "hook_modules" in sig_params:
-            kwargs["hook_modules"] = hook_modules
-        if "runtime" in sig_params:
-            kwargs["runtime"] = runtime_dict
-        result = setup_fn(preset, resources, **kwargs)
-        if isinstance(result, AgentPreset):
-            preset = result
 
     # Portability classification (advisory, non-mutating): label every
     # assembled hook ``portable`` (faithfully reproducible across runtimes)

@@ -71,7 +71,7 @@ more capable than a turnkey coding agent.
 
 ## 3. Runtime footprint
 
-Core Looplet 0.3.0 declares **zero third-party runtime dependencies**. Provider
+Core Looplet 0.4.0 declares **zero third-party runtime dependencies**. Provider
 SDKs are optional extras. This is a current package property, not a benchmark
 inference.
 

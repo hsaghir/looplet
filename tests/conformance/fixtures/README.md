@@ -1,8 +1,8 @@
-# Conformance Fixtures for Cartridge-Spec v1.0
+# Conformance Fixtures for Cartridge Spec v2.0
 
 Each subdirectory is a minimal cartridge plus an `expected.json`
-describing the loader output a v1.0 conformant runtime must produce.
-The four seed fixtures cover the new v1.0 slots.
+describing the loader output a v2.0 conformant runtime must produce,
+or an `expected_error.json` describing a required rejection.
 
 ## Fixtures
 
@@ -24,9 +24,9 @@ The four seed fixtures cover the new v1.0 slots.
 
 The summary the test compares against is intentionally narrow.
 Implementation details (live Python objects, hook ordering beyond
-what the cartridge declares, etc.) are NOT pinned by v1.0.
+what the cartridge declares, etc.) are not pinned by v2.0.
 
 ## Status
 
-Seed only - v1.0 conformance is documentation, not enforcement. v2 will
-mandate this suite as a release criterion.
+The suite is a release criterion for the reference loader. It pins a narrow
+portable subset rather than every Looplet runtime feature.

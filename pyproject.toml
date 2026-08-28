@@ -1,6 +1,6 @@
 [project]
 name = "looplet"
-version = "0.3.0"
+version = "0.4.0"
 description = "Test-driven harness engineering for Python agents: own the loop, capture failures, and gate changes in CI."
 readme = "README.md"
 license = { text = "Apache-2.0" }
@@ -51,6 +51,7 @@ Changelog = "https://github.com/hsaghir/looplet/blob/master/CHANGELOG.md"
 
 [project.scripts]
 looplet = "looplet.__main__:main"
+looplet-proof = "looplet.examples.regression_demo:main"
 
 [dependency-groups]
 dev = [
@@ -73,6 +74,9 @@ packages = ["src/looplet"]
 "examples/agent_factory.cartridge" = "looplet/_bundled/agent_factory.cartridge"
 "examples/coder.cartridge" = "looplet/_bundled/coder.cartridge"
 "examples/coder_portable.cartridge" = "looplet/_bundled/coder_portable.cartridge"
+"examples/regression_demo/before_publish_report.py" = "looplet/_bundled/regression_demo/before_publish_report.py"
+"examples/regression_demo/report_agent.cartridge" = "looplet/_bundled/regression_demo/report_agent.cartridge"
+"tests/conformance/fixtures" = "looplet/_bundled/conformance"
 "tests/fixtures/coder_skill_bundle/SKILL.md" = "tests/fixtures/coder_skill_bundle/SKILL.md"
 "tests/fixtures/coder_skill_bundle/__init__.py" = "tests/fixtures/coder_skill_bundle/__init__.py"
 "tests/fixtures/coder_skill_bundle/looplet.py" = "tests/fixtures/coder_skill_bundle/looplet.py"
@@ -88,11 +92,14 @@ include = [
     "README.md",
     "LICENSE",
     "CHANGELOG.md",
+    "SPEC.md",
+    "cartridge.schema.json",
     "docs/hooks.md",
     "docs/skills.md",
     "examples/agent_factory.cartridge",
     "examples/coder.cartridge",
     "examples/coder_portable.cartridge",
+    "examples/regression_demo",
     "tests/fixtures/coder_skill_bundle/SKILL.md",
     "tests/fixtures/coder_skill_bundle/looplet.py",
     "tests/fixtures/coder_skill_bundle/tools.py",

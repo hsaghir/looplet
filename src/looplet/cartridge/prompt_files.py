@@ -1,4 +1,4 @@
-"""Prompt-file hooks for Cartridge Spec v1.1.
+"""Explicit prompt-file hooks for cartridges.
 
 Two extra prompt slots beyond ``prompts/system.md``:
 

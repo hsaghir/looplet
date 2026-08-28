@@ -16,6 +16,7 @@ from looplet import (
     composable_loop,
 )
 from looplet.__main__ import main as cli_main
+from looplet.artifact_compat import ARTIFACT_DESCRIPTOR
 from looplet.provenance import ProvenanceSink, replay_loop
 from looplet.testing import MockLLMBackend
 from looplet.tools import ToolSpec
@@ -107,6 +108,7 @@ class TestReplayLoopSmoke:
         """Replay should work from call_NN_response.txt even without manifest."""
         trace_dir = _captured_dir(tmp_path)
         (trace_dir / "manifest.jsonl").unlink()
+        (trace_dir / ARTIFACT_DESCRIPTOR).unlink()
         steps = list(replay_loop(trace_dir, tools=_make_tools()))
         assert len(steps) == 3
 
@@ -237,6 +239,7 @@ class TestShowCLISmoke:
         """With only manifest.jsonl present, `show` still prints LLM summary."""
         trace_dir = _captured_dir(tmp_path)
         (trace_dir / "trajectory.json").unlink()
+        (trace_dir / ARTIFACT_DESCRIPTOR).unlink()
         rc = cli_main(["show", str(trace_dir)])
         assert rc == 0
         out = capsys.readouterr().out
@@ -245,6 +248,7 @@ class TestShowCLISmoke:
     def test_show_json_tolerates_missing_trajectory(self, tmp_path: Path, capsys):
         trace_dir = _captured_dir(tmp_path)
         (trace_dir / "trajectory.json").unlink()
+        (trace_dir / ARTIFACT_DESCRIPTOR).unlink()
 
         rc = cli_main(["show", str(trace_dir), "--json"])
 

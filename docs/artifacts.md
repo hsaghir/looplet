@@ -15,6 +15,7 @@ capture:
 
 ```text
 traces/run-42/
+├── artifact.json
 ├── trajectory.json
 ├── steps/
 │   ├── step_00.json
@@ -28,6 +29,7 @@ traces/run-42/
 
 | Path | Contents | Primary reader |
 | --- | --- | --- |
+| `artifact.json` | Format version, artifact kind, producing Looplet version, and declared components. | All supported directory readers |
 | `trajectory.json` | Run metadata, task view, steps, stop reason, timing, and captured context. | `EvalContext.from_trajectory_dir()` or JSON tooling |
 | `steps/step_NN.json` | One review-friendly copy of each step record. | Humans, diffs, JSON tooling |
 | `manifest.jsonl` | One structured summary per model call. | `looplet show`, replay loader, line-oriented tooling |
@@ -68,6 +70,7 @@ grader results, and case identity to the trajectory:
 
 ```text
 eval-runs/regression-42/
+├── artifact.json
 ├── trajectory.json
 ├── steps/
 ├── manifest.jsonl              # when a recording backend was attached
@@ -81,6 +84,7 @@ eval-runs/regression-42/
 
 | Path | Contents | Trust role |
 | --- | --- | --- |
+| `artifact.json` | Declares a versioned `eval_run` and its required components. | Compatibility boundary |
 | `artifacts.json` | Collector-observed world state used by graders. | Host observation |
 | `evals.json` | Normalized grader scores, labels, metrics, and errors. | Decision evidence |
 | `expected.json` | Grader-only expected data restored into `ctx.task["expected"]` after the run. | Promotion oracle input |
@@ -100,6 +104,23 @@ print(record.case.id if record.case else "no case metadata")
 
 A missing `trajectory.json` or malformed JSON fails loudly. Collector errors
 remain explicit eval results rather than disappearing as absent data.
+
+### Writer inventory
+
+| Writer | Files it owns |
+| --- | --- |
+| `RecordingLLMBackend.save()` and its async twin | `artifact.json`, `manifest.jsonl`, and indexed `call_NN_{prompt,response}.txt` pairs |
+| `TrajectoryRecorder.save()` | `artifact.json`, `trajectory.json`, `steps/step_NN.json`, and the model-call files when a recording backend is attached |
+| `ProvenanceSink.flush()` | The union selected by its attached recorder/backend; an unused sink may create only its directory |
+| `EvalHook.save()` | One legacy standalone JSON report with `task`, `results`, `summary`, and optional `expected` / `artifacts` |
+| `save_eval_run()` | A versioned eval-run directory: required trajectory, artifacts, and eval results; optional case, expectations, and recorded calls |
+| `promote_to_offline()` | The same layout as `save_eval_run()` |
+| `run_cartridge_evals(..., output_dir=...)` | One `save_eval_run()` directory per case plus a `workspace/` owned by the evaluated application |
+
+`EvalHook.save()` remains an unversioned compatibility report. It has no
+supported round-trip reader and should not be used as a long-lived CI wire
+format. Use `save_eval_run()` for durable evidence; use the documented
+`looplet eval run --json` schema for transient CI decisions.
 
 ### Agent-visible and grader-only data
 
@@ -142,24 +163,81 @@ write collector output to `artifacts.json` and top-level case expectations to
 
 ## Compatibility policy
 
-The cartridge format has its own schema version. Saved provenance and eval
-run directories in `0.3` do not yet declare a separate stable artifact schema
-version.
+The cartridge schema and saved-artifact schema are independent. New provenance
+and eval-run directories carry this descriptor:
 
-For automation:
+```json
+{
+  "schema": "looplet.saved-artifact",
+  "version": 1,
+  "kind": "provenance",
+  "producer": {"name": "looplet", "version": "0.4.0"},
+  "components": ["model_calls", "trajectory"]
+}
+```
 
-1. pin the Looplet minor line;
-2. prefer `load_eval_run()` and `EvalContext.from_trajectory_dir()` over
-   reconstructing dataclasses from JSON fields;
-3. tolerate additional object fields when consuming JSON;
-4. fail on missing required evidence rather than substituting success;
-5. preserve the producing Looplet version and cartridge hash beside exported
-   artifacts;
-6. review the changelog before upgrading the reader or producer.
+`version` governs the artifact layout; `producer.version` identifies the
+package that wrote it for diagnostics. They do not advance together. `kind` is
+`provenance` or `eval_run`. Version 1 components use the closed vocabulary
+`trajectory`, `model_calls`, `artifacts`, and `eval_results`.
 
-The roadmap includes explicit schema-version and compatibility guarantees for
-saved evidence. Until those land, readable files aid review and portability
-but are not a frozen cross-version wire contract.
+An absent `artifact.json` means the supported unversioned legacy shape (called
+v0), not “the latest version.” Looplet keeps concrete legacy fixtures for that
+shape, including the older `metrics.json` input. An unknown schema, unsupported
+explicit version, unknown kind/component, malformed descriptor, or missing
+declared component fails before rendering, replay, or grading.
+
+### Stable and optional fields
+
+Required means a current writer emits the field and a v1 reader may rely on its
+meaning. Optional means consumers must accept its absence and producers may add
+it without advancing the format. Unknown object fields are ignored; this makes
+additive metadata forward-compatible. Unknown component names are refused
+because components declare completeness.
+
+| File | Required stable | Optional stable | Internal or application-owned |
+| --- | --- | --- | --- |
+| `artifact.json` | `schema`, `version`, `kind`, `producer.name`, `producer.version`, `components` | Additional object fields | None |
+| `trajectory.json` | `run_id`, `termination_reason`, `steps`; each step's `tool_call` and `tool_result` | `task`, timestamps, counts, session text, metadata, context, call linkage, call summaries | In-memory span objects |
+| `manifest.jsonl` | Contiguous `index`, supported `method`; matching indexed prompt/response files and replay response section | Timing, sizes, tool count, step link, error, scope, metadata | None |
+| `artifacts.json` | A JSON object | Application-defined keys and values | The meaning of application keys |
+| `evals.json` | An array; each result's `name` | Present `score`, `label`, `metrics`, `details`, `explanation`, `duration_ms` | None |
+| `expected.json` | A JSON object when present | The whole file is optional | Application-defined keys and values |
+| `case.json` | `id` and `task` when present | `expected`, `marks`, `notes`; the whole file is optional | None |
+| `steps/step_NN.json` | None | None | Redundant review copy; `trajectory.json` is authoritative |
+| `workspace/` | None | None | Evaluated application state, outside the artifact schema |
+
+Current writers also emit `task`, `results`, and `summary` in the standalone
+`EvalHook.save()` report; `expected` and `artifacts` are optional there. Those
+v0 fields retain their current meaning, but new automation should use the
+versioned directory or CI summary instead.
+
+Malformed decision-bearing JSON fails closed. Missing optional fields use the
+defaults documented by the supported readers. Conflicting expected data is an
+error. Consumers should call `load_eval_run()` and
+`EvalContext.from_trajectory_dir()` rather than reconstructing internal
+dataclasses from JSON.
+
+### Publication and incomplete directories
+
+Saved directories are not transactional databases, and concurrent reads while
+a writer is active are unsupported. Before clearing an old descriptor, writers
+atomically publish `.artifact.json.pending`. Readers refuse any directory with
+that marker, so a crash cannot turn a partial v1 replacement into an
+ordinary-looking legacy v0 artifact. Writers then replace the payload, publish
+`artifact.json` with an atomic file replacement, and remove the pending marker.
+Once a v1 descriptor is present, every declared component file must be present
+or the directory is rejected as incomplete.
+
+Legacy v0 has no completion marker, so its historical best-effort behavior is
+retained. Required malformed files still fail loudly. Reusing a directory
+removes only exact Looplet-owned names; use one directory per logical run and
+inspect it only after the writer returns.
+
+For automation, preserve the artifact directory intact, tolerate additional
+object fields, fail on missing required evidence, and review the changelog
+before advancing the producing or reading Looplet version. There is no promise
+to read every historical or future shape.
 
 ## Redaction and retention
 

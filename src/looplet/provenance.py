@@ -50,6 +50,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 from uuid import uuid4
 
+from looplet.artifact_compat import (
+    begin_artifact_write,
+    read_artifact_descriptor,
+    write_artifact_descriptor,
+)
 from looplet.telemetry import Span, Tracer
 
 if TYPE_CHECKING:
@@ -215,7 +220,7 @@ class _RecordingBase:
 
     # ── disk IO ─────────────────────────────────────────────────
 
-    def save(self, directory: str | Path) -> Path:
+    def save(self, directory: str | Path, *, publish_descriptor: bool = True) -> Path:
         """Write captured calls as ``call_NN_prompt.txt`` / ``_response.txt``.
 
         Also writes ``manifest.jsonl`` with one :class:`LLMCall` summary
@@ -223,6 +228,8 @@ class _RecordingBase:
         """
         root = Path(directory)
         root.mkdir(parents=True, exist_ok=True)
+        if publish_descriptor:
+            begin_artifact_write(root)
         _clear_call_artifacts(root)
         manifest = root / "manifest.jsonl"
         with manifest.open("w", encoding="utf-8") as mf:
@@ -235,6 +242,8 @@ class _RecordingBase:
                     _format_response_block(c), encoding="utf-8"
                 )
                 mf.write(json.dumps(c.to_dict()) + "\n")
+        if publish_descriptor:
+            write_artifact_descriptor(root, kind="provenance", components=("model_calls",))
         return root
 
     def reset(self) -> None:
@@ -788,7 +797,7 @@ class TrajectoryRecorder:
 
     # ── disk IO ─────────────────────────────────────────────────
 
-    def save(self, directory: str | Path) -> Path:
+    def save(self, directory: str | Path, *, publish_descriptor: bool = True) -> Path:
         """Write ``trajectory.json`` + per-step files + (optional) LLM calls.
 
         Layout::
@@ -804,6 +813,8 @@ class TrajectoryRecorder:
         """
         root = Path(directory)
         root.mkdir(parents=True, exist_ok=True)
+        if publish_descriptor:
+            begin_artifact_write(root)
         _clear_call_artifacts(root)
         traj_text = json.dumps(self.trajectory.to_dict(), indent=2, default=str)
         if self._redact is not None:
@@ -823,7 +834,12 @@ class TrajectoryRecorder:
                 encoding="utf-8",
             )
         if self._recording_llm is not None:
-            self._recording_llm.save(root)
+            self._recording_llm.save(root, publish_descriptor=False)
+        components = ["trajectory"]
+        if self._recording_llm is not None:
+            components.append("model_calls")
+        if publish_descriptor:
+            write_artifact_descriptor(root, kind="provenance", components=components)
         return root
 
 
@@ -999,6 +1015,12 @@ def _load_trace_calls(trace_dir: Path) -> list[dict[str, Any]]:
     the manifest is missing, falls back to the response files alone
     (every call treated as ``generate`` returning the file contents).
     """
+    descriptor = read_artifact_descriptor(
+        trace_dir,
+        expected_kinds=("eval_run", "provenance"),
+    )
+    if descriptor is not None and "model_calls" not in descriptor["components"]:
+        raise ValueError(f"Saved artifact in {trace_dir} does not declare a model_calls component")
     manifest = trace_dir / "manifest.jsonl"
     calls: list[dict[str, Any]] = []
     if manifest.exists():

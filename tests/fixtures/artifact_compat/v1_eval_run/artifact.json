@@ -1,0 +1,16 @@
+{
+  "schema": "looplet.saved-artifact",
+  "version": 1,
+  "kind": "eval_run",
+  "producer": {
+    "name": "looplet",
+    "version": "0.3.0",
+    "future_producer_field": "ignored"
+  },
+  "components": [
+    "artifacts",
+    "eval_results",
+    "trajectory"
+  ],
+  "future_descriptor_field": "ignored"
+}

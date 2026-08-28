@@ -1,0 +1,27 @@
+{
+  "run_id": "fixture-v1",
+  "task": {
+    "goal": "Prove the saved eval fixture loads"
+  },
+  "termination_reason": "done",
+  "steps": [
+    {
+      "step_num": 1,
+      "tool_call": {
+        "tool": "done",
+        "args": {
+          "summary": "fixture complete"
+        }
+      },
+      "tool_result": {
+        "data": {
+          "status": "completed"
+        },
+        "error": null
+      }
+    }
+  ],
+  "future_trajectory_field": {
+    "ignored": true
+  }
+}

@@ -137,6 +137,18 @@ CARTRIDGE_EVALS_SUBPATH = "evals"
 # an integrity failure; unmarked judge graders may still be intentionally
 # omitted when no judge backend is configured.
 _REQUIRED_EVAL_MARK = "required"
+_EVAL_SUMMARY_SCHEMA = "looplet.eval-summary"
+_EVAL_SUMMARY_VERSION = 1
+_EVAL_RESULT_STATES = {
+    "pass",
+    "explicit_fail",
+    "threshold_fail",
+    "skipped",
+    "missing",
+    "collector_error",
+    "grader_error",
+    "metric_only",
+}
 
 
 def _validate_case_id(case_id: str) -> str:
@@ -2044,6 +2056,184 @@ def _result_is_integrity_failure(
     return normalized not in {"pass", "correct", "yes"}
 
 
+def _eval_result_state(
+    result: EvalResult | None,
+    *,
+    required: bool,
+    threshold: float,
+    collector: bool = False,
+) -> str:
+    """Classify one result using the stable eval-summary v1 vocabulary."""
+    if result is None:
+        return "missing"
+    label = (result.label or "").lower()
+    if collector and label == "error":
+        return "collector_error"
+    if label == "error":
+        return "grader_error"
+    if label == "skipped":
+        return "skipped"
+    if label in {"fail", "wrong", "no"}:
+        return "explicit_fail"
+    if result.score is not None:
+        if required and result.score < 0.5:
+            return "explicit_fail"
+        if result.score < threshold:
+            return "threshold_fail"
+        return "pass"
+    if result.metrics and not label:
+        return "metric_only"
+    if label in {"pass", "correct", "yes"}:
+        return "pass"
+    return "explicit_fail"
+
+
+def _required_status(state: str, *, required: bool) -> str:
+    if not required:
+        return "not_required"
+    if state in {"pass", "threshold_fail"}:
+        return "satisfied"
+    return "failed"
+
+
+def _eval_state_fails(state: str, *, required: bool) -> bool:
+    if state in {"pass", "metric_only", "skipped"}:
+        return required and state != "pass"
+    return True
+
+
+def _eval_summary_result(
+    result: EvalResult | None,
+    *,
+    name: str,
+    marks: set[str],
+    threshold: float,
+    collector: bool = False,
+) -> dict[str, Any]:
+    required = _REQUIRED_EVAL_MARK in marks
+    state = _eval_result_state(
+        result,
+        required=required,
+        threshold=threshold,
+        collector=collector,
+    )
+    payload: dict[str, Any] = {
+        "name": name,
+        "marks": sorted(marks),
+        "required": required,
+        "required_status": _required_status(state, required=required),
+        "state": state,
+    }
+    if result is not None:
+        payload.update(result.to_dict())
+        if state in {"collector_error", "grader_error"}:
+            payload["error"] = result.explanation or result.label or "unknown error"
+    return payload
+
+
+def _eval_grader_manifest(graders: list[Callable]) -> list[dict[str, Any]]:
+    """Freeze grader identity and marks before candidate execution begins."""
+    return [
+        {
+            "name": grader.__name__,
+            "marks": sorted(_get_marks(grader)),
+            "required": _REQUIRED_EVAL_MARK in _get_marks(grader),
+        }
+        for grader in sorted(graders, key=lambda item: item.__name__)
+    ]
+
+
+def _build_eval_summary(
+    *,
+    records: list[EvalRunRecord],
+    grader_manifest: list[dict[str, Any]],
+    threshold: float,
+    output_dir: str | None,
+) -> dict[str, Any]:
+    """Build the stable v1 CI report from one trusted pre-run grader manifest."""
+    manifest = [dict(item) for item in grader_manifest]
+    manifest_names = {item["name"] for item in manifest}
+    integrity_failures: list[str] = []
+    case_reports: list[dict[str, Any]] = []
+    failed = False
+
+    for record in records:
+        case_id = record.case.id if record.case is not None else "?"
+        case_marks = sorted(record.case.marks) if record.case is not None else []
+        by_name = {result.name: result for result in record.results}
+        results: list[dict[str, Any]] = []
+        for expected in manifest:
+            result = by_name.get(expected["name"])
+            item = _eval_summary_result(
+                result,
+                name=expected["name"],
+                marks=set(expected["marks"]),
+                threshold=threshold,
+            )
+            results.append(item)
+            if _eval_state_fails(item["state"], required=item["required"]):
+                failed = True
+            if item["state"] == "missing":
+                integrity_failures.append(
+                    f"{case_id}/{item['name']}: grader missing from run result"
+                )
+            elif item["required_status"] == "failed":
+                integrity_failures.append(
+                    f"{case_id}/{item['name']}: required grader {item['state']}"
+                )
+            elif item["state"] == "grader_error":
+                integrity_failures.append(f"{case_id}/{item['name']}: grader error")
+
+        for result in record.results:
+            if result.name in manifest_names:
+                continue
+            collector = result.name.startswith("collector:")
+            item = _eval_summary_result(
+                result,
+                name=result.name,
+                marks=set(),
+                threshold=threshold,
+                collector=collector,
+            )
+            results.append(item)
+            if _eval_state_fails(item["state"], required=False):
+                failed = True
+            if item["state"] == "collector_error":
+                integrity_failures.append(f"{case_id}/{item['name']}: collector error")
+            elif item["state"] == "grader_error":
+                integrity_failures.append(f"{case_id}/{item['name']}: unexpected grader error")
+
+        case_reports.append(
+            {
+                "id": case_id,
+                "marks": case_marks,
+                "completed": record.context.completed,
+                "state": "fail"
+                if any(
+                    _eval_state_fails(item["state"], required=item["required"]) for item in results
+                )
+                else "pass",
+                "results": results,
+            }
+        )
+
+    report = {
+        "schema": _EVAL_SUMMARY_SCHEMA,
+        "version": _EVAL_SUMMARY_VERSION,
+        "state": "fail" if failed else "pass",
+        "passed": not failed,
+        "threshold": threshold,
+        "grader_manifest": manifest,
+        "cases": case_reports,
+        "integrity_failures": integrity_failures,
+        "output_dir": output_dir,
+    }
+    assert {item["state"] for case in case_reports for item in case["results"]} <= (
+        _EVAL_RESULT_STATES
+    )
+    return report
+
+
 # ── Batch runner ─────────────────────────────────────────────────
 
 
@@ -2378,6 +2568,7 @@ def _run_cartridge_cli(args: list[str]) -> int:
     if not overview.graders:
         print(f"error: no graders (evals/eval_*.py) under {cdir / 'evals'}", file=sys.stderr)
         return 1
+    grader_manifest = _eval_grader_manifest(overview.graders)
 
     base_url = parsed.base_url or os.environ.get("OPENAI_BASE_URL")
     model = parsed.model or os.environ.get("OPENAI_MODEL")
@@ -2430,17 +2621,17 @@ def _run_cartridge_cli(args: list[str]) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
-    grader_names = sorted(g.__name__ for g in overview.graders)
+    report = _build_eval_summary(
+        records=records,
+        grader_manifest=grader_manifest,
+        threshold=parsed.threshold,
+        output_dir=str(parsed.out) if parsed.out else None,
+    )
+    grader_names = [item["name"] for item in report["grader_manifest"]]
     header = f"{'case':22}" + "".join(f"{n:22}" for n in grader_names)
     if not parsed.json:
         print(header)
         print("-" * len(header))
-    below_threshold = False
-    integrity_failures: list[str] = []
-    case_reports: list[dict[str, Any]] = []
-    required_names = {
-        grader.__name__ for grader in overview.graders if _REQUIRED_EVAL_MARK in _get_marks(grader)
-    }
     for rec in records:
         scores = {r.name: r for r in rec.results}
         cells = ""
@@ -2450,8 +2641,6 @@ def _run_cartridge_cli(args: list[str]) -> int:
                 cells += f"{'-':22}"
             elif r.score is not None:
                 cells += f"{r.score:<22.2f}"
-                if r.score < parsed.threshold:
-                    below_threshold = True
             elif r.metrics:
                 # Metric grader (no pass/fail score) - show the numbers.
                 cells += f"{('; '.join(f'{k}={v:g}' for k, v in r.metrics.items())):22}"
@@ -2460,41 +2649,15 @@ def _run_cartridge_cli(args: list[str]) -> int:
         case_id = rec.case.id if rec.case is not None else "?"
         if not parsed.json:
             print(f"{case_id:22}{cells}")
-        for result in rec.results:
-            if _result_is_integrity_failure(
-                result,
-                required=result.name in required_names,
-            ):
-                integrity_failures.append(
-                    f"{case_id}/{result.name}: {result.label or 'invalid result'}"
-                )
-        case_reports.append(
-            {
-                "id": case_id,
-                "completed": rec.context.completed,
-                "results": [result.to_dict() for result in rec.results],
-            }
-        )
 
-    failed = below_threshold or bool(integrity_failures)
+    failed = not report["passed"]
     if parsed.json:
-        print(
-            json.dumps(
-                {
-                    "passed": not failed,
-                    "threshold": parsed.threshold,
-                    "cases": case_reports,
-                    "integrity_failures": integrity_failures,
-                    "output_dir": str(parsed.out) if parsed.out else None,
-                },
-                indent=2,
-            )
-        )
+        print(json.dumps(report, indent=2))
     elif parsed.out:
         print(f"\npersisted {len(records)} run(s) under {parsed.out}/")
-    if integrity_failures and not parsed.json:
+    if report["integrity_failures"] and not parsed.json:
         print("\nintegrity failures:")
-        for failure in integrity_failures:
+        for failure in report["integrity_failures"]:
             print(f"  - {failure}")
     if parsed.threshold > 0 and not parsed.json:
         print(f"threshold {parsed.threshold:.2f} → {'FAIL' if failed else 'PASS'}")

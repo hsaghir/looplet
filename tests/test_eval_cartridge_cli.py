@@ -70,6 +70,10 @@ def build(runtime=None):
 """
 
 _GRADERS = """\
+from looplet import eval_mark
+
+
+@eval_mark("smoke")
 def eval_completed(ctx):
     return ctx.completed
 
@@ -110,6 +114,7 @@ _CASE = {
         },
     },
     "expected": {"file_written": True},
+    "marks": ["regression"],
 }
 
 
@@ -330,15 +335,29 @@ def test_cli_run_json_emits_one_eval_report(tmp_path: Path, monkeypatch, capsys)
 
     assert rc == 0
     payload = json.loads(capsys.readouterr().out)
+    assert payload["schema"] == "looplet.eval-summary"
+    assert payload["version"] == 1
+    assert payload["state"] == "pass"
     assert payload["passed"] is True
     assert payload["threshold"] == 1.0
     assert payload["output_dir"] == str(out)
     assert payload["integrity_failures"] == []
     assert payload["cases"][0]["id"] == "make_greeting"
+    assert payload["cases"][0]["marks"] == ["regression"]
     assert payload["cases"][0]["completed"] is True
-    assert {result["name"] for result in payload["cases"][0]["results"]} >= {
+    by_name = {result["name"]: result for result in payload["cases"][0]["results"]}
+    assert set(by_name) >= {
         "eval_completed",
         "eval_wrote_file",
+    }
+    assert by_name["eval_completed"]["marks"] == ["smoke"]
+    assert by_name["eval_completed"]["state"] == "pass"
+    assert by_name["eval_completed"]["required_status"] == "not_required"
+    manifest = {item["name"]: item for item in payload["grader_manifest"]}
+    assert manifest["eval_completed"] == {
+        "name": "eval_completed",
+        "marks": ["smoke"],
+        "required": False,
     }
 
 
@@ -358,11 +377,13 @@ def test_cli_run_json_preserves_threshold_failure_exit(tmp_path: Path, monkeypat
 
     assert rc == 1
     payload = json.loads(capsys.readouterr().out)
+    assert payload["state"] == "fail"
     assert payload["passed"] is False
     zero = next(
         result for result in payload["cases"][0]["results"] if result["name"] == "eval_zero"
     )
     assert zero["score"] == 0.0
+    assert zero["state"] == "threshold_fail"
 
 
 def test_cli_run_unknown_case_returns_failure(tmp_path: Path, monkeypatch) -> None:
@@ -383,7 +404,7 @@ def test_cli_run_rejects_invalid_threshold_before_backend_setup(tmp_path: Path) 
     assert eval_cli(["run", str(cart), "--threshold", "nan"]) == 1
 
 
-def test_cli_run_fails_on_evaluator_error(tmp_path: Path, monkeypatch) -> None:
+def test_cli_run_fails_on_evaluator_error(tmp_path: Path, monkeypatch, capsys) -> None:
     cart = _make_cartridge(tmp_path)
     (cart / "evals" / "eval_broken.py").write_text(
         "def eval_broken(ctx):\n    raise RuntimeError('grader broke')\n"
@@ -396,7 +417,14 @@ def test_cli_run_fails_on_evaluator_error(tmp_path: Path, monkeypatch) -> None:
         "OpenAIBackend",
         lambda **kw: MockLLMBackend(responses=_scripted()),
     )
-    assert eval_cli(["run", str(cart)]) == 1
+    assert eval_cli(["run", str(cart), "--json"]) == 1
+    payload = json.loads(capsys.readouterr().out)
+    broken = next(
+        result for result in payload["cases"][0]["results"] if result["name"] == "eval_broken"
+    )
+    assert broken["state"] == "grader_error"
+    assert broken["error"] == "grader broke"
+    assert payload["passed"] is False
 
 
 def test_cli_run_fails_on_failing_verdict_label(tmp_path: Path, monkeypatch) -> None:
@@ -436,7 +464,7 @@ def test_cli_run_fails_when_required_judge_is_skipped(tmp_path: Path, monkeypatc
     assert "must not run" not in by_name["eval_required_judge"].explanation
 
 
-def test_cli_run_fails_on_collector_error(tmp_path: Path, monkeypatch) -> None:
+def test_cli_run_fails_on_collector_error(tmp_path: Path, monkeypatch, capsys) -> None:
     cart = _make_cartridge(tmp_path)
     (cart / "evals" / "collect_outcome.py").write_text(
         "def collect_broken(state, runtime):\n    raise RuntimeError('collector broke')\n"
@@ -449,7 +477,16 @@ def test_cli_run_fails_on_collector_error(tmp_path: Path, monkeypatch) -> None:
         "OpenAIBackend",
         lambda **kw: MockLLMBackend(responses=_scripted()),
     )
-    assert eval_cli(["run", str(cart)]) == 1
+    assert eval_cli(["run", str(cart), "--json"]) == 1
+    payload = json.loads(capsys.readouterr().out)
+    broken = next(
+        result
+        for result in payload["cases"][0]["results"]
+        if result["name"] == "collector:collect_broken"
+    )
+    assert broken["state"] == "collector_error"
+    assert broken["error"] == "RuntimeError: collector broke"
+    assert payload["passed"] is False
 
 
 # ── CLI preflight / error paths (no live model needed) ───────────

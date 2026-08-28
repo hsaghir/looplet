@@ -74,6 +74,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, NamedTuple, cast
 
+from looplet.artifact_compat import (
+    begin_artifact_write,
+    read_artifact_descriptor,
+    write_artifact_descriptor,
+)
+
 if TYPE_CHECKING:
     from looplet.session import SessionLog
     from looplet.types import AgentState, LLMBackend
@@ -274,6 +280,10 @@ class EvalContext:
         Expects ``trajectory.json`` (from :class:`TrajectoryRecorder`).
         """
         root = Path(path)
+        read_artifact_descriptor(
+            root,
+            expected_kinds=("eval_run", "provenance"),
+        )
         traj_path = root / "trajectory.json"
         if not traj_path.exists():
             raise FileNotFoundError(f"No trajectory.json in {root}")
@@ -1091,6 +1101,7 @@ def save_eval_run(
     """
     root = Path(directory)
     root.mkdir(parents=True, exist_ok=True)
+    begin_artifact_write(root)
 
     # Resolve the trajectory source.
     src_context = context
@@ -1106,6 +1117,7 @@ def save_eval_run(
     recorder_redact = (
         cast(Callable[[str], str], raw_recorder_redact) if callable(raw_recorder_redact) else None
     )
+    has_model_calls = False
 
     if recorder is not None:
         # Full-fidelity record (trajectory.json + steps/ + LLM calls).
@@ -1114,7 +1126,12 @@ def save_eval_run(
             src_context,
             expected=grader_expected,
         )
-        recorder.save(root)
+        save_parameters = inspect.signature(recorder.save).parameters
+        if "publish_descriptor" in save_parameters:
+            recorder.save(root, publish_descriptor=False)
+        else:
+            recorder.save(root)
+        has_model_calls = (root / "manifest.jsonl").is_file()
         if src_context is not None and not merged_before_save:
             _merge_context_into_saved_trajectory(
                 root,
@@ -1168,6 +1185,10 @@ def save_eval_run(
     else:
         (root / "case.json").unlink(missing_ok=True)
 
+    components = ["artifacts", "eval_results", "trajectory"]
+    if has_model_calls:
+        components.append("model_calls")
+    write_artifact_descriptor(root, kind="eval_run", components=components)
     return root
 
 
@@ -1263,6 +1284,7 @@ def load_eval_run(directory: str | Path) -> "EvalRunRecord":
     ``trajectory.json`` raises :class:`FileNotFoundError` (loud).
     """
     root = Path(directory)
+    read_artifact_descriptor(root, expected_kinds=("eval_run",))
     context = EvalContext.from_trajectory_dir(root)
 
     results: list[EvalResult] = []

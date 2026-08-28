@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from looplet import __version__
+from looplet.artifact_compat import read_artifact_descriptor
 
 
 def _fmt_ms(ms: float | int | None) -> str:
@@ -88,12 +89,21 @@ def _render_show(trace_dir: Path, *, json_output: bool = False) -> int:
     if not trace_dir.exists():
         print(f"error: {trace_dir} does not exist", file=sys.stderr)
         return 1
+    try:
+        descriptor = read_artifact_descriptor(
+            trace_dir,
+            expected_kinds=("eval_run", "provenance"),
+        )
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
 
     # ── trajectory.json (optional; short-circuit if missing) ─────
     traj_path = trace_dir / "trajectory.json"
     manifest_path = trace_dir / "manifest.jsonl"
+    declared = set(descriptor["components"]) if descriptor is not None else None
     traj: dict[str, Any] = {}
-    if traj_path.exists():
+    if (declared is None or "trajectory" in declared) and traj_path.exists():
         try:
             parsed_traj = json.loads(traj_path.read_text(encoding="utf-8"))
         except Exception as exc:
@@ -106,7 +116,7 @@ def _render_show(trace_dir: Path, *, json_output: bool = False) -> int:
 
     # ── manifest.jsonl (optional) ────────────────────────────────
     calls: list[dict[str, Any]] = []
-    if manifest_path.exists():
+    if (declared is None or "model_calls" in declared) and manifest_path.exists():
         for line_number, line in enumerate(
             manifest_path.read_text(encoding="utf-8").splitlines(), start=1
         ):

@@ -1,0 +1,13 @@
+{
+  "run_id": "fixture-legacy-v0",
+  "task": "legacy task",
+  "steps": [
+    {
+      "tool": "done",
+      "args": {
+        "answer": "legacy"
+      },
+      "error": null
+    }
+  ]
+}

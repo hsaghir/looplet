@@ -45,6 +45,11 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### CLI
 
+- Re-running `looplet migrate` on an already-current cartridge is now a true
+  no-op and reports `already current` instead of claiming files were rewritten.
+- `looplet diff` now labels manifest, runtime, and eval changes explicitly;
+  binary changes are represented by content digest instead of being hidden;
+  `looplet hash --help` now describes its actual all-versioned-files scope.
 - `looplet run-cartridge` now captures a provenance trace under the target
   project's `.looplet/traces/` directory by default. Use `--trace-dir` to
   choose a location or `--no-trace` to opt out.
@@ -90,7 +95,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   while preserving unrelated files.
 - `looplet run-cartridge` now rejects missing project roots before execution,
   preserves results from custom terminal tools, reports incomplete human runs
-  honestly, and closes cartridge-owned subprocesses before returning.
+  honestly, closes cartridge-owned subprocesses before returning, and labels
+  human output with the canonical command rather than the skill-bundle `run`.
 
 ## [0.3.0] - 2026-07-16
 

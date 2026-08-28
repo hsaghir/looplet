@@ -324,7 +324,7 @@ def cmd_run_workspace(args: argparse.Namespace) -> int:
         return 1
 
     if not json_output:
-        print(f"{_bold('looplet run')} {workspace_path}")
+        print(f"{_bold('looplet run-cartridge')} {workspace_path}")
         if not getattr(args, "pretty", False):
             print(_dim(f"  task:  {task[:100]}{'…' if len(task) > 100 else ''}"))
             print(_dim(f"  model: {os.environ['OPENAI_MODEL']}"))
@@ -383,7 +383,7 @@ def cmd_run_workspace(args: argparse.Namespace) -> int:
         from looplet.cli._pretty import PrettyPrinter  # noqa: PLC0415
 
         pretty = PrettyPrinter(
-            title=f"looplet run · {workspace_path.name}",
+            title=f"looplet run-cartridge · {workspace_path.name}",
             max_steps=preset.config.max_steps,
         )
         pretty.header(

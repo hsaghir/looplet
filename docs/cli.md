@@ -124,8 +124,8 @@ tolerate added fields. It cannot be combined with `--pretty`.
 | Command | Purpose |
 | --- | --- |
 | `looplet describe <cartridge>` | Print tools, hooks, config, and a prompt preview. |
-| `looplet diff <before> <after> [--show]` | Group cartridge changes by prompt, tool, hook, resource, or config. |
-| `looplet hash <cartridge> [--show-files]` | Compute a stable SHA-256 hash over content-bearing harness files. |
+| `looplet diff <before> <after> [--show]` | Group changes by manifest, config, runtime, prompt, tool, hook, resource, memory, or eval. |
+| `looplet hash <cartridge> [--show-files]` | Hash every versioned regular file except documented runtime/cache exclusions. |
 | `looplet portability <cartridge> [--json]` | Classify protocol, standard-library, runtime, and Python-host dependencies. |
 | `looplet conform [fixtures] [-v]` | Run Cartridge Spec conformance fixtures against the loader. |
 | `looplet migrate <cartridge> [--dry-run]` | Upgrade a v1 cartridge to schema version 2. |

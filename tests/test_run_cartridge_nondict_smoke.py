@@ -36,6 +36,7 @@ def _args(
     parent_trace: Path | None = None,
     no_trace: bool = False,
     json_output: bool = False,
+    pretty: bool = False,
 ) -> argparse.Namespace:
     return argparse.Namespace(
         workspace=_MCP_DEMO,
@@ -46,7 +47,7 @@ def _args(
         parent_trace=parent_trace,
         no_trace=no_trace,
         quiet=False,
-        pretty=False,
+        pretty=pretty,
         json=json_output,
     )
 
@@ -77,6 +78,7 @@ def test_run_cartridge_survives_int_tool_result(monkeypatch, capsys, tmp_path):
     assert rc == 0
     out = capsys.readouterr().out
     # The add step printed without raising, and the run reached `done`.
+    assert "looplet run-cartridge" in out
     assert "add(" in out
     assert "80235" in out
     assert f"Trace: {trace_dir}" in out
@@ -96,6 +98,18 @@ def test_run_cartridge_can_disable_trace(monkeypatch, tmp_path):
 
     assert rc == 0
     assert not trace_dir.exists()
+
+
+@pytest.mark.skipif(not _MCP_DEMO.is_dir(), reason="mcp_demo cartridge not present")
+def test_pretty_output_uses_run_cartridge_label(monkeypatch, capsys, tmp_path):
+    _patch_runtime(monkeypatch)
+
+    rc = factory_commands.cmd_run_workspace(
+        _args(project_root=tmp_path, no_trace=True, pretty=True)
+    )
+
+    assert rc == 0
+    assert "looplet run-cartridge" in capsys.readouterr().out
 
 
 @pytest.mark.skipif(not _MCP_DEMO.is_dir(), reason="mcp_demo cartridge not present")

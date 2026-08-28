@@ -6,6 +6,8 @@ import json
 import logging
 from types import SimpleNamespace
 
+import pytest
+
 from looplet import BaseToolRegistry, DefaultState, LoopConfig, composable_loop, minimal_preset
 from looplet.cartridge.portability import _read_yaml_file
 from looplet.cli import spec_commands
@@ -79,6 +81,33 @@ def test_text_style_skips_deleted_tracked_path(tmp_path, monkeypatch):
     monkeypatch.setattr(check_text_style, "repository_files", lambda: [missing])
 
     assert check_text_style.main() == 0
+
+
+@pytest.mark.parametrize(
+    ("path", "category"),
+    [
+        ("cartridge.json", "manifest"),
+        ("config.yaml", "config"),
+        ("runtime.yaml", "runtime"),
+        ("evals/eval_quality.py", "eval"),
+    ],
+)
+def test_cartridge_diff_classifies_public_slots(path, category):
+    assert spec_commands._categorize(path) == category
+
+
+def test_cartridge_diff_distinguishes_binary_content(tmp_path):
+    before = tmp_path / "before"
+    after = tmp_path / "after"
+    before.mkdir()
+    after.mkdir()
+    (before / "asset.bin").write_bytes(b"\xff\x00before")
+    (after / "asset.bin").write_bytes(b"\xff\x00after")
+
+    assert (
+        spec_commands._walk_files(before)["asset.bin"]
+        != spec_commands._walk_files(after)["asset.bin"]
+    )
 
 
 def test_portability_ignores_malformed_yaml(tmp_path):

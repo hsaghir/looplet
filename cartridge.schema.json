@@ -24,6 +24,7 @@
     "language": {
       "type": "string",
       "minLength": 1,
+      "pattern": "\\S",
       "default": "python"
     },
     "metadata": {

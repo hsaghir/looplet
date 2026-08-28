@@ -321,12 +321,15 @@ def _render_description(preset: Any, cartridge_path: Path) -> int:
 
 
 _CATEGORY_PATHS = (
+    ("manifest", ("workspace.json", "cartridge.json")),
+    ("config", ("config.yaml",)),
+    ("runtime", ("runtime.yaml",)),
     ("prompt", ("prompts/",)),
     ("tool", ("tools/",)),
     ("hook", ("hooks/",)),
     ("resource", ("resources/",)),
-    ("config", ("config.yaml", "workspace.json", "cartridge.json")),
     ("memory", ("memory/",)),
+    ("eval", ("evals/",)),
     ("setup", ("setup.py",)),
 )
 
@@ -355,7 +358,10 @@ def _walk_files(root: Path) -> dict[str, str]:
         try:
             out[rel] = path.read_text(encoding="utf-8")
         except UnicodeDecodeError:
-            out[rel] = "<binary>"
+            import hashlib  # noqa: PLC0415
+
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            out[rel] = f"<binary sha256={digest}>"
     return out
 
 
@@ -565,6 +571,7 @@ def cartridge_migrate(root: Path, *, dry_run: bool = False) -> dict[str, Any]:
     report: dict[str, Any] = {
         "schema_version_before": None,
         "schema_version_after": 2,
+        "changed": False,
         "moved_runtime_keys": [],
         "added_builtin_hooks": [],
         "wrote_files": [],
@@ -623,22 +630,22 @@ def cartridge_migrate(root: Path, *, dry_run: bool = False) -> dict[str, Any]:
 
     # Step 3: bump schema_version.
     meta["schema_version"] = 2
+    report["changed"] = bool(report["schema_version_before"] != 2 or moved or added_hooks)
 
     if dry_run:
         return report
 
-    # Write everything.
+    def _write_if_changed(path: Path, content: str) -> None:
+        if path.is_file() and path.read_text(encoding="utf-8") == content:
+            return
+        path.write_text(content, encoding="utf-8")
+        report["wrote_files"].append(str(path.relative_to(root)))
+
     if cfg_path.is_file() or cfg:
-        cfg_path.write_text(_dump_yaml(cfg) + "\n", encoding="utf-8")
-        report["wrote_files"].append(str(cfg_path.relative_to(root)))
+        _write_if_changed(cfg_path, _dump_yaml(cfg) + "\n")
     if rt:
-        rt_path.write_text(_dump_yaml(rt) + "\n", encoding="utf-8")
-        report["wrote_files"].append(str(rt_path.relative_to(root)))
-    meta_path.write_text(
-        json.dumps(meta, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-    report["wrote_files"].append(str(meta_path.relative_to(root)))
+        _write_if_changed(rt_path, _dump_yaml(rt) + "\n")
+    _write_if_changed(meta_path, json.dumps(meta, indent=2, sort_keys=True) + "\n")
     return report
 
 
@@ -649,7 +656,10 @@ def cmd_migrate(args: argparse.Namespace) -> int:
     except (FileNotFoundError, RuntimeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    label = _bold("would migrate") if args.dry_run else _bold("migrated")
+    if not report["changed"]:
+        label = _bold("already current")
+    else:
+        label = _bold("would migrate") if args.dry_run else _bold("migrated")
     print(f"{label}: {root}")
     print(f"  schema_version: {report['schema_version_before']} → {report['schema_version_after']}")
     if report["moved_runtime_keys"]:
@@ -728,12 +738,10 @@ def add_subparsers(sub: "argparse._SubParsersAction") -> None:
         help="Print a canonical content hash of a cartridge",
         description=(
             "Compute a stable SHA-256 hash over the cartridge's "
-            "content-bearing files (cartridge.json, config.yaml, "
-            "runtime.yaml, prompts/, tools/, hooks/, resources/, "
-            "memory/). The hash excludes __pycache__/, *.pyc, .git/, "
-            "and seed/ so it changes only when the agent's surface "
-            "changes. Use it to pin cartridge versions in deployment "
-            "manifests or to detect unintended drift."
+            "regular files. The hash excludes __pycache__/, *.pyc, .git/, "
+            ".venv/, seed/, and documented cache directories so it changes "
+            "only when the versioned artifact changes. Use it to pin "
+            "cartridge versions in deployment manifests or detect drift."
         ),
     )
     hash_p.add_argument("cartridge", type=str, help="Path to a cartridge directory")

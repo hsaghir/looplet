@@ -553,10 +553,10 @@ class LoopConfig:
 
     use_native_tools: bool = True
     """If True, pass tool schemas to the LLM and parse tool_use blocks
-    instead of JSON text. Default True - the loop probes the backend
-    for ``generate_with_tools`` and silently falls back to JSON-text
-    parsing when the backend does not implement it. Set to False to
-    force the JSON-text path even on backends that support native tools."""
+    instead of JSON text. Default True - the loop uses
+    ``generate_with_tools`` when available and transparently falls back
+    to JSON-text generation when it is missing or rejected. Set to False
+    to force the JSON-text path even on native-capable backends."""
 
     concurrent_dispatch: bool = False
     """If True, dispatch non-dependent tool calls in parallel via

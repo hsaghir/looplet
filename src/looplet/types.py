@@ -581,8 +581,9 @@ class NativeToolBackend(Protocol):
     structured tool-use blocks (list of dicts) instead of free-text JSON.
     The loop detects the capability via hasattr(backend, "generate_with_tools")
     and uses it whenever ``LoopConfig.use_native_tools`` is True (the
-    default). When the backend lacks ``generate_with_tools``, the loop
-    silently falls back to JSON-text parsing - no configuration needed.
+    default). When the backend lacks or rejects ``generate_with_tools``,
+    the loop transparently falls back to JSON-text generation - no second
+    configuration setting is needed.
 
     The returned list is normalised to Anthropic-style content blocks:
         [{"type": "text", "text": "..."},

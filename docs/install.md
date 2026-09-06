@@ -70,20 +70,25 @@ set without a key. Setting `OPENAI_API_KEY=x` explicitly is still useful when
 other clients inspect the same environment.
 
 Compatible endpoints do not all implement native tool calling the same way.
-Probe the endpoint before enabling it in a release harness:
+Looplet enables native tool calling by default and automatically falls back to
+the regular text protocol when an endpoint does not support it. You can still
+inspect the endpoint with:
 
 ```bash
 looplet doctor
 ```
 
-If the probe reports that native tools are unsupported, use text-mode tool
-calling explicitly:
+Keep the single mode setting explicit in applications that want to document
+the default:
 
 ```python
 from looplet import LoopConfig
 
-config = LoopConfig(use_native_tools=False)
+config = LoopConfig(use_native_tools=True)
 ```
+
+Set it to `False` only when deliberately forcing the text protocol for a
+compatibility test.
 
 See [provider recipes](recipes.md) for Ollama, Groq, Together, and explicit
 client construction.
@@ -122,10 +127,10 @@ class MyBackend:
         return my_client.complete(prompt)
 ```
 
-If it also exposes `generate_with_tools(...)`, Looplet can use native tool
-schemas. Otherwise set `LoopConfig(use_native_tools=False)` and Looplet uses
-its text tool protocol. See the [Python API map](api.md) for the backend
-protocol surface.
+If it also exposes `generate_with_tools(...)`, Looplet uses native tool
+schemas by default. If the method is absent or the endpoint rejects the native
+request, Looplet transparently uses its text tool protocol. See the [Python API
+map](api.md) for the backend protocol surface.
 
 ## Diagnose the environment
 

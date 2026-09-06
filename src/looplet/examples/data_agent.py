@@ -53,7 +53,6 @@ from looplet import (
     MockLLMBackend,
     ThresholdCompactHook,
     composable_loop,
-    probe_native_tool_support,
     tool,
     tools_from,
 )
@@ -290,10 +289,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"# llm: {model} via {base_url}")
         llm = OpenAIBackend(base_url=base_url, api_key=api_key, model=model)
         model_label = model
-    protocol_probe = probe_native_tool_support(llm)
     print(f"# model: {model_label}")
-    print(f"# tool protocol: {'native' if protocol_probe.supported else 'json-text'}")
-    print(f"# probe: {protocol_probe.reason}")
+    print("# tool protocol: native by default (automatic text fallback)")
 
     config = LoopConfig(
         max_steps=10,
@@ -309,7 +306,7 @@ def main(argv: list[str] | None = None) -> int:
         checkpoint_dir=str(CHECKPOINT_DIR),
         approval_handler=approval,
         context_window=4_000,
-        use_native_tools=protocol_probe.supported,
+        use_native_tools=True,
     )
     hooks = [
         ApprovalHook(),

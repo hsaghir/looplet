@@ -5,10 +5,10 @@ Covers:
    normalised Anthropic-style content blocks.
  - ``llm_call_with_retry`` routes to ``generate_with_tools`` when ``tools`` is
    passed and the backend supports it; falls back to ``generate`` otherwise.
- - The composable loop passes tool schemas through only when
-   ``LOOPLET_NATIVE_TOOLS`` (via FLAGS.native_tools) or
-   ``LoopConfig.use_native_tools`` is set, and routes the resulting
-   ``list[dict]`` response through ``parse_native_tool_use``.
+ - The composable loop passes tool schemas through when
+     ``LoopConfig.use_native_tools`` is enabled (the default), transparently
+     falls back to regular generation when native calls fail, and routes a
+     resulting ``list[dict]`` response through ``parse_native_tool_use``.
 """
 
 from __future__ import annotations
@@ -240,6 +240,21 @@ class _NativeBackend:
         return [{"type": "tool_use", "id": "n1", "name": "done", "input": {}}]
 
 
+class _NativeFailureBackend:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def generate_with_tools(
+        self, prompt, *, tools, max_tokens=2000, system_prompt="", temperature=0.2
+    ):
+        self.calls.append("native")
+        raise RuntimeError("tools endpoint unsupported")
+
+    def generate(self, prompt, *, max_tokens=2000, system_prompt="", temperature=0.2):
+        self.calls.append("regular")
+        return '{"tool": "done", "args": {}}'
+
+
 class TestLLMCallWithRetryNative:
     def test_no_tools_uses_generate(self):
         backend = _NoToolBackend()
@@ -260,3 +275,15 @@ class TestLLMCallWithRetryNative:
         result = llm_call_with_retry(backend, "hi", tools=_weather_schema())
         assert result.ok
         assert isinstance(result.text, str)
+
+    def test_native_failure_falls_back_to_regular_generation(self):
+        backend = _NativeFailureBackend()
+        result = llm_call_with_retry(
+            backend,
+            "hi",
+            tools=_weather_schema(),
+            max_retries=0,
+        )
+        assert result.ok
+        assert isinstance(result.text, str)
+        assert backend.calls == ["native", "regular"]

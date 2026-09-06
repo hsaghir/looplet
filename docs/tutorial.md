@@ -50,8 +50,11 @@ done_tool: done
 Host/runtime policy lives separately:
 
 ```yaml title="runtime.yaml"
-use_native_tools: false
+use_native_tools: true
 ```
+
+Native tool calling is the default. If the backend does not support it, the
+loop automatically falls back to regular text calls.
 
 That split lets two hosts choose different provider or context behavior
 without pretending they are different agent contracts.

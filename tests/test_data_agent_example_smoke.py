@@ -45,8 +45,7 @@ class TestDataAgentExample:
         assert rc == 0
         assert any((tmp_path / "checkpoints").glob("*.json"))
         out = capsys.readouterr().out
-        assert "# tool protocol: json-text" in out
-        assert "# probe: backend has no generate_with_tools method" in out
+        assert "# tool protocol: native by default (automatic text fallback)" in out
         assert "describe_csv" in out
         assert "delete_rows" in out
         assert "done(summary=inspected orders.csv and removed cancellations)" in out

@@ -52,16 +52,16 @@ looplet doctor
 ```
 
 If the endpoint accepts chat completions but not native tool schemas, the
-probe reports that distinction. Select text-mode tools explicitly:
+probe reports that distinction and the loop automatically falls back:
 
 ```python
 from looplet import LoopConfig
 
-config = LoopConfig(use_native_tools=False)
+config = LoopConfig(use_native_tools=True)
 ```
 
-Do not silently fall back in a release harness. Record the selected protocol
-in configuration and test it.
+The fallback is recorded through the normal logger. Set the same setting to
+`False` only when a release harness intentionally requires text mode.
 
 ## Anthropic backend configuration
 
@@ -99,7 +99,7 @@ Check these boundaries in order:
 
 1. Confirm the registry contains the expected tool names.
 2. Print or save the prompt and verify the tool schema is present.
-3. Confirm `use_native_tools` matches the endpoint's actual capabilities.
+3. Keep `use_native_tools=True` unless the harness intentionally forces text mode.
 4. Inspect the yielded error `Step` instead of relying on the final response.
 5. Run the same tool directly with representative arguments.
 

@@ -57,7 +57,7 @@ and tool types.
 from looplet import LoopConfig, composable_loop
 
 
-config = LoopConfig(max_steps=8, use_native_tools=False)
+config = LoopConfig(max_steps=8, use_native_tools=True)
 
 for step in composable_loop(
     llm=current_backend,
@@ -68,9 +68,10 @@ for step in composable_loop(
     existing_logger.info(step.pretty())
 ```
 
-Keep text-mode tools for the first parity check if the previous harness used a
-text protocol. Native tool calling can be enabled and tested as a separate
-change.
+Native tool calling is now the default, while backends that only support the
+previous text protocol continue to work through the automatic fallback. Set
+the same `use_native_tools` setting to `False` only for a deliberate
+text-protocol parity test.
 
 Run the same deterministic tool tests and a small set of representative tasks
 before adding any hook. If behavior changes, the loop replacement is the only
@@ -295,8 +296,8 @@ Use separate commits or pull requests for these checkpoints:
 4. add one failure-derived case, collector, and required grader;
 5. add only the hooks needed by observed runtime policy;
 6. package the harness as a cartridge if file-native review helps;
-7. enable native tools, compaction, or other operational controls one at a
-   time.
+7. make native tools, compaction, or other operational controls explicit one
+  at a time.
 
 At every checkpoint, keep one cheap parity test that can disprove the current
 migration assumption. The goal is not to use every Looplet feature. The goal

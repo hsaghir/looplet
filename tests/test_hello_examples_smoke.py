@@ -26,8 +26,7 @@ class TestHelloWorldExample:
 
         assert rc == 0
         out = capsys.readouterr().out
-        assert "Tool protocol: json-text" in out
-        assert "Probe: backend has no generate_with_tools method" in out
+        assert "Tool protocol: native by default (automatic text fallback)" in out
         assert "greet(name=Alice)" in out
         assert "greet(name=Bob)" in out
         assert "done(answer=" in out
@@ -50,8 +49,7 @@ class TestOllamaHelloExample:
 
         assert rc == 0
         out = capsys.readouterr().out
-        assert "Tool protocol: json-text" in out
-        assert "Probe: backend has no generate_with_tools method" in out
+        assert "Tool protocol: native by default (automatic text fallback)" in out
         assert "greet(name=Alice)" in out
         assert "greet(name=Bob)" in out
         assert "done(answer=" in out

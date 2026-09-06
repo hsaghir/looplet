@@ -36,7 +36,7 @@ Typical usage::
     for chunk in llm.stream("What is 2+2?"):
         print(chunk, end="", flush=True)
 
-    # Native tool calling (gate with LOOPLET_NATIVE_TOOLS=1)
+    # Native tool calling (selected automatically by LoopConfig)
     schemas = [
         {"name": "get_weather",
          "description": "Get current weather",

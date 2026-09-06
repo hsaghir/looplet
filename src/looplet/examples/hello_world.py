@@ -21,7 +21,6 @@ from looplet import (
     LoopConfig,
     MockLLMBackend,
     composable_loop,
-    probe_native_tool_support,
     tool,
     tools_from,
 )
@@ -102,18 +101,16 @@ def main(argv: list[str] | None = None) -> int:
         llm = OpenAIBackend(base_url=url, api_key=api_key, model=model)
         model_label = model
 
-    protocol_probe = probe_native_tool_support(llm)
     print("looplet hello world")
     print(f"Model: {model_label}")
-    print(f"Tool protocol: {'native' if protocol_probe.supported else 'json-text'}")
-    print(f"Probe: {protocol_probe.reason}")
+    print("Tool protocol: native by default (automatic text fallback)")
     print()
 
     for step in composable_loop(
         llm=llm,
         tools=build_tools(),
         state=DefaultState(max_steps=args.max_steps),
-        config=LoopConfig(max_steps=args.max_steps, use_native_tools=protocol_probe.supported),
+        config=LoopConfig(max_steps=args.max_steps, use_native_tools=True),
         task={"goal": "Greet Alice and Bob, then finish."},
         hooks=[
             EvalHook(

@@ -33,7 +33,6 @@ from looplet import (
     OpenAIBackend,
     TrajectoryRecorder,
     composable_loop,
-    probe_native_tool_support,
 )
 from looplet.compact import PruneToolResults, TruncateCompact, compact_chain
 from looplet.presets import AgentPreset
@@ -171,7 +170,6 @@ def run(
         model_label = model
 
     recording = RecordingLLMBackend(llm)
-    protocol_probe = probe_native_tool_support(recording)
     file_cache = FileCache(workspace_str)
     tools = make_tools(workspace_str, file_cache)
 
@@ -195,7 +193,7 @@ def run(
             PruneToolResults(keep_recent=10), TruncateCompact(keep_recent=5)
         ),
         memory_sources=memory_sources,
-        use_native_tools=protocol_probe.supported,
+        use_native_tools=True,
     )
     state = DefaultState(max_steps=max_steps)
     session_log = SessionLog()
@@ -210,8 +208,7 @@ def run(
     if instructions:
         print(f"  Instructions: {len(instructions)} chars")
     print(f"  Model: {model_label} | Budget: {max_steps} steps")
-    print(f"  Tool protocol: {'native' if protocol_probe.supported else 'json-text'}")
-    print(f"  Probe: {protocol_probe.reason}\n")
+    print("  Tool protocol: native by default (automatic text fallback)\n")
 
     effective_trace_dir = None
     if provenance:
@@ -339,7 +336,7 @@ def build(runtime: Any) -> AgentPreset:
             TruncateCompact(keep_recent=5),
         ),
         memory_sources=memory_sources,
-        use_native_tools=bool(runtime.option("use_native_tools", False)),
+        use_native_tools=bool(runtime.option("use_native_tools", True)),
     )
 
     return AgentPreset(

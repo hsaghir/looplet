@@ -153,7 +153,7 @@ def _parse_call(response: str) -> ToolCall:
 
 
 def _loop_config() -> LoopConfig:
-    return LoopConfig(max_steps=MAX_STEPS, use_native_tools=False, system_prompt=SYSTEM_PROMPT)
+    return LoopConfig(max_steps=MAX_STEPS, use_native_tools=True, system_prompt=SYSTEM_PROMPT)
 
 
 def _raw_prompt(task: dict[str, Any], observations: list[str]) -> str:

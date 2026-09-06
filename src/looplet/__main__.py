@@ -300,7 +300,7 @@ def _doctor_checks(*, probe_backend: bool) -> list[dict[str, str]]:
                 {
                     "name": "tool_protocol",
                     "status": "ok",
-                    "detail": "use LoopConfig(use_native_tools=False) or probe before enabling native tools",
+                    "detail": "native tools are enabled by default; regular text calls are the automatic fallback",
                 }
             )
     except Exception as exc:  # noqa: BLE001

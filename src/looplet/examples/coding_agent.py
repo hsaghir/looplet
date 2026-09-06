@@ -56,7 +56,6 @@ from looplet import (
     StaticMemorySource,
     ThresholdCompactHook,
     composable_loop,
-    probe_native_tool_support,
     tool,
     tools_from,
 )
@@ -430,23 +429,6 @@ def _build_briefing(state: Any, session_log: SessionLog, context: Any) -> str:
     return "\n".join(lines)
 
 
-def _build_prompt(*, use_native: bool = False, **kwargs: Any) -> str | None:
-    """Custom prompt with JSON format instruction for non-native backends."""
-    if use_native:
-        return None  # Let the default prompt handle it
-    from looplet.prompts import build_prompt as _default  # noqa: PLC0415
-
-    return _default(
-        **kwargs,
-        action_prompt=(
-            "Respond with EXACTLY one JSON object, nothing else:\n"
-            '{"tool": "<tool_name>", "args": {<arguments>}, "reasoning": "<why>"}\n'
-            'Example: {"tool": "write", "args": {"file_path": "main.py", '
-            '"content": "print(1)"}, "reasoning": "create main"}'
-        ),
-    )
-
-
 DOMAIN = DomainAdapter(
     build_briefing=_build_briefing,
 )
@@ -561,25 +543,7 @@ def run_coding_agent(
     """
     ws = workspace or tempfile.mkdtemp(prefix="looplet_example_")
 
-    # Detect native tool support behaviorally, then fall back to JSON-text
-    # with explicit format instructions when native tool calls are unavailable.
-    protocol_probe = probe_native_tool_support(llm)
-    _native = protocol_probe.supported
-
-    # When native tools aren't available, add a JSON format instruction
-    # via build_prompt so the model knows the expected response shape.
-    _domain = DomainAdapter(
-        build_briefing=_build_briefing,
-        build_prompt=(
-            None
-            if _native
-            # pyright: ignore[reportArgumentType]
-            else lambda **kw: _build_prompt(use_native=False, **kw)
-        ),
-    )
-
-    print(f"[harness] Tool protocol: {'native' if _native else 'json-text'}")
-    print(f"[harness] Probe: {protocol_probe.reason}")
+    print("[harness] Tool protocol: native by default (automatic text fallback)")
 
     config = LoopConfig(
         max_steps=max_steps,
@@ -589,13 +553,12 @@ def run_coding_agent(
             "install packages, and execute commands. Use edit for targeted "
             "fixes, write for new files. Run tests before calling done."
         ),
-        # Use native tool calling when the backend supports it.
-        use_native_tools=_native,
+        # Native tool calling is the default; the loop falls back to text.
+        use_native_tools=True,
         # Compaction chain: cheap → LLM → truncate
         compact_service=COMPACT_SERVICE,
-        # Domain adapter bundles the briefing builder (+ prompt override
-        # for JSON-text mode when native tools aren't available)
-        domain=_domain,
+        # Domain adapter bundles the briefing builder.
+        domain=DOMAIN,
         # Persistent memory - coding standards survive compaction
         memory_sources=[CODING_STANDARDS],
         # Budget: auto-compact at 80% of context window

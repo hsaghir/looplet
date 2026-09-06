@@ -767,7 +767,7 @@ class TestSkillBundles:
 
         assert rc == 0
         out = capsys.readouterr().out
-        assert "Tool protocol: json-text" in out
+        assert "Tool protocol: native by default (automatic text fallback)" in out
         assert "✏️  #2 write: math_utils.py" in out
         assert "Done: Created math_utils.add with tests." in out
         assert (tmp_path / "math_utils.py").exists()

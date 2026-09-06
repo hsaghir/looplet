@@ -24,7 +24,6 @@ from looplet import (
     LoopConfig,
     MockLLMBackend,
     composable_loop,
-    probe_native_tool_support,
     tool,
     tools_from,
 )
@@ -82,11 +81,9 @@ def main(argv: list[str] | None = None) -> int:
         llm = OpenAIBackend(base_url=base_url, api_key="ollama", model=model)
         model_label = model
 
-    protocol_probe = probe_native_tool_support(llm)
     print("looplet ollama hello")
     print(f"Model: {model_label}")
-    print(f"Tool protocol: {'native' if protocol_probe.supported else 'json-text'}")
-    print(f"Probe: {protocol_probe.reason}")
+    print("Tool protocol: native by default (automatic text fallback)")
     print()
 
     for step in composable_loop(
@@ -95,7 +92,7 @@ def main(argv: list[str] | None = None) -> int:
         state=DefaultState(max_steps=args.max_steps),
         config=LoopConfig(
             max_steps=args.max_steps,
-            use_native_tools=protocol_probe.supported,
+            use_native_tools=True,
         ),
         task={"goal": "Greet Alice and Bob, then call done with a summary."},
     ):

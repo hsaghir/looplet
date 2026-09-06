@@ -142,7 +142,8 @@ async def async_llm_call(
 
     Awaits ``llm.generate()`` or ``llm.generate_with_tools()`` when
     they are coroutines; calls them synchronously otherwise (supporting
-    sync backends used from async context).
+    sync backends used from async context). A failed native call
+    transparently falls back to ``generate()``.
     """
     if cancel_token is not None and getattr(cancel_token, "is_cancelled", False):
         return LLMResult(None, RuntimeError("cancelled before LLM call"))
@@ -175,8 +176,9 @@ async def async_llm_call(
         return out
 
     last_error: Exception | None = None
+    attempt_limit = max_retries + 1 + int(use_native)
 
-    for attempt in range(max_retries + 1):
+    for attempt in range(attempt_limit):
         if cancel_token is not None and getattr(cancel_token, "is_cancelled", False):
             return LLMResult(None, RuntimeError("cancelled during retry"))
         try:
@@ -195,6 +197,8 @@ async def async_llm_call(
                 result = llm.generate_with_tools(prompt, **call_kwargs)
                 if inspect.isawaitable(result):
                     result = await result
+                if result is None:
+                    raise RuntimeError("native tool call returned no response")
                 return LLMResult(result, stop_reason=getattr(llm, "last_stop_reason", None))
 
             call_kwargs = {
@@ -214,7 +218,14 @@ async def async_llm_call(
             last_error = e
             if _is_prompt_too_long(e):
                 return LLMResult(None, e)
-            if attempt < max_retries:
+            if use_native:
+                logger.warning(
+                    "Async native tool call failed; falling back to regular generation: %s",
+                    e,
+                )
+                use_native = False
+                continue
+            if attempt < attempt_limit - 1:
                 wait = RETRY_BACKOFF_BASE * (2**attempt)
                 logger.warning(
                     "Async LLM call attempt %d/%d failed: %s - retrying in %.1fs",
@@ -224,6 +235,8 @@ async def async_llm_call(
                     wait,
                 )
                 await asyncio.sleep(wait)
+            else:
+                return LLMResult(None, last_error)
 
     return LLMResult(None, last_error)
 

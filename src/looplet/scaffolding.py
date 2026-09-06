@@ -196,7 +196,9 @@ def llm_call_with_retry(
 
     When ``tools`` is provided and the backend exposes ``generate_with_tools``,
     native tool calling is used; otherwise the call falls back to ``generate``
-    (plain text → JSON-text tool parsing upstream).
+    (plain text → JSON-text tool parsing upstream). If the native call raises,
+    the same call transparently downgrades to ``generate`` without requiring a
+    second configuration setting.
 
     When ``cancel_token`` is provided:
       * If already cancelled before the call, returns an error result
@@ -210,8 +212,10 @@ def llm_call_with_retry(
         return LLMResult(None, RuntimeError("cancelled before LLM call"))
 
     use_native = tools is not None and hasattr(llm, "generate_with_tools")
+    # Reserve one extra iteration for the transparent native -> text fallback.
+    attempt_limit = max_retries + 1 + int(use_native)
     last_error: Exception | None = None
-    for attempt in range(max_retries + 1):
+    for attempt in range(attempt_limit):
         # Re-check cancellation between retries - a long backoff could span it.
         if cancel_token is not None and getattr(cancel_token, "is_cancelled", False):
             return LLMResult(None, RuntimeError("cancelled during retry backoff"))
@@ -237,6 +241,8 @@ def llm_call_with_retry(
                 if cache_breakpoints and _accepts_kwarg(call, "cache_breakpoints"):
                     call_kwargs["cache_breakpoints"] = cache_breakpoints
                 blocks = call(prompt, **call_kwargs)
+                if blocks is None:
+                    raise RuntimeError("native tool call returned no response")
                 return LLMResult(blocks, stop_reason=getattr(llm, "last_stop_reason", None))
             call = llm.generate
             call_kwargs = {
@@ -298,6 +304,13 @@ def llm_call_with_retry(
             if _is_prompt_too_long(e):
                 logger.warning("Prompt too long (not retrying): %s", e)
                 return LLMResult(None, e)
+            if use_native:
+                logger.warning(
+                    "Native tool call failed; falling back to regular generation: %s",
+                    e,
+                )
+                use_native = False
+                continue
             # MockLLMBackend(cycle=False) raises LLMResponsesExhausted when
             # a test scripted fewer responses than the loop asked for.
             # Retrying the same exhausted mock never helps; surface the
@@ -306,7 +319,7 @@ def llm_call_with_retry(
             if type(e).__name__ == "LLMResponsesExhausted":
                 logger.warning("Mock LLM exhausted (not retrying): %s", e)
                 return LLMResult(None, e)
-            if attempt < max_retries:
+            if attempt < attempt_limit - 1:
                 wait = RETRY_BACKOFF_BASE * (2**attempt)
                 logger.warning(
                     "LLM call failed (attempt %d/%d): %s - retrying in %.1fs",
@@ -322,6 +335,7 @@ def llm_call_with_retry(
                     max_retries + 1,
                     last_error,
                 )
+                return LLMResult(None, last_error)
     return LLMResult(None, last_error)
 
 

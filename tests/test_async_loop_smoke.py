@@ -45,6 +45,29 @@ class TestAsyncLlmCall:
         assert result.text == "recovered"
         assert mock.calls == 2
 
+    async def test_native_failure_falls_back_to_regular_generation(self):
+        calls = []
+
+        class NativeFailureBackend:
+            async def generate_with_tools(self, prompt, *, tools, **kwargs):
+                calls.append("native")
+                raise RuntimeError("tools endpoint unsupported")
+
+            async def generate(self, prompt, **kwargs):
+                calls.append("regular")
+                return '{"tool": "done", "args": {}}'
+
+        result = await async_llm_call(
+            NativeFailureBackend(),
+            "finish",
+            tools=[{"name": "done"}],
+            max_retries=0,
+        )
+
+        assert result.ok
+        assert result.text == '{"tool": "done", "args": {}}'
+        assert calls == ["native", "regular"]
+
 
 class TestAsyncComposableLoop:
     async def test_basic_loop(self):

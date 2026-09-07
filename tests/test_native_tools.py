@@ -18,6 +18,14 @@ from typing import Any
 
 import pytest
 
+from looplet import (
+    DefaultState,
+    LoopConfig,
+    async_composable_loop,
+    composable_loop,
+    tool,
+    tools_from,
+)
 from looplet.backends import (
     AnthropicBackend,
     OpenAIBackend,
@@ -25,6 +33,7 @@ from looplet.backends import (
     _openai_message_to_blocks,
     _to_openai_tools,
 )
+from looplet.native_tools import NativeToolPolicy
 from looplet.scaffolding import llm_call_with_retry
 from looplet.types import NativeToolBackend
 
@@ -255,7 +264,48 @@ class _NativeFailureBackend:
         return '{"tool": "done", "args": {}}'
 
 
+class _StickyNativeFailureBackend:
+    def __init__(self) -> None:
+        self.native_calls = 0
+        self.regular_calls = 0
+
+    def generate_with_tools(
+        self, prompt, *, tools, max_tokens=2000, system_prompt="", temperature=0.2
+    ):
+        del prompt, tools, max_tokens, system_prompt, temperature
+        self.native_calls += 1
+        raise RuntimeError("tools endpoint unsupported")
+
+    def generate(self, prompt, *, max_tokens=2000, system_prompt="", temperature=0.2):
+        del prompt, max_tokens, system_prompt, temperature
+        self.regular_calls += 1
+        if self.regular_calls == 1:
+            return '{"tool": "echo", "args": {"value": "x"}}'
+        return '{"tool": "done", "args": {"answer": "done"}}'
+
+
+@tool(description="Echo a value.")
+def _echo(*, value: str) -> dict[str, str]:
+    return {"value": value}
+
+
 class TestLLMCallWithRetryNative:
+    def test_native_policy_defaults_on_and_parses_after_demotion(self):
+        policy = NativeToolPolicy()
+        backend = _NativeBackend()
+        assert policy.enabled is True
+        assert policy.should_use(backend, _weather_schema())
+        assert (
+            policy.parse_response([{"type": "tool_use", "id": "n1", "name": "done", "input": {}}])[
+                0
+            ].tool
+            == "done"
+        )
+
+        policy.demote()
+        assert not policy.should_use(backend, _weather_schema())
+        assert policy.parse_response('{"tool": "done", "args": {}}')[0].tool == "done"
+
     def test_no_tools_uses_generate(self):
         backend = _NoToolBackend()
         result = llm_call_with_retry(backend, "hi")
@@ -287,3 +337,37 @@ class TestLLMCallWithRetryNative:
         assert result.ok
         assert isinstance(result.text, str)
         assert backend.calls == ["native", "regular"]
+        assert result.native_fallback is True
+
+    def test_native_failure_is_demoted_for_the_rest_of_the_loop(self):
+        backend = _StickyNativeFailureBackend()
+        tools = tools_from([_echo], include_done=True, done_parameters={"answer": "x"})
+
+        for _ in composable_loop(
+            llm=backend,
+            task={"goal": "echo then finish"},
+            tools=tools,
+            state=DefaultState(max_steps=3),
+            config=LoopConfig(max_steps=3),
+        ):
+            pass
+
+        assert backend.native_calls == 1
+        assert backend.regular_calls == 2
+
+    @pytest.mark.asyncio
+    async def test_async_native_failure_is_demoted_for_the_rest_of_the_loop(self):
+        backend = _StickyNativeFailureBackend()
+        tools = tools_from([_echo], include_done=True, done_parameters={"answer": "x"})
+
+        async for _ in async_composable_loop(
+            llm=backend,
+            task={"goal": "echo then finish"},
+            tools=tools,
+            state=DefaultState(max_steps=3),
+            config=LoopConfig(max_steps=3),
+        ):
+            pass
+
+        assert backend.native_calls == 1
+        assert backend.regular_calls == 2

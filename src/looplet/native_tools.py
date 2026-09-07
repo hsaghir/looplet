@@ -11,6 +11,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from looplet.parse import parse_multi_tool_calls, parse_native_tool_use
+
 
 @dataclass(frozen=True)
 class NativeToolProbeResult:
@@ -24,6 +26,46 @@ class NativeToolProbeResult:
 
     raw_response: Any = None
     """Raw backend response, useful for debugging proxy mismatches."""
+
+
+@dataclass
+class NativeToolPolicy:
+    """Own native-tool selection for one loop run.
+
+    ``enabled`` is the user-facing policy switch and defaults to ``True``.
+    ``demoted`` is transient run state: a rejected native call moves the
+    current run to the regular text protocol for all later calls.
+    """
+
+    enabled: bool = True
+    demoted: bool = False
+
+    def should_use(self, llm: Any, tools: Any | None) -> bool:
+        """Return whether this call should use the native tool protocol."""
+        return bool(
+            self.enabled
+            and not self.demoted
+            and tools is not None
+            and callable(getattr(llm, "generate_with_tools", None))
+        )
+
+    def tool_schemas(self, llm: Any, tools: Any | None) -> list[dict[str, Any]] | None:
+        """Return schemas for a native call, or ``None`` for text mode."""
+        if tools is None or not self.should_use(llm, tools):
+            return None
+        return tools.tool_schemas()
+
+    def demote(self) -> None:
+        """Use the regular text protocol for the rest of this run."""
+        self.demoted = True
+
+    def parse_response(self, response: Any) -> list[Any]:
+        """Parse a response according to the protocol used by this run."""
+        if self.enabled and not self.demoted and isinstance(response, list):
+            tool_calls = parse_native_tool_use(response)
+            if tool_calls:
+                return tool_calls
+        return parse_multi_tool_calls(response)
 
 
 def probe_native_tool_support(

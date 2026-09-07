@@ -50,7 +50,8 @@ from looplet.loop import (
     _run_post_dispatch_hooks,
     emit_event,
 )
-from looplet.parse import parse_multi_tool_calls, parse_native_tool_use, to_text
+from looplet.native_tools import NativeToolPolicy
+from looplet.parse import parse_multi_tool_calls, to_text
 from looplet.scaffolding import (
     PARSE_RECOVERY_MAX,
     LLMResult,
@@ -134,6 +135,7 @@ async def async_llm_call(
     temperature: float = 0.2,
     max_retries: int = MAX_LLM_RETRIES,
     tools: list[dict[str, Any]] | None = None,
+    native_policy: NativeToolPolicy | None = None,
     cancel_token: Any | None = None,
     cache_breakpoints: list[Any] | None = None,
     generate_kwargs: dict[str, Any] | None = None,
@@ -148,7 +150,8 @@ async def async_llm_call(
     if cancel_token is not None and getattr(cancel_token, "is_cancelled", False):
         return LLMResult(None, RuntimeError("cancelled before LLM call"))
 
-    use_native = tools is not None and hasattr(llm, "generate_with_tools")
+    policy = native_policy or NativeToolPolicy()
+    use_native = policy.should_use(llm, tools)
     _gk = generate_kwargs or {}
 
     def _method_accepts(method_name: str, name: str) -> bool:
@@ -176,6 +179,7 @@ async def async_llm_call(
         return out
 
     last_error: Exception | None = None
+    native_fallback = False
     attempt_limit = max_retries + 1 + int(use_native)
 
     for attempt in range(attempt_limit):
@@ -199,7 +203,10 @@ async def async_llm_call(
                     result = await result
                 if result is None:
                     raise RuntimeError("native tool call returned no response")
-                return LLMResult(result, stop_reason=getattr(llm, "last_stop_reason", None))
+                return LLMResult(
+                    result,
+                    stop_reason=getattr(llm, "last_stop_reason", None),
+                )
 
             call_kwargs = {
                 "max_tokens": max_tokens,
@@ -212,7 +219,11 @@ async def async_llm_call(
             result = llm.generate(prompt, **call_kwargs)
             if inspect.isawaitable(result):
                 result = await result
-            return LLMResult(result, stop_reason=getattr(llm, "last_stop_reason", None))
+            return LLMResult(
+                result,
+                stop_reason=getattr(llm, "last_stop_reason", None),
+                native_fallback=native_fallback,
+            )
 
         except Exception as e:
             last_error = e
@@ -223,7 +234,9 @@ async def async_llm_call(
                     "Async native tool call failed; falling back to regular generation: %s",
                     e,
                 )
+                policy.demote()
                 use_native = False
+                native_fallback = True
                 continue
             if attempt < attempt_limit - 1:
                 wait = RETRY_BACKOFF_BASE * (2**attempt)
@@ -391,6 +404,7 @@ async def async_composable_loop(
     stop_reason = "budget_exhausted"
     llm_calls = 0
     consecutive_parse_failures = 0
+    native_policy = NativeToolPolicy(enabled=config.use_native_tools)
     post_dispatch_parts: list[str] = []
     # Wrap async LLM in a sync bridge so tools can use ctx.llm.generate()
     # without needing to await. The bridge handles the async→sync
@@ -477,8 +491,7 @@ async def async_composable_loop(
             )
 
         # ── Native tool schemas ─────────────────────────────────
-        _native_on = config.use_native_tools and hasattr(llm, "generate_with_tools")
-        _tool_schemas = tools.tool_schemas() if _native_on else None
+        _tool_schemas = native_policy.tool_schemas(llm, tools)
 
         _cache_bps: list[Any] | None = None
         if config.cache_policy is not None:
@@ -511,6 +524,7 @@ async def async_composable_loop(
             system_prompt=config.system_prompt,
             temperature=config.temperature,
             tools=_tool_schemas,
+            native_policy=native_policy,
             cancel_token=config.cancel_token,
             cache_breakpoints=_cache_bps,
             generate_kwargs=config.generate_kwargs or None,
@@ -540,16 +554,7 @@ async def async_composable_loop(
             break
 
         # ── Parse response ──────────────────────────────────────
-        if config.use_native_tools and isinstance(raw_response, list):
-            tool_calls = parse_native_tool_use(raw_response)
-            # Graceful fallback: model may return text-only content (no
-            # tool_use blocks) even when native tools are enabled. Re-parse
-            # the flattened text via the JSON-text parser, which strips
-            # markdown fences and tolerates surrounding prose.
-            if not tool_calls:
-                tool_calls = parse_multi_tool_calls(raw_response)
-        else:
-            tool_calls = parse_multi_tool_calls(raw_response)
+        tool_calls = native_policy.parse_response(raw_response)
 
         if not tool_calls:
             consecutive_parse_failures += 1

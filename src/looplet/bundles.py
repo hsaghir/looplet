@@ -348,14 +348,22 @@ def run_skill_bundle(
 
     This helper is the console/bundle adapter: it loads a bundle,
     asks the bundle for normal looplet primitives, and delegates to the
-    unchanged core loop.
+    unchanged core loop. A preset built by this helper is closed when the
+    returned iterator finishes; a caller-supplied preset remains caller-owned.
     """
     loaded = load_skill_bundle(bundle) if isinstance(bundle, (str, Path)) else bundle
     runtime = runtime or SkillRuntime()
-    preset = preset or loaded.build_preset(runtime)
-    errors, _ = _validate_preset_contract(preset, runtime)
-    if errors:
-        raise ValueError("invalid bundle preset: " + "; ".join(errors))
+    owns_preset = preset is None
+    if owns_preset:
+        preset = loaded.build_preset(runtime)
+    try:
+        errors, _ = _validate_preset_contract(preset, runtime)
+        if errors:
+            raise ValueError("invalid bundle preset: " + "; ".join(errors))
+    except Exception:
+        if owns_preset and isinstance(preset, AgentPreset):
+            preset.close()
+        raise
     preset = cast(AgentPreset, preset)
     loop_task = {"description": task} if isinstance(task, str) else dict(task)
     hooks = [*preset.hooks, *extra_hooks]
@@ -384,8 +392,12 @@ def run_skill_bundle(
                     conversation=conversation,
                 )
         finally:
-            if sink is not None:
-                sink.flush()
+            try:
+                if sink is not None:
+                    sink.flush()
+            finally:
+                if owns_preset:
+                    preset.close()
 
     return _steps()
 

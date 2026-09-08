@@ -24,7 +24,8 @@ from looplet.checkpoint import (
 )
 from looplet.history import HistoryRecorder
 from looplet.hook_decision import normalize_hook_return
-from looplet.parse import parse_multi_tool_calls, parse_native_tool_use, to_text
+from looplet.native_tools import NativeToolPolicy
+from looplet.parse import parse_multi_tool_calls, to_text
 from looplet.recovery import FailureScenario as _FailureScenario
 from looplet.recovery_strategies import (
     rebuild_prompt as _rebuild_prompt,
@@ -1712,6 +1713,7 @@ def composable_loop(
 
     # ── Loop state ──────────────────────────────────────────
     consecutive_parse_failures = 0
+    native_policy = NativeToolPolicy(enabled=config.use_native_tools)
     quality_gate_message = ""
     post_dispatch_parts: list[str] = []
     llm_calls = 0
@@ -2056,8 +2058,7 @@ def composable_loop(
                     f"llm.call.step_{step_num}",
                     attributes={"step": step_num},
                 )
-            _native_on = (config.use_native_tools) and hasattr(effective_llm, "generate_with_tools")
-            _tool_schemas = tools.tool_schemas() if _native_on else None
+            _tool_schemas = native_policy.tool_schemas(effective_llm, tools)
             # ── Prompt cache breakpoints (opt-in) ─────────────────
             # When a ``cache_policy`` is configured, compute hashes for
             # the stable sections and hand them to the backend. If a
@@ -2099,6 +2100,7 @@ def composable_loop(
                 system_prompt=config.system_prompt,
                 temperature=config.temperature,
                 tools=_tool_schemas,
+                native_policy=native_policy,
                 cancel_token=config.cancel_token,
                 max_continuations=config.max_turn_continuations,
                 cache_breakpoints=_cache_bps,
@@ -2207,17 +2209,7 @@ def composable_loop(
             break
 
         # ── Parse response (native tool_use or JSON text) ────
-        if (config.use_native_tools) and isinstance(raw_response, list):
-            tool_calls = parse_native_tool_use(raw_response)
-            # Graceful fallback: model may return text-only content (no
-            # tool_use blocks) even when native tools are enabled - e.g.
-            # when it emits a JSON tool call inside a markdown code fence.
-            # Re-parse the flattened text via the JSON-text parser, which
-            # already handles fences, extra prose, and escape repair.
-            if not tool_calls:
-                tool_calls = parse_multi_tool_calls(raw_response)
-        else:
-            tool_calls = parse_multi_tool_calls(raw_response)
+        tool_calls = native_policy.parse_response(raw_response)
         if not tool_calls:
             consecutive_parse_failures += 1
             # Consult recovery_registry if set - use returned action

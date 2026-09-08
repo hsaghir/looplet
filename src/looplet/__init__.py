@@ -138,6 +138,7 @@ from looplet.model_gateway import (
     ModelGatewayServer,
 )
 from looplet.native_tools import (
+    NativeToolPolicy,
     NativeToolProbeResult,
     probe_native_tool_support,
     supports_native_tools,
@@ -275,6 +276,7 @@ __all__ = [
     "ModelGatewayClient",
     "ModelGatewayHandle",
     "NativeToolProbeResult",
+    "NativeToolPolicy",
     "probe_native_tool_support",
     "supports_native_tools",
     # ── CONTEXT MANAGEMENT ──────────────────────────────────────

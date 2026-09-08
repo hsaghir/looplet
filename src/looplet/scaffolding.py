@@ -20,6 +20,8 @@ import re
 import time
 from typing import Any
 
+from looplet.native_tools import NativeToolPolicy
+
 logger = logging.getLogger(__name__)
 
 
@@ -87,9 +89,18 @@ class LLMResult:
     ``continuations`` counts how many budget-aware continuation calls
     were stitched together to produce ``text`` - always ``0`` unless
     the caller requested continuation.
+    ``native_fallback`` is true when a native tool call was rejected and
+    the returned response came from the regular text path.
     """
 
-    __slots__ = ("text", "error", "is_prompt_too_long", "stop_reason", "continuations")
+    __slots__ = (
+        "text",
+        "error",
+        "is_prompt_too_long",
+        "stop_reason",
+        "continuations",
+        "native_fallback",
+    )
 
     def __init__(
         self,
@@ -97,12 +108,14 @@ class LLMResult:
         error: Exception | None = None,
         stop_reason: str | None = None,
         continuations: int = 0,
+        native_fallback: bool = False,
     ) -> None:
         self.text = text
         self.error = error
         self.is_prompt_too_long = error is not None and _is_prompt_too_long(error)
         self.stop_reason = stop_reason
         self.continuations = continuations
+        self.native_fallback = native_fallback
 
     @property
     def ok(self) -> bool:
@@ -177,6 +190,7 @@ def llm_call_with_retry(
     temperature: float = 0.2,
     max_retries: int = MAX_LLM_RETRIES,
     tools: list[dict[str, Any]] | None = None,
+    native_policy: NativeToolPolicy | None = None,
     cancel_token: Any | None = None,
     max_continuations: int = 0,
     cache_breakpoints: list[Any] | None = None,
@@ -211,10 +225,12 @@ def llm_call_with_retry(
     if cancel_token is not None and getattr(cancel_token, "is_cancelled", False):
         return LLMResult(None, RuntimeError("cancelled before LLM call"))
 
-    use_native = tools is not None and hasattr(llm, "generate_with_tools")
+    policy = native_policy or NativeToolPolicy()
+    use_native = policy.should_use(llm, tools)
     # Reserve one extra iteration for the transparent native -> text fallback.
     attempt_limit = max_retries + 1 + int(use_native)
     last_error: Exception | None = None
+    native_fallback = False
     for attempt in range(attempt_limit):
         # Re-check cancellation between retries - a long backoff could span it.
         if cancel_token is not None and getattr(cancel_token, "is_cancelled", False):
@@ -298,7 +314,12 @@ def llm_call_with_retry(
                 stop = getattr(llm, "last_stop_reason", None)
                 _cont += 1
             final_text: Any = _acc_text if _cont > 0 else text
-            return LLMResult(final_text, stop_reason=stop, continuations=_cont)
+            return LLMResult(
+                final_text,
+                stop_reason=stop,
+                continuations=_cont,
+                native_fallback=native_fallback,
+            )
         except Exception as e:
             last_error = e
             if _is_prompt_too_long(e):
@@ -309,7 +330,9 @@ def llm_call_with_retry(
                     "Native tool call failed; falling back to regular generation: %s",
                     e,
                 )
+                policy.demote()
                 use_native = False
+                native_fallback = True
                 continue
             # MockLLMBackend(cycle=False) raises LLMResponsesExhausted when
             # a test scripted fewer responses than the loop asked for.

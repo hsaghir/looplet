@@ -351,7 +351,6 @@ def _render_run(
         run_skill_bundle,
         validate_skill_bundle,
     )
-    from looplet.native_tools import probe_native_tool_support  # noqa: PLC0415
     from looplet.resilient import ResilientBackend  # noqa: PLC0415
     from looplet.testing import MockLLMBackend  # noqa: PLC0415
 
@@ -375,7 +374,7 @@ def _render_run(
         return SkillRuntime(
             workspace=workspace,
             max_steps=max_steps,
-            options={"require_tests": require_tests, "use_native_tools": False},
+            options={"require_tests": require_tests, "use_native_tools": True},
             output_dir=output_dir,
         )
 
@@ -496,7 +495,7 @@ def _render_run(
         enabled: bool
         used_as_bool: bool
 
-        def __init__(self, enabled: bool = False) -> None:
+        def __init__(self, enabled: bool = True) -> None:
             self.enabled = enabled
             self.used_as_bool = False
 
@@ -523,7 +522,7 @@ def _render_run(
                 output_dir=output_dir,
             )
             object.__setattr__(self, "accessed_options", set())
-            object.__setattr__(self, "native_tool_flag", _NativeToolFlag(False))
+            object.__setattr__(self, "native_tool_flag", _NativeToolFlag(True))
 
         def option(self, name: str, default: Any = None) -> Any:
             self.accessed_options.add(name)
@@ -534,7 +533,7 @@ def _render_run(
     runtime = _TrackingRuntime(
         workspace=workspace,
         max_steps=max_steps,
-        options={"require_tests": require_tests, "use_native_tools": False},
+        options={"require_tests": require_tests, "use_native_tools": True},
         output_dir=effective_trace_dir,
     )
     validation = provider_validation or validate_skill_bundle(bundle, runtime)
@@ -556,28 +555,22 @@ def _render_run(
         )
         model_label = model
 
-    protocol_probe = probe_native_tool_support(llm)
-    if protocol_probe.supported and "use_native_tools" in runtime.accessed_options:
-        runtime.native_tool_flag.enabled = True
-        if validation.preset is not None:
-            if validation.preset.config.use_native_tools is False:
-                if runtime.native_tool_flag.used_as_bool:
-                    validation.preset.config.use_native_tools = True
     for warning in validation.warnings:
         print(f"warning: {warning}", file=sys.stderr)
 
     uses_native_protocol = bool(
-        protocol_probe.supported
-        and validation.preset is not None
-        and validation.preset.config.use_native_tools
+        validation.preset is not None and validation.preset.config.use_native_tools
     )
 
     print(f"looplet run {bundle.skill.name}")
     print(f"  Task: {task}")
     print(f"  Cartridge: {workspace}")
     print(f"  Model: {model_label} | Budget: {max_steps} steps")
-    print(f"  Tool protocol: {'native' if uses_native_protocol else 'json-text'}")
-    print(f"  Probe: {protocol_probe.reason}")
+    print(
+        "  Tool protocol: native by default (automatic text fallback)"
+        if uses_native_protocol
+        else "  Tool protocol: json-text"
+    )
     print()
 
     render_step = getattr(bundle.module, "render_step", None)

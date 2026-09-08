@@ -354,6 +354,10 @@ def _render_run(
     from looplet.resilient import ResilientBackend  # noqa: PLC0415
     from looplet.testing import MockLLMBackend  # noqa: PLC0415
 
+    def _close_validation_preset(validation: BundleValidation | None) -> None:
+        if validation is not None and validation.preset is not None:
+            validation.preset.close()
+
     try:
         bundle = load_skill_bundle(bundle_path)
     except Exception as exc:  # noqa: BLE001
@@ -406,6 +410,7 @@ def _render_run(
             )
             if not provider_validation.ok:
                 _report_invalid_bundle(provider_validation)
+                _close_validation_preset(provider_validation)
                 return 1
             provider = cast(Callable[[], Iterable[str]], provider)
             provider_returned_string = False
@@ -422,6 +427,7 @@ def _render_run(
                     file=sys.stderr,
                 )
                 print(f"  - {type(exc).__name__}: {exc}", file=sys.stderr)
+                _close_validation_preset(provider_validation)
                 return 1
             if provider_returned_string:
                 print(
@@ -429,12 +435,14 @@ def _render_run(
                     "an iterable of response strings, got str",
                     file=sys.stderr,
                 )
+                _close_validation_preset(provider_validation)
                 return 1
             if not scripted_responses:
                 print(
                     f"error: bundle {bundle.skill.name!r} scripted_responses() returned no responses",
                     file=sys.stderr,
                 )
+                _close_validation_preset(provider_validation)
                 return 1
             for index, response in enumerate(scripted_responses, start=1):
                 if not isinstance(response, str):
@@ -443,6 +451,7 @@ def _render_run(
                         f"{index} must be str, got {type(response).__name__}",
                         file=sys.stderr,
                     )
+                    _close_validation_preset(provider_validation)
                     return 1
                 if not response.strip():
                     print(
@@ -450,6 +459,7 @@ def _render_run(
                         f"{index} must not be empty",
                         file=sys.stderr,
                     )
+                    _close_validation_preset(provider_validation)
                     return 1
         elif not callable(bundle_run):
             print(
@@ -465,6 +475,7 @@ def _render_run(
         )
         if not validation.ok:
             _report_invalid_bundle(validation)
+            _close_validation_preset(validation)
             return 1
         for warning in validation.warnings:
             print(f"warning: {warning}", file=sys.stderr)
@@ -484,11 +495,14 @@ def _render_run(
         except Exception as exc:  # noqa: BLE001
             print(f"error: bundle {bundle.skill.name!r} failed while running", file=sys.stderr)
             print(f"  - {type(exc).__name__}: {exc}", file=sys.stderr)
+            _close_validation_preset(validation)
             return 1
         if isinstance(result, bool) or not isinstance(result, int):
             print(f"error: bundle {bundle.skill.name!r} returned invalid status", file=sys.stderr)
             print(f"  - expected int exit code, got {type(result).__name__}", file=sys.stderr)
+            _close_validation_preset(validation)
             return 1
+        _close_validation_preset(validation)
         return result
 
     class _NativeToolFlag:
@@ -539,6 +553,7 @@ def _render_run(
     validation = provider_validation or validate_skill_bundle(bundle, runtime)
     if not validation.ok:
         _report_invalid_bundle(validation)
+        _close_validation_preset(validation)
         return 1
 
     if scripted_mode:
@@ -575,27 +590,30 @@ def _render_run(
 
     render_step = getattr(bundle.module, "render_step", None)
     try:
-        for step in run_skill_bundle(
-            bundle,
-            llm=llm,
-            task=task,
-            runtime=runtime,
-            provenance=not no_trace,
-            trace_dir=effective_trace_dir,
-            preset=validation.preset,
-        ):
-            if callable(render_step):
-                with bundle.import_context():
-                    rendered = render_step(step)
-                if rendered:
-                    print(rendered)
-            else:
-                status = "ERROR" if step.tool_result.error else "ok"
-                print(f"#{step.number} {step.tool_call.tool} {status}")
-    except Exception as exc:  # noqa: BLE001
-        print(f"error: bundle {bundle.skill.name!r} failed while running", file=sys.stderr)
-        print(f"  - {type(exc).__name__}: {exc}", file=sys.stderr)
-        return 1
+        try:
+            for step in run_skill_bundle(
+                bundle,
+                llm=llm,
+                task=task,
+                runtime=runtime,
+                provenance=not no_trace,
+                trace_dir=effective_trace_dir,
+                preset=validation.preset,
+            ):
+                if callable(render_step):
+                    with bundle.import_context():
+                        rendered = render_step(step)
+                    if rendered:
+                        print(rendered)
+                else:
+                    status = "ERROR" if step.tool_result.error else "ok"
+                    print(f"#{step.number} {step.tool_call.tool} {status}")
+        except Exception as exc:  # noqa: BLE001
+            print(f"error: bundle {bundle.skill.name!r} failed while running", file=sys.stderr)
+            print(f"  - {type(exc).__name__}: {exc}", file=sys.stderr)
+            return 1
+    finally:
+        _close_validation_preset(validation)
     if effective_trace_dir is not None:
         print(f"\n  Trace: {effective_trace_dir}")
     return 0

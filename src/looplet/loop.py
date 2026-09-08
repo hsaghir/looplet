@@ -46,7 +46,15 @@ from looplet.scaffolding import (
 )
 from looplet.session import SessionLog
 from looplet.tools import BaseToolRegistry, _summarize_args_dict
-from looplet.types import AgentState, Step, ToolCall, ToolContext, ToolResult
+from looplet.types import (
+    AgentState,
+    RunPhase,
+    RunStatus,
+    Step,
+    ToolCall,
+    ToolContext,
+    ToolResult,
+)
 from looplet.validation import validate_args as _validate_args
 
 
@@ -117,6 +125,9 @@ class LoopContext:
     config: Any
     resources: dict[str, Any] = field(default_factory=dict)
     step_num: int = 0
+    status: RunStatus = RunStatus.CREATED
+    phase: RunPhase = RunPhase.STARTING
+    termination_reason: str | None = None
 
 
 # ── Hook Protocol ────────────────────────────────────────────────
@@ -817,6 +828,44 @@ def _bind_loop_context(loop_ctx: LoopContext, hooks: list[Any]) -> None:
                 pass
 
 
+def _set_run_lifecycle(
+    loop_ctx: LoopContext,
+    *,
+    status: RunStatus | None = None,
+    phase: RunPhase | None = None,
+    termination_reason: str | None = None,
+) -> None:
+    """Update the live lifecycle view and compatible state metadata."""
+
+    if status is not None:
+        loop_ctx.status = status
+    if phase is not None:
+        loop_ctx.phase = phase
+    if termination_reason is not None:
+        loop_ctx.termination_reason = termination_reason
+
+    state = loop_ctx.state
+    for name, value in (
+        ("run_status", loop_ctx.status.value),
+        ("run_phase", loop_ctx.phase.value),
+        ("termination_reason", loop_ctx.termination_reason),
+    ):
+        try:
+            setattr(state, name, value)
+        except AttributeError:
+            pass
+    metadata = getattr(state, "metadata", None)
+    if isinstance(metadata, dict):
+        metadata.update(
+            {
+                "run_status": loop_ctx.status.value,
+                "run_phase": loop_ctx.phase.value,
+            }
+        )
+        if loop_ctx.termination_reason is not None:
+            metadata["termination_reason"] = loop_ctx.termination_reason
+
+
 def _build_tool_ctx(
     config: "LoopConfig",
     *,
@@ -865,7 +914,13 @@ def _build_tool_ctx(
     if state is not None:
         _state_meta = getattr(state, "metadata", None)
         if isinstance(_state_meta, dict):
-            _metadata.update(_state_meta)
+            _metadata.update(
+                {
+                    key: value
+                    for key, value in _state_meta.items()
+                    if key not in {"run_status", "run_phase", "termination_reason"}
+                }
+            )
 
     return ToolContext(
         cancel_token=config.cancel_token,
@@ -989,6 +1044,10 @@ def emit_event(
     from looplet.hook_decision import HookDecision  # noqa: PLC0415
 
     decisions: list[Any] = []
+    state = payload_kwargs.get("state")
+    if state is not None:
+        payload_kwargs.setdefault("run_status", getattr(state, "run_status", None))
+        payload_kwargs.setdefault("run_phase", getattr(state, "run_phase", None))
     payload = EventPayload(event=event, **payload_kwargs)
     for hook in hooks:
         fn = getattr(hook, "on_event", None)
@@ -1793,6 +1852,7 @@ def composable_loop(
         step_num=0,
     )
     _bind_loop_context(loop_ctx, hooks)
+    _set_run_lifecycle(loop_ctx, status=RunStatus.RUNNING, phase=RunPhase.STARTING)
 
     for hook in hooks:
         if hasattr(hook, "pre_loop"):
@@ -1844,6 +1904,7 @@ def composable_loop(
         # reads the live values (rather than a snapshot from start-of-loop).
         loop_ctx.step_num = step_num
         loop_ctx.conversation = _conv
+        _set_run_lifecycle(loop_ctx, phase=RunPhase.PROMPTING)
         _hook_requested_stop = False  # reset per step; honored after dispatch
 
         # Clear per-step hook context so hooks start each step with
@@ -2088,6 +2149,7 @@ def composable_loop(
                         memory_text=_rendered_memory,
                     )
             _llm_t0 = time.perf_counter()
+            _set_run_lifecycle(loop_ctx, phase=RunPhase.LLM)
             llm_result = llm_call_with_retry(
                 effective_llm,
                 prompt,
@@ -2298,6 +2360,7 @@ def composable_loop(
         # Dispatch non-done tools
         regular_calls = tool_calls[:done_idx] if done_idx is not None else tool_calls
         if regular_calls:
+            _set_run_lifecycle(loop_ctx, phase=RunPhase.DISPATCHING)
             # ── Pre-dispatch interception (hooks + permissions) ──
             _intercept = _intercept_tool_calls(
                 regular_calls,
@@ -2445,12 +2508,16 @@ def composable_loop(
                             },
                             tool_results_store={},
                             metadata={"task": str(task)},
+                            run_status=loop_ctx.status.value,
+                            run_phase=loop_ctx.phase.value,
+                            termination_reason=loop_ctx.termination_reason,
                         ),
                         key=f"step_{cur_step}",
                     )
 
         # Handle done() if present
         if done_idx is not None:
+            _set_run_lifecycle(loop_ctx, phase=RunPhase.FINALIZING)
             tool_call = tool_calls[done_idx]
             cur_step = step_num + done_idx
 
@@ -2601,6 +2668,12 @@ def composable_loop(
                     highlights=[],
                     recall_key="",
                 )
+                _set_run_lifecycle(
+                    loop_ctx,
+                    status=RunStatus.COMPLETED,
+                    phase=RunPhase.TERMINAL,
+                    termination_reason="done",
+                )
                 # Save checkpoint after done step (after yield, matching non-done pattern)
                 if _ckpt_store is not None:
                     _ckpt_store.save(
@@ -2618,6 +2691,9 @@ def composable_loop(
                             },
                             tool_results_store={},
                             metadata={"task": str(task), "status": "done"},
+                            run_status=loop_ctx.status.value,
+                            run_phase=loop_ctx.phase.value,
+                            termination_reason=loop_ctx.termination_reason,
                         ),
                         key=f"step_{cur_step}_done",
                     )
@@ -2669,6 +2745,21 @@ def composable_loop(
 
     # ── Post-loop hooks ─────────────────────────────────────
     # Stash stop_reason on state so hooks (e.g. StreamingHook) can read it
+    final_status = (
+        RunStatus.COMPLETED
+        if stop_reason == "done"
+        else RunStatus.CANCELLED
+        if stop_reason == "cancelled"
+        else RunStatus.FAILED
+        if stop_reason in {"error", "llm_error"}
+        else RunStatus.STOPPED
+    )
+    _set_run_lifecycle(
+        loop_ctx,
+        status=final_status,
+        phase=RunPhase.TERMINAL,
+        termination_reason=stop_reason,
+    )
     if state is not None:
         state._stop_reason = stop_reason  # pyright: ignore[reportAttributeAccessIssue]
 

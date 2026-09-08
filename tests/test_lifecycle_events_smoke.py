@@ -95,6 +95,8 @@ class TestLifecycleEventDispatch:
         stop_payloads = [p for p in r.payloads if p.event == LifecycleEvent.STOP]
         assert len(stop_payloads) == 1
         assert stop_payloads[0].termination_reason == "done"
+        assert stop_payloads[0].run_status == "completed"
+        assert stop_payloads[0].run_phase == "terminal"
 
     def test_post_llm_response_payload_carries_raw_response(self):
         r = _Recorder()

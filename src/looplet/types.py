@@ -52,6 +52,29 @@ class ErrorKind(str, Enum):
     """Cancelled via ``CancelToken`` before completion."""
 
 
+class RunStatus(str, Enum):
+    """Coarse lifecycle status of one agent-loop execution."""
+
+    CREATED = "created"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    STOPPED = "stopped"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class RunPhase(str, Enum):
+    """Fine-grained phase visible to hooks and runtime observers."""
+
+    STARTING = "starting"
+    PROMPTING = "prompting"
+    LLM = "llm"
+    DISPATCHING = "dispatching"
+    FINALIZING = "finalizing"
+    STOPPING = "stopping"
+    TERMINAL = "terminal"
+
+
 @dataclass
 class ToolError:
     """Structured error produced by a tool or LLM call.

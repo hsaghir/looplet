@@ -221,12 +221,15 @@ def _dict_to_tool_call(d: dict) -> ToolCall | None:
     theory = d.get("theory", "")
     if theory:
         args["__theory__"] = theory
-    return ToolCall(
-        tool=str(tool),
-        args=args,
-        reasoning=str(d.get("reasoning", d.get("thinking", d.get("thought", "")))),
-        call_id=str(d.get("call_id") or d.get("id") or ""),
-    )
+    call_kwargs: dict[str, Any] = {
+        "tool": str(tool),
+        "args": args,
+        "reasoning": str(d.get("reasoning", d.get("thinking", d.get("thought", "")))),
+    }
+    call_id = d.get("call_id") or d.get("id")
+    if call_id:
+        call_kwargs["call_id"] = str(call_id)
+    return ToolCall(**call_kwargs)
 
 
 # ── Native Tool Calling ─────────────────────────────────────────
@@ -251,12 +254,13 @@ def parse_native_tool_use(blocks: list[dict]) -> list[ToolCall]:
         input_args = block.get("input", {})
         if not name:
             continue
-        calls.append(
-            ToolCall(
-                tool=str(name),
-                args=dict(input_args) if isinstance(input_args, dict) else {},
-                reasoning="",  # native tool_use doesn't include reasoning
-                call_id=block.get("id") or "",
-            )
-        )
+        call_kwargs: dict[str, Any] = {
+            "tool": str(name),
+            "args": dict(input_args) if isinstance(input_args, dict) else {},
+            "reasoning": "",  # native tool_use doesn't include reasoning
+        }
+        call_id = block.get("id")
+        if call_id:
+            call_kwargs["call_id"] = str(call_id)
+        calls.append(ToolCall(**call_kwargs))
     return calls

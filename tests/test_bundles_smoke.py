@@ -522,6 +522,28 @@ class TestSkillBundles:
         assert result.skill_name == "coder"
         assert result.errors == []
 
+    def test_bundle_validation_close_is_idempotent(self, tmp_path):
+        result = validate_skill_bundle(
+            CODER_BUNDLE,
+            SkillRuntime(workspace=tmp_path, max_steps=8),
+        )
+        closed: list[bool] = []
+        assert result.preset is not None
+        result.preset.close = lambda: closed.append(True)  # type: ignore[method-assign]
+
+        result.close()
+        result.close()
+
+        assert closed == [True, True]
+
+    def test_bundle_validation_context_manager_closes_preset(self, tmp_path):
+        with validate_skill_bundle(
+            CODER_BUNDLE,
+            SkillRuntime(workspace=tmp_path, max_steps=8),
+        ) as result:
+            assert result.ok, result.errors
+            assert result.preset is not None
+
     def test_validation_warns_when_bundle_ignores_runtime_max_steps(self, tmp_path):
         bundle_root = tmp_path / "fixed_budget_bundle"
         bundle_root.mkdir()
@@ -1634,6 +1656,52 @@ class TestSkillBundles:
         capsys.readouterr()
         assert rc == 0
         assert (bundle_root / "builds.txt").read_text(encoding="utf-8") == "1"
+
+    def test_cli_closes_validation_owned_preset(self, tmp_path, capsys):
+        bundle_root = tmp_path / "validation_cleanup_bundle"
+        bundle_root.mkdir()
+        (bundle_root / "SKILL.md").write_text(
+            "---\nname: validation-cleanup\ndescription: Validation cleanup bundle.\n"
+            "entrypoint: looplet.py\n---\n# Cleanup\n",
+            encoding="utf-8",
+        )
+        (bundle_root / "looplet.py").write_text(
+            "from pathlib import Path\n"
+            "from looplet import DefaultState, LoopConfig, tools_from\n"
+            "from looplet.presets import AgentPreset\n"
+            "marker = Path(__file__).with_name('closed.txt')\n"
+            "def build(runtime):\n"
+            "    preset = AgentPreset(\n"
+            "        tools=tools_from([], include_done=True),\n"
+            "        hooks=[],\n"
+            "        config=LoopConfig(max_steps=1),\n"
+            "        state=DefaultState(max_steps=1),\n"
+            "    )\n"
+            "    original_close = preset.close\n"
+            "    def close():\n"
+            "        marker.write_text('closed')\n"
+            "        original_close()\n"
+            "    preset.close = close\n"
+            "    return preset\n",
+            encoding="utf-8",
+        )
+
+        rc = cli_main(
+            [
+                "run",
+                str(bundle_root),
+                "Task",
+                "--workspace",
+                str(tmp_path / "workspace"),
+                "--scripted-response",
+                '{"tool": "done", "args": {"answer": "ok"}}',
+                "--no-trace",
+            ]
+        )
+
+        capsys.readouterr()
+        assert rc == 0
+        assert (bundle_root / "closed.txt").read_text(encoding="utf-8") == "closed"
 
     def test_cli_runs_native_generic_bundle_without_rebuilding_after_validation(
         self,

@@ -63,6 +63,9 @@ class Checkpoint:
     termination_reason: str | None = None
     """Terminal reason when the checkpoint represents loop shutdown."""
 
+    domain_state: dict[str, Any] = field(default_factory=dict)
+    """JSON-safe state supplied by a cartridge for crash-resume."""
+
     def to_dict(self) -> dict[str, Any]:
         """Serialize to a JSON-safe dictionary."""
         return {
@@ -71,6 +74,7 @@ class Checkpoint:
             "conversation_data": self.conversation_data,
             "config_snapshot": self.config_snapshot,
             "tool_results_store": self.tool_results_store,
+            "domain_state": self.domain_state,
             "metadata": self.metadata,
             "created_at": self.created_at,
             "run_status": self.run_status,
@@ -92,6 +96,7 @@ class Checkpoint:
             run_status=str(data.get("run_status", "created")),
             run_phase=str(data.get("run_phase", "starting")),
             termination_reason=data.get("termination_reason"),
+            domain_state=data.get("domain_state", {}),
         )
 
 
@@ -268,6 +273,7 @@ def resume_loop_state(checkpoint: Checkpoint) -> dict[str, Any]:
       - ``state_counters``: dict with ``queries_used`` and
         ``budget_remaining`` if present in ``config_snapshot`` (so the
         loop can restore its budget/query accounting)
+            - ``domain_state``: JSON-safe cartridge state from the checkpoint
       - ``metadata``: checkpoint metadata dict
 
     The returned dict can be passed to composable_loop to resume
@@ -305,5 +311,6 @@ def resume_loop_state(checkpoint: Checkpoint) -> dict[str, Any]:
         "conversation": conv,
         "step_offset": checkpoint.step_number,
         "state_counters": state_counters,
+        "domain_state": checkpoint.domain_state,
         "metadata": checkpoint.metadata,
     }

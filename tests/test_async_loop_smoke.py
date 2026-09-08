@@ -331,6 +331,56 @@ class TestAsyncComposableLoop:
         assert checkpoint.metadata["status"] == "done"
         assert len(checkpoint.session_log_data["entries"]) == 1
 
+    async def test_domain_checkpoint_state_round_trips(self, tmp_path):
+        from looplet.checkpoint import Checkpoint, FileCheckpointStore
+        from looplet.loop import LoopConfig
+
+        restored = []
+
+        def snapshot(ctx):
+            return {"phase": ctx.phase.value, "step": ctx.step_num}
+
+        def restore(ctx, data):
+            restored.append((ctx.step_num, data))
+
+        checkpoint = FileCheckpointStore(tmp_path)
+        checkpoint.save(
+            Checkpoint(
+                step_number=1,
+                session_log_data={"entries": [], "current_theory": ""},
+                conversation_data=None,
+                config_snapshot={"max_steps": 3},
+                tool_results_store={},
+                metadata={},
+                domain_state={"saved": True},
+            ),
+            "step_1",
+        )
+        mock = AsyncMockLLMBackend(
+            responses=['{"tool": "done", "args": {"summary": "finished"}, "reasoning": "r"}']
+        )
+        tools = BaseToolRegistry()
+        register_done_tool(tools)
+
+        async for _ in async_composable_loop(
+            llm=mock,
+            tools=tools,
+            state=DefaultState(max_steps=3),
+            config=LoopConfig(
+                max_steps=3,
+                checkpoint_dir=tmp_path,
+                checkpoint_state=snapshot,
+                restore_checkpoint_state=restore,
+            ),
+            task={},
+        ):
+            pass
+
+        saved = checkpoint.load("step_2_done")
+        assert restored == [(1, {"saved": True})]
+        assert saved is not None
+        assert saved.domain_state == {"phase": "terminal", "step": 2}
+
     async def test_regular_checkpoint_includes_recorded_session_log_entry(self, tmp_path):
         from looplet.checkpoint import FileCheckpointStore
 

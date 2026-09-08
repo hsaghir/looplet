@@ -381,6 +381,7 @@ async def async_composable_loop(
     )
     _bind_loop_context(loop_ctx, hooks)
     _set_run_lifecycle(loop_ctx, status=RunStatus.RUNNING, phase=RunPhase.STARTING)
+    loop_ctx.step_num = _step_offset
 
     # Domain callables
     _default_ee = lambda data: []  # noqa: E731
@@ -390,6 +391,14 @@ async def async_composable_loop(
         or _default_ee
     )
     build_prompt_fn = config.build_prompt or (config.domain.build_prompt if config.domain else None)
+    checkpoint_state = config.checkpoint_state or (
+        config.domain.checkpoint_state if config.domain else None
+    )
+    restore_checkpoint_state = config.restore_checkpoint_state or (
+        config.domain.restore_checkpoint_state if config.domain else None
+    )
+    if config.initial_checkpoint is not None and restore_checkpoint_state is not None:
+        restore_checkpoint_state(loop_ctx, resumed.get("domain_state", {}))
 
     # ── Pre-loop hooks ──────────────────────────────────────────
     try:
@@ -434,6 +443,7 @@ async def async_composable_loop(
         metadata = {"task": str(task)}
         if status is not None:
             metadata["status"] = status
+        loop_ctx.step_num = step_number
         _ckpt_store.save(
             _Checkpoint(
                 step_number=step_number,
@@ -448,6 +458,7 @@ async def async_composable_loop(
                     "budget_remaining": getattr(state, "budget_remaining", 0),
                 },
                 tool_results_store={},
+                domain_state=(checkpoint_state(loop_ctx) if checkpoint_state is not None else {}),
                 metadata=metadata,
                 run_status=loop_ctx.status.value,
                 run_phase=loop_ctx.phase.value,

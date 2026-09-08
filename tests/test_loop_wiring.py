@@ -336,6 +336,102 @@ def test_auto_resume_from_checkpoint_dir():
         assert steps[0].number >= 2
 
 
+def test_checkpoint_callbacks_snapshot_and_restore_domain_state():
+    from looplet.checkpoint import Checkpoint, FileCheckpointStore
+    from looplet.loop import LoopConfig, LoopContext, composable_loop
+
+    observed_resources = []
+    restored = []
+    resource = object()
+
+    def snapshot(ctx: LoopContext) -> dict:
+        observed_resources.append(ctx.resources["shared"])
+        return {"cursor": ctx.step_num, "status": ctx.status.value}
+
+    def restore(ctx: LoopContext, data: dict) -> None:
+        restored.append((ctx.resources["shared"], ctx.step_num, data))
+
+    registry = _make_registry()
+    registry.set_resources({"shared": resource})
+    with tempfile.TemporaryDirectory() as tmpdir:
+        store = FileCheckpointStore(tmpdir)
+        checkpoint = Checkpoint(
+            step_number=1,
+            session_log_data={"entries": [], "current_theory": ""},
+            conversation_data=None,
+            config_snapshot={"max_steps": 5, "budget_remaining": 4},
+            tool_results_store={},
+            metadata={},
+            domain_state={"cursor": 7},
+        )
+        store.save(checkpoint, "step_1")
+        list(
+            composable_loop(
+                _make_scripted_llm(['{"tool": "done", "args": {"summary": "ok"}}']),
+                tools=registry,
+                state=SimpleState(_max_steps=5),
+                config=LoopConfig(
+                    checkpoint_dir=tmpdir,
+                    checkpoint_state=snapshot,
+                    restore_checkpoint_state=restore,
+                ),
+            )
+        )
+        saved = store.load("step_2_done")
+
+    assert restored == [(resource, 1, {"cursor": 7})]
+    assert observed_resources == [resource]
+    assert saved is not None
+    assert saved.domain_state == {"cursor": 2, "status": "completed"}
+
+
+def test_domain_adapter_checkpoint_callbacks_are_used():
+    from looplet.checkpoint import Checkpoint, FileCheckpointStore
+    from looplet.loop import DomainAdapter, LoopConfig, LoopContext, composable_loop
+
+    restored = []
+
+    def snapshot(ctx: LoopContext) -> dict:
+        return {"step": ctx.step_num}
+
+    def restore(ctx: LoopContext, data: dict) -> None:
+        restored.append(data)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        store = FileCheckpointStore(tmpdir)
+        store.save(
+            Checkpoint(
+                step_number=1,
+                session_log_data={"entries": [], "current_theory": ""},
+                conversation_data=None,
+                config_snapshot={"max_steps": 5, "budget_remaining": 4},
+                tool_results_store={},
+                metadata={},
+                domain_state={"from": "adapter"},
+            ),
+            "step_1",
+        )
+        list(
+            composable_loop(
+                _make_scripted_llm(['{"tool": "done", "args": {"summary": "ok"}}']),
+                tools=_make_registry(),
+                state=SimpleState(_max_steps=5),
+                config=LoopConfig(
+                    checkpoint_dir=tmpdir,
+                    domain=DomainAdapter(
+                        checkpoint_state=snapshot,
+                        restore_checkpoint_state=restore,
+                    ),
+                ),
+            )
+        )
+        saved = store.load("step_2_done")
+
+    assert restored == [{"from": "adapter"}]
+    assert saved is not None
+    assert saved.domain_state == {"step": 2}
+
+
 # ── Tracer test ──────────────────────────────────────────────────
 
 

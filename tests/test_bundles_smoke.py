@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import sys
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -647,6 +648,48 @@ class TestSkillBundles:
         )
 
         assert not (tmp_path / ".looplet").exists()
+
+    def test_run_skill_bundle_closes_owned_preset(self, tmp_path):
+        bundle = load_skill_bundle(CODER_BUNDLE)
+        original_build = bundle.build
+        closed: list[bool] = []
+
+        def build(runtime):
+            preset = original_build(runtime)
+            preset.close = lambda: closed.append(True)  # type: ignore[method-assign]
+            return preset
+
+        bundle = replace(bundle, build=build)
+        list(
+            run_skill_bundle(
+                bundle,
+                llm=MockLLMBackend(responses=[]),
+                task="Task",
+                runtime=SkillRuntime(workspace=tmp_path, max_steps=1),
+                provenance=False,
+            )
+        )
+
+        assert closed == [True]
+
+    def test_run_skill_bundle_does_not_close_supplied_preset(self, tmp_path):
+        bundle = load_skill_bundle(CODER_BUNDLE)
+        preset = bundle.build_preset(SkillRuntime(workspace=tmp_path, max_steps=1))
+        closed: list[bool] = []
+        preset.close = lambda: closed.append(True)  # type: ignore[method-assign]
+
+        list(
+            run_skill_bundle(
+                bundle,
+                llm=MockLLMBackend(responses=[]),
+                task="Task",
+                runtime=SkillRuntime(workspace=tmp_path, max_steps=1),
+                provenance=False,
+                preset=preset,
+            )
+        )
+
+        assert closed == []
 
     def test_run_skill_bundle_reports_invalid_bundle_contract(self, tmp_path):
         bundle_root = tmp_path / "bad_direct_run_bundle"

@@ -46,10 +46,13 @@ from looplet.checkpoint import resume_loop_state as _resume_loop_state
 from looplet.loop import (
     LoopConfig,
     LoopContext,
+    RunPhase,
+    RunStatus,
     _bind_loop_context,
     _build_tool_ctx,
     _intercept_tool_calls,
     _run_post_dispatch_hooks,
+    _set_run_lifecycle,
     emit_event,
 )
 from looplet.native_tools import NativeToolPolicy
@@ -377,6 +380,7 @@ async def async_composable_loop(
         step_num=0,
     )
     _bind_loop_context(loop_ctx, hooks)
+    _set_run_lifecycle(loop_ctx, status=RunStatus.RUNNING, phase=RunPhase.STARTING)
 
     # Domain callables
     _default_ee = lambda data: []  # noqa: E731
@@ -445,6 +449,9 @@ async def async_composable_loop(
                 },
                 tool_results_store={},
                 metadata=metadata,
+                run_status=loop_ctx.status.value,
+                run_phase=loop_ctx.phase.value,
+                termination_reason=loop_ctx.termination_reason,
             ),
             key=f"step_{step_number}" if status is None else f"step_{step_number}_{status}",
         )
@@ -453,6 +460,7 @@ async def async_composable_loop(
         step_num = state.step_count + 1 + _step_offset
         loop_ctx.step_num = step_num
         loop_ctx.conversation = _conv
+        _set_run_lifecycle(loop_ctx, phase=RunPhase.PROMPTING)
 
         # Clear step_context
         try:
@@ -532,6 +540,7 @@ async def async_composable_loop(
 
         # ── AWAIT: LLM call ─────────────────────────────────────
         _llm_t0 = time.perf_counter()
+        _set_run_lifecycle(loop_ctx, phase=RunPhase.LLM)
         llm_result = await async_llm_call(
             llm,
             prompt,
@@ -645,6 +654,7 @@ async def async_composable_loop(
 
         regular_calls = tool_calls[:done_idx] if done_idx is not None else tool_calls
         if regular_calls:
+            _set_run_lifecycle(loop_ctx, phase=RunPhase.DISPATCHING)
             _intercept = _intercept_tool_calls(
                 regular_calls,
                 hooks,
@@ -735,6 +745,7 @@ async def async_composable_loop(
 
         # Handle done()
         if done_idx is not None:
+            _set_run_lifecycle(loop_ctx, phase=RunPhase.FINALIZING)
             tool_call = tool_calls[done_idx]
             cur_step = step_num + done_idx
 
@@ -792,6 +803,12 @@ async def async_composable_loop(
                 _history.record_step(
                     step, theory="", entities=[], findings=[], highlights=[], recall_key=""
                 )
+                _set_run_lifecycle(
+                    loop_ctx,
+                    status=RunStatus.COMPLETED,
+                    phase=RunPhase.TERMINAL,
+                    termination_reason="done",
+                )
                 _save_checkpoint(cur_step, status="done")
                 done = True
                 stop_reason = "done"
@@ -811,6 +828,21 @@ async def async_composable_loop(
                     done = True
                     break
 
+    final_status = (
+        RunStatus.COMPLETED
+        if stop_reason == "done"
+        else RunStatus.CANCELLED
+        if stop_reason == "cancelled"
+        else RunStatus.FAILED
+        if stop_reason in {"error", "llm_error"}
+        else RunStatus.STOPPED
+    )
+    _set_run_lifecycle(
+        loop_ctx,
+        status=final_status,
+        phase=RunPhase.TERMINAL,
+        termination_reason=stop_reason,
+    )
     if state is not None:
         state._stop_reason = stop_reason  # pyright: ignore[reportAttributeAccessIssue]
 

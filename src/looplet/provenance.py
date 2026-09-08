@@ -766,6 +766,13 @@ class TrajectoryRecorder:
         else:
             self.trajectory.termination_reason = "no_steps"
 
+        if state is not None:
+            for key in ("run_status", "run_phase"):
+                value = getattr(state, key, None)
+                if value is not None:
+                    self.trajectory.metadata[key] = getattr(value, "value", str(value))
+            self.trajectory.metadata["termination_reason"] = self.trajectory.termination_reason
+
         # Auto-save when output_dir was specified at construction time.
         if self._output_dir is not None:
             self.save(self._output_dir)

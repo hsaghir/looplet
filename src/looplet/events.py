@@ -104,6 +104,8 @@ class EventPayload:
     tool_call: Any | None = None
     tool_result: Any | None = None
     termination_reason: str | None = None
+    run_status: str | None = None
+    run_phase: str | None = None
     messages_before: int | None = None
     messages_after: int | None = None
     subagent_id: str | None = None

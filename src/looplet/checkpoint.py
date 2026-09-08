@@ -54,6 +54,15 @@ class Checkpoint:
     created_at: float = field(default_factory=time.time)
     """Unix timestamp when this checkpoint was created."""
 
+    run_status: str = "created"
+    """Lifecycle status at checkpoint time."""
+
+    run_phase: str = "starting"
+    """Lifecycle phase at checkpoint time."""
+
+    termination_reason: str | None = None
+    """Terminal reason when the checkpoint represents loop shutdown."""
+
     def to_dict(self) -> dict[str, Any]:
         """Serialize to a JSON-safe dictionary."""
         return {
@@ -64,6 +73,9 @@ class Checkpoint:
             "tool_results_store": self.tool_results_store,
             "metadata": self.metadata,
             "created_at": self.created_at,
+            "run_status": self.run_status,
+            "run_phase": self.run_phase,
+            "termination_reason": self.termination_reason,
         }
 
     @classmethod
@@ -77,6 +89,9 @@ class Checkpoint:
             tool_results_store=data.get("tool_results_store", {}),
             metadata=data.get("metadata", {}),
             created_at=data.get("created_at", time.time()),
+            run_status=str(data.get("run_status", "created")),
+            run_phase=str(data.get("run_phase", "starting")),
+            termination_reason=data.get("termination_reason"),
         )
 
 

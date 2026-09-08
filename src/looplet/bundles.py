@@ -183,6 +183,17 @@ class BundleValidation:
     skill_name: str | None = None
     preset: AgentPreset | None = None
 
+    def close(self) -> None:
+        """Close the live preset materialized during validation, if any."""
+        if self.preset is not None:
+            self.preset.close()
+
+    def __enter__(self) -> "BundleValidation":
+        return self
+
+    def __exit__(self, *exc_info: Any) -> None:
+        self.close()
+
 
 def discover_skill_bundles(
     *roots: str | Path | Iterable[str | Path],

@@ -522,6 +522,28 @@ class TestSkillBundles:
         assert result.skill_name == "coder"
         assert result.errors == []
 
+    def test_bundle_validation_close_is_idempotent(self, tmp_path):
+        result = validate_skill_bundle(
+            CODER_BUNDLE,
+            SkillRuntime(workspace=tmp_path, max_steps=8),
+        )
+        closed: list[bool] = []
+        assert result.preset is not None
+        result.preset.close = lambda: closed.append(True)  # type: ignore[method-assign]
+
+        result.close()
+        result.close()
+
+        assert closed == [True, True]
+
+    def test_bundle_validation_context_manager_closes_preset(self, tmp_path):
+        with validate_skill_bundle(
+            CODER_BUNDLE,
+            SkillRuntime(workspace=tmp_path, max_steps=8),
+        ) as result:
+            assert result.ok, result.errors
+            assert result.preset is not None
+
     def test_validation_warns_when_bundle_ignores_runtime_max_steps(self, tmp_path):
         bundle_root = tmp_path / "fixed_budget_bundle"
         bundle_root.mkdir()

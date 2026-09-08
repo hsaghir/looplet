@@ -40,6 +40,13 @@ class TestSingleToolJSON:
         assert isinstance(calls, list)
         assert all(isinstance(c, ToolCall) for c in calls)
 
+    def test_missing_call_id_gets_generated_id(self) -> None:
+        raw = '{"tools": [{"tool": "a"}, {"tool": "b"}]}'
+        calls = parse_multi_tool_calls(raw)
+        ids = [call.call_id for call in calls]
+        assert all(ids)
+        assert len(set(ids)) == len(ids)
+
 
 class TestMultiToolJSON:
     def test_multi_tool_two_calls(self) -> None:
@@ -162,6 +169,16 @@ class TestNativeToolUse:
         assert len(calls) == 2
         assert calls[0].tool == "a"
         assert calls[1].tool == "b"
+
+    def test_missing_id_gets_generated_unique_ids(self) -> None:
+        blocks = [
+            {"type": "tool_use", "name": "a", "input": {}},
+            {"type": "tool_use", "name": "b", "input": {}},
+        ]
+        calls = parse_native_tool_use(blocks)
+        ids = [call.call_id for call in calls]
+        assert all(ids)
+        assert len(set(ids)) == len(ids)
 
     def test_skips_non_tool_use_blocks(self) -> None:
         blocks = [

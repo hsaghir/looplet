@@ -74,3 +74,32 @@ def test_force_reload_works_without_changes(tmp_path: Path) -> None:
     p2 = w.force_reload()
     # Different objects; same workspace
     assert p1 is not p2
+
+
+def test_reload_closes_previous_preset(tmp_path: Path) -> None:
+    ws = _scaffold(tmp_path / "w.workspace", name="w")
+    watcher = WorkspaceWatcher(ws, runtime={"workspace": str(tmp_path)})
+    previous = watcher.preset()
+    closed: list[bool] = []
+    previous.close = lambda: closed.append(True)  # type: ignore[method-assign]
+
+    watcher.force_reload()
+
+    assert closed == [True]
+
+
+def test_watcher_close_and_context_manager_close_preset(tmp_path: Path) -> None:
+    ws = _scaffold(tmp_path / "w.workspace", name="w")
+    watcher = WorkspaceWatcher(ws, runtime={"workspace": str(tmp_path)})
+    preset = watcher.preset()
+    closed: list[bool] = []
+    preset.close = lambda: closed.append(True)  # type: ignore[method-assign]
+
+    watcher.close()
+    watcher.close()
+
+    assert closed == [True]
+    assert watcher.changed() is True
+
+    with WorkspaceWatcher(ws, runtime={"workspace": str(tmp_path)}) as scoped:
+        scoped.preset()

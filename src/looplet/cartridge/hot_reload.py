@@ -134,12 +134,33 @@ class WorkspaceWatcher:
         """
         if not self.changed():
             return None
-        self._preset = cartridge_to_preset(self.root, strict=self.strict, runtime=self.runtime)
+        replacement = cartridge_to_preset(self.root, strict=self.strict, runtime=self.runtime)
+        previous = self._preset
+        self._preset = replacement
         self._fp = fingerprint_workspace(self.root)
-        return self._preset
+        if previous is not None:
+            previous.close()
+        return replacement
 
     def force_reload(self) -> Any:
         """Reload regardless of fingerprint (for tests / debug)."""
-        self._preset = cartridge_to_preset(self.root, strict=self.strict, runtime=self.runtime)
+        replacement = cartridge_to_preset(self.root, strict=self.strict, runtime=self.runtime)
+        previous = self._preset
+        self._preset = replacement
         self._fp = fingerprint_workspace(self.root)
-        return self._preset
+        if previous is not None:
+            previous.close()
+        return replacement
+
+    def close(self) -> None:
+        """Close the currently loaded preset, if any."""
+        if self._preset is not None:
+            self._preset.close()
+            self._preset = None
+            self._fp = {}
+
+    def __enter__(self) -> "WorkspaceWatcher":
+        return self
+
+    def __exit__(self, *exc_info: Any) -> None:
+        self.close()

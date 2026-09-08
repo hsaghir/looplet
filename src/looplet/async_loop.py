@@ -45,6 +45,8 @@ from looplet.checkpoint import FileCheckpointStore as _FileCheckpointStore
 from looplet.checkpoint import resume_loop_state as _resume_loop_state
 from looplet.loop import (
     LoopConfig,
+    LoopContext,
+    _bind_loop_context,
     _build_tool_ctx,
     _intercept_tool_calls,
     _run_post_dispatch_hooks,
@@ -365,6 +367,17 @@ async def async_composable_loop(
         conversation=_conv,
     )
 
+    loop_ctx = LoopContext(
+        state=state,
+        session_log=session_log,
+        conversation=_conv,
+        tools=tools,
+        config=config,
+        resources=tools.resources,
+        step_num=0,
+    )
+    _bind_loop_context(loop_ctx, hooks)
+
     # Domain callables
     _default_ee = lambda data: []  # noqa: E731
     extract_entities = (
@@ -438,6 +451,8 @@ async def async_composable_loop(
 
     while state.budget_remaining > 0 and not done:
         step_num = state.step_count + 1 + _step_offset
+        loop_ctx.step_num = step_num
+        loop_ctx.conversation = _conv
 
         # Clear step_context
         try:

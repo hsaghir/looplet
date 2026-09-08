@@ -624,6 +624,16 @@ class BaseToolRegistry:
         """
         self._resources = dict(resources or {})
 
+    @property
+    def resources(self) -> dict[str, Any]:
+        """Return a snapshot of the shared resource registry.
+
+        The mapping is copied so callers cannot replace registry entries,
+        while values retain identity for hooks and tools that share a live
+        cartridge resource.
+        """
+        return dict(self._resources)
+
     def register(self, spec: ToolSpec) -> None:
         """Register a ToolSpec by name.
 

@@ -176,6 +176,15 @@ class ValidatingToolRegistry:
     def tool_names(self) -> list[str]:
         return self._base.tool_names
 
+    @property
+    def resources(self) -> dict[str, Any]:
+        """Expose the wrapped registry's shared resource snapshot."""
+        return self._base.resources
+
+    def set_resources(self, resources: dict[str, Any]) -> None:
+        """Delegate shared-resource wiring to the wrapped registry."""
+        self._base.set_resources(resources)
+
     def tool_catalog_text(self) -> str:
         return self._base.tool_catalog_text()
 

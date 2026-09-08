@@ -572,6 +572,57 @@ class TestSkillBundles:
         assert result.ok, result.errors
         assert "config.max_steps differs from runtime.max_steps (2 != 8)" in result.warnings
 
+    def test_validation_rejects_missing_tool_resource_dependency(self, tmp_path):
+        bundle_root = tmp_path / "missing-resource-bundle"
+        bundle_root.mkdir()
+        (bundle_root / "SKILL.md").write_text(
+            "---\nname: missing-resource\ndescription: Missing resource bundle.\n"
+            "entrypoint: looplet.py\n---\n# Missing\n",
+            encoding="utf-8",
+        )
+        (bundle_root / "looplet.py").write_text(
+            "from looplet import DefaultState, LoopConfig, ToolSpec, tools_from\n"
+            "from looplet.presets import AgentPreset\n"
+            "def inspect(*, ctx):\n"
+            "    return {'ok': 'cache' in ctx.resources}\n"
+            "def build(runtime):\n"
+            "    spec = ToolSpec('inspect', 'Inspect', {}, inspect, requires=['cache'])\n"
+            "    return AgentPreset(tools=tools_from([spec], include_done=True), hooks=[], "
+            "config=LoopConfig(max_steps=1), state=DefaultState(max_steps=1))\n",
+            encoding="utf-8",
+        )
+
+        result = validate_skill_bundle(bundle_root)
+
+        assert result.ok is False
+        assert any("cache" in error for error in result.errors)
+
+    def test_validation_rejects_unowned_closeable_resource(self, tmp_path):
+        bundle_root = tmp_path / "unowned-resource-bundle"
+        bundle_root.mkdir()
+        (bundle_root / "SKILL.md").write_text(
+            "---\nname: unowned-resource\ndescription: Unowned resource bundle.\n"
+            "entrypoint: looplet.py\n---\n# Unowned\n",
+            encoding="utf-8",
+        )
+        (bundle_root / "looplet.py").write_text(
+            "from looplet import DefaultState, LoopConfig, tools_from\n"
+            "from looplet.presets import AgentPreset\n"
+            "class Resource:\n"
+            "    def close(self):\n"
+            "        pass\n"
+            "def build(runtime):\n"
+            "    return AgentPreset(tools=tools_from([], include_done=True), hooks=[], "
+            "config=LoopConfig(max_steps=1), state=DefaultState(max_steps=1), "
+            "resources={'resource': Resource()})\n",
+            encoding="utf-8",
+        )
+
+        result = validate_skill_bundle(bundle_root)
+
+        assert result.ok is False
+        assert any("not owned" in error for error in result.errors)
+
     def test_cli_reports_generic_bundle_runtime_step_warning(self, tmp_path, capsys):
         bundle_root = tmp_path / "fixed_budget_bundle"
         bundle_root.mkdir()

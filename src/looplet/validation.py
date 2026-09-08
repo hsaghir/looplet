@@ -177,6 +177,11 @@ class ValidatingToolRegistry:
         return self._base.tool_names
 
     @property
+    def tool_specs(self) -> dict[str, Any]:
+        """Expose the wrapped registry's tool specifications."""
+        return self._base.tool_specs
+
+    @property
     def resources(self) -> dict[str, Any]:
         """Expose the wrapped registry's shared resource snapshot."""
         return self._base.resources

@@ -709,6 +709,11 @@ class BaseToolRegistry:
         """Names of all registered tools."""
         return list(self._tools.keys())
 
+    @property
+    def tool_specs(self) -> dict[str, ToolSpec]:
+        """Snapshot of registered tool specifications for contract validation."""
+        return dict(self._tools)
+
     def tool_catalog_text(self) -> str:
         """Format all registered tools for LLM prompt inclusion."""
         lines = ["Available tools:"]

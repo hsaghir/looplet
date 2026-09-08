@@ -437,6 +437,30 @@ def _validate_preset_contract(
         )
     if preset.config.max_steps <= 0:
         errors.append("config.max_steps must be positive")
+
+    declared_resources = {
+        resource_name
+        for spec in preset.tools.tool_specs.values()
+        for resource_name in getattr(spec, "requires", ())
+    }
+    missing_resources = sorted(declared_resources - set(preset.resources))
+    if missing_resources:
+        errors.append(
+            "tool resource dependencies are not provided by the preset: "
+            + ", ".join(missing_resources)
+        )
+
+    owned_ids = {id(resource) for resource in preset.owned_resources}
+    unowned_closeables = sorted(
+        name
+        for name, resource in preset.resources.items()
+        if callable(getattr(resource, "close", None)) and id(resource) not in owned_ids
+    )
+    if unowned_closeables:
+        errors.append(
+            "closeable bundle resources are not owned by AgentPreset: "
+            + ", ".join(unowned_closeables)
+        )
     return errors, warnings
 
 

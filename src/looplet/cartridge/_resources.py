@@ -38,7 +38,12 @@ from looplet.refs import _REF_PREFIX, _register_resource_origin
 logger = logging.getLogger(__name__)
 
 
-def _load_resources(root: Path, runtime: dict[str, Any] | None = None) -> dict[str, Any]:
+def _load_resources(
+    root: Path,
+    runtime: dict[str, Any] | None = None,
+    *,
+    owned_resources: list[Any] | None = None,
+) -> dict[str, Any]:
     """Build the shared-resource registry from ``resources/<name>.py`` files.
 
     Each resource module must define a builder named ``build``. The
@@ -91,6 +96,8 @@ def _load_resources(root: Path, runtime: dict[str, Any] | None = None) -> dict[s
             accepts_runtime = False
         instance = builder(runtime=runtime_dict) if accepts_runtime else builder()
         resources[name] = instance
+        if owned_resources is not None and callable(getattr(instance, "close", None)):
+            owned_resources.append(instance)
         _register_resource_origin(instance, name)
         # Cartridge spec v2: resources may declare ``THREAD_SAFE = True``
         # / ``False`` at module level. The loader stashes this in a

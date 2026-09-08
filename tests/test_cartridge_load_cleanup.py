@@ -114,3 +114,80 @@ def test_preset_close_closes_lep_hooks(monkeypatch: pytest.MonkeyPatch) -> None:
     preset.close()
 
     assert closed == [True]
+
+
+def _write_resource_cartridge(root: Path, *, late_failure: bool = False) -> None:
+    root.mkdir()
+    (root / "cartridge.json").write_text(
+        json.dumps({"name": "resource-lifecycle", "schema_version": 2}),
+        encoding="utf-8",
+    )
+    (root / "config.yaml").write_text(
+        "max_steps: 3\ndone_tool: done\n",
+        encoding="utf-8",
+    )
+    prompts = root / "prompts"
+    prompts.mkdir()
+    (prompts / "system.md").write_text("test", encoding="utf-8")
+    if late_failure:
+        (prompts / "briefing.md").write_text("undeclared", encoding="utf-8")
+    resources = root / "resources"
+    resources.mkdir()
+    (resources / "tracker.py").write_text(
+        "from pathlib import Path\n"
+        "\n"
+        "class Tracker:\n"
+        "    def __init__(self, marker):\n"
+        "        self.marker = marker\n"
+        "\n"
+        "    def close(self):\n"
+        "        Path(self.marker).write_text('closed', encoding='utf-8')\n"
+        "\n"
+        "def build(runtime):\n"
+        "    return Tracker(runtime['resource_marker'])\n",
+        encoding="utf-8",
+    )
+    done = root / "tools" / "done"
+    done.mkdir(parents=True)
+    (done / "tool.yaml").write_text(
+        "name: done\ndescription: Finish.\nparameters: {}\n",
+        encoding="utf-8",
+    )
+    (done / "execute.py").write_text(
+        "def execute(ctx):\n    return {}\n",
+        encoding="utf-8",
+    )
+
+
+def test_cartridge_preset_close_closes_owned_resources(tmp_path: Path) -> None:
+    cartridge = tmp_path / "resource.cartridge"
+    marker = tmp_path / "closed.txt"
+    _write_resource_cartridge(cartridge)
+
+    preset = cartridge_to_preset(
+        cartridge,
+        runtime={"resource_marker": str(marker)},
+        strict=True,
+    )
+    assert preset.resources["tracker"].marker == str(marker)
+
+    preset.close()
+    preset.close()
+
+    assert marker.read_text(encoding="utf-8") == "closed"
+    assert preset.owned_resources == []
+
+
+def test_late_cartridge_load_failure_closes_owned_resources(tmp_path: Path) -> None:
+    cartridge = tmp_path / "resource-late-failure.cartridge"
+    marker = tmp_path / "closed.txt"
+    _write_resource_cartridge(cartridge, late_failure=True)
+
+    with pytest.raises(CartridgeSerializationError, match="prompts/briefing.md"):
+        cartridge_to_preset(
+            cartridge,
+            runtime={"resource_marker": str(marker)},
+            strict=True,
+        )
+
+    assert marker.read_text(encoding="utf-8") == "closed"

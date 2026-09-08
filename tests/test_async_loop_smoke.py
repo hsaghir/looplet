@@ -192,6 +192,51 @@ class TestAsyncComposableLoop:
 
         assert len(pre_prompts) >= 1
 
+    async def test_async_loop_context_exposes_registry_resources(self):
+        resource = object()
+        hook_resources = []
+        tool_resources = []
+
+        class ResourceHook:
+            def bind(self, ctx):
+                hook_resources.append(ctx.resources["shared"])
+
+        def inspect_resource(*, ctx):
+            tool_resources.append(ctx.resources["shared"])
+            return {"same": True}
+
+        tools = BaseToolRegistry()
+        register_done_tool(tools)
+        tools.register(
+            ToolSpec(
+                name="inspect_resource",
+                description="inspect",
+                parameters={},
+                execute=inspect_resource,
+                requires=["shared"],
+            )
+        )
+        tools.set_resources({"shared": resource})
+        mock = AsyncMockLLMBackend(
+            responses=[
+                '{"tool": "inspect_resource", "args": {}}',
+                '{"tool": "done", "args": {"summary": "ok"}}',
+            ]
+        )
+
+        async for _ in async_composable_loop(
+            llm=mock,
+            tools=tools,
+            state=DefaultState(max_steps=3),
+            config=LoopConfig(max_steps=3),
+            hooks=[ResourceHook()],
+            task={},
+        ):
+            pass
+
+        assert hook_resources == [resource]
+        assert tool_resources == [resource]
+
     async def test_step_context_cleared_per_step(self):
         """step_context should be cleared at each step in async loop."""
         ctx_values = []

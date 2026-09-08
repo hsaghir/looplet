@@ -193,6 +193,7 @@ from looplet.tools import (
 )
 from looplet.types import (
     CancelToken,
+    CloseableResource,
     DefaultState,
     ErrorKind,
     LLMBackend,
@@ -250,6 +251,7 @@ __all__ = [
     "claude_skill_compatibility",
     "wrap_claude_skill_as_bundle",
     "DefaultState",
+    "CloseableResource",
     "LLMBackend",
     "HookDecision",
     "Allow",

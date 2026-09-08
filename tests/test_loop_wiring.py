@@ -177,6 +177,49 @@ def test_router_selects_backend():
     assert "fallback" not in calls_received
 
 
+def test_loop_context_exposes_same_registry_resource_as_tools() -> None:
+    from looplet.loop import LoopConfig, composable_loop
+    from looplet.tools import ToolSpec
+
+    resource = object()
+    hook_resources: list[object] = []
+    tool_resources: list[object] = []
+
+    class ResourceHook:
+        def bind(self, ctx):
+            hook_resources.append(ctx.resources["shared"])
+
+    def inspect_resource(*, ctx):
+        tool_resources.append(ctx.resources["shared"])
+        return {"same": True}
+
+    registry = _make_registry([("inspect_resource", inspect_resource)])
+    registry._tools["inspect_resource"].requires = ["shared"]
+    registry.set_resources({"shared": resource})
+    llm = _make_scripted_llm(
+        [
+            '{"tool": "inspect_resource", "args": {}}',
+            '{"tool": "done", "args": {"summary": "ok"}}',
+        ]
+    )
+
+    list(
+        composable_loop(
+            llm,
+            tools=registry,
+            config=LoopConfig(max_steps=3),
+            state=SimpleState(_max_steps=3),
+            hooks=[ResourceHook()],
+        )
+    )
+
+    assert hook_resources == [resource]
+    assert tool_resources == [resource]
+    snapshot = registry.resources
+    snapshot["shared"] = object()
+    assert registry.resources["shared"] is resource
+
+
 # ── Checkpoint test ──────────────────────────────────────────────
 
 

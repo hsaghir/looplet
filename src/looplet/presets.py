@@ -32,7 +32,7 @@ from looplet.compact import DefaultCompactService
 from looplet.loop import LoopConfig
 from looplet.memory import StaticMemorySource
 from looplet.tools import BaseToolRegistry, ToolSpec, register_done_tool, tool, tools_from
-from looplet.types import DefaultState
+from looplet.types import CloseableResource, DefaultState
 
 __all__ = [
     "AgentPreset",
@@ -82,6 +82,14 @@ class AgentPreset:
 
     Empty for presets constructed directly in code (no workspace).
     Mutable: callers may inject test doubles by direct assignment.
+    """
+
+    owned_resources: list[CloseableResource] = field(default_factory=list)
+    """Closeable instances built by cartridge resource modules.
+
+    Directly constructed presets leave this empty unless the caller
+    explicitly transfers ownership. Non-closeable resource values remain
+    ordinary dependency-injection data.
     """
 
     mcp_adapters: list[Any] = field(default_factory=list)
@@ -202,6 +210,21 @@ class AgentPreset:
 
                 logging.getLogger(__name__).warning("error closing model gateway", exc_info=True)
             self.model_gateway = None
+        closed_ids: set[int] = set()
+        for resource in reversed(self.owned_resources):
+            resource_id = id(resource)
+            if resource_id in closed_ids:
+                continue
+            closed_ids.add(resource_id)
+            try:
+                resource.close()
+            except Exception:  # pragma: no cover - defensive
+                import logging  # noqa: PLC0415
+
+                logging.getLogger(__name__).warning(
+                    "error closing cartridge resource", exc_info=True
+                )
+        self.owned_resources = []
 
     def __enter__(self) -> "AgentPreset":
         return self

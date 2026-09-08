@@ -113,6 +113,18 @@ class ToolError:
         return self.message
 
 
+# ── Resource lifecycle ───────────────────────────────────────────
+
+
+@runtime_checkable
+class CloseableResource(Protocol):
+    """Optional lifecycle contract for resources owned by a cartridge."""
+
+    def close(self) -> None:
+        """Release the resource's external handles."""
+        ...
+
+
 # ── Tool-author exceptions ───────────────────────────────────────
 
 

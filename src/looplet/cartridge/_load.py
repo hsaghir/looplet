@@ -127,11 +127,22 @@ class _LoadResourceTracker:
     """Own load-time handles until they transfer to an ``AgentPreset``."""
 
     def __init__(self) -> None:
+        self.owned_resources: list[Any] = []
         self.mcp_adapters: list[Any] = []
         self.state_service_handles: list[Any] = []
         self.model_gateway: Any = None
 
     def close(self) -> None:
+        closed_ids: set[int] = set()
+        for resource in reversed(self.owned_resources):
+            resource_id = id(resource)
+            if resource_id in closed_ids:
+                continue
+            closed_ids.add(resource_id)
+            try:
+                resource.close()
+            except Exception:  # pragma: no cover - best effort
+                logger.warning("error closing resource after load failure", exc_info=True)
         for resource in reversed(self.mcp_adapters):
             try:
                 resource.close()
@@ -151,6 +162,7 @@ class _LoadResourceTracker:
 
     def disarm(self) -> None:
         """Release ownership after handles have been attached to a preset."""
+        self.owned_resources = []
         self.mcp_adapters = []
         self.state_service_handles = []
         self.model_gateway = None
@@ -621,7 +633,11 @@ def _workspace_to_preset_inner(
             f"in config.yaml."
         )
 
-    resources = _load_resources(root, runtime_dict)
+    resources = _load_resources(
+        root,
+        runtime_dict,
+        owned_resources=load_resources.owned_resources,
+    )
     # Loader-injected resource: built-in hooks (and any user resource
     # builder that wants it) can resolve cartridge-root-relative paths
     # via ``resources["cartridge_root"]``. Used by ``static_briefing``
@@ -1664,6 +1680,7 @@ def _workspace_to_preset_inner(
         tools=registry,
         state=state,
         resources=dict(resources),
+        owned_resources=list(load_resources.owned_resources),
     )
     if _mcp_adapters:
         preset.mcp_adapters = list(_mcp_adapters)

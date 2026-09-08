@@ -196,6 +196,7 @@ from looplet.types import (
     CloseableResource,
     DefaultState,
     ErrorKind,
+    InvalidRunTransition,
     LLMBackend,
     NativeToolBackend,
     RunPhase,
@@ -206,6 +207,7 @@ from looplet.types import (
     ToolError,
     ToolResult,
     ToolValidationError,
+    validate_run_transition,
 )
 
 __all__ = [
@@ -256,6 +258,8 @@ __all__ = [
     "CloseableResource",
     "RunPhase",
     "RunStatus",
+    "InvalidRunTransition",
+    "validate_run_transition",
     "LLMBackend",
     "HookDecision",
     "Allow",

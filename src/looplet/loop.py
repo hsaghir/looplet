@@ -54,6 +54,7 @@ from looplet.types import (
     ToolCall,
     ToolContext,
     ToolResult,
+    validate_run_transition,
 )
 from looplet.validation import validate_args as _validate_args
 
@@ -836,6 +837,15 @@ def _set_run_lifecycle(
     termination_reason: str | None = None,
 ) -> None:
     """Update the live lifecycle view and compatible state metadata."""
+
+    next_status = loop_ctx.status if status is None else status
+    next_phase = loop_ctx.phase if phase is None else phase
+    validate_run_transition(
+        loop_ctx.status,
+        loop_ctx.phase,
+        next_status=next_status,
+        next_phase=next_phase,
+    )
 
     if status is not None:
         loop_ctx.status = status

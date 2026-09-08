@@ -75,6 +75,90 @@ class RunPhase(str, Enum):
     TERMINAL = "terminal"
 
 
+class InvalidRunTransition(ValueError):
+    """Raised when a run lifecycle update violates the transition policy."""
+
+    def __init__(
+        self,
+        current_status: RunStatus,
+        current_phase: RunPhase,
+        next_status: RunStatus,
+        next_phase: RunPhase,
+    ) -> None:
+        self.current_status = current_status
+        self.current_phase = current_phase
+        self.next_status = next_status
+        self.next_phase = next_phase
+        super().__init__(
+            "invalid run lifecycle transition: "
+            f"{current_status.value}/{current_phase.value} -> "
+            f"{next_status.value}/{next_phase.value}"
+        )
+
+
+_TERMINAL_RUN_STATUSES = frozenset(
+    {
+        RunStatus.COMPLETED,
+        RunStatus.STOPPED,
+        RunStatus.FAILED,
+        RunStatus.CANCELLED,
+    }
+)
+
+_RUN_STATUS_TRANSITIONS: dict[RunStatus, frozenset[RunStatus]] = {
+    RunStatus.CREATED: frozenset({RunStatus.RUNNING}),
+    RunStatus.RUNNING: _TERMINAL_RUN_STATUSES,
+    RunStatus.COMPLETED: frozenset(),
+    RunStatus.STOPPED: frozenset(),
+    RunStatus.FAILED: frozenset(),
+    RunStatus.CANCELLED: frozenset(),
+}
+
+_RUN_PHASE_TRANSITIONS: dict[RunPhase, frozenset[RunPhase]] = {
+    RunPhase.STARTING: frozenset({RunPhase.PROMPTING, RunPhase.STOPPING, RunPhase.TERMINAL}),
+    RunPhase.PROMPTING: frozenset({RunPhase.LLM, RunPhase.STOPPING, RunPhase.TERMINAL}),
+    RunPhase.LLM: frozenset(
+        {
+            RunPhase.PROMPTING,
+            RunPhase.DISPATCHING,
+            RunPhase.FINALIZING,
+            RunPhase.STOPPING,
+            RunPhase.TERMINAL,
+        }
+    ),
+    RunPhase.DISPATCHING: frozenset(
+        {RunPhase.PROMPTING, RunPhase.FINALIZING, RunPhase.STOPPING, RunPhase.TERMINAL}
+    ),
+    RunPhase.FINALIZING: frozenset({RunPhase.PROMPTING, RunPhase.STOPPING, RunPhase.TERMINAL}),
+    RunPhase.STOPPING: frozenset({RunPhase.TERMINAL}),
+    RunPhase.TERMINAL: frozenset(),
+}
+
+
+def validate_run_transition(
+    current_status: RunStatus,
+    current_phase: RunPhase,
+    *,
+    next_status: RunStatus | None = None,
+    next_phase: RunPhase | None = None,
+) -> None:
+    """Validate one lifecycle update without mutating runtime state."""
+
+    target_status = current_status if next_status is None else next_status
+    target_phase = current_phase if next_phase is None else next_phase
+    status_changed = target_status != current_status
+    phase_changed = target_phase != current_phase
+
+    if status_changed and target_status not in _RUN_STATUS_TRANSITIONS[current_status]:
+        raise InvalidRunTransition(current_status, current_phase, target_status, target_phase)
+    if phase_changed and target_phase not in _RUN_PHASE_TRANSITIONS[current_phase]:
+        raise InvalidRunTransition(current_status, current_phase, target_status, target_phase)
+    if target_status in _TERMINAL_RUN_STATUSES and target_phase != RunPhase.TERMINAL:
+        raise InvalidRunTransition(current_status, current_phase, target_status, target_phase)
+    if target_phase == RunPhase.TERMINAL and target_status not in _TERMINAL_RUN_STATUSES:
+        raise InvalidRunTransition(current_status, current_phase, target_status, target_phase)
+
+
 @dataclass
 class ToolError:
     """Structured error produced by a tool or LLM call.

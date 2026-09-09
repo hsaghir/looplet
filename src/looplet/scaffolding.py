@@ -18,11 +18,50 @@ import json
 import logging
 import re
 import time
+from dataclasses import dataclass
 from typing import Any
 
 from looplet.native_tools import NativeToolPolicy
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class NativeToolStats:
+    """Run-scoped observability for native-tool negotiation."""
+
+    requested: int = 0
+    attempted: int = 0
+    succeeded: int = 0
+    fallbacks: int = 0
+    last_fallback_reason: str | None = None
+
+    @property
+    def has_activity(self) -> bool:
+        """Whether any native negotiation has occurred in this run."""
+        return self.requested > 0 or self.attempted > 0 or self.fallbacks > 0
+
+    def record(self, result: "LLMResult") -> None:
+        """Record one LLM result without affecting protocol behavior."""
+        if not result.native_requested:
+            return
+        self.requested += 1
+        if result.native_attempted:
+            self.attempted += 1
+        if result.native_succeeded:
+            self.succeeded += 1
+        if result.native_fallback:
+            self.fallbacks += 1
+            self.last_fallback_reason = result.native_fallback_reason
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "requested": self.requested,
+            "attempted": self.attempted,
+            "succeeded": self.succeeded,
+            "fallbacks": self.fallbacks,
+            "last_fallback_reason": self.last_fallback_reason,
+        }
 
 
 # ── Constants ────────────────────────────────────────────────────
@@ -100,6 +139,10 @@ class LLMResult:
         "stop_reason",
         "continuations",
         "native_fallback",
+        "native_requested",
+        "native_attempted",
+        "native_succeeded",
+        "native_fallback_reason",
     )
 
     def __init__(
@@ -109,6 +152,10 @@ class LLMResult:
         stop_reason: str | None = None,
         continuations: int = 0,
         native_fallback: bool = False,
+        native_requested: bool = False,
+        native_attempted: bool = False,
+        native_succeeded: bool = False,
+        native_fallback_reason: str | None = None,
     ) -> None:
         self.text = text
         self.error = error
@@ -116,6 +163,10 @@ class LLMResult:
         self.stop_reason = stop_reason
         self.continuations = continuations
         self.native_fallback = native_fallback
+        self.native_requested = native_requested
+        self.native_attempted = native_attempted
+        self.native_succeeded = native_succeeded
+        self.native_fallback_reason = native_fallback_reason
 
     @property
     def ok(self) -> bool:
@@ -231,12 +282,15 @@ def llm_call_with_retry(
     attempt_limit = max_retries + 1 + int(use_native)
     last_error: Exception | None = None
     native_fallback = False
+    native_attempted = False
+    native_fallback_reason: str | None = None
     for attempt in range(attempt_limit):
         # Re-check cancellation between retries - a long backoff could span it.
         if cancel_token is not None and getattr(cancel_token, "is_cancelled", False):
             return LLMResult(None, RuntimeError("cancelled during retry backoff"))
         try:
             if use_native:
+                native_attempted = True
                 call = llm.generate_with_tools
                 # Build unified kwargs: base params + generate_kwargs overrides
                 call_kwargs: dict[str, Any] = {
@@ -259,7 +313,13 @@ def llm_call_with_retry(
                 blocks = call(prompt, **call_kwargs)
                 if blocks is None:
                     raise RuntimeError("native tool call returned no response")
-                return LLMResult(blocks, stop_reason=getattr(llm, "last_stop_reason", None))
+                return LLMResult(
+                    blocks,
+                    stop_reason=getattr(llm, "last_stop_reason", None),
+                    native_requested=True,
+                    native_attempted=True,
+                    native_succeeded=True,
+                )
             call = llm.generate
             call_kwargs = {
                 "max_tokens": max_tokens,
@@ -319,6 +379,10 @@ def llm_call_with_retry(
                 stop_reason=stop,
                 continuations=_cont,
                 native_fallback=native_fallback,
+                native_requested=bool(tools is not None and policy.enabled),
+                native_attempted=native_attempted,
+                native_succeeded=False,
+                native_fallback_reason=native_fallback_reason,
             )
         except Exception as e:
             last_error = e
@@ -333,6 +397,7 @@ def llm_call_with_retry(
                 policy.demote()
                 use_native = False
                 native_fallback = True
+                native_fallback_reason = f"{type(e).__name__}: {e}"
                 continue
             # MockLLMBackend(cycle=False) raises LLMResponsesExhausted when
             # a test scripted fewer responses than the loop asked for.

@@ -105,6 +105,12 @@ class TestLifecycleEventDispatch:
         assert all(p.raw_response for p in post)
         assert all(p.prompt for p in post)
 
+    def test_post_llm_response_payload_carries_native_stats(self):
+        r = _Recorder()
+        _run_simple(r)
+        post = [p for p in r.payloads if p.event == LifecycleEvent.POST_LLM_RESPONSE]
+        assert post[-1].extra["native_tool_stats"]["requested"] >= 0
+
 
 class TestLifecycleEventDecisions:
     def test_stop_from_post_llm_response_halts_loop(self):

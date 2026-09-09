@@ -134,6 +134,7 @@ class LoopContext:
     termination_reason: str | None = None
     native_tool_stats: NativeToolStats = field(default_factory=NativeToolStats)
     context_budget: ContextBudgetSnapshot = field(default_factory=ContextBudgetSnapshot)
+    policy_decisions: list[dict[str, Any]] = field(default_factory=list)
     run_envelope: RunEnvelope | None = None
 
 
@@ -893,6 +894,49 @@ def _set_run_lifecycle(
             metadata["termination_reason"] = loop_ctx.termination_reason
 
 
+def _record_policy_decision(state: Any, decision: Any) -> None:
+    """Persist a JSON-safe policy audit record on the live run."""
+    record = getattr(decision, "policy_decision", None)
+    if record is None:
+        return
+    data = record.to_dict() if hasattr(record, "to_dict") else dict(record)
+    envelope = getattr(state, "run_envelope", None)
+    if envelope is not None:
+        data.setdefault("run_id", envelope.run_id)
+        if envelope.tenant_id is not None:
+            data.setdefault("tenant_id", envelope.tenant_id)
+    metadata = getattr(state, "metadata", None)
+    if isinstance(metadata, dict):
+        decisions = metadata.setdefault("policy_decisions", [])
+        if isinstance(decisions, list):
+            decisions.append(data)
+
+
+def _policy_checkpoint_metadata(state: Any) -> dict[str, Any]:
+    metadata = getattr(state, "metadata", None)
+    decisions = metadata.get("policy_decisions") if isinstance(metadata, dict) else None
+    return {"policy_decisions": list(decisions)} if isinstance(decisions, list) else {}
+
+
+def _deadline_expired(loop_ctx: LoopContext) -> bool:
+    """Cancel the run when its host deadline has passed."""
+    envelope = loop_ctx.run_envelope
+    if envelope is None or envelope.deadline_at is None:
+        return False
+    if time.time() < envelope.deadline_at:
+        return False
+    cancel_token = getattr(loop_ctx.config, "cancel_token", None)
+    if cancel_token is not None:
+        cancel_token.cancel()
+    _set_run_lifecycle(
+        loop_ctx,
+        status=RunStatus.CANCELLED,
+        phase=RunPhase.TERMINAL,
+        termination_reason="deadline_exceeded",
+    )
+    return True
+
+
 def _build_tool_ctx(
     config: "LoopConfig",
     *,
@@ -1330,6 +1374,7 @@ def _intercept_tool_calls(
         )
         _handled = False
         for _d in _pre_tool_decisions:
+            _record_policy_decision(state, _d)
             if _d.updated_args is not None:
                 tc.args = _d.updated_args
             if _d.permission == "deny":
@@ -1380,6 +1425,7 @@ def _intercept_tool_calls(
                 session_log=session_log,
                 context=context,
             )
+            _record_policy_decision(state, _decision)
             if _decision.updated_args is not None:
                 tc.args = _decision.updated_args
             if _decision.permission == "deny":
@@ -1956,6 +2002,10 @@ def composable_loop(
         # reads the live values (rather than a snapshot from start-of-loop).
         loop_ctx.step_num = step_num
         loop_ctx.conversation = _conv
+        if _deadline_expired(loop_ctx):
+            stop_reason = "deadline_exceeded"
+            done = True
+            break
         _set_run_lifecycle(loop_ctx, phase=RunPhase.PROMPTING)
         _hook_requested_stop = False  # reset per step; honored after dispatch
 
@@ -2229,6 +2279,9 @@ def composable_loop(
                 generate_kwargs=config.generate_kwargs or None,
             )
             loop_ctx.native_tool_stats.record(llm_result)
+            if _deadline_expired(loop_ctx):
+                stop_reason = "deadline_exceeded"
+                done = True
             _state_metadata = getattr(state, "metadata", None)
             if isinstance(_state_metadata, dict) and loop_ctx.native_tool_stats.has_activity:
                 _state_metadata["native_tool_stats"] = loop_ctx.native_tool_stats.to_dict()
@@ -2586,7 +2639,7 @@ def composable_loop(
                                 if loop_ctx.run_envelope is not None
                                 else None
                             ),
-                            metadata={"task": str(task)},
+                            metadata={"task": str(task), **_policy_checkpoint_metadata(state)},
                             run_status=loop_ctx.status.value,
                             run_phase=loop_ctx.phase.value,
                             termination_reason=loop_ctx.termination_reason,
@@ -2778,7 +2831,11 @@ def composable_loop(
                                 if loop_ctx.run_envelope is not None
                                 else None
                             ),
-                            metadata={"task": str(task), "status": "done"},
+                            metadata={
+                                "task": str(task),
+                                "status": "done",
+                                **_policy_checkpoint_metadata(state),
+                            },
                             run_status=loop_ctx.status.value,
                             run_phase=loop_ctx.phase.value,
                             termination_reason=loop_ctx.termination_reason,
@@ -2837,7 +2894,7 @@ def composable_loop(
         RunStatus.COMPLETED
         if stop_reason == "done"
         else RunStatus.CANCELLED
-        if stop_reason == "cancelled"
+        if stop_reason in {"cancelled", "deadline_exceeded"}
         else RunStatus.FAILED
         if stop_reason in {"error", "llm_error"}
         else RunStatus.STOPPED

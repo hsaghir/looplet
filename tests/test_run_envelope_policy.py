@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import tempfile
+import time
 from pathlib import Path
 
 from looplet import (
@@ -129,3 +130,29 @@ def test_permission_hook_emits_policy_audit_record() -> None:
     assert decision.policy_decision is not None
     assert decision.policy_decision.decision == "deny"
     assert decision.policy_decision.tool == "shell"
+
+
+def test_expired_deadline_cancels_sync_run_before_llm_call() -> None:
+    envelope = RunEnvelope(run_id="expired", deadline_at=time.time() - 1)
+    calls = []
+
+    class Backend:
+        def generate(self, prompt, **kwargs):
+            calls.append(True)
+            return '{"tool":"done","args":{"summary":"ok"}}'
+
+    state = DefaultState(max_steps=2)
+    steps = list(
+        composable_loop(
+            Backend(),
+            tools=_tools(lambda **kwargs: {}),
+            state=state,
+            config=LoopConfig(max_steps=2, run_envelope=envelope),
+            task={},
+        )
+    )
+
+    assert steps == []
+    assert calls == []
+    assert state.run_status == "cancelled"
+    assert state.termination_reason == "deadline_exceeded"

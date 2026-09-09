@@ -52,7 +52,9 @@ from looplet.loop import (
     RunStatus,
     _bind_loop_context,
     _build_tool_ctx,
+    _deadline_expired,
     _intercept_tool_calls,
+    _policy_checkpoint_metadata,
     _run_post_dispatch_hooks,
     _set_run_lifecycle,
     emit_event,
@@ -488,7 +490,7 @@ async def async_composable_loop(
                 run_envelope=(
                     loop_ctx.run_envelope.to_dict() if loop_ctx.run_envelope is not None else None
                 ),
-                metadata=metadata,
+                metadata={**metadata, **_policy_checkpoint_metadata(state)},
                 run_status=loop_ctx.status.value,
                 run_phase=loop_ctx.phase.value,
                 termination_reason=loop_ctx.termination_reason,
@@ -500,6 +502,10 @@ async def async_composable_loop(
         step_num = state.step_count + 1 + _step_offset
         loop_ctx.step_num = step_num
         loop_ctx.conversation = _conv
+        if _deadline_expired(loop_ctx):
+            stop_reason = "deadline_exceeded"
+            done = True
+            break
         _set_run_lifecycle(loop_ctx, phase=RunPhase.PROMPTING)
 
         # Clear step_context
@@ -510,7 +516,7 @@ async def async_composable_loop(
 
         # Cancellation check
         if config.cancel_token is not None and getattr(config.cancel_token, "is_cancelled", False):
-            stop_reason = "cancelled"
+            stop_reason = "deadline_exceeded"
             break
 
         # ── Build prompt ────────────────────────────────────────
@@ -618,6 +624,9 @@ async def async_composable_loop(
             generate_kwargs=config.generate_kwargs or None,
         )
         loop_ctx.native_tool_stats.record(llm_result)
+        if _deadline_expired(loop_ctx):
+            stop_reason = "cancelled"
+            done = True
         _state_metadata = getattr(state, "metadata", None)
         if isinstance(_state_metadata, dict) and loop_ctx.native_tool_stats.has_activity:
             _state_metadata["native_tool_stats"] = loop_ctx.native_tool_stats.to_dict()

@@ -68,6 +68,36 @@ class TestAsyncLlmCall:
         assert result.text == '{"tool": "done", "args": {}}'
         assert calls == ["native", "regular"]
 
+    async def test_native_fallback_stats_are_exposed_on_state(self):
+        class TrackingBackend:
+            def __init__(self):
+                self.calls = []
+
+            async def generate_with_tools(self, prompt, *, tools, **kwargs):
+                self.calls.append("native")
+                raise RuntimeError("unsupported native endpoint")
+
+            async def generate(self, prompt, **kwargs):
+                self.calls.append("regular")
+                return '{"tool": "done", "args": {}}'
+
+        from looplet import BaseToolRegistry, DefaultState, LoopConfig, register_done_tool
+
+        backend = TrackingBackend()
+        tools = BaseToolRegistry()
+        register_done_tool(tools)
+        state = DefaultState(max_steps=2)
+        async for _ in async_composable_loop(
+            llm=backend,
+            tools=tools,
+            state=state,
+            config=LoopConfig(max_steps=2),
+            task={},
+        ):
+            pass
+
+        assert state.metadata["native_tool_stats"]["fallbacks"] == 1
+
 
 class TestAsyncComposableLoop:
     async def test_basic_loop(self):

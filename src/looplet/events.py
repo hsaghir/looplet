@@ -111,6 +111,7 @@ class EventPayload:
     subagent_id: str | None = None
     hook_slot: str | None = None
     hook_name: str | None = None
+    native_tool_stats: dict[str, Any] | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
     def to_jsonable(self) -> dict[str, Any]:

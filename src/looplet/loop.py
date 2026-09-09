@@ -39,6 +39,7 @@ from looplet.recovery_strategies import (
 from looplet.scaffolding import (
     PARSE_RECOVERY_MAX,
     LLMResult,
+    NativeToolStats,
     build_parse_recovery_prompt,
     estimate_prompt_tokens,
     llm_call_with_retry,
@@ -129,6 +130,7 @@ class LoopContext:
     status: RunStatus = RunStatus.CREATED
     phase: RunPhase = RunPhase.STARTING
     termination_reason: str | None = None
+    native_tool_stats: NativeToolStats = field(default_factory=NativeToolStats)
 
 
 # ── Hook Protocol ────────────────────────────────────────────────
@@ -2188,6 +2190,10 @@ def composable_loop(
                 cache_breakpoints=_cache_bps,
                 generate_kwargs=config.generate_kwargs or None,
             )
+            loop_ctx.native_tool_stats.record(llm_result)
+            _state_metadata = getattr(state, "metadata", None)
+            if isinstance(_state_metadata, dict) and loop_ctx.native_tool_stats.has_activity:
+                _state_metadata["native_tool_stats"] = loop_ctx.native_tool_stats.to_dict()
             _llm_dur_ms = (time.perf_counter() - _llm_t0) * 1000.0
             if _llm_span is not None and config.tracer is not None:
                 config.tracer.end_span(_llm_span)
@@ -2259,6 +2265,7 @@ def composable_loop(
             prompt=prompt,
             raw_response=raw_response,
             usage=_step_usage,
+            extra={"native_tool_stats": loop_ctx.native_tool_stats.to_dict()},
         )
         for _d in _post_llm_decisions:
             if _d.stop is not None:

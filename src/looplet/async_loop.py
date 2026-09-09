@@ -60,6 +60,7 @@ from looplet.parse import parse_multi_tool_calls, to_text
 from looplet.scaffolding import (
     PARSE_RECOVERY_MAX,
     LLMResult,
+    NativeToolStats,
     _is_prompt_too_long,
     build_parse_recovery_prompt,
     truncate_tool_result,
@@ -185,6 +186,8 @@ async def async_llm_call(
 
     last_error: Exception | None = None
     native_fallback = False
+    native_attempted = False
+    native_fallback_reason: str | None = None
     attempt_limit = max_retries + 1 + int(use_native)
 
     for attempt in range(attempt_limit):
@@ -192,6 +195,7 @@ async def async_llm_call(
             return LLMResult(None, RuntimeError("cancelled during retry"))
         try:
             if use_native:
+                native_attempted = True
                 call_kwargs: dict[str, Any] = {
                     "tools": tools,
                     "max_tokens": max_tokens,
@@ -211,6 +215,9 @@ async def async_llm_call(
                 return LLMResult(
                     result,
                     stop_reason=getattr(llm, "last_stop_reason", None),
+                    native_requested=True,
+                    native_attempted=True,
+                    native_succeeded=True,
                 )
 
             call_kwargs = {
@@ -228,6 +235,10 @@ async def async_llm_call(
                 result,
                 stop_reason=getattr(llm, "last_stop_reason", None),
                 native_fallback=native_fallback,
+                native_requested=bool(tools is not None and policy.enabled),
+                native_attempted=native_attempted,
+                native_succeeded=False,
+                native_fallback_reason=native_fallback_reason,
             )
 
         except Exception as e:
@@ -242,6 +253,7 @@ async def async_llm_call(
                 policy.demote()
                 use_native = False
                 native_fallback = True
+                native_fallback_reason = f"{type(e).__name__}: {e}"
                 continue
             if attempt < attempt_limit - 1:
                 wait = RETRY_BACKOFF_BASE * (2**attempt)
@@ -381,6 +393,7 @@ async def async_composable_loop(
     )
     _bind_loop_context(loop_ctx, hooks)
     _set_run_lifecycle(loop_ctx, status=RunStatus.RUNNING, phase=RunPhase.STARTING)
+    loop_ctx.native_tool_stats = NativeToolStats()
     loop_ctx.step_num = _step_offset
 
     # Domain callables
@@ -564,6 +577,10 @@ async def async_composable_loop(
             cache_breakpoints=_cache_bps,
             generate_kwargs=config.generate_kwargs or None,
         )
+        loop_ctx.native_tool_stats.record(llm_result)
+        _state_metadata = getattr(state, "metadata", None)
+        if isinstance(_state_metadata, dict) and loop_ctx.native_tool_stats.has_activity:
+            _state_metadata["native_tool_stats"] = loop_ctx.native_tool_stats.to_dict()
         _llm_dur_ms = (time.perf_counter() - _llm_t0) * 1000.0
         llm_calls += 1
 

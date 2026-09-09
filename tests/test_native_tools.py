@@ -290,6 +290,30 @@ def _echo(*, value: str) -> dict[str, str]:
 
 
 class TestLLMCallWithRetryNative:
+    def test_native_stats_are_inactive_before_any_result(self):
+        from looplet.scaffolding import NativeToolStats
+
+        assert NativeToolStats().has_activity is False
+
+    def test_native_stats_record_success_and_fallback(self):
+        from looplet.scaffolding import NativeToolStats
+
+        stats = NativeToolStats()
+        success = llm_call_with_retry(_NativeBackend(), "hi", tools=_weather_schema())
+        stats.record(success)
+        fallback = llm_call_with_retry(
+            _NativeFailureBackend(), "hi", tools=_weather_schema(), max_retries=0
+        )
+        stats.record(fallback)
+
+        assert stats.to_dict() == {
+            "requested": 2,
+            "attempted": 2,
+            "succeeded": 1,
+            "fallbacks": 1,
+            "last_fallback_reason": "RuntimeError: tools endpoint unsupported",
+        }
+
     def test_native_policy_defaults_on_and_parses_after_demotion(self):
         policy = NativeToolPolicy()
         backend = _NativeBackend()

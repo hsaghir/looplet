@@ -389,11 +389,33 @@ class ModelGatewayHandle:
         thread = threading.Thread(target=server.serve, args=(socket_path,), daemon=True)
         thread.start()
         # Wait briefly for the socket to appear so children that spawn
-        # immediately can connect on first use.
+        # immediately can connect on first use.  A filesystem socket path
+        # may exist briefly before listen() is ready, so probe an actual
+        # connection instead of treating path creation as readiness.
         deadline = time.monotonic() + 5.0
         while time.monotonic() < deadline and not os.path.exists(socket_path):
             time.sleep(0.01)
         if not os.path.exists(socket_path):
+            server.stop()
+            thread.join(timeout=2.0)
+            try:
+                os.rmdir(socket_dir)
+            except OSError:  # pragma: no cover - best effort
+                pass
+            raise ModelGatewayError("model gateway failed to create its socket")
+        ready = False
+        while time.monotonic() < deadline and os.path.exists(socket_path):
+            probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            try:
+                probe.settimeout(0.2)
+                probe.connect(socket_path)
+                ready = True
+                break
+            except OSError:
+                time.sleep(0.01)
+            finally:
+                probe.close()
+        if not ready:
             server.stop()
             thread.join(timeout=2.0)
             try:

@@ -93,10 +93,12 @@ class TestCheckpointDataclass:
 
     def test_to_dict_is_json_serializable(self) -> None:
         cp = _make_checkpoint()
+        cp.domain_state = {"cursor": 4, "seen": ["alpha"]}
         raw = json.dumps(cp.to_dict())
         assert isinstance(raw, str)
         loaded = json.loads(raw)
         assert loaded["step_number"] == 3
+        assert loaded["domain_state"] == {"cursor": 4, "seen": ["alpha"]}
 
     def test_from_dict_missing_optional_fields(self) -> None:
         minimal = {
@@ -108,6 +110,7 @@ class TestCheckpointDataclass:
         assert cp.step_number == 1
         assert cp.conversation_data is None
         assert cp.tool_results_store == {}
+        assert cp.domain_state == {}
         assert cp.metadata == {}
 
     def test_created_at_defaults_to_now(self) -> None:
@@ -395,8 +398,10 @@ class TestResumeLoopState:
 
     def test_metadata_passed_through(self) -> None:
         cp, _ = self._make_checkpoint_with_log()
+        cp.domain_state = {"cursor": 9}
         result = resume_loop_state(cp)
         assert result["metadata"]["task_id"] == "test-task"
+        assert result["domain_state"] == {"cursor": 9}
 
     def test_session_log_entries_tool_names_preserved(self) -> None:
         cp, original = self._make_checkpoint_with_log()

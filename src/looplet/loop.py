@@ -419,11 +419,11 @@ class LoopHook(Protocol):
 
 @dataclass
 class DomainAdapter:
-    """Bundle the five domain-specific callables a loop needs.
+    """Bundle optional domain-specific callables used by a loop.
 
     Grouping keeps :class:`LoopConfig` flat and readable, and gives
     agent packages a single handle to pass around instead of threading
-    five separate callables.
+    separate callables through config kwargs.
 
     When a :class:`LoopConfig` has a :attr:`LoopConfig.domain` set,
     each adapter field seeds the corresponding flat ``LoopConfig``
@@ -440,6 +440,8 @@ class DomainAdapter:
     build_trace: Callable[..., Any] | None = None
     build_prompt: Callable[..., str] | None = None
     extract_step_metadata: Callable[..., tuple[list[str], list[str]]] | None = None
+    checkpoint_state: Callable[["LoopContext"], dict[str, Any]] | None = None
+    restore_checkpoint_state: Callable[["LoopContext", dict[str, Any]], None] | None = None
 
 
 @dataclass
@@ -657,6 +659,12 @@ class LoopConfig:
     """When set, ``resume_loop_state(checkpoint)`` is called at loop start
     to restore session_log and step offset (crash-resume support).
     """
+
+    checkpoint_state: Callable[["LoopContext"], dict[str, Any]] | None = None
+    """Optional callback returning JSON-safe cartridge state for checkpoints."""
+
+    restore_checkpoint_state: Callable[["LoopContext", dict[str, Any]], None] | None = None
+    """Optional callback restoring cartridge state from a checkpoint."""
 
     memory_sources: list[Any] = field(default_factory=list)
     """Optional list of ``PersistentMemorySource`` objects rendered into
@@ -1809,6 +1817,10 @@ def composable_loop(
     else:
         extract_entities = _raw_extract_entities
     build_prompt_fn = config.build_prompt or (_dom.build_prompt if _dom else None)
+    checkpoint_state = config.checkpoint_state or (_dom.checkpoint_state if _dom else None)
+    restore_checkpoint_state = config.restore_checkpoint_state or (
+        _dom.restore_checkpoint_state if _dom else None
+    )
 
     # ── Loop state ──────────────────────────────────────────
     consecutive_parse_failures = 0
@@ -1863,6 +1875,9 @@ def composable_loop(
     )
     _bind_loop_context(loop_ctx, hooks)
     _set_run_lifecycle(loop_ctx, status=RunStatus.RUNNING, phase=RunPhase.STARTING)
+    loop_ctx.step_num = _step_offset
+    if config.initial_checkpoint is not None and restore_checkpoint_state is not None:
+        restore_checkpoint_state(loop_ctx, resumed.get("domain_state", {}))
 
     for hook in hooks:
         if hasattr(hook, "pre_loop"):
@@ -2503,6 +2518,7 @@ def composable_loop(
 
                 # Save checkpoint after the session log and conversation include this step.
                 if _ckpt_store is not None:
+                    loop_ctx.step_num = cur_step
                     _ckpt_store.save(
                         _Checkpoint(
                             step_number=cur_step,
@@ -2517,6 +2533,9 @@ def composable_loop(
                                 "budget_remaining": getattr(state, "budget_remaining", 0),
                             },
                             tool_results_store={},
+                            domain_state=(
+                                checkpoint_state(loop_ctx) if checkpoint_state is not None else {}
+                            ),
                             metadata={"task": str(task)},
                             run_status=loop_ctx.status.value,
                             run_phase=loop_ctx.phase.value,
@@ -2686,6 +2705,7 @@ def composable_loop(
                 )
                 # Save checkpoint after done step (after yield, matching non-done pattern)
                 if _ckpt_store is not None:
+                    loop_ctx.step_num = cur_step
                     _ckpt_store.save(
                         _Checkpoint(
                             step_number=cur_step,
@@ -2700,6 +2720,9 @@ def composable_loop(
                                 "budget_remaining": getattr(state, "budget_remaining", 0),
                             },
                             tool_results_store={},
+                            domain_state=(
+                                checkpoint_state(loop_ctx) if checkpoint_state is not None else {}
+                            ),
                             metadata={"task": str(task), "status": "done"},
                             run_status=loop_ctx.status.value,
                             run_phase=loop_ctx.phase.value,

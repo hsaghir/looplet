@@ -1206,45 +1206,16 @@ def _workspace_to_preset_inner(
                     if strict:
                         raise CartridgeSerializationError(msg)
                     logger.warning("%s; tool will receive None for missing resources", msg)
-            # Surface ``parameters: {}`` mismatches with the execute.py
-            # signature. The most common scaffold-then-edit friction:
-            # ``scaffold_cartridge`` writes ``parameters: {}`` and
-            # ``def execute(ctx, **kwargs)`` together. Users replace
-            # ``**kwargs`` with explicit keyword params (``*, name: str``)
-            # but forget to also fill in ``parameters:``. The dispatcher
-            # then rejects every call with VALIDATION because the schema
-            # advertises zero parameters. We detect the mismatch here and
-            # warn pointing at the tool.yaml. Detection is deliberately
-            # conservative: we only flag declared-empty parameters paired
-            # with a non-``**kwargs`` signature that has at least one
-            # required keyword-only parameter beyond ``ctx``.
-            if not spec.parameters:
-                try:
-                    sig = inspect.signature(execute_fn)
-                    explicit = [
-                        p
-                        for p in sig.parameters.values()
-                        if p.kind == inspect.Parameter.KEYWORD_ONLY and p.name != "ctx"
-                    ]
-                    has_var_keyword = any(
-                        p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
-                    )
-                except (TypeError, ValueError):
-                    explicit = []
-                    has_var_keyword = True
-                if explicit and not has_var_keyword:
-                    declared = [p.name for p in explicit]
-                    msg = (
-                        f"tool {spec.name!r} (in {tool_dir.name!r}): "
-                        f"execute.py declares keyword params {declared} but "
-                        f"tool.yaml has empty ``parameters: {{}}``. The "
-                        f"dispatcher will reject every call with a VALIDATION "
-                        f"error. Add the parameters block to {spec_path.name}, "
-                        f"or accept ``**kwargs`` in execute.py."
-                    )
-                    if strict:
-                        raise CartridgeSerializationError(msg)
-                    logger.warning("%s", msg)
+            contract_errors = spec.contract_errors()
+            if contract_errors:
+                msg = (
+                    f"tool {spec.name!r} (in {spec_path}) has parameters/schema "
+                    f"contract errors; dispatch may return VALIDATION: "
+                    + "; ".join(contract_errors)
+                )
+                if strict:
+                    raise CartridgeSerializationError(msg)
+                logger.warning("%s", msg)
             registry.register(spec)
 
             # ``output_schema:`` on the done tool installs an

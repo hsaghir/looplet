@@ -215,6 +215,26 @@ def test_loader_does_not_warn_when_parameters_filled(
     )
 
 
+def test_loader_warns_on_nonempty_optional_signature_mismatch(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    ws = _write_basic_workspace(tmp_path)
+    (ws / "tools" / "greet").mkdir(parents=True)
+    (ws / "tools" / "greet" / "tool.yaml").write_text(
+        "name: greet\ndescription: Greet.\nparameters:\n"
+        "  name:\n    type: string\n    default: world\n"
+    )
+    (ws / "tools" / "greet" / "execute.py").write_text(
+        "def execute(ctx, *, name: str) -> dict:\n    return {'hi': name}\n"
+    )
+
+    with caplog.at_level(logging.WARNING, logger="looplet.cartridge._load"):
+        cartridge_to_preset(str(ws))
+
+    msgs = [rec.getMessage() for rec in caplog.records]
+    assert any("greet" in m and "parameters/schema contract errors" in m for m in msgs)
+
+
 # ── fix 3: watcher fingerprint must detect content edits even when
 # mtime resolution is coarse (tmpfs / network mounts) ─────────────────
 

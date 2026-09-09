@@ -623,6 +623,33 @@ class TestSkillBundles:
         assert result.ok is False
         assert any("not owned" in error for error in result.errors)
 
+    def test_validation_rejects_tool_schema_signature_mismatch(self, tmp_path):
+        bundle_root = tmp_path / "mismatched-tool-bundle"
+        bundle_root.mkdir()
+        (bundle_root / "SKILL.md").write_text(
+            "---\nname: mismatched-tool\ndescription: Mismatched tool bundle.\n"
+            "entrypoint: looplet.py\n---\n# Mismatch\n",
+            encoding="utf-8",
+        )
+        (bundle_root / "looplet.py").write_text(
+            "from looplet import DefaultState, LoopConfig, ToolSpec, tools_from\n"
+            "from looplet.presets import AgentPreset\n"
+            "def inspect(*, query='default'):\n"
+            "    return {'query': query}\n"
+            "def build(runtime):\n"
+            "    spec = ToolSpec('inspect', 'Inspect', {\"type\": \"object\", "
+            '"properties": {"query": {"type": "string"}}, '
+            '"required": ["query"]}, inspect)\n'
+            "    return AgentPreset(tools=tools_from([spec], include_done=True), hooks=[], "
+            "config=LoopConfig(max_steps=1), state=DefaultState(max_steps=1))\n",
+            encoding="utf-8",
+        )
+
+        result = validate_skill_bundle(bundle_root)
+
+        assert result.ok is False
+        assert any("has a default but schema marks it required" in error for error in result.errors)
+
     def test_cli_reports_generic_bundle_runtime_step_warning(self, tmp_path, capsys):
         bundle_root = tmp_path / "fixed_budget_bundle"
         bundle_root.mkdir()

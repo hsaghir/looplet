@@ -438,6 +438,10 @@ def _validate_preset_contract(
     if preset.config.max_steps <= 0:
         errors.append("config.max_steps must be positive")
 
+    for tool_name, spec in preset.tools.tool_specs.items():
+        for contract_error in spec.contract_errors():
+            errors.append(f"tool {tool_name!r}: {contract_error}")
+
     declared_resources = {
         resource_name
         for spec in preset.tools.tool_specs.values()

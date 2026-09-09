@@ -44,6 +44,7 @@ from looplet.checkpoint import Checkpoint as _Checkpoint
 from looplet.checkpoint import FileCheckpointStore as _FileCheckpointStore
 from looplet.checkpoint import resume_loop_state as _resume_loop_state
 from looplet.loop import (
+    ContextBudgetSnapshot,
     LoopConfig,
     LoopContext,
     RunPhase,
@@ -63,6 +64,7 @@ from looplet.scaffolding import (
     NativeToolStats,
     _is_prompt_too_long,
     build_parse_recovery_prompt,
+    estimate_prompt_tokens,
     truncate_tool_result,
 )
 from looplet.session import SessionLog
@@ -536,6 +538,30 @@ async def async_composable_loop(
                 briefing=_briefing,
                 memory=_rendered_memory,
             )
+
+        _estimated_tokens = estimate_prompt_tokens(prompt)
+        loop_ctx.context_budget = ContextBudgetSnapshot(
+            prompt_chars=len(prompt),
+            estimated_tokens=_estimated_tokens,
+            context_window_tokens=config.context_window,
+            briefing_chars=len(_briefing),
+            context_history_chars=len(_context_history),
+            pressure=_estimated_tokens > config.context_window - 3_000,
+        )
+        _state_metadata = getattr(state, "metadata", None)
+        if loop_ctx.context_budget.pressure and isinstance(_state_metadata, dict):
+            _state_metadata["context_budget"] = loop_ctx.context_budget.to_dict()
+
+        emit_event(
+            hooks,
+            _LE.PRE_LLM_CALL,
+            step_num=step_num,
+            state=state,
+            session_log=session_log,
+            context=context,
+            prompt=prompt,
+            context_budget=loop_ctx.context_budget.to_dict(),
+        )
 
         # ── Native tool schemas ─────────────────────────────────
         _tool_schemas = native_policy.tool_schemas(llm, tools)

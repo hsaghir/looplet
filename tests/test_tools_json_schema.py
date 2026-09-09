@@ -143,6 +143,37 @@ class TestToolSpecJsonSchema:
 
         assert spec.contract_errors() == ["callable parameter 'limit' is not declared"]
 
+    def test_retry_contract_defaults_are_conservative(self):
+        from looplet.tools import ToolSpec
+
+        spec = ToolSpec("read", "Read", {}, lambda: {})
+
+        assert spec.idempotency == "unknown"
+        assert spec.retryable is False
+
+    def test_retry_contract_round_trips_on_cartridge_tool(self, tmp_path):
+        from looplet import ToolSpec, cartridge_to_preset, preset_to_cartridge
+
+        source = tmp_path / "source"
+        source.mkdir()
+        (source / "cartridge.json").write_text('{"name":"x","schema_version":2}\n')
+        (source / "config.yaml").write_text("max_steps: 2\ndone_tool: done\n")
+        (source / "tools" / "done").mkdir(parents=True)
+        (source / "tools" / "done" / "tool.yaml").write_text(
+            "name: done\nparameters:\n  summary: {type: string}\n"
+        )
+        (source / "tools" / "done" / "execute.py").write_text(
+            "def execute(*, summary): return {'summary': summary}\n"
+        )
+        preset = cartridge_to_preset(source)
+        preset.tools._tools["done"].idempotency = "safe"
+        preset.tools._tools["done"].retryable = True
+        output = tmp_path / "output"
+        preset_to_cartridge(preset, output, name="x")
+        text = (output / "tools" / "done" / "tool.yaml").read_text()
+        assert "idempotency: safe" in text
+        assert "retryable: true" in text
+
     def test_spec_text_simple(self):
         from looplet.tools import ToolSpec
 

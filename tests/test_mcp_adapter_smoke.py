@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from looplet import BaseToolRegistry
+from looplet import BaseToolRegistry, RunEnvelope
 from looplet.mcp import MCPToolAdapter
 
 pytestmark = pytest.mark.smoke
@@ -74,6 +74,17 @@ class TestMCPToolAdapter:
         assert adapter._send_and_receive({}) is None
         assert adapter._read_message() is None
         adapter._write_message({})
+
+    def test_envelope_is_added_to_wire_request_params(self, monkeypatch):
+        adapter = MCPToolAdapter("echo test", run_envelope=RunEnvelope(run_id="run-1"))
+        sent = []
+        monkeypatch.setattr(
+            adapter, "_send_and_receive", lambda message: sent.append(message) or {}
+        )
+
+        adapter._send_request("tools/list", {})
+
+        assert sent[0]["params"]["run_envelope"] == {"run_id": "run-1"}
 
     def test_json_rpc_error_response_returns_none(self, caplog):
         adapter = MCPToolAdapter("echo test")

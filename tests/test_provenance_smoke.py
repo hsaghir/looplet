@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from looplet import RunEnvelope
 from looplet.provenance import (
     LLMCall,
     ProvenanceSink,
@@ -154,6 +155,24 @@ class TestTrajectoryRecorderSmoke:
         assert traj.termination_reason == "done"
         assert len(traj.llm_calls) == 1
         assert traj.ended_at is not None and traj.ended_at >= traj.started_at
+
+    def test_persists_run_envelope_and_policy_decisions(self):
+        hook = TrajectoryRecorder()
+
+        class DummyState:
+            def __init__(self):
+                self.steps = []
+                self.run_envelope = RunEnvelope(run_id="run-1", tenant_id="tenant-a")
+                self.metadata = {"policy_decisions": [{"decision": "deny", "tool": "shell"}]}
+                self._stop_reason = "done"
+
+        state = DummyState()
+        hook.pre_loop(state, None, None)
+        hook.on_loop_end(state, None, None, None)
+
+        metadata = hook.trajectory.to_dict()["metadata"]
+        assert metadata["run_envelope"] == {"run_id": "run-1", "tenant_id": "tenant-a"}
+        assert metadata["policy_decisions"] == [{"decision": "deny", "tool": "shell"}]
 
     def test_sweeps_missed_done_step(self):
         """Loop's done-handling path bypasses post_dispatch - on_loop_end

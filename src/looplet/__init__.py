@@ -151,6 +151,7 @@ from looplet.permissions import (
 )
 from looplet.presets import (
     AgentPreset,
+    ShutdownReport,
     coding_agent_preset,
     minimal_preset,
     research_agent_preset,
@@ -396,6 +397,7 @@ __all__ = [
     "run_sub_loop",
     # ── PRESETS (one-liner agent setup) ─────────────────────────
     "AgentPreset",
+    "ShutdownReport",
     "coding_agent_preset",
     "research_agent_preset",
     "minimal_preset",

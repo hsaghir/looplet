@@ -753,6 +753,7 @@ async def async_composable_loop(
                 def _ctx_for(_c: ToolCall, _cur_step: int):
                     return _build_tool_ctx(
                         config,
+                        tools=tools,
                         hooks=hooks,
                         tool_call=_c,
                         step_num=_cur_step,
@@ -853,6 +854,7 @@ async def async_composable_loop(
             else:
                 _ctx = _build_tool_ctx(
                     config,
+                    tools=tools,
                     hooks=hooks,
                     tool_call=tool_call,
                     step_num=cur_step,

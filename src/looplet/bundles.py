@@ -376,6 +376,14 @@ def run_skill_bundle(
             preset.close()
         raise
     preset = cast(AgentPreset, preset)
+    for component in [*preset.mcp_adapters, *preset.hooks, *preset.state_service_handles]:
+        setter = getattr(component, "set_run_envelope", None)
+        if callable(setter):
+            setter(preset.config.run_envelope)
+    if preset.model_gateway is not None:
+        setter = getattr(preset.model_gateway, "set_run_envelope", None)
+        if callable(setter):
+            setter(preset.config.run_envelope)
     loop_task = {"description": task} if isinstance(task, str) else dict(task)
     hooks = [*preset.hooks, *extra_hooks]
     run_llm: Any = llm

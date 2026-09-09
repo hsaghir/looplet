@@ -940,6 +940,7 @@ def _deadline_expired(loop_ctx: LoopContext) -> bool:
 def _build_tool_ctx(
     config: "LoopConfig",
     *,
+    tools: Any = None,
     hooks: list[Any] | None = None,
     tool_call: ToolCall | None = None,
     step_num: int = 0,
@@ -982,6 +983,14 @@ def _build_tool_ctx(
     # Populate metadata: config.tool_metadata (defaults) + state.metadata
     # (per-run overrides). State wins on key conflicts.
     _metadata: dict[str, Any] = dict(config.tool_metadata) if config.tool_metadata else {}
+    if tool_call is not None:
+        spec = getattr(tools, "_tools", {}).get(tool_call.tool)
+        if spec is not None:
+            idempotency = getattr(spec, "idempotency", "unknown")
+            retryable = bool(getattr(spec, "retryable", False))
+            if idempotency != "unknown" or retryable:
+                _metadata.setdefault("tool_idempotency", idempotency)
+                _metadata.setdefault("tool_retryable", retryable)
     if state is not None:
         _state_meta = getattr(state, "metadata", None)
         if isinstance(_state_meta, dict):
@@ -2507,6 +2516,7 @@ def composable_loop(
                 def _ctx_for(_c: ToolCall, _cur_step: int) -> ToolContext | None:
                     return _build_tool_ctx(
                         config,
+                        tools=tools,
                         hooks=hooks,
                         tool_call=_c,
                         step_num=_cur_step,
@@ -2746,6 +2756,7 @@ def composable_loop(
                 # termination signal would prevent the agent from ever stopping.
                 _ctx = _build_tool_ctx(
                     config,
+                    tools=tools,
                     hooks=hooks,
                     tool_call=tool_call,
                     step_num=cur_step,

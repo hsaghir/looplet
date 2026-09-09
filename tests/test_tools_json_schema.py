@@ -94,6 +94,55 @@ class TestToolSpecJsonSchema:
         )
         assert spec.required_parameters() == ["query"]
 
+    def test_contract_errors_accept_matching_optional_signature(self):
+        from looplet.tools import ToolSpec
+
+        spec = ToolSpec(
+            name="search",
+            description="Search",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "limit": {"type": "integer", "default": 10},
+                },
+                "required": ["query"],
+            },
+            execute=lambda *, query, limit=10: {"query": query, "limit": limit},
+        )
+
+        assert spec.contract_errors() == []
+
+    def test_contract_errors_reject_mismatched_requiredness(self):
+        from looplet.tools import ToolSpec
+
+        spec = ToolSpec(
+            name="search",
+            description="Search",
+            parameters={
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
+            },
+            execute=lambda *, query="default": {"query": query},
+        )
+
+        errors = spec.contract_errors()
+
+        assert errors == ["callable parameter 'query' has a default but schema marks it required"]
+
+    def test_contract_errors_reject_undeclared_callable_parameter(self):
+        from looplet.tools import ToolSpec
+
+        spec = ToolSpec(
+            name="search",
+            description="Search",
+            parameters={"query": "query"},
+            execute=lambda *, query, limit: {"query": query, "limit": limit},
+        )
+
+        assert spec.contract_errors() == ["callable parameter 'limit' is not declared"]
+
     def test_spec_text_simple(self):
         from looplet.tools import ToolSpec
 

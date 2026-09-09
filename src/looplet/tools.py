@@ -437,6 +437,65 @@ class ToolSpec:
                 required.append(name)
         return required
 
+    def contract_errors(self) -> list[str]:
+        """Return mismatches between the schema and the execute signature.
+
+        The audit is intentionally limited to the contract facts that affect
+        dispatch: declared names and requiredness. ``ctx`` is injected by the
+        registry, and ``**kwargs`` permits declarative extension parameters.
+        """
+        try:
+            signature = inspect.signature(self.execute)
+        except (TypeError, ValueError):
+            return []
+
+        accepts_kwargs = any(
+            parameter.kind == inspect.Parameter.VAR_KEYWORD
+            for parameter in signature.parameters.values()
+        )
+        callable_parameters = {
+            name: parameter
+            for name, parameter in signature.parameters.items()
+            if name != "ctx"
+            and parameter.kind
+            not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+        }
+        declared_names = set(self.parameter_names())
+        errors: list[str] = []
+
+        if not accepts_kwargs:
+            undeclared = sorted(set(callable_parameters) - declared_names)
+            errors.extend(f"callable parameter {name!r} is not declared" for name in undeclared)
+            unaccepted = sorted(declared_names - set(callable_parameters))
+            errors.extend(
+                f"schema parameter {name!r} is not accepted by the callable" for name in unaccepted
+            )
+
+        unknown_required = sorted(set(self.required_parameters()) - declared_names)
+        errors.extend(f"required parameter {name!r} is not declared" for name in unknown_required)
+
+        explicit_requiredness = self.is_json_schema or any(
+            str(desc).lower().lstrip().startswith("(optional)")
+            or (isinstance(desc, dict) and "default" in desc)
+            for desc in self.parameters.values()
+        )
+        if explicit_requiredness:
+            declared_required = set(self.required_parameters())
+            for name, parameter in callable_parameters.items():
+                if name not in declared_names:
+                    continue
+                callable_required = parameter.default is inspect.Signature.empty
+                schema_required = name in declared_required
+                if callable_required and not schema_required:
+                    errors.append(
+                        f"callable parameter {name!r} is required but schema marks it optional"
+                    )
+                elif not callable_required and schema_required:
+                    errors.append(
+                        f"callable parameter {name!r} has a default but schema marks it required"
+                    )
+        return errors
+
     def spec_text(self) -> str:
         """Format for LLM prompt inclusion."""
         if self.is_json_schema:

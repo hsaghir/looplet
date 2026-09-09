@@ -34,8 +34,24 @@ from looplet.memory import StaticMemorySource
 from looplet.tools import BaseToolRegistry, ToolSpec, register_done_tool, tool, tools_from
 from looplet.types import CloseableResource, DefaultState
 
+
+@dataclass(frozen=True)
+class ShutdownReport:
+    """JSON-safe summary of one preset shutdown attempt."""
+
+    closed_components: tuple[str, ...] = ()
+    errors: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "closed_components": list(self.closed_components),
+            "errors": list(self.errors),
+        }
+
+
 __all__ = [
     "AgentPreset",
+    "ShutdownReport",
     "coding_agent_preset",
     "research_agent_preset",
     "minimal_preset",
@@ -165,7 +181,7 @@ class AgentPreset:
     applies. Presets constructed directly in code also leave this unset.
     """
 
-    def close(self) -> None:
+    def close(self) -> ShutdownReport:
         """Terminate all subprocesses owned by this preset.
 
         Covers LEP hooks, ``mcp_servers:`` adapters, ``state_services:``
@@ -175,40 +191,31 @@ class AgentPreset:
         """
         from looplet.lep import LEPHookAdapter  # noqa: PLC0415
 
+        closed_components: list[str] = []
+        errors: list[str] = []
+
+        def _close(component: Any, label: str) -> None:
+            try:
+                component.close()
+                closed_components.append(label)
+            except Exception as exc:  # pragma: no cover - defensive
+                errors.append(f"{label}: {type(exc).__name__}: {exc}")
+                import logging  # noqa: PLC0415
+
+                logging.getLogger(__name__).warning("error closing %s", label, exc_info=True)
+
         for hook in self.hooks:
             if not isinstance(hook, LEPHookAdapter):
                 continue
-            try:
-                hook.close()
-            except Exception:  # pragma: no cover - defensive
-                import logging  # noqa: PLC0415
-
-                logging.getLogger(__name__).warning("error closing LEP hook", exc_info=True)
+            _close(hook, "lep_hook")
         for adapter in self.mcp_adapters:
-            try:
-                adapter.close()
-            except Exception:  # pragma: no cover - defensive
-                import logging  # noqa: PLC0415
-
-                logging.getLogger(__name__).warning("error closing MCP adapter", exc_info=True)
+            _close(adapter, "mcp_adapter")
         self.mcp_adapters = []
         for handle in self.state_service_handles:
-            try:
-                handle.close()
-            except Exception:  # pragma: no cover - defensive
-                import logging  # noqa: PLC0415
-
-                logging.getLogger(__name__).warning(
-                    "error closing state service handle", exc_info=True
-                )
+            _close(handle, "state_service")
         self.state_service_handles = []
         if self.model_gateway is not None:
-            try:
-                self.model_gateway.close()
-            except Exception:  # pragma: no cover - defensive
-                import logging  # noqa: PLC0415
-
-                logging.getLogger(__name__).warning("error closing model gateway", exc_info=True)
+            _close(self.model_gateway, "model_gateway")
             self.model_gateway = None
         closed_ids: set[int] = set()
         for resource in reversed(self.owned_resources):
@@ -216,15 +223,9 @@ class AgentPreset:
             if resource_id in closed_ids:
                 continue
             closed_ids.add(resource_id)
-            try:
-                resource.close()
-            except Exception:  # pragma: no cover - defensive
-                import logging  # noqa: PLC0415
-
-                logging.getLogger(__name__).warning(
-                    "error closing cartridge resource", exc_info=True
-                )
+            _close(resource, "resource")
         self.owned_resources = []
+        return ShutdownReport(tuple(closed_components), tuple(errors))
 
     def __enter__(self) -> "AgentPreset":
         return self
@@ -254,6 +255,15 @@ class AgentPreset:
         Returns the loop generator - iterate to drive the agent.
         """
         from looplet.loop import composable_loop  # noqa: PLC0415
+
+        for component in [*self.mcp_adapters, *self.hooks, *self.state_service_handles]:
+            setter = getattr(component, "set_run_envelope", None)
+            if callable(setter):
+                setter(self.config.run_envelope)
+        if self.model_gateway is not None:
+            setter = getattr(self.model_gateway, "set_run_envelope", None)
+            if callable(setter):
+                setter(self.config.run_envelope)
 
         # Bind the live LLM backend to the model gateway (if any) so
         # out-of-process MCP tools / LEP hooks can reach the same model

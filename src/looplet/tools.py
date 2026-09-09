@@ -353,6 +353,12 @@ class ToolSpec:
     timeout (the tool itself is responsible for timing out).
     """
 
+    idempotency: str = "unknown"
+    """Retry safety classification: ``safe``, ``keyed``, ``unsafe``, or ``unknown``."""
+
+    retryable: bool = False
+    """Whether a host may retry transient failures for this tool."""
+
     requires: list[str] = field(default_factory=list)
     """Names of shared resources the tool needs at dispatch time.
 

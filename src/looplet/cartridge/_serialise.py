@@ -840,6 +840,12 @@ def _write_tool(spec: Any, tools_root: Path, warnings: list[str], strict: bool) 
     requires = getattr(spec, "requires", None) or []
     if requires:
         yaml_payload["requires"] = list(requires)
+    idempotency = getattr(spec, "idempotency", "unknown")
+    retryable = bool(getattr(spec, "retryable", False))
+    if idempotency != "unknown":
+        yaml_payload["idempotency"] = idempotency
+    if retryable:
+        yaml_payload["retryable"] = True
     # Schema v2 keeps cross-tool categorisation with the consuming policy,
     # not on each tool. Programmatic ToolSpecs may still carry host-side tags,
     # but a cartridge cannot represent them.

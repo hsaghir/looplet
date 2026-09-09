@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import tempfile
 import time
+from contextlib import nullcontext
 from pathlib import Path
+
+import pytest
 
 from looplet import (
     BaseToolRegistry,
@@ -16,6 +19,7 @@ from looplet import (
     ToolSpec,
     composable_loop,
 )
+from looplet.bundles import run_skill_bundle
 from looplet.checkpoint import FileCheckpointStore
 from looplet.events import EventPayload, LifecycleEvent
 from looplet.hook_decision import HookDecision
@@ -132,6 +136,44 @@ def test_permission_hook_emits_policy_audit_record() -> None:
     assert decision.policy_decision.tool == "shell"
 
 
+def test_run_skill_bundle_binds_envelope_to_protocol_components() -> None:
+    class Component:
+        def __init__(self):
+            self.envelope = None
+
+        def set_run_envelope(self, envelope):
+            self.envelope = envelope
+
+    envelope = RunEnvelope(run_id="bundle-run")
+    component = Component()
+    from looplet.presets import AgentPreset
+
+    preset = AgentPreset(
+        config=LoopConfig(max_steps=1, run_envelope=envelope),
+        hooks=[],
+        tools=_tools(lambda **kwargs: {}),
+        state=DefaultState(max_steps=1),
+        mcp_adapters=[component],
+    )
+
+    class Bundle:
+        def import_context(self):
+            return nullcontext()
+
+    list(
+        run_skill_bundle(
+            bundle=Bundle(),
+            llm=MockLLMBackend(responses=['{"tool":"done","args":{"summary":"ok"}}']),
+            task="finish",
+            runtime=None,
+            provenance=False,
+            preset=preset,
+        )
+    )
+
+    assert component.envelope == envelope
+
+
 def test_expired_deadline_cancels_sync_run_before_llm_call() -> None:
     envelope = RunEnvelope(run_id="expired", deadline_at=time.time() - 1)
     calls = []
@@ -156,3 +198,25 @@ def test_expired_deadline_cancels_sync_run_before_llm_call() -> None:
     assert calls == []
     assert state.run_status == "cancelled"
     assert state.termination_reason == "deadline_exceeded"
+
+
+def test_expired_deadline_fails_fast_for_socket_protocol_clients() -> None:
+    envelope = RunEnvelope(run_id="expired", deadline_at=time.time() - 1)
+
+    from looplet.model_gateway import ModelGatewayClient, ModelGatewayError
+    from looplet.state_service import StateServiceClient, StateServiceError
+
+    # Construct without connecting: the fail-fast guard is exercised at RPC time.
+    gateway = object.__new__(ModelGatewayClient)
+    gateway._run_envelope = envelope
+    gateway._lock = __import__("threading").Lock()
+    gateway._next_id = 0
+    with pytest.raises(ModelGatewayError, match="deadline"):
+        gateway._rpc("llm/initialize", {})
+
+    service = object.__new__(StateServiceClient)
+    service._run_envelope = envelope
+    service._lock = __import__("threading").Lock()
+    service._next_id = 0
+    with pytest.raises(StateServiceError, match="deadline"):
+        service._rpc("state/initialize", {})

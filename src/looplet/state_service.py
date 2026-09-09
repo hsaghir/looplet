@@ -59,6 +59,9 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
+from looplet.protocol_context import remaining_deadline
+from looplet.types import RunEnvelope
+
 logger = logging.getLogger(__name__)
 
 __all__ = [
@@ -252,9 +255,16 @@ class StateServiceClient:
     ``concurrent_dispatch``).
     """
 
-    def __init__(self, socket_path: str, *, connect_timeout: float = 10.0) -> None:
+    def __init__(
+        self,
+        socket_path: str,
+        *,
+        connect_timeout: float = 10.0,
+        run_envelope: RunEnvelope | None = None,
+    ) -> None:
         self._path = socket_path
         self._lock = threading.Lock()
+        self._run_envelope = run_envelope
         self._next_id = 0
         self._sock = self._connect(socket_path, connect_timeout)
         self._reader = _LineReader(self._sock)
@@ -288,6 +298,9 @@ class StateServiceClient:
 
     def _rpc(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
+            remaining = remaining_deadline(self._run_envelope)
+            if remaining is not None and remaining <= 0:
+                raise StateServiceError("state service call exceeded run deadline")
             self._next_id += 1
             rid = self._next_id
             try:
@@ -309,8 +322,15 @@ class StateServiceClient:
 
     def call(self, name: str, *args: Any, **kwargs: Any) -> Any:
         """Invoke a server method by name; return its value."""
-        result = self._rpc("state/call", {"name": name, "args": list(args), "kwargs": kwargs})
+        params = {"name": name, "args": list(args), "kwargs": kwargs}
+        if self._run_envelope is not None:
+            params["run_envelope"] = self._run_envelope.to_dict()
+        result = self._rpc("state/call", params)
         return result.get("value")
+
+    def set_run_envelope(self, envelope: RunEnvelope | None) -> None:
+        """Bind host correlation context for subsequent state requests."""
+        self._run_envelope = envelope
 
     def __getattr__(self, name: str) -> Callable[..., Any]:
         # Only reached for attributes not found normally; expose every
@@ -357,6 +377,10 @@ class StateServiceHandle:
         if self._exported_env is None:
             self._exported_env = (env_name, env_name in os.environ, os.environ.get(env_name))
         os.environ[env_name] = self.socket_path
+
+    def set_run_envelope(self, envelope: RunEnvelope | None) -> None:
+        """Bind host correlation context to the owned client."""
+        self.client.set_run_envelope(envelope)
 
     @staticmethod
     def _server_env(socket_path: str, extra: dict[str, str] | None = None) -> dict[str, str]:

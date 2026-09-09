@@ -772,6 +772,16 @@ class TrajectoryRecorder:
                 if value is not None:
                     self.trajectory.metadata[key] = getattr(value, "value", str(value))
             self.trajectory.metadata["termination_reason"] = self.trajectory.termination_reason
+            for key in ("run_envelope", "policy_decisions"):
+                value = getattr(state, key, None)
+                if value is None:
+                    state_metadata = getattr(state, "metadata", None)
+                    if isinstance(state_metadata, dict):
+                        value = state_metadata.get(key)
+                if value is not None:
+                    if hasattr(value, "to_dict"):
+                        value = value.to_dict()
+                    self.trajectory.metadata[key] = value
 
         # Auto-save when output_dir was specified at construction time.
         if self._output_dir is not None:

@@ -39,7 +39,8 @@ from typing import Any
 
 from looplet.hook_decision import HookDecision
 from looplet.hook_view import ViewSpec, extract_view
-from looplet.types import ToolResult
+from looplet.protocol_context import remaining_deadline
+from looplet.types import RunEnvelope, ToolResult
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +80,7 @@ class LEPHookAdapter:
         run_id: str = "lep-run",
         on_failure: str = "fail_closed",
         cartridge_id: str = "lep",
+        run_envelope: RunEnvelope | None = None,
     ) -> None:
         if on_failure not in _FAILURE_POLICIES:
             raise ValueError(f"on_failure must be one of {_FAILURE_POLICIES}, got {on_failure!r}")
@@ -87,6 +89,7 @@ class LEPHookAdapter:
         self._run_id = run_id
         self._on_failure = on_failure
         self._cartridge_id = cartridge_id
+        self._run_envelope = run_envelope
         self._proc: subprocess.Popen[str] | None = None
         self._next_id = 0
         self.capabilities: dict[str, Any] = {}
@@ -97,8 +100,14 @@ class LEPHookAdapter:
         if proc is None or proc.stdin is None or proc.stdout is None:
             raise LEPProtocolError("LEP server process is not running")
         self._next_id += 1
-        req = {"id": self._next_id, "method": method, "params": params or {}}
+        wire_params = dict(params or {})
+        if self._run_envelope is not None:
+            wire_params.setdefault("run_envelope", self._run_envelope.to_dict())
+        req = {"id": self._next_id, "method": method, "params": wire_params}
         try:
+            remaining = remaining_deadline(self._run_envelope)
+            if remaining is not None and remaining <= 0:
+                raise LEPProtocolError("LEP call exceeded run deadline")
             proc.stdin.write(json.dumps(req) + "\n")
             proc.stdin.flush()
             line = proc.stdout.readline()
@@ -113,6 +122,10 @@ class LEPHookAdapter:
         except json.JSONDecodeError as exc:  # pragma: no cover - defensive
             raise LEPProtocolError(f"LEP server emitted non-JSON: {line!r}") from exc
         return (parsed or {}).get("result") or {}
+
+    def set_run_envelope(self, envelope: RunEnvelope | None) -> None:
+        """Bind host correlation context for subsequent policy requests."""
+        self._run_envelope = envelope
 
     def _decision(
         self,

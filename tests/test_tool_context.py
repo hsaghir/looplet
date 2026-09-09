@@ -40,6 +40,39 @@ class TestToolContext:
         assert ctx.on_progress is None
         assert ctx.metadata == {}
 
+    def test_tool_context_exposes_retry_contract(self):
+        from looplet import BaseToolRegistry, DefaultState, LoopConfig, ToolSpec, composable_loop
+        from looplet.testing import MockLLMBackend
+
+        seen = []
+
+        def inspect(*, ctx):
+            seen.append(dict(ctx.metadata))
+            return {}
+
+        tools = BaseToolRegistry()
+        tools.register(
+            ToolSpec("inspect", "Inspect", {}, inspect, idempotency="safe", retryable=True)
+        )
+        tools.register(ToolSpec("done", "Done", {"summary": "summary"}, lambda *, summary: {}))
+        list(
+            composable_loop(
+                MockLLMBackend(
+                    responses=[
+                        '{"tool":"inspect","args":{}}',
+                        '{"tool":"done","args":{"summary":"ok"}}',
+                    ]
+                ),
+                tools=tools,
+                state=DefaultState(max_steps=3),
+                config=LoopConfig(max_steps=3),
+                task={},
+            )
+        )
+
+        assert seen[0]["tool_idempotency"] == "safe"
+        assert seen[0]["tool_retryable"] is True
+
     def test_full_construction(self):
         progress_calls: list[tuple[str, dict]] = []
         tok = CancelToken()

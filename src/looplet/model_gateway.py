@@ -75,6 +75,9 @@ import time
 from pathlib import Path
 from typing import Any
 
+from looplet.protocol_context import remaining_deadline
+from looplet.types import RunEnvelope
+
 logger = logging.getLogger(__name__)
 
 __all__ = [
@@ -267,10 +270,17 @@ class ModelGatewayClient:
     or from the ``LOOPLET_LLM_SOCKET`` env var via :meth:`from_env`.
     """
 
-    def __init__(self, socket_path: str, *, connect_timeout: float = 10.0) -> None:
+    def __init__(
+        self,
+        socket_path: str,
+        *,
+        connect_timeout: float = 10.0,
+        run_envelope: RunEnvelope | None = None,
+    ) -> None:
         self._path = socket_path
         self._lock = threading.Lock()
         self._next_id = 0
+        self._run_envelope = run_envelope
         self._sock = self._connect(socket_path, connect_timeout)
         self._reader = _LineReader(self._sock)
         self.ready = False
@@ -313,6 +323,9 @@ class ModelGatewayClient:
 
     def _rpc(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
+            remaining = remaining_deadline(self._run_envelope)
+            if remaining is not None and remaining <= 0:
+                raise ModelGatewayError("model gateway call exceeded run deadline")
             self._next_id += 1
             rid = self._next_id
             try:
@@ -334,8 +347,15 @@ class ModelGatewayClient:
 
     def generate(self, prompt: str, **kwargs: Any) -> str:
         """Forward a single-call generation to the host backend."""
-        result = self._rpc("llm/generate", {"prompt": prompt, "kwargs": kwargs})
+        params = {"prompt": prompt, "kwargs": kwargs}
+        if self._run_envelope is not None:
+            params["run_envelope"] = self._run_envelope.to_dict()
+        result = self._rpc("llm/generate", params)
         return str(result.get("text", ""))
+
+    def set_run_envelope(self, envelope: RunEnvelope | None) -> None:
+        """Bind host correlation context for subsequent model requests."""
+        self._run_envelope = envelope
 
     def close(self) -> None:
         try:
@@ -435,6 +455,12 @@ class ModelGatewayHandle:
     def set_backend(self, backend: Any) -> None:
         """Bind the live LLM backend the gateway exposes to its clients."""
         self.server.set_backend(backend)
+
+    def set_run_envelope(self, envelope: RunEnvelope | None) -> None:
+        """Bind host correlation context to the gateway's future clients."""
+        # The gateway server is shared by child clients; environment-based
+        # propagation carries the envelope to newly spawned clients.
+        self._run_envelope = envelope
 
     def close(self) -> None:
         self.server.stop()

@@ -37,6 +37,33 @@ class TestPresetsImports:
 
 
 class TestAgentPreset:
+    def test_close_returns_idempotent_shutdown_report(self):
+        from looplet.presets import AgentPreset
+
+        class Resource:
+            def __init__(self):
+                self.calls = 0
+
+            def close(self):
+                self.calls += 1
+
+        resource = Resource()
+        preset = AgentPreset(
+            config=__import__("looplet").LoopConfig(max_steps=1),
+            hooks=[],
+            tools=__import__("looplet").BaseToolRegistry(),
+            state=__import__("looplet").DefaultState(max_steps=1),
+            resources={"resource": resource},
+            owned_resources=[resource, resource],
+        )
+
+        first = preset.close()
+        second = preset.close()
+
+        assert resource.calls == 1
+        assert first.closed_components == ("resource",)
+        assert second.closed_components == ()
+
     def test_coding_preset_returns_agent_preset(self, tmp_path):
         from looplet.presets import AgentPreset, coding_agent_preset
 

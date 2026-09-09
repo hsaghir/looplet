@@ -43,7 +43,9 @@ import threading
 from collections.abc import Callable
 from typing import Any
 
+from looplet.protocol_context import remaining_deadline
 from looplet.tools import BaseToolRegistry, ToolSpec
+from looplet.types import RunEnvelope
 
 __all__ = ["MCPToolAdapter"]
 
@@ -73,12 +75,14 @@ class MCPToolAdapter:
         *,
         env: dict[str, str] | None = None,
         timeout: float = 30.0,
+        run_envelope: RunEnvelope | None = None,
     ) -> None:
         if timeout <= 0:
             raise ValueError("timeout must be greater than zero")
         self._command = command
         self._env = env
         self._timeout = timeout
+        self._run_envelope = run_envelope
         self._proc: subprocess.Popen | None = None
         self._request_id = 0
         self._lock = threading.Lock()
@@ -123,6 +127,10 @@ class MCPToolAdapter:
         for spec in specs:
             registry.register(spec)
         return len(specs)
+
+    def set_run_envelope(self, envelope: RunEnvelope | None) -> None:
+        """Bind host correlation context for subsequent protocol requests."""
+        self._run_envelope = envelope
 
     def close(self) -> None:
         """Shut down the MCP server subprocess."""
@@ -222,7 +230,7 @@ class MCPToolAdapter:
                 "jsonrpc": "2.0",
                 "id": self._request_id,
                 "method": method,
-                "params": params,
+                "params": self._wire_params(params),
             }
             return self._send_and_receive(msg)
 
@@ -232,9 +240,17 @@ class MCPToolAdapter:
             msg = {
                 "jsonrpc": "2.0",
                 "method": method,
-                "params": params,
+                "params": self._wire_params(params),
             }
             self._write_message(msg)
+
+    def _wire_params(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Attach optional host correlation context to protocol params."""
+        if self._run_envelope is None:
+            return params
+        merged = dict(params)
+        merged.setdefault("run_envelope", self._run_envelope.to_dict())
+        return merged
 
     def _send_and_receive(self, msg: dict) -> dict | None:
         """Write a message and read the response."""
@@ -326,6 +342,11 @@ class MCPToolAdapter:
             self._reader_threads.add(reader)
         reader.start()
         limit = self._timeout if timeout is None else timeout
+        remaining = remaining_deadline(self._run_envelope)
+        if remaining is not None:
+            limit = min(limit, remaining)
+        if limit <= 0:
+            raise TimeoutError(f"MCP server {operation} exceeded run deadline")
         if not done.wait(limit):
             if operation == "response" and self._proc is not None:
                 self._stop_process_tree(self._proc, wait_timeout=min(5.0, max(0.1, limit)))

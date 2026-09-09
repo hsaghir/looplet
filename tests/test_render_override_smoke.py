@@ -6,6 +6,7 @@ import pytest
 
 from looplet import (
     BaseToolRegistry,
+    ContextProjection,
     DefaultState,
     LoopConfig,
     composable_loop,
@@ -38,6 +39,53 @@ def _tools() -> BaseToolRegistry:
 
 
 class TestRenderMessagesOverride:
+    def test_override_can_consume_context_projection(self):
+        projections: list[ContextProjection] = []
+
+        def project(*, projection):
+            projections.append(projection)
+            return projection.default_prompt
+
+        list(
+            composable_loop(
+                llm=MockLLMBackend(responses=['{"tool":"done","args":{"answer":"ok"}}']),
+                tools=_tools(),
+                state=DefaultState(max_steps=2),
+                config=LoopConfig(max_steps=2, render_messages_override=project),
+            )
+        )
+
+        assert projections
+        assert projections[0].messages == ()
+        assert projections[0].step_num == 1
+        assert projections[0].to_dict()["message_count"] == 0
+
+    def test_projection_isolated_from_nested_input_mutation(self):
+        seen = []
+
+        def project(*, projection):
+            seen.append(projection)
+            projection.task["nested"]["value"] = "renderer-change"
+            projection.state_summary["facts"]["value"] = "renderer-change"
+            return projection.default_prompt
+
+        task = {"nested": {"value": "original"}}
+        state = DefaultState(max_steps=2, metadata={"facts": {"value": "original"}})
+        tools = _tools()
+        list(
+            composable_loop(
+                llm=MockLLMBackend(responses=['{"tool":"done","args":{"answer":"ok"}}']),
+                tools=tools,
+                state=state,
+                config=LoopConfig(max_steps=2, render_messages_override=project),
+                task=task,
+            )
+        )
+
+        assert seen
+        assert task["nested"]["value"] == "original"
+        assert state.metadata["facts"]["value"] == "original"
+
     def test_override_controls_prompt_bytes(self):
         seen_prompts: list[str] = []
         llm = MockLLMBackend(

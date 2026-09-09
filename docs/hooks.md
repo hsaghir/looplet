@@ -283,7 +283,10 @@ hooks = [sink.trajectory_hook()]
 
 ## Async Hooks
 
-For the async loop, implement the same methods as `async def`:
+The async loop accepts the same hook slots as the synchronous loop. Hook
+methods may be ordinary functions or `async def`; awaitable results are
+resolved sequentially in registration order so decision precedence remains
+deterministic:
 
 ```python
 class AsyncProgressHook:
@@ -292,8 +295,10 @@ class AsyncProgressHook:
         return None
 ```
 
-The async loop checks `asyncio.iscoroutinefunction()` and properly `await`s
-async hooks while also supporting sync hooks in the same hook list.
+Sync hooks remain valid in async runs, and async hooks can return the same
+`HookDecision`, text, or legacy values as sync hooks. Stream emitters remain
+ordinary synchronous callbacks; keep them non-blocking when used from an
+async host.
 
 ## Testing Hooks
 

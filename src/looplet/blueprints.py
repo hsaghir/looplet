@@ -150,19 +150,22 @@ def blueprint_from_bundle(
     """Load a bundle and return its structural blueprint."""
     bundle = bundle_root if isinstance(bundle_root, SkillBundle) else load_skill_bundle(bundle_root)
     preset = bundle.build_preset(runtime or SkillRuntime())
-    return blueprint_from_preset(
-        preset,
-        name=bundle.skill.name,
-        description=bundle.skill.description,
-        tags=bundle.skill.tags,
-        instructions=bundle.skill.instructions,
-        metadata=bundle.skill.metadata,
-        source=SourceBlueprint(
-            kind="bundle",
-            path=str(bundle.root),
-            entrypoint=str(bundle.skill.metadata.get("entrypoint") or "looplet.py"),
-        ),
-    )
+    try:
+        return blueprint_from_preset(
+            preset,
+            name=bundle.skill.name,
+            description=bundle.skill.description,
+            tags=bundle.skill.tags,
+            instructions=bundle.skill.instructions,
+            metadata=bundle.skill.metadata,
+            source=SourceBlueprint(
+                kind="bundle",
+                path=str(bundle.root),
+                entrypoint=str(bundle.skill.metadata.get("entrypoint") or "looplet.py"),
+            ),
+        )
+    finally:
+        preset.close()
 
 
 def blueprint_from_preset(

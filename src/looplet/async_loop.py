@@ -43,6 +43,12 @@ from typing import Any, AsyncGenerator
 from looplet.checkpoint import Checkpoint as _Checkpoint
 from looplet.checkpoint import FileCheckpointStore as _FileCheckpointStore
 from looplet.checkpoint import resume_loop_state as _resume_loop_state
+from looplet.context_budget import (
+    _CONTEXT_INLINE_PER_STEP_CHARS_OVERRIDE,
+    _CONTEXT_WINDOW_STEPS_OVERRIDE,
+    _CONTEXT_WINDOW_TOTAL_CHARS_OVERRIDE,
+)
+from looplet.context_projection import ContextProjection
 from looplet.loop import (
     ContextBudgetSnapshot,
     LoopConfig,
@@ -50,14 +56,18 @@ from looplet.loop import (
     RunEnvelope,
     RunPhase,
     RunStatus,
-    _bind_loop_context,
+    _bind_loop_context_async,
     _build_tool_ctx,
+    _call_check_done,
     _deadline_expired,
-    _intercept_tool_calls,
+    _emit_hook_decision_event_async,
+    _intercept_tool_calls_async,
     _policy_checkpoint_metadata,
-    _run_post_dispatch_hooks,
+    _render_projection,
+    _run_post_dispatch_hooks_async,
     _set_run_lifecycle,
-    emit_event,
+    _validate_loop_inputs,
+    emit_event_async,
 )
 from looplet.native_tools import NativeToolPolicy
 from looplet.parse import parse_multi_tool_calls, to_text
@@ -73,6 +83,7 @@ from looplet.scaffolding import (
 from looplet.session import SessionLog
 from looplet.tools import BaseToolRegistry
 from looplet.types import AgentState, DefaultState, Step, ToolCall, ToolResult
+from looplet.validation import validate_args as _validate_args
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +95,13 @@ __all__ = [
 # ── Retry constants (mirror scaffolding.py) ──────────────────────
 MAX_LLM_RETRIES = 2
 RETRY_BACKOFF_BASE = 1.0
+
+
+async def _maybe_await(value: Any) -> Any:
+    """Resolve sync or async hook results in registration order."""
+    if inspect.isawaitable(value):
+        return await value
+    return value
 
 
 class _SyncBridgeLLM:
@@ -145,6 +163,7 @@ async def async_llm_call(
     system_prompt: str = "",
     temperature: float = 0.2,
     max_retries: int = MAX_LLM_RETRIES,
+    max_continuations: int = 0,
     tools: list[dict[str, Any]] | None = None,
     native_policy: NativeToolPolicy | None = None,
     cancel_token: Any | None = None,
@@ -236,9 +255,37 @@ async def async_llm_call(
             result = llm.generate(prompt, **call_kwargs)
             if inspect.isawaitable(result):
                 result = await result
+            stop = getattr(llm, "last_stop_reason", None)
+            continuation_count = 0
+            accumulated = result if isinstance(result, str) else ""
+            while (
+                max_continuations > 0
+                and continuation_count < max_continuations
+                and stop == "max_tokens"
+                and isinstance(accumulated, str)
+            ):
+                if cancel_token is not None and getattr(cancel_token, "is_cancelled", False):
+                    break
+                continuation_prompt = (
+                    prompt
+                    + "\n\n[assistant partial output so far]\n"
+                    + accumulated
+                    + "\n\n[continue from exactly where you left off; "
+                    "do not repeat any prior text]"
+                )
+                more = llm.generate(continuation_prompt, **call_kwargs)
+                if inspect.isawaitable(more):
+                    more = await more
+                if not isinstance(more, str):
+                    break
+                accumulated += more
+                stop = getattr(llm, "last_stop_reason", None)
+                continuation_count += 1
+            result = accumulated if continuation_count else result
             return LLMResult(
                 result,
-                stop_reason=getattr(llm, "last_stop_reason", None),
+                stop_reason=stop,
+                continuations=continuation_count,
                 native_fallback=native_fallback,
                 native_requested=bool(tools is not None and policy.enabled),
                 native_attempted=native_attempted,
@@ -323,6 +370,7 @@ async def async_composable_loop(
         config.system_prompt = system_prompt
     if hooks is None:
         hooks = []
+    _validate_loop_inputs(task, tools, config)
 
     if not callable(getattr(llm, "generate", None)):
         raise TypeError(
@@ -376,6 +424,31 @@ async def async_composable_loop(
             except AttributeError:
                 pass
 
+    _ctx_tokens: list[tuple[Any, Any]] = []
+    if config.context_window_steps is not None:
+        _ctx_tokens.append(
+            (
+                _CONTEXT_WINDOW_STEPS_OVERRIDE,
+                _CONTEXT_WINDOW_STEPS_OVERRIDE.set(int(config.context_window_steps)),
+            )
+        )
+    if config.context_inline_per_step_chars is not None:
+        _ctx_tokens.append(
+            (
+                _CONTEXT_INLINE_PER_STEP_CHARS_OVERRIDE,
+                _CONTEXT_INLINE_PER_STEP_CHARS_OVERRIDE.set(
+                    int(config.context_inline_per_step_chars)
+                ),
+            )
+        )
+    if config.context_window_total_chars is not None:
+        _ctx_tokens.append(
+            (
+                _CONTEXT_WINDOW_TOTAL_CHARS_OVERRIDE,
+                _CONTEXT_WINDOW_TOTAL_CHARS_OVERRIDE.set(int(config.context_window_total_chars)),
+            )
+        )
+
     # Stash task + conversation on state (same as sync loop)
     try:
         setattr(state, "task", task)  # noqa: B010
@@ -406,7 +479,7 @@ async def async_composable_loop(
         step_num=0,
         run_envelope=config.run_envelope,
     )
-    _bind_loop_context(loop_ctx, hooks)
+    await _bind_loop_context_async(loop_ctx, hooks)
     _set_run_lifecycle(loop_ctx, status=RunStatus.RUNNING, phase=RunPhase.STARTING)
     loop_ctx.native_tool_stats = NativeToolStats()
     loop_ctx.step_num = _step_offset
@@ -436,11 +509,15 @@ async def async_composable_loop(
 
     for hook in hooks:
         if hasattr(hook, "pre_loop"):
-            result = hook.pre_loop(state, session_log, context)
-            if inspect.isawaitable(result):
-                await result
+            await _maybe_await(hook.pre_loop(state, session_log, context))
 
-    emit_event(hooks, _LE.SESSION_START, state=state, session_log=session_log, context=context)
+    await emit_event_async(
+        hooks,
+        _LE.SESSION_START,
+        state=state,
+        session_log=session_log,
+        context=context,
+    )
 
     # ── Render memory once (stable across steps) ────────────────
     _rendered_memory = ""
@@ -464,6 +541,11 @@ async def async_composable_loop(
     # without needing to await. The bridge handles the async→sync
     # translation via a thread pool when running inside an event loop.
     _sync_llm = _SyncBridgeLLM(llm)
+
+    def _get_llm() -> Any:
+        if config.router is not None:
+            return config.router.select(purpose="reasoning")
+        return llm
 
     def _save_checkpoint(step_number: int, *, status: str | None = None) -> None:
         if _ckpt_store is None:
@@ -516,17 +598,69 @@ async def async_composable_loop(
 
         # Cancellation check
         if config.cancel_token is not None and getattr(config.cancel_token, "is_cancelled", False):
-            stop_reason = "deadline_exceeded"
+            stop_reason = "cancelled"
             break
+
+        _want_compact = False
+        for hook in hooks:
+            method = getattr(hook, "should_compact", None)
+            if method is not None and await _maybe_await(
+                method(state, session_log, _conv, step_num)
+            ):
+                _want_compact = True
+                break
+        if _want_compact and config.compact_service is not None:
+            from looplet.compact import run_compact_async as _run_compact  # noqa: PLC0415
+
+            await _run_compact(
+                config.compact_service,
+                hooks=hooks,
+                state=state,
+                session_log=session_log,
+                llm=_get_llm(),
+                conversation=_conv,
+                step_num=step_num,
+                reason="proactive",
+            )
 
         # ── Build prompt ────────────────────────────────────────
         briefing_parts: list[str] = list(post_dispatch_parts)
         post_dispatch_parts.clear()
+        _briefing_override: str | None = None
         for hook in hooks:
-            if hasattr(hook, "pre_prompt"):
-                text = hook.pre_prompt(state, session_log, context, step_num)
-                if isinstance(text, str) and text:
-                    briefing_parts.append(text)
+            method = getattr(hook, "build_briefing", None)
+            if method is None:
+                continue
+            candidate = await _maybe_await(method(state, session_log, context))
+            if candidate is not None:
+                _briefing_override = str(candidate)
+                break
+        if _briefing_override is not None:
+            briefing_parts.append(_briefing_override)
+        for hook in hooks:
+            method = getattr(hook, "pre_prompt", None)
+            if method is None:
+                continue
+            raw = await _maybe_await(method(state, session_log, context, step_num))
+            from looplet.hook_decision import normalize_hook_return  # noqa: PLC0415
+
+            decision = normalize_hook_return(raw, slot="pre_prompt")
+            if decision is not None:
+                await _emit_hook_decision_event_async(
+                    hooks,
+                    decision=decision,
+                    hook_slot="pre_prompt",
+                    hook_name=type(hook).__name__,
+                    step_num=step_num,
+                    state=state,
+                    session_log=session_log,
+                    context=context,
+                )
+            text = (
+                decision.additional_context if decision else raw if isinstance(raw, str) else None
+            )
+            if text:
+                briefing_parts.append(str(text))
 
         _briefing = "\n".join(briefing_parts)
         _catalog = tools.tool_catalog_text()
@@ -534,17 +668,43 @@ async def async_composable_loop(
         _log_text = session_log.render() if hasattr(session_log, "render") else ""
         _context_history = state.context_summary() if hasattr(state, "context_summary") else ""
 
-        if build_prompt_fn is not None:
-            prompt = build_prompt_fn(
-                task=task,
-                tool_catalog=_catalog,
-                state_summary=_state_summary,
-                context_history=_context_history,
-                step_number=step_num,
-                max_steps=config.max_steps,
-                session_log=_log_text,
-                briefing=_briefing,
-                memory=_rendered_memory,
+        _hook_prompt: str | None = None
+        for hook in hooks:
+            method = getattr(hook, "build_prompt", None)
+            if method is None:
+                continue
+            candidate = await _maybe_await(
+                method(
+                    task=task,
+                    tool_catalog=_catalog,
+                    state_summary=_state_summary,
+                    context_history=_context_history,
+                    step_number=step_num,
+                    max_steps=config.max_steps,
+                    session_log=_log_text,
+                    briefing=_briefing,
+                    memory=_rendered_memory,
+                )
+            )
+            if candidate is not None:
+                _hook_prompt = str(candidate)
+                break
+
+        if _hook_prompt is not None:
+            prompt = _hook_prompt
+        elif build_prompt_fn is not None:
+            prompt = await _maybe_await(
+                build_prompt_fn(
+                    task=task,
+                    tool_catalog=_catalog,
+                    state_summary=_state_summary,
+                    context_history=_context_history,
+                    step_number=step_num,
+                    max_steps=config.max_steps,
+                    session_log=_log_text,
+                    briefing=_briefing,
+                    memory=_rendered_memory,
+                )
             )
         else:
             prompt = _build_prompt(
@@ -559,6 +719,21 @@ async def async_composable_loop(
                 memory=_rendered_memory,
             )
 
+        if config.render_messages_override is not None:
+            projection = ContextProjection(
+                messages=tuple(_conv.messages),
+                default_prompt=prompt,
+                step_num=step_num,
+                task=task,
+                tool_catalog=_catalog,
+                state_summary=_state_summary,
+                context_history=_context_history,
+                session_log=_log_text,
+                briefing=_briefing,
+                memory=_rendered_memory,
+            )
+            prompt = _render_projection(config.render_messages_override, projection)
+
         _estimated_tokens = estimate_prompt_tokens(prompt)
         loop_ctx.context_budget = ContextBudgetSnapshot(
             prompt_chars=len(prompt),
@@ -572,7 +747,7 @@ async def async_composable_loop(
         if loop_ctx.context_budget.pressure and isinstance(_state_metadata, dict):
             _state_metadata["context_budget"] = loop_ctx.context_budget.to_dict()
 
-        emit_event(
+        await emit_event_async(
             hooks,
             _LE.PRE_LLM_CALL,
             step_num=step_num,
@@ -582,6 +757,11 @@ async def async_composable_loop(
             prompt=prompt,
             context_budget=loop_ctx.context_budget.to_dict(),
         )
+
+        if _deadline_expired(loop_ctx):
+            stop_reason = "deadline_exceeded"
+            done = True
+            break
 
         # ── Native tool schemas ─────────────────────────────────
         _tool_schemas = native_policy.tool_schemas(llm, tools)
@@ -611,8 +791,9 @@ async def async_composable_loop(
         # ── AWAIT: LLM call ─────────────────────────────────────
         _llm_t0 = time.perf_counter()
         _set_run_lifecycle(loop_ctx, phase=RunPhase.LLM)
+        effective_llm = _get_llm()
         llm_result = await async_llm_call(
-            llm,
+            effective_llm,
             prompt,
             max_tokens=config.max_tokens,
             system_prompt=config.system_prompt,
@@ -620,13 +801,15 @@ async def async_composable_loop(
             tools=_tool_schemas,
             native_policy=native_policy,
             cancel_token=config.cancel_token,
+            max_continuations=config.max_turn_continuations,
             cache_breakpoints=_cache_bps,
             generate_kwargs=config.generate_kwargs or None,
         )
         loop_ctx.native_tool_stats.record(llm_result)
         if _deadline_expired(loop_ctx):
-            stop_reason = "cancelled"
+            stop_reason = "deadline_exceeded"
             done = True
+            break
         _state_metadata = getattr(state, "metadata", None)
         if isinstance(_state_metadata, dict) and loop_ctx.native_tool_stats.has_activity:
             _state_metadata["native_tool_stats"] = loop_ctx.native_tool_stats.to_dict()
@@ -652,6 +835,7 @@ async def async_composable_loop(
             step = Step(number=step_num, tool_call=error_call, tool_result=error_result)
             state.steps.append(step)
             yield step
+            stop_reason = "llm_error"
             break
 
         # ── Parse response ──────────────────────────────────────
@@ -732,7 +916,7 @@ async def async_composable_loop(
         regular_calls = tool_calls[:done_idx] if done_idx is not None else tool_calls
         if regular_calls:
             _set_run_lifecycle(loop_ctx, phase=RunPhase.DISPATCHING)
-            _intercept = _intercept_tool_calls(
+            _intercept = await _intercept_tool_calls_async(
                 regular_calls,
                 hooks,
                 state,
@@ -788,9 +972,15 @@ async def async_composable_loop(
                 if not (tool_spec and tool_spec.free) and not was_intercepted:
                     state.queries_used += 1
 
-                tool_result.data = truncate_tool_result(tool_result.data)
+                from looplet.loop import _get_persist_threshold  # noqa: PLC0415
 
-                _pd = _run_post_dispatch_hooks(
+                tool_result.data = truncate_tool_result(
+                    tool_result.data,
+                    persist_dir=config.tool_result_persist_dir,
+                    persist_threshold=_get_persist_threshold(),
+                )
+
+                _pd = await _run_post_dispatch_hooks_async(
                     tool_call,
                     tool_result,
                     hooks,
@@ -832,11 +1022,37 @@ async def async_composable_loop(
                 if hasattr(hook, "check_done"):
                     from looplet.hook_decision import normalize_hook_return  # noqa: PLC0415
 
-                    w = hook.check_done(state, session_log, context, step_num)
+                    w = await _maybe_await(
+                        _call_check_done(hook, state, session_log, context, step_num, tool_call)
+                    )
                     _decision = normalize_hook_return(w, slot="check_done")
+                    if _decision is not None:
+                        await _emit_hook_decision_event_async(
+                            hooks,
+                            decision=_decision,
+                            hook_slot="check_done",
+                            hook_name=type(hook).__name__,
+                            step_num=cur_step,
+                            state=state,
+                            session_log=session_log,
+                            context=context,
+                        )
                     if _decision is not None and _decision.is_block():
                         gate_warning = _decision.block or "blocked by hook"
                         break
+
+            schema_for_call = None
+            if gate_warning is None:
+                if tool_call.tool == config.done_tool and config.output_schema is not None:
+                    schema_for_call = config.output_schema
+                elif tool_call.tool in config.done_tool_schemas:
+                    schema_for_call = config.done_tool_schemas[tool_call.tool]
+            if schema_for_call is not None:
+                validation = _validate_args(schema_for_call, tool_call.args)
+                if not validation.valid:
+                    gate_warning = (
+                        f"Output schema validation failed: {'; '.join(validation.errors)}"
+                    )
 
             if gate_warning is not None:
                 tool_result = ToolResult(
@@ -864,7 +1080,7 @@ async def async_composable_loop(
                 )
                 tool_result = tools.dispatch(tool_call, ctx=_ctx)
 
-                _pd_done = _run_post_dispatch_hooks(
+                _pd_done = await _run_post_dispatch_hooks_async(
                     tool_call,
                     tool_result,
                     hooks,
@@ -900,7 +1116,7 @@ async def async_composable_loop(
             if hasattr(hook, "should_stop"):
                 from looplet.hook_decision import normalize_hook_return  # noqa: PLC0415
 
-                _raw = hook.should_stop(state, step_num, 0)
+                _raw = await _maybe_await(hook.should_stop(state, step_num, 0))
                 _decision = normalize_hook_return(_raw, slot="should_stop")
                 if _decision is not None and _decision.is_stop():
                     stop_reason = _decision.stop or "hook_requested_stop"
@@ -911,7 +1127,7 @@ async def async_composable_loop(
         RunStatus.COMPLETED
         if stop_reason == "done"
         else RunStatus.CANCELLED
-        if stop_reason == "cancelled"
+        if stop_reason in {"cancelled", "deadline_exceeded"}
         else RunStatus.FAILED
         if stop_reason in {"error", "llm_error"}
         else RunStatus.STOPPED
@@ -925,7 +1141,7 @@ async def async_composable_loop(
     if state is not None:
         state._stop_reason = stop_reason  # pyright: ignore[reportAttributeAccessIssue]
 
-    emit_event(
+    await emit_event_async(
         hooks,
         _LE.STOP,
         state=state,
@@ -940,3 +1156,9 @@ async def async_composable_loop(
             result = hook.on_loop_end(state, session_log, context, llm)
             if inspect.isawaitable(result):
                 await result
+
+    for var, token in _ctx_tokens:
+        try:
+            var.reset(token)
+        except (LookupError, ValueError):
+            pass

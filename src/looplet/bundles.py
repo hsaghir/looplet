@@ -37,6 +37,7 @@ __all__ = [
     "discover_skill_bundles",
     "load_skill_bundle",
     "run_skill_bundle",
+    "validate_preset_contract",
     "validate_skill_bundle",
 ]
 
@@ -431,49 +432,23 @@ def _validate_preset_contract(
         errors.append(f"build returned {type(preset).__name__}, expected AgentPreset")
         return errors, warnings
 
-    names = preset.tools.tool_names
-    if len(names) != len(set(names)):
-        errors.append("tool names must be unique")
-    if "done" not in names:
-        errors.append("bundle preset must register a done tool")
-    if preset.config.max_steps != preset.state.max_steps:
-        warnings.append("config.max_steps and state.max_steps differ")
-    if runtime is not None and preset.config.max_steps != runtime.max_steps:
-        warnings.append(
-            "config.max_steps differs from runtime.max_steps "
-            f"({preset.config.max_steps} != {runtime.max_steps})"
-        )
-    if preset.config.max_steps <= 0:
-        errors.append("config.max_steps must be positive")
-
-    for tool_name, spec in preset.tools.tool_specs.items():
-        for contract_error in spec.contract_errors():
-            errors.append(f"tool {tool_name!r}: {contract_error}")
-
-    declared_resources = {
-        resource_name
-        for spec in preset.tools.tool_specs.values()
-        for resource_name in getattr(spec, "requires", ())
-    }
-    missing_resources = sorted(declared_resources - set(preset.resources))
-    if missing_resources:
-        errors.append(
-            "tool resource dependencies are not provided by the preset: "
-            + ", ".join(missing_resources)
-        )
-
-    owned_ids = {id(resource) for resource in preset.owned_resources}
-    unowned_closeables = sorted(
-        name
-        for name, resource in preset.resources.items()
-        if callable(getattr(resource, "close", None)) and id(resource) not in owned_ids
-    )
-    if unowned_closeables:
-        errors.append(
-            "closeable bundle resources are not owned by AgentPreset: "
-            + ", ".join(unowned_closeables)
-        )
+    errors.extend(preset._contract_errors())
+    warnings.extend(preset._contract_warnings(runtime.max_steps if runtime is not None else None))
     return errors, warnings
+
+
+def validate_preset_contract(
+    preset: Any,
+    runtime: SkillRuntime | None = None,
+) -> BundleValidation:
+    """Validate an already-built preset through the bundle contract."""
+    errors, warnings = _validate_preset_contract(preset, runtime)
+    return BundleValidation(
+        ok=not errors,
+        errors=errors,
+        warnings=warnings,
+        preset=preset if isinstance(preset, AgentPreset) else None,
+    )
 
 
 def _default_trace_dir(bundle: SkillBundle, runtime: SkillRuntime) -> Path:

@@ -255,6 +255,7 @@ def test_map_stop_reason_known_internal_values() -> None:
     assert map_stop_reason(None) is StopReason.MAX_STEPS
     assert map_stop_reason("") is StopReason.MAX_STEPS
     assert map_stop_reason("cancelled") is StopReason.CANCELLED
+    assert map_stop_reason("deadline_exceeded") is StopReason.CANCELLED
 
 
 def test_map_stop_reason_hook_categories() -> None:

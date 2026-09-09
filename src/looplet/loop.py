@@ -22,6 +22,7 @@ from looplet.checkpoint import (
 from looplet.checkpoint import (
     resume_loop_state as _resume_loop_state,
 )
+from looplet.context_projection import ContextProjection
 from looplet.history import HistoryRecorder
 from looplet.hook_decision import normalize_hook_return
 from looplet.native_tools import NativeToolPolicy
@@ -728,13 +729,11 @@ class LoopConfig:
     Default: 128 000."""
 
     render_messages_override: Callable[..., str] | None = None
-    """Byte-exact prompt escape hatch.
+    """Render the prompt from a :class:`ContextProjection`.
 
-    Receives keyword arguments ``messages: list[Message]``,
-    ``default_prompt: str`` (the string the loop would have sent), and
-    ``step_num: int``. Must return a string; whatever it returns is
-    what the backend sees. When ``None`` (default), the loop uses the
-    default or user-supplied :attr:`build_prompt` path.
+    New callbacks receive one keyword argument, ``projection``. Legacy
+    callbacks accepting ``messages``, ``default_prompt``, and ``step_num``
+    remain supported. The returned string is what the backend sees.
 
     Prefer this over :attr:`build_prompt` when you want to inspect or
     mutate the full conversation thread (compaction, redaction, role
@@ -930,8 +929,8 @@ def _deadline_expired(loop_ctx: LoopContext) -> bool:
         cancel_token.cancel()
     _set_run_lifecycle(
         loop_ctx,
-        status=RunStatus.CANCELLED,
-        phase=RunPhase.TERMINAL,
+        status=RunStatus.RUNNING,
+        phase=RunPhase.STOPPING,
         termination_reason="deadline_exceeded",
     )
     return True
@@ -1170,6 +1169,323 @@ def emit_event(
     return decisions
 
 
+async def emit_event_async(
+    hooks: list[Any],
+    event: Any,
+    **payload_kwargs: Any,
+) -> list[Any]:
+    """Async counterpart to :func:`emit_event`.
+
+    Hooks are awaited in registration order so decisions retain the same
+    precedence and mutation semantics as the synchronous loop.
+    """
+    import inspect as _inspect  # noqa: PLC0415
+
+    from looplet.events import EventPayload  # noqa: PLC0415
+    from looplet.hook_decision import HookDecision  # noqa: PLC0415
+
+    decisions: list[Any] = []
+    state = payload_kwargs.get("state")
+    if state is not None:
+        payload_kwargs.setdefault("run_status", getattr(state, "run_status", None))
+        payload_kwargs.setdefault("run_phase", getattr(state, "run_phase", None))
+        envelope = getattr(state, "run_envelope", None)
+        if envelope is not None:
+            payload_kwargs.setdefault(
+                "run_envelope",
+                envelope.to_dict() if hasattr(envelope, "to_dict") else envelope,
+            )
+    payload = EventPayload(event=event, **payload_kwargs)
+    for hook in hooks:
+        fn = getattr(hook, "on_event", None)
+        if fn is None:
+            continue
+        equivalent = _EVENT_METHOD_EQUIV.get(event)
+        if equivalent is not None and hasattr(hook, equivalent):
+            continue
+        try:
+            result = fn(payload)
+            if _inspect.isawaitable(result):
+                result = await result
+        except Exception:  # noqa: BLE001
+            logger.exception("async on_event hook raised; continuing")
+            continue
+        if isinstance(result, HookDecision):
+            from looplet.events import LifecycleEvent as _LE  # noqa: PLC0415
+
+            if event != _LE.HOOK_DECISION and not result.is_noop():
+                await _emit_hook_decision_event_async(
+                    hooks,
+                    decision=result,
+                    hook_slot="on_event",
+                    hook_name=type(hook).__name__,
+                    step_num=payload.step_num,
+                    state=payload.state,
+                    session_log=payload.session_log,
+                    context=payload.context,
+                    extra={"originating_event": getattr(event, "value", str(event))},
+                )
+            decisions.append(result)
+    return decisions
+
+
+async def _emit_hook_decision_event_async(
+    hooks: list[Any],
+    *,
+    decision: Any,
+    hook_slot: str,
+    hook_name: str,
+    step_num: int = 0,
+    state: Any = None,
+    session_log: Any = None,
+    context: Any = None,
+    extra: dict[str, Any] | None = None,
+) -> None:
+    """Async version of the structured HookDecision audit event."""
+    if decision is None or decision.is_noop():
+        return
+    _record_policy_decision(state, decision)
+    from looplet.events import LifecycleEvent as _LE  # noqa: PLC0415
+
+    event_extra = {"decision": asdict(decision)}
+    if extra:
+        event_extra.update(extra)
+    await emit_event_async(
+        hooks,
+        _LE.HOOK_DECISION,
+        step_num=step_num,
+        state=state,
+        session_log=session_log,
+        context=context,
+        hook_slot=hook_slot,
+        hook_name=hook_name,
+        policy_decision=getattr(decision, "policy_decision", None),
+        extra=event_extra,
+    )
+
+
+async def _bind_loop_context_async(loop_ctx: LoopContext, hooks: list[Any]) -> None:
+    """Bind hooks while awaiting async ``bind`` implementations."""
+    import inspect as _inspect  # noqa: PLC0415
+
+    for hook in hooks:
+        bind_fn = getattr(hook, "bind", None)
+        if bind_fn is None:
+            continue
+        try:
+            result = bind_fn(loop_ctx)
+            if _inspect.isawaitable(result):
+                await result
+        except (TypeError, ValueError):
+            continue
+
+
+async def _intercept_tool_calls_async(
+    calls: list[ToolCall],
+    hooks: list[Any],
+    state: AgentState,
+    session_log: SessionLog,
+    context: Any,
+    step_num: int,
+) -> _InterceptResult:
+    """Awaitable version of :func:`_intercept_tool_calls`."""
+    import inspect as _inspect  # noqa: PLC0415
+
+    from looplet.events import LifecycleEvent as _LE  # noqa: PLC0415
+    from looplet.hook_decision import normalize_hook_return  # noqa: PLC0415
+    from looplet.types import ErrorKind, ToolError  # noqa: PLC0415
+
+    result = _InterceptResult()
+    for tc_idx, tc in enumerate(calls):
+        cur_step = step_num + tc_idx
+        decisions = await emit_event_async(
+            hooks,
+            _LE.PRE_TOOL_USE,
+            step_num=cur_step,
+            state=state,
+            session_log=session_log,
+            context=context,
+            tool_call=tc,
+        )
+        handled = False
+        for decision in decisions:
+            if decision.updated_args is not None:
+                tc.args = decision.updated_args
+            if decision.permission == "deny":
+                reason = decision.block or ""
+                message = f"Permission denied for tool '{tc.tool}'"
+                if reason:
+                    message += f": {reason}"
+                error = ToolError(kind=ErrorKind.PERMISSION_DENIED, message=message)
+                result.intercepted[tc_idx] = ToolResult(
+                    tool=tc.tool,
+                    args_summary=_summarize_args_dict(tc.args),
+                    data=None,
+                    error=message,
+                    error_detail=error,
+                )
+                handled = True
+                break
+            if decision.updated_result is not None:
+                result.intercepted[tc_idx] = decision.updated_result
+                handled = True
+                break
+            if decision.additional_context:
+                result.extra_context.append(decision.additional_context)
+        if handled:
+            continue
+
+        for hook in hooks:
+            method = getattr(hook, "pre_dispatch", None)
+            if method is None:
+                continue
+            raw = method(state, session_log, tc, cur_step)
+            if _inspect.isawaitable(raw):
+                raw = await raw
+            decision = normalize_hook_return(raw, slot="pre_dispatch")
+            if decision is None:
+                if raw is not None and isinstance(raw, ToolResult):
+                    result.intercepted[tc_idx] = raw
+                    break
+                continue
+            await _emit_hook_decision_event_async(
+                hooks,
+                decision=decision,
+                hook_slot="pre_dispatch",
+                hook_name=type(hook).__name__,
+                step_num=cur_step,
+                state=state,
+                session_log=session_log,
+                context=context,
+            )
+            if decision.updated_args is not None:
+                tc.args = decision.updated_args
+            if decision.permission == "deny":
+                reason = decision.block or ""
+                message = f"Permission denied for tool '{tc.tool}'"
+                if reason:
+                    message += f": {reason}"
+                error = ToolError(kind=ErrorKind.PERMISSION_DENIED, message=message)
+                result.intercepted[tc_idx] = ToolResult(
+                    tool=tc.tool,
+                    args_summary=_summarize_args_dict(tc.args),
+                    data=None,
+                    error=message,
+                    error_detail=error,
+                )
+                break
+            if decision.updated_result is not None:
+                result.intercepted[tc_idx] = decision.updated_result
+                break
+            if decision.additional_context:
+                result.extra_context.append(decision.additional_context)
+
+        if tc_idx in result.intercepted:
+            continue
+        for hook in hooks:
+            method = getattr(hook, "check_permission", None)
+            if method is None:
+                continue
+            raw = method(tc, state)
+            if _inspect.isawaitable(raw):
+                raw = await raw
+            decision = normalize_hook_return(raw, slot="check_permission")
+            if decision is not None:
+                await _emit_hook_decision_event_async(
+                    hooks,
+                    decision=decision,
+                    hook_slot="check_permission",
+                    hook_name=type(hook).__name__,
+                    step_num=cur_step,
+                    state=state,
+                    session_log=session_log,
+                    context=context,
+                )
+            if decision is not None and decision.permission == "deny":
+                reason = decision.block or ""
+                message = f"Permission denied for tool '{tc.tool}'"
+                if reason:
+                    message += f": {reason}"
+                error = ToolError(kind=ErrorKind.PERMISSION_DENIED, message=message)
+                result.intercepted[tc_idx] = ToolResult(
+                    tool=tc.tool,
+                    args_summary=_summarize_args_dict(tc.args),
+                    data=None,
+                    error=message,
+                    error_detail=error,
+                )
+                break
+    return result
+
+
+async def _run_post_dispatch_hooks_async(
+    tool_call: ToolCall,
+    tool_result: ToolResult,
+    hooks: list[Any],
+    state: AgentState,
+    session_log: SessionLog,
+    context: Any,
+    step_num: int,
+    *,
+    emit_lifecycle: bool = True,
+) -> _PostDispatchOutcome:
+    """Awaitable version of :func:`_run_post_dispatch_hooks`."""
+    import inspect as _inspect  # noqa: PLC0415
+
+    from looplet.events import LifecycleEvent as _LE  # noqa: PLC0415
+    from looplet.hook_decision import normalize_hook_return  # noqa: PLC0415
+
+    outcome = _PostDispatchOutcome(tool_result=tool_result)
+    for hook in hooks:
+        method = getattr(hook, "post_dispatch", None)
+        if method is None:
+            continue
+        raw = method(state, session_log, tool_call, tool_result, step_num)
+        if _inspect.isawaitable(raw):
+            raw = await raw
+        decision = normalize_hook_return(raw, slot="post_dispatch")
+        if decision is None:
+            continue
+        await _emit_hook_decision_event_async(
+            hooks,
+            decision=decision,
+            hook_slot="post_dispatch",
+            hook_name=type(hook).__name__,
+            step_num=step_num,
+            state=state,
+            session_log=session_log,
+            context=context,
+        )
+        if decision.updated_result is not None:
+            outcome.tool_result = decision.updated_result
+            tool_result = outcome.tool_result
+        if decision.additional_context:
+            outcome.extra_context.append(decision.additional_context)
+        if decision.stop is not None:
+            outcome.stop_reason = decision.stop
+    if not emit_lifecycle:
+        return outcome
+    event = _LE.POST_TOOL_FAILURE if tool_result.error else _LE.POST_TOOL_USE
+    decisions = await emit_event_async(
+        hooks,
+        event,
+        step_num=step_num,
+        state=state,
+        session_log=session_log,
+        context=context,
+        tool_call=tool_call,
+        tool_result=tool_result,
+    )
+    for decision in decisions:
+        if decision.updated_result is not None:
+            outcome.tool_result = decision.updated_result
+        if decision.additional_context:
+            outcome.extra_context.append(decision.additional_context)
+        if decision.stop is not None:
+            outcome.stop_reason = decision.stop
+    return outcome
+
+
 def _emit_hook_decision_event(
     hooks: list[Any],
     *,
@@ -1185,6 +1501,8 @@ def _emit_hook_decision_event(
     """Emit a structured event for a non-noop HookDecision."""
     if decision is None or decision.is_noop():
         return
+
+    _record_policy_decision(state, decision)
 
     from looplet.events import LifecycleEvent as _LE  # noqa: PLC0415
 
@@ -1329,6 +1647,32 @@ def _validate_hooks(hooks: list[Any]) -> None:
             )
 
 
+def _validate_loop_inputs(task: Any, tools: BaseToolRegistry, config: LoopConfig) -> None:
+    """Reject impossible loop wiring before prompt assembly begins."""
+    if config.max_steps <= 0:
+        raise ValueError("config.max_steps must be positive")
+
+
+def _render_projection(
+    renderer: Callable[..., str],
+    projection: ContextProjection,
+) -> str:
+    """Invoke a new projection renderer or a legacy keyword renderer."""
+    import inspect  # noqa: PLC0415
+
+    try:
+        parameters = inspect.signature(renderer).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    if "projection" in parameters:
+        return renderer(projection=projection)
+    return renderer(
+        messages=list(projection.messages),
+        default_prompt=projection.default_prompt,
+        step_num=projection.step_num,
+    )
+
+
 # ── Composable Agent Loop ───────────────────────────────────────
 
 
@@ -1383,7 +1727,6 @@ def _intercept_tool_calls(
         )
         _handled = False
         for _d in _pre_tool_decisions:
-            _record_policy_decision(state, _d)
             if _d.updated_args is not None:
                 tc.args = _d.updated_args
             if _d.permission == "deny":
@@ -1434,7 +1777,6 @@ def _intercept_tool_calls(
                 session_log=session_log,
                 context=context,
             )
-            _record_policy_decision(state, _decision)
             if _decision.updated_args is not None:
                 tc.args = _decision.updated_args
             if _decision.permission == "deny":
@@ -1683,6 +2025,7 @@ def composable_loop(
         config.system_prompt = system_prompt
     if hooks is None:
         hooks = []
+    _validate_loop_inputs(task, tools, config)
 
     # ── Per-run context-window overrides ────────────────────────
     # Push LoopConfig overrides into the contextvars consumed by
@@ -2125,15 +2468,20 @@ def composable_loop(
         else:
             _rendered_memory = ""
 
+        _tool_catalog = str(tools.tool_catalog_text())
+        _state_summary_raw = state.snapshot()
+        _state_summary = _state_summary_raw if isinstance(_state_summary_raw, dict) else {}
+        _session_log_text = str(session_log.render())
+        _briefing_text = "\n".join(str(part) for part in briefing_parts)
         _prompt_kwargs = dict(
             task=task,
-            tool_catalog=tools.tool_catalog_text(),
-            state_summary=state.snapshot(),
+            tool_catalog=_tool_catalog,
+            state_summary=_state_summary,
             context_history=context_history,
             step_number=step_num,
             max_steps=config.max_steps,
-            session_log=session_log.render(),
-            briefing="\n".join(briefing_parts),
+            session_log=_session_log_text,
+            briefing=_briefing_text,
             memory=_rendered_memory,
         )
 
@@ -2168,11 +2516,19 @@ def composable_loop(
         # the would-be default prompt so the user can fall back to
         # it for sections they don't want to change.
         if config.render_messages_override is not None:
-            prompt = config.render_messages_override(
-                messages=list(_conv.messages),
+            projection = ContextProjection(
+                messages=tuple(_conv.messages),
                 default_prompt=prompt,
                 step_num=step_num,
+                task=task,
+                tool_catalog=_tool_catalog,
+                state_summary=_state_summary,
+                context_history=context_history,
+                session_log=_session_log_text,
+                briefing=_briefing_text,
+                memory=_rendered_memory,
             )
+            prompt = _render_projection(config.render_messages_override, projection)
 
         # ── Pre-flight context check ──────────────────────────
         estimated_tokens = estimate_prompt_tokens(prompt)
@@ -2291,6 +2647,7 @@ def composable_loop(
             if _deadline_expired(loop_ctx):
                 stop_reason = "deadline_exceeded"
                 done = True
+                break
             _state_metadata = getattr(state, "metadata", None)
             if isinstance(_state_metadata, dict) and loop_ctx.native_tool_stats.has_activity:
                 _state_metadata["native_tool_stats"] = loop_ctx.native_tool_stats.to_dict()
@@ -2392,6 +2749,7 @@ def composable_loop(
             step = Step(number=step_num, tool_call=error_call, tool_result=error_result)
             state.steps.append(step)
             yield step
+            stop_reason = "llm_error"
             _history.record_step(
                 step, theory="", entities=[], findings=[], highlights=[], recall_key=""
             )

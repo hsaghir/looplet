@@ -141,7 +141,7 @@ composable_loop(llm, tools, state, config, hooks)
 | `permissions` | Declarative permission engine | `PermissionEngine`, `PermissionHook`, `PermissionRule` |
 | `compact` | Context management | `DefaultCompactService`, `compact_chain`, `PruneToolResults`, `SummarizeCompact`, `TruncateCompact` |
 | `checkpoint` | Crash-resume | `FileCheckpointStore`, `resume_loop_state` |
-| `hooks` | Hook decisions | `HookDecision`, `InjectContext`, `Allow`, `Deny`, `Block`, `Stop` |
+| `hook_decision` | Hook decisions | `HookDecision`, `InjectContext`, `Allow`, `Deny`, `Block`, `Stop` |
 | `skills` | Composable bundles | `Skill` |
 | `subagent` | Sub-agent spawning | `run_sub_loop`, `clone_tools_excluding` |
 | `mcp` | MCP server adapter | `MCPToolAdapter` |
@@ -161,7 +161,7 @@ A cartridge is a directory of files the loader materialises into a runnable agen
 
 ```
 my_agent.cartridge/
-├── cartridge.json          # REQUIRED  {"name": "my_agent", "schema_version": 1}
+├── cartridge.json          # REQUIRED  {"name": "my_agent", "schema_version": 2}
 ├── config.yaml             # REQUIRED  CONTRACT tier - what the agent does (max_steps, system_prompt, done_tool, ...)
 ├── runtime.yaml            # OPTIONAL  RUNTIME tier - how this host runs it (max_tokens, temperature, compact_service, ...)
 ├── prompts/system.md       # REQUIRED  the agent's system prompt
@@ -237,9 +237,9 @@ Field tiers (spec v2):
 - **HOST** (never serialised; runtime-supplied): `approval_handler`,
   `cancel_token`, `render_messages_override`.
 
-v1.x still accepts RUNTIME keys in `config.yaml` with a
-`DeprecationWarning`; v2.0 will hard-fail. `scaffold_cartridge()` and
-`preset_to_cartridge()` always emit the split shape.
+Schema v2 is the current and only supported cartridge contract. Runtime keys
+belong in `runtime.yaml`; use `looplet migrate` to convert older cartridges.
+`scaffold_cartridge()` and `preset_to_cartridge()` emit the split shape.
 
 `tool.yaml` for a tool that needs a shared resource:
 

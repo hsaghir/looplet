@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from looplet import (
     BaseToolRegistry,
+    ContextProjection,
     DefaultState,
+    InjectContext,
     LoopConfig,
     ToolSpec,
     register_done_tool,
@@ -100,6 +104,198 @@ class TestAsyncLlmCall:
 
 
 class TestAsyncComposableLoop:
+    async def test_async_hook_slots_are_awaited_and_effects_apply(self):
+        seen: list[str] = []
+
+        class AsyncPolicy:
+            async def pre_prompt(self, state, session_log, context, step_num):
+                seen.append(f"pre:{step_num}")
+                return "async briefing"
+
+            async def pre_dispatch(self, state, session_log, tool_call, step_num):
+                seen.append(f"pre_dispatch:{tool_call.tool}")
+                if tool_call.tool == "ping":
+                    return InjectContext("ping inspected")
+                return None
+
+            async def post_dispatch(self, state, session_log, tool_call, tool_result, step_num):
+                seen.append(f"post:{tool_call.tool}")
+                return InjectContext("post inspected")
+
+            async def check_done(self, state, session_log, context, step_num, tool_call=None):
+                seen.append(f"done:{tool_call.tool if tool_call else 'none'}")
+                return None
+
+            async def should_stop(self, state, step_num, new_entities):
+                seen.append(f"stop:{step_num}")
+                return False
+
+            async def on_event(self, payload):
+                if payload.event.value == "session_start":
+                    seen.append("event:session_start")
+
+        tools = BaseToolRegistry()
+        register_done_tool(tools)
+        tools.register(ToolSpec("ping", "Ping", {}, lambda: {"pong": True}))
+        backend = AsyncMockLLMBackend(
+            responses=[
+                '{"tool":"ping","args":{}}',
+                '{"tool":"done","args":{"summary":"ok"}}',
+            ]
+        )
+
+        async for _ in async_composable_loop(
+            llm=backend,
+            tools=tools,
+            state=DefaultState(max_steps=3),
+            config=LoopConfig(max_steps=3),
+            hooks=[AsyncPolicy()],
+            task={},
+        ):
+            pass
+
+        assert "event:session_start" in seen
+        assert "pre:1" in seen
+        assert "pre_dispatch:ping" in seen
+        assert "post:ping" in seen
+        assert "done:done" in seen
+
+    async def test_late_llm_deadline_does_not_dispatch_response(self):
+        import time
+
+        class SlowBackend:
+            async def generate(self, prompt, **kwargs):
+                await asyncio.sleep(0.02)
+                return '{"tool":"done","args":{"summary":"late"}}'
+
+        from looplet import RunEnvelope
+
+        dispatched = []
+        tools = BaseToolRegistry()
+        register_done_tool(tools)
+        tools.register(
+            ToolSpec(
+                "side_effect",
+                "Side effect",
+                {},
+                lambda: dispatched.append(True) or {"ok": True},
+            )
+        )
+        state = DefaultState(max_steps=2)
+
+        async for _ in async_composable_loop(
+            llm=SlowBackend(),
+            tools=tools,
+            state=state,
+            config=LoopConfig(
+                max_steps=2,
+                run_envelope=RunEnvelope(
+                    run_id="late-async",
+                    deadline_at=time.time() + 0.005,
+                ),
+            ),
+            task={},
+        ):
+            pass
+
+        assert dispatched == []
+        assert state.termination_reason == "deadline_exceeded"
+
+    async def test_async_compaction_events_are_awaited(self):
+        from looplet import DefaultCompactService, LifecycleEvent
+
+        events = []
+
+        class CompactVote:
+            async def should_compact(self, state, session_log, conversation, step_num):
+                return step_num == 1
+
+            async def on_event(self, payload):
+                if payload.event in (LifecycleEvent.PRE_COMPACT, LifecycleEvent.POST_COMPACT):
+                    events.append(payload.event)
+
+        tools = BaseToolRegistry()
+        register_done_tool(tools)
+        async for _ in async_composable_loop(
+            llm=AsyncMockLLMBackend(responses=['{"tool":"done","args":{"summary":"ok"}}']),
+            tools=tools,
+            state=DefaultState(max_steps=2),
+            config=LoopConfig(max_steps=2, compact_service=DefaultCompactService()),
+            hooks=[CompactVote()],
+            task={},
+        ):
+            pass
+
+        assert events == [LifecycleEvent.PRE_COMPACT, LifecycleEvent.POST_COMPACT]
+
+    async def test_context_projection_override_is_shared_with_sync_loop(self):
+        projections: list[ContextProjection] = []
+
+        def render(*, projection):
+            projections.append(projection)
+            return projection.default_prompt
+
+        tools = BaseToolRegistry()
+        register_done_tool(tools)
+        async for _ in async_composable_loop(
+            llm=AsyncMockLLMBackend(responses=['{"tool":"done","args":{"summary":"ok"}}']),
+            tools=tools,
+            state=DefaultState(max_steps=2),
+            config=LoopConfig(max_steps=2, render_messages_override=render),
+            task={},
+        ):
+            pass
+
+        assert projections
+        assert projections[0].messages == ()
+        assert projections[0].step_num == 1
+
+    async def test_expired_deadline_has_cancelled_terminal_state(self):
+        import time
+
+        from looplet import RunEnvelope
+
+        tools = BaseToolRegistry()
+        register_done_tool(tools)
+        state = DefaultState(max_steps=2)
+        async for _ in async_composable_loop(
+            llm=AsyncMockLLMBackend(responses=['{"tool":"done","args":{"summary":"ok"}}']),
+            tools=tools,
+            state=state,
+            config=LoopConfig(
+                max_steps=2,
+                run_envelope=RunEnvelope(run_id="expired", deadline_at=time.time() - 1),
+            ),
+            task={},
+        ):
+            pass
+
+        assert state.run_status == "cancelled"
+        assert state.run_phase == "terminal"
+        assert state.termination_reason == "deadline_exceeded"
+
+    async def test_llm_exhaustion_is_failed_terminal_state(self):
+        class FailingBackend:
+            async def generate(self, prompt, **kwargs):
+                raise RuntimeError("provider unavailable")
+
+        tools = BaseToolRegistry()
+        register_done_tool(tools)
+        state = DefaultState(max_steps=2)
+
+        async for _ in async_composable_loop(
+            llm=FailingBackend(),
+            tools=tools,
+            state=state,
+            config=LoopConfig(max_steps=2),
+            task={},
+        ):
+            pass
+
+        assert state.run_status == "failed"
+        assert state.run_phase == "terminal"
+        assert state.termination_reason == "llm_error"
+
     async def test_basic_loop(self):
         mock = AsyncMockLLMBackend(
             responses=[

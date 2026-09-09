@@ -233,6 +233,59 @@ class AgentPreset:
     def __exit__(self, *exc_info: Any) -> None:
         self.close()
 
+    def _contract_errors(self) -> list[str]:
+        """Return errors in this preset's executable wiring."""
+        errors: list[str] = []
+        names = self.tools.tool_names
+        if len(names) != len(set(names)):
+            errors.append("tool names must be unique")
+        terminal_tools = {self.config.done_tool, *self.config.done_tools}
+        if not terminal_tools.intersection(names):
+            errors.append(
+                "preset must register at least one configured terminal tool: "
+                + ", ".join(sorted(terminal_tools))
+            )
+        if self.config.max_steps <= 0:
+            errors.append("config.max_steps must be positive")
+        for tool_name, spec in self.tools.tool_specs.items():
+            for contract_error in spec.contract_errors():
+                errors.append(f"tool {tool_name!r}: {contract_error}")
+        declared_resources = {
+            resource_name
+            for spec in self.tools.tool_specs.values()
+            for resource_name in getattr(spec, "requires", ())
+        }
+        missing_resources = sorted(declared_resources - set(self.resources))
+        if missing_resources:
+            errors.append(
+                "tool resource dependencies are not provided by the preset: "
+                + ", ".join(missing_resources)
+            )
+        owned_ids = {id(resource) for resource in self.owned_resources}
+        unowned_closeables = sorted(
+            name
+            for name, resource in self.resources.items()
+            if callable(getattr(resource, "close", None)) and id(resource) not in owned_ids
+        )
+        if unowned_closeables:
+            errors.append(
+                "closeable bundle resources are not owned by AgentPreset: "
+                + ", ".join(unowned_closeables)
+            )
+        return errors
+
+    def _contract_warnings(self, runtime_max_steps: int | None = None) -> list[str]:
+        """Return non-fatal consistency warnings for this preset."""
+        warnings: list[str] = []
+        if self.config.max_steps != self.state.max_steps:
+            warnings.append("config.max_steps and state.max_steps differ")
+        if runtime_max_steps is not None and self.config.max_steps != runtime_max_steps:
+            warnings.append(
+                "config.max_steps differs from runtime.max_steps "
+                f"({self.config.max_steps} != {runtime_max_steps})"
+            )
+        return warnings
+
     def run(
         self,
         llm: Any,
@@ -255,6 +308,10 @@ class AgentPreset:
         Returns the loop generator - iterate to drive the agent.
         """
         from looplet.loop import composable_loop  # noqa: PLC0415
+
+        errors = self._contract_errors()
+        if errors:
+            raise ValueError("invalid agent preset: " + "; ".join(errors))
 
         for component in [*self.mcp_adapters, *self.hooks, *self.state_service_handles]:
             setter = getattr(component, "set_run_envelope", None)

@@ -8,6 +8,11 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Async loops now await hook results across lifecycle slots, share the same
+  policy decisions and terminal output-schema checks as sync loops, and stop
+  cleanly when a host deadline expires during an LLM call.
+- Prompt renderers can consume the immutable `ContextProjection` snapshot;
+  blueprint inspection closes temporary presets after extracting structure.
 - **Private-loop migration recipe.** `examples/private_loop_migration/` evolves
   one tiny agent from a hand-written loop to `composable_loop()`, captured
   provenance, and a required outcome grader, with no provider, network call, or

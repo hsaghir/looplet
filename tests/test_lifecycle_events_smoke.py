@@ -105,6 +105,18 @@ class TestLifecycleEventDispatch:
         assert all(p.raw_response for p in post)
         assert all(p.prompt for p in post)
 
+    def test_pre_llm_event_carries_context_budget(self):
+        r = _Recorder()
+        _run_simple(r)
+        pre = [p for p in r.payloads if p.event == LifecycleEvent.PRE_LLM_CALL]
+        assert pre
+        budget = pre[0].context_budget
+        assert budget is not None
+        assert budget["prompt_chars"] > 0
+        assert budget["estimated_tokens"] > 0
+        assert budget["context_window_tokens"] > 0
+        assert budget == pre[0].to_jsonable()["context_budget"]
+
     def test_post_llm_response_payload_carries_native_stats(self):
         r = _Recorder()
         _run_simple(r)

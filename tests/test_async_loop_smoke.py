@@ -411,6 +411,35 @@ class TestAsyncComposableLoop:
         assert saved is not None
         assert saved.domain_state == {"phase": "terminal", "step": 2}
 
+    async def test_context_budget_is_exposed_on_async_event(self):
+        mock = AsyncMockLLMBackend(
+            responses=['{"tool": "done", "args": {"summary": "ok"}, "reasoning": "r"}']
+        )
+        tools = BaseToolRegistry()
+        register_done_tool(tools)
+        state = DefaultState(max_steps=3)
+        budgets = []
+
+        class BudgetObserver:
+            def on_event(self, payload):
+                if payload.context_budget is not None:
+                    budgets.append(payload.context_budget)
+
+        async for _ in async_composable_loop(
+            llm=mock,
+            tools=tools,
+            state=state,
+            config=LoopConfig(max_steps=3),
+            hooks=[BudgetObserver()],
+            task={},
+        ):
+            pass
+
+        assert budgets
+        assert budgets[0]["prompt_chars"] > 0
+        assert budgets[0]["estimated_tokens"] > 0
+        assert state.metadata.get("context_budget") is None
+
     async def test_regular_checkpoint_includes_recorded_session_log_entry(self, tmp_path):
         from looplet.checkpoint import FileCheckpointStore
 

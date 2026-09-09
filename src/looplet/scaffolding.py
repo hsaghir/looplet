@@ -64,6 +64,28 @@ class NativeToolStats:
         }
 
 
+@dataclass
+class ContextBudgetSnapshot:
+    """Effective prompt-budget measurements for one loop turn."""
+
+    prompt_chars: int = 0
+    estimated_tokens: int = 0
+    context_window_tokens: int = 0
+    briefing_chars: int = 0
+    context_history_chars: int = 0
+    pressure: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "prompt_chars": self.prompt_chars,
+            "estimated_tokens": self.estimated_tokens,
+            "context_window_tokens": self.context_window_tokens,
+            "briefing_chars": self.briefing_chars,
+            "context_history_chars": self.context_history_chars,
+            "pressure": self.pressure,
+        }
+
+
 # ── Constants ────────────────────────────────────────────────────
 
 MAX_LLM_RETRIES = 2

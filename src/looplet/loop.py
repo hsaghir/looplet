@@ -38,6 +38,7 @@ from looplet.recovery_strategies import (
 )
 from looplet.scaffolding import (
     PARSE_RECOVERY_MAX,
+    ContextBudgetSnapshot,
     LLMResult,
     NativeToolStats,
     build_parse_recovery_prompt,
@@ -131,6 +132,7 @@ class LoopContext:
     phase: RunPhase = RunPhase.STARTING
     termination_reason: str | None = None
     native_tool_stats: NativeToolStats = field(default_factory=NativeToolStats)
+    context_budget: ContextBudgetSnapshot = field(default_factory=ContextBudgetSnapshot)
 
 
 # ── Hook Protocol ────────────────────────────────────────────────
@@ -2093,6 +2095,18 @@ def composable_loop(
         # ── Pre-flight context check ──────────────────────────
         estimated_tokens = estimate_prompt_tokens(prompt)
         preflight_too_long = estimated_tokens > config.context_window - 3_000
+        briefing_text = "\n".join(briefing_parts)
+        loop_ctx.context_budget = ContextBudgetSnapshot(
+            prompt_chars=len(prompt),
+            estimated_tokens=estimated_tokens,
+            context_window_tokens=config.context_window,
+            briefing_chars=len(briefing_text),
+            context_history_chars=len(context_history),
+            pressure=preflight_too_long,
+        )
+        _state_metadata = getattr(state, "metadata", None)
+        if loop_ctx.context_budget.pressure and isinstance(_state_metadata, dict):
+            _state_metadata["context_budget"] = loop_ctx.context_budget.to_dict()
 
         # Emit StepStartEvent
         if stream is not None and _StepStartEvent is not None:
@@ -2114,6 +2128,7 @@ def composable_loop(
             session_log=session_log,
             context=context,
             prompt=prompt,
+            context_budget=loop_ctx.context_budget.to_dict(),
         )
         for _d in _pre_llm_decisions:
             if _d.additional_context:

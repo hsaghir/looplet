@@ -50,6 +50,7 @@ from looplet.session import SessionLog
 from looplet.tools import BaseToolRegistry, _summarize_args_dict
 from looplet.types import (
     AgentState,
+    RunEnvelope,
     RunPhase,
     RunStatus,
     Step,
@@ -133,6 +134,7 @@ class LoopContext:
     termination_reason: str | None = None
     native_tool_stats: NativeToolStats = field(default_factory=NativeToolStats)
     context_budget: ContextBudgetSnapshot = field(default_factory=ContextBudgetSnapshot)
+    run_envelope: RunEnvelope | None = None
 
 
 # ── Hook Protocol ────────────────────────────────────────────────
@@ -761,6 +763,9 @@ class LoopConfig:
         # Every tool with ctx= sees ctx.metadata["db_path"]
     """
 
+    run_envelope: RunEnvelope | None = None
+    """Optional host identity, tenancy, deadline, and policy context."""
+
     generate_kwargs: dict[str, Any] = field(default_factory=dict)
     """Extra keyword arguments passed through to every LLM call.
 
@@ -949,6 +954,7 @@ def _build_tool_ctx(
         request_approval=config.approval_handler,
         on_progress=_progress_fn,
         llm=_tool_llm,
+        run_envelope=config.run_envelope,
         metadata=_metadata,
     )
 
@@ -1070,6 +1076,12 @@ def emit_event(
     if state is not None:
         payload_kwargs.setdefault("run_status", getattr(state, "run_status", None))
         payload_kwargs.setdefault("run_phase", getattr(state, "run_phase", None))
+        envelope = getattr(state, "run_envelope", None)
+        if envelope is not None:
+            payload_kwargs.setdefault(
+                "run_envelope",
+                envelope.to_dict() if hasattr(envelope, "to_dict") else envelope,
+            )
     payload = EventPayload(event=event, **payload_kwargs)
     for hook in hooks:
         fn = getattr(hook, "on_event", None)
@@ -1135,6 +1147,7 @@ def _emit_hook_decision_event(
         context=context,
         hook_slot=hook_slot,
         hook_name=hook_name,
+        policy_decision=getattr(decision, "policy_decision", None),
         extra=event_extra,
     )
 
@@ -1767,6 +1780,11 @@ def composable_loop(
     _step_offset = 0
     if config.initial_checkpoint is not None:
         resumed = _resume_loop_state(config.initial_checkpoint)
+        if config.run_envelope is None and isinstance(resumed.get("run_envelope"), dict):
+            config = _dc_replace(
+                config,
+                run_envelope=RunEnvelope.from_dict(resumed["run_envelope"]),
+            )
         _step_offset = resumed.get("step_offset", 0)
         # Restore session log entries into session_log
         restored_log = resumed.get("session_log")
@@ -1859,6 +1877,10 @@ def composable_loop(
         setattr(state, "conversation", _conv)  # noqa: B010
     except AttributeError:
         pass
+    try:
+        setattr(state, "run_envelope", config.run_envelope)  # noqa: B010
+    except AttributeError:
+        pass
 
     # ── Bind LoopContext ──────────────────────────────────────
     # Hooks that need long-lived access to state/tools/conversation
@@ -1876,6 +1898,7 @@ def composable_loop(
         config=config,
         resources=tools.resources,
         step_num=0,
+        run_envelope=config.run_envelope,
     )
     _bind_loop_context(loop_ctx, hooks)
     _set_run_lifecycle(loop_ctx, status=RunStatus.RUNNING, phase=RunPhase.STARTING)
@@ -2558,6 +2581,11 @@ def composable_loop(
                             domain_state=(
                                 checkpoint_state(loop_ctx) if checkpoint_state is not None else {}
                             ),
+                            run_envelope=(
+                                loop_ctx.run_envelope.to_dict()
+                                if loop_ctx.run_envelope is not None
+                                else None
+                            ),
                             metadata={"task": str(task)},
                             run_status=loop_ctx.status.value,
                             run_phase=loop_ctx.phase.value,
@@ -2744,6 +2772,11 @@ def composable_loop(
                             tool_results_store={},
                             domain_state=(
                                 checkpoint_state(loop_ctx) if checkpoint_state is not None else {}
+                            ),
+                            run_envelope=(
+                                loop_ctx.run_envelope.to_dict()
+                                if loop_ctx.run_envelope is not None
+                                else None
                             ),
                             metadata={"task": str(task), "status": "done"},
                             run_status=loop_ctx.status.value,

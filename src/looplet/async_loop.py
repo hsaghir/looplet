@@ -47,6 +47,7 @@ from looplet.loop import (
     ContextBudgetSnapshot,
     LoopConfig,
     LoopContext,
+    RunEnvelope,
     RunPhase,
     RunStatus,
     _bind_loop_context,
@@ -354,6 +355,11 @@ async def async_composable_loop(
     _step_offset = 0
     if config.initial_checkpoint is not None:
         resumed = _resume_loop_state(config.initial_checkpoint)
+        if config.run_envelope is None and isinstance(resumed.get("run_envelope"), dict):
+            config = _dc_replace(
+                config,
+                run_envelope=RunEnvelope.from_dict(resumed["run_envelope"]),
+            )
         _step_offset = resumed.get("step_offset", 0)
         restored_log = resumed.get("session_log")
         if restored_log is not None:
@@ -377,6 +383,10 @@ async def async_composable_loop(
         setattr(state, "conversation", _conv)  # noqa: B010
     except AttributeError:
         pass
+    try:
+        setattr(state, "run_envelope", config.run_envelope)  # noqa: B010
+    except AttributeError:
+        pass
 
     _history = HistoryRecorder(
         state=state,
@@ -392,6 +402,7 @@ async def async_composable_loop(
         config=config,
         resources=tools.resources,
         step_num=0,
+        run_envelope=config.run_envelope,
     )
     _bind_loop_context(loop_ctx, hooks)
     _set_run_lifecycle(loop_ctx, status=RunStatus.RUNNING, phase=RunPhase.STARTING)
@@ -474,6 +485,9 @@ async def async_composable_loop(
                 },
                 tool_results_store={},
                 domain_state=(checkpoint_state(loop_ctx) if checkpoint_state is not None else {}),
+                run_envelope=(
+                    loop_ctx.run_envelope.to_dict() if loop_ctx.run_envelope is not None else None
+                ),
                 metadata=metadata,
                 run_status=loop_ctx.status.value,
                 run_phase=loop_ctx.phase.value,

@@ -29,7 +29,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from looplet.types import ToolResult
+from looplet.types import PolicyDecision, ToolResult
 
 __all__ = [
     "HookDecision",
@@ -40,6 +40,7 @@ __all__ = [
     "Continue",
     "InjectContext",
     "RewriteThread",
+    "PolicyDecision",
     "normalize_hook_return",
 ]
 
@@ -94,6 +95,7 @@ class HookDecision:
     permission: str | None = None  # "allow" | "deny" | None
     additional_context: str | None = None
     rewrite_thread: dict[str, Any] | None = None
+    policy_decision: PolicyDecision | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     # ── Convenience predicates ───────────────────────────────────
@@ -116,6 +118,7 @@ class HookDecision:
             and self.permission is None
             and self.additional_context is None
             and self.rewrite_thread is None
+            and self.policy_decision is None
             and not self.metadata
         )
 
@@ -139,6 +142,9 @@ class HookDecision:
             "permission": self.permission,
             "additional_context": self.additional_context,
             "rewrite_thread": dict(self.rewrite_thread) if self.rewrite_thread else None,
+            "policy_decision": (
+                self.policy_decision.to_dict() if self.policy_decision is not None else None
+            ),
             "metadata": dict(self.metadata),
         }
 
@@ -175,6 +181,11 @@ class HookDecision:
                 rewrite_thread=(
                     dict(raw["rewrite_thread"])
                     if isinstance(raw.get("rewrite_thread"), dict)
+                    else None
+                ),
+                policy_decision=(
+                    PolicyDecision(**dict(raw["policy_decision"]))
+                    if isinstance(raw.get("policy_decision"), dict)
                     else None
                 ),
                 metadata=dict(raw.get("metadata") or {}),
@@ -261,12 +272,23 @@ def _toolresult_from_wire(raw: Any) -> "ToolResult | None":
 # Each returns a ``HookDecision`` - they're factories, not classes.
 
 
-def Allow(updated_args: dict[str, Any] | None = None) -> HookDecision:
+def Allow(
+    updated_args: dict[str, Any] | None = None,
+    *,
+    policy_decision: PolicyDecision | None = None,
+) -> HookDecision:
     """Grant a tool call, optionally rewriting its arguments."""
-    return HookDecision(permission="allow", updated_args=updated_args)
+    return HookDecision(
+        permission="allow", updated_args=updated_args, policy_decision=policy_decision
+    )
 
 
-def Deny(reason: str, *, retry: bool = False) -> HookDecision:
+def Deny(
+    reason: str,
+    *,
+    retry: bool = False,
+    policy_decision: PolicyDecision | None = None,
+) -> HookDecision:
     """Refuse a tool call. The reason is surfaced to the model.
 
     ``retry=True`` signals that the model may legitimately try again
@@ -276,6 +298,7 @@ def Deny(reason: str, *, retry: bool = False) -> HookDecision:
     return HookDecision(
         permission="deny",
         block=reason,
+        policy_decision=policy_decision,
         metadata={"retry": retry} if retry else {},
     )
 

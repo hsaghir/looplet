@@ -75,6 +75,82 @@ class RunPhase(str, Enum):
     TERMINAL = "terminal"
 
 
+@dataclass(frozen=True)
+class RunEnvelope:
+    """Host-supplied identity and policy context for one loop run."""
+
+    run_id: str
+    request_id: str | None = None
+    tenant_id: str | None = None
+    actor_id: str | None = None
+    parent_run_id: str | None = None
+    deadline_at: float | None = None
+    deployment: str | None = None
+    cartridge_version: str | None = None
+    model_id: str | None = None
+    policy_version: str | None = None
+    trace_id: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a JSON-safe host context snapshot."""
+        return {
+            key: value
+            for key, value in {
+                "run_id": self.run_id,
+                "request_id": self.request_id,
+                "tenant_id": self.tenant_id,
+                "actor_id": self.actor_id,
+                "parent_run_id": self.parent_run_id,
+                "deadline_at": self.deadline_at,
+                "deployment": self.deployment,
+                "cartridge_version": self.cartridge_version,
+                "model_id": self.model_id,
+                "policy_version": self.policy_version,
+                "trace_id": self.trace_id,
+            }.items()
+            if value is not None
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "RunEnvelope":
+        """Reconstruct an envelope from a checkpoint or wire payload."""
+        return cls(**{name: data[name] for name in cls.__dataclass_fields__ if name in data})
+
+
+@dataclass(frozen=True)
+class PolicyDecision:
+    """Structured, non-authoritative policy audit record.
+
+    Attaching this record to a hook decision never changes permission
+    behavior; ``HookDecision.permission`` remains the enforcement field.
+    """
+
+    decision: str
+    tool: str | None = None
+    policy_id: str | None = None
+    policy_version: str | None = None
+    reason: str = ""
+    subject_id: str | None = None
+    target: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            key: value
+            for key, value in {
+                "decision": self.decision,
+                "tool": self.tool,
+                "policy_id": self.policy_id,
+                "policy_version": self.policy_version,
+                "reason": self.reason,
+                "subject_id": self.subject_id,
+                "target": self.target,
+                "metadata": dict(self.metadata),
+            }.items()
+            if value is not None and value != ""
+        }
+
+
 class InvalidRunTransition(ValueError):
     """Raised when a run lifecycle update violates the transition policy."""
 
@@ -338,6 +414,7 @@ class ToolContext:
     cancel_token: "CancelToken | None" = None
     on_progress: Callable[[str, dict], None] | None = None
     session_id: str | None = None
+    run_envelope: RunEnvelope | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     llm: Any = None
     """LLM backend available for tool-internal use (summarize, classify,

@@ -66,6 +66,9 @@ class Checkpoint:
     domain_state: dict[str, Any] = field(default_factory=dict)
     """JSON-safe state supplied by a cartridge for crash-resume."""
 
+    run_envelope: dict[str, Any] | None = None
+    """JSON-safe host identity and policy context for this run."""
+
     def to_dict(self) -> dict[str, Any]:
         """Serialize to a JSON-safe dictionary."""
         return {
@@ -75,6 +78,7 @@ class Checkpoint:
             "config_snapshot": self.config_snapshot,
             "tool_results_store": self.tool_results_store,
             "domain_state": self.domain_state,
+            "run_envelope": self.run_envelope,
             "metadata": self.metadata,
             "created_at": self.created_at,
             "run_status": self.run_status,
@@ -97,6 +101,7 @@ class Checkpoint:
             run_phase=str(data.get("run_phase", "starting")),
             termination_reason=data.get("termination_reason"),
             domain_state=data.get("domain_state", {}),
+            run_envelope=data.get("run_envelope"),
         )
 
 
@@ -312,5 +317,6 @@ def resume_loop_state(checkpoint: Checkpoint) -> dict[str, Any]:
         "step_offset": checkpoint.step_number,
         "state_counters": state_counters,
         "domain_state": checkpoint.domain_state,
+        "run_envelope": checkpoint.run_envelope,
         "metadata": checkpoint.metadata,
     }

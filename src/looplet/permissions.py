@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Callable
 
-from looplet.types import ToolCall
+from looplet.types import PolicyDecision, ToolCall
 
 if TYPE_CHECKING:
     from looplet.types import AgentState
@@ -288,10 +288,19 @@ class PermissionHook:
         if payload.tool_call is None:
             return None
         outcome = self.engine.evaluate(payload.tool_call)
+        audit = PolicyDecision(
+            decision=outcome.decision.value,
+            tool=payload.tool_call.tool,
+            policy_id=outcome.rule.tool if outcome.rule is not None else "default",
+            reason=outcome.reason,
+        )
         if outcome.allowed:
-            return Allow()
+            return Allow(policy_decision=audit)
         if outcome.denied:
-            return Deny(outcome.reason or f"permission denied for '{payload.tool_call.tool}'")
+            return Deny(
+                outcome.reason or f"permission denied for '{payload.tool_call.tool}'",
+                policy_decision=audit,
+            )
         # ALLOW by default for ASK/DEFAULT outcomes that slipped through.
         return None
 

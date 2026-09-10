@@ -1653,6 +1653,78 @@ def _validate_loop_inputs(task: Any, tools: BaseToolRegistry, config: LoopConfig
         raise ValueError("config.max_steps must be positive")
 
 
+def _set_context_overrides(config: LoopConfig) -> list[tuple[Any, Any]]:
+    """Set per-run context budget overrides and return reset tokens."""
+    from looplet.context_budget import (  # noqa: PLC0415
+        _CONTEXT_INLINE_PER_STEP_CHARS_OVERRIDE,
+        _CONTEXT_WINDOW_STEPS_OVERRIDE,
+        _CONTEXT_WINDOW_TOTAL_CHARS_OVERRIDE,
+    )
+
+    tokens: list[tuple[Any, Any]] = []
+    if config.context_window_steps is not None:
+        tokens.append(
+            (
+                _CONTEXT_WINDOW_STEPS_OVERRIDE,
+                _CONTEXT_WINDOW_STEPS_OVERRIDE.set(int(config.context_window_steps)),
+            )
+        )
+    if config.context_inline_per_step_chars is not None:
+        tokens.append(
+            (
+                _CONTEXT_INLINE_PER_STEP_CHARS_OVERRIDE,
+                _CONTEXT_INLINE_PER_STEP_CHARS_OVERRIDE.set(
+                    int(config.context_inline_per_step_chars)
+                ),
+            )
+        )
+    if config.context_window_total_chars is not None:
+        tokens.append(
+            (
+                _CONTEXT_WINDOW_TOTAL_CHARS_OVERRIDE,
+                _CONTEXT_WINDOW_TOTAL_CHARS_OVERRIDE.set(int(config.context_window_total_chars)),
+            )
+        )
+    return tokens
+
+
+def _reset_context_overrides(tokens: list[tuple[Any, Any]]) -> None:
+    """Restore per-run context budget overrides."""
+    for var, token in tokens:
+        try:
+            var.reset(token)
+        except (LookupError, ValueError):
+            pass
+
+
+def _mark_failed_state(state: Any) -> None:
+    """Keep caller-owned state truthful when an unhandled run error escapes."""
+    if state is None:
+        return
+    for name, value in (
+        ("run_status", "failed"),
+        ("run_phase", "terminal"),
+        ("termination_reason", "error"),
+    ):
+        try:
+            setattr(state, name, value)
+        except AttributeError:
+            pass
+    try:
+        state._stop_reason = "error"
+    except AttributeError:
+        pass
+    metadata = getattr(state, "metadata", None)
+    if isinstance(metadata, dict):
+        metadata.update(
+            {
+                "run_status": "failed",
+                "run_phase": "terminal",
+                "termination_reason": "error",
+            }
+        )
+
+
 def _render_projection(
     renderer: Callable[..., str],
     projection: ContextProjection,
@@ -1958,6 +2030,49 @@ def composable_loop(
     max_steps: int | None = None,
     system_prompt: str | None = None,
 ) -> Generator[Step, None, Any]:
+    """Run the synchronous loop with exception-safe per-run cleanup."""
+    effective_config = config or LoopConfig()
+    if max_steps is not None:
+        effective_config.max_steps = max_steps
+    if system_prompt is not None:
+        effective_config.system_prompt = system_prompt
+    tokens = _set_context_overrides(effective_config)
+    try:
+        trace = yield from _composable_loop_impl(
+            llm=llm,
+            task=task,
+            tools=tools,
+            context=context,
+            hooks=hooks,
+            config=effective_config,
+            state=state,
+            session_log=session_log,
+            stream=stream,
+            conversation=conversation,
+        )
+        return trace
+    except BaseException:
+        _mark_failed_state(state)
+        raise
+    finally:
+        _reset_context_overrides(tokens)
+
+
+def _composable_loop_impl(
+    llm: Any,
+    task: Any = None,
+    tools: BaseToolRegistry | None = None,
+    context: Any = None,
+    hooks: list[Any] | None = None,
+    config: LoopConfig | None = None,
+    state: AgentState | None = None,
+    session_log: SessionLog | None = None,
+    stream: Any | None = None,
+    conversation: Any | None = None,
+    *,
+    max_steps: int | None = None,
+    system_prompt: str | None = None,
+) -> Generator[Step, None, Any]:
     """Domain-agnostic agent loop with composable hooks.
 
     Yields Steps, returns a trace object built by config.build_trace.
@@ -2026,45 +2141,6 @@ def composable_loop(
     if hooks is None:
         hooks = []
     _validate_loop_inputs(task, tools, config)
-
-    # ── Per-run context-window overrides ────────────────────────
-    # Push LoopConfig overrides into the contextvars consumed by
-    # ``DefaultState.context_summary``. Each is reset in the
-    # ``finally`` at the end of the loop. Without this, cartridges
-    # had no path to override the env-default
-    # ``CONTEXT_WINDOW_STEPS=5``, which silently elided source-of-truth
-    # tool results past 5 steps and caused chained-tool-use agents to
-    # invent plausible-looking arguments for downstream calls.
-    from looplet.context_budget import (  # noqa: PLC0415
-        _CONTEXT_INLINE_PER_STEP_CHARS_OVERRIDE,
-        _CONTEXT_WINDOW_STEPS_OVERRIDE,
-        _CONTEXT_WINDOW_TOTAL_CHARS_OVERRIDE,
-    )
-
-    _ctx_tokens: list[tuple[Any, Any]] = []
-    if config.context_window_steps is not None:
-        _ctx_tokens.append(
-            (
-                _CONTEXT_WINDOW_STEPS_OVERRIDE,
-                _CONTEXT_WINDOW_STEPS_OVERRIDE.set(int(config.context_window_steps)),
-            )
-        )
-    if config.context_inline_per_step_chars is not None:
-        _ctx_tokens.append(
-            (
-                _CONTEXT_INLINE_PER_STEP_CHARS_OVERRIDE,
-                _CONTEXT_INLINE_PER_STEP_CHARS_OVERRIDE.set(
-                    int(config.context_inline_per_step_chars)
-                ),
-            )
-        )
-    if config.context_window_total_chars is not None:
-        _ctx_tokens.append(
-            (
-                _CONTEXT_WINDOW_TOTAL_CHARS_OVERRIDE,
-                _CONTEXT_WINDOW_TOTAL_CHARS_OVERRIDE.set(int(config.context_window_total_chars)),
-            )
-        )
 
     # ── Input guards ────────────────────────────────────────────
     if not callable(getattr(llm, "generate", None)):
@@ -3344,13 +3420,6 @@ def composable_loop(
             "total_time_ms": elapsed,
             "conversation": _conv,
         }
-    # Reset per-run context-window overrides so the next loop in the
-    # same process sees a clean slate.
-    for var, token in _ctx_tokens:
-        try:
-            var.reset(token)
-        except (LookupError, ValueError):
-            pass
     return trace
 
 

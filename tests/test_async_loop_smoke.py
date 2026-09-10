@@ -201,6 +201,72 @@ class TestAsyncComposableLoop:
         assert dispatched == []
         assert state.termination_reason == "deadline_exceeded"
 
+    async def test_prompt_exception_restores_context_override_and_terminal_state(self):
+        from looplet.context_budget import get_context_window_steps
+
+        class BrokenRenderer:
+            def __call__(self, *, projection):
+                raise RuntimeError("renderer failed")
+
+        tools = BaseToolRegistry()
+        register_done_tool(tools)
+        state = DefaultState(max_steps=2)
+        before = get_context_window_steps()
+
+        with pytest.raises(RuntimeError, match="renderer failed"):
+            async for _ in async_composable_loop(
+                llm=AsyncMockLLMBackend(responses=[]),
+                tools=tools,
+                state=state,
+                config=LoopConfig(
+                    max_steps=2,
+                    context_window_steps=77,
+                    render_messages_override=BrokenRenderer(),
+                ),
+                task={},
+            ):
+                pass
+
+        assert get_context_window_steps() == before
+        assert state.run_status == "failed"
+        assert state.run_phase == "terminal"
+
+    async def test_router_selected_llm_reaches_async_tool_context(self):
+        from looplet.router import ModelProfile, SimpleRouter
+
+        selected = AsyncMockLLMBackend(
+            responses=[
+                '{"tool":"inspect","args":{}}',
+                '{"tool":"done","args":{"summary":"ok"}}',
+            ]
+        )
+        original = AsyncMockLLMBackend(responses=[])
+        seen = []
+
+        def inspect_llm(*, ctx):
+            seen.append(ctx.llm)
+            return {"ok": True}
+
+        tools = BaseToolRegistry()
+        register_done_tool(tools)
+        tools.register(ToolSpec("inspect", "Inspect", {}, inspect_llm))
+        profile = ModelProfile("selected", selected)
+        async for _ in async_composable_loop(
+            llm=original,
+            tools=tools,
+            state=DefaultState(max_steps=3),
+            config=LoopConfig(
+                max_steps=3,
+                router=SimpleRouter({"reasoning": profile}, default_profile=profile),
+                use_native_tools=False,
+            ),
+            task={},
+        ):
+            pass
+
+        assert seen
+        assert getattr(seen[0], "_backend", None) is selected
+
     async def test_async_compaction_events_are_awaited(self):
         from looplet import DefaultCompactService, LifecycleEvent
 

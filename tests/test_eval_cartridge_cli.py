@@ -207,6 +207,31 @@ def test_run_cartridge_evals_no_output_uses_tempdir(tmp_path: Path) -> None:
     assert (records[0].directory / "test_greeting.py").is_file()
 
 
+def test_no_output_eval_record_cleans_up_owned_tempdir(tmp_path: Path) -> None:
+    cart = _make_cartridge(tmp_path)
+    record = run_cartridge_evals(cart, llm=MockLLMBackend(responses=_scripted()))[0]
+    sandbox = record.directory
+
+    record.cleanup()
+
+    assert not sandbox.exists()
+
+
+def test_persisted_eval_record_cleanup_preserves_evidence(tmp_path: Path) -> None:
+    cart = _make_cartridge(tmp_path)
+    output = tmp_path / "runs"
+    record = run_cartridge_evals(
+        cart,
+        llm=MockLLMBackend(responses=_scripted()),
+        output_dir=output,
+    )[0]
+    persisted = record.directory
+
+    record.cleanup()
+
+    assert (persisted / "trajectory.json").is_file()
+
+
 def test_run_cartridge_evals_case_filter(tmp_path: Path) -> None:
     cart = _make_cartridge(tmp_path)
     records = run_cartridge_evals(

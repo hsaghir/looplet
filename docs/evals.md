@@ -149,6 +149,12 @@ If you find yourself writing `"pytest" in str(ctx.steps)` as a quality
 signal, replace it with a collector that runs `pytest` and surfaces a
 boolean artifact.
 
+`run_cartridge_evals()` keeps no-output sandboxes available for inspection and
+returns their path in each `EvalRunRecord`. Call `record.cleanup()` when the
+record is no longer needed, or use the record as a context manager. Records
+created with `output_dir=` own persisted evidence and are never removed by
+`cleanup()`.
+
 ### Trust boundary: the agent must not own its oracle
 
 Files under `case.task["files"]` are task inputs placed in the agent's

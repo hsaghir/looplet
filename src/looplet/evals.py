@@ -209,6 +209,23 @@ class EvalRunRecord(NamedTuple):
     context: "EvalContext"
     results: list["EvalResult"]
     directory: Path
+    cleanup_directory: Path | None = None
+
+    def cleanup(self) -> None:
+        """Remove an owned no-output sandbox, if one exists.
+
+        Persisted eval records never own their evidence directory. A no-output
+        record remains inspectable until this method is called explicitly.
+        """
+        if self.cleanup_directory is None:
+            return
+        shutil.rmtree(self.cleanup_directory, ignore_errors=True)
+
+    def __enter__(self) -> "EvalRunRecord":
+        return self
+
+    def __exit__(self, *exc_info: Any) -> None:
+        self.cleanup()
 
 
 # ── Core data types ──────────────────────────────────────────────
@@ -1473,6 +1490,7 @@ def run_cartridge_evals(
                 context=ctx,
                 results=list(hook.results),
                 directory=directory,
+                cleanup_directory=None if run_dir is not None else sandbox,
             )
         )
     return records

@@ -8,6 +8,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- No-output cartridge eval records now expose explicit sandbox cleanup through
+  `EvalRunRecord.cleanup()` and the context-manager protocol.
 - Async loops now await hook results across lifecycle slots, share the same
   policy decisions and terminal output-schema checks as sync loops, and stop
   cleanly when a host deadline expires during an LLM call.

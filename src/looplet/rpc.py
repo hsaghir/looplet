@@ -205,7 +205,7 @@ def map_stop_reason(raw: Any, *, errored: bool = False) -> StopReason:
         return StopReason.DONE
     if text in _MAX_STEPS_TOKENS:
         return StopReason.MAX_STEPS
-    if "cancel" in text:
+    if "cancel" in text or "deadline" in text:
         return StopReason.CANCELLED
     if "stagn" in text:
         return StopReason.STAGNATED

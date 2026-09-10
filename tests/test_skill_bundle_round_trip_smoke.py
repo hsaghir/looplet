@@ -63,6 +63,36 @@ def test_coder_bundle_exports_structural_blueprint(tmp_path):
     assert blueprint.fingerprint() == blueprint_from_bundle(CODER_BUNDLE, runtime).fingerprint()
 
 
+def test_blueprint_from_bundle_closes_temporary_preset(monkeypatch, tmp_path):
+    from looplet.presets import AgentPreset
+
+    closed = []
+    original_close = AgentPreset.close
+
+    def close(self):
+        closed.append(id(self))
+        return original_close(self)
+
+    monkeypatch.setattr(AgentPreset, "close", close)
+    blueprint_from_bundle(CODER_BUNDLE, SkillRuntime(workspace=tmp_path, max_steps=2))
+
+    assert len(closed) == 1
+
+
+def test_preset_blueprint_is_the_canonical_introspection_path(tmp_path):
+    runtime = SkillRuntime(workspace=tmp_path / "workspace", max_steps=8)
+    preset = load_skill_bundle(CODER_BUNDLE).build_preset(runtime)
+    try:
+        functional = blueprint_from_preset(preset, name="coder")
+        direct = blueprint_from_bundle(CODER_BUNDLE, runtime)
+        assert compare_blueprints(direct, functional, ignore_metadata=True).ok
+        assert direct.fingerprint(include_metadata=False) == functional.fingerprint(
+            include_metadata=False
+        )
+    finally:
+        preset.close()
+
+
 def test_export_bundle_to_library_code_builds_equivalent_preset(tmp_path):
     runtime = SkillRuntime(workspace=tmp_path / "workspace", max_steps=8)
     exported = tmp_path / "coder_export.py"

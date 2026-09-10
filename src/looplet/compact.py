@@ -426,6 +426,69 @@ def run_compact(
     return outcome
 
 
+async def run_compact_async(
+    service: CompactService,
+    *,
+    hooks: list[Any],
+    state: AgentState,
+    session_log: SessionLog,
+    llm: LLMBackend,
+    conversation: Any | None,
+    step_num: int,
+    reason: str,
+) -> CompactOutcome:
+    """Async-hook bridge for the existing synchronous compact service."""
+    from looplet.events import LifecycleEvent  # noqa: PLC0415
+    from looplet.loop import emit_event_async  # noqa: PLC0415
+
+    before = len(conversation.messages) if conversation is not None else None
+    pre = await emit_event_async(
+        hooks,
+        LifecycleEvent.PRE_COMPACT,
+        state=state,
+        session_log=session_log,
+        step_num=step_num,
+        messages_before=before,
+        extra={"reason": reason},
+    )
+    for decision in pre:
+        if decision.stop is not None:
+            return CompactOutcome(reason=f"aborted: {decision.stop}")
+
+    outcome = service.compact(
+        state=state,
+        session_log=session_log,
+        llm=llm,
+        conversation=conversation,
+        step_num=step_num,
+        reason=reason,
+    )
+    post = await emit_event_async(
+        hooks,
+        LifecycleEvent.POST_COMPACT,
+        state=state,
+        session_log=session_log,
+        step_num=step_num,
+        messages_before=outcome.messages_before,
+        messages_after=outcome.messages_after,
+        extra={"reason": reason, "outcome": outcome.to_dict()},
+    )
+    apply_thread_rewrite(state, outcome.follow_up)
+    for decision in post:
+        if getattr(decision, "rewrite_thread", None):
+            apply_thread_rewrite(state, decision.rewrite_thread)
+    if outcome.cleanup is not None:
+        try:
+            outcome.cleanup()
+        except Exception:  # noqa: BLE001
+            import logging  # noqa: PLC0415
+
+            logging.getLogger(__name__).exception(
+                "CompactOutcome.cleanup raised; continuing",
+            )
+    return outcome
+
+
 def apply_thread_rewrite(state: Any, spec: "dict[str, Any] | None") -> None:
     """Apply a declarative, JSON-safe thread rewrite to ``state``.
 

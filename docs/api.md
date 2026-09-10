@@ -93,13 +93,19 @@ needs. Return values are normalized through these decisions:
 
 `HookDecision` is the underlying normalized form. The convenience constructors
 make intent easier to review. The [hook guide](hooks.md) documents lifecycle
-order, method signatures, composition, and error handling.
+order, method signatures, composition, and error handling. In
+`async_composable_loop`, hook methods may be sync or async and are awaited in
+registration order. Stream emitters passed through `stream=` remain ordinary
+synchronous callbacks and should stay non-blocking.
 
 ## Cartridges and presets
 
 | API | Use it for |
 | --- | --- |
 | `AgentPreset` | In-memory composition of backend-independent harness pieces. |
+| `AgentBlueprint` / `blueprint_from_bundle(...)` | Inspect stable agent structure without retaining the temporary runtime preset. |
+| `ContextProjection` | Immutable snapshot passed to `render_messages_override` for custom prompt rendering. |
+| `validate_preset_contract(...)` | Validate a built preset at a bundle/host boundary before execution. |
 | `bundled_cartridge_path(name)` | Resolve a reference cartridge shipped in the source tree or installed distribution. |
 | `Cartridge` / `CartridgeLayout` | Parsed file-native harness and its paths. |
 | `cartridge_to_preset(...)` | Load a cartridge into the same preset used by Python callers. |

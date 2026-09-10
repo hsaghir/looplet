@@ -40,6 +40,9 @@ async for step in async_composable_loop(
 The async loop yields the same `Step` contract. A synchronous tool may still
 block the event loop if its implementation performs slow I/O directly. Use an
 async-aware tool boundary or move blocking work to a worker owned by the host.
+Hook methods may be synchronous or `async def`; Looplet awaits them in order.
+The existing compaction service, terminal output schemas, routing, context
+budgets, and cancellation/deadline semantics apply to async runs as well.
 
 `ResilientBackend` wraps the synchronous backend protocol. Do not use it as an
 async retry layer. Configure retries and timeouts in the async provider client

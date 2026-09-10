@@ -44,6 +44,7 @@ from looplet.bundles import (
     discover_skill_bundles,
     load_skill_bundle,
     run_skill_bundle,
+    validate_preset_contract,
     validate_skill_bundle,
 )
 from looplet.cache import CachePolicy
@@ -68,6 +69,7 @@ from looplet.compact import (
     default_compact_service,
     run_compact,
 )
+from looplet.context_projection import ContextProjection
 from looplet.conversation import Conversation, Message
 from looplet.done_steps import (
     is_rejected_done,
@@ -249,6 +251,7 @@ __all__ = [
     "load_skill_bundle",
     "validate_skill_bundle",
     "run_skill_bundle",
+    "validate_preset_contract",
     "bundled_cartridge_path",
     "blueprint_from_bundle",
     "blueprint_from_preset",
@@ -394,6 +397,7 @@ __all__ = [
     "SessionLog",
     "Conversation",
     "Message",
+    "ContextProjection",
     "run_sub_loop",
     # ── PRESETS (one-liner agent setup) ─────────────────────────
     "AgentPreset",

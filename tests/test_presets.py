@@ -37,6 +37,20 @@ class TestPresetsImports:
 
 
 class TestAgentPreset:
+    def test_run_rejects_missing_configured_terminal_tool(self):
+        from looplet import BaseToolRegistry, DefaultState, LoopConfig, MockLLMBackend
+        from looplet.presets import AgentPreset
+
+        preset = AgentPreset(
+            config=LoopConfig(max_steps=1, done_tool="finish"),
+            hooks=[],
+            tools=BaseToolRegistry(),
+            state=DefaultState(max_steps=1),
+        )
+
+        with pytest.raises(ValueError, match="terminal"):
+            list(preset.run(MockLLMBackend(responses=[]), task={}))
+
     def test_close_returns_idempotent_shutdown_report(self):
         from looplet.presets import AgentPreset
 

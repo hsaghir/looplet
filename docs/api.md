@@ -146,7 +146,7 @@ networks, state, permissions, or randomness. Start with
 | `load_cases(...)` / `save_case(...)` | Read and write JSON case corpora. |
 | `parametrize_cases(...)` | Turn case files into ordinary pytest parameters. |
 | `assert_evals_pass(...)` | Run discovered graders and raise one useful assertion on failure. |
-| `run_cartridge_evals(...)` | Execute a cartridge's cases, collectors, and graders end to end. |
+| `run_cartridge_evals(...)` | Execute a cartridge's cases, collectors, and graders end to end. No-output records expose `cleanup()` and support `with`; persisted records retain their evidence. |
 | `save_eval_run(...)` / `load_eval_run(...)` | Persist and restore one self-contained eval record. |
 
 Required graders fail closed when skipped, errored, or below the pass boundary.

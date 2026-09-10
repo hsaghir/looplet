@@ -1,9 +1,9 @@
 """Async composable loop - ``async for step in async_composable_loop(...)``.
 
 Async mirror of :func:`looplet.loop.composable_loop` for use with
-async LLM backends (:class:`AsyncOpenAIBackend`, etc.). All hooks,
-tools, parsing, and state management remain synchronous - only
-LLM calls are awaited.
+async LLM backends (:class:`AsyncOpenAIBackend`, etc.). Tool execution,
+parsing, and state management remain synchronous; LLM calls and
+awaitable hook results are awaited.
 
 Usage::
 
@@ -18,8 +18,8 @@ Usage::
         print(step.pretty())
 
 The function accepts the same arguments as ``composable_loop`` and
-yields the same :class:`Step` objects. Hooks are still synchronous
-Protocol methods - they run inline between awaited LLM calls.
+yields the same :class:`Step` objects. Hooks may be synchronous or
+``async def`` and run sequentially between awaited LLM calls.
 
 When to use this instead of ``composable_loop``:
 - Your LLM backend has ``async def generate()``
@@ -28,7 +28,6 @@ When to use this instead of ``composable_loop``:
 
 When NOT to use this:
 - Your LLM backend is synchronous - use ``composable_loop`` instead
-- You need async hooks - not yet supported
 """
 
 from __future__ import annotations

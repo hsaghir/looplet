@@ -281,6 +281,28 @@ class TestSkillBundles:
 
         assert loaded_values == ["FIRST", "SECOND"]
 
+    def test_bundle_import_roots_do_not_accumulate_after_context_exit(self, tmp_path):
+        from looplet.bundles import _BUNDLE_IMPORT_ROOTS
+
+        for index in range(40):
+            bundle_root = tmp_path / f"bundle-{index}" / "skill"
+            bundle_root.mkdir(parents=True)
+            (bundle_root / "SKILL.md").write_text(
+                f"---\nname: bundle-{index}\ndescription: Bundle.\nentrypoint: looplet.py\n---\n# Bundle\n",
+                encoding="utf-8",
+            )
+            (bundle_root / "looplet.py").write_text(
+                "from looplet import DefaultState, LoopConfig, tools_from\n"
+                "from looplet.presets import AgentPreset\n"
+                "def build(runtime):\n"
+                "    return AgentPreset(tools=tools_from([], include_done=True), hooks=[], "
+                "config=LoopConfig(max_steps=1), state=DefaultState(max_steps=1))\n",
+                encoding="utf-8",
+            )
+            load_skill_bundle(bundle_root)
+
+        assert not _BUNDLE_IMPORT_ROOTS
+
     def test_bundle_import_context_keeps_protected_modules_loaded(self, tmp_path):
         project = tmp_path / "project"
         bundle_root = project / "skill"

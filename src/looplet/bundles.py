@@ -555,6 +555,7 @@ def _entrypoint_import_roots(path: Path) -> list[Path]:
 
 
 _BUNDLE_IMPORT_ROOTS: set[Path] = set()
+_BUNDLE_IMPORT_ROOT_COUNTS: dict[Path, int] = {}
 _PROTECTED_MODULE_PREFIXES = ("_pytest", "looplet", "pytest", "tests")
 _PROTECTED_MODULE_NAMES = {"conftest"}
 _STDLIB_MODULE_NAMES = frozenset(getattr(sys, "stdlib_module_names", ()))
@@ -575,12 +576,23 @@ def _bundle_import_context(import_roots: Iterable[Path]) -> Iterator[None]:
             while root in sys.path:
                 sys.path.remove(root)
         sys.path[:0] = root_strings
-        _BUNDLE_IMPORT_ROOTS.update(roots)
+        for root in roots:
+            _BUNDLE_IMPORT_ROOTS.add(root)
+            _BUNDLE_IMPORT_ROOT_COUNTS[root] = _BUNDLE_IMPORT_ROOT_COUNTS.get(root, 0) + 1
         yield
     finally:
-        _purge_context_modules(roots, original_modules)
-        _restore_modules(removed_modules)
-        sys.path[:] = original_sys_path
+        try:
+            _purge_context_modules(roots, original_modules)
+            _restore_modules(removed_modules)
+            sys.path[:] = original_sys_path
+        finally:
+            for root in roots:
+                count = _BUNDLE_IMPORT_ROOT_COUNTS.get(root, 0) - 1
+                if count > 0:
+                    _BUNDLE_IMPORT_ROOT_COUNTS[root] = count
+                else:
+                    _BUNDLE_IMPORT_ROOT_COUNTS.pop(root, None)
+                    _BUNDLE_IMPORT_ROOTS.discard(root)
 
 
 def _purge_conflicting_bundle_modules(current_roots: tuple[Path, ...]) -> dict[str, ModuleType]:

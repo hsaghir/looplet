@@ -18,7 +18,7 @@ from looplet import (
     composable_loop,
     register_done_tool,
 )
-from looplet.checkpoint import Checkpoint, CheckpointHook, FileCheckpointStore
+from looplet.checkpoint import Checkpoint, CheckpointHook, FileCheckpointStore, resume_loop_state
 from looplet.testing import AsyncMockLLMBackend
 
 
@@ -148,3 +148,6 @@ def test_checkpoint_preserves_host_lifecycle_context(tmp_path):
     assert checkpoint.step_number == 1
     assert checkpoint.run_status
     assert checkpoint.run_phase
+    resumed = resume_loop_state(checkpoint)
+    assert resumed["run_envelope"] == envelope.to_dict()
+    assert resumed["step_offset"] == 1

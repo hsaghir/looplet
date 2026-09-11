@@ -124,6 +124,7 @@ nav:
       - Behavioral evals: evals.md
     - Operate:
       - Runtime operations: operations.md
+      - Host integration: host-integration.md
       - Recipes: recipes.md
       - Portability: portability.md
   - Reference:

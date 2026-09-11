@@ -76,6 +76,87 @@ class RunPhase(str, Enum):
 
 
 @dataclass(frozen=True)
+class RunResult:
+    """Host-facing summary built from one completed loop state.
+
+    The loop remains an iterator and continues to yield :class:`Step`
+    objects. Hosts that need a stable sync/async result shape can call
+    :meth:`from_state` after consuming either loop variant instead of
+    reaching into private state fields themselves.
+    """
+
+    status: RunStatus
+    phase: RunPhase
+    termination_reason: str | None
+    output: Any | None
+    steps: tuple["Step", ...]
+    run_envelope: "RunEnvelope | None" = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def completed(self) -> bool:
+        """Whether the loop reached an accepted terminal output."""
+        return self.status is RunStatus.COMPLETED
+
+    @property
+    def failed(self) -> bool:
+        """Whether the loop ended because of an execution error."""
+        return self.status is RunStatus.FAILED
+
+    @property
+    def cancelled(self) -> bool:
+        """Whether the loop observed cooperative cancellation or a deadline."""
+        return self.status is RunStatus.CANCELLED
+
+    @classmethod
+    def from_state(
+        cls,
+        state: Any,
+        *,
+        output: Any | None = None,
+        tool_name: str = "done",
+        steps: list["Step"] | tuple["Step", ...] | None = None,
+    ) -> "RunResult":
+        """Build a result from a live ``AgentState`` implementation."""
+        from looplet.done_steps import done_output  # noqa: PLC0415
+
+        raw_status = getattr(state, "run_status", RunStatus.CREATED)
+        status = raw_status if isinstance(raw_status, RunStatus) else RunStatus(str(raw_status))
+        raw_phase = getattr(state, "run_phase", RunPhase.STARTING)
+        phase = raw_phase if isinstance(raw_phase, RunPhase) else RunPhase(str(raw_phase))
+        metadata = getattr(state, "metadata", {})
+        metadata_copy = dict(metadata) if isinstance(metadata, dict) else {}
+        reason = getattr(state, "_stop_reason", None)
+        if reason is None:
+            reason = getattr(state, "termination_reason", None)
+        if reason is None:
+            reason = metadata_copy.get("termination_reason")
+        selected_steps = tuple(steps if steps is not None else getattr(state, "steps", ()))
+        return cls(
+            status=status,
+            phase=phase,
+            termination_reason=str(reason) if reason is not None else None,
+            output=done_output(state, tool_name=tool_name) if output is None else output,
+            steps=selected_steps,
+            run_envelope=getattr(state, "run_envelope", None),
+            metadata=metadata_copy,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a JSON-friendly host summary."""
+        envelope = self.run_envelope.to_dict() if self.run_envelope is not None else None
+        return {
+            "status": self.status.value,
+            "phase": self.phase.value,
+            "termination_reason": self.termination_reason,
+            "output": self.output,
+            "steps": [step.to_dict() for step in self.steps],
+            "run_envelope": envelope,
+            "metadata": dict(self.metadata),
+        }
+
+
+@dataclass(frozen=True)
 class RunEnvelope:
     """Host-supplied identity and policy context for one loop run."""
 

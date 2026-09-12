@@ -374,21 +374,33 @@ class RPCServer:
 
     # ── command handlers ─────────────────────────────────────────
 
+    def _close_preset(self) -> None:
+        preset = self.preset
+        self.preset = None
+        if preset is not None:
+            preset.close()
+
     def cmd_load_workspace(self, msg: dict[str, Any]) -> None:
         path = msg.get("path")
         if not path:
             raise ValueError("load_workspace requires 'path'")
         runtime = msg.get("runtime") or None
-        self.preset = cartridge_to_preset(Path(path), runtime=runtime)
-        _emit(
-            self.out_stream,
-            {
+        replacement = cartridge_to_preset(Path(path), runtime=runtime)
+        try:
+            ready = {
                 "event": "ready",
                 "loaded": str(path),
-                "tools": list(self.preset.tools.tool_names),
-                "capabilities": _capabilities(self.preset),
-            },
-        )
+                "tools": list(replacement.tools.tool_names),
+                "capabilities": _capabilities(replacement),
+            }
+        except BaseException:
+            replacement.close()
+            raise
+        previous = self.preset
+        self.preset = replacement
+        if previous is not None:
+            previous.close()
+        _emit(self.out_stream, ready)
 
     def cmd_set_backend(self, msg: dict[str, Any]) -> None:
         factory = msg.get("factory")
@@ -404,8 +416,9 @@ class RPCServer:
             raise ValueError("call load_workspace before run")
         if self.backend is None:
             raise ValueError("call set_backend before run")
+        self._bind_backend_to_gateway()
         task = msg.get("task") or {}
-        max_steps = int(msg.get("max_steps") or self.preset.config.max_steps or 30)
+        max_steps = self._parse_max_steps(msg)
         self._execute_run(
             task=task,
             max_steps=max_steps,
@@ -426,19 +439,33 @@ class RPCServer:
             raise ValueError("call load_workspace before resume")
         if self.backend is None:
             raise ValueError("call set_backend before resume")
+        self._bind_backend_to_gateway()
         ref = msg.get("checkpoint")
         if not ref:
             raise ValueError("resume requires 'checkpoint' (an id or a path)")
         checkpoint_dir = msg.get("checkpoint_dir")
         checkpoint = self._load_checkpoint(str(ref), checkpoint_dir)
         task = msg.get("task") or {}
-        max_steps = int(msg.get("max_steps") or self.preset.config.max_steps or 30)
+        max_steps = self._parse_max_steps(msg)
         self._execute_run(
             task=task,
             max_steps=max_steps,
             checkpoint_dir=checkpoint_dir,
             initial_checkpoint=checkpoint,
         )
+
+    def _bind_backend_to_gateway(self) -> None:
+        gateway = getattr(self.preset, "model_gateway", None)
+        if gateway is not None:
+            gateway.set_backend(self.backend)
+
+    def _parse_max_steps(self, msg: dict[str, Any]) -> int:
+        value = msg.get("max_steps")
+        if value is None:
+            value = getattr(self.preset.config, "max_steps", 0) or 30
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError("max_steps must be a positive integer")
+        return value
 
     # ── shared run engine ────────────────────────────────────────
 
@@ -508,7 +535,6 @@ class RPCServer:
             config = replace(config, **changes)
 
         state = DefaultState(max_steps=max_steps)
-
         # Start the stdin reader (idempotent) and a per-run watcher that trips
         # the token when a ``{"cmd":"cancel"}`` frame arrives mid-run.
         self._ensure_reader()
@@ -752,8 +778,15 @@ class RPCServer:
             except json.JSONDecodeError as exc:
                 _emit(self.out_stream, {"event": "error", "message": f"bad JSON: {exc}"})
                 continue
+            if not isinstance(msg, dict):
+                _emit(
+                    self.out_stream,
+                    {"event": "error", "message": "expected a JSON object command"},
+                )
+                continue
             cmd = msg.get("cmd")
             if cmd == "quit":
+                self._close_preset()
                 _emit(self.out_stream, {"event": "ready", "quit": True})
                 return 0
             if cmd == "cancel":
@@ -772,6 +805,7 @@ class RPCServer:
                     self.out_stream,
                     {"event": "error", "message": f"{type(exc).__name__}: {exc}"},
                 )
+        self._close_preset()
         return 0
 
     def _iter_lines(self) -> Iterable[str]:

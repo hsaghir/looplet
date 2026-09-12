@@ -851,11 +851,19 @@ class PruneToolResults:
             tool_indices.append(i)
 
         # Keep the last N; clear the rest.
-        to_clear = tool_indices[: -self.keep_recent] if len(tool_indices) > self.keep_recent else []
+        to_clear = (
+            tool_indices
+            if self.keep_recent <= 0
+            else tool_indices[: -self.keep_recent]
+            if len(tool_indices) > self.keep_recent
+            else []
+        )
 
         cleared = 0
         for idx in to_clear:
             msgs[idx].content = self.cleared_marker
+            if msgs[idx].tool_result is not None:
+                msgs[idx].tool_result.data = self.cleared_marker
             cleared += 1
 
         return CompactOutcome(

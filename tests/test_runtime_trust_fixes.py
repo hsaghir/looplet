@@ -30,7 +30,7 @@ from pathlib import Path
 
 import pytest
 
-from looplet import cartridge_to_preset
+from looplet import cartridge_to_preset, preset_to_cartridge
 from looplet.types import ToolCall
 
 
@@ -80,6 +80,55 @@ def test_workspace_reload_picks_up_edited_tool_body(tmp_path: Path) -> None:
         f"second load returned stale body: {out2!r} "
         f"(if you see version=1, the bytecode cache is back)"
     )
+
+
+def test_back_to_back_cartridges_isolate_helper_modules(tmp_path: Path) -> None:
+    workspaces = []
+    for name, value in (("left", "left"), ("right", "right")):
+        workspace_parent = tmp_path / name
+        workspace_parent.mkdir()
+        ws = _write_basic_workspace(workspace_parent)
+        (ws / "helper.py").write_text(f"VALUE = {value!r}\n")
+        (ws / "tools" / "stamp").mkdir(parents=True)
+        (ws / "tools" / "stamp" / "tool.yaml").write_text(
+            "name: stamp\ndescription: Return helper value.\nparameters: {}\n"
+        )
+        (ws / "tools" / "stamp" / "execute.py").write_text(
+            "import helper\ndef execute(ctx) -> dict:\n    return {'value': helper.VALUE}\n"
+        )
+        workspaces.append(ws)
+
+    outputs = []
+    for ws in workspaces:
+        preset = cartridge_to_preset(str(ws), strict=True)
+        outputs.append(
+            preset.tools.dispatch(ToolCall(tool="stamp", args={}, reasoning="x", call_id="1")).data
+        )
+
+    assert outputs == [{"value": "left"}, {"value": "right"}]
+
+
+def test_serializing_first_cartridge_after_second_load_keeps_source(
+    tmp_path: Path,
+) -> None:
+    presets = []
+    for name, value in (("left", "left"), ("right", "right")):
+        workspace_parent = tmp_path / f"source-{name}"
+        workspace_parent.mkdir()
+        ws = _write_basic_workspace(workspace_parent)
+        (ws / "tools" / "stamp").mkdir(parents=True)
+        (ws / "tools" / "stamp" / "tool.yaml").write_text(
+            "name: stamp\ndescription: Return version.\nparameters: {}\n"
+        )
+        (ws / "tools" / "stamp" / "execute.py").write_text(
+            f"def execute(ctx) -> dict:\n    return {{'value': {value!r}}}\n"
+        )
+        presets.append(cartridge_to_preset(str(ws), strict=True))
+
+    snapshot = tmp_path / "snapshot"
+    preset_to_cartridge(presets[0], snapshot, name="snapshot")
+
+    assert "'value': 'left'" in (snapshot / "tools" / "stamp" / "execute.py").read_text()
 
 
 def test_workspace_load_does_not_pollute_cartridge_with_pycache(tmp_path: Path) -> None:

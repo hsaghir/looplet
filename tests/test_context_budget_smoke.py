@@ -79,6 +79,17 @@ def test_context_summary_window_steps_limits_recent() -> None:
     assert "tool_a" not in summary  # step 1 is out of window
 
 
+@pytest.mark.parametrize("window", [0, -1])
+def test_context_summary_nonpositive_window_is_empty(window: int) -> None:
+    state = DefaultState()
+    state.steps.append(_make_step(1, "tool_a", {"v": 1}))
+    token = context_budget._CONTEXT_WINDOW_STEPS_OVERRIDE.set(window)
+    try:
+        assert state.context_summary() == ""
+    finally:
+        context_budget._CONTEXT_WINDOW_STEPS_OVERRIDE.reset(token)
+
+
 def test_context_summary_aggregate_cap_shrinks_largest() -> None:
     """When aggregate exceeds budget, the largest contributor shrinks."""
     state = DefaultState()

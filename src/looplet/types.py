@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Protocol, runtime_checkable
+from typing import Any, Callable, Mapping, Protocol, runtime_checkable
 from uuid import uuid4
 
 # ── Error taxonomy ───────────────────────────────────────────────
@@ -120,12 +120,16 @@ class RunResult:
         """Build a result from a live ``AgentState`` implementation."""
         from looplet.done_steps import done_output  # noqa: PLC0415
 
-        raw_status = getattr(state, "run_status", RunStatus.CREATED)
-        status = raw_status if isinstance(raw_status, RunStatus) else RunStatus(str(raw_status))
-        raw_phase = getattr(state, "run_phase", RunPhase.STARTING)
-        phase = raw_phase if isinstance(raw_phase, RunPhase) else RunPhase(str(raw_phase))
         metadata = getattr(state, "metadata", {})
         metadata_copy = dict(metadata) if isinstance(metadata, dict) else {}
+        raw_status = getattr(state, "run_status", None)
+        if raw_status is None:
+            raw_status = metadata_copy.get("run_status", RunStatus.CREATED)
+        status = raw_status if isinstance(raw_status, RunStatus) else RunStatus(str(raw_status))
+        raw_phase = getattr(state, "run_phase", None)
+        if raw_phase is None:
+            raw_phase = metadata_copy.get("run_phase", RunPhase.STARTING)
+        phase = raw_phase if isinstance(raw_phase, RunPhase) else RunPhase(str(raw_phase))
         reason = getattr(state, "_stop_reason", None)
         if reason is None:
             reason = getattr(state, "termination_reason", None)
@@ -145,15 +149,36 @@ class RunResult:
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-friendly host summary."""
         envelope = self.run_envelope.to_dict() if self.run_envelope is not None else None
-        return {
-            "status": self.status.value,
-            "phase": self.phase.value,
-            "termination_reason": self.termination_reason,
-            "output": self.output,
-            "steps": [step.to_dict() for step in self.steps],
-            "run_envelope": envelope,
-            "metadata": dict(self.metadata),
-        }
+        return _json_safe(
+            {
+                "status": self.status.value,
+                "phase": self.phase.value,
+                "termination_reason": self.termination_reason,
+                "output": self.output,
+                "steps": [step.to_dict() for step in self.steps],
+                "run_envelope": envelope,
+                "metadata": dict(self.metadata),
+            }
+        )
+
+
+def _json_safe(value: Any) -> Any:
+    """Convert public result values into recursively JSON-safe data."""
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, Enum):
+        return _json_safe(value.value)
+    if isinstance(value, Mapping):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_json_safe(item) for item in value]
+    to_dict = getattr(value, "to_dict", None)
+    if callable(to_dict):
+        try:
+            return _json_safe(to_dict())
+        except Exception:  # pragma: no cover - defensive serialization
+            pass
+    return repr(value)
 
 
 @dataclass(frozen=True)
@@ -746,7 +771,8 @@ class DefaultState:
         # it for anything but stable iteration) so ``int`` covers both
         # the real step number and the ``id(step)`` fallback.
         rendered: list[tuple[int, str]] = []
-        for step in self.steps[-CONTEXT_WINDOW_STEPS:]:
+        recent_steps = self.steps[-CONTEXT_WINDOW_STEPS:] if CONTEXT_WINDOW_STEPS > 0 else []
+        for step in recent_steps:
             tr = getattr(step, "tool_result", None)
             if tr is None:
                 rendered.append((id(step), str(step)))

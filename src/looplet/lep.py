@@ -95,7 +95,13 @@ class LEPHookAdapter:
         self.capabilities: dict[str, Any] = {}
 
     # ── transport ────────────────────────────────────────────────
-    def _rpc(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    def _rpc(
+        self,
+        method: str,
+        params: dict[str, Any] | None = None,
+        *,
+        expect_response: bool = True,
+    ) -> dict[str, Any]:
         proc = self._proc
         if proc is None or proc.stdin is None or proc.stdout is None:
             raise LEPProtocolError("LEP server process is not running")
@@ -110,6 +116,8 @@ class LEPHookAdapter:
                 raise LEPProtocolError("LEP call exceeded run deadline")
             proc.stdin.write(json.dumps(req) + "\n")
             proc.stdin.flush()
+            if not expect_response:
+                return {}
             line = proc.stdout.readline()
         except (BrokenPipeError, OSError, ValueError) as exc:
             # Dead/half-closed server: surface as a protocol error so
@@ -121,7 +129,19 @@ class LEPHookAdapter:
             parsed = json.loads(line)
         except json.JSONDecodeError as exc:  # pragma: no cover - defensive
             raise LEPProtocolError(f"LEP server emitted non-JSON: {line!r}") from exc
-        return (parsed or {}).get("result") or {}
+        if not isinstance(parsed, dict):
+            raise LEPProtocolError("LEP server response must be a JSON object")
+        if parsed.get("id") != req["id"]:
+            raise LEPProtocolError(
+                f"LEP server response id mismatch: expected {req['id']}, got {parsed.get('id')}"
+            )
+        if "error" in parsed:
+            if "result" in parsed:
+                raise LEPProtocolError("LEP server response cannot contain both result and error")
+            raise LEPProtocolError(f"LEP server returned error: {parsed['error']!r}")
+        if "result" not in parsed or not isinstance(parsed["result"], dict):
+            raise LEPProtocolError("LEP server response result must be a JSON object")
+        return parsed["result"]
 
     def set_run_envelope(self, envelope: RunEnvelope | None) -> None:
         """Bind host correlation context for subsequent policy requests."""
@@ -293,7 +313,11 @@ class LEPHookAdapter:
         if proc is None:
             return
         try:
-            self._rpc("loop/shutdown", {"run_id": self._run_id, "outcome": "ok"})
+            self._rpc(
+                "loop/shutdown",
+                {"run_id": self._run_id, "outcome": "ok"},
+                expect_response=False,
+            )
         except Exception:  # pragma: no cover - best effort
             pass
         try:
@@ -303,9 +327,19 @@ class LEPHookAdapter:
             pass
         try:
             proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:  # pragma: no cover - best effort
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            try:
+                proc.wait(timeout=1)
+            except Exception:
+                pass
         except Exception:  # pragma: no cover - best effort
-            proc.kill()
-        self._proc = None
+            pass
+        finally:
+            self._proc = None
 
 
 def server_argv(server_path: str, *args: str) -> list[str]:

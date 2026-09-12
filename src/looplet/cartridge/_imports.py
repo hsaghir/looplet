@@ -63,4 +63,12 @@ def _import_module_from_path(path: Path, module_name: str) -> Any:
     except Exception:
         _sys.modules.pop(module_name, None)
         raise
+    setattr(module, "__looplet_source_path__", str(path))
+    for value in module.__dict__.values():
+        if getattr(value, "__module__", None) != module_name:
+            continue
+        try:
+            value.__looplet_source_path__ = str(path)
+        except (AttributeError, TypeError):
+            pass
     return module

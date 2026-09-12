@@ -144,6 +144,10 @@ class AgentsMdMemorySource:
         # Walk root → start so outer (broader) context comes first.
         start = self.start.resolve()
         stop = (self.stop or Path(start.anchor)).resolve()
+        try:
+            start.relative_to(stop)
+        except ValueError as exc:
+            raise ValueError(f"stop path {stop} is not an ancestor of start path {start}") from exc
         chain: list[Path] = []
         cur = start
         while True:

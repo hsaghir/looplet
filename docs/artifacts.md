@@ -146,7 +146,10 @@ process isolation for untrusted candidates.
 ```
 
 A checkpoint stores the step number, session log, conversation, selected
-configuration fields, tool-result store, metadata, and creation timestamp.
+configuration fields, an optional JSON-safe tool-result store snapshot,
+metadata, and creation timestamp. Custom registries opt into result recall
+resume by implementing `snapshot_results()` and `restore_results()`;
+the default registry has no stored result payloads.
 When the same checkpoint directory is used again and `initial_checkpoint` is
 unset, Looplet resumes the highest-step valid checkpoint.
 

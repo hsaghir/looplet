@@ -173,6 +173,53 @@ def test_unknown_method_returns_error():
         handle.close()
 
 
+def test_stop_closes_connected_clients():
+    handle = ModelGatewayHandle.start(backend=_ScriptedLLM(["X"]))
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.settimeout(1.0)
+    sock.connect(handle.socket_path)
+    try:
+        handle.close()
+        try:
+            assert sock.recv(1) == b""
+        except ConnectionResetError:
+            pass
+    finally:
+        sock.close()
+
+
+@pytest.mark.parametrize("payload", [b"not-json\n", b"[]\n"])
+def test_malformed_frame_gets_protocol_error(payload):
+    handle = ModelGatewayHandle.start()
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.settimeout(1.0)
+    sock.connect(handle.socket_path)
+    try:
+        sock.sendall(payload)
+        data = sock.recv(4096)
+        reply = json.loads(data.split(b"\n", 1)[0].decode())
+        assert reply["id"] is None
+        assert "error" in reply
+    finally:
+        sock.close()
+        handle.close()
+
+
+def test_client_rejects_mismatched_response_id():
+    import threading
+    from types import SimpleNamespace
+
+    client = ModelGatewayClient.__new__(ModelGatewayClient)
+    client._lock = threading.Lock()
+    client._next_id = 0
+    client._run_envelope = None
+    client._sock = SimpleNamespace(sendall=lambda _payload: None)
+    client._reader = SimpleNamespace(readline=lambda: '{"id":99,"result":{}}')
+
+    with pytest.raises(ModelGatewayError, match="id mismatch"):
+        client._rpc("llm/initialize", {})
+
+
 def test_start_fails_when_server_never_binds(monkeypatch, tmp_path):
     socket_dir = tmp_path / "gateway"
     socket_dir.mkdir()
@@ -192,3 +239,18 @@ def test_start_fails_when_server_never_binds(monkeypatch, tmp_path):
     with pytest.raises(ModelGatewayError, match="failed to create"):
         ModelGatewayHandle.start()
     assert not socket_dir.exists()
+
+
+def test_server_refuses_live_socket(tmp_path):
+    path = str(tmp_path / "live.sock")
+    owner = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    owner.bind(path)
+    owner.listen(1)
+    try:
+        from looplet.model_gateway import ModelGatewayServer
+
+        with pytest.raises(ModelGatewayError, match="already in use"):
+            ModelGatewayServer().serve(path)
+    finally:
+        owner.close()
+        os.unlink(path)

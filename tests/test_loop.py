@@ -693,6 +693,65 @@ class TestComposableLoopHooks:
         assert "search" in tool_names
         assert "think" in tool_names
 
+    def test_cancellation_after_regular_dispatch_skips_queued_done(self):
+        from looplet import CancelToken
+        from looplet.loop import LoopConfig, composable_loop
+        from looplet.tools import ToolSpec
+        from tests.conftest import MockLLMBackend
+
+        token = CancelToken()
+        called = []
+        multi_json = '{"tools": [{"tool": "search", "args": {}}, {"tool": "done", "args": {}}]}'
+        reg = _make_registry_with_done(
+            ToolSpec(
+                name="search",
+                description="s",
+                parameters={},
+                execute=lambda **kwargs: (called.append("search"), token.cancel(), {"ok": True})[
+                    -1
+                ],
+            )
+        )
+
+        steps = list(
+            composable_loop(
+                MockLLMBackend([multi_json]),
+                state=SimpleState(max_steps=5),
+                tools=reg,
+                config=LoopConfig(max_steps=5, cancel_token=token),
+            )
+        )
+
+        assert called == ["search"]
+        assert all(step.tool_call.tool != "done" for step in steps)
+
+    def test_batched_done_hook_receives_terminal_step_number(self):
+        from looplet.loop import LoopConfig, composable_loop
+        from looplet.tools import ToolSpec
+        from tests.conftest import MockLLMBackend
+
+        seen = []
+        reg = _make_registry_with_done(
+            ToolSpec(name="search", description="s", parameters={}, execute=lambda **kwargs: {})
+        )
+        response = '{"tools": [{"tool": "search", "args": {}}, {"tool": "done", "args": {"summary": "ok"}}]}'
+
+        class Gate:
+            def check_done(self, state, session_log, context, step_num, tool_call=None):
+                seen.append(step_num)
+
+        list(
+            composable_loop(
+                MockLLMBackend([response]),
+                state=SimpleState(max_steps=3),
+                tools=reg,
+                hooks=[Gate()],
+                config=LoopConfig(max_steps=3),
+            )
+        )
+
+        assert seen == [2]
+
     def test_should_stop_hook(self):
         from looplet.loop import LoopConfig, composable_loop
         from looplet.tools import ToolSpec

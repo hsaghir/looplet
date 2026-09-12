@@ -255,6 +255,8 @@ def cartridge_to_preset(
             )
         root = extended_root
 
+    _purge_cartridge_helper_modules()
+
     # Shared-resource registry - built once, referenced by ``@<name>``
     # strings throughout hook / tool kwargs. Lets two hooks share the
     # same live object (e.g. a FileCache) on reload, instead of
@@ -298,6 +300,7 @@ def cartridge_to_preset(
                 strict=strict,
                 load_resources=load_resources,
             )
+            _remember_cartridge_helper_modules(root)
             # Stamp the preset with its origin so a subsequent
             # ``preset_to_cartridge`` call can copy any top-level ``*.py``
             # helper modules from the source workspace into the snapshot.
@@ -306,6 +309,7 @@ def cartridge_to_preset(
             # dataclass surface stays clean.
             _stamp_preset_origin(preset, root)
         except BaseException:
+            _remember_cartridge_helper_modules(root)
             load_resources.close()
             raise
         load_resources.disarm()
@@ -319,6 +323,34 @@ def cartridge_to_preset(
 
 
 _EXTENDS_TEMPDIRS: list[Path] = []
+_CARTRIDGE_HELPER_MODULES: set[str] = set()
+
+
+def _purge_cartridge_helper_modules() -> None:
+    """Remove ordinary helper modules left by the previous cartridge load."""
+    import sys as _sys  # noqa: PLC0415
+
+    for module_name in _CARTRIDGE_HELPER_MODULES:
+        _sys.modules.pop(module_name, None)
+    _CARTRIDGE_HELPER_MODULES.clear()
+
+
+def _remember_cartridge_helper_modules(root: Path) -> None:
+    """Track non-synthetic modules imported from ``root`` for next load."""
+    import sys as _sys  # noqa: PLC0415
+
+    resolved_root = root.resolve()
+    for module_name, module in list(_sys.modules.items()):
+        if module_name.startswith("_chw_"):
+            continue
+        module_file = getattr(module, "__file__", None)
+        if not module_file:
+            continue
+        try:
+            Path(module_file).resolve().relative_to(resolved_root)
+        except (OSError, ValueError):
+            continue
+        _CARTRIDGE_HELPER_MODULES.add(module_name)
 
 
 def _cleanup_extends_tempdirs() -> None:

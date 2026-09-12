@@ -115,6 +115,21 @@ class TestPruneToolResults:
         # The kept ones are the LAST two
         assert kept[0].tool_result.data == {"i": 4}
         assert kept[1].tool_result.data == {"i": 5}
+        assert all("i" not in m.tool_result.data for m in cleared)
+
+    def test_zero_keep_recent_clears_all_payloads(self):
+        conv = _conv_with_tool_results(3)
+        out = PruneToolResults(keep_recent=0).compact(
+            state=None,
+            session_log=None,
+            llm=None,
+            conversation=conv,
+            step_num=3,
+            reason="test",
+        )
+        assert out.extra["cleared"] == 3
+        tool_msgs = [m for m in conv.messages if m.role == MessageRole.TOOL]
+        assert all(m.tool_result.data == "[tool result cleared by compact]" for m in tool_msgs)
 
     def test_no_conversation_noop(self):
         svc = PruneToolResults()

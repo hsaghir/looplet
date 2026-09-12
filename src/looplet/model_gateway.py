@@ -147,6 +147,9 @@ class ModelGatewayServer:
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._srv: socket.socket | None = None
+        self._run_envelope: RunEnvelope | None = None
+        self._connections: set[socket.socket] = set()
+        self._connections_lock = threading.Lock()
 
     @property
     def backend(self) -> Any:
@@ -160,13 +163,29 @@ class ModelGatewayServer:
         """Bind (or replace) the live LLM backend the gateway exposes."""
         self._backend = backend
 
+    def set_run_envelope(self, envelope: RunEnvelope | None) -> None:
+        """Bind host deadline/correlation context for gateway requests."""
+        self._run_envelope = envelope
+
     # -- serving -------------------------------------------------------
     def serve(self, socket_path: str) -> int:
         """Bind a Unix domain socket and serve clients until shutdown."""
         if not hasattr(socket, "AF_UNIX"):  # pragma: no cover - non-POSIX
             raise ModelGatewayError("model gateway requires AF_UNIX sockets")
         if os.path.exists(socket_path):
-            os.unlink(socket_path)
+            probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            try:
+                probe.connect(socket_path)
+            except (ConnectionRefusedError, FileNotFoundError):
+                os.unlink(socket_path)
+            except OSError as exc:
+                raise ModelGatewayError(
+                    f"model gateway socket is already in use: {socket_path}"
+                ) from exc
+            else:
+                raise ModelGatewayError(f"model gateway socket is already in use: {socket_path}")
+            finally:
+                probe.close()
         srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         srv.bind(socket_path)
         srv.listen(16)
@@ -180,6 +199,11 @@ class ModelGatewayServer:
                     continue
                 except OSError:  # pragma: no cover - socket closed on stop
                     break
+                if self._stop.is_set():
+                    conn.close()
+                    break
+                with self._connections_lock:
+                    self._connections.add(conn)
                 threading.Thread(target=self._serve_conn, args=(conn,), daemon=True).start()
         finally:
             srv.close()
@@ -193,6 +217,22 @@ class ModelGatewayServer:
 
     def stop(self) -> None:
         self._stop.set()
+        if self._srv is not None:
+            try:
+                self._srv.close()
+            except OSError:
+                pass
+        with self._connections_lock:
+            connections = list(self._connections)
+        for conn in connections:
+            try:
+                conn.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            try:
+                conn.close()
+            except OSError:
+                pass
 
     def _serve_conn(self, conn: socket.socket) -> None:
         reader = _LineReader(conn)
@@ -208,6 +248,8 @@ class ModelGatewayServer:
         except (OSError, ValueError):  # pragma: no cover - client gone
             return
         finally:
+            with self._connections_lock:
+                self._connections.discard(conn)
             try:
                 conn.close()
             except OSError:  # pragma: no cover - best effort
@@ -217,8 +259,10 @@ class ModelGatewayServer:
         try:
             req = json.loads(line)
         except json.JSONDecodeError:
+            _send_line(conn, {"id": None, "error": {"message": "invalid JSON"}})
             return
         if not isinstance(req, dict):
+            _send_line(conn, {"id": None, "error": {"message": "request must be a JSON object"}})
             return
         rid = req.get("id")
         method = req.get("method")
@@ -251,6 +295,9 @@ class ModelGatewayServer:
 
     def _generate(self, prompt: str, kwargs: dict[str, Any]) -> str:
         with self._lock:
+            remaining = remaining_deadline(self._run_envelope)
+            if remaining is not None and remaining <= 0:
+                raise ModelGatewayError("model gateway call exceeded run deadline")
             backend = self._backend
             if backend is None:
                 raise ModelGatewayError("no LLM backend is bound")
@@ -313,6 +360,10 @@ class ModelGatewayClient:
                 sock.connect(path)
                 return sock
             except OSError as exc:
+                try:
+                    sock.close()
+                except UnboundLocalError:
+                    pass
                 last_exc = exc
                 time.sleep(0.02)
         raise ModelGatewayError(f"could not connect to model gateway at {path!r}: {last_exc}")
@@ -341,6 +392,10 @@ class ModelGatewayClient:
                 raise ModelGatewayError(f"model gateway emitted non-JSON: {line!r}") from exc
             if not isinstance(parsed, dict):  # pragma: no cover - defensive
                 raise ModelGatewayError("malformed model-gateway response")
+            if parsed.get("id") != rid:
+                raise ModelGatewayError(
+                    f"model gateway response id mismatch: expected {rid}, got {parsed.get('id')}"
+                )
             if parsed.get("error"):
                 raise ModelGatewayError(str(parsed["error"].get("message", "error")))
             return parsed.get("result") or {}
@@ -461,6 +516,7 @@ class ModelGatewayHandle:
         # The gateway server is shared by child clients; environment-based
         # propagation carries the envelope to newly spawned clients.
         self._run_envelope = envelope
+        self.server.set_run_envelope(envelope)
 
     def close(self) -> None:
         self.server.stop()

@@ -71,6 +71,17 @@ class TestCheckpointDataclass:
         assert "metadata" in d
         assert "created_at" in d
 
+    def test_to_dict_is_defensive_and_json_safe(self) -> None:
+        cp = _make_checkpoint()
+        snapshot = cp.to_dict()
+        snapshot["tool_results_store"]["step_1_search"]["rows"].append({"id": 2})
+        assert cp.tool_results_store["step_1_search"]["rows"] == [{"id": 1}]
+
+    @pytest.mark.parametrize("step_number", [None, "1", True])
+    def test_from_dict_rejects_invalid_step_number(self, step_number) -> None:
+        with pytest.raises(ValueError, match="step_number"):
+            Checkpoint.from_dict({"step_number": step_number})
+
     def test_from_dict_round_trip(self) -> None:
         cp = _make_checkpoint()
         d = cp.to_dict()
@@ -293,6 +304,72 @@ class TestCheckpointHook:
         _, key = call_args[0]
         assert "5" in key
 
+    def test_real_loop_state_defers_save_until_post_step(self) -> None:
+        store = self._make_store()
+        captured_lengths: list[int] = []
+
+        def get_data(step_num: int) -> Checkpoint:
+            captured_lengths.append(len(state.steps))
+            return _make_checkpoint(step=step_num)
+
+        state = MagicMock()
+        state.steps = []
+        session_log = MagicMock()
+        tc, tr = self._make_tool_call_result()
+        hook = CheckpointHook(store=store, get_checkpoint_data=get_data, save_every_n_steps=1)
+
+        hook.post_dispatch(state, session_log, tc, tr, 1)
+        assert captured_lengths == []
+        state.steps.append(object())
+        hook.post_step(state, session_log, 1)
+
+        assert captured_lengths == [1]
+
+    def test_loop_checkpoint_hook_sees_recorded_step_and_terminal_lifecycle(self, tmp_path):
+        from looplet import (
+            BaseToolRegistry,
+            DefaultState,
+            LoopConfig,
+            MockLLMBackend,
+            register_done_tool,
+        )
+        from looplet.loop import composable_loop
+
+        tools = BaseToolRegistry()
+        register_done_tool(tools)
+        state = DefaultState(max_steps=1)
+        session_log = SessionLog()
+        snapshots = []
+
+        def get_data(step_num: int) -> Checkpoint:
+            snapshots.append(
+                (
+                    len(state.steps),
+                    len(session_log.entries),
+                    getattr(state, "run_status", None),
+                    getattr(state, "run_phase", None),
+                )
+            )
+            return _make_checkpoint(step=step_num)
+
+        hook = CheckpointHook(
+            store=FileCheckpointStore(tmp_path),
+            get_checkpoint_data=get_data,
+            save_every_n_steps=1,
+        )
+        list(
+            composable_loop(
+                MockLLMBackend(['{"tool":"done","args":{"summary":"ok"}}']),
+                tools=tools,
+                state=state,
+                session_log=session_log,
+                config=LoopConfig(max_steps=1),
+                hooks=[hook],
+            )
+        )
+
+        assert snapshots == [(1, 1, "completed", "terminal")]
+
     def test_hook_default_save_every(self) -> None:
         store = self._make_store()
         hook = CheckpointHook(
@@ -300,6 +377,15 @@ class TestCheckpointHook:
             get_checkpoint_data=lambda n: _make_checkpoint(step=n),
         )
         assert hook.save_every_n_steps == 5
+
+    @pytest.mark.parametrize("interval", [0, -1])
+    def test_hook_rejects_invalid_save_interval(self, interval: int) -> None:
+        with pytest.raises(ValueError, match="save_every_n_steps"):
+            CheckpointHook(
+                store=self._make_store(),
+                get_checkpoint_data=lambda n: _make_checkpoint(step=n),
+                save_every_n_steps=interval,
+            )
 
     def test_noop_hook_methods_dont_raise(self) -> None:
         store = self._make_store()

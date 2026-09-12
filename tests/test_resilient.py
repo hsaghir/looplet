@@ -128,8 +128,28 @@ class TestTimeoutBehavior:
             retries=3,
             timeout_s=0.05,
             sleep=lambda _s: None,
+            retry_on=lambda exc: isinstance(exc, TimeoutError),
         )
         assert llm.generate("p") == "ok"
+
+    def test_local_timeout_is_not_retried_by_default(self) -> None:
+        state = {"calls": 0}
+
+        class SlowBackend:
+            def generate(self, prompt, **_kw):
+                state["calls"] += 1
+                time.sleep(0.2)
+                return "too late"
+
+        llm = ResilientBackend(
+            SlowBackend(),
+            retries=3,
+            timeout_s=0.01,
+            sleep=lambda _s: None,
+        )
+        with pytest.raises(RetryExhausted):
+            llm.generate("p")
+        assert state["calls"] == 1
 
 
 class TestGenerateWithTools:

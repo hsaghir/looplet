@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -71,7 +73,7 @@ class Checkpoint:
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to a JSON-safe dictionary."""
-        return {
+        payload = {
             "step_number": self.step_number,
             "session_log_data": self.session_log_data,
             "conversation_data": self.conversation_data,
@@ -85,10 +87,50 @@ class Checkpoint:
             "run_phase": self.run_phase,
             "termination_reason": self.termination_reason,
         }
+        try:
+            return json.loads(json.dumps(payload, allow_nan=False))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("checkpoint contains non-JSON-safe data") from exc
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Checkpoint":
         """Deserialize from a dictionary produced by to_dict()."""
+        if not isinstance(data, dict):
+            raise ValueError("checkpoint root must be a JSON object")
+        for field_name in (
+            "session_log_data",
+            "config_snapshot",
+            "tool_results_store",
+            "metadata",
+            "domain_state",
+        ):
+            if field_name in data and not isinstance(data[field_name], dict):
+                raise ValueError(f"checkpoint {field_name} must be a JSON object")
+        if data.get("conversation_data") is not None and not isinstance(
+            data.get("conversation_data"), dict
+        ):
+            raise ValueError("checkpoint conversation_data must be an object or null")
+        if data.get("run_envelope") is not None and not isinstance(data.get("run_envelope"), dict):
+            raise ValueError("checkpoint run_envelope must be an object or null")
+        if "step_number" not in data:
+            raise ValueError("checkpoint is missing step_number")
+        if isinstance(data["step_number"], bool) or not isinstance(data["step_number"], int):
+            raise ValueError("checkpoint step_number must be an integer")
+        if isinstance(data.get("created_at", time.time()), bool) or not isinstance(
+            data.get("created_at", time.time()), (int, float)
+        ):
+            raise ValueError("checkpoint created_at must be a number")
+        for field_name in ("run_status", "run_phase"):
+            if field_name in data and not isinstance(data[field_name], str):
+                raise ValueError(f"checkpoint {field_name} must be a string")
+        if data.get("termination_reason") is not None and not isinstance(
+            data.get("termination_reason"), str
+        ):
+            raise ValueError("checkpoint termination_reason must be a string or null")
+        try:
+            json.dumps(data, allow_nan=False)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("checkpoint contains non-JSON-safe data") from exc
         return cls(
             step_number=data["step_number"],
             session_log_data=data.get("session_log_data", {}),
@@ -142,7 +184,20 @@ class FileCheckpointStore:
         """Write checkpoint to ``{directory}/{key}.json``."""
         safe_key = Path(key).name  # strip any directory separators to prevent traversal
         path = self._dir / f"{safe_key}.json"
-        path.write_text(json.dumps(checkpoint.to_dict(), indent=2))
+        fd, temporary_name = tempfile.mkstemp(
+            dir=self._dir,
+            prefix=f".{safe_key}.",
+            suffix=".tmp",
+        )
+        temporary = Path(temporary_name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(json.dumps(checkpoint.to_dict(), indent=2))
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
         logger.debug("checkpoint saved: %s", path)
 
     def load(self, key: str) -> Checkpoint | None:
@@ -166,6 +221,8 @@ class FileCheckpointStore:
             try:
                 data = json.loads(path.read_text())
                 cp = Checkpoint.from_dict(data)
+                if cp.run_status == "completed" or cp.termination_reason == "done":
+                    continue
                 if best is None or cp.step_number > best.step_number:
                     best = cp
             except Exception:  # noqa: BLE001
@@ -196,9 +253,12 @@ class CheckpointHook:
         get_checkpoint_data: Callable[[int], Checkpoint],
         save_every_n_steps: int = 5,
     ) -> None:
+        if save_every_n_steps < 1:
+            raise ValueError("save_every_n_steps must be >= 1")
         self._store = store
         self._get_data = get_checkpoint_data
         self.save_every_n_steps = save_every_n_steps
+        self._pending_steps: list[int] = []
 
     # ── LoopHook interface ─────────────────────────────────────────
 
@@ -231,11 +291,23 @@ class CheckpointHook:
         """Save a checkpoint if step_num is a multiple of save_every_n_steps."""
         n = step_num
         if n % self.save_every_n_steps == 0:
-            cp = self._get_data(n)
-            key = f"step_{n}"
-            self._store.save(cp, key)
-            logger.debug("auto-checkpoint at step %d → key=%s", n, key)
+            if isinstance(getattr(state, "steps", None), list):
+                self._pending_steps.append(n)
+            else:
+                self._save(n)
         return None
+
+    def post_step(self, state: AgentState, session_log: SessionLog, step_num: int) -> None:
+        """Flush a deferred checkpoint after the loop records the step."""
+        if step_num in self._pending_steps:
+            self._pending_steps.remove(step_num)
+            self._save(step_num)
+
+    def _save(self, step_num: int) -> None:
+        cp = self._get_data(step_num)
+        key = f"step_{step_num}"
+        self._store.save(cp, key)
+        logger.debug("auto-checkpoint at step %d → key=%s", step_num, key)
 
     def check_done(
         self,
@@ -278,6 +350,7 @@ def resume_loop_state(checkpoint: Checkpoint) -> dict[str, Any]:
       - ``state_counters``: dict with ``queries_used`` and
         ``budget_remaining`` if present in ``config_snapshot`` (so the
         loop can restore its budget/query accounting)
+            - ``tool_results_store``: JSON-safe result-store snapshot
             - ``domain_state``: JSON-safe cartridge state from the checkpoint
       - ``metadata``: checkpoint metadata dict
 
@@ -316,6 +389,7 @@ def resume_loop_state(checkpoint: Checkpoint) -> dict[str, Any]:
         "conversation": conv,
         "step_offset": checkpoint.step_number,
         "state_counters": state_counters,
+        "tool_results_store": checkpoint.tool_results_store,
         "domain_state": checkpoint.domain_state,
         "run_envelope": checkpoint.run_envelope,
         "metadata": checkpoint.metadata,

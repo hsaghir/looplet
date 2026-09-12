@@ -8,6 +8,7 @@ alongside existing structures during migration.
 from __future__ import annotations
 
 import copy
+import json
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -285,10 +286,14 @@ class Conversation:
 
     def serialize(self) -> dict[str, Any]:
         """Serialize to a JSON-compatible dict for persistence."""
-        return {
+        payload = {
             "version": 1,
             "messages": [_serialize_message(m) for m in self.messages],
         }
+        try:
+            return json.loads(json.dumps(payload, allow_nan=False))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("conversation contains non-JSON-safe data") from exc
 
     @classmethod
     def deserialize(cls, data: dict[str, Any]) -> "Conversation":

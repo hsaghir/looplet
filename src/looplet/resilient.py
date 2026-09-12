@@ -59,9 +59,13 @@ class RetryExhausted(RuntimeError):
         self.attempts = attempts
 
 
+class _LocalTimeout(TimeoutError):
+    """A timeout raised by looplet after abandoning a worker thread."""
+
+
 def _default_retry_on(exc: BaseException) -> bool:
-    """Retry every exception except user-interrupts / system-exits."""
-    return not isinstance(exc, (KeyboardInterrupt, SystemExit))
+    """Retry ordinary failures, but not abandoned local worker calls."""
+    return not isinstance(exc, (KeyboardInterrupt, SystemExit, _LocalTimeout))
 
 
 def _run_with_timeout(
@@ -90,7 +94,7 @@ def _run_with_timeout(
     t.start()
     t.join(timeout_s)
     if t.is_alive():
-        raise TimeoutError(f"LLM call exceeded {timeout_s}s timeout")
+        raise _LocalTimeout(f"LLM call exceeded {timeout_s}s timeout")
     if error:
         raise error[0]
     return result[0]
@@ -192,6 +196,9 @@ class ResilientBackend:
             try:
                 return _run_with_timeout(fn, self._timeout_s)
             except BaseException as exc:  # noqa: BLE001 - decide below
+                if isinstance(exc, _LocalTimeout) and self._retry_on is _default_retry_on:
+                    errors.append(exc)
+                    raise RetryExhausted(errors) from exc
                 if not self._retry_on(exc):
                     raise
                 errors.append(exc)

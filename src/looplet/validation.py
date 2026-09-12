@@ -38,17 +38,24 @@ class FieldSpec:
 
     Args:
         name: Field name (must match the arg key).
-        field_type: Type tag - one of 'str'|'int'|'float'|'bool'|'list'|'dict'|'any'.
+        field_type: Type tag - one of 'str'|'int'|'float'|'bool'|'list'|'dict'|'any',
+            or a Python type for backwards compatibility.
         required: Whether the field must be present.
         description: Human-readable description for documentation.
         allowed_values: Restrict to a fixed set of string values (enum-like).
     """
 
     name: str
-    field_type: str
+    field_type: str | type
     required: bool = True
     description: str = ""
     allowed_values: list[str] | None = None
+
+    def __post_init__(self) -> None:
+        if isinstance(self.field_type, type):
+            return
+        if self.field_type != "any" and self.field_type not in _TYPE_MAP:
+            raise ValueError(f"unsupported field type: {self.field_type!r}")
 
 
 # ── OutputSchema ─────────────────────────────────────────────────────
@@ -113,7 +120,11 @@ def validate_args(schema: OutputSchema, args: dict[str, Any]) -> ValidationResul
 
         # Type check (skip for 'any')
         if spec.field_type != "any":
-            expected = _TYPE_MAP.get(spec.field_type)
+            expected = (
+                spec.field_type
+                if isinstance(spec.field_type, type)
+                else _TYPE_MAP.get(spec.field_type)
+            )
             if expected is not None:
                 # bool is a subclass of int - check bool before int to avoid false positives
                 if spec.field_type == "int" and isinstance(value, bool):
@@ -189,6 +200,14 @@ class ValidatingToolRegistry:
     def set_resources(self, resources: dict[str, Any]) -> None:
         """Delegate shared-resource wiring to the wrapped registry."""
         self._base.set_resources(resources)
+
+    def snapshot_results(self) -> dict[str, Any]:
+        """Delegate checkpoint result snapshots to the wrapped registry."""
+        return self._base.snapshot_results()
+
+    def restore_results(self, snapshot: dict[str, Any]) -> None:
+        """Restore checkpointed results through the wrapped registry."""
+        self._base.restore_results(snapshot)
 
     def tool_catalog_text(self) -> str:
         return self._base.tool_catalog_text()

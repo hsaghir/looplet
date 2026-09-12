@@ -21,6 +21,12 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   cartridge in any of the four stages. `docs/migrate.md` walks the stages and
   states when the original raw loop remains the better choice.
 
+### Changed
+
+- Expanded the hook guide to document the complete hook extension surface,
+  including async-capable methods, permission/compaction hooks, prompt
+  builders, lifecycle events, and `pre_loop(tools=...)`.
+
 ## [0.4.0] - 2026-08-28
 
 ### Added
@@ -82,6 +88,78 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- State Service request reads now honor run deadlines, malformed requests
+  receive structured errors, non-JSON results are reported without dropping
+  the connection, and service instances can be served again after shutdown.
+- SSP, MGP, and MCP clients now reject mismatched response IDs; State Service
+  environment ownership is stacked safely across same-name handles, and failed
+  MGP connection retries close their sockets.
+- Model gateway run envelopes now reach the host server for deadline checks,
+  and duplicate live gateway sockets are rejected instead of stolen.
+- RPC runs now bind the selected backend to optional model gateways; RPC/MGP
+  shutdown closes active client sockets, and malformed MGP frames receive
+  protocol errors instead of hanging callers.
+- RPC servers now close loaded presets on workspace replacement, `quit`, and
+  EOF, and reject malformed `max_steps` values instead of coercing them.
+- Checkpoint and conversation serialization now make defensive JSON-safe
+  copies and reject invalid scalar/nested shapes early.
+- State-service startup no longer unlinks an active socket owned by another
+  live service.
+- Tool registries can now opt into checkpointed result recall via
+  `snapshot_results()` and `restore_results()`; sync/async resumes restore
+  those JSON-safe snapshots, and terminal result keys are preserved.
+- Validating tool registries now forward result-store snapshot/restore hooks,
+  so checkpoint-enabled loops remain compatible with schema validation.
+- Checkpoint loading now validates JSON object shapes consistently, and
+  `CheckpointHook` rejects non-positive save intervals at construction.
+- `CheckpointHook` now snapshots after the current step/history update, and
+  batched terminal sentinels report their actual step number to `check_done`.
+- Checkpoint files are now written atomically, completed checkpoints are
+  excluded from automatic resume, and queued terminal tools stop honoring
+  cancellation/deadline signals after dispatch.
+- Async history now preserves tool-result recall keys, and async streaming
+- Async history now preserves tool-result recall keys, and async streaming
+  avoids duplicating lifecycle start/end events when `StreamingHook` is used.
+- `RunResult.to_dict()` now recursively normalizes arbitrary output and
+  metadata into JSON-safe values as documented.
+- Async `pre_loop` hooks now receive the tool registry when their signature
+  declares `tools=`, matching synchronous loop behavior.
+- Cartridge loads now clear ordinary helper modules imported by the previous
+  cartridge, preventing same-named helpers from leaking across reloads.
+- `async_llm_call` is now available from the package-level `looplet` API.
+- Tool-result pruning now clears the structured payload as well as rendered
+  content, and `keep_recent=0` clears every eligible result.
+- Fallback routers no longer advertise native-tool support unless both
+  backends can provide it.
+- Resilient backends no longer retry abandoned local timeout workers by
+  default; timeout retries remain available through an explicit predicate.
+- `AgentsMdMemorySource` rejects a stop path outside the start path, and
+  context-based eval saves remove stale per-step files on reuse.
+- Async tool timeouts no longer wait for cancellation-resistant coroutine
+  cleanup when dispatch is bridged from a running event loop.
+- Non-positive recent-context windows now render no steps instead of exposing
+  the entire step history when the value is zero.
+- Unknown `FieldSpec` type tags are rejected instead of silently disabling
+  type validation.
+- RPC, LEP, and MCP transports now reject non-object JSON frames and malformed
+  response envelopes as controlled protocol failures instead of leaking
+  attribute errors or bypassing failure policy.
+- LEP and state-service shutdown now remain bounded, reap forcibly terminated
+  child processes, and clear process handles during cleanup.
+- Async `LoopEndEvent` emission now follows awaited `on_loop_end` cleanup and
+  includes integer extra-call counts, matching the sync loop contract.
+- `looplet show` now reports unreadable manifest paths as controlled CLI errors
+  instead of leaking an uncaught traceback.
+- Manifestless replay now rejects non-contiguous response files instead of
+  silently truncating the recorded call stream, and replay preserves recorded
+  LLM failures so native-tool fallback behavior remains observable.
+- Invalid `save_eval_run()` calls no longer leave a pending artifact marker
+  behind or invalidate an existing saved artifact before trajectory validation.
+- Synchronous checkpoint resume now restores serialized conversation history
+  before binding the active history recorder, matching async resume behavior.
+- Sync and async loops now tolerate protocol-compatible custom states that
+  reject dynamic private attributes, and host results recover lifecycle status
+  and phase from the state's metadata fallback.
 - Cartridge manifests now reject malformed JSON, non-object values, invalid
   names, missing required fields, and invalid field types before any body is
   imported. `Cartridge` also preserves the optional opaque artifact version

@@ -1130,12 +1130,17 @@ def save_eval_run(
     """
     root = Path(directory)
     root.mkdir(parents=True, exist_ok=True)
-    begin_artifact_write(root)
 
     # Resolve the trajectory source.
     src_context = context
     if src_context is None and eval_hook is not None:
         src_context = getattr(eval_hook, "context", None)
+    if recorder is None and src_context is None:
+        raise ValueError(
+            "save_eval_run needs a trajectory source: pass recorder=, context=, "
+            "or an eval_hook with a captured .context (run the loop first)."
+        )
+    begin_artifact_write(root)
     grader_expected: dict[str, Any] | None = None
     if case is not None:
         grader_expected = dict(case.expected)
@@ -1173,13 +1178,12 @@ def save_eval_run(
         _write_json(root / "trajectory.json", traj)
         steps_dir = root / "steps"
         steps_dir.mkdir(exist_ok=True)
+        for old_step in steps_dir.glob("step_*.json"):
+            old_step.unlink()
         for i, step in enumerate(traj["steps"]):
             _write_json(steps_dir / f"step_{i:02d}.json", step)
-    else:
-        raise ValueError(
-            "save_eval_run needs a trajectory source: pass recorder=, context=, "
-            "or an eval_hook with a captured .context (run the loop first)."
-        )
+    else:  # pragma: no cover - guarded above
+        raise AssertionError("trajectory source disappeared during save")
 
     # Outcome artifacts - the piece TrajectoryRecorder never wrote.
     if eval_hook is not None:

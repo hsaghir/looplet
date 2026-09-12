@@ -769,6 +769,167 @@ class TestAsyncComposableLoop:
 
         assert observations == [("stop", "done", "done"), ("end", "done")]
 
+    async def test_async_pre_loop_receives_tools_when_declared(self):
+        seen = []
+
+        class ToolAwareHook:
+            async def pre_loop(self, state, session_log, context, tools):
+                seen.append(tools)
+
+        mock = AsyncMockLLMBackend(
+            responses=['{"tool": "done", "args": {"summary": "finished"}, "reasoning": "r"}']
+        )
+        tools = BaseToolRegistry()
+        register_done_tool(tools)
+
+        async for _ in async_composable_loop(
+            llm=mock,
+            tools=tools,
+            state=DefaultState(max_steps=1),
+            config=LoopConfig(max_steps=1),
+            hooks=[ToolAwareHook()],
+            task={},
+        ):
+            pass
+
+        assert seen == [tools]
+
+    async def test_async_loop_uses_configured_build_briefing(self):
+        mock = AsyncMockLLMBackend(
+            responses=['{"tool": "done", "args": {"summary": "finished"}, "reasoning": "r"}']
+        )
+        tools = BaseToolRegistry()
+        register_done_tool(tools)
+
+        async for _ in async_composable_loop(
+            llm=mock,
+            tools=tools,
+            state=DefaultState(max_steps=1),
+            config=LoopConfig(max_steps=1, build_briefing=lambda *_args: "configured briefing"),
+            task={},
+        ):
+            pass
+
+        assert "configured briefing" in mock.last_prompt
+
+    async def test_async_loop_applies_briefing_budget(self):
+        class BriefingHook:
+            def pre_prompt(self, state, session_log, context, step_num):
+                return "x" * 100
+
+        mock = AsyncMockLLMBackend(
+            responses=['{"tool": "done", "args": {"summary": "finished"}, "reasoning": "r"}']
+        )
+        tools = BaseToolRegistry()
+        register_done_tool(tools)
+
+        async for _ in async_composable_loop(
+            llm=mock,
+            tools=tools,
+            state=DefaultState(max_steps=1),
+            config=LoopConfig(max_steps=1, max_briefing_tokens=5),
+            hooks=[BriefingHook()],
+            task={},
+        ):
+            pass
+
+        assert "briefing truncated - token budget exceeded" in mock.last_prompt
+
+    async def test_async_batched_done_hook_receives_terminal_step_number(self):
+        seen = []
+
+        class Gate:
+            def check_done(self, state, session_log, context, step_num, tool_call=None):
+                seen.append(step_num)
+
+        mock = AsyncMockLLMBackend(
+            responses=[
+                '{"tools": [{"tool": "search", "args": {}}, {"tool": "done", "args": {"summary": "ok"}}]}'
+            ]
+        )
+        tools = BaseToolRegistry()
+        register_done_tool(tools)
+        tools.register(
+            ToolSpec(name="search", description="search", parameters={}, execute=lambda: {})
+        )
+
+        async for _ in async_composable_loop(
+            llm=mock,
+            tools=tools,
+            state=DefaultState(max_steps=1),
+            config=LoopConfig(max_steps=1),
+            hooks=[Gate()],
+            task={},
+        ):
+            pass
+
+        assert seen == [2]
+
+    async def test_async_loop_end_event_follows_cleanup_and_counts_extra_calls(self):
+        order = []
+
+        class Stream:
+            def __init__(self):
+                self.loop_end = None
+
+            def emit(self, event):
+                if type(event).__name__ == "LoopEndEvent":
+                    order.append("loop_end")
+                    self.loop_end = event
+
+        class CleanupHook:
+            async def on_loop_end(self, state, session_log, context, llm):
+                order.append("cleanup")
+                return 1
+
+        mock = AsyncMockLLMBackend(
+            responses=['{"tool": "done", "args": {"summary": "finished"}, "reasoning": "r"}']
+        )
+        tools = BaseToolRegistry()
+        register_done_tool(tools)
+        stream = Stream()
+
+        async for _ in async_composable_loop(
+            llm=mock,
+            tools=tools,
+            state=DefaultState(max_steps=1),
+            config=LoopConfig(max_steps=1),
+            hooks=[CleanupHook()],
+            task={},
+            stream=stream,
+        ):
+            pass
+
+        assert order == ["cleanup", "loop_end"]
+        assert stream.loop_end is not None
+        assert stream.loop_end.total_llm_calls == 2
+
+    async def test_async_streaming_hook_does_not_duplicate_loop_lifecycle_events(self):
+        from looplet.streaming import CallbackEmitter, LoopEndEvent, LoopStartEvent, StreamingHook
+
+        events = []
+        stream = type("Stream", (), {"emit": lambda self, event: events.append(event)})()
+        streaming_hook = StreamingHook(CallbackEmitter(events.append))
+        mock = AsyncMockLLMBackend(
+            responses=['{"tool": "done", "args": {"summary": "finished"}, "reasoning": "r"}']
+        )
+        tools = BaseToolRegistry()
+        register_done_tool(tools)
+
+        async for _ in async_composable_loop(
+            llm=mock,
+            tools=tools,
+            state=DefaultState(max_steps=1),
+            config=LoopConfig(max_steps=1),
+            hooks=[streaming_hook],
+            task={},
+            stream=stream,
+        ):
+            pass
+
+        assert sum(isinstance(event, LoopStartEvent) for event in events) == 1
+        assert sum(isinstance(event, LoopEndEvent) for event in events) == 1
+
     async def test_cache_policy_threads_breakpoints_into_async_backend(self):
         class CacheAwareAsyncBackend:
             def __init__(self) -> None:

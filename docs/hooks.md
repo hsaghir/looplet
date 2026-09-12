@@ -27,17 +27,29 @@ A hook is any Python object that implements one or more of these methods:
 
 ```python
 class MyHook:
-    def pre_loop(self, state, session_log, context):
+    def pre_loop(self, state, session_log, context, tools=None):
         """Called once at loop start. Setup, logging, initial state."""
         pass
+
+    def build_briefing(self, state, session_log, context) -> str | None:
+        """Return the base briefing. First non-None hook result wins."""
+        return None
 
     def pre_prompt(self, state, session_log, context, step_num) -> str | None:
         """Called before each LLM prompt. Return text to inject into briefing."""
         return None
 
+    def build_prompt(self, **prompt_parts) -> str | None:
+        """Return a complete custom prompt, or None for the default builder."""
+        return None
+
     def pre_dispatch(self, state, session_log, tool_call, step_num) -> ToolResult | None:
         """Called before each tool. Return a ToolResult to skip execution (cache hit)."""
         return None
+
+    def check_permission(self, tool_call, state) -> bool:
+        """Return False to deny a tool call."""
+        return True
 
     def post_dispatch(self, state, session_log, tool_call, tool_result, step_num) -> str | None:
         """Called after each tool. Return text to inject into next prompt."""
@@ -51,6 +63,14 @@ class MyHook:
         """Called after each step. Return True to force loop termination."""
         return False
 
+    def should_compact(self, state, session_log, conversation, step_num) -> bool:
+        """Return True to request configured compaction before the next prompt."""
+        return False
+
+    def on_event(self, payload):
+        """Observe a lifecycle event; return a HookDecision or None."""
+        return None
+
     def on_loop_end(self, state, session_log, context, llm) -> int:
         """Called once after loop exits. Return count of extra LLM calls made."""
         return 0
@@ -58,6 +78,11 @@ class MyHook:
 
 **All methods are optional.** Implement only the ones you need. The loop checks
 for method existence with `hasattr()` before calling.
+
+Hook methods may be synchronous or `async def` when using
+`async_composable_loop()`. `pre_loop` may declare `tools=` (or `**kwargs`) to
+register or inspect derived tools before the run starts. The `build_prompt`
+callable receives the prompt-part keyword arguments documented in the API map.
 
 ## Hook Composition
 

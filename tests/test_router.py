@@ -187,6 +187,19 @@ def test_fallback_router_passes_kwargs_through():
     assert primary.calls[0]["max_tokens"] == 500
 
 
+def test_fallback_router_hides_native_tools_when_fallback_lacks_support():
+    class NativePrimary(MockLLM):
+        def generate_with_tools(self, prompt, *, tools, **kwargs):
+            return [{"type": "tool_use", "name": "done", "input": {}}]
+
+    backend = FallbackRouter(
+        primary=NativePrimary(),
+        fallback=MockLLM("fallback response"),
+    ).select("reasoning")
+
+    assert not hasattr(backend, "generate_with_tools")
+
+
 def test_fallback_router_satisfies_model_router():
     router = FallbackRouter(primary=MockLLM(), fallback=MockLLM())
     assert isinstance(router, ModelRouter)

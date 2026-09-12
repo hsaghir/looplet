@@ -17,7 +17,10 @@ These tests witness the two properties the primitive must guarantee:
 
 from __future__ import annotations
 
+import json
 import os
+import socket
+import subprocess
 import tempfile
 import textwrap
 from pathlib import Path
@@ -26,6 +29,7 @@ import pytest
 
 import looplet
 from looplet.state_service import (
+    StateServiceBase,
     StateServiceClient,
     StateServiceError,
     StateServiceHandle,
@@ -166,6 +170,47 @@ def test_close_terminates_server_and_cleans_socket_and_env(
         assert os.environ[env_name] == previous
 
 
+def test_close_reaps_stubborn_server_process(tmp_path: Path) -> None:
+    class StubbornProcess:
+        def __init__(self):
+            self.terminated = False
+            self.killed = False
+            self.reaped = False
+
+        def terminate(self):
+            self.terminated = True
+
+        def wait(self, timeout=None):
+            if not self.killed:
+                raise subprocess.TimeoutExpired(["stubborn"], timeout)
+            self.reaped = True
+
+        def kill(self):
+            self.killed = True
+
+    class Client:
+        def _rpc(self, method, params):
+            return {}
+
+        def close(self):
+            pass
+
+    process = StubbornProcess()
+    handle = StateServiceHandle(
+        "stubborn",
+        process,
+        Client(),
+        str(tmp_path / "service.sock"),
+        str(tmp_path / "socket-dir"),
+    )
+
+    handle.close()
+
+    assert process.terminated
+    assert process.killed
+    assert process.reaped
+
+
 def test_spawn_failure_cleans_socket_directory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -206,3 +251,93 @@ def test_failed_connection_attempt_closes_socket(monkeypatch: pytest.MonkeyPatch
 def test_spawn_rejects_nonpositive_timeout() -> None:
     with pytest.raises(StateServiceError, match="greater than zero"):
         StateServiceHandle.spawn(["unused"], name="counter", timeout_s=0)
+
+
+def test_server_refuses_live_socket(tmp_path: Path) -> None:
+    path = str(tmp_path / "live.sock")
+    owner = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    owner.bind(path)
+    owner.listen(1)
+    try:
+        with pytest.raises(StateServiceError, match="already in use"):
+            StateServiceBase().serve(path)
+    finally:
+        owner.close()
+        Path(path).unlink(missing_ok=True)
+
+
+def test_state_server_returns_error_for_malformed_request() -> None:
+    left, right = socket.socketpair()
+    try:
+        service = StateServiceBase()
+        service._handle_line(left, "not-json")
+        reply = json.loads(right.recv(4096).split(b"\n", 1)[0])
+        assert reply["id"] is None
+        assert "error" in reply
+    finally:
+        left.close()
+        right.close()
+
+
+def test_state_server_reports_non_json_result() -> None:
+    class Service(StateServiceBase):
+        def bad(self):
+            return object()
+
+    left, right = socket.socketpair()
+    try:
+        Service()._handle_line(left, '{"id":1,"method":"state/call","params":{"name":"bad"}}')
+        reply = json.loads(right.recv(4096).split(b"\n", 1)[0])
+        assert reply["id"] == 1
+        assert "not JSON-serializable" in reply["error"]["message"]
+    finally:
+        left.close()
+        right.close()
+
+
+@pytest.mark.parametrize("close_first", [True, False])
+def test_export_env_stacks_same_name_ownership(tmp_path: Path, close_first: bool) -> None:
+    class NoopProc:
+        def terminate(self):
+            pass
+
+        def wait(self, timeout=None):
+            pass
+
+    class NoopClient:
+        def _rpc(self, method, params):
+            return {}
+
+        def close(self):
+            pass
+
+    first = StateServiceHandle.__new__(StateServiceHandle)
+    first.name = "counter"
+    first.proc = NoopProc()
+    first.client = NoopClient()
+    first.socket_path = str(tmp_path / "one.sock")
+    first._socket_dir = str(tmp_path / "one-dir")
+    first._exported_env = None
+    second = StateServiceHandle.__new__(StateServiceHandle)
+    second.name = "counter"
+    second.proc = NoopProc()
+    second.client = NoopClient()
+    second.socket_path = str(tmp_path / "two.sock")
+    second._socket_dir = str(tmp_path / "two-dir")
+    second._exported_env = None
+    os.environ["LOOPLET_STATE_COUNTER"] = "/caller/service.sock"
+    try:
+        first.export_env()
+        second.export_env()
+        assert os.environ["LOOPLET_STATE_COUNTER"] == second.socket_path
+        if close_first:
+            first.close()
+            assert os.environ["LOOPLET_STATE_COUNTER"] == second.socket_path
+            second.close()
+        else:
+            second.close()
+            assert os.environ["LOOPLET_STATE_COUNTER"] == first.socket_path
+            first.close()
+        assert os.environ["LOOPLET_STATE_COUNTER"] == "/caller/service.sock"
+    finally:
+        os.environ.pop("LOOPLET_STATE_COUNTER", None)

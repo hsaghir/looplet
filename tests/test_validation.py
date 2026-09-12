@@ -52,6 +52,15 @@ class TestFieldSpec:
             fs = FieldSpec(name="x", field_type=ft)
             assert fs.field_type == ft
 
+    def test_unknown_field_type_rejected(self) -> None:
+        with pytest.raises(ValueError, match="unsupported field type"):
+            FieldSpec(name="x", field_type="integer")
+
+    def test_python_type_field_type_remains_supported(self) -> None:
+        schema = OutputSchema(fields={"x": FieldSpec(name="x", field_type=str)})
+        assert validate_args(schema, {"x": "ok"}).valid
+        assert not validate_args(schema, {"x": 1}).valid
+
 
 # ── OutputSchema ────────────────────────────────────────────────────
 
@@ -219,6 +228,11 @@ class TestValidateArgs:
 
 
 class TestValidatingToolRegistry:
+    def test_result_store_checkpoint_methods_delegate(self) -> None:
+        registry = ValidatingToolRegistry()
+        assert registry.snapshot_results() == {}
+        registry.restore_results({"k": {"value": 1}})
+
     def _make_registry(self) -> "ValidatingToolRegistry":
         from looplet.tools import ToolSpec
         from looplet.validation import FieldSpec, OutputSchema, ValidatingToolRegistry

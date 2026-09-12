@@ -258,7 +258,7 @@ class MCPToolAdapter:
             return None
         try:
             self._write_message(msg)
-            return self._read_message()
+            return self._read_message(expected_id=msg.get("id"))
         except OSError:
             self.close()
             raise
@@ -276,7 +276,7 @@ class MCPToolAdapter:
         self._proc.stdin.write(line)
         self._proc.stdin.flush()
 
-    def _read_message(self) -> dict | None:
+    def _read_message(self, expected_id: int | None = None) -> dict | None:
         """Read one newline-delimited JSON-RPC message from the server.
 
         Returns the parsed ``result`` payload, or ``None`` on EOF / a
@@ -294,6 +294,14 @@ class MCPToolAdapter:
             data = json.loads(line.decode("utf-8"))
         except json.JSONDecodeError as exc:
             logger.warning("MCP non-JSON line on stdout (%s): %r", exc, line[:200])
+            return None
+        if not isinstance(data, dict):
+            logger.warning("MCP response must be a JSON object: %r", data)
+            return None
+        if expected_id is not None and data.get("id") != expected_id:
+            logger.warning(
+                "MCP response id mismatch: expected %s, got %s", expected_id, data.get("id")
+            )
             return None
         if "error" in data:
             logger.warning("MCP error: %s", data["error"])

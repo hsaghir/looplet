@@ -8,6 +8,9 @@ from __future__ import annotations
 import io
 import json
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 from looplet.cartridge.scaffold import scaffold_cartridge
 from looplet.rpc import RPCServer
@@ -53,6 +56,17 @@ def test_bad_json_does_not_kill_server(tmp_path: Path) -> None:
     out_buf.seek(0)
     events = [json.loads(line) for line in out_buf.read().splitlines() if line.strip()]
     assert events[0]["event"] == "error" and "JSON" in events[0]["message"]
+    assert events[-1]["event"] == "ready"
+
+
+def test_nonobject_json_does_not_kill_server() -> None:
+    in_buf = io.StringIO("[]\n" + json.dumps({"cmd": "quit"}) + "\n")
+    out_buf = io.StringIO()
+    RPCServer(in_stream=in_buf, out_stream=out_buf).serve_forever()
+    out_buf.seek(0)
+    events = [json.loads(line) for line in out_buf.read().splitlines() if line.strip()]
+    assert events[0]["event"] == "error"
+    assert "JSON object" in events[0]["message"]
     assert events[-1]["event"] == "ready"
 
 
@@ -103,3 +117,60 @@ def test_set_backend_bad_spec_emits_error() -> None:
         ]
     )
     assert any(e["event"] == "error" for e in events)
+
+
+class _FakePreset:
+    def __init__(self, max_steps: int = 7) -> None:
+        self.config = SimpleNamespace(max_steps=max_steps)
+        self.tools = SimpleNamespace(tool_names=["done"])
+        self.hooks = []
+        self.resources = {}
+        self.closed = 0
+
+    def close(self):
+        self.closed += 1
+
+
+def test_rpc_quit_and_eof_close_loaded_preset() -> None:
+    for command in ('{"cmd":"quit"}\n', ""):
+        preset = _FakePreset()
+        output = io.StringIO()
+        server = RPCServer(in_stream=io.StringIO(command), out_stream=output, preset=preset)
+        assert server.serve_forever() == 0
+        assert preset.closed == 1
+
+
+def test_rpc_reloading_workspace_closes_previous(monkeypatch):
+    presets = [_FakePreset(), _FakePreset()]
+    first = presets[0]
+    monkeypatch.setattr("looplet.rpc.cartridge_to_preset", lambda *args, **kwargs: presets.pop(0))
+    server = RPCServer(in_stream=io.StringIO(), out_stream=io.StringIO())
+
+    server.cmd_load_workspace({"path": "one"})
+    server.cmd_load_workspace({"path": "two"})
+
+    assert presets == []
+    assert first.closed == 1
+    assert server.preset.closed == 0
+
+
+@pytest.mark.parametrize("value", [0, -1, True, "3"])
+def test_rpc_rejects_invalid_max_steps(value):
+    server = RPCServer(preset=_FakePreset(), backend=object())
+    server._execute_run = lambda **kwargs: None
+
+    with pytest.raises(ValueError, match="max_steps"):
+        server.cmd_run({"task": {}, "max_steps": value})
+
+
+def test_rpc_binds_selected_backend_to_model_gateway():
+    preset = _FakePreset()
+    gateway = SimpleNamespace(set_backend=lambda backend: setattr(gateway, "bound", backend))
+    preset.model_gateway = gateway
+    backend = object()
+    server = RPCServer(preset=preset, backend=backend)
+    server._execute_run = lambda **kwargs: None
+
+    server.cmd_run({"task": {}, "max_steps": 1})
+
+    assert gateway.bound is backend

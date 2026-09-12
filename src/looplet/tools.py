@@ -1035,11 +1035,14 @@ class BaseToolRegistry:
                     import concurrent.futures  # noqa: PLC0415
 
                     _effective_timeout = _async_timeout or 120
-                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                        future = pool.submit(
-                            asyncio.run, _run_with_timeout(result_data, _async_timeout)
-                        )  # pyright: ignore[reportArgumentType]
+                    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+                    future = pool.submit(
+                        asyncio.run, _run_with_timeout(result_data, _async_timeout)
+                    )  # pyright: ignore[reportArgumentType]
+                    try:
                         result_data = future.result(timeout=_effective_timeout)
+                    finally:
+                        pool.shutdown(wait=False, cancel_futures=True)
                 else:
                     result_data = asyncio.run(_run_with_timeout(result_data, _async_timeout))  # pyright: ignore[reportArgumentType]
         except Exception as e:
@@ -1083,6 +1086,19 @@ class BaseToolRegistry:
 
     def _store_result(self, call: ToolCall, result_data: Any) -> str | None:
         """Override in subclasses to enable result storage/recall."""
+        return None
+
+    def snapshot_results(self) -> dict[str, Any]:
+        """Return JSON-safe stored results for checkpoint persistence.
+
+        Registries that implement result recall should override this method
+        together with :meth:`restore_results`. The default registry stores no
+        results, so its snapshot is empty.
+        """
+        return {}
+
+    def restore_results(self, snapshot: dict[str, Any]) -> None:
+        """Restore a checkpointed result snapshot; default is a no-op."""
         return None
 
     @staticmethod

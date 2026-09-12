@@ -103,8 +103,9 @@ class _FallbackLLM:
     def __init__(self, primary: LLMBackend, fallback: LLMBackend) -> None:
         self._primary = primary
         self._fallback = fallback
-        # Expose generate_with_tools only if at least one backend supports it
-        if hasattr(primary, "generate_with_tools") or hasattr(fallback, "generate_with_tools"):
+        # Expose native tools only when either backend can satisfy the full
+        # fallback contract; otherwise the loop uses text generation safely.
+        if hasattr(primary, "generate_with_tools") and hasattr(fallback, "generate_with_tools"):
             self.generate_with_tools = self._generate_with_tools_impl
 
     def generate(

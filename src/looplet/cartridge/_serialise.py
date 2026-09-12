@@ -905,6 +905,14 @@ def _write_tool(spec: Any, tools_root: Path, warnings: list[str], strict: bool) 
     # that key). Copy the original on-disk ``execute.py`` verbatim - it
     # already carries the correct shim or top-level function.
     if module_name.startswith("_chw_tool_"):
+        source_path = getattr(fn, "__looplet_source_path__", None)
+        if source_path is None:
+            source_path = getattr(fn, "__globals__", {}).get("__looplet_source_path__")
+        if source_path and Path(source_path).is_file():
+            (tool_dir / "execute.py").write_text(
+                Path(source_path).read_text(encoding="utf-8"), encoding="utf-8"
+            )
+            return
         import sys as _sys  # noqa: PLC0415
 
         chw_mod = _sys.modules.get(module_name)
@@ -1118,6 +1126,9 @@ def _render_hook_source(cls: type, warnings: list[str], strict: bool) -> str:
     #    any methods (commonly ``to_config()``) the workspace-local
     #    subclass adds beyond an installed base class.
     if module_name.startswith("_chw_hook_"):
+        source_path = getattr(cls, "__looplet_source_path__", None)
+        if source_path and Path(source_path).is_file():
+            return Path(source_path).read_text(encoding="utf-8")
         import sys as _sys  # noqa: PLC0415
 
         chw_mod = _sys.modules.get(module_name)

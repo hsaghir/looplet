@@ -63,6 +63,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _CALL_ARTIFACT = re.compile(r"call_\d+_(?:prompt|response)\.txt")
+_CALL_RESPONSE_ARTIFACT = re.compile(r"call_(\d+)_response\.txt")
 _STEP_ARTIFACT = re.compile(r"step_\d+\.json")
 
 
@@ -996,6 +997,7 @@ class _ReplayLLMBackend:
         temperature: float = 0.2,
     ) -> str:
         call = self._next("generate")
+        self._raise_recorded_error(call)
         response = call.get("response", "")
         if not isinstance(response, str):
             # Defensive: the manifest should always hold a string for
@@ -1013,6 +1015,7 @@ class _ReplayLLMBackend:
         temperature: float = 0.2,
     ) -> list[dict[str, Any]]:
         call = self._next("generate_with_tools")
+        self._raise_recorded_error(call)
         response = call.get("response", [])
         if isinstance(response, list):
             return response
@@ -1022,6 +1025,12 @@ class _ReplayLLMBackend:
             return decoded if isinstance(decoded, list) else []
         except Exception:
             return []
+
+    @staticmethod
+    def _raise_recorded_error(call: dict[str, Any]) -> None:
+        error = call.get("error")
+        if error:
+            raise RuntimeError(f"replayed LLM call failed: {error}")
 
 
 def _load_trace_calls(trace_dir: Path) -> list[dict[str, Any]]:
@@ -1087,23 +1096,34 @@ def _load_trace_calls(trace_dir: Path) -> list[dict[str, Any]]:
                     "index": idx,
                     "method": method,
                     "response": response,
+                    "error": entry.get("error"),
                 }
             )
     else:
         # Fallback: scan call_NN_response.txt files.
-        idx = 0
-        while True:
-            body = _read_call_body(trace_dir, idx)
-            if body is None:
-                break
+        response_files: list[tuple[int, Path]] = []
+        for path in trace_dir.iterdir():
+            if not path.is_file():
+                continue
+            match = _CALL_RESPONSE_ARTIFACT.fullmatch(path.name)
+            if match is not None:
+                response_files.append((int(match.group(1)), path))
+        response_files.sort(key=lambda item: item[0])
+        for expected_index, (index, path) in enumerate(response_files):
+            if index != expected_index:
+                raise ValueError(
+                    f"non-contiguous recorded responses in {trace_dir}: "
+                    f"expected index {expected_index}, got {index}"
+                )
+            body = path.read_text(encoding="utf-8")
             calls.append(
                 {
-                    "index": idx,
+                    "index": index,
                     "method": "generate",
                     "response": _extract_response_text(body),
+                    "error": _extract_recorded_error(body),
                 }
             )
-            idx += 1
     if not calls:
         raise FileNotFoundError(
             f"no recorded calls found in {trace_dir} - expected "
@@ -1133,6 +1153,15 @@ def _extract_response_text(body: str | None) -> str:
     if marker in body:
         return body.split(marker, 1)[1].lstrip("\n")
     return body
+
+
+def _extract_recorded_error(body: str | None) -> str | None:
+    if not body or "## ERROR\n" not in body:
+        return None
+    error = body.split("## ERROR\n", 1)[1]
+    if "\n## RESPONSE" in error:
+        error = error.split("\n## RESPONSE", 1)[0]
+    return error.strip() or None
 
 
 def _extract_content_blocks(body: str | None) -> list[dict[str, Any]]:

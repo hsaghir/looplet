@@ -95,6 +95,14 @@ class TestMCPToolAdapter:
         assert adapter._read_message() is None
         assert "MCP error" in caplog.text
 
+    @pytest.mark.parametrize("payload", [b"[]\n", b"1\n"])
+    def test_nonobject_response_returns_none(self, payload, caplog):
+        adapter = MCPToolAdapter("echo test")
+        adapter._proc = SimpleNamespace(stdout=io.BytesIO(payload))
+
+        assert adapter._read_message() is None
+        assert "must be a JSON object" in caplog.text
+
     @pytest.mark.parametrize("timeout", [0, -1])
     def test_timeout_must_be_positive(self, timeout):
         with pytest.raises(ValueError, match="greater than zero"):

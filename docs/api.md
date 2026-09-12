@@ -25,6 +25,9 @@ list of re-exported names for a given release.
 | `DefaultState` | Default mutable loop state. Supply a compatible custom state when the domain needs more fields. |
 | `Step` | One parsed tool call and its result, timing, classification, and related metadata. |
 | `ToolCall` / `ToolResult` | Typed call and result records used by registries, hooks, and tests. |
+| `RunResult` | Stable host-facing summary of status, termination, output, steps, envelope, and metadata. |
+| `RunEnvelope` | Host-supplied identity, deployment, policy, trace, and deadline context for one run. |
+| `RunStatus` / `RunPhase` | Lifecycle enums used by host observers and result consumers. |
 
 The loop accepts explicit dependencies and returns control after each
 dispatch:

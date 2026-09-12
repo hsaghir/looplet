@@ -117,9 +117,12 @@ def _render_show(trace_dir: Path, *, json_output: bool = False) -> int:
     # ── manifest.jsonl (optional) ────────────────────────────────
     calls: list[dict[str, Any]] = []
     if (declared is None or "model_calls" in declared) and manifest_path.exists():
-        for line_number, line in enumerate(
-            manifest_path.read_text(encoding="utf-8").splitlines(), start=1
-        ):
+        try:
+            manifest_lines = manifest_path.read_text(encoding="utf-8").splitlines()
+        except Exception as exc:
+            print(f"error: could not read {manifest_path}: {exc}", file=sys.stderr)
+            return 1
+        for line_number, line in enumerate(manifest_lines, start=1):
             line = line.strip()
             if not line:
                 continue

@@ -139,6 +139,37 @@ class TestToolTimeout:
         assert r.error_kind == ErrorKind.TIMEOUT
         assert elapsed < 2.0  # must return promptly, not wait 10s
 
+    def test_async_tool_timeout_does_not_wait_for_delayed_cancellation(self) -> None:
+        """A coroutine that delays cancellation must not block its caller."""
+        import asyncio
+
+        async def stubborn_async(x: str = "") -> dict:
+            try:
+                await asyncio.sleep(0.2)
+            except asyncio.CancelledError:
+                await asyncio.sleep(0.2)
+                raise
+            return {"x": x}
+
+        async def run_dispatch() -> tuple[object, float]:
+            reg = BaseToolRegistry()
+            reg.register(
+                ToolSpec(
+                    name="stubborn_async",
+                    description="x",
+                    parameters={"x": "str"},
+                    execute=stubborn_async,
+                    timeout_s=0.05,
+                )
+            )
+            started = time.monotonic()
+            result = reg.dispatch(ToolCall(tool="stubborn_async", args={"x": "hi"}))
+            return result, time.monotonic() - started
+
+        result, elapsed = asyncio.run(run_dispatch())
+        assert result.error_kind == ErrorKind.TIMEOUT
+        assert elapsed < 0.15
+
 
 # ── Persist large outputs to file ────────────────────────────────
 

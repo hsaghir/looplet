@@ -16,9 +16,13 @@ server; fail_open allows) and the basic authority slots
 
 from __future__ import annotations
 
+import io
 import os
+import subprocess
 import textwrap
 from pathlib import Path
+
+import pytest
 
 import looplet
 from looplet import (
@@ -112,6 +116,52 @@ class TestFailurePolicy:
             assert adapter.check_permission(ToolCall(tool="x", args={}), None) is False
         finally:
             adapter.close()
+
+    def test_close_reaps_stubborn_process_without_waiting_for_shutdown_response(self):
+        class StubbornProcess:
+            def __init__(self):
+                self.stdin = io.StringIO()
+                self.stdout = io.StringIO()
+                self.killed = False
+                self.reaped = False
+
+            def wait(self, timeout=None):
+                if not self.killed:
+                    raise subprocess.TimeoutExpired(["stubborn"], timeout)
+                self.reaped = True
+
+            def kill(self):
+                self.killed = True
+
+        adapter = LEPHookAdapter(["unused"])
+        process = StubbornProcess()
+        adapter._proc = process
+
+        adapter.close()
+
+        assert process.killed
+        assert process.reaped
+        assert adapter._proc is None
+
+    @pytest.mark.parametrize(
+        "response",
+        [
+            "[]\n",
+            "1\n",
+            '{"id":99,"result":{}}\n',
+            '{"id":1,"error":"bad"}\n',
+            '{"id":1,"result":[]}\n',
+        ],
+    )
+    def test_malformed_response_applies_failure_policy(self, response):
+        class Process:
+            stdin = io.StringIO()
+            stdout = io.StringIO(response)
+
+        adapter = LEPHookAdapter(["unused"], on_failure="fail_closed")
+        adapter._proc = Process()
+
+        assert adapter.check_permission(ToolCall(tool="x", args={}), None) is False
 
     def test_fail_open_allows_on_broken_server(self, tmp_path):
         bad = tmp_path / "bad.py"

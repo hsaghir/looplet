@@ -17,7 +17,12 @@ from looplet import (
 )
 from looplet.__main__ import main as cli_main
 from looplet.artifact_compat import ARTIFACT_DESCRIPTOR
-from looplet.provenance import ProvenanceSink, replay_loop
+from looplet.provenance import (
+    ProvenanceSink,
+    _load_trace_calls,
+    _ReplayLLMBackend,
+    replay_loop,
+)
 from looplet.testing import MockLLMBackend
 from looplet.tools import ToolSpec
 
@@ -111,6 +116,40 @@ class TestReplayLoopSmoke:
         (trace_dir / ARTIFACT_DESCRIPTOR).unlink()
         steps = list(replay_loop(trace_dir, tools=_make_tools()))
         assert len(steps) == 3
+
+    def test_fallback_rejects_missing_middle_response(self, tmp_path: Path):
+        trace_dir = tmp_path / "trace"
+        trace_dir.mkdir()
+        (trace_dir / "call_00_response.txt").write_text("response")
+        (trace_dir / "call_02_response.txt").write_text("response")
+
+        with pytest.raises(ValueError, match="expected index 1, got 2"):
+            list(replay_loop(trace_dir, tools=_make_tools()))
+
+    def test_replay_preserves_recorded_llm_error(self, tmp_path: Path):
+        trace_dir = tmp_path / "trace"
+        trace_dir.mkdir()
+        (trace_dir / "manifest.jsonl").write_text(
+            json.dumps(
+                {
+                    "index": 0,
+                    "method": "generate_with_tools",
+                    "error": "RuntimeError: provider unavailable",
+                }
+            )
+            + "\n"
+        )
+        (trace_dir / "call_00_response.txt").write_text(
+            "# call 00 - error=yes\n\n"
+            "## ERROR\nRuntimeError: provider unavailable\n\n"
+            "## RESPONSE (content blocks)\n[]\n"
+        )
+
+        calls = _load_trace_calls(trace_dir)
+        assert calls[0]["error"] == "RuntimeError: provider unavailable"
+        backend = _ReplayLLMBackend(calls)
+        with pytest.raises(RuntimeError, match="replayed LLM call failed"):
+            backend.generate_with_tools("prompt", tools=[])
 
     @pytest.mark.parametrize(
         "manifest, expected",
@@ -278,6 +317,19 @@ class TestShowCLISmoke:
         assert rc == 1
         captured = capsys.readouterr()
         assert "manifest.jsonl line 2" in captured.err
+        assert captured.out == ""
+
+    def test_show_rejects_manifest_directory(self, tmp_path: Path, capsys):
+        trace_dir = tmp_path / "trace"
+        trace_dir.mkdir()
+        (trace_dir / "manifest.jsonl").mkdir()
+
+        rc = cli_main(["show", str(trace_dir)])
+
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert "could not read" in captured.err
+        assert "Traceback" not in captured.err
         assert captured.out == ""
 
     def test_show_rejects_nonobject_manifest_record(self, tmp_path: Path, capsys):

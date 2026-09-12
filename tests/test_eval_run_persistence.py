@@ -208,6 +208,15 @@ def test_save_eval_run_without_hook_writes_empty_artifacts(tmp_path: Path) -> No
     assert rec.case is None
 
 
+def test_failed_save_without_source_does_not_leave_pending_marker(tmp_path: Path) -> None:
+    root = tmp_path / "run"
+
+    with pytest.raises(ValueError, match="needs a trajectory source"):
+        save_eval_run(root)
+
+    assert not (root / ".artifact.json.pending").exists()
+
+
 def test_reusing_run_directory_removes_stale_optional_sidecars(tmp_path: Path) -> None:
     recorder = _FakeRecorder(_sample_steps(), task={})
     case = EvalCase(id="old", expected={"answer": 1})
@@ -218,6 +227,18 @@ def test_reusing_run_directory_removes_stale_optional_sidecars(tmp_path: Path) -
     save_eval_run(tmp_path / "run", recorder=recorder)
     assert not (tmp_path / "run" / "case.json").exists()
     assert not (tmp_path / "run" / "expected.json").exists()
+
+
+def test_reusing_context_run_removes_stale_step_files(tmp_path: Path) -> None:
+    root = tmp_path / "run"
+    save_eval_run(root, context=EvalContext(steps=[{}, {}, {}], task={}))
+    assert (root / "steps" / "step_02.json").exists()
+
+    save_eval_run(root, context=EvalContext(steps=[{}], task={}))
+
+    assert (root / "steps" / "step_00.json").exists()
+    assert not (root / "steps" / "step_01.json").exists()
+    assert not (root / "steps" / "step_02.json").exists()
 
 
 def test_recorder_run_merges_eval_context_evidence(tmp_path: Path) -> None:

@@ -82,6 +82,8 @@ SOCKET_ENV_VAR = "LOOPLET_STATE_SOCKET"
 #: Per-service env var prefix: ``LOOPLET_STATE_<NAME>`` carries the socket
 #: path for service ``<name>`` to clients that share several services.
 PER_SERVICE_ENV_PREFIX = "LOOPLET_STATE_"
+_EXPORTED_ENV_OWNERS: dict[str, list["StateServiceHandle"]] = {}
+_EXPORTED_ENV_BASE: dict[str, tuple[bool, str | None]] = {}
 
 
 class StateServiceError(RuntimeError):
@@ -90,6 +92,13 @@ class StateServiceError(RuntimeError):
 
 def _send_line(sock: socket.socket, obj: dict[str, Any]) -> None:
     sock.sendall((json.dumps(obj) + "\n").encode("utf-8"))
+
+
+def _send_error(sock: socket.socket, rid: Any, message: str) -> None:
+    try:
+        _send_line(sock, {"id": rid, "error": {"message": message}})
+    except (OSError, TypeError, ValueError):
+        pass
 
 
 class _LineReader:
@@ -164,8 +173,19 @@ class StateServiceBase:
         path = socket_path or os.environ.get(SOCKET_ENV_VAR)
         if not path:
             raise StateServiceError(f"no socket path given and {SOCKET_ENV_VAR} is unset")
+        self._stop.clear()
         if os.path.exists(path):
-            os.unlink(path)
+            probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            try:
+                probe.connect(path)
+            except (ConnectionRefusedError, FileNotFoundError):
+                os.unlink(path)
+            except OSError as exc:
+                raise StateServiceError(f"state service socket is already in use: {path}") from exc
+            else:
+                raise StateServiceError(f"state service socket is already in use: {path}")
+            finally:
+                probe.close()
         srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         srv.bind(path)
         srv.listen(16)
@@ -209,8 +229,10 @@ class StateServiceBase:
         try:
             req = json.loads(line)
         except json.JSONDecodeError:
+            _send_error(conn, None, "invalid JSON")
             return
         if not isinstance(req, dict):
+            _send_error(conn, None, "request must be a JSON object")
             return
         rid = req.get("id")
         method = req.get("method")
@@ -238,9 +260,12 @@ class StateServiceBase:
                 )
                 return
         except Exception as exc:  # noqa: BLE001 - report, never crash the server
-            _send_line(conn, {"id": rid, "error": {"message": str(exc)}})
+            _send_error(conn, rid, str(exc))
             return
-        _send_line(conn, {"id": rid, "result": result})
+        try:
+            _send_line(conn, {"id": rid, "result": result})
+        except (TypeError, ValueError) as exc:
+            _send_error(conn, rid, f"result is not JSON-serializable: {exc}")
 
 
 # ── client ────────────────────────────────────────────────────
@@ -303,11 +328,19 @@ class StateServiceClient:
                 raise StateServiceError("state service call exceeded run deadline")
             self._next_id += 1
             rid = self._next_id
+            old_timeout = self._sock.gettimeout()
+            if remaining is not None:
+                self._sock.settimeout(remaining)
             try:
                 _send_line(self._sock, {"id": rid, "method": method, "params": params})
                 line = self._reader.readline()
+            except socket.timeout as exc:
+                raise StateServiceError("state service call exceeded run deadline") from exc
             except OSError as exc:
                 raise StateServiceError(f"state transport failed: {exc}") from exc
+            finally:
+                if remaining is not None:
+                    self._sock.settimeout(old_timeout)
             if line is None:
                 raise StateServiceError("state service closed the connection")
             try:
@@ -316,6 +349,10 @@ class StateServiceClient:
                 raise StateServiceError(f"state service emitted non-JSON: {line!r}") from exc
             if not isinstance(parsed, dict):  # pragma: no cover - defensive
                 raise StateServiceError("malformed state-service response")
+            if parsed.get("id") != rid:
+                raise StateServiceError(
+                    f"state service response id mismatch: expected {rid}, got {parsed.get('id')}"
+                )
             if parsed.get("error"):
                 raise StateServiceError(str(parsed["error"].get("message", "error")))
             return parsed.get("result") or {}
@@ -353,6 +390,28 @@ class StateServiceClient:
 # ── launcher / handle ─────────────────────────────────────────
 
 
+def _terminate_and_reap(proc: subprocess.Popen[bytes]) -> None:
+    try:
+        proc.terminate()
+    except Exception:  # pragma: no cover - best effort
+        pass
+    try:
+        proc.wait(timeout=5)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    except Exception:  # pragma: no cover - best effort
+        pass
+    try:
+        proc.kill()
+    except Exception:  # pragma: no cover - best effort
+        pass
+    try:
+        proc.wait(timeout=1)
+    except Exception:  # pragma: no cover - best effort
+        pass
+
+
 class StateServiceHandle:
     """Owns a spawned state-service process plus a connected client."""
 
@@ -375,7 +434,11 @@ class StateServiceHandle:
         """Expose this service to child processes until :meth:`close`."""
         env_name = f"{PER_SERVICE_ENV_PREFIX}{self.name.upper()}"
         if self._exported_env is None:
-            self._exported_env = (env_name, env_name in os.environ, os.environ.get(env_name))
+            owners = _EXPORTED_ENV_OWNERS.setdefault(env_name, [])
+            if not owners:
+                _EXPORTED_ENV_BASE[env_name] = (env_name in os.environ, os.environ.get(env_name))
+            owners.append(self)
+            self._exported_env = (env_name, *_EXPORTED_ENV_BASE[env_name])
         os.environ[env_name] = self.socket_path
 
     def set_run_envelope(self, envelope: RunEnvelope | None) -> None:
@@ -437,14 +500,7 @@ class StateServiceHandle:
         try:
             client = StateServiceClient(socket_path, connect_timeout=timeout_s)
         except StateServiceError:
-            try:
-                proc.terminate()
-                proc.wait(timeout=5)
-            except Exception:  # pragma: no cover - best effort
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
+            _terminate_and_reap(proc)
             for path in (socket_path, socket_dir):
                 try:
                     if os.path.isdir(path):
@@ -466,22 +522,23 @@ class StateServiceHandle:
         except Exception:  # pragma: no cover - best effort
             pass
         proc = self.proc
-        try:
-            proc.terminate()
-            proc.wait(timeout=5)
-        except Exception:  # pragma: no cover - best effort
-            try:
-                proc.kill()
-            except Exception:
-                pass
+        _terminate_and_reap(proc)
         if self._exported_env is not None:
             env_name, existed, previous = self._exported_env
-            if os.environ.get(env_name) == self.socket_path:
+            owners = _EXPORTED_ENV_OWNERS.get(env_name, [])
+            if self in owners:
+                owners.remove(self)
+            if owners:
+                os.environ[env_name] = owners[-1].socket_path
+            elif os.environ.get(env_name) == self.socket_path:
                 if existed:
                     assert previous is not None
                     os.environ[env_name] = previous
                 else:
                     os.environ.pop(env_name, None)
+            if not owners:
+                _EXPORTED_ENV_OWNERS.pop(env_name, None)
+                _EXPORTED_ENV_BASE.pop(env_name, None)
             self._exported_env = None
         for p in (self.socket_path, self._socket_dir):
             try:

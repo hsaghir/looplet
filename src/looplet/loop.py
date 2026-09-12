@@ -2183,13 +2183,6 @@ def _composable_loop_impl(
 
     _conv = conversation if conversation is not None else _Conversation()
 
-    # ── Unified history recorder - single write path for step/turn events ──
-    _history = HistoryRecorder(
-        state=state,
-        session_log=session_log,
-        conversation=_conv,
-    )
-
     # ── Lazy streaming imports (avoid circular: streaming imports loop.LoopHook)
     _LoopStartEvent = _StepStartEvent = _LLMCallStartEvent = None
     _ToolDispatchEvent = _LoopEndEvent = None
@@ -2265,6 +2258,9 @@ def _composable_loop_impl(
         if restored_log is not None:
             session_log.entries = restored_log.entries[:]
             session_log.current_theory = restored_log.current_theory
+        restored_conv = resumed.get("conversation")
+        if restored_conv is not None and conversation is None:
+            _conv = restored_conv
         # Restore state counters (queries_used, budget_remaining) so
         # budget enforcement continues where the checkpoint left off.
         # Some state classes expose budget_remaining as a read-only property
@@ -2274,6 +2270,13 @@ def _composable_loop_impl(
                 setattr(state, _k, _v)
             except AttributeError:
                 pass
+
+    # ── Unified history recorder - single write path for step/turn events ──
+    _history = HistoryRecorder(
+        state=state,
+        session_log=session_log,
+        conversation=_conv,
+    )
 
     # Domain adapter seeding: when ``config.domain`` is set, fall back
     # to each adapter field only if the flat field is still ``None``.
@@ -2379,6 +2382,8 @@ def _composable_loop_impl(
     loop_ctx.step_num = _step_offset
     if config.initial_checkpoint is not None and restore_checkpoint_state is not None:
         restore_checkpoint_state(loop_ctx, resumed.get("domain_state", {}))
+    if config.initial_checkpoint is not None:
+        tools.restore_results(resumed.get("tool_results_store") or {})
 
     for hook in hooks:
         if hasattr(hook, "pre_loop"):
@@ -3057,6 +3062,10 @@ def _composable_loop_impl(
                     highlights=step_highlights,
                     recall_key=recall_key,
                 )
+                for _hook in hooks:
+                    _post_step = getattr(_hook, "post_step", None)
+                    if _post_step is not None:
+                        _post_step(state, session_log, cur_step)
 
                 # Save checkpoint after the session log and conversation include this step.
                 if _ckpt_store is not None:
@@ -3074,7 +3083,7 @@ def _composable_loop_impl(
                                 "queries_used": getattr(state, "queries_used", 0),
                                 "budget_remaining": getattr(state, "budget_remaining", 0),
                             },
-                            tool_results_store={},
+                            tool_results_store=tools.snapshot_results(),
                             domain_state=(
                                 checkpoint_state(loop_ctx) if checkpoint_state is not None else {}
                             ),
@@ -3091,6 +3100,15 @@ def _composable_loop_impl(
                         key=f"step_{cur_step}",
                     )
 
+        if _deadline_expired(loop_ctx):
+            stop_reason = "deadline_exceeded"
+            done = True
+            break
+        if config.cancel_token is not None and getattr(config.cancel_token, "is_cancelled", False):
+            stop_reason = "cancelled"
+            done = True
+            break
+
         # Handle done() if present
         if done_idx is not None:
             _set_run_lifecycle(loop_ctx, phase=RunPhase.FINALIZING)
@@ -3101,7 +3119,7 @@ def _composable_loop_impl(
             for hook in hooks:
                 if hasattr(hook, "check_done"):
                     try:
-                        w = _call_check_done(hook, state, session_log, context, step_num, tool_call)
+                        w = _call_check_done(hook, state, session_log, context, cur_step, tool_call)
                         _decision = normalize_hook_return(w, slot="check_done")
                     except Exception:  # noqa: BLE001
                         # Isolate buggy hooks: a single check_done that
@@ -3182,7 +3200,7 @@ def _composable_loop_impl(
                     entities=[],
                     findings=[],
                     highlights=[],
-                    recall_key="",
+                    recall_key=tool_result.result_key or "",
                 )
             else:
                 # done() dispatch intentionally bypasses permission checks - it's
@@ -3251,6 +3269,10 @@ def _composable_loop_impl(
                     phase=RunPhase.TERMINAL,
                     termination_reason="done",
                 )
+                for _hook in hooks:
+                    _post_step = getattr(_hook, "post_step", None)
+                    if _post_step is not None:
+                        _post_step(state, session_log, cur_step)
                 # Save checkpoint after done step (after yield, matching non-done pattern)
                 if _ckpt_store is not None:
                     loop_ctx.step_num = cur_step
@@ -3267,7 +3289,7 @@ def _composable_loop_impl(
                                 "queries_used": getattr(state, "queries_used", 0),
                                 "budget_remaining": getattr(state, "budget_remaining", 0),
                             },
-                            tool_results_store={},
+                            tool_results_store=tools.snapshot_results(),
                             domain_state=(
                                 checkpoint_state(loop_ctx) if checkpoint_state is not None else {}
                             ),
@@ -3351,7 +3373,10 @@ def _composable_loop_impl(
         termination_reason=stop_reason,
     )
     if state is not None:
-        state._stop_reason = stop_reason  # pyright: ignore[reportAttributeAccessIssue]
+        try:
+            state._stop_reason = stop_reason  # pyright: ignore[reportAttributeAccessIssue]
+        except AttributeError:
+            pass
 
     # Fire STOP - event-style hooks see termination reason before
     # on_loop_end cleanup runs. Return values are ignored (the loop

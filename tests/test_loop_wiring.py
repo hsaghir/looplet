@@ -304,6 +304,58 @@ def test_load_latest_returns_highest_step():
         assert latest.step_number == 3
 
 
+def test_load_latest_ignores_completed_checkpoint():
+    from looplet.checkpoint import Checkpoint, FileCheckpointStore
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        store = FileCheckpointStore(tmpdir)
+        store.save(
+            Checkpoint(
+                step_number=5,
+                session_log_data={"entries": [], "current_theory": ""},
+                conversation_data=None,
+                config_snapshot={},
+                tool_results_store={},
+                metadata={},
+                run_status="completed",
+                run_phase="terminal",
+                termination_reason="done",
+            ),
+            "step_5_done",
+        )
+        store.save(
+            Checkpoint(
+                step_number=2,
+                session_log_data={"entries": [], "current_theory": ""},
+                conversation_data=None,
+                config_snapshot={},
+                tool_results_store={},
+                metadata={},
+                run_status="running",
+                run_phase="dispatching",
+            ),
+            "step_2",
+        )
+
+        latest = store.load_latest()
+
+        assert latest is not None
+        assert latest.step_number == 2
+
+
+def test_explicit_checkpoint_load_rejects_wrong_json_shapes(tmp_path):
+    from looplet.checkpoint import FileCheckpointStore
+
+    store = FileCheckpointStore(tmp_path)
+    (tmp_path / "bad.json").write_text("[]")
+    with pytest.raises(ValueError, match="checkpoint root"):
+        store.load("bad")
+
+    (tmp_path / "nested.json").write_text('{"step_number": 1, "session_log_data": []}')
+    with pytest.raises(ValueError, match="session_log_data"):
+        store.load("nested")
+
+
 def test_auto_resume_from_checkpoint_dir():
     """When checkpoint_dir has checkpoints, the loop auto-resumes."""
     from looplet.checkpoint import Checkpoint, FileCheckpointStore

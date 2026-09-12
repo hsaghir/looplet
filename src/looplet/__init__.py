@@ -16,7 +16,7 @@ __version__ = "0.4.0"
 # ruff: noqa: F401 - __init__.py intentionally re-exports for `from looplet import X`
 
 from looplet.approval import ApprovalHook
-from looplet.async_loop import async_composable_loop
+from looplet.async_loop import async_composable_loop, async_llm_call
 from looplet.backends import AnthropicBackend, OpenAIBackend
 from looplet.blueprints import (
     AgentBlueprint,
@@ -221,6 +221,7 @@ __all__ = [
     "__version__",
     "composable_loop",
     "async_composable_loop",
+    "async_llm_call",
     "LoopConfig",
     "LoopContext",
     "LoopHook",

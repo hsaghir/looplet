@@ -54,6 +54,7 @@ from looplet.loop import (
     _build_tool_ctx,
     _call_check_done,
     _deadline_expired,
+    _default_build_briefing,
     _emit_hook_decision_event_async,
     _intercept_tool_calls_async,
     _mark_failed_state,
@@ -528,6 +529,11 @@ async def _async_composable_loop_impl(
         or (lambda state, step_num: ([], []))
     )
     build_prompt_fn = config.build_prompt or (config.domain.build_prompt if config.domain else None)
+    build_briefing_fn = (
+        config.build_briefing
+        or (config.domain.build_briefing if config.domain else None)
+        or _default_build_briefing
+    )
     checkpoint_state = config.checkpoint_state or (
         config.domain.checkpoint_state if config.domain else None
     )
@@ -536,6 +542,8 @@ async def _async_composable_loop_impl(
     )
     if config.initial_checkpoint is not None and restore_checkpoint_state is not None:
         restore_checkpoint_state(loop_ctx, resumed.get("domain_state", {}))
+    if config.initial_checkpoint is not None:
+        tools.restore_results(resumed.get("tool_results_store") or {})
 
     # ── Pre-loop hooks ──────────────────────────────────────────
     try:
@@ -545,7 +553,20 @@ async def _async_composable_loop_impl(
 
     for hook in hooks:
         if hasattr(hook, "pre_loop"):
-            await _maybe_await(hook.pre_loop(state, session_log, context))
+            import inspect as _inspect  # noqa: PLC0415
+
+            try:
+                _pl_params = _inspect.signature(hook.pre_loop).parameters
+                _pl_takes_tools = "tools" in _pl_params or any(
+                    p.kind == _inspect.Parameter.VAR_KEYWORD for p in _pl_params.values()
+                )
+            except (TypeError, ValueError):
+                _pl_takes_tools = False
+            if _pl_takes_tools:
+                result = hook.pre_loop(state, session_log, context, tools=tools)
+            else:
+                result = hook.pre_loop(state, session_log, context)
+            await _maybe_await(result)
 
     await emit_event_async(
         hooks,
@@ -555,8 +576,10 @@ async def _async_composable_loop_impl(
         context=context,
     )
 
-    _has_streaming_hook = False
-    if stream is not None and _LoopStartEvent is not None:
+    from looplet.streaming import StreamingHook as _StreamingHook  # noqa: PLC0415
+
+    _has_streaming_hook = any(isinstance(h, _StreamingHook) for h in hooks)
+    if stream is not None and _LoopStartEvent is not None and not _has_streaming_hook:
         task_id = task.get("id", "") if isinstance(task, dict) else str(task)[:80]
         stream.emit(_LoopStartEvent(task_summary=str(task_id), max_steps=config.max_steps))
 
@@ -609,7 +632,7 @@ async def _async_composable_loop_impl(
                     "queries_used": getattr(state, "queries_used", 0),
                     "budget_remaining": getattr(state, "budget_remaining", 0),
                 },
-                tool_results_store={},
+                tool_results_store=tools.snapshot_results(),
                 domain_state=(checkpoint_state(loop_ctx) if checkpoint_state is not None else {}),
                 run_envelope=(
                     loop_ctx.run_envelope.to_dict() if loop_ctx.run_envelope is not None else None
@@ -669,19 +692,24 @@ async def _async_composable_loop_impl(
             )
 
         # ── Build prompt ────────────────────────────────────────
-        briefing_parts: list[str] = list(post_dispatch_parts)
-        post_dispatch_parts.clear()
         _briefing_override: str | None = None
         for hook in hooks:
             method = getattr(hook, "build_briefing", None)
             if method is None:
                 continue
-            candidate = await _maybe_await(method(state, session_log, context))
+            try:
+                candidate = await _maybe_await(method(state, session_log, context))
+            except Exception:  # noqa: BLE001
+                logger.exception("build_briefing hook raised; falling back")
+                candidate = None
             if candidate is not None:
                 _briefing_override = str(candidate)
                 break
-        if _briefing_override is not None:
-            briefing_parts.append(_briefing_override)
+        if _briefing_override is None:
+            _briefing_override = await _maybe_await(build_briefing_fn(state, session_log, context))
+        briefing_parts: list[str] = [str(_briefing_override)]
+        _briefing_budget = config.max_briefing_tokens
+        _briefing_used = len(briefing_parts[0]) // 4 if _briefing_budget else 0
         for hook in hooks:
             method = getattr(hook, "pre_prompt", None)
             if method is None:
@@ -705,7 +733,17 @@ async def _async_composable_loop_impl(
                 decision.additional_context if decision else raw if isinstance(raw, str) else None
             )
             if text:
+                if _briefing_budget:
+                    text_tokens = len(text) // 4
+                    if _briefing_used + text_tokens > _briefing_budget:
+                        briefing_parts.append("(briefing truncated - token budget exceeded)")
+                        break
+                    _briefing_used += text_tokens
                 briefing_parts.append(str(text))
+
+        if post_dispatch_parts:
+            briefing_parts.append("\n".join(post_dispatch_parts))
+            post_dispatch_parts.clear()
 
         _briefing = "\n".join(briefing_parts)
         _catalog = tools.tool_catalog_text()
@@ -953,7 +991,12 @@ async def _async_composable_loop_impl(
                 state.steps.append(step)
                 yield step
                 _history.record_step(
-                    step, theory="", entities=[], findings=[], highlights=[], recall_key=""
+                    step,
+                    theory="",
+                    entities=[],
+                    findings=[],
+                    highlights=[],
+                    recall_key="",
                 )
                 _save_checkpoint(step_num)
                 continue
@@ -1075,8 +1118,12 @@ async def _async_composable_loop_impl(
                     entities=step_entities,
                     findings=step_findings,
                     highlights=step_highlights,
-                    recall_key="",
+                    recall_key=tool_result.result_key or "",
                 )
+                for _hook in hooks:
+                    _post_step = getattr(_hook, "post_step", None)
+                    if _post_step is not None:
+                        await _maybe_await(_post_step(state, session_log, cur_step))
                 if stream is not None and _ToolResultEvent is not None:
                     stream.emit(
                         _ToolResultEvent(
@@ -1096,6 +1143,15 @@ async def _async_composable_loop_impl(
                     )
                 _save_checkpoint(cur_step)
 
+        if _deadline_expired(loop_ctx):
+            stop_reason = "deadline_exceeded"
+            done = True
+            break
+        if config.cancel_token is not None and getattr(config.cancel_token, "is_cancelled", False):
+            stop_reason = "cancelled"
+            done = True
+            break
+
         # Handle done()
         if done_idx is not None:
             _set_run_lifecycle(loop_ctx, phase=RunPhase.FINALIZING)
@@ -1109,7 +1165,7 @@ async def _async_composable_loop_impl(
 
                     try:
                         w = await _maybe_await(
-                            _call_check_done(hook, state, session_log, context, step_num, tool_call)
+                            _call_check_done(hook, state, session_log, context, cur_step, tool_call)
                         )
                     except Exception:  # noqa: BLE001
                         logger.exception(
@@ -1173,7 +1229,12 @@ async def _async_composable_loop_impl(
                         )
                     )
                 _history.record_step(
-                    step, theory="", entities=[], findings=[], highlights=[], recall_key=""
+                    step,
+                    theory="",
+                    entities=[],
+                    findings=[],
+                    highlights=[],
+                    recall_key="",
                 )
                 _save_checkpoint(cur_step)
             else:
@@ -1205,7 +1266,12 @@ async def _async_composable_loop_impl(
                 state.steps.append(step)
                 yield step
                 _history.record_step(
-                    step, theory="", entities=[], findings=[], highlights=[], recall_key=""
+                    step,
+                    theory="",
+                    entities=[],
+                    findings=[],
+                    highlights=[],
+                    recall_key=tool_result.result_key or "",
                 )
                 _set_run_lifecycle(
                     loop_ctx,
@@ -1213,6 +1279,10 @@ async def _async_composable_loop_impl(
                     phase=RunPhase.TERMINAL,
                     termination_reason="done",
                 )
+                for _hook in hooks:
+                    _post_step = getattr(_hook, "post_step", None)
+                    if _post_step is not None:
+                        await _maybe_await(_post_step(state, session_log, cur_step))
                 _save_checkpoint(cur_step, status="done")
                 done = True
                 stop_reason = "done"
@@ -1258,7 +1328,10 @@ async def _async_composable_loop_impl(
         termination_reason=stop_reason,
     )
     if state is not None:
-        state._stop_reason = stop_reason  # pyright: ignore[reportAttributeAccessIssue]
+        try:
+            state._stop_reason = stop_reason  # pyright: ignore[reportAttributeAccessIssue]
+        except AttributeError:
+            pass
 
     await emit_event_async(
         hooks,
@@ -1269,7 +1342,16 @@ async def _async_composable_loop_impl(
         termination_reason=stop_reason,
     )
 
-    if stream is not None and _LoopEndEvent is not None:
+    # ── on_loop_end ─────────────────────────────────────────────
+    for hook in hooks:
+        if hasattr(hook, "on_loop_end"):
+            result = hook.on_loop_end(state, session_log, context, llm)
+            if inspect.isawaitable(result):
+                result = await result
+            if isinstance(result, int):
+                llm_calls += result
+
+    if stream is not None and _LoopEndEvent is not None and not _has_streaming_hook:
         stream.emit(
             _LoopEndEvent(
                 total_steps=state.step_count,
@@ -1277,10 +1359,3 @@ async def _async_composable_loop_impl(
                 reason=stop_reason,
             )
         )
-
-    # ── on_loop_end ─────────────────────────────────────────────
-    for hook in hooks:
-        if hasattr(hook, "on_loop_end"):
-            result = hook.on_loop_end(state, session_log, context, llm)
-            if inspect.isawaitable(result):
-                await result

@@ -41,6 +41,11 @@ def test_returns_none_when_nothing_found(tmp_path: Path) -> None:
     assert src.load(state=None) is None
 
 
+def test_unrelated_stop_path_is_rejected(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="not an ancestor"):
+        AgentsMdMemorySource(start=tmp_path, stop=tmp_path.parent / "other")
+
+
 def test_max_chars_truncates(tmp_path: Path) -> None:
     big = "X" * 5000
     (tmp_path / "AGENTS.md").write_text(big)

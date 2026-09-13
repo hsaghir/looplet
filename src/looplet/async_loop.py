@@ -750,6 +750,20 @@ async def _async_composable_loop_impl(
         _state_summary = state.snapshot() if hasattr(state, "snapshot") else {}
         _log_text = session_log.render() if hasattr(session_log, "render") else ""
         _context_history = state.context_summary() if hasattr(state, "context_summary") else ""
+        context_plan = None
+        if config.context_planner is not None:
+            context_plan = await _maybe_await(
+                config.context_planner(
+                    task=task,
+                    tool_catalog=_catalog,
+                    state_summary=_state_summary,
+                    context_history=_context_history,
+                    step_number=step_num,
+                    session_log=_log_text,
+                    briefing=_briefing,
+                    memory=_rendered_memory,
+                )
+            )
 
         _hook_prompt: str | None = None
         for hook in hooks:
@@ -814,6 +828,7 @@ async def _async_composable_loop_impl(
                 session_log=_log_text,
                 briefing=_briefing,
                 memory=_rendered_memory,
+                context_plan=context_plan,
             )
             prompt = _render_projection(config.render_messages_override, projection)
 
@@ -1048,12 +1063,26 @@ async def _async_composable_loop_impl(
 
                 if config.concurrent_dispatch:
                     _tool_ctxs = [_ctx_for(_c, step_num + _idx) for _idx, _c in dispatch_items]
-                    dispatch_results = tools.dispatch_batch(calls_to_dispatch, ctx=_tool_ctxs)
+                    if (
+                        type(tools).dispatch_batch is not BaseToolRegistry.dispatch_batch
+                        and type(tools).async_dispatch_batch
+                        is BaseToolRegistry.async_dispatch_batch
+                    ):
+                        dispatch_results = await asyncio.to_thread(
+                            tools.dispatch_batch,
+                            calls_to_dispatch,
+                            ctx=_tool_ctxs,
+                        )
+                    else:
+                        dispatch_results = await tools.async_dispatch_batch(
+                            calls_to_dispatch,
+                            ctx=_tool_ctxs,
+                        )
                 else:
                     dispatch_results = []
                     for _idx, _c in dispatch_items:
                         _tool_ctx = _ctx_for(_c, step_num + _idx)
-                        dispatch_results.append(tools.dispatch(_c, ctx=_tool_ctx))
+                        dispatch_results.append(await tools.async_dispatch(_c, ctx=_tool_ctx))
             else:
                 dispatch_results = []
 
@@ -1248,7 +1277,7 @@ async def _async_composable_loop_impl(
                     session_log=session_log,
                     llm=_sync_llm,
                 )
-                tool_result = tools.dispatch(tool_call, ctx=_ctx)
+                tool_result = await tools.async_dispatch(tool_call, ctx=_ctx)
 
                 _pd_done = await _run_post_dispatch_hooks_async(
                     tool_call,

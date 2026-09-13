@@ -29,6 +29,35 @@
     },
     "metadata": {
       "type": "object"
+    },
+    "compatibility": {
+      "type": "object",
+      "properties": {
+        "looplet": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "languages": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "requires": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "rpc": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
     }
   }
 }

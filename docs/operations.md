@@ -15,6 +15,7 @@ for the boundary it owns.
 | Local traces and aggregate metrics | `TracingHook` and `MetricsHook` |
 | Crash recovery | `LoopConfig(checkpoint_dir=...)` |
 | Cooperative stop | `CancelToken` |
+| Host-owned run lifecycle | `AgentRuntime` + `RunStore` |
 
 ## Asynchronous loops
 
@@ -37,9 +38,10 @@ async for step in async_composable_loop(
     await publish_step(step)
 ```
 
-The async loop yields the same `Step` contract. A synchronous tool may still
-block the event loop if its implementation performs slow I/O directly. Use an
-async-aware tool boundary or move blocking work to a worker owned by the host.
+The async loop yields the same `Step` contract. Coroutine tools are awaited
+directly; synchronous tools are moved to a worker thread by the registry.
+For long-running synchronous tools, still prefer an explicit host-owned
+execution boundary when stronger isolation or resource limits are required.
 Hook methods may be synchronous or `async def`; Looplet awaits them in order.
 The existing compaction service, terminal output schemas, routing, context
 budgets, and cancellation/deadline semantics apply to async runs as well.

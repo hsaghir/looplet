@@ -75,6 +75,10 @@ class RunPhase(str, Enum):
     TERMINAL = "terminal"
 
 
+RPC_PROTOCOL_VERSION = "1.0"
+"""Stable stdio RPC protocol version used by compatibility metadata."""
+
+
 @dataclass(frozen=True)
 class RunResult:
     """Host-facing summary built from one completed loop state.

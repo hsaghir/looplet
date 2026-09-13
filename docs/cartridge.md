@@ -88,6 +88,26 @@ to the format is: (a) it cannot be expressed as a hook / tool /
 preset / subagent, AND (b) every cartridge author pays for it whether
 they want it or not. **Both** must hold.
 
+## Compatibility metadata
+
+Cartridges may declare optional runtime compatibility metadata in
+`cartridge.json`:
+
+```json
+{
+  "compatibility": {
+    "looplet": ">=0.4,<0.6",
+    "languages": ["python"],
+    "requires": ["async_tool_dispatch", "run_store"],
+    "rpc": ["1.0"]
+  }
+}
+```
+
+The loader validates this before importing tools, hooks, or resources. Missing
+metadata preserves legacy behavior. Unknown required capabilities and version
+or protocol mismatches fail clearly at the cartridge boundary.
+
 ---
 
 ## Layout

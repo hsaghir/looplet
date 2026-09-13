@@ -50,6 +50,7 @@ from looplet.bundles import (
 from looplet.cache import CachePolicy
 from looplet.cartridge import (
     Cartridge,
+    CartridgeCompatibility,
     CartridgeLayout,
     CartridgeSerializationError,
     cartridge_to_preset,
@@ -69,6 +70,7 @@ from looplet.compact import (
     default_compact_service,
     run_compact,
 )
+from looplet.context_plan import ContextPlan
 from looplet.context_projection import ContextProjection
 from looplet.conversation import Conversation, Message
 from looplet.done_steps import (
@@ -108,6 +110,7 @@ from looplet.evals import (
     seed_case_workspace,
 )
 from looplet.events import EventPayload, LifecycleEvent
+from looplet.execution_session import ExecutionSession
 from looplet.harness_snapshot import serialize_harness
 from looplet.hook_decision import (
     Allow,
@@ -161,6 +164,9 @@ from looplet.presets import (
 from looplet.prompts import preview_prompt
 from looplet.provenance import ProvenanceSink, TrajectoryRecorder, replay_loop
 from looplet.resilient import ResilientBackend, RetryExhausted
+from looplet.run_records import ArtifactRef, RunEvent, RunRecord, event_from_payload
+from looplet.run_store import FileRunStore, MemoryRunStore, RunStore
+from looplet.runtime import AgentRuntime, RunHandle
 from looplet.session import SessionLog
 from looplet.skills import (
     FileSkillStore,
@@ -195,6 +201,7 @@ from looplet.tools import (
     tools_from,
 )
 from looplet.types import (
+    RPC_PROTOCOL_VERSION,
     CancelToken,
     CloseableResource,
     DefaultState,
@@ -267,6 +274,7 @@ __all__ = [
     "RunPhase",
     "RunResult",
     "RunStatus",
+    "RPC_PROTOCOL_VERSION",
     "RunEnvelope",
     "PolicyDecision",
     "InvalidRunTransition",
@@ -331,6 +339,7 @@ __all__ = [
     "serialize_harness",
     # ── CARTRIDGE FORMAT (canonical; SPEC.md v2.0) ──────────────
     "Cartridge",
+    "CartridgeCompatibility",
     "CartridgeLayout",
     "CartridgeSerializationError",
     "cartridge_to_preset",
@@ -401,6 +410,17 @@ __all__ = [
     "Conversation",
     "Message",
     "ContextProjection",
+    "ContextPlan",
+    "ArtifactRef",
+    "RunEvent",
+    "RunRecord",
+    "event_from_payload",
+    "RunStore",
+    "MemoryRunStore",
+    "FileRunStore",
+    "ExecutionSession",
+    "AgentRuntime",
+    "RunHandle",
     "run_sub_loop",
     # ── PRESETS (one-liner agent setup) ─────────────────────────
     "AgentPreset",

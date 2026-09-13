@@ -72,6 +72,45 @@ class TestAsyncLlmCall:
         assert result.text == '{"tool": "done", "args": {}}'
         assert calls == ["native", "regular"]
 
+    async def test_async_loop_awaits_async_tools(self):
+        seen = []
+
+        async def lookup(*, query: str) -> dict:
+            await asyncio.sleep(0)
+            seen.append(query)
+            return {"query": query}
+
+        mock = AsyncMockLLMBackend(
+            responses=[
+                '{"tool":"lookup","args":{"query":"hello"}}',
+                '{"tool":"done","args":{"summary":"ok"}}',
+            ]
+        )
+        tools = BaseToolRegistry()
+        register_done_tool(tools)
+        tools.register(
+            ToolSpec(
+                name="lookup",
+                description="lookup",
+                parameters={"query": "str"},
+                execute=lookup,
+            )
+        )
+
+        steps = []
+        async for step in async_composable_loop(
+            llm=mock,
+            tools=tools,
+            state=DefaultState(max_steps=3),
+            config=LoopConfig(max_steps=3),
+            task={},
+        ):
+            steps.append(step)
+
+        assert seen == ["hello"]
+        assert steps[0].tool_result.data == {"query": "hello"}
+        assert steps[0].tool_result.error is None
+
     async def test_native_fallback_stats_are_exposed_on_state(self):
         class TrackingBackend:
             def __init__(self):

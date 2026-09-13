@@ -8,6 +8,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Added optional host-layer records and lifecycle primitives: `AgentRuntime`,
+  `RunHandle`, `RunStore`, `RunEvent`, `ArtifactRef`, `ContextPlan`, and
+  `ExecutionSession`.
 - No-output cartridge eval records now expose explicit sandbox cleanup through
   `EvalRunRecord.cleanup()` and the context-manager protocol.
 - Async loops now await hook results across lifecycle slots, share the same
@@ -88,6 +91,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- `AgentRuntime` now prevents unsafe reuse of mutable preset state, serializes
+  file-backed run-store updates, and rejects malformed compatibility constraints.
 - State Service request reads now honor run deadlines, malformed requests
   receive structured errors, non-JSON results are reported without dropping
   the connection, and service instances can be served again after shutdown.

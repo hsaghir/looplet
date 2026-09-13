@@ -35,7 +35,9 @@ from looplet.cartridge._layout import (
     _stamp_preset_origin,
 )
 from looplet.cartridge._manifest import (
+    CartridgeCompatibility,
     _manifest_present,
+    _read_manifest_compatibility,
     _read_manifest_language,
     _read_schema_version,
 )
@@ -168,6 +170,76 @@ class _LoadResourceTracker:
         self.model_gateway = None
 
 
+_SUPPORTED_COMPATIBILITY_FEATURES = frozenset(
+    {"async_tool_dispatch", "run_store", "context_plan", "execution_session", "run_events"}
+)
+
+
+def _version_tuple(value: str) -> tuple[int, ...]:
+    parts = value.strip().split(".")
+    if not parts or any(not part.isdigit() for part in parts):
+        raise CartridgeSerializationError(f"invalid Looplet version constraint: {value!r}")
+    return tuple(int(part) for part in parts)
+
+
+def _version_satisfies(version: str, constraint: str) -> bool:
+    import re  # noqa: PLC0415
+
+    current = _version_tuple(version)
+    clauses = [clause.strip() for clause in constraint.split(",")]
+    if not clauses or any(not clause for clause in clauses):
+        raise CartridgeSerializationError(f"invalid Looplet version constraint: {constraint!r}")
+    for clause in clauses:
+        match = re.fullmatch(r"(>=|<=|==|>|<)?\s*(\d+(?:\.\d+)*)", clause)
+        if match is None:
+            raise CartridgeSerializationError(f"invalid Looplet version constraint: {constraint!r}")
+        operator = match.group(1) or "=="
+        target = _version_tuple(match.group(2))
+        width = max(len(current), len(target))
+        left = current + (0,) * (width - len(current))
+        right = target + (0,) * (width - len(target))
+        comparisons = {
+            "==": left == right,
+            ">=": left >= right,
+            "<=": left <= right,
+            ">": left > right,
+            "<": left < right,
+        }
+        if not comparisons[operator]:
+            return False
+    return True
+
+
+def _validate_compatibility(compatibility: CartridgeCompatibility, language: str) -> None:
+    from looplet import __version__  # noqa: PLC0415
+
+    if compatibility.looplet is not None and not _version_satisfies(
+        __version__, compatibility.looplet
+    ):
+        raise CartridgeSerializationError(
+            f"cartridge requires looplet {compatibility.looplet!r}; "
+            f"installed version is {__version__}"
+        )
+    if compatibility.languages and language not in compatibility.languages:
+        raise CartridgeSerializationError(
+            f"cartridge does not support this runtime language {language!r}; "
+            f"declared languages: {list(compatibility.languages)}"
+        )
+    unsupported = sorted(set(compatibility.requires) - _SUPPORTED_COMPATIBILITY_FEATURES)
+    if unsupported:
+        raise CartridgeSerializationError(
+            "cartridge requires unsupported Looplet capabilities: " + ", ".join(unsupported)
+        )
+    if compatibility.rpc:
+        from looplet.types import RPC_PROTOCOL_VERSION  # noqa: PLC0415
+
+        if RPC_PROTOCOL_VERSION not in compatibility.rpc:
+            raise CartridgeSerializationError(
+                f"cartridge requires RPC versions {list(compatibility.rpc)}; "
+                f"this runtime provides {RPC_PROTOCOL_VERSION}"
+            )
+
+
 def _validate_supported_manifest(root: Path) -> None:
     """Validate one manifest before resolving or importing its cartridge."""
     try:
@@ -182,6 +254,7 @@ def _validate_supported_manifest(root: Path) -> None:
             f'set ``"schema_version": 2`` in cartridge.json.'
         )
     declared_language = _read_manifest_language(root)
+    _validate_compatibility(_read_manifest_compatibility(root), declared_language)
     if declared_language != "python":
         raise CartridgeSerializationError(
             f"Cartridge {root} declares ``language: {declared_language!r}`` "

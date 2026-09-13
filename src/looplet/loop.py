@@ -22,6 +22,7 @@ from looplet.checkpoint import (
 from looplet.checkpoint import (
     resume_loop_state as _resume_loop_state,
 )
+from looplet.context_plan import ContextPlan
 from looplet.context_projection import ContextProjection
 from looplet.history import HistoryRecorder
 from looplet.hook_decision import normalize_hook_return
@@ -556,6 +557,13 @@ class LoopConfig:
 
     Receives keyword args: task, tool_catalog, state_summary,
     context_history, step_number, max_steps, session_log, briefing.
+    """
+
+    context_planner: Callable[..., ContextPlan | None] | None = None
+    """Optional host planner that describes prompt selection and budgets.
+
+    The returned :class:`ContextPlan` is passed to
+    :class:`ContextProjection`; prompt rendering remains unchanged.
     """
 
     extract_step_metadata: Callable[..., tuple[list[str], list[str]]] | None = None
@@ -2554,6 +2562,18 @@ def _composable_loop_impl(
         _state_summary = _state_summary_raw if isinstance(_state_summary_raw, dict) else {}
         _session_log_text = str(session_log.render())
         _briefing_text = "\n".join(str(part) for part in briefing_parts)
+        context_plan = None
+        if config.context_planner is not None:
+            context_plan = config.context_planner(
+                task=task,
+                tool_catalog=_tool_catalog,
+                state_summary=_state_summary,
+                context_history=context_history,
+                step_number=step_num,
+                session_log=_session_log_text,
+                briefing=_briefing_text,
+                memory=_rendered_memory,
+            )
         _prompt_kwargs = dict(
             task=task,
             tool_catalog=_tool_catalog,
@@ -2608,6 +2628,7 @@ def _composable_loop_impl(
                 session_log=_session_log_text,
                 briefing=_briefing_text,
                 memory=_rendered_memory,
+                context_plan=context_plan,
             )
             prompt = _render_projection(config.render_messages_override, projection)
 

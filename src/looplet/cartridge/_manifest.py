@@ -36,6 +36,53 @@ from looplet.cartridge._layout import (
 # ── Data class ──────────────────────────────────────────────────
 
 
+@dataclass(frozen=True)
+class CartridgeCompatibility:
+    """Optional host/runtime compatibility declaration."""
+
+    looplet: str | None = None
+    languages: tuple[str, ...] = ()
+    requires: tuple[str, ...] = ()
+    rpc: tuple[str, ...] = ()
+
+    @classmethod
+    def from_dict(cls, value: Any) -> "CartridgeCompatibility":
+        if value is None:
+            return cls()
+        if not isinstance(value, dict):
+            raise CartridgeSerializationError("cartridge compatibility must be an object")
+        looplet = value.get("looplet")
+        if looplet is not None and not isinstance(looplet, str):
+            raise CartridgeSerializationError("cartridge compatibility.looplet must be a string")
+
+        def _strings(name: str) -> tuple[str, ...]:
+            raw = value.get(name, [])
+            if not isinstance(raw, list) or any(not isinstance(item, str) for item in raw):
+                raise CartridgeSerializationError(
+                    f"cartridge compatibility.{name} must be an array of strings"
+                )
+            return tuple(raw)
+
+        return cls(
+            looplet=looplet,
+            languages=_strings("languages"),
+            requires=_strings("requires"),
+            rpc=_strings("rpc"),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        value: dict[str, Any] = {}
+        if self.looplet is not None:
+            value["looplet"] = self.looplet
+        if self.languages:
+            value["languages"] = list(self.languages)
+        if self.requires:
+            value["requires"] = list(self.requires)
+        if self.rpc:
+            value["rpc"] = list(self.rpc)
+        return value
+
+
 def _manifest_path(root: Path) -> Path | None:
     """Return the path to the cartridge manifest file, or ``None``.
 
@@ -134,6 +181,11 @@ def _read_manifest_language(root: Path) -> str:
     return val.strip().lower()
 
 
+def _read_manifest_compatibility(root: Path) -> CartridgeCompatibility:
+    """Read optional runtime compatibility metadata."""
+    return CartridgeCompatibility.from_dict(_read_manifest_data(root).get("compatibility"))
+
+
 @dataclass
 class Cartridge:
     """A loaded Cartridge.
@@ -148,6 +200,7 @@ class Cartridge:
     schema_version: int = SCHEMA_VERSION
     language: str = "python"
     metadata: dict[str, Any] = field(default_factory=dict)
+    compatibility: CartridgeCompatibility = field(default_factory=CartridgeCompatibility)
     serialization_warnings: list[str] = field(default_factory=list)
     version: str = ""
 
@@ -179,6 +232,7 @@ class Cartridge:
             language=_read_manifest_language(root),
             version=str(meta.get("version", "")),
             metadata=dict(meta.get("metadata", {})),
+            compatibility=CartridgeCompatibility.from_dict(meta.get("compatibility")),
         )
 
     # ── instance API ───────────────────────────────────────────
@@ -194,6 +248,8 @@ class Cartridge:
         }
         if self.version:
             payload["version"] = self.version
+        if self.compatibility.to_dict():
+            payload["compatibility"] = self.compatibility.to_dict()
         (self.path / CartridgeLayout.CARTRIDGE_JSON).write_text(
             json.dumps(payload, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",

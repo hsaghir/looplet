@@ -91,7 +91,7 @@ from typing import Any, Callable, Iterable, TextIO
 from looplet.cartridge import cartridge_to_preset
 from looplet.done_steps import done_output
 from looplet.loop import composable_loop
-from looplet.types import CancelToken, DefaultState
+from looplet.types import RPC_PROTOCOL_VERSION, CancelToken, DefaultState
 
 __all__ = [
     "RPCServer",
@@ -166,8 +166,6 @@ STOP_REASONS: tuple[str, ...] = tuple(r.value for r in StopReason)
 #: an orchestrator can detect a stale/mismatched checkout instead of mis-reading
 #: the API (the dogfood F1: pre-/post-#90 rpc.py differed silently). Bump on any
 #: wire-incompatible change.
-RPC_PROTOCOL_VERSION = "1.0"
-
 # Loop-internal ``stop_reason`` strings that denote step-budget exhaustion
 # (the contract's ``max_steps``) rather than a resource budget. The loop seeds
 # ``stop_reason = "budget_exhausted"`` and leaves it untouched when the

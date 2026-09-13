@@ -20,14 +20,19 @@ list of re-exported names for a given release.
 | --- | --- |
 | `composable_loop(...)` | Synchronous iterator-first tool loop that yields one `Step` per dispatch. |
 | `async_composable_loop(...)` | Async generator with the same loop contract. |
+| `AgentRuntime` / `RunHandle` | Optional host lifecycle wrapper with cancellation, events, persistence, and cleanup. |
 | `LoopConfig` | Runtime limits, prompt settings, native tools, compaction, checkpointing, cancellation, and related policy. |
 | `LoopContext` | Host context made available to loop and tool execution. |
+| `ExecutionSession` | Optional grouping for related run IDs and forked host sessions. |
 | `DefaultState` | Default mutable loop state. Supply a compatible custom state when the domain needs more fields. |
 | `Step` | One parsed tool call and its result, timing, classification, and related metadata. |
 | `ToolCall` / `ToolResult` | Typed call and result records used by registries, hooks, and tests. |
 | `RunResult` | Stable host-facing summary of status, termination, output, steps, envelope, and metadata. |
 | `RunEnvelope` | Host-supplied identity, deployment, policy, trace, and deadline context for one run. |
 | `RunStatus` / `RunPhase` | Lifecycle enums used by host observers and result consumers. |
+| `RunEvent` / `ArtifactRef` | Stable host event and artifact-reference records. |
+| `MemoryRunStore` / `FileRunStore` | Optional logical run persistence over existing checkpoints and artifacts. |
+| `ContextPlan` | Advisory prompt selection and budget plan passed through `ContextProjection`. |
 
 The loop accepts explicit dependencies and returns control after each
 dispatch:
@@ -55,6 +60,7 @@ the event loop. See [runtime operations](operations.md#asynchronous-loops).
 | `tools_from([...])` | Create a registry from tool specs and optionally add the standard `done` tool. |
 | `ToolSpec` | Inspect or construct a tool name, description, schema, and implementation explicitly. |
 | `BaseToolRegistry` | Register, validate, look up, and dispatch tools. |
+| `BaseToolRegistry.async_dispatch(...)` | Await coroutine tools directly and move blocking sync tools off the event loop. |
 | `register_done_tool(...)` | Add the completion tool to a custom registry. |
 | `ToolContext` | Access host resources, workspace details, cancellation, progress, and the selected backend inside a tool. |
 | `ToolError` / `ToolValidationError` | Return or test structured failures without parsing exception text. |

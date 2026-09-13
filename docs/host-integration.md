@@ -68,6 +68,22 @@ contains status, phase, termination reason, accepted `done()` output, steps,
 run envelope, and persistent metadata. It does not replace the iterator or
 trajectory artifacts.
 
+For applications that need lifecycle ownership, use the optional runtime
+wrapper. It keeps direct loop usage available while coordinating run events,
+logical persistence, cancellation, and preset cleanup:
+
+```python
+from looplet import AgentRuntime, FileRunStore
+
+with AgentRuntime(preset, store=FileRunStore(".looplet/runs")) as runtime:
+    result = runtime.run(llm, task=task)
+```
+
+Set `checkpoint_every_n_steps` on `AgentRuntime` when the run store should
+also retain recovery checkpoints. Checkpoints remain recovery state; traces,
+evals, and application artifacts remain separate evidence files referenced by
+the run record.
+
 ## Memory and policy
 
 Use `LoopConfig.memory_sources` for authorized retrieval context. A source can

@@ -25,7 +25,7 @@ from __future__ import annotations
 import os
 import subprocess
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Iterable
 
 from looplet.budget import ContextBudget, ThresholdCompactHook
 from looplet.compact import DefaultCompactService
@@ -295,6 +295,7 @@ class AgentPreset:
         session_log: Any = None,
         conversation: Any = None,
         stream: Any = None,
+        extra_hooks: Iterable[Any] = (),
     ) -> Any:
         """Drive ``composable_loop`` with this preset's wiring.
 
@@ -340,12 +341,70 @@ class AgentPreset:
             tools=self.tools,
             state=self.state,
             config=self.config,
-            hooks=self.hooks,
+            hooks=[*self.hooks, *extra_hooks],
             task=task,
             context=context,
             session_log=session_log,
             conversation=conversation,
             stream=stream,
+        )
+
+    def run_async(
+        self,
+        llm: Any,
+        *,
+        task: Any = None,
+        context: Any = None,
+        session_log: Any = None,
+        conversation: Any = None,
+        stream: Any = None,
+        extra_hooks: Iterable[Any] = (),
+    ) -> Any:
+        """Drive the async loop with this preset's wiring."""
+        from looplet.async_loop import async_composable_loop  # noqa: PLC0415
+
+        errors = self._contract_errors()
+        if errors:
+            raise ValueError("invalid agent preset: " + "; ".join(errors))
+
+        for component in [*self.mcp_adapters, *self.hooks, *self.state_service_handles]:
+            setter = getattr(component, "set_run_envelope", None)
+            if callable(setter):
+                setter(self.config.run_envelope)
+        if self.model_gateway is not None:
+            setter = getattr(self.model_gateway, "set_run_envelope", None)
+            if callable(setter):
+                setter(self.config.run_envelope)
+            self.model_gateway.set_backend(llm)
+
+        return async_composable_loop(
+            llm=llm,
+            tools=self.tools,
+            state=self.state,
+            config=self.config,
+            hooks=[*self.hooks, *extra_hooks],
+            task=task,
+            context=context,
+            session_log=session_log,
+            conversation=conversation,
+            stream=stream,
+        )
+
+    def runtime(
+        self,
+        *,
+        store: Any = None,
+        session: Any = None,
+        checkpoint_every_n_steps: int | None = None,
+    ) -> Any:
+        """Return an :class:`AgentRuntime` around this preset."""
+        from looplet.runtime import AgentRuntime  # noqa: PLC0415
+
+        return AgentRuntime(
+            self,
+            store=store,
+            session=session,
+            checkpoint_every_n_steps=checkpoint_every_n_steps,
         )
 
 

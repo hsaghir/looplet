@@ -81,6 +81,7 @@ class CartridgeLayout:
         "cancel_token",
         "approval_handler",
         "render_messages_override",
+        "context_planner",
     )
 
     # ── Schema-v2 field tiering ─────────────────────────────────

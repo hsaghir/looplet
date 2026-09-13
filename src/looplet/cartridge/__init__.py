@@ -98,6 +98,7 @@ from looplet.cartridge._load import (  # noqa: E402, F401
 # Cartridge dataclass + manifest helpers live in :mod:`looplet.cartridge._manifest`.
 from looplet.cartridge._manifest import (  # noqa: E402, F401
     Cartridge,
+    CartridgeCompatibility,
     _manifest_present,
 )
 from looplet.cartridge._render import _apply_runtime_substitutions  # noqa: E402, F401

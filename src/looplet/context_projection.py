@@ -6,6 +6,8 @@ import copy
 from dataclasses import dataclass
 from typing import Any
 
+from looplet.context_plan import ContextPlan
+
 __all__ = ["ContextProjection"]
 
 
@@ -28,6 +30,7 @@ class ContextProjection:
     session_log: str = ""
     briefing: str = ""
     memory: str = ""
+    context_plan: ContextPlan | None = None
 
     def __post_init__(self) -> None:
         """Detach nested prompt inputs from live loop state."""
@@ -48,4 +51,5 @@ class ContextProjection:
             "session_log": self.session_log,
             "briefing": self.briefing,
             "memory": self.memory,
+            "context_plan": self.context_plan.to_dict() if self.context_plan else None,
         }

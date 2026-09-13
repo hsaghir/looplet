@@ -665,6 +665,16 @@ def tools_from(
     return registry
 
 
+@dataclass(slots=True)
+class _PreparedToolCall:
+    call: ToolCall
+    spec: ToolSpec
+    ctx: ToolContext | None
+    exec_kwargs: dict[str, Any]
+    started_at: float
+    warning_start: int
+
+
 class BaseToolRegistry:
     """Domain-agnostic tool registry with dispatch.
 
@@ -786,27 +796,18 @@ class BaseToolRegistry:
             lines.append(spec.spec_text())
         return "\n".join(lines)
 
-    def dispatch(self, call: ToolCall, *, ctx: ToolContext | None = None) -> ToolResult:
-        """Execute a tool call and return the result with provenance.
-
-        Strips dunder args (``__*``), wraps exceptions into error fields,
-        and records wall-clock timing in duration_ms.
-
-        When ``ctx`` is supplied and the tool's ``execute`` callable declares
-        a ``ctx`` parameter, it is threaded through. If ``ctx.cancel_token``
-        has been cancelled, the tool is skipped and a cancellation error is
-        returned without invoking ``execute``.
-        """
+    def _prepare_dispatch(
+        self,
+        call: ToolCall,
+        *,
+        ctx: ToolContext | None,
+    ) -> _PreparedToolCall | ToolResult:
         clean_args = {k: v for k, v in call.args.items() if not k.startswith("__")}
 
         if call.tool not in self._tools:
-            # "Unknown tool: 'scann'. Did you mean 'scan'? Available: …"
-            # The suggestion is the single biggest UX win for LLM
-            # self-recovery: without it the model often repeats the
-            # same typo rather than scanning the full catalog.
             hint = suggest_similar(call.tool, self.tool_names)
             did_you_mean = f" Did you mean {hint!r}?" if hint else ""
-            _te = ToolError(
+            error = ToolError(
                 kind=ErrorKind.VALIDATION,
                 message=(
                     f"Unknown tool: {call.tool!r}.{did_you_mean} Available: {self.tool_names}"
@@ -820,16 +821,14 @@ class BaseToolRegistry:
                 tool=call.tool,
                 args_summary=_summarize_args_dict(clean_args),
                 data=None,
-                error=_te.message,
-                error_detail=_te,
+                error=error.message,
+                error_detail=error,
                 call_id=call.call_id,
             )
 
         spec = self._tools[call.tool]
-
-        # Honor cancellation before invoking execute at all.
         if ctx is not None and ctx.cancel_token is not None and ctx.cancel_token.is_cancelled:
-            _te = ToolError(
+            error = ToolError(
                 kind=ErrorKind.CANCELLED,
                 message="Tool execution cancelled before dispatch",
                 retriable=False,
@@ -838,42 +837,28 @@ class BaseToolRegistry:
                 tool=call.tool,
                 args_summary=self._summarize_args(call),
                 data=None,
-                error=_te.message,
-                error_detail=_te,
+                error=error.message,
+                error_detail=error,
                 call_id=call.call_id,
             )
 
-        # _accepts_ctx is normally computed eagerly in register(), but guard
-        # against ToolSpec instances constructed directly and inserted into
-        # _tools without going through register().
         if spec._accepts_ctx is None:
             spec._accepts_ctx = _accepts_ctx(spec.execute)
 
-        # Sanitize string args: LLMs frequently emit leading/trailing
-        # whitespace, newlines, or wrapping quotes that cause silent
-        # failures (empty bash commands, wrong file paths). Strip them
-        # at the framework level so every tool benefits.
         sanitized: dict[str, Any] = {}
-        for k, v in clean_args.items():
-            if isinstance(v, str):
-                v = v.strip()
-            sanitized[k] = v
-
+        for key, value in clean_args.items():
+            sanitized[key] = value.strip() if isinstance(value, str) else value
         exec_kwargs: dict[str, Any] = dict(sanitized)
         if spec._accepts_ctx:
             exec_kwargs["ctx"] = ctx
 
-        # Populate ``ctx.resources`` for tools that declared
-        # ``ToolSpec.requires``. Auto-creates a ToolContext when the
-        # tool accepts ``ctx`` but the caller didn't supply one.
         if spec.requires:
             if not spec._accepts_ctx:
                 import logging  # noqa: PLC0415
 
                 logging.getLogger(__name__).warning(
-                    "Tool %r declares requires=%s but its execute "
-                    "signature has no ``ctx`` parameter - the resources "
-                    "won't reach the tool. Add ``ctx`` to the signature.",
+                    "Tool %r declares requires=%s but its execute signature has no "
+                    "``ctx`` parameter - the resources won't reach the tool.",
                     spec.name,
                     spec.requires,
                 )
@@ -886,11 +871,6 @@ class BaseToolRegistry:
                     if req_name in self._resources:
                         live_ctx.resources[req_name] = self._resources[req_name]
 
-        # Auto-coerce _raw_arg: when the parser received a bare string
-        # instead of a dict and there's exactly one required parameter,
-        # map the string to that parameter automatically. This handles
-        # the common case of LLMs sending {"tool": "bash", "args": "ls"}
-        # instead of {"tool": "bash", "args": {"command": "ls"}}.
         known_params = spec.parameter_names()
         required = spec.required_parameters()
         if "_raw_arg" in exec_kwargs and len(required) == 1:
@@ -901,27 +881,21 @@ class BaseToolRegistry:
                 sanitized[target_param] = raw
                 sanitized.pop("_raw_arg", None)
 
-        # Reject empty/None values for required string parameters.
-        # LLMs frequently send {"command": ""} or {"command": null}
-        # which passes the "key exists" check but produces silent
-        # failures (bash runs empty command → exit 0, no output).
-        # Only check params that ARE present - missing ones are caught below.
-        for p in required:
-            if p not in sanitized:
-                continue  # caught by the missing-args check below
-            val = sanitized[p]
-            if val is None or (isinstance(val, str) and not val):
+        for param in required:
+            if param not in sanitized:
+                continue
+            value = sanitized[param]
+            if value is None or (isinstance(value, str) and not value):
                 schema_hint = _format_param_hint(spec)
-                _te = ToolError(
+                error = ToolError(
                     kind=ErrorKind.VALIDATION,
                     message=(
-                        f"Tool '{spec.name}' received empty value for required "
-                        f"argument '{p}'. Provide a non-empty value. "
-                        f"Expected: {schema_hint}"
+                        f"Tool '{spec.name}' received empty value for required argument "
+                        f"'{param}'. Provide a non-empty value. Expected: {schema_hint}"
                     ),
                     retriable=True,
                     recovery_hint={
-                        "empty_param": p,
+                        "empty_param": param,
                         "expected": dict(spec.parameters or {}),
                     },
                 )
@@ -929,26 +903,19 @@ class BaseToolRegistry:
                     tool=call.tool,
                     args_summary=self._summarize_args(call),
                     data=None,
-                    error=_te.message,
-                    error_detail=_te,
+                    error=error.message,
+                    error_detail=error,
                     call_id=call.call_id,
                 )
 
-        missing = [p for p in required if p not in sanitized]
-        # Unknown / mistyped extra args - the common case is the LLM
-        # sending ``file_pth`` instead of ``file_path``. Without this
-        # check the extra arg slides into the ``**kwargs`` of the tool
-        # callable (or raises an opaque ``TypeError: got an unexpected
-        # keyword argument``). Surface it as VALIDATION with a
-        # "did you mean?" hint so the model can self-correct on the
-        # next turn.
-        unknown = [a for a in sanitized if a not in known_params]
+        missing = [param for param in required if param not in sanitized]
+        unknown = [arg for arg in sanitized if arg not in known_params]
         if unknown:
             first = unknown[0]
             hint = suggest_similar(first, known_params)
             did_you_mean = f" Did you mean {hint!r}?" if hint else ""
             schema_hint = _format_param_hint(spec)
-            _te = ToolError(
+            error = ToolError(
                 kind=ErrorKind.VALIDATION,
                 message=(
                     f"Tool {spec.name!r} got unexpected argument"
@@ -966,20 +933,19 @@ class BaseToolRegistry:
                 tool=call.tool,
                 args_summary=self._summarize_args(call),
                 data=None,
-                error=_te.message,
-                error_detail=_te,
+                error=error.message,
+                error_detail=error,
                 call_id=call.call_id,
             )
         if missing:
             schema_hint = _format_param_hint(spec)
             provided = sorted(sanitized.keys()) if sanitized else []
-            _te = ToolError(
+            error = ToolError(
                 kind=ErrorKind.VALIDATION,
                 message=(
                     f"Tool '{spec.name}' missing required argument"
                     f"{'s' if len(missing) > 1 else ''}: {missing}. "
-                    f"You provided: {provided}. "
-                    f"Expected: {schema_hint}"
+                    f"You provided: {provided}. Expected: {schema_hint}"
                 ),
                 retriable=False,
                 recovery_hint={
@@ -992,18 +958,43 @@ class BaseToolRegistry:
                 tool=call.tool,
                 args_summary=self._summarize_args(call),
                 data=None,
-                error=_te.message,
-                error_detail=_te,
+                error=error.message,
+                error_detail=error,
                 call_id=call.call_id,
             )
 
-        t0 = time.time()
+        return _PreparedToolCall(
+            call=call,
+            spec=spec,
+            ctx=ctx,
+            exec_kwargs=exec_kwargs,
+            started_at=time.time(),
+            warning_start=len(ctx.warnings) if ctx is not None else 0,
+        )
+
+    def dispatch(self, call: ToolCall, *, ctx: ToolContext | None = None) -> ToolResult:
+        """Execute a tool call and return the result with provenance.
+
+        Strips dunder args (``__*``), wraps exceptions into error fields,
+        and records wall-clock timing in duration_ms.
+
+        When ``ctx`` is supplied and the tool's ``execute`` callable declares
+        a ``ctx`` parameter, it is threaded through. If ``ctx.cancel_token``
+        has been cancelled, the tool is skipped and a cancellation error is
+        returned without invoking ``execute``.
+        """
+        prepared = self._prepare_dispatch(call, ctx=ctx)
+        if isinstance(prepared, ToolResult):
+            return prepared
+        spec = prepared.spec
+        exec_kwargs = prepared.exec_kwargs
+        t0 = prepared.started_at
         # Snapshot the warnings list length on the shared ctx (if any)
         # so we can slice out only those added during this call. This
         # keeps per-call ToolResult.warnings scoped to the invocation
         # that produced them, while the caller's long-lived ctx still
         # accumulates the full history for its own observability.
-        warn_start = len(ctx.warnings) if ctx is not None else 0
+        warn_start = prepared.warning_start
 
         try:
             # Enforce framework-level timeout when ToolSpec.timeout_s is set.
@@ -1083,6 +1074,116 @@ class BaseToolRegistry:
             call_id=call.call_id,
             warnings=warns,
         )
+
+    async def async_dispatch(
+        self,
+        call: ToolCall,
+        *,
+        ctx: ToolContext | None = None,
+    ) -> ToolResult:
+        """Execute one tool without blocking the caller's event loop.
+
+        Coroutine tools run directly; synchronous tools run in a worker
+        thread. Validation, dependency injection, cancellation, and result
+        shaping use the same preparation contract as synchronous dispatch.
+        """
+        import asyncio  # noqa: PLC0415
+
+        prepared = self._prepare_dispatch(call, ctx=ctx)
+        if isinstance(prepared, ToolResult):
+            return prepared
+        spec = prepared.spec
+
+        async def _execute() -> Any:
+            if inspect.iscoroutinefunction(spec.execute):
+                result = spec.execute(**prepared.exec_kwargs)
+            else:
+                result = await asyncio.to_thread(spec.execute, **prepared.exec_kwargs)
+            if inspect.isawaitable(result):
+                result = await result
+            return result
+
+        try:
+            if spec.timeout_s is not None and spec.timeout_s > 0:
+                result_data = await asyncio.wait_for(_execute(), timeout=spec.timeout_s)
+            else:
+                result_data = await _execute()
+        except Exception as exc:
+            error = _classify_exception(exc)
+            warnings = (
+                list(ctx.warnings[prepared.warning_start :])
+                if ctx is not None and len(ctx.warnings) > prepared.warning_start
+                else []
+            )
+            return ToolResult(
+                tool=call.tool,
+                args_summary=self._summarize_args(call),
+                data=None,
+                error=error.message,
+                error_detail=error,
+                duration_ms=(time.time() - prepared.started_at) * 1000,
+                call_id=call.call_id,
+                warnings=warnings,
+            )
+
+        result_key = self._store_result(call, result_data)
+        warnings = (
+            list(ctx.warnings[prepared.warning_start :])
+            if ctx is not None and len(ctx.warnings) > prepared.warning_start
+            else []
+        )
+        return ToolResult(
+            tool=call.tool,
+            args_summary=self._summarize_args(call),
+            data=result_data,
+            duration_ms=(time.time() - prepared.started_at) * 1000,
+            result_key=result_key,
+            call_id=call.call_id,
+            warnings=warnings,
+        )
+
+    async def async_dispatch_batch(
+        self,
+        calls: list[ToolCall],
+        *,
+        ctx: ToolContext | Sequence[ToolContext | None] | None = None,
+    ) -> list[ToolResult]:
+        """Dispatch calls asynchronously while preserving input order."""
+        import asyncio  # noqa: PLC0415
+
+        if not calls:
+            return []
+        ctxs: list[ToolContext | None] | None = list(ctx) if isinstance(ctx, Sequence) else None
+        shared_ctx: ToolContext | None = None if ctxs is not None else cast(ToolContext | None, ctx)
+        if ctxs is not None and len(ctxs) != len(calls):
+            raise ValueError("ctx sequence length must match calls length")
+
+        results: list[ToolResult] = []
+        offset = 0
+        for batch in self._partition_calls(calls):
+            batch_calls = batch["calls"]
+            batch_ctxs = ctxs[offset : offset + len(batch_calls)] if ctxs is not None else None
+            if batch["concurrent"] and len(batch_calls) > 1:
+                if batch_ctxs is not None:
+                    batch_results = await asyncio.gather(
+                        *(
+                            self.async_dispatch(call, ctx=call_ctx)
+                            for call, call_ctx in zip(batch_calls, batch_ctxs)
+                        )
+                    )
+                else:
+                    batch_results = await asyncio.gather(
+                        *(self.async_dispatch(call, ctx=shared_ctx) for call in batch_calls)
+                    )
+                results.extend(batch_results)
+            elif batch_ctxs is not None:
+                for call, call_ctx in zip(batch_calls, batch_ctxs):
+                    results.append(await self.async_dispatch(call, ctx=call_ctx))
+            else:
+                for call in batch_calls:
+                    results.append(await self.async_dispatch(call, ctx=shared_ctx))
+            offset += len(batch_calls)
+        return results
 
     def _store_result(self, call: ToolCall, result_data: Any) -> str | None:
         """Override in subclasses to enable result storage/recall."""

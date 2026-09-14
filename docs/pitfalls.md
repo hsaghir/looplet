@@ -157,6 +157,19 @@ list(composable_loop(...))
 
 # ✗ this does nothing - the loop never runs
 composable_loop(...)
+
+## 13. Token and context budgets are explicit
+
+`LoopConfig.max_tokens=None` means that Looplet does not impose a per-call
+output limit; the backend decides. Set an integer when the cartridge needs a
+specific ceiling. OpenAI-compatible backends omit `max_tokens` in the unset
+case; Anthropic supplies its API-required default when unset.
+
+`LoopConfig.context_window` is a hard pre-call safety boundary. Looplet records
+context pressure and, when `reactive_recovery=True`, runs the configured
+recovery chain before retrying. With recovery disabled, an oversized prompt is
+stopped before it reaches the provider and the run records a typed context
+overflow error.
 ```
 
 ## 9. `generate_with_tools` is surfaced via hasattr

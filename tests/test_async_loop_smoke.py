@@ -200,6 +200,28 @@ class TestAsyncLlmCall:
 
 
 class TestAsyncComposableLoop:
+    async def test_preflight_disabled_recovery_never_calls_backend(self):
+        class Backend:
+            async def generate(self, *_args, **_kwargs):
+                raise AssertionError("oversized prompt must be blocked before backend")
+
+        from looplet import BaseToolRegistry, DefaultState, LoopConfig, register_done_tool
+
+        tools = BaseToolRegistry()
+        register_done_tool(tools)
+        steps = []
+        async for step in async_composable_loop(
+            llm=Backend(),
+            tools=tools,
+            state=DefaultState(max_steps=1),
+            config=LoopConfig(max_steps=1, context_window=1, reactive_recovery=False),
+            task={},
+        ):
+            steps.append(step)
+
+        assert steps[0].tool_call.tool == "__llm_error__"
+        assert "context" in steps[0].tool_result.error.lower()
+
     async def test_async_hook_slots_are_awaited_and_effects_apply(self):
         seen: list[str] = []
 

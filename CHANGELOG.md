@@ -35,6 +35,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - `AgentPreset.run()` and `run_async()` now enforce a single-use lifecycle,
   preventing mutable state and live resource wiring from leaking across
   sequential or concurrent runs.
+- `LoopConfig.max_tokens` is now unset by default, preserving provider
+  decisions, and oversized prompts are blocked before provider calls when
+  reactive recovery is disabled.
 - Native tool fallback now requires an explicit
   `NativeToolUnsupportedError`; provider failures remain visible. Broken
   `check_done` quality gates fail closed in sync and async loops.

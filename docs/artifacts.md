@@ -151,7 +151,12 @@ metadata, and creation timestamp. Custom registries opt into result recall
 resume by implementing `snapshot_results()` and `restore_results()`;
 the default registry has no stored result payloads.
 When the same checkpoint directory is used again and `initial_checkpoint` is
-unset, Looplet resumes the highest-step valid checkpoint.
+unset, Looplet resumes the highest-step incomplete checkpoint for the current
+`RunEnvelope.run_id`. A terminal checkpoint is authoritative and prevents
+older snapshots from being implicitly resumed. Legacy checkpoints without a
+run envelope remain supported only when no run identity is configured. Use
+`FileCheckpointStore.load_latest()` for inspection and
+`load_latest_for_resume()` for crash-resume selection.
 
 Checkpoints are recovery state, not provenance or eval evidence. Use a unique
 directory per logical task and apply the same access and retention policy as

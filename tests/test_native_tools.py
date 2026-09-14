@@ -257,7 +257,9 @@ class _NativeFailureBackend:
         self, prompt, *, tools, max_tokens=2000, system_prompt="", temperature=0.2
     ):
         self.calls.append("native")
-        raise RuntimeError("tools endpoint unsupported")
+        from looplet.native_tools import NativeToolUnsupportedError
+
+        raise NativeToolUnsupportedError("tools endpoint unsupported")
 
     def generate(self, prompt, *, max_tokens=2000, system_prompt="", temperature=0.2):
         self.calls.append("regular")
@@ -274,7 +276,9 @@ class _StickyNativeFailureBackend:
     ):
         del prompt, tools, max_tokens, system_prompt, temperature
         self.native_calls += 1
-        raise RuntimeError("tools endpoint unsupported")
+        from looplet.native_tools import NativeToolUnsupportedError
+
+        raise NativeToolUnsupportedError("tools endpoint unsupported")
 
     def generate(self, prompt, *, max_tokens=2000, system_prompt="", temperature=0.2):
         del prompt, max_tokens, system_prompt, temperature
@@ -311,7 +315,7 @@ class TestLLMCallWithRetryNative:
             "attempted": 2,
             "succeeded": 1,
             "fallbacks": 1,
-            "last_fallback_reason": "RuntimeError: tools endpoint unsupported",
+            "last_fallback_reason": "NativeToolUnsupportedError: tools endpoint unsupported",
         }
 
     def test_native_policy_defaults_on_and_parses_after_demotion(self):
@@ -362,6 +366,28 @@ class TestLLMCallWithRetryNative:
         assert isinstance(result.text, str)
         assert backend.calls == ["native", "regular"]
         assert result.native_fallback is True
+
+    def test_provider_failure_does_not_fallback_to_text(self):
+        class ProviderFailureBackend:
+            def generate_with_tools(self, prompt, *, tools, **kwargs):
+                del prompt, tools, kwargs
+                raise RuntimeError("authentication failed")
+
+            def generate(self, prompt, **kwargs):
+                del prompt, kwargs
+                raise AssertionError("ordinary provider failures must not demote")
+
+        result = llm_call_with_retry(
+            ProviderFailureBackend(),
+            "hi",
+            tools=_weather_schema(),
+            max_retries=0,
+        )
+
+        assert not result.ok
+        assert isinstance(result.error, RuntimeError)
+        assert "authentication failed" in str(result.error)
+        assert result.native_fallback is False
 
     def test_native_failure_is_demoted_for_the_rest_of_the_loop(self):
         backend = _StickyNativeFailureBackend()

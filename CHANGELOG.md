@@ -32,6 +32,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - Checkpoint auto-resume is now terminal-authoritative and scoped by
   `RunEnvelope.run_id`; `FileRunStore` coordinates read/modify/write
   transactions across processes.
+- Native tool fallback now requires an explicit
+  `NativeToolUnsupportedError`; provider failures remain visible. Broken
+  `check_done` quality gates fail closed in sync and async loops.
 
 ## [0.4.0] - 2026-08-28
 

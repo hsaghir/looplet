@@ -117,7 +117,20 @@ snapshot and `load_latest_for_resume()` when implementing crash recovery.
 but the store is still a persistence boundary: keep one logical run ID per
 directory entry and do not treat a checkpoint as a provenance artifact.
 
-## 9. Do not swallow exceptions in hooks
+## 9. Hook failures have explicit safety semantics
+
+Policy-bearing `check_done` hooks fail closed: if the gate raises, Looplet
+rejects the candidate `done()` call and exposes the rejection to the agent.
+Telemetry and observer hooks may still log and continue where their lifecycle
+contract says they are non-blocking. Do not rely on a hook exception to mean
+"allow"; return an explicit `Continue()` or `Block(...)` decision instead.
+
+Native tool fallback is also explicit. Backends should raise
+`NativeToolUnsupportedError` only when the native protocol is unavailable.
+Authentication, rate-limit, transport, and provider errors remain visible as
+failures and are never silently changed into JSON-text calls.
+
+## 10. Do not swallow exceptions in hooks
 
 A hook that eats `KeyError` can mask a real bug - for example, a
 missing `tool_call.args` key that should have surfaced as a prompt for

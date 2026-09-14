@@ -452,7 +452,9 @@ async def _async_composable_loop_impl(
     if config.checkpoint_dir is not None:
         _ckpt_store = _FileCheckpointStore(config.checkpoint_dir)
         if config.initial_checkpoint is None:
-            _latest = _ckpt_store.load_latest()
+            _latest = _ckpt_store.load_latest_for_resume(
+                run_id=(config.run_envelope.run_id if config.run_envelope is not None else None)
+            )
             if _latest is not None:
                 config = _dc_replace(config, initial_checkpoint=_latest)
                 logger.info(

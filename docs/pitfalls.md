@@ -104,7 +104,20 @@ defaults at registration time. Prefer a JSON Schema `parameters` object for
 new tools when the full contract needs to be visible to a host or remote
 adapter.
 
-## 8. Do not swallow exceptions in hooks
+## 8. Checkpoint directories are run-scoped
+
+Use a unique checkpoint directory per logical task when possible. When a
+`RunEnvelope(run_id=...)` is configured, implicit resume selects only that
+run's checkpoints. A terminal checkpoint blocks implicit resurrection of
+older state. For legacy identity-less checkpoints, auto-resume considers only
+checkpoints without a run envelope. Use `load_latest()` to inspect the newest
+snapshot and `load_latest_for_resume()` when implementing crash recovery.
+
+`FileRunStore` coordinates readers and writers across threads and processes,
+but the store is still a persistence boundary: keep one logical run ID per
+directory entry and do not treat a checkpoint as a provenance artifact.
+
+## 9. Do not swallow exceptions in hooks
 
 A hook that eats `KeyError` can mask a real bug - for example, a
 missing `tool_call.args` key that should have surfaced as a prompt for

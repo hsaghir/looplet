@@ -222,6 +222,15 @@ class TestFileCheckpointStore:
         assert a is not None and a.step_number == 1
         assert b is not None and b.step_number == 2
 
+    def test_load_rejects_conflicting_run_identity(self, tmp_path: Path) -> None:
+        store = FileCheckpointStore(tmp_path)
+        checkpoint = _make_checkpoint()
+        checkpoint.run_envelope = {"run_id": "run-a"}
+        (tmp_path / "step_1.json").write_text(json.dumps(checkpoint.to_dict()))
+
+        with pytest.raises(ValueError, match="belongs to run 'run-a'"):
+            store.load("step_1", run_id="run-b")
+
 
 # ── CheckpointHook ─────────────────────────────────────────────────
 

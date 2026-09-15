@@ -544,6 +544,37 @@ class TestAsyncComposableLoop:
         assert steps[1].tool_call.tool == "done"
         assert mock.calls == 2
 
+    async def test_extract_entities_receives_live_state(self):
+        seen_states = []
+
+        def extract_entities(data, *, state):
+            seen_states.append(state)
+            return ["entity"]
+
+        tools = BaseToolRegistry()
+        register_done_tool(tools)
+        tools.register(
+            ToolSpec(
+                name="inspect", description="Inspect", parameters={}, execute=lambda: {"value": 1}
+            )
+        )
+        state = DefaultState(max_steps=3)
+        async for _ in async_composable_loop(
+            llm=AsyncMockLLMBackend(
+                responses=[
+                    '{"tool":"inspect","args":{}}',
+                    '{"tool":"done","args":{"summary":"ok"}}',
+                ]
+            ),
+            tools=tools,
+            state=state,
+            config=LoopConfig(max_steps=3, extract_entities=extract_entities),
+            task={},
+        ):
+            pass
+
+        assert seen_states == [state]
+
     async def test_max_steps_and_system_prompt_shorthand(self):
         """Regression: ``async_composable_loop`` accepts the same
         ``max_steps`` / ``system_prompt`` keyword shorthands as

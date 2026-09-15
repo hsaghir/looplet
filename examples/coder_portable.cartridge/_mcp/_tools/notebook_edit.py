@@ -15,7 +15,7 @@ def _as_source(value: str, like: Any | None = None) -> str | list[str]:
     if isinstance(like, list):
         if not value:
             return []
-        return value.splitlines(keepends=True)
+        return value.splitlines()
     return value
 
 

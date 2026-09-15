@@ -267,6 +267,16 @@ class TestPresetIntegration:
         steps = list(first)
         assert len(steps) == 1
 
+    def test_closing_unstarted_preset_run_releases_claim(self):
+        from looplet.presets import minimal_preset
+        from looplet.testing import MockLLMBackend
+
+        preset = minimal_preset()
+        abandoned = preset.run(MockLLMBackend(['{"tool":"done","args":{}}']), task={})
+        abandoned.close()
+        assert not preset.run_claimed
+        assert list(preset.run(MockLLMBackend(['{"tool":"done","args":{}}']), task={}))
+
     @pytest.mark.asyncio
     async def test_async_preset_run_is_single_use(self):
         from looplet.async_loop import async_composable_loop

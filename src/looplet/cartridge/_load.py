@@ -1272,6 +1272,7 @@ def _workspace_to_preset_inner(
                 idempotency=str(yaml_payload.get("idempotency", "unknown")),
                 retryable=bool(yaml_payload.get("retryable", False)),
                 requires=list(yaml_payload.get("requires", []) or []),
+                capabilities=list(yaml_payload.get("capabilities", []) or []),
                 tags=list(yaml_payload.get("tags", []) or []),
                 render=dict(yaml_payload.get("render", {}) or {}),
             )

@@ -840,6 +840,9 @@ def _write_tool(spec: Any, tools_root: Path, warnings: list[str], strict: bool) 
     requires = getattr(spec, "requires", None) or []
     if requires:
         yaml_payload["requires"] = list(requires)
+    capabilities = getattr(spec, "capabilities", None) or []
+    if capabilities:
+        yaml_payload["capabilities"] = list(capabilities)
     idempotency = getattr(spec, "idempotency", "unknown")
     retryable = bool(getattr(spec, "retryable", False))
     if idempotency != "unknown":

@@ -29,6 +29,18 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - Expanded the hook guide to document the complete hook extension surface,
   including async-capable methods, permission/compaction hooks, prompt
   builders, lifecycle events, and `pre_loop(tools=...)`.
+- Checkpoint auto-resume is now terminal-authoritative and scoped by
+  `RunEnvelope.run_id`; `FileRunStore` coordinates read/modify/write
+  transactions across processes.
+- `AgentPreset.run()` and `run_async()` now enforce a single-use lifecycle,
+  preventing mutable state and live resource wiring from leaking across
+  sequential or concurrent runs.
+- `LoopConfig.max_tokens` is now unset by default, preserving provider
+  decisions, and oversized prompts are blocked before provider calls when
+  reactive recovery is disabled.
+- Native tool fallback now requires an explicit
+  `NativeToolUnsupportedError`; provider failures remain visible. Broken
+  `check_done` quality gates fail closed in sync and async loops.
 
 ## [0.4.0] - 2026-08-28
 
@@ -91,6 +103,10 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Tool dispatch now preserves string arguments byte-for-byte, derives optional
+  simple-schema parameters from callable defaults, and retains MCP JSON Schema
+  requiredness. MCP stdio reads now skip notifications and queue responses
+  that arrive out of order instead of treating them as missing responses.
 - `AgentRuntime` now prevents unsafe reuse of mutable preset state, serializes
   file-backed run-store updates, and rejects malformed compatibility constraints.
 - State Service request reads now honor run deadlines, malformed requests

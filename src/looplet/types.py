@@ -554,6 +554,8 @@ class ToolContext:
                 return {"summary": summary, "raw_chars": len(raw)}
             return {"results": raw}
     """
+    execution_policy: Any = None
+    """Host-owned :class:`looplet.capabilities.ExecutionPolicy`, if supplied."""
     request_approval: Callable[[str, list[str] | None], str | None] | None = None
     """Optional handler that lets a tool request approval from the
     caller (user, upstream agent, webhook) mid-execution. Signature is

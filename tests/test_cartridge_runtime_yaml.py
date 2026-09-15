@@ -74,6 +74,17 @@ def test_runtime_yaml_does_not_mask_runtime_keys_in_config_yaml(tmp_path: Path) 
     assert "max_tokens" in str(exc_info.value)
 
 
+def test_config_yaml_rejects_host_execution_policy(tmp_path: Path) -> None:
+    _write_minimal_cartridge(
+        tmp_path, config_text="name: host-policy\nschema_version: 2\nexecution_policy: {}"
+    )
+
+    from looplet import cartridge_to_preset
+
+    with pytest.raises(Exception, match="host-only"):
+        cartridge_to_preset(tmp_path, strict=True)
+
+
 def test_runtime_yaml_present_silences_warning(tmp_path: Path) -> None:
     """When the runtime key is in runtime.yaml, no warning fires."""
     _write_minimal_cartridge(

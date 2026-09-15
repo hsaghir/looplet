@@ -92,7 +92,19 @@ return {
 return {"error": "ENOENT"}
 ```
 
-## 7. Do not swallow exceptions in hooks
+## 7. Tool arguments are not normalized by the registry
+
+The registry preserves string arguments exactly. This is intentional: leading
+and trailing whitespace may be meaningful in source text, secrets, regular
+expressions, fixed-width records, and shell commands. Normalize a value inside
+the tool only when that tool's contract calls for it.
+
+Simple-format `ToolSpec` parameters also inherit optionality from callable
+defaults at registration time. Prefer a JSON Schema `parameters` object for
+new tools when the full contract needs to be visible to a host or remote
+adapter.
+
+## 8. Do not swallow exceptions in hooks
 
 A hook that eats `KeyError` can mask a real bug - for example, a
 missing `tool_call.args` key that should have surfaced as a prompt for

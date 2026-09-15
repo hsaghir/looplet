@@ -29,6 +29,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - Expanded the hook guide to document the complete hook extension surface,
   including async-capable methods, permission/compaction hooks, prompt
   builders, lifecycle events, and `pre_loop(tools=...)`.
+- Checkpoint auto-resume is now terminal-authoritative and scoped by
+  `RunEnvelope.run_id`; `FileRunStore` coordinates read/modify/write
+  transactions across processes.
 
 ## [0.4.0] - 2026-08-28
 

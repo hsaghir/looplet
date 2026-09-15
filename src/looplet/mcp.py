@@ -47,9 +47,13 @@ from looplet.protocol_context import remaining_deadline
 from looplet.tools import BaseToolRegistry, ToolSpec
 from looplet.types import RunEnvelope
 
-__all__ = ["MCPToolAdapter"]
+__all__ = ["MCPProtocolError", "MCPToolAdapter"]
 
 logger = logging.getLogger(__name__)
+
+
+class MCPProtocolError(RuntimeError):
+    """The MCP server emitted an invalid JSON-RPC response envelope."""
 
 
 class MCPToolAdapter:
@@ -260,7 +264,7 @@ class MCPToolAdapter:
         try:
             self._write_message(msg)
             return self._read_message(expected_id=msg.get("id"))
-        except OSError:
+        except (OSError, MCPProtocolError):
             self.close()
             raise
 
@@ -317,7 +321,9 @@ class MCPToolAdapter:
             if "error" in data:
                 logger.warning("MCP error: %s", data["error"])
                 return None
-            return data.get("result", data)
+            if "result" not in data:
+                raise MCPProtocolError("MCP response must contain either result or error")
+            return data["result"]
 
     def _pop_pending_message(self, expected_id: int | None) -> dict[str, Any] | None:
         """Remove a queued response matching ``expected_id``, if available."""

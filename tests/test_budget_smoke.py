@@ -21,6 +21,12 @@ pytestmark = pytest.mark.smoke
 
 
 class TestContextBudget:
+    def test_rejects_contradictory_thresholds(self):
+        with pytest.raises(ValueError, match="compact_buffer"):
+            ContextBudget(context_window=100, compact_buffer=100)
+        with pytest.raises(ValueError, match="thresholds"):
+            ContextBudget(context_window=20_000, warning_at=900, error_at=800)
+
     def test_tier_ordering(self):
         b = ContextBudget(
             context_window=1000,

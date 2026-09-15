@@ -17,11 +17,13 @@ import io
 import json
 from pathlib import Path
 
+from looplet.capabilities import ExecutionPolicy
 from looplet.cartridge import cartridge_to_preset
 from looplet.cartridge.scaffold import scaffold_cartridge
 from looplet.loop import LoopConfig
 from looplet.rpc import STOP_REASONS, RPCServer, _capabilities
 from looplet.testing import MockLLMBackend
+from looplet.tools import BaseToolRegistry, ToolSpec
 
 EXPECTED_KEYS = {
     "events",
@@ -79,6 +81,7 @@ class _FakePreset:
         self.hooks = hooks or []
         self.resources = resources or {}
         self.config = config or LoopConfig(max_steps=5)
+        self.tools = BaseToolRegistry()
 
 
 # ── AC-1: load_workspace ready carries the capabilities dict ─────────
@@ -95,7 +98,7 @@ def test_load_workspace_ready_carries_capabilities(tmp_path: Path) -> None:
     ready = next(e for e in events if e["event"] == "ready" and "loaded" in e)
     assert "capabilities" in ready
     caps = ready["capabilities"]
-    assert set(caps) == EXPECTED_KEYS
+    assert set(caps) >= EXPECTED_KEYS
     # The bare load fields remain untouched.
     assert ready["loaded"] == str(ws)
     assert isinstance(ready["tools"], list)
@@ -124,6 +127,28 @@ def test_plain_cartridge_capability_defaults(tmp_path: Path) -> None:
     assert caps["checkpoint"] is True
     assert caps["events"] is True
     assert caps["cancel"] is True
+
+
+def test_capabilities_advertise_tool_requirements_and_grants() -> None:
+    preset = _FakePreset(
+        config=LoopConfig(
+            max_steps=5,
+            execution_policy=ExecutionPolicy(capabilities=frozenset({"network"})),
+        )
+    )
+    preset.tools.register(
+        ToolSpec(
+            name="fetch",
+            description="Fetch",
+            parameters={},
+            execute=lambda: {},
+            capabilities=["network"],
+        )
+    )
+
+    caps = _capabilities(preset)
+    assert caps["tool_capabilities"] == {"fetch": ["network"]}
+    assert caps["granted_capabilities"] == ["network"]
 
 
 # ── AC-2: capabilities reflect the loaded preset ────────────────────

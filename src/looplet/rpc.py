@@ -263,6 +263,8 @@ def _capabilities(preset: Any) -> dict[str, Any]:
       reports.
     """
     hooks = getattr(preset, "hooks", None) or []
+    tool_specs = getattr(getattr(preset, "tools", None), "tool_specs", {}) or {}
+    policy = getattr(getattr(preset, "config", None), "execution_policy", None)
     return {
         "events": True,
         "cancel": True,
@@ -276,6 +278,13 @@ def _capabilities(preset: Any) -> dict[str, Any]:
         "checkpoint": True,
         "cost": _has_cost_sink(preset),
         "permission_authority": _has_permission_authority(hooks),
+        "tool_capabilities": {
+            name: sorted(set(spec.capabilities))
+            for name, spec in tool_specs.items()
+            if getattr(spec, "capabilities", None)
+        },
+        "granted_capabilities": sorted(getattr(policy, "capabilities", ()) or ()),
+        "granted_environment": sorted(getattr(policy, "environment", ()) or ()),
         "stop_reasons": list(STOP_REASONS),
     }
 
@@ -442,7 +451,7 @@ class RPCServer:
         if not ref:
             raise ValueError("resume requires 'checkpoint' (an id or a path)")
         checkpoint_dir = msg.get("checkpoint_dir")
-        checkpoint = self._load_checkpoint(str(ref), checkpoint_dir)
+        checkpoint = self._load_checkpoint(str(ref), checkpoint_dir, run_id=msg.get("run_id"))
         task = msg.get("task") or {}
         max_steps = self._parse_max_steps(msg)
         self._execute_run(
@@ -467,7 +476,9 @@ class RPCServer:
 
     # ── shared run engine ────────────────────────────────────────
 
-    def _load_checkpoint(self, ref: str, checkpoint_dir: str | None) -> Any:
+    def _load_checkpoint(
+        self, ref: str, checkpoint_dir: str | None, *, run_id: str | None = None
+    ) -> Any:
         """Resolve a checkpoint reference to a :class:`Checkpoint`.
 
         ``ref`` is tried first as a filesystem path (an absolute
@@ -475,18 +486,26 @@ class RPCServer:
         ``checkpoint_dir`` via :class:`FileCheckpointStore` - both reuse
         ``checkpoint.py``'s serialisation verbatim.
         """
-        from looplet.checkpoint import Checkpoint, FileCheckpointStore
+        from looplet.checkpoint import Checkpoint, FileCheckpointStore, validate_checkpoint_identity
+
+        def _validate_rpc_identity(checkpoint: Any) -> Any:
+            checkpoint_run_id = checkpoint.run_id
+            if run_id is None and checkpoint_run_id is not None:
+                raise ValueError("resume requires 'run_id' for an identity-bearing checkpoint")
+            validate_checkpoint_identity(checkpoint, run_id)
+            return checkpoint
 
         path = Path(ref)
         if path.is_file():
             try:
-                return Checkpoint.from_dict(json.loads(path.read_text()))
+                checkpoint = Checkpoint.from_dict(json.loads(path.read_text()))
+                return _validate_rpc_identity(checkpoint)
             except (OSError, json.JSONDecodeError, KeyError) as exc:
                 raise ValueError(f"could not load checkpoint file {ref!r}: {exc}") from exc
         if checkpoint_dir:
-            cp = FileCheckpointStore(checkpoint_dir).load(Path(ref).name)
+            cp = FileCheckpointStore(checkpoint_dir).load(Path(ref).name, run_id=run_id)
             if cp is not None:
-                return cp
+                return _validate_rpc_identity(cp)
         raise ValueError(
             f"checkpoint not found: {ref!r} "
             "(pass an existing checkpoint path, or a 'checkpoint_dir' plus its id)"

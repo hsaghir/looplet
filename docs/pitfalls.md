@@ -136,7 +136,16 @@ A hook that eats `KeyError` can mask a real bug - for example, a
 missing `tool_call.args` key that should have surfaced as a prompt for
 the model. Let exceptions propagate unless you have a specific recovery.
 
-## 8. `composable_loop` is a generator
+## 11. Presets are single-use execution plans
+
+`AgentPreset` contains mutable state, hook instances, configuration, and live
+tool/resource wiring. It can be claimed by only one sync or async run. Reusing
+it or starting a concurrent second run raises a clear error. Build a fresh
+preset from the cartridge or factory for each run; use `AgentRuntime` when the
+host needs lifecycle, persistence, or cancellation management. Looplet does
+not deep-copy tool closures, sockets, MCP adapters, or external resources.
+
+## 12. `composable_loop` is a generator
 
 ```python
 # ✓ do this

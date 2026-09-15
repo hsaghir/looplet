@@ -187,6 +187,43 @@ def test_runtime_completion_store_failure_is_reported_without_masking_result() -
     assert any("complete" in warning for warning in result.metadata["persistence_warnings"])
 
 
+def test_runtime_session_attach_failure_returns_failed_result_and_restores_config() -> None:
+    class BrokenSession:
+        def attach(self, run_id):
+            raise OSError("session unavailable")
+
+        def close(self):
+            pass
+
+    preset = _preset()
+    old_envelope = preset.config.run_envelope
+    old_token = preset.config.cancel_token
+    with AgentRuntime(preset, session=BrokenSession()) as runtime:
+        result = runtime.run(MockLLMBackend(), task={})
+
+    assert result.status is RunStatus.FAILED
+    assert "session unavailable" in result.metadata["error"]
+    assert preset.config.run_envelope is old_envelope
+    assert preset.config.cancel_token is old_token
+
+
+def test_runtime_store_create_failure_returns_failed_result_and_restores_config() -> None:
+    class BrokenStore(MemoryRunStore):
+        def create(self, envelope, *, metadata=None):
+            raise OSError("store unavailable")
+
+    preset = _preset()
+    old_envelope = preset.config.run_envelope
+    old_token = preset.config.cancel_token
+    with AgentRuntime(preset, store=BrokenStore()) as runtime:
+        result = runtime.run(MockLLMBackend(['{"tool":"done","args":{"summary":"ok"}}']), task={})
+
+    assert result.status is RunStatus.COMPLETED
+    assert any("create" in warning for warning in result.metadata["persistence_warnings"])
+    assert preset.config.run_envelope is old_envelope
+    assert preset.config.cancel_token is old_token
+
+
 def test_runtime_provider_checkpoint_failure_is_reported_without_masking_result() -> None:
     class BrokenBackend(MockLLMBackend):
         def checkpoint_state(self):

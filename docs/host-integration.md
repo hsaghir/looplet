@@ -118,6 +118,10 @@ Attach `EvalHook` for live collectors and graders, or use
 store. The host may use the evaluated result as a release gate; Looplet does
 not own deployment promotion.
 
-Always close the preset and any host-owned resources. `AgentPreset.close()`
-and `EvalRunRecord.cleanup()` distinguish clean-up of temporary execution
-state from persisted evidence.
+`AgentPreset` is a single-use execution plan. Build a fresh preset from the
+cartridge or factory for each sequential or concurrent run; its mutable state,
+hooks, and configuration are not copied between runs. Use `AgentRuntime` when
+the host needs lifecycle, identity, cancellation, and persistence. Always
+close the preset and any host-owned resources. `AgentPreset.close()` and
+`EvalRunRecord.cleanup()` distinguish clean-up of temporary execution state
+from persisted evidence.

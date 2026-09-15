@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import threading
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
@@ -181,6 +182,15 @@ class AgentPreset:
     applies. Presets constructed directly in code also leave this unset.
     """
 
+    _lifecycle_lock: threading.RLock = field(
+        default_factory=threading.RLock,
+        init=False,
+        repr=False,
+        compare=False,
+    )
+    _run_claimed: bool = field(default=False, init=False, repr=False, compare=False)
+    _closed: bool = field(default=False, init=False, repr=False, compare=False)
+
     def close(self) -> ShutdownReport:
         """Terminate all subprocesses owned by this preset.
 
@@ -190,6 +200,9 @@ class AgentPreset:
         server cannot block the rest.
         """
         from looplet.lep import LEPHookAdapter  # noqa: PLC0415
+
+        with self._lifecycle_lock:
+            self._closed = True
 
         closed_components: list[str] = []
         errors: list[str] = []
@@ -310,8 +323,11 @@ class AgentPreset:
         """
         from looplet.loop import composable_loop  # noqa: PLC0415
 
+        self._claim_run()
+
         errors = self._contract_errors()
         if errors:
+            self._release_failed_claim()
             raise ValueError("invalid agent preset: " + "; ".join(errors))
 
         for component in [*self.mcp_adapters, *self.hooks, *self.state_service_handles]:
@@ -336,7 +352,7 @@ class AgentPreset:
                     "error binding LLM backend to model gateway", exc_info=True
                 )
 
-        return composable_loop(
+        loop = composable_loop(
             llm=llm,
             tools=self.tools,
             state=self.state,
@@ -348,6 +364,14 @@ class AgentPreset:
             conversation=conversation,
             stream=stream,
         )
+
+        def _drive() -> Any:
+            try:
+                yield from loop
+            finally:
+                self._mark_run_finished()
+
+        return _drive()
 
     def run_async(
         self,
@@ -363,8 +387,11 @@ class AgentPreset:
         """Drive the async loop with this preset's wiring."""
         from looplet.async_loop import async_composable_loop  # noqa: PLC0415
 
+        self._claim_run()
+
         errors = self._contract_errors()
         if errors:
+            self._release_failed_claim()
             raise ValueError("invalid agent preset: " + "; ".join(errors))
 
         for component in [*self.mcp_adapters, *self.hooks, *self.state_service_handles]:
@@ -377,7 +404,7 @@ class AgentPreset:
                 setter(self.config.run_envelope)
             self.model_gateway.set_backend(llm)
 
-        return async_composable_loop(
+        loop = async_composable_loop(
             llm=llm,
             tools=self.tools,
             state=self.state,
@@ -389,6 +416,42 @@ class AgentPreset:
             conversation=conversation,
             stream=stream,
         )
+
+        async def _drive() -> Any:
+            try:
+                async for step in loop:
+                    yield step
+            finally:
+                self._mark_run_finished()
+
+        return _drive()
+
+    @property
+    def run_claimed(self) -> bool:
+        """Whether this preset has been claimed for an execution."""
+        with self._lifecycle_lock:
+            return self._run_claimed
+
+    def _claim_run(self) -> None:
+        """Claim this mutable preset for one sync or async execution."""
+        with self._lifecycle_lock:
+            if self._closed:
+                raise RuntimeError("AgentPreset is closed; build a fresh preset for another run")
+            if self._run_claimed:
+                raise RuntimeError(
+                    "AgentPreset is single-use; build a fresh preset for another run "
+                    "or use a preset factory for repeated/concurrent execution"
+                )
+            self._run_claimed = True
+
+    def _release_failed_claim(self) -> None:
+        with self._lifecycle_lock:
+            self._run_claimed = False
+
+    def _mark_run_finished(self) -> None:
+        # The claim remains permanent. This marker exists only for lifecycle
+        # introspection and future host cleanup policies.
+        return None
 
     def runtime(
         self,

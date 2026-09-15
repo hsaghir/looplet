@@ -725,7 +725,7 @@ class LoopConfig:
 
     Leave unset for fully-autonomous runs."""
 
-    execution_policy: ExecutionPolicy | None = None
+    execution_policy: ExecutionPolicy | None = field(default=None, kw_only=True)
     """Host-owned capabilities available to declared tools in this run."""
 
     context_window: int = 128_000
@@ -1016,6 +1016,10 @@ def _build_tool_ctx(
 
     return ToolContext(
         cancel_token=config.cancel_token,
+        cwd=(config.execution_policy.workspace_root if config.execution_policy else None),
+        workspace_root=(
+            config.execution_policy.workspace_root if config.execution_policy else None
+        ),
         request_approval=config.approval_handler,
         on_progress=_progress_fn,
         llm=_tool_llm,
@@ -3111,35 +3115,33 @@ def _composable_loop_impl(
                 # Save checkpoint after the session log and conversation include this step.
                 if _ckpt_store is not None:
                     loop_ctx.step_num = cur_step
-                    _ckpt_store.save(
-                        _Checkpoint(
-                            step_number=cur_step,
-                            session_log_data={
-                                "entries": session_log.to_list(),
-                                "current_theory": session_log.current_theory,
-                            },
-                            conversation_data=_conv.serialize(),
-                            config_snapshot={
-                                "max_steps": config.max_steps,
-                                "queries_used": getattr(state, "queries_used", 0),
-                                "budget_remaining": getattr(state, "budget_remaining", 0),
-                            },
-                            tool_results_store=tools.snapshot_results(),
-                            domain_state=(
-                                checkpoint_state(loop_ctx) if checkpoint_state is not None else {}
-                            ),
-                            run_envelope=(
-                                loop_ctx.run_envelope.to_dict()
-                                if loop_ctx.run_envelope is not None
-                                else None
-                            ),
-                            metadata={"task": str(task), **_policy_checkpoint_metadata(state)},
-                            run_status=loop_ctx.status.value,
-                            run_phase=loop_ctx.phase.value,
-                            termination_reason=loop_ctx.termination_reason,
+                    _checkpoint = _Checkpoint(
+                        step_number=cur_step,
+                        session_log_data={
+                            "entries": session_log.to_list(),
+                            "current_theory": session_log.current_theory,
+                        },
+                        conversation_data=_conv.serialize(),
+                        config_snapshot={
+                            "max_steps": config.max_steps,
+                            "queries_used": getattr(state, "queries_used", 0),
+                            "budget_remaining": getattr(state, "budget_remaining", 0),
+                        },
+                        tool_results_store=tools.snapshot_results(),
+                        domain_state=(
+                            checkpoint_state(loop_ctx) if checkpoint_state is not None else {}
                         ),
-                        key=f"step_{cur_step}",
+                        run_envelope=(
+                            loop_ctx.run_envelope.to_dict()
+                            if loop_ctx.run_envelope is not None
+                            else None
+                        ),
+                        metadata={"task": str(task), **_policy_checkpoint_metadata(state)},
+                        run_status=loop_ctx.status.value,
+                        run_phase=loop_ctx.phase.value,
+                        termination_reason=loop_ctx.termination_reason,
                     )
+                    _ckpt_store.save(_checkpoint, key=f"step_{cur_step}")
 
         if _deadline_expired(loop_ctx):
             stop_reason = "deadline_exceeded"
@@ -3321,39 +3323,37 @@ def _composable_loop_impl(
                 # Save checkpoint after done step (after yield, matching non-done pattern)
                 if _ckpt_store is not None:
                     loop_ctx.step_num = cur_step
-                    _ckpt_store.save(
-                        _Checkpoint(
-                            step_number=cur_step,
-                            session_log_data={
-                                "entries": session_log.to_list(),
-                                "current_theory": session_log.current_theory,
-                            },
-                            conversation_data=_conv.serialize(),
-                            config_snapshot={
-                                "max_steps": config.max_steps,
-                                "queries_used": getattr(state, "queries_used", 0),
-                                "budget_remaining": getattr(state, "budget_remaining", 0),
-                            },
-                            tool_results_store=tools.snapshot_results(),
-                            domain_state=(
-                                checkpoint_state(loop_ctx) if checkpoint_state is not None else {}
-                            ),
-                            run_envelope=(
-                                loop_ctx.run_envelope.to_dict()
-                                if loop_ctx.run_envelope is not None
-                                else None
-                            ),
-                            metadata={
-                                "task": str(task),
-                                "status": "done",
-                                **_policy_checkpoint_metadata(state),
-                            },
-                            run_status=loop_ctx.status.value,
-                            run_phase=loop_ctx.phase.value,
-                            termination_reason=loop_ctx.termination_reason,
+                    _checkpoint = _Checkpoint(
+                        step_number=cur_step,
+                        session_log_data={
+                            "entries": session_log.to_list(),
+                            "current_theory": session_log.current_theory,
+                        },
+                        conversation_data=_conv.serialize(),
+                        config_snapshot={
+                            "max_steps": config.max_steps,
+                            "queries_used": getattr(state, "queries_used", 0),
+                            "budget_remaining": getattr(state, "budget_remaining", 0),
+                        },
+                        tool_results_store=tools.snapshot_results(),
+                        domain_state=(
+                            checkpoint_state(loop_ctx) if checkpoint_state is not None else {}
                         ),
-                        key=f"step_{cur_step}_done",
+                        run_envelope=(
+                            loop_ctx.run_envelope.to_dict()
+                            if loop_ctx.run_envelope is not None
+                            else None
+                        ),
+                        metadata={
+                            "task": str(task),
+                            "status": "done",
+                            **_policy_checkpoint_metadata(state),
+                        },
+                        run_status=loop_ctx.status.value,
+                        run_phase=loop_ctx.phase.value,
+                        termination_reason=loop_ctx.termination_reason,
                     )
+                    _ckpt_store.save(_checkpoint, key=f"step_{cur_step}_done")
                 done = True
                 stop_reason = "done"
                 # DONE_ACCEPTED is observer-only; the loop is already terminating.

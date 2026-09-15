@@ -79,6 +79,7 @@ from looplet.scaffolding import (
     estimate_prompt_tokens,
     truncate_tool_result,
 )
+from looplet.scaffolding import _accepts_kwarg as _sync_accepts_kwarg
 from looplet.session import SessionLog
 from looplet.tools import BaseToolRegistry, _summarize_args_dict
 from looplet.types import AgentState, DefaultState, Step, ToolCall, ToolResult
@@ -192,6 +193,10 @@ async def async_llm_call(
         except (TypeError, ValueError):
             return False
 
+    def _method_accepts_kwarg(method_name: str, name: str) -> bool:
+        fn = getattr(llm, method_name, None)
+        return _sync_accepts_kwarg(fn, name) if fn is not None else False
+
     # Filter generate_kwargs to only keys the backend accepts
     def _filtered_kwargs(method_name: str) -> dict[str, Any]:
         fn = getattr(llm, method_name, None)
@@ -201,7 +206,9 @@ async def async_llm_call(
         for k, v in _gk.items():
             try:
                 sig = inspect.signature(fn)
-                if k in sig.parameters:
+                if k in sig.parameters or any(
+                    p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+                ):
                     out[k] = v
             except (TypeError, ValueError):
                 pass
@@ -233,6 +240,10 @@ async def async_llm_call(
                     "generate_with_tools", "cache_breakpoints"
                 ):
                     call_kwargs["cache_breakpoints"] = cache_breakpoints
+                if cancel_token is not None and _method_accepts_kwarg(
+                    "generate_with_tools", "cancel_token"
+                ):
+                    call_kwargs["cancel_token"] = cancel_token
                 result = llm.generate_with_tools(prompt, **call_kwargs)
                 if inspect.isawaitable(result):
                     result = await result
@@ -254,6 +265,8 @@ async def async_llm_call(
             }
             if cache_breakpoints and _method_accepts("generate", "cache_breakpoints"):
                 call_kwargs["cache_breakpoints"] = cache_breakpoints
+            if cancel_token is not None and _method_accepts_kwarg("generate", "cancel_token"):
+                call_kwargs["cancel_token"] = cancel_token
             result = llm.generate(prompt, **call_kwargs)
             if inspect.isawaitable(result):
                 result = await result
@@ -643,29 +656,30 @@ async def _async_composable_loop_impl(
         if status is not None:
             metadata["status"] = status
         loop_ctx.step_num = step_number
-        _ckpt_store.save(
-            _Checkpoint(
-                step_number=step_number,
-                session_log_data={
-                    "entries": session_log.to_list(),
-                    "current_theory": session_log.current_theory,
-                },
-                conversation_data=_conv.serialize(),
-                config_snapshot={
-                    "max_steps": config.max_steps,
-                    "queries_used": getattr(state, "queries_used", 0),
-                    "budget_remaining": getattr(state, "budget_remaining", 0),
-                },
-                tool_results_store=tools.snapshot_results(),
-                domain_state=(checkpoint_state(loop_ctx) if checkpoint_state is not None else {}),
-                run_envelope=(
-                    loop_ctx.run_envelope.to_dict() if loop_ctx.run_envelope is not None else None
-                ),
-                metadata={**metadata, **_policy_checkpoint_metadata(state)},
-                run_status=loop_ctx.status.value,
-                run_phase=loop_ctx.phase.value,
-                termination_reason=loop_ctx.termination_reason,
+        _checkpoint = _Checkpoint(
+            step_number=step_number,
+            session_log_data={
+                "entries": session_log.to_list(),
+                "current_theory": session_log.current_theory,
+            },
+            conversation_data=_conv.serialize(),
+            config_snapshot={
+                "max_steps": config.max_steps,
+                "queries_used": getattr(state, "queries_used", 0),
+                "budget_remaining": getattr(state, "budget_remaining", 0),
+            },
+            tool_results_store=tools.snapshot_results(),
+            domain_state=(checkpoint_state(loop_ctx) if checkpoint_state is not None else {}),
+            run_envelope=(
+                loop_ctx.run_envelope.to_dict() if loop_ctx.run_envelope is not None else None
             ),
+            metadata={**metadata, **_policy_checkpoint_metadata(state)},
+            run_status=loop_ctx.status.value,
+            run_phase=loop_ctx.phase.value,
+            termination_reason=loop_ctx.termination_reason,
+        )
+        _ckpt_store.save(
+            _checkpoint,
             key=f"step_{step_number}" if status is None else f"step_{step_number}_{status}",
         )
 

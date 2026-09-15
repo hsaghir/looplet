@@ -36,6 +36,7 @@ def test_execution_policy_checks_capabilities_and_paths(tmp_path: Path) -> None:
         capabilities=frozenset({"host.absolute_path"}),
     )
     assert absolute_policy.resolve_path("/tmp/outside.txt") == Path("/tmp/outside.txt")
+    assert ExecutionPolicy(environment=frozenset({"SAFE_FLAG"})).allows_environment("SAFE_FLAG")
 
 
 def test_declared_tool_capability_denial_is_structured() -> None:
@@ -115,6 +116,16 @@ def test_loop_config_policy_reaches_tool_context() -> None:
 
     assert result.data == {"present": True}
     assert received == [policy]
+
+
+def test_policy_workspace_is_propagated_to_tool_context(tmp_path: Path) -> None:
+    from looplet.loop import _build_tool_ctx
+
+    policy = ExecutionPolicy(workspace_root=str(tmp_path))
+    ctx = _build_tool_ctx(LoopConfig(execution_policy=policy))
+
+    assert ctx.workspace_root == str(tmp_path)
+    assert ctx.cwd == str(tmp_path)
 
 
 def test_tool_capabilities_round_trip_through_cartridge(tmp_path) -> None:

@@ -35,6 +35,10 @@ class ExecutionPolicy:
         """Return missing capabilities in stable order."""
         return tuple(sorted(set(required) - self.capabilities))
 
+    def allows_environment(self, name: str) -> bool:
+        """Return whether a tool may access the named environment variable."""
+        return name in self.environment
+
     def resolve_path(self, path: str | Path, *, allow_absolute: bool = False) -> Path:
         """Resolve a path against the workspace, rejecting escapes."""
         candidate = Path(path).expanduser()

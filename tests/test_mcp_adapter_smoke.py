@@ -95,6 +95,13 @@ class TestMCPToolAdapter:
         assert adapter._read_message() is None
         assert "MCP error" in caplog.text
 
+    def test_missing_result_or_error_is_rejected(self):
+        adapter = MCPToolAdapter("echo test")
+        adapter._proc = SimpleNamespace(stdout=io.BytesIO(b'{"jsonrpc":"2.0","id":1}\n'))
+
+        with pytest.raises(RuntimeError, match="result or error"):
+            adapter._read_message(expected_id=1)
+
     def test_reader_skips_notifications_and_queues_other_responses(self):
         adapter = MCPToolAdapter("echo test")
         adapter._proc = SimpleNamespace(

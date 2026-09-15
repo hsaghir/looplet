@@ -85,6 +85,14 @@ class ContextBudget:
     at least this much slack - otherwise the next LLM call will fail
     with prompt-too-long on a slightly larger response."""
 
+    def __post_init__(self) -> None:
+        if self.context_window <= 0:
+            raise ValueError("context_window must be positive")
+        if self.compact_buffer < 0 or self.compact_buffer >= self.context_window:
+            raise ValueError("compact_buffer must be >= 0 and smaller than context_window")
+        if not 0 <= self.warning_at < self.error_at < self.blocking_at:
+            raise ValueError("thresholds must satisfy 0 <= warning_at < error_at < blocking_at")
+
     @property
     def blocking_at(self) -> int:
         """Hard ceiling: past this, prompt-too-long is imminent."""
@@ -117,6 +125,7 @@ def classify_tier(
     add-ons (e.g. rendered memory, briefing tail). Returns
     ``(tier, estimated_tokens)``.
     """
+
     # Prefer conversation - it's the closest approximation of what
     # the LLM actually sees (tool catalog, briefing, etc. are still
     # excluded, but message history dominates in long sessions).

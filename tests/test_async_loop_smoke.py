@@ -24,6 +24,37 @@ pytestmark = [pytest.mark.smoke, pytest.mark.asyncio]
 
 
 class TestAsyncLlmCall:
+    async def test_forwards_cancel_token_and_kwargs_to_permissive_backend(self):
+        class Backend:
+            def __init__(self):
+                self.calls = []
+
+            async def generate(self, prompt, **kwargs):
+                self.calls.append(kwargs)
+                return '{"tool":"done","args":{}}'
+
+        from looplet.types import CancelToken
+
+        backend = Backend()
+        token = CancelToken()
+        await async_llm_call(
+            backend,
+            "prompt",
+            cancel_token=token,
+            generate_kwargs={"provider_flag": 7},
+            max_retries=0,
+        )
+
+        assert backend.calls == [
+            {
+                "max_tokens": None,
+                "system_prompt": "",
+                "temperature": 0.2,
+                "provider_flag": 7,
+                "cancel_token": token,
+            }
+        ]
+
     async def test_awaits_async_backend(self):
         mock = AsyncMockLLMBackend(responses=["hello"])
         result = await async_llm_call(mock, "test")

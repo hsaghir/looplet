@@ -77,9 +77,10 @@ class _PresetRunIterator:
         return self
 
     def __next__(self) -> Any:
-        self._started = True
         try:
-            return next(self._iterator)
+            item = next(self._iterator)
+            self._started = True
+            return item
         except BaseException:
             self._finish()
             raise
@@ -114,9 +115,10 @@ class _PresetAsyncIterator:
         return self
 
     async def __anext__(self) -> Any:
-        self._started = True
         try:
-            return await self._iterator.__anext__()
+            item = await self._iterator.__anext__()
+            self._started = True
+            return item
         except BaseException:
             self._finish()
             raise

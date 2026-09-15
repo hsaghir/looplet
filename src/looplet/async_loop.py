@@ -505,6 +505,12 @@ async def _async_composable_loop_impl(
             config.run_envelope.run_id if config.run_envelope is not None else None,
         )
         resumed = _resume_loop_state(config.initial_checkpoint)
+        restore_backend = (
+            config.router.select(purpose="reasoning") if config.router is not None else llm
+        )
+        restore_backend_state = getattr(restore_backend, "restore_checkpoint_state", None)
+        if callable(restore_backend_state):
+            restore_backend_state((resumed.get("domain_state") or {}).get("llm", {}))
         if config.run_envelope is None and isinstance(resumed.get("run_envelope"), dict):
             config = _dc_replace(
                 config,

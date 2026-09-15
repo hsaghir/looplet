@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import tempfile
 from pathlib import Path
@@ -135,6 +136,42 @@ def test_tool_render_hints_round_trip(tmp_path: Path) -> None:
 
     assert p1.tools._tools["done"].render == {"preview": 5, "max_chars": 800}
     assert p2.tools._tools["done"].render == p1.tools._tools["done"].render
+
+
+def test_manifest_metadata_round_trips_with_loaded_preset(tmp_path: Path) -> None:
+    src = tmp_path / "src.cartridge"
+    src.mkdir()
+    (src / "cartridge.json").write_text(
+        json.dumps(
+            {
+                "name": "source-agent",
+                "schema_version": 2,
+                "description": "Source description",
+                "version": "3.2.1",
+                "language": "python",
+                "metadata": {"owner": "platform", "tier": "gold"},
+                "compatibility": {"looplet": ">=0.4", "requires": ["run_store"]},
+            }
+        )
+    )
+    (src / "config.yaml").write_text("max_steps: 3\n")
+    (src / "prompts").mkdir()
+    (src / "prompts" / "system.md").write_text("test")
+    done = src / "tools" / "done"
+    done.mkdir(parents=True)
+    (done / "tool.yaml").write_text(
+        "name: done\ndescription: done\nparameters:\n  summary: { type: string }\n"
+    )
+    (done / "execute.py").write_text("def execute(*, summary):\n    return {'summary': summary}\n")
+
+    preset = cartridge_to_preset(src, strict=True)
+    out = preset_to_cartridge(preset, tmp_path / "out.cartridge", strict=True)
+    manifest = json.loads((out.path / "cartridge.json").read_text())
+
+    assert manifest["name"] == "source-agent"
+    assert manifest["description"] == "Source description"
+    assert manifest["version"] == "3.2.1"
+    assert manifest["metadata"] == {"owner": "platform", "tier": "gold"}
 
 
 def test_permissions_with_contains_matcher_round_trip(tmp_path: Path) -> None:

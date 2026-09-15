@@ -25,6 +25,20 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+class CheckpointIdentityError(ValueError):
+    """A checkpoint belongs to a different logical run."""
+
+
+def validate_checkpoint_identity(checkpoint: "Checkpoint", run_id: str | None) -> None:
+    """Reject a checkpoint carrying an identity different from ``run_id``."""
+    checkpoint_run_id = checkpoint.run_id
+    if run_id is not None and checkpoint_run_id is not None and checkpoint_run_id != run_id:
+        raise CheckpointIdentityError(
+            f"checkpoint belongs to run {checkpoint_run_id!r}, not {run_id!r}"
+        )
+
+
 # ── Checkpoint dataclass ────────────────────────────────────────────
 
 
@@ -237,7 +251,9 @@ class FileCheckpointStore:
         if not path.exists():
             return None
         data = json.loads(path.read_text())
-        return Checkpoint.from_dict(data)
+        checkpoint = Checkpoint.from_dict(data)
+        validate_checkpoint_identity(checkpoint, run_id)
+        return checkpoint
 
     def load_latest(self, *, run_id: str | None = None) -> Checkpoint | None:
         """Load the highest-step checkpoint for one logical run.

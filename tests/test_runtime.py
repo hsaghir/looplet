@@ -116,6 +116,39 @@ def test_runtime_store_can_checkpoint_each_step() -> None:
     record = store.load(result.run_envelope.run_id)
     assert record is not None
     assert record.checkpoint_keys == ("step_1",)
+    checkpoint = store.load_checkpoint(result.run_envelope.run_id, "step_1")
+    assert checkpoint is not None
+    assert checkpoint.is_terminal
+    assert checkpoint.run_status == "completed"
+    assert checkpoint.session_log_data["entries"]
+
+
+def test_runtime_failed_run_persists_terminal_checkpoint() -> None:
+    class FailingBackend:
+        def generate(self, prompt, **kwargs):
+            raise RuntimeError("backend failed")
+
+    store = MemoryRunStore()
+    with AgentRuntime(_preset(), store=store, checkpoint_every_n_steps=1) as runtime:
+        result = runtime.run(FailingBackend(), task={})
+
+    checkpoint = store.load_checkpoint(result.run_envelope.run_id, "step_1")
+    assert result.status is RunStatus.FAILED
+    assert checkpoint is not None
+    assert checkpoint.is_terminal
+    assert checkpoint.run_status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_runtime_handle_wait_shuts_down_executor() -> None:
+    runtime = AgentRuntime(_preset())
+    handle = runtime.start(MockLLMBackend(['{"tool":"done","args":{"summary":"ok"}}']))
+    try:
+        result = await handle.wait()
+        assert result.status is RunStatus.COMPLETED
+        assert handle._executor._shutdown is True
+    finally:
+        runtime.close()
 
 
 def test_runtime_rejects_reuse_after_first_run() -> None:

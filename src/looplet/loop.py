@@ -23,6 +23,7 @@ from looplet.checkpoint import (
 from looplet.checkpoint import (
     resume_loop_state as _resume_loop_state,
 )
+from looplet.checkpoint import validate_checkpoint_identity as _validate_checkpoint_identity
 from looplet.context_plan import ContextPlan
 from looplet.context_projection import ContextProjection
 from looplet.history import HistoryRecorder
@@ -1667,8 +1668,10 @@ def _validate_hooks(hooks: list[Any]) -> None:
 
 def _validate_loop_inputs(task: Any, tools: BaseToolRegistry, config: LoopConfig) -> None:
     """Reject impossible loop wiring before prompt assembly begins."""
+    if isinstance(config.max_steps, bool) or not isinstance(config.max_steps, int):
+        raise ValueError("config.max_steps must be a positive integer")
     if config.max_steps <= 0:
-        raise ValueError("config.max_steps must be positive")
+        raise ValueError("config.max_steps must be a positive integer")
 
 
 def _set_context_overrides(config: LoopConfig) -> list[tuple[Any, Any]]:
@@ -2266,6 +2269,10 @@ def _composable_loop_impl(
     # ── Crash-resume from initial checkpoint ───────────────────
     _step_offset = 0
     if config.initial_checkpoint is not None:
+        _validate_checkpoint_identity(
+            config.initial_checkpoint,
+            config.run_envelope.run_id if config.run_envelope is not None else None,
+        )
         resumed = _resume_loop_state(config.initial_checkpoint)
         if config.run_envelope is None and isinstance(resumed.get("run_envelope"), dict):
             config = _dc_replace(
@@ -3249,6 +3256,10 @@ def _composable_loop_impl(
                     highlights=[],
                     recall_key=tool_result.result_key or "",
                 )
+                for _hook in hooks:
+                    _post_step = getattr(_hook, "post_step", None)
+                    if _post_step is not None:
+                        _post_step(state, session_log, cur_step)
             else:
                 # done() dispatch intentionally bypasses permission checks - it's
                 # a loop signal, not a side-effecting tool. Permission-gating a

@@ -40,3 +40,26 @@ class TestDefaultMaxTokensNone:
             default_max_tokens=4096,
         )
         assert llm._default_max_tokens == 4096
+
+    def test_openai_omits_max_tokens_when_call_and_backend_are_unset(self):
+        client = type("Client", (), {})()
+        client.chat = type("Chat", (), {})()
+        client.chat.completions = type("Completions", (), {})()
+        captured = {}
+
+        def create(**kwargs):
+            captured.update(kwargs)
+            return type(
+                "Response",
+                (),
+                {
+                    "choices": [
+                        type("Choice", (), {"message": type("Message", (), {"content": "ok"})()})()
+                    ]
+                },
+            )()
+
+        client.chat.completions.create = create
+        OpenAIBackend(client, model="test").generate("hello", max_tokens=None)
+
+        assert "max_tokens" not in captured

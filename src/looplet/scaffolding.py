@@ -26,6 +26,10 @@ from looplet.native_tools import NativeToolPolicy, NativeToolUnsupportedError
 logger = logging.getLogger(__name__)
 
 
+class ContextOverflowError(RuntimeError):
+    """Prompt cannot fit the configured model context window."""
+
+
 @dataclass
 class NativeToolStats:
     """Run-scoped observability for native-tool negotiation."""
@@ -181,7 +185,9 @@ class LLMResult:
     ) -> None:
         self.text = text
         self.error = error
-        self.is_prompt_too_long = error is not None and _is_prompt_too_long(error)
+        self.is_prompt_too_long = error is not None and (
+            isinstance(error, ContextOverflowError) or _is_prompt_too_long(error)
+        )
         self.stop_reason = stop_reason
         self.continuations = continuations
         self.native_fallback = native_fallback
@@ -258,7 +264,7 @@ def llm_call_with_retry(
     llm: Any,
     prompt: str,
     *,
-    max_tokens: int = 2000,
+    max_tokens: int | None = None,
     system_prompt: str = "",
     temperature: float = 0.2,
     max_retries: int = MAX_LLM_RETRIES,

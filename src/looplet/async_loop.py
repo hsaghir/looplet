@@ -71,6 +71,7 @@ from looplet.native_tools import NativeToolPolicy, NativeToolUnsupportedError
 from looplet.parse import parse_multi_tool_calls, to_text
 from looplet.scaffolding import (
     PARSE_RECOVERY_MAX,
+    ContextOverflowError,
     LLMResult,
     NativeToolStats,
     _is_prompt_too_long,
@@ -125,7 +126,7 @@ class _SyncBridgeLLM:
         self,
         prompt: str,
         *,
-        max_tokens: int = 2000,
+        max_tokens: int | None = None,
         system_prompt: str = "",
         temperature: float = 0.2,
     ) -> str:
@@ -157,7 +158,7 @@ async def async_llm_call(
     llm: Any,
     prompt: str,
     *,
-    max_tokens: int = 2000,
+    max_tokens: int | None = None,
     system_prompt: str = "",
     temperature: float = 0.2,
     max_retries: int = MAX_LLM_RETRIES,
@@ -917,19 +918,35 @@ async def _async_composable_loop_impl(
         _set_run_lifecycle(loop_ctx, phase=RunPhase.LLM)
         if stream is not None and _LLMCallStartEvent is not None:
             stream.emit(_LLMCallStartEvent(step_num=step_num))
-        llm_result = await async_llm_call(
-            effective_llm,
-            prompt,
-            max_tokens=config.max_tokens,
-            system_prompt=config.system_prompt,
-            temperature=config.temperature,
-            tools=_tool_schemas,
-            native_policy=native_policy,
-            cancel_token=config.cancel_token,
-            max_continuations=config.max_turn_continuations,
-            cache_breakpoints=_cache_bps,
-            generate_kwargs=config.generate_kwargs or None,
-        )
+        if loop_ctx.context_budget.pressure:
+            logger.warning(
+                "Async pre-flight block: prompt ~%d tokens exceeds safe limit - %s",
+                _estimated_tokens,
+                "running recovery before LLM call"
+                if config.reactive_recovery
+                else "stopping before LLM call",
+            )
+            llm_result = LLMResult(
+                None,
+                ContextOverflowError(
+                    f"prompt estimate {_estimated_tokens} tokens exceeds safe context "
+                    f"limit {config.context_window - 3_000}"
+                ),
+            )
+        else:
+            llm_result = await async_llm_call(
+                effective_llm,
+                prompt,
+                max_tokens=config.max_tokens,
+                system_prompt=config.system_prompt,
+                temperature=config.temperature,
+                tools=_tool_schemas,
+                native_policy=native_policy,
+                cancel_token=config.cancel_token,
+                max_continuations=config.max_turn_continuations,
+                cache_breakpoints=_cache_bps,
+                generate_kwargs=config.generate_kwargs or None,
+            )
         loop_ctx.native_tool_stats.record(llm_result)
         if _deadline_expired(loop_ctx):
             stop_reason = "deadline_exceeded"
@@ -963,7 +980,11 @@ async def _async_composable_loop_impl(
                 tool="__llm_error__",
                 args_summary="",
                 data=None,
-                error="LLM call failed after all retry attempts",
+                error=(
+                    str(llm_result.error)
+                    if llm_result.error is not None
+                    else "LLM call failed after all retry attempts"
+                ),
             )
             step = Step(number=step_num, tool_call=error_call, tool_result=error_result)
             state.steps.append(step)

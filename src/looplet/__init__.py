@@ -48,6 +48,7 @@ from looplet.bundles import (
     validate_skill_bundle,
 )
 from looplet.cache import CachePolicy
+from looplet.capabilities import CapabilityDeniedError, ExecutionPolicy
 from looplet.cartridge import (
     Cartridge,
     CartridgeCompatibility,
@@ -230,6 +231,8 @@ __all__ = [
     "composable_loop",
     "async_composable_loop",
     "async_llm_call",
+    "ExecutionPolicy",
+    "CapabilityDeniedError",
     "LoopConfig",
     "LoopContext",
     "LoopHook",

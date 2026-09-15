@@ -96,6 +96,13 @@ allow/deny rules. `ApprovalHook` turns a tool result containing
 `needs_approval=True` into `waiting_for_approval`; the host persists the
 pending request, obtains a decision, and resumes from a checkpoint.
 
+For tool authority, supply an `ExecutionPolicy` from the host and declare
+requirements on `ToolSpec.capabilities` such as `network`, `workspace.write`,
+or `shell`. Undeclared tools retain legacy behavior; declared tools fail
+closed when the host has not granted every capability. Cartridges may declare
+tool requirements, but the policy itself remains host-owned and is never
+authored in `config.yaml`.
+
 ## Cancellation and checkpoints
 
 Cancellation is cooperative and shared with LLM calls and tools:

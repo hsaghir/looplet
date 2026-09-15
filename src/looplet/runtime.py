@@ -20,6 +20,22 @@ from looplet.types import CancelToken, RunEnvelope, RunPhase, RunResult, RunStat
 __all__ = ["AgentRuntime", "RunHandle"]
 
 
+def _failed_runtime_result(
+    state: Any,
+    envelope: RunEnvelope,
+    exc: BaseException,
+) -> RunResult:
+    return RunResult(
+        status=RunStatus.FAILED,
+        phase=RunPhase.TERMINAL,
+        termination_reason="error",
+        output=None,
+        steps=tuple(getattr(state, "steps", ())),
+        run_envelope=envelope,
+        metadata={"error": f"{type(exc).__name__}: {exc}"},
+    )
+
+
 class _RuntimeEventHook:
     def __init__(
         self,
@@ -268,11 +284,11 @@ class AgentRuntime:
                     self.store.create(run_envelope, metadata={"runtime": "AgentRuntime"})
                 except Exception as exc:  # noqa: BLE001
                     persistence_errors.append(f"create: {type(exc).__name__}: {exc}")
-            if self.session is not None:
-                self.session.attach(run_envelope.run_id)
             started = time.perf_counter()
             result: RunResult | None = None
             try:
+                if self.session is not None:
+                    self.session.attach(run_envelope.run_id)
                 for _ in self.preset.run(
                     llm,
                     task=task,
@@ -285,15 +301,7 @@ class AgentRuntime:
                     pass
                 result = RunResult.from_state(self.preset.state)
             except Exception as exc:  # noqa: BLE001 - host boundary returns a failed result
-                result = RunResult(
-                    status=RunStatus.FAILED,
-                    phase=RunPhase.TERMINAL,
-                    termination_reason="error",
-                    output=None,
-                    steps=tuple(getattr(self.preset.state, "steps", ())),
-                    run_envelope=run_envelope,
-                    metadata={"error": f"{type(exc).__name__}: {exc}"},
-                )
+                result = _failed_runtime_result(self.preset.state, run_envelope, exc)
             finally:
                 if checkpoint_hook is not None and result is not None:
                     checkpoint_hook.finalize(result)
@@ -355,11 +363,11 @@ class AgentRuntime:
                     self.store.create(run_envelope, metadata={"runtime": "AgentRuntime"})
                 except Exception as exc:  # noqa: BLE001
                     persistence_errors.append(f"create: {type(exc).__name__}: {exc}")
-            if self.session is not None:
-                self.session.attach(run_envelope.run_id)
             started = time.perf_counter()
             result: RunResult | None = None
             try:
+                if self.session is not None:
+                    self.session.attach(run_envelope.run_id)
                 async for _ in self.preset.run_async(
                     llm,
                     task=task,
@@ -372,15 +380,7 @@ class AgentRuntime:
                     pass
                 result = RunResult.from_state(self.preset.state)
             except Exception as exc:  # noqa: BLE001
-                result = RunResult(
-                    status=RunStatus.FAILED,
-                    phase=RunPhase.TERMINAL,
-                    termination_reason="error",
-                    output=None,
-                    steps=tuple(getattr(self.preset.state, "steps", ())),
-                    run_envelope=run_envelope,
-                    metadata={"error": f"{type(exc).__name__}: {exc}"},
-                )
+                result = _failed_runtime_result(self.preset.state, run_envelope, exc)
             finally:
                 if checkpoint_hook is not None and result is not None:
                     checkpoint_hook.finalize(result)

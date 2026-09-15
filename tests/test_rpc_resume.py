@@ -238,3 +238,33 @@ def test_resume_missing_checkpoint_raises(tmp_path: Path) -> None:
         pass
     else:
         raise AssertionError("resume from a missing checkpoint must raise ValueError")
+
+
+def test_resume_path_rejects_mismatched_run_identity(tmp_path: Path) -> None:
+    ck = tmp_path / "checkpoint.json"
+    checkpoint = {
+        "step_number": 1,
+        "session_log_data": {"entries": []},
+        "conversation_data": None,
+        "config_snapshot": {},
+        "tool_results_store": {},
+        "metadata": {},
+        "run_envelope": {"run_id": "run-a"},
+    }
+    ck.write_text(json.dumps(checkpoint))
+    ws = _scaffold(tmp_path)
+    server, _out = _server(ws, tmp_path, backend=make_greet_then_done_backend())
+
+    try:
+        server.cmd_resume(
+            {
+                "checkpoint": str(ck),
+                "run_id": "run-b",
+                "task": {},
+                "max_steps": 3,
+            }
+        )
+    except ValueError as exc:
+        assert "run-a" in str(exc)
+    else:
+        raise AssertionError("resume must reject a checkpoint from another run")

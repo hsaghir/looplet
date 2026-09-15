@@ -31,6 +31,15 @@ def test_execution_policy_checks_capabilities_and_paths(tmp_path: Path) -> None:
     with pytest.raises(CapabilityDeniedError, match="escapes workspace"):
         policy.resolve_path("../outside.txt")
 
+
+def test_case_local_scratch_path_is_explicit_and_contained(tmp_path: Path) -> None:
+    policy = ExecutionPolicy(scratch_root=str(tmp_path))
+    assert policy.scratch_path("nested/output.txt") == tmp_path / "nested" / "output.txt"
+    with pytest.raises(CapabilityDeniedError, match="SCRATCH_UNAVAILABLE"):
+        ExecutionPolicy().scratch_path()
+    with pytest.raises(CapabilityDeniedError, match="PATH_DENIED"):
+        policy.scratch_path("../outside.txt")
+
     absolute_policy = ExecutionPolicy(
         workspace_root=str(tmp_path),
         capabilities=frozenset({"host.absolute_path"}),

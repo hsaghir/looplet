@@ -40,20 +40,24 @@ import os
 import signal
 import subprocess
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import Any
 
 from looplet.protocol_context import remaining_deadline
 from looplet.tools import BaseToolRegistry, ToolSpec
 from looplet.types import RunEnvelope
 
-__all__ = ["MCPProtocolError", "MCPToolAdapter"]
+__all__ = ["MCPProtocolError", "MCPToolError", "MCPToolAdapter"]
 
 logger = logging.getLogger(__name__)
 
 
 class MCPProtocolError(RuntimeError):
     """The MCP server emitted an invalid JSON-RPC response envelope."""
+
+
+class MCPToolError(RuntimeError):
+    """An MCP server reported failure while executing a tool."""
 
 
 class MCPToolAdapter:
@@ -80,6 +84,7 @@ class MCPToolAdapter:
         env: dict[str, str] | None = None,
         timeout: float = 30.0,
         run_envelope: RunEnvelope | None = None,
+        capabilities: Iterable[str] | None = None,
     ) -> None:
         if timeout <= 0:
             raise ValueError("timeout must be greater than zero")
@@ -87,6 +92,7 @@ class MCPToolAdapter:
         self._env = env
         self._timeout = timeout
         self._run_envelope = run_envelope
+        self._capabilities = list(dict.fromkeys(capabilities or ()))
         self._proc: subprocess.Popen | None = None
         self._request_id = 0
         self._lock = threading.Lock()
@@ -119,6 +125,7 @@ class MCPToolAdapter:
                     description=desc,
                     parameters=params,
                     execute=self._make_executor(name, params),
+                    capabilities=list(self._capabilities),
                 )
             )
         return specs
@@ -284,8 +291,8 @@ class MCPToolAdapter:
     def _read_message(self, expected_id: int | None = None) -> dict | None:
         """Read one newline-delimited JSON-RPC message from the server.
 
-        Returns the parsed ``result`` payload, or ``None`` on EOF / a
-        JSON-RPC error response (errors are logged at WARNING).
+        Returns the parsed ``result`` payload, or ``None`` on EOF. JSON-RPC
+        errors are raised so the dispatcher records a real failure.
         """
         if self._proc is None or self._proc.stdout is None:
             return None
@@ -319,8 +326,9 @@ class MCPToolAdapter:
                 )
                 continue
             if "error" in data:
-                logger.warning("MCP error: %s", data["error"])
-                return None
+                error = data["error"]
+                logger.warning("MCP error: %s", error)
+                raise MCPToolError(f"MCP request failed: {error}")
             if "result" not in data:
                 raise MCPProtocolError("MCP response must contain either result or error")
             return data["result"]
@@ -442,7 +450,24 @@ class MCPToolAdapter:
                 },
             )
             if resp is None:
-                return {"error": f"MCP tool '{tool_name}' returned no response"}
+                raise MCPToolError(f"MCP tool '{tool_name}' returned no response")
+            if not isinstance(resp, dict):
+                raise MCPProtocolError(
+                    f"MCP tool '{tool_name}' result must be an object, got {type(resp).__name__}"
+                )
+            if resp.get("isError") is True:
+                content = resp.get("content", [])
+                messages = (
+                    [
+                        str(block.get("text", ""))
+                        for block in content
+                        if isinstance(block, dict) and block.get("text")
+                    ]
+                    if isinstance(content, list)
+                    else []
+                )
+                detail = "; ".join(messages) or "server returned isError=true"
+                raise MCPToolError(f"MCP tool '{tool_name}' failed: {detail}")
             # MCP returns content as list of content blocks
             content = resp.get("content", [])
             if isinstance(content, list) and len(content) == 1:

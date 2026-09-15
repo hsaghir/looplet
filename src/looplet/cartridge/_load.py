@@ -38,6 +38,7 @@ from looplet.cartridge._manifest import (
     CartridgeCompatibility,
     _manifest_present,
     _read_manifest_compatibility,
+    _read_manifest_data,
     _read_manifest_language,
     _read_schema_version,
 )
@@ -1422,12 +1423,24 @@ def _workspace_to_preset_inner(
                     raise CartridgeSerializationError(msg)
                 logger.warning("%s; skipping server", msg)
                 continue
+            _srv_capabilities = _srv_cfg.get("capabilities")
+            if _srv_capabilities is not None and (
+                not isinstance(_srv_capabilities, list)
+                or any(not isinstance(capability, str) for capability in _srv_capabilities)
+            ):
+                msg = f"mcp_servers.{_srv_name}.capabilities must be a list of strings"
+                if strict:
+                    raise CartridgeSerializationError(msg)
+                logger.warning("%s; skipping server", msg)
+                continue
             try:
-                _adapter = MCPToolAdapter(
-                    _cmd,
-                    env=_srv_env,
-                    timeout=float(_srv_cfg.get("timeout_s", 30.0)),
-                )
+                _adapter_kwargs: dict[str, Any] = {
+                    "env": _srv_env,
+                    "timeout": float(_srv_cfg.get("timeout_s", 30.0)),
+                }
+                if _srv_capabilities is not None:
+                    _adapter_kwargs["capabilities"] = _srv_capabilities
+                _adapter = MCPToolAdapter(_cmd, **_adapter_kwargs)
                 for _spec in _adapter.tools():
                     if _allow_set is not None and _spec.name not in _allow_set:
                         continue
@@ -1761,6 +1774,7 @@ def _workspace_to_preset_inner(
         resources=dict(resources),
         owned_resources=list(load_resources.owned_resources),
     )
+    preset.cartridge_manifest = dict(_read_manifest_data(root))
     if _mcp_adapters:
         preset.mcp_adapters = list(_mcp_adapters)
     if _state_service_handles:

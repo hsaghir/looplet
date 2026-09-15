@@ -3,6 +3,8 @@ from __future__ import annotations
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from multiprocessing import get_context
 
+import pytest
+
 from looplet import RunEnvelope, RunPhase, RunResult, RunStatus
 from looplet.checkpoint import Checkpoint
 from looplet.run_records import RunEvent
@@ -107,3 +109,21 @@ def test_file_run_store_serializes_concurrent_process_updates(tmp_path) -> None:
     assert record is not None
     assert set(record.checkpoint_keys) == {"step_1", "step_2", "step_3", "step_4"}
     assert all(store.load_checkpoint("process-race", f"step_{step}") for step in range(1, 5))
+
+
+@pytest.mark.parametrize("store_kind", ["memory", "file"])
+def test_run_store_rejects_checkpoint_from_another_run(tmp_path, store_kind) -> None:
+    store = MemoryRunStore() if store_kind == "memory" else FileRunStore(tmp_path)
+    store.create(RunEnvelope(run_id="run-a"))
+    checkpoint = Checkpoint(
+        step_number=1,
+        session_log_data={"entries": []},
+        conversation_data=None,
+        config_snapshot={},
+        tool_results_store={},
+        metadata={},
+        run_envelope={"run_id": "run-b"},
+    )
+
+    with pytest.raises(ValueError, match="belongs to run 'run-b'"):
+        store.save_checkpoint("run-a", checkpoint)

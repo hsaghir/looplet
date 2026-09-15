@@ -26,7 +26,7 @@ import os
 import subprocess
 import threading
 from dataclasses import dataclass, field
-from typing import Any, Iterable
+from typing import Any, Awaitable, Callable, Iterable, cast
 
 from looplet.budget import ContextBudget, ThresholdCompactHook
 from looplet.compact import DefaultCompactService
@@ -57,6 +57,81 @@ __all__ = [
     "research_agent_preset",
     "minimal_preset",
 ]
+
+
+class _PresetRunIterator:
+    """Release a preset claim when closed before first iteration."""
+
+    def __init__(self, iterator: Any, release: Callable[[], None]) -> None:
+        self._iterator = iterator
+        self._release = release
+        self._started = False
+        self._released = False
+
+    def _finish(self) -> None:
+        if not self._started and not self._released:
+            self._released = True
+            self._release()
+
+    def __iter__(self) -> "_PresetRunIterator":
+        return self
+
+    def __next__(self) -> Any:
+        self._started = True
+        try:
+            return next(self._iterator)
+        except BaseException:
+            self._finish()
+            raise
+
+    def close(self) -> None:
+        try:
+            close = getattr(self._iterator, "close", None)
+            if callable(close):
+                close()
+        finally:
+            self._finish()
+
+    def __del__(self) -> None:
+        self._finish()
+
+
+class _PresetAsyncIterator:
+    """Async equivalent of :class:`_PresetRunIterator`."""
+
+    def __init__(self, iterator: Any, release: Callable[[], None]) -> None:
+        self._iterator = iterator
+        self._release = release
+        self._started = False
+        self._released = False
+
+    def _finish(self) -> None:
+        if not self._started and not self._released:
+            self._released = True
+            self._release()
+
+    def __aiter__(self) -> "_PresetAsyncIterator":
+        return self
+
+    async def __anext__(self) -> Any:
+        self._started = True
+        try:
+            return await self._iterator.__anext__()
+        except BaseException:
+            self._finish()
+            raise
+
+    async def aclose(self) -> None:
+        try:
+            close = getattr(self._iterator, "aclose", None)
+            if callable(close):
+                await cast(Awaitable[Any], close())
+        finally:
+            self._finish()
+
+    def __del__(self) -> None:
+        self._finish()
+
 
 # ── Preset container ─────────────────────────────────────────────
 
@@ -181,6 +256,9 @@ class AgentPreset:
     ``None`` means the cartridge omitted the directive and the loader default
     applies. Presets constructed directly in code also leave this unset.
     """
+
+    cartridge_manifest: dict[str, Any] = field(default_factory=dict)
+    """JSON-safe manifest retained for cartridge round-trips."""
 
     _lifecycle_lock: threading.RLock = field(
         default_factory=threading.RLock,
@@ -371,7 +449,7 @@ class AgentPreset:
             finally:
                 self._mark_run_finished()
 
-        return _drive()
+        return _PresetRunIterator(_drive(), self._release_failed_claim)
 
     def run_async(
         self,
@@ -424,7 +502,7 @@ class AgentPreset:
             finally:
                 self._mark_run_finished()
 
-        return _drive()
+        return _PresetAsyncIterator(_drive(), self._release_failed_claim)
 
     @property
     def run_claimed(self) -> bool:

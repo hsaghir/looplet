@@ -451,6 +451,33 @@ class TestToolRegistryCloning:
         assert "write_file" not in registered
         assert "search" in registered
 
+    def test_clone_preserves_authority_and_retry_metadata(self):
+        from looplet.subagent import clone_tools_excluding
+        from looplet.tools import BaseToolRegistry, ToolSpec
+
+        spec = ToolSpec(
+            name="read",
+            description="Read",
+            parameters={},
+            execute=lambda: {},
+            timeout_s=2.5,
+            idempotency="safe",
+            retryable=True,
+            requires=["workspace"],
+            tags=["filesystem"],
+            render={"max_chars": 100},
+            capabilities=["workspace.read"],
+        )
+        parent = BaseToolRegistry()
+        parent.register(spec)
+        copied = clone_tools_excluding(parent, [])._tools["read"]
+        assert copied is not spec
+        assert copied.capabilities == ["workspace.read"]
+        assert copied.requires == ["workspace"]
+        assert copied.idempotency == "safe"
+        assert copied.retryable is True
+        assert copied.timeout_s == 2.5
+
 
 # ── Parent state isolation tests ─────────────────────────────────
 

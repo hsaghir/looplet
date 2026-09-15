@@ -12,7 +12,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Protocol, Sequence, runtime_checkable
 
-from looplet.checkpoint import Checkpoint
+from looplet.checkpoint import Checkpoint, validate_checkpoint_identity
 from looplet.run_records import ArtifactRef, RunEvent, RunRecord
 from looplet.types import RunEnvelope, RunResult
 
@@ -122,6 +122,7 @@ class MemoryRunStore:
     def save_checkpoint(self, run_id: str, checkpoint: Checkpoint) -> str:
         with self._lock:
             record = self._require(run_id)
+            validate_checkpoint_identity(checkpoint, run_id)
             key = f"step_{checkpoint.step_number}"
             self._records[run_id] = record.with_updates(
                 updated_at=checkpoint.created_at,
@@ -132,7 +133,10 @@ class MemoryRunStore:
 
     def load_checkpoint(self, run_id: str, key: str) -> Checkpoint | None:
         with self._lock:
-            return self._checkpoints.get((run_id, Path(key).name))
+            checkpoint = self._checkpoints.get((run_id, Path(key).name))
+            if checkpoint is not None:
+                validate_checkpoint_identity(checkpoint, run_id)
+            return checkpoint
 
     def complete(
         self,
@@ -227,6 +231,7 @@ class FileRunStore:
     def save_checkpoint(self, run_id: str, checkpoint: Checkpoint) -> str:
         with self._locked():
             record = self._require_unlocked(run_id)
+            validate_checkpoint_identity(checkpoint, run_id)
             key = f"step_{checkpoint.step_number}"
             path = self._root(run_id) / "checkpoints" / f"{key}.json"
             self._write(path, checkpoint.to_dict())
@@ -242,7 +247,9 @@ class FileRunStore:
             path = self._root(run_id) / "checkpoints" / f"{Path(key).name}.json"
             if not path.is_file():
                 return None
-            return Checkpoint.from_dict(json.loads(path.read_text(encoding="utf-8")))
+            checkpoint = Checkpoint.from_dict(json.loads(path.read_text(encoding="utf-8")))
+            validate_checkpoint_identity(checkpoint, run_id)
+            return checkpoint
 
     def complete(
         self,

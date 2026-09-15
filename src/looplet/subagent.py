@@ -163,60 +163,63 @@ def run_sub_loop(
         conversation=_sub_conv,
     )
 
-    # Exhaust generator - collect step dicts
-    steps: list[dict[str, Any]] = []
-    trace: Any = None
     try:
-        while True:
-            step = next(gen)
-            steps.append(step.to_dict())
-    except StopIteration as e:
-        trace = e.value
+        steps: list[dict[str, Any]] = []
+        trace: Any = None
+        try:
+            while True:
+                step = next(gen)
+                steps.append(step.to_dict())
+        except StopIteration as e:
+            trace = e.value
 
-    # Aggregate findings and highlights from session log entries
-    all_findings: list[str] = []
-    all_highlights: list[str] = []
-    if hasattr(session_log, "entries"):
-        for entry in session_log.entries:
-            if hasattr(entry, "findings"):
-                all_findings.extend(entry.findings or [])
-            if hasattr(entry, "highlights"):
-                all_highlights.extend(entry.highlights or [])
+        all_findings: list[str] = []
+        all_highlights: list[str] = []
+        if hasattr(session_log, "entries"):
+            for entry in session_log.entries:
+                if hasattr(entry, "findings"):
+                    all_findings.extend(entry.findings or [])
+                if hasattr(entry, "highlights"):
+                    all_highlights.extend(entry.highlights or [])
 
-    # Build summary via injected callable or generic default
-    result: dict[str, Any]
-    if build_summary is not None:
-        result = build_summary(state, session_log, steps)
-    else:
-        entities = sorted(session_log.all_entities())
-        summary = f"Entities: {', '.join(entities[:10])}" if entities else "No findings"
-        result = {
-            "summary": summary,
-            "entities": entities,
-        }
+        if build_summary is not None:
+            result = build_summary(state, session_log, steps)
+        else:
+            entities = sorted(session_log.all_entities())
+            summary = f"Entities: {', '.join(entities[:10])}" if entities else "No findings"
+            result = {"summary": summary, "entities": entities}
 
-    result["steps"] = steps
-    result["llm_calls"] = trace.get("llm_calls", 0) if isinstance(trace, dict) else 0
-    result.setdefault("findings", all_findings)
-    result.setdefault("highlights", all_highlights)
-
-    # Fire SUBAGENT_STOP - observers see completion, final state, and
-    # the llm-call cost via EventPayload.extra. Swallowing exceptions
-    # is already handled by emit_event.
-    emit_event(
-        list(parent_hooks or []) + (hooks or []),
-        _LE.SUBAGENT_STOP,
-        state=state,
-        context=context,
-        subagent_id=subagent_id,
-        extra={
-            "llm_calls": result["llm_calls"],
-            "step_count": len(steps),
-            "entities": result.get("entities", []),
-        },
-    )
-    result["subagent_id"] = subagent_id
-    return result
+        result["steps"] = steps
+        result["llm_calls"] = trace.get("llm_calls", 0) if isinstance(trace, dict) else 0
+        result.setdefault("findings", all_findings)
+        result.setdefault("highlights", all_highlights)
+        result["subagent_id"] = subagent_id
+        return result
+    except BaseException as exc:
+        emit_event(
+            list(parent_hooks or []) + (hooks or []),
+            _LE.SUBAGENT_STOP,
+            state=state,
+            context=context,
+            subagent_id=subagent_id,
+            termination_reason="error",
+            extra={"error": f"{type(exc).__name__}: {exc}"},
+        )
+        raise
+    finally:
+        if "result" in locals():
+            emit_event(
+                list(parent_hooks or []) + (hooks or []),
+                _LE.SUBAGENT_STOP,
+                state=state,
+                context=context,
+                subagent_id=subagent_id,
+                extra={
+                    "llm_calls": result["llm_calls"],
+                    "step_count": len(result["steps"]),
+                    "entities": result.get("entities", []),
+                },
+            )
 
 
 class _ParentHookForwarder:
@@ -339,6 +342,14 @@ def clone_tools_excluding(parent_tools: Any, exclude: list[str]) -> Any:
                 execute=spec.execute,
                 concurrent_safe=spec.concurrent_safe,
                 free=spec.free,
+                timeout_s=getattr(spec, "timeout_s", None),
+                infer_optional_from_signature=getattr(spec, "infer_optional_from_signature", False),
+                idempotency=getattr(spec, "idempotency", "unknown"),
+                retryable=getattr(spec, "retryable", False),
+                requires=list(getattr(spec, "requires", ())),
+                tags=list(getattr(spec, "tags", ())),
+                render=dict(getattr(spec, "render", {})),
+                capabilities=list(getattr(spec, "capabilities", ())),
             )
         )
     return sub

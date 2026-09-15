@@ -59,7 +59,13 @@ from looplet.cartridge import (
     resource_ref_for,
 )
 from looplet.cartridge.scaffold import scaffold_cartridge
-from looplet.checkpoint import FileCheckpointStore
+from looplet.checkpoint import (
+    Checkpoint,
+    CheckpointHook,
+    CheckpointStore,
+    FileCheckpointStore,
+    resume_loop_state,
+)
 from looplet.compact import (
     CompactOutcome,
     CompactService,

@@ -42,6 +42,7 @@ from typing import Any, AsyncGenerator
 from looplet.checkpoint import Checkpoint as _Checkpoint
 from looplet.checkpoint import FileCheckpointStore as _FileCheckpointStore
 from looplet.checkpoint import resume_loop_state as _resume_loop_state
+from looplet.checkpoint import validate_checkpoint_identity as _validate_checkpoint_identity
 from looplet.context_projection import ContextProjection
 from looplet.loop import (
     ContextBudgetSnapshot,
@@ -55,6 +56,7 @@ from looplet.loop import (
     _call_check_done,
     _deadline_expired,
     _default_build_briefing,
+    _default_extract_entities,
     _emit_hook_decision_event_async,
     _intercept_tool_calls_async,
     _mark_failed_state,
@@ -498,6 +500,10 @@ async def _async_composable_loop_impl(
 
     _step_offset = 0
     if config.initial_checkpoint is not None:
+        _validate_checkpoint_identity(
+            config.initial_checkpoint,
+            config.run_envelope.run_id if config.run_envelope is not None else None,
+        )
         resumed = _resume_loop_state(config.initial_checkpoint)
         if config.run_envelope is None and isinstance(resumed.get("run_envelope"), dict):
             config = _dc_replace(
@@ -554,12 +560,25 @@ async def _async_composable_loop_impl(
     loop_ctx.step_num = _step_offset
 
     # Domain callables
-    _default_ee = lambda data: []  # noqa: E731
-    extract_entities = (
+    _raw_extract_entities = (
         config.extract_entities
         or (config.domain.extract_entities if config.domain else None)
-        or _default_ee
+        or _default_extract_entities
     )
+    try:
+        _ee_params = inspect.signature(_raw_extract_entities).parameters
+        _ee_takes_state = "state" in _ee_params or any(
+            parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in _ee_params.values()
+        )
+    except (TypeError, ValueError):
+        _ee_takes_state = False
+    if _ee_takes_state:
+
+        def extract_entities(data: Any) -> list[str]:
+            return _raw_extract_entities(data, state=state)
+
+    else:
+        extract_entities = _raw_extract_entities
     extract_step_metadata = (
         config.extract_step_metadata
         or (config.domain.extract_step_metadata if config.domain else None)
@@ -710,9 +729,14 @@ async def _async_composable_loop_impl(
         _want_compact = False
         for hook in hooks:
             method = getattr(hook, "should_compact", None)
-            if method is not None and await _maybe_await(
-                method(state, session_log, _conv, step_num)
-            ):
+            if method is None:
+                continue
+            try:
+                should_compact = await _maybe_await(method(state, session_log, _conv, step_num))
+            except Exception:  # noqa: BLE001
+                logger.exception("should_compact hook raised; skipping")
+                should_compact = False
+            if should_compact:
                 _want_compact = True
                 break
         if _want_compact and config.compact_service is not None:

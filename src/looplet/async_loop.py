@@ -67,7 +67,7 @@ from looplet.loop import (
     _validate_loop_inputs,
     emit_event_async,
 )
-from looplet.native_tools import NativeToolPolicy
+from looplet.native_tools import NativeToolPolicy, NativeToolUnsupportedError
 from looplet.parse import parse_multi_tool_calls, to_text
 from looplet.scaffolding import (
     PARSE_RECOVERY_MAX,
@@ -210,6 +210,9 @@ async def async_llm_call(
     native_fallback = False
     native_attempted = False
     native_fallback_reason: str | None = None
+    # Reserve one extra slot for the native-to-text fallback. Ordinary native
+    # provider failures are handled by the explicit native retry budget below
+    # and never consume this fallback slot.
     attempt_limit = max_retries + 1 + int(use_native)
 
     for attempt in range(attempt_limit):
@@ -233,7 +236,7 @@ async def async_llm_call(
                 if inspect.isawaitable(result):
                     result = await result
                 if result is None:
-                    raise RuntimeError("native tool call returned no response")
+                    raise NativeToolUnsupportedError("native tool call returned no response")
                 return LLMResult(
                     result,
                     stop_reason=getattr(llm, "last_stop_reason", None),
@@ -295,7 +298,7 @@ async def async_llm_call(
             last_error = e
             if _is_prompt_too_long(e):
                 return LLMResult(None, e)
-            if use_native:
+            if use_native and isinstance(e, NativeToolUnsupportedError):
                 logger.warning(
                     "Async native tool call failed; falling back to regular generation: %s",
                     e,
@@ -305,6 +308,24 @@ async def async_llm_call(
                 native_fallback = True
                 native_fallback_reason = f"{type(e).__name__}: {e}"
                 continue
+            if use_native:
+                if attempt < max_retries:
+                    wait = RETRY_BACKOFF_BASE * (2**attempt)
+                    logger.warning(
+                        "Async native LLM call attempt %d/%d failed: %s - retrying in %.1fs",
+                        attempt + 1,
+                        max_retries + 1,
+                        e,
+                        wait,
+                    )
+                    await asyncio.sleep(wait)
+                    continue
+                return LLMResult(
+                    None,
+                    e,
+                    native_requested=bool(tools is not None and policy.enabled),
+                    native_attempted=native_attempted,
+                )
             if attempt < attempt_limit - 1:
                 wait = RETRY_BACKOFF_BASE * (2**attempt)
                 logger.warning(
@@ -1200,10 +1221,18 @@ async def _async_composable_loop_impl(
                         )
                     except Exception:  # noqa: BLE001
                         logger.exception(
-                            "check_done hook %s raised; continuing",
+                            "check_done hook %s raised; rejecting done()",
                             type(hook).__name__,
                         )
-                        w = None
+                        from looplet.hook_decision import HookDecision  # noqa: PLC0415
+
+                        w = HookDecision(
+                            block=(
+                                f"Quality gate {type(hook).__name__} failed; "
+                                "the final answer was not accepted."
+                            ),
+                            metadata={"hook_error": True},
+                        )
                     _decision = normalize_hook_return(w, slot="check_done")
                     if _decision is not None:
                         await _emit_hook_decision_event_async(
@@ -1238,6 +1267,7 @@ async def _async_composable_loop_impl(
                     tool=done_tool_name,
                     args_summary="rejected",
                     data={"rejected": True, "reason": gate_warning},
+                    error=gate_warning,
                 )
                 step = Step(number=cur_step, tool_call=tool_call, tool_result=tool_result)
                 state.steps.append(step)

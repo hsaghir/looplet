@@ -25,7 +25,7 @@ from looplet.checkpoint import (
 from looplet.context_plan import ContextPlan
 from looplet.context_projection import ContextProjection
 from looplet.history import HistoryRecorder
-from looplet.hook_decision import normalize_hook_return
+from looplet.hook_decision import HookDecision, normalize_hook_return
 from looplet.native_tools import NativeToolPolicy
 from looplet.parse import parse_multi_tool_calls, to_text
 from looplet.recovery import FailureScenario as _FailureScenario
@@ -3145,16 +3145,20 @@ def _composable_loop_impl(
                         w = _call_check_done(hook, state, session_log, context, cur_step, tool_call)
                         _decision = normalize_hook_return(w, slot="check_done")
                     except Exception:  # noqa: BLE001
-                        # Isolate buggy hooks: a single check_done that
-                        # raises (or returns garbage normalize_hook_return
-                        # rejects) must not crash the loop. Log loudly,
-                        # treat as 'no decision', and let the agent's
-                        # done() through.
+                        # A broken quality gate must fail closed. The agent
+                        # gets one actionable rejection and can retry after
+                        # the host records the hook failure.
                         logger.exception(
-                            "check_done hook %s raised or returned invalid value; continuing",
+                            "check_done hook %s raised; rejecting done()",
                             type(hook).__name__,
                         )
-                        _decision = None
+                        _decision = HookDecision(
+                            block=(
+                                f"Quality gate {type(hook).__name__} failed; "
+                                "the final answer was not accepted."
+                            ),
+                            metadata={"hook_error": True},
+                        )
                     if _decision is not None:
                         _emit_hook_decision_event(
                             hooks,

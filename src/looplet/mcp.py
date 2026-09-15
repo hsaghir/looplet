@@ -88,6 +88,7 @@ class MCPToolAdapter:
         self._lock = threading.Lock()
         self._reader_lock = threading.Lock()
         self._reader_threads: set[threading.Thread] = set()
+        self._pending_messages: list[dict[str, Any]] = []
         self._tool_schemas: list[dict[str, Any]] = []
         self._started = False
 
@@ -284,29 +285,48 @@ class MCPToolAdapter:
         """
         if self._proc is None or self._proc.stdout is None:
             return None
-        line = self._run_io_with_timeout(
-            self._proc.stdout.readline,
-            operation="response",
-        )
-        if not line:
-            return None
-        try:
-            data = json.loads(line.decode("utf-8"))
-        except json.JSONDecodeError as exc:
-            logger.warning("MCP non-JSON line on stdout (%s): %r", exc, line[:200])
-            return None
-        if not isinstance(data, dict):
-            logger.warning("MCP response must be a JSON object: %r", data)
-            return None
-        if expected_id is not None and data.get("id") != expected_id:
-            logger.warning(
-                "MCP response id mismatch: expected %s, got %s", expected_id, data.get("id")
-            )
-            return None
-        if "error" in data:
-            logger.warning("MCP error: %s", data["error"])
-            return None
-        return data.get("result", data)
+        while True:
+            data = self._pop_pending_message(expected_id)
+            if data is None:
+                line = self._run_io_with_timeout(
+                    self._proc.stdout.readline,
+                    operation="response",
+                )
+                if not line:
+                    return None
+                try:
+                    data = json.loads(line.decode("utf-8"))
+                except json.JSONDecodeError as exc:
+                    logger.warning("MCP non-JSON line on stdout (%s): %r", exc, line[:200])
+                    continue
+                if not isinstance(data, dict):
+                    logger.warning("MCP response must be a JSON object: %r", data)
+                    continue
+
+            if expected_id is not None and data.get("id") is None:
+                logger.debug(
+                    "MCP notification received while awaiting response: %s", data.get("method")
+                )
+                continue
+            if expected_id is not None and data.get("id") != expected_id:
+                self._pending_messages.append(data)
+                logger.debug(
+                    "Queued MCP response id %s while awaiting %s", data.get("id"), expected_id
+                )
+                continue
+            if "error" in data:
+                logger.warning("MCP error: %s", data["error"])
+                return None
+            return data.get("result", data)
+
+    def _pop_pending_message(self, expected_id: int | None) -> dict[str, Any] | None:
+        """Remove a queued response matching ``expected_id``, if available."""
+        if expected_id is None:
+            return self._pending_messages.pop(0) if self._pending_messages else None
+        for index, message in enumerate(self._pending_messages):
+            if message.get("id") == expected_id:
+                return self._pending_messages.pop(index)
+        return None
 
     def _stderr_tail_if_exited(self, proc: subprocess.Popen | None) -> str:
         """Read one bounded stderr chunk after a child has exited."""
@@ -475,7 +495,9 @@ class MCPToolAdapter:
         """Convert MCP JSON-schema parameters to ToolSpec parameter dict."""
         input_schema = schema.get("inputSchema", {})
         props = input_schema.get("properties", {})
+        required = set(input_schema.get("required", []))
         params: dict[str, str] = {}
         for name, prop in props.items():
-            params[name] = prop.get("type", "str")
+            type_name = prop.get("type", "str") if isinstance(prop, dict) else "str"
+            params[name] = type_name if name in required else f"(optional) {type_name}"
         return params

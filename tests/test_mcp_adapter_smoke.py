@@ -36,7 +36,7 @@ class TestMCPToolAdapter:
             },
         }
         params = MCPToolAdapter._extract_params(schema)
-        assert params == {"path": "string", "encoding": "string"}
+        assert params == {"path": "string", "encoding": "(optional) string"}
 
     def test_extract_params_empty(self):
         schema = {"name": "noop", "inputSchema": {"type": "object"}}
@@ -94,6 +94,19 @@ class TestMCPToolAdapter:
 
         assert adapter._read_message() is None
         assert "MCP error" in caplog.text
+
+    def test_reader_skips_notifications_and_queues_other_responses(self):
+        adapter = MCPToolAdapter("echo test")
+        adapter._proc = SimpleNamespace(
+            stdout=io.BytesIO(
+                b'{"jsonrpc":"2.0","method":"notifications/progress"}\n'
+                b'{"jsonrpc":"2.0","id":2,"result":{"value":"later"}}\n'
+                b'{"jsonrpc":"2.0","id":1,"result":{"value":"now"}}\n'
+            )
+        )
+
+        assert adapter._read_message(expected_id=1) == {"value": "now"}
+        assert adapter._read_message(expected_id=2) == {"value": "later"}
 
     @pytest.mark.parametrize("payload", [b"[]\n", b"1\n"])
     def test_nonobject_response_returns_none(self, payload, caplog):

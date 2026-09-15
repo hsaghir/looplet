@@ -31,6 +31,40 @@ class TestToolTimeout:
         )
         assert spec.timeout_s == 5.0
 
+    def test_string_arguments_preserve_whitespace(self) -> None:
+        seen = []
+        reg = BaseToolRegistry()
+        reg.register(
+            ToolSpec(
+                name="capture",
+                description="x",
+                parameters={"value": "str"},
+                execute=lambda value: seen.append(value),
+            )
+        )
+
+        result = reg.dispatch(ToolCall(tool="capture", args={"value": "  exact  "}))
+
+        assert result.error is None
+        assert seen == ["  exact  "]
+
+    def test_simple_schema_can_explicitly_infer_callable_default(self) -> None:
+        reg = BaseToolRegistry()
+        reg.register(
+            ToolSpec(
+                name="optional",
+                description="x",
+                parameters={"value": "str"},
+                execute=lambda value="default": value,
+                infer_optional_from_signature=True,
+            )
+        )
+
+        result = reg.dispatch(ToolCall(tool="optional", args={}))
+
+        assert result.error is None
+        assert result.data == "default"
+
     def test_slow_tool_times_out(self) -> None:
         reg = BaseToolRegistry()
         reg.register(

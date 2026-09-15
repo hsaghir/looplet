@@ -91,6 +91,10 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Tool dispatch now preserves string arguments byte-for-byte, derives optional
+  simple-schema parameters from callable defaults, and retains MCP JSON Schema
+  requiredness. MCP stdio reads now skip notifications and queue responses
+  that arrive out of order instead of treating them as missing responses.
 - `AgentRuntime` now prevents unsafe reuse of mutable preset state, serializes
   file-backed run-store updates, and rejects malformed compatibility constraints.
 - State Service request reads now honor run deadlines, malformed requests

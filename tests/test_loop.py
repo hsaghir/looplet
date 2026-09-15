@@ -660,6 +660,36 @@ class TestComposableLoopHooks:
                 )
             )
 
+    def test_explicit_identityless_checkpoint_is_rejected_for_identified_run(self):
+        from looplet.checkpoint import Checkpoint
+        from looplet.loop import LoopConfig, composable_loop
+        from looplet.types import RunEnvelope
+        from tests.conftest import MockLLMBackend
+
+        checkpoint = Checkpoint(
+            step_number=1,
+            session_log_data={"entries": [], "current_theory": ""},
+            conversation_data=None,
+            config_snapshot={"max_steps": 2},
+            tool_results_store={},
+            metadata={},
+        )
+        config = LoopConfig(
+            max_steps=2,
+            initial_checkpoint=checkpoint,
+            run_envelope=RunEnvelope(run_id="run-b"),
+        )
+
+        with pytest.raises(ValueError, match="belongs to run None"):
+            list(
+                composable_loop(
+                    MockLLMBackend(['{"tool":"done","args":{}}']),
+                    state=SimpleState(),
+                    tools=_make_registry_with_done(),
+                    config=config,
+                )
+            )
+
     def test_pre_dispatch_interception(self):
         from looplet.loop import LoopConfig, composable_loop
         from looplet.tools import ToolSpec

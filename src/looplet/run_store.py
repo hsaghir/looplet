@@ -122,7 +122,10 @@ class MemoryRunStore:
     def save_checkpoint(self, run_id: str, checkpoint: Checkpoint) -> str:
         with self._lock:
             record = self._require(run_id)
-            validate_checkpoint_identity(checkpoint, run_id)
+            if checkpoint.run_id is None:
+                checkpoint = replace(checkpoint, run_envelope={"run_id": run_id})
+            else:
+                validate_checkpoint_identity(checkpoint, run_id)
             key = f"step_{checkpoint.step_number}"
             self._records[run_id] = record.with_updates(
                 updated_at=checkpoint.created_at,
@@ -231,7 +234,10 @@ class FileRunStore:
     def save_checkpoint(self, run_id: str, checkpoint: Checkpoint) -> str:
         with self._locked():
             record = self._require_unlocked(run_id)
-            validate_checkpoint_identity(checkpoint, run_id)
+            if checkpoint.run_id is None:
+                checkpoint = replace(checkpoint, run_envelope={"run_id": run_id})
+            else:
+                validate_checkpoint_identity(checkpoint, run_id)
             key = f"step_{checkpoint.step_number}"
             path = self._root(run_id) / "checkpoints" / f"{key}.json"
             self._write(path, checkpoint.to_dict())

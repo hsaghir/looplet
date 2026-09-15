@@ -139,6 +139,91 @@ def test_runtime_failed_run_persists_terminal_checkpoint() -> None:
     assert checkpoint.run_status == "failed"
 
 
+def test_runtime_checkpoint_carries_checkpointable_llm_state() -> None:
+    class CheckpointLLM(MockLLMBackend):
+        def __init__(self):
+            super().__init__(['{"tool":"done","args":{"summary":"ok"}}'])
+
+        def checkpoint_state(self):
+            return {"provider_response_id": "resp-1"}
+
+    store = MemoryRunStore()
+    with AgentRuntime(_preset(), store=store, checkpoint_every_n_steps=1) as runtime:
+        result = runtime.run(CheckpointLLM(), task={})
+
+    checkpoint = store.load_checkpoint(result.run_envelope.run_id, "step_1")
+    assert checkpoint is not None
+    assert checkpoint.domain_state["llm"] == {"provider_response_id": "resp-1"}
+
+
+def test_runtime_checkpoint_failure_is_reported_without_masking_result() -> None:
+    class BrokenStore(MemoryRunStore):
+        def save_checkpoint(self, run_id, checkpoint):
+            raise OSError("checkpoint disk full")
+
+    store = BrokenStore()
+    with AgentRuntime(_preset(), store=store, checkpoint_every_n_steps=1) as runtime:
+        result = runtime.run(
+            MockLLMBackend(['{"tool":"done","args":{"summary":"ok"}}']),
+            task={},
+        )
+
+    assert result.status is RunStatus.COMPLETED
+    assert any("checkpoint" in warning for warning in result.metadata["persistence_warnings"])
+
+
+def test_runtime_completion_store_failure_is_reported_without_masking_result() -> None:
+    class BrokenStore(MemoryRunStore):
+        def complete(self, run_id, result, *, artifacts=()):
+            raise OSError("store unavailable")
+
+    with AgentRuntime(_preset(), store=BrokenStore()) as runtime:
+        result = runtime.run(
+            MockLLMBackend(['{"tool":"done","args":{"summary":"ok"}}']),
+            task={},
+        )
+
+    assert result.status is RunStatus.COMPLETED
+    assert any("complete" in warning for warning in result.metadata["persistence_warnings"])
+
+
+def test_runtime_provider_checkpoint_failure_is_reported_without_masking_result() -> None:
+    class BrokenBackend(MockLLMBackend):
+        def checkpoint_state(self):
+            raise RuntimeError("provider state unavailable")
+
+    with AgentRuntime(_preset(), store=MemoryRunStore(), checkpoint_every_n_steps=1) as runtime:
+        result = runtime.run(
+            BrokenBackend(['{"tool":"done","args":{"summary":"ok"}}']),
+            task={},
+        )
+
+    assert result.status is RunStatus.COMPLETED
+    assert any(
+        "provider state unavailable" in warning
+        for warning in result.metadata["persistence_warnings"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_async_runtime_checkpoint_failure_is_reported_without_masking_result() -> None:
+    class BrokenStore(MemoryRunStore):
+        def save_checkpoint(self, run_id, checkpoint):
+            raise OSError("async checkpoint unavailable")
+
+    with AgentRuntime(_preset(), store=BrokenStore(), checkpoint_every_n_steps=1) as runtime:
+        result = await runtime.run_async(
+            AsyncMockLLMBackend(['{"tool":"done","args":{"summary":"ok"}}']),
+            task={},
+        )
+
+    assert result.status is RunStatus.COMPLETED
+    assert any(
+        "async checkpoint unavailable" in warning
+        for warning in result.metadata["persistence_warnings"]
+    )
+
+
 @pytest.mark.asyncio
 async def test_runtime_handle_wait_shuts_down_executor() -> None:
     runtime = AgentRuntime(_preset())

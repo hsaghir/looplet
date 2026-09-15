@@ -33,7 +33,7 @@ class CheckpointIdentityError(ValueError):
 def validate_checkpoint_identity(checkpoint: "Checkpoint", run_id: str | None) -> None:
     """Reject a checkpoint carrying an identity different from ``run_id``."""
     checkpoint_run_id = checkpoint.run_id
-    if run_id is not None and checkpoint_run_id is not None and checkpoint_run_id != run_id:
+    if run_id is not None and checkpoint_run_id != run_id:
         raise CheckpointIdentityError(
             f"checkpoint belongs to run {checkpoint_run_id!r}, not {run_id!r}"
         )
@@ -239,9 +239,13 @@ class FileCheckpointStore:
     def load(self, key: str, *, run_id: str | None = None) -> Checkpoint | None:
         """Read checkpoint from ``{directory}/{key}.json``; None if missing."""
         safe_key = Path(key).name  # strip any directory separators to prevent traversal
-        path = self._dir / f"{safe_key}.json"
-        if not path.exists() and run_id is not None:
-            path = self._dir / f"{run_id}__{safe_key}.json"
+        path = (
+            self._dir / f"{run_id}__{safe_key}.json"
+            if run_id is not None
+            else self._dir / f"{safe_key}.json"
+        )
+        if run_id is not None and not path.exists():
+            path = self._dir / f"{safe_key}.json"
         if not path.exists():
             namespaced = sorted(self._dir.glob(f"*__{safe_key}.json"))
             if len(namespaced) == 1:

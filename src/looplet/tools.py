@@ -408,6 +408,13 @@ class ToolSpec:
     leave this empty.
     """
 
+    capabilities: list[str] = field(default_factory=list)
+    """Host authorities required before this tool may execute.
+
+    Examples include ``workspace.write``, ``network``, ``shell``, and
+    ``host.absolute_path``. An empty list preserves legacy behavior.
+    """
+
     _accepts_ctx: bool | None = field(default=None, repr=False, compare=False)
     """Cached result of ``inspect.signature(execute)`` for ``ctx`` detection."""
 
@@ -870,6 +877,32 @@ class BaseToolRegistry:
                 error_detail=error,
                 call_id=call.call_id,
             )
+
+        if spec.capabilities:
+            policy = getattr(ctx, "execution_policy", None) if ctx is not None else None
+            if policy is None or not policy.allows(spec.capabilities):
+                missing = (
+                    tuple(spec.capabilities)
+                    if policy is None
+                    else policy.missing(spec.capabilities)
+                )
+                error = ToolError(
+                    kind=ErrorKind.PERMISSION_DENIED,
+                    message=(
+                        f"Tool '{spec.name}' requires unavailable capabilities: "
+                        f"{', '.join(missing)}"
+                    ),
+                    retriable=False,
+                    context={"missing_capabilities": list(missing)},
+                )
+                return ToolResult(
+                    tool=call.tool,
+                    args_summary=self._summarize_args(call),
+                    data=None,
+                    error=error.message,
+                    error_detail=error,
+                    call_id=call.call_id,
+                )
 
         if spec._accepts_ctx is None:
             spec._accepts_ctx = _accepts_ctx(spec.execute)

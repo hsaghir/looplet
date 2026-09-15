@@ -13,6 +13,7 @@ from dataclasses import replace as _dc_replace
 from typing import TYPE_CHECKING, Any, Callable, Generator, Protocol, runtime_checkable
 from weakref import WeakKeyDictionary
 
+from looplet.capabilities import ExecutionPolicy
 from looplet.checkpoint import (
     Checkpoint as _Checkpoint,
 )
@@ -724,6 +725,9 @@ class LoopConfig:
 
     Leave unset for fully-autonomous runs."""
 
+    execution_policy: ExecutionPolicy | None = None
+    """Host-owned capabilities available to declared tools in this run."""
+
     context_window: int = 128_000
     """Maximum context window (in tokens) for the backend.  Used by:
 
@@ -1016,6 +1020,7 @@ def _build_tool_ctx(
         on_progress=_progress_fn,
         llm=_tool_llm,
         run_envelope=config.run_envelope,
+        execution_policy=config.execution_policy,
         metadata=_metadata,
     )
 

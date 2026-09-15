@@ -157,6 +157,7 @@ list(composable_loop(...))
 
 # ✗ this does nothing - the loop never runs
 composable_loop(...)
+```
 
 ## 13. Token and context budgets are explicit
 
@@ -170,7 +171,6 @@ context pressure and, when `reactive_recovery=True`, runs the configured
 recovery chain before retrying. With recovery disabled, an oversized prompt is
 stopped before it reaches the provider and the run records a typed context
 overflow error.
-```
 
 ## 9. `generate_with_tools` is surfaced via hasattr
 

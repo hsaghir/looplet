@@ -41,6 +41,7 @@ from looplet.recovery_strategies import (
 from looplet.scaffolding import (
     PARSE_RECOVERY_MAX,
     ContextBudgetSnapshot,
+    ContextOverflowError,
     LLMResult,
     NativeToolStats,
     build_parse_recovery_prompt,
@@ -477,7 +478,7 @@ class LoopConfig:
     """
 
     max_steps: int = 15
-    max_tokens: int = 2000
+    max_tokens: int | None = None
     system_prompt: str = ""
     temperature: float = 0.2
     recovery_temperature: float = 0.1
@@ -2679,13 +2680,21 @@ def _composable_loop_impl(
                 stop_reason = _d.stop
                 _hook_requested_stop = True
 
-        if preflight_too_long and config.reactive_recovery:
+        if preflight_too_long:
             logger.warning(
-                "Pre-flight block: prompt ~%d tokens exceeds safe limit - "
-                "running recovery before LLM call",
+                "Pre-flight block: prompt ~%d tokens exceeds safe limit - %s",
                 estimated_tokens,
+                "running recovery before LLM call"
+                if config.reactive_recovery
+                else "stopping before LLM call",
             )
-            llm_result = LLMResult(None, Exception("pre-flight: prompt is too long"))
+            llm_result = LLMResult(
+                None,
+                ContextOverflowError(
+                    f"prompt estimate {estimated_tokens} tokens exceeds safe context "
+                    f"limit {config.context_window - 3_000}"
+                ),
+            )
         else:
             # ── LLM call with retry + reactive recovery ───────────
             # Emit LLMCallStartEvent
@@ -2848,7 +2857,11 @@ def _composable_loop_impl(
                 tool="__llm_error__",
                 args_summary="",
                 data=None,
-                error="LLM call failed after all retry attempts",
+                error=(
+                    str(llm_result.error)
+                    if llm_result.error is not None
+                    else "LLM call failed after all retry attempts"
+                ),
             )
             step = Step(number=step_num, tool_call=error_call, tool_result=error_result)
             state.steps.append(step)

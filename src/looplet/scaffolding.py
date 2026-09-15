@@ -21,7 +21,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from looplet.native_tools import NativeToolPolicy
+from looplet.native_tools import NativeToolPolicy, NativeToolUnsupportedError
 
 logger = logging.getLogger(__name__)
 
@@ -282,10 +282,11 @@ def llm_call_with_retry(
     against the same context window will always fail.
 
     When ``tools`` is provided and the backend exposes ``generate_with_tools``,
-    native tool calling is used; otherwise the call falls back to ``generate``
-    (plain text → JSON-text tool parsing upstream). If the native call raises,
-    the same call transparently downgrades to ``generate`` without requiring a
-    second configuration setting.
+    native tool calling is used; otherwise the call uses ``generate`` (plain
+    text → JSON-text tool parsing upstream). A backend may raise
+    :class:`looplet.native_tools.NativeToolUnsupportedError` to explicitly
+    request a demotion to the text protocol; ordinary provider failures remain
+    failures.
 
     When ``cancel_token`` is provided:
       * If already cancelled before the call, returns an error result
@@ -300,7 +301,9 @@ def llm_call_with_retry(
 
     policy = native_policy or NativeToolPolicy()
     use_native = policy.should_use(llm, tools)
-    # Reserve one extra iteration for the transparent native -> text fallback.
+    # Reserve one extra slot for the native-to-text fallback. Ordinary native
+    # provider failures are handled by the explicit native retry budget below
+    # and never consume this fallback slot.
     attempt_limit = max_retries + 1 + int(use_native)
     last_error: Exception | None = None
     native_fallback = False
@@ -334,7 +337,7 @@ def llm_call_with_retry(
                     call_kwargs["cache_breakpoints"] = cache_breakpoints
                 blocks = call(prompt, **call_kwargs)
                 if blocks is None:
-                    raise RuntimeError("native tool call returned no response")
+                    raise NativeToolUnsupportedError("native tool call returned no response")
                 return LLMResult(
                     blocks,
                     stop_reason=getattr(llm, "last_stop_reason", None),
@@ -411,7 +414,7 @@ def llm_call_with_retry(
             if _is_prompt_too_long(e):
                 logger.warning("Prompt too long (not retrying): %s", e)
                 return LLMResult(None, e)
-            if use_native:
+            if use_native and isinstance(e, NativeToolUnsupportedError):
                 logger.warning(
                     "Native tool call failed; falling back to regular generation: %s",
                     e,
@@ -429,6 +432,24 @@ def llm_call_with_retry(
             if type(e).__name__ == "LLMResponsesExhausted":
                 logger.warning("Mock LLM exhausted (not retrying): %s", e)
                 return LLMResult(None, e)
+            if use_native:
+                if attempt < max_retries:
+                    wait = RETRY_BACKOFF_BASE * (2**attempt)
+                    logger.warning(
+                        "Native LLM call failed (attempt %d/%d): %s - retrying in %.1fs",
+                        attempt + 1,
+                        max_retries + 1,
+                        e,
+                        wait,
+                    )
+                    time.sleep(wait)
+                    continue
+                return LLMResult(
+                    None,
+                    e,
+                    native_requested=bool(tools is not None and policy.enabled),
+                    native_attempted=native_attempted,
+                )
             if attempt < attempt_limit - 1:
                 wait = RETRY_BACKOFF_BASE * (2**attempt)
                 logger.warning(

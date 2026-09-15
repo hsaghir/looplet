@@ -14,6 +14,16 @@ from typing import Any
 from looplet.parse import parse_multi_tool_calls, parse_native_tool_use
 
 
+class NativeToolUnsupportedError(RuntimeError):
+    """Backend cannot serve the native tool-calling protocol.
+
+    Raise this exception when a backend or proxy explicitly reports that
+    native tools are unavailable. Looplet may then demote the current run to
+    JSON-text tool calls. Authentication, rate-limit, transport, and provider
+    errors must use their original exception types so they remain visible.
+    """
+
+
 @dataclass(frozen=True)
 class NativeToolProbeResult:
     """Result of a native-tool protocol probe."""
@@ -33,8 +43,9 @@ class NativeToolPolicy:
     """Own native-tool selection for one loop run.
 
     ``enabled`` is the user-facing policy switch and defaults to ``True``.
-    ``demoted`` is transient run state: a rejected native call moves the
-    current run to the regular text protocol for all later calls.
+    ``demoted`` is transient run state: an explicit
+    :class:`NativeToolUnsupportedError` moves the current run to the regular
+    text protocol for all later calls.
     """
 
     enabled: bool = True

@@ -137,6 +137,31 @@ def _tools_with_add_and_done() -> BaseToolRegistry:
 
 
 class TestHookDecisionWiringPreDispatch:
+    def test_check_done_hook_failure_rejects_completion(self):
+        llm = MockLLMBackend(
+            responses=[
+                '{"tool":"done","args":{"answer":"first"},"reasoning":""}',
+                '{"tool":"done","args":{"answer":"second"},"reasoning":""}',
+            ]
+        )
+
+        class BrokenGate:
+            def check_done(self, state, session_log, context, step_num, tool_call=None):
+                raise RuntimeError("gate unavailable")
+
+        steps = list(
+            composable_loop(
+                llm=llm,
+                tools=_tools_with_add_and_done(),
+                state=DefaultState(max_steps=2),
+                hooks=[BrokenGate()],
+                config=LoopConfig(max_steps=2),
+            )
+        )
+
+        assert steps[0].tool_result.data["rejected"] is True
+        assert "quality gate" in steps[0].tool_result.error.lower()
+
     def test_updated_args_rewrites_tool_input(self):
         """A pre_dispatch hook that returns Allow(updated_args=...) rewrites
         the call before dispatch."""

@@ -395,6 +395,50 @@ def test_load_latest_filters_by_run_identity_and_terminal_state():
         assert store.load_latest(run_id="run-a").step_number == 8
 
 
+def test_run_scoped_checkpoint_keys_do_not_collide():
+    from looplet.checkpoint import Checkpoint, FileCheckpointStore
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        store = FileCheckpointStore(tmpdir)
+        for run_id in ("run-a", "run-b"):
+            store.save(
+                Checkpoint(
+                    step_number=1,
+                    session_log_data={"entries": [run_id]},
+                    conversation_data=None,
+                    config_snapshot={},
+                    tool_results_store={},
+                    metadata={},
+                    run_envelope={"run_id": run_id},
+                    run_status="running",
+                    run_phase="dispatching",
+                ),
+                "step_1",
+            )
+
+        assert store.load_latest(run_id="run-a").session_log_data["entries"] == ["run-a"]
+        assert store.load_latest(run_id="run-b").session_log_data["entries"] == ["run-b"]
+
+
+def test_explicit_namespaced_checkpoint_load_accepts_run_id():
+    from looplet.checkpoint import Checkpoint, FileCheckpointStore
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        store = FileCheckpointStore(tmpdir)
+        checkpoint = Checkpoint(
+            step_number=1,
+            session_log_data={"entries": []},
+            conversation_data=None,
+            config_snapshot={},
+            tool_results_store={},
+            metadata={},
+            run_envelope={"run_id": "run-a"},
+        )
+        store.save(checkpoint, "step_1")
+
+        assert store.load("step_1", run_id="run-a") is not None
+
+
 def test_legacy_auto_resume_does_not_adopt_identity_bound_checkpoint():
     from looplet.checkpoint import Checkpoint, FileCheckpointStore
 

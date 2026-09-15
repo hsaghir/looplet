@@ -163,8 +163,9 @@ class MemoryRunStore:
             return self._records.get(run_id)
 
     def events(self, run_id: str) -> tuple[RunEvent, ...]:
-        record = self._require(run_id)
-        return record.events
+        with self._lock:
+            record = self._require(run_id)
+            return record.events
 
     def _require(self, run_id: str) -> RunRecord:
         record = self._records.get(run_id)

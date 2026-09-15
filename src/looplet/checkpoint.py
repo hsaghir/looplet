@@ -177,7 +177,7 @@ class CheckpointStore(Protocol):
         """Persist a checkpoint under the given key."""
         ...
 
-    def load(self, key: str) -> Checkpoint | None:
+    def load(self, key: str, *, run_id: str | None = None) -> Checkpoint | None:
         """Load a checkpoint by key; returns None if not found."""
         ...
 
@@ -196,9 +196,15 @@ class FileCheckpointStore:
         self._dir = Path(directory)
         self._dir.mkdir(parents=True, exist_ok=True)
 
+    @staticmethod
+    def key_for(checkpoint: Checkpoint, key: str) -> str:
+        """Return a run-scoped checkpoint key, preserving legacy keys."""
+        safe_key = Path(key).name
+        return f"{checkpoint.run_id}__{safe_key}" if checkpoint.run_id else safe_key
+
     def save(self, checkpoint: Checkpoint, key: str) -> None:
         """Write checkpoint to ``{directory}/{key}.json``."""
-        safe_key = Path(key).name  # strip any directory separators to prevent traversal
+        safe_key = self.key_for(checkpoint, key)
         path = self._dir / f"{safe_key}.json"
         fd, temporary_name = tempfile.mkstemp(
             dir=self._dir,
@@ -216,10 +222,18 @@ class FileCheckpointStore:
             temporary.unlink(missing_ok=True)
         logger.debug("checkpoint saved: %s", path)
 
-    def load(self, key: str) -> Checkpoint | None:
+    def load(self, key: str, *, run_id: str | None = None) -> Checkpoint | None:
         """Read checkpoint from ``{directory}/{key}.json``; None if missing."""
         safe_key = Path(key).name  # strip any directory separators to prevent traversal
         path = self._dir / f"{safe_key}.json"
+        if not path.exists() and run_id is not None:
+            path = self._dir / f"{run_id}__{safe_key}.json"
+        if not path.exists():
+            namespaced = sorted(self._dir.glob(f"*__{safe_key}.json"))
+            if len(namespaced) == 1:
+                path = namespaced[0]
+            elif len(namespaced) > 1:
+                raise ValueError(f"checkpoint key {key!r} is ambiguous; pass run_id explicitly")
         if not path.exists():
             return None
         data = json.loads(path.read_text())

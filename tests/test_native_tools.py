@@ -158,6 +158,26 @@ class TestOpenAIMessageNormaliser:
         msg = SimpleNamespace(content="Hello", tool_calls=None)
         assert _openai_message_to_blocks(msg) == [{"type": "text", "text": "Hello"}]
 
+    def test_preserves_all_native_tool_calls_in_order(self):
+        msg = SimpleNamespace(
+            content=None,
+            tool_calls=[
+                SimpleNamespace(
+                    id="call_1",
+                    function=SimpleNamespace(name="first", arguments='{"value":1}'),
+                ),
+                SimpleNamespace(
+                    id="call_2",
+                    function=SimpleNamespace(name="second", arguments='{"value":2}'),
+                ),
+            ],
+        )
+
+        assert _openai_message_to_blocks(msg) == [
+            {"type": "tool_use", "id": "call_1", "name": "first", "input": {"value": 1}},
+            {"type": "tool_use", "id": "call_2", "name": "second", "input": {"value": 2}},
+        ]
+
 
 class TestAnthropicResponseNormaliser:
     def test_mixed_text_and_tool_use(self):
@@ -172,6 +192,19 @@ class TestAnthropicResponseNormaliser:
         assert _anthropic_response_to_blocks(response) == [
             {"type": "text", "text": "Let me check."},
             {"type": "tool_use", "id": "tu_1", "name": "get_weather", "input": {"city": "Paris"}},
+        ]
+
+    def test_preserves_all_native_tool_calls_in_order(self):
+        response = SimpleNamespace(
+            content=[
+                SimpleNamespace(type="tool_use", id="tu_1", name="first", input={"value": 1}),
+                SimpleNamespace(type="tool_use", id="tu_2", name="second", input={"value": 2}),
+            ]
+        )
+
+        assert _anthropic_response_to_blocks(response) == [
+            {"type": "tool_use", "id": "tu_1", "name": "first", "input": {"value": 1}},
+            {"type": "tool_use", "id": "tu_2", "name": "second", "input": {"value": 2}},
         ]
 
 

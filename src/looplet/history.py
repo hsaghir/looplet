@@ -96,6 +96,7 @@ class HistoryRecorder:
                     role=MessageRole.ASSISTANT,
                     content="",
                     tool_call=step.tool_call,
+                    metadata=dict(step.metadata),
                 )
             )
             self._conversation.append(
@@ -103,6 +104,7 @@ class HistoryRecorder:
                     role=MessageRole.TOOL,
                     content="",
                     tool_result=step.tool_result,
+                    metadata=dict(step.metadata),
                 )
             )
 

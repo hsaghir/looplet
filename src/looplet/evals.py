@@ -472,6 +472,11 @@ class _DictStep:
             tr = {"error": self._data.get("error"), "data": self._data.get("data", {})}
         return _DictView(tr)
 
+    @property
+    def metadata(self) -> dict[str, Any]:
+        metadata = self._data.get("metadata", {})
+        return dict(metadata) if isinstance(metadata, dict) else {}
+
 
 class _DictView:
     """Attribute-access wrapper for dicts (so eval functions can use dot notation)."""

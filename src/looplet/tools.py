@@ -1210,12 +1210,15 @@ class BaseToolRegistry:
         calls: list[ToolCall],
         *,
         ctx: ToolContext | Sequence[ToolContext | None] | None = None,
+        max_concurrent: int | None = None,
     ) -> list[ToolResult]:
         """Dispatch calls asynchronously while preserving input order."""
         import asyncio  # noqa: PLC0415
 
         if not calls:
             return []
+        if max_concurrent is not None and max_concurrent <= 0:
+            raise ValueError("max_concurrent must be positive")
         ctxs: list[ToolContext | None] | None = list(ctx) if isinstance(ctx, Sequence) else None
         shared_ctx: ToolContext | None = None if ctxs is not None else cast(ToolContext | None, ctx)
         if ctxs is not None and len(ctxs) != len(calls):
@@ -1227,18 +1230,27 @@ class BaseToolRegistry:
             batch_calls = batch["calls"]
             batch_ctxs = ctxs[offset : offset + len(batch_calls)] if ctxs is not None else None
             if batch["concurrent"] and len(batch_calls) > 1:
-                if batch_ctxs is not None:
-                    batch_results = await asyncio.gather(
-                        *(
-                            self.async_dispatch(call, ctx=call_ctx)
-                            for call, call_ctx in zip(batch_calls, batch_ctxs)
+                worker_limit = max_concurrent or len(batch_calls)
+                for start in range(0, len(batch_calls), worker_limit):
+                    chunk = batch_calls[start : start + worker_limit]
+                    chunk_ctxs = (
+                        batch_ctxs[start : start + worker_limit] if batch_ctxs is not None else None
+                    )
+                    if chunk_ctxs is not None:
+                        results.extend(
+                            await asyncio.gather(
+                                *(
+                                    self.async_dispatch(call, ctx=call_ctx)
+                                    for call, call_ctx in zip(chunk, chunk_ctxs)
+                                )
+                            )
                         )
-                    )
-                else:
-                    batch_results = await asyncio.gather(
-                        *(self.async_dispatch(call, ctx=shared_ctx) for call in batch_calls)
-                    )
-                results.extend(batch_results)
+                    else:
+                        results.extend(
+                            await asyncio.gather(
+                                *(self.async_dispatch(call, ctx=shared_ctx) for call in chunk)
+                            )
+                        )
             elif batch_ctxs is not None:
                 for call, call_ctx in zip(batch_calls, batch_ctxs):
                     results.append(await self.async_dispatch(call, ctx=call_ctx))
@@ -1298,6 +1310,7 @@ class BaseToolRegistry:
         calls: list[ToolCall],
         *,
         ctx: ToolContext | Sequence[ToolContext | None] | None = None,
+        max_workers: int | None = None,
     ) -> list[ToolResult]:
         """Dispatch multiple tool calls, preserving original order.
 
@@ -1308,6 +1321,8 @@ class BaseToolRegistry:
         """
         if not calls:
             return []
+        if max_workers is not None and max_workers <= 0:
+            raise ValueError("max_workers must be positive")
 
         ctxs: list[ToolContext | None] | None = list(ctx) if isinstance(ctx, Sequence) else None
         shared_ctx: ToolContext | None = None if ctxs is not None else cast(ToolContext | None, ctx)
@@ -1324,6 +1339,7 @@ class BaseToolRegistry:
                     self._dispatch_concurrent_batch(
                         batch_calls,
                         ctx=batch_ctxs if batch_ctxs is not None else shared_ctx,
+                        max_workers=max_workers,
                     )
                 )
             else:
@@ -1342,6 +1358,7 @@ class BaseToolRegistry:
         calls: list[ToolCall],
         *,
         ctx: ToolContext | Sequence[ToolContext | None] | None = None,
+        max_workers: int | None = None,
     ) -> list[ToolResult]:
         """Dispatch a batch of concurrent-safe tools in parallel via ThreadPoolExecutor."""
         ctxs: list[ToolContext | None] | None = list(ctx) if isinstance(ctx, Sequence) else None
@@ -1351,7 +1368,8 @@ class BaseToolRegistry:
         if len(calls) <= 1:
             call_ctx = ctxs[0] if ctxs else shared_ctx
             return [self.dispatch(c, ctx=call_ctx) for c in calls]
-        with ThreadPoolExecutor(max_workers=min(10, len(calls))) as pool:
+        worker_count = min(max_workers or 10, len(calls))
+        with ThreadPoolExecutor(max_workers=worker_count) as pool:
             if ctxs is not None:
                 futures = [
                     pool.submit(self.dispatch, c, ctx=call_ctx) for c, call_ctx in zip(calls, ctxs)

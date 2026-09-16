@@ -768,6 +768,120 @@ class TestComposableLoopHooks:
         tool_names = [s.tool_call.tool for s in steps]
         assert "search" in tool_names
         assert "think" in tool_names
+        turn_metadata = [step.metadata["turn"] for step in steps[:2]]
+        assert [item["call_index"] for item in turn_metadata] == [0, 1]
+        assert {item["turn_id"] for item in turn_metadata} == {turn_metadata[0]["turn_id"]}
+        assert {item["batch_size"] for item in turn_metadata} == {2}
+        assert {item["dispatch_mode"] for item in turn_metadata} == {"serial"}
+
+    def test_multi_tool_budget_does_not_dispatch_beyond_remaining_steps(self):
+        from looplet.loop import LoopConfig, composable_loop
+        from looplet.tools import ToolSpec
+        from tests.conftest import MockLLMBackend
+
+        called: list[str] = []
+        reg = _make_registry_with_done(
+            ToolSpec(
+                name="first",
+                description="first",
+                parameters={},
+                execute=lambda: called.append("first"),
+            ),
+            ToolSpec(
+                name="second",
+                description="second",
+                parameters={},
+                execute=lambda: called.append("second"),
+            ),
+        )
+        response = (
+            '{"tools": [{"tool": "first", "args": {}}, '
+            '{"tool": "second", "args": {}}, '
+            '{"tool": "done", "args": {}}]}'
+        )
+
+        steps = list(
+            composable_loop(
+                MockLLMBackend([response]),
+                state=SimpleState(max_steps=2),
+                tools=reg,
+                config=LoopConfig(max_steps=2),
+            )
+        )
+
+        assert called == ["first", "second"]
+        assert [step.tool_call.tool for step in steps] == ["first", "second"]
+        assert all(step.tool_call.tool != "done" for step in steps)
+        assert steps[0].metadata["turn"]["budget_skipped"]
+
+    def test_multi_tool_stream_events_carry_turn_metadata(self):
+        from looplet.loop import LoopConfig, composable_loop
+        from looplet.streaming import CallbackEmitter, ToolDispatchEvent
+        from looplet.tools import ToolSpec
+        from tests.conftest import MockLLMBackend
+
+        events = []
+        reg = _make_registry_with_done(
+            ToolSpec(name="first", description="first", parameters={}, execute=lambda: {}),
+            ToolSpec(name="second", description="second", parameters={}, execute=lambda: {}),
+        )
+        response = '{"tools": [{"tool": "first", "args": {}}, {"tool": "second", "args": {}}]}'
+
+        list(
+            composable_loop(
+                MockLLMBackend([response, '{"tool": "done", "args": {}}']),
+                state=SimpleState(max_steps=5),
+                tools=reg,
+                config=LoopConfig(max_steps=5),
+                stream=CallbackEmitter(events.append),
+            )
+        )
+
+        dispatches = [event for event in events if isinstance(event, ToolDispatchEvent)]
+        assert [event.metadata["call_index"] for event in dispatches[:2]] == [0, 1]
+        assert {event.metadata["turn_id"] for event in dispatches[:2]} == {
+            dispatches[0].metadata["turn_id"]
+        }
+
+    def test_calls_after_terminal_are_recorded_without_dispatch(self):
+        from looplet.loop import LoopConfig, composable_loop
+        from looplet.tools import ToolSpec
+        from tests.conftest import MockLLMBackend
+
+        called: list[str] = []
+        reg = _make_registry_with_done(
+            ToolSpec(
+                name="search",
+                description="search",
+                parameters={},
+                execute=lambda: called.append("search"),
+            ),
+            ToolSpec(
+                name="ignored",
+                description="ignored",
+                parameters={},
+                execute=lambda: called.append("ignored"),
+            ),
+        )
+        response = (
+            '{"tools": [{"tool": "search", "args": {}}, '
+            '{"tool": "done", "args": {}}, '
+            '{"tool": "ignored", "args": {}}]}'
+        )
+
+        steps = list(
+            composable_loop(
+                MockLLMBackend([response]),
+                state=SimpleState(max_steps=5),
+                tools=reg,
+                config=LoopConfig(max_steps=5),
+            )
+        )
+
+        assert called == ["search"]
+        assert [step.tool_call.tool for step in steps] == ["search", "done"]
+        ignored = steps[-1].metadata["turn"]["ignored_after_terminal"]
+        assert ignored[0]["tool"] == "ignored"
 
     def test_cancellation_after_regular_dispatch_skips_queued_done(self):
         from looplet import CancelToken

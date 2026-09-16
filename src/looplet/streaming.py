@@ -133,6 +133,7 @@ class ToolDispatchEvent(Event):
     step_num: int = 0
     tool_name: str = ""
     args_summary: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self.event_type = type(self).__name__
@@ -146,6 +147,7 @@ class ToolResultEvent(Event):
     tool_name: str = ""
     duration_ms: float = 0.0
     has_error: bool = False
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self.event_type = type(self).__name__
@@ -158,6 +160,7 @@ class StepEndEvent(Event):
     step_num: int = 0
     classification: str = ""
     new_entities_count: int = 0
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self.event_type = type(self).__name__

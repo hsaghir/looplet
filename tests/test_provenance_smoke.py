@@ -156,6 +156,30 @@ class TestTrajectoryRecorderSmoke:
         assert len(traj.llm_calls) == 1
         assert traj.ended_at is not None and traj.ended_at >= traj.started_at
 
+    def test_preserves_multi_tool_turn_metadata(self):
+        hook = TrajectoryRecorder()
+
+        class DummyState:
+            def __init__(self):
+                self.steps: list[Step] = []
+
+        state = DummyState()
+        hook.pre_loop(state, None, None)
+        turn = {
+            "turn_id": "turn-1",
+            "call_index": 1,
+            "batch_size": 2,
+            "dispatch_mode": "serial",
+        }
+        step = self._make_step(1, tool="search")
+        step.metadata = {"turn": turn}
+        state.steps.append(step)
+        hook.post_dispatch(state, None, step.tool_call, step.tool_result, step_num=1)
+        hook.on_loop_end(state, None, None, None)
+
+        assert hook.trajectory.steps[0].metadata == {"turn": turn}
+        assert hook.trajectory.to_dict()["steps"][0]["metadata"] == {"turn": turn}
+
     def test_persists_run_envelope_and_policy_decisions(self):
         hook = TrajectoryRecorder()
 

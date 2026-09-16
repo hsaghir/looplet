@@ -291,7 +291,7 @@ dict (`name: kwargs`). Unknown names raise
 | Component | How |
 | --- | --- |
 | CONTRACT-tier fields (`max_steps`, `done_tool`, `permissions`, `memory`, `model`, `extends`, `builtin_tools`, `builtin_hooks`; plus loader-populated metadata) | Serialised via `config.yaml` |
-| RUNTIME-tier fields (`max_tokens`, `temperature`, `recovery_temperature`, `max_turn_continuations`, `generate_kwargs`, `use_native_tools`, `concurrent_dispatch`, `reactive_recovery`, `context_window`, `max_briefing_tokens`, `compact_service`, `cache_policy`, `checkpoint_dir`, `initial_checkpoint`, `tool_result_persist_dir`, `router`, `tracer`, `recovery_registry`) | Serialised via sibling `runtime.yaml`; schema v2 rejects these fields in `config.yaml`. |
+| RUNTIME-tier fields (`max_tokens`, `temperature`, `recovery_temperature`, `max_turn_continuations`, `generate_kwargs`, `use_native_tools`, `concurrent_dispatch`, `max_parallel_calls`, `reactive_recovery`, `context_window`, `max_briefing_tokens`, `compact_service`, `cache_policy`, `checkpoint_dir`, `initial_checkpoint`, `tool_result_persist_dir`, `router`, `tracer`, `recovery_registry`) | Serialised via sibling `runtime.yaml`; schema v2 rejects these fields in `config.yaml`. |
 | `system_prompt` | Written to `prompts/system.md` |
 | Tools whose `execute` is a top-level function | `tools/<name>/{tool.yaml, execute.py}`; the source is preserved verbatim and an `execute = <orig_name>` alias is appended so the loader finds it under the canonical name |
 | Hooks with an opt-in `to_config(self) -> dict` method | `hooks/NN_<ClassName>/{hook.py, config.yaml}`; class source is preserved, kwargs come from `to_config()` |

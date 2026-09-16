@@ -597,6 +597,9 @@ class LoopConfig:
     ThreadPoolExecutor. Default False - some backends and tools
     are not thread-safe."""
 
+    max_parallel_calls: int = 10
+    """Maximum number of concurrent-safe calls executed at once."""
+
     reactive_recovery: bool = True
     """If True, attempt multi-strategy recovery when a prompt exceeds
     the context window (prompt-too-long error). Default True - essential
@@ -1672,6 +1675,8 @@ def _validate_loop_inputs(task: Any, tools: BaseToolRegistry, config: LoopConfig
         raise ValueError("config.max_steps must be a positive integer")
     if config.max_steps <= 0:
         raise ValueError("config.max_steps must be a positive integer")
+    if config.max_parallel_calls <= 0:
+        raise ValueError("config.max_parallel_calls must be positive")
 
 
 def _set_context_overrides(config: LoopConfig) -> list[tuple[Any, Any]]:
@@ -1772,6 +1777,48 @@ def _render_projection(
 # ── Extracted dispatch helpers ────────────────────────────────────
 # These reduce composable_loop's nesting depth and make the heaviest
 # phases independently readable + testable.
+
+_TURN_METADATA_KEY = "looplet_turn"
+
+
+def _call_reference(tool_call: ToolCall) -> dict[str, str]:
+    return {"tool": tool_call.tool, "call_id": tool_call.call_id}
+
+
+def _annotate_tool_turn(
+    calls: list[ToolCall],
+    *,
+    turn_id: str,
+    batch_size: int,
+    budget_skipped: list[ToolCall],
+) -> None:
+    """Attach one compact, host-owned turn record to each parsed call."""
+
+    for call_index, tool_call in enumerate(calls):
+        turn = {
+            "turn_id": turn_id,
+            "call_index": call_index,
+            "batch_size": batch_size,
+        }
+        if call_index == 0 and budget_skipped:
+            turn["budget_skipped"] = [_call_reference(call) for call in budget_skipped]
+        tool_call.metadata[_TURN_METADATA_KEY] = turn
+
+
+def _step_metadata(
+    tool_call: ToolCall,
+    *,
+    dispatch_mode: str,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    turn = tool_call.metadata.get(_TURN_METADATA_KEY)
+    if not isinstance(turn, dict):
+        return {}
+    annotated = dict(turn)
+    annotated["dispatch_mode"] = dispatch_mode
+    if extra:
+        annotated.update(extra)
+    return {"turn": annotated}
 
 
 @dataclass
@@ -2970,6 +3017,25 @@ def _composable_loop_impl(
         # ── Dispatch tool calls ──────────────────────────────
         all_step_entities: list[str] = []
 
+        # A provider response is one model turn even when it contains many
+        # calls. Bound the number of calls consumed by the remaining step
+        # budget before terminal handling or dispatch can overshoot it.
+        available_steps = max(0, int(getattr(state, "budget_remaining", 0)))
+        if available_steps <= 0:
+            stop_reason = "budget_exhausted"
+            done = True
+            break
+        original_tool_calls = tool_calls
+        budget_skipped = original_tool_calls[available_steps:]
+        tool_calls = original_tool_calls[:available_steps]
+        if len(original_tool_calls) > 1:
+            _annotate_tool_turn(
+                tool_calls,
+                turn_id=f"turn-{llm_calls}",
+                batch_size=len(original_tool_calls),
+                budget_skipped=budget_skipped,
+            )
+
         # Effective set of terminal sentinels: legacy ``done_tool``
         # plus the host-side ``done_tools`` list. The first one the agent
         # invokes ends the loop; the legacy field stays the canonical
@@ -3024,7 +3090,17 @@ def _composable_loop_impl(
 
                 if config.concurrent_dispatch:
                     _tool_ctxs = [_ctx_for(_c, step_num + _idx) for _idx, _c in dispatch_items]
-                    dispatch_results = tools.dispatch_batch(calls_to_dispatch, ctx=_tool_ctxs)
+                    if type(tools).dispatch_batch is BaseToolRegistry.dispatch_batch:
+                        dispatch_results = tools.dispatch_batch(
+                            calls_to_dispatch,
+                            ctx=_tool_ctxs,
+                            max_workers=config.max_parallel_calls,
+                        )
+                    else:
+                        dispatch_results = tools.dispatch_batch(
+                            calls_to_dispatch,
+                            ctx=_tool_ctxs,
+                        )
                 else:
                     dispatch_results = []
                     for _idx, _c in dispatch_items:
@@ -3053,6 +3129,17 @@ def _composable_loop_impl(
                     persist_dir=config.tool_result_persist_dir,
                     persist_threshold=_get_persist_threshold(),
                 )
+                dispatch_mode = (
+                    "parallel"
+                    if config.concurrent_dispatch
+                    and tool_spec is not None
+                    and tool_spec.concurrent_safe
+                    else "serial"
+                )
+                event_metadata = _step_metadata(
+                    tool_call,
+                    dispatch_mode=dispatch_mode,
+                ).get("turn", {})
 
                 # Emit ToolDispatchEvent
                 if stream is not None and _ToolDispatchEvent is not None:
@@ -3061,6 +3148,7 @@ def _composable_loop_impl(
                             step_num=cur_step,
                             tool_name=tool_call.tool,
                             args_summary=_summarize_args_dict(tool_call.args),
+                            metadata=event_metadata,
                         )
                     )
 
@@ -3080,7 +3168,15 @@ def _composable_loop_impl(
                     stop_reason = _pd.stop_reason
                     _hook_requested_stop = True
 
-                step = Step(number=cur_step, tool_call=tool_call, tool_result=tool_result)
+                step = Step(
+                    number=cur_step,
+                    tool_call=tool_call,
+                    tool_result=tool_result,
+                    metadata=_step_metadata(
+                        tool_call,
+                        dispatch_mode=dispatch_mode,
+                    ),
+                )
                 cur_step_count = state.step_count
                 state.steps.append(step)
                 yield step
@@ -3093,6 +3189,7 @@ def _composable_loop_impl(
                             tool_name=tool_result.tool,
                             duration_ms=tool_result.duration_ms,
                             has_error=tool_result.error is not None,
+                            metadata=event_metadata,
                         )
                     )
                 if stream is not None and _StepEndEvent is not None:
@@ -3101,6 +3198,7 @@ def _composable_loop_impl(
                             step_num=cur_step,
                             classification="continue",
                             new_entities_count=0,
+                            metadata=event_metadata,
                         )
                     )
 
@@ -3228,6 +3326,21 @@ def _composable_loop_impl(
                         f"Output schema validation failed: {'; '.join(validation.errors)}"
                     )
 
+            ignored_after_terminal = tool_calls[done_idx + 1 :]
+            done_metadata = _step_metadata(
+                tool_call,
+                dispatch_mode="serial",
+                extra=(
+                    {
+                        "ignored_after_terminal": [
+                            _call_reference(call) for call in ignored_after_terminal
+                        ]
+                    }
+                    if ignored_after_terminal
+                    else None
+                ),
+            )
+
             # Emit ToolDispatchEvent for done
             if stream is not None and _ToolDispatchEvent is not None:
                 stream.emit(
@@ -3235,6 +3348,7 @@ def _composable_loop_impl(
                         step_num=cur_step,
                         tool_name=tool_call.tool,
                         args_summary=_summarize_args_dict(tool_call.args),
+                        metadata=done_metadata.get("turn", {}),
                     )
                 )
 
@@ -3251,7 +3365,12 @@ def _composable_loop_impl(
                     data={"rejected": True, "reason": gate_warning},
                     error=gate_warning,
                 )
-                step = Step(number=cur_step, tool_call=tool_call, tool_result=tool_result)
+                step = Step(
+                    number=cur_step,
+                    tool_call=tool_call,
+                    tool_result=tool_result,
+                    metadata=done_metadata,
+                )
                 state.steps.append(step)
                 yield step
                 _history.record_step(
@@ -3297,7 +3416,12 @@ def _composable_loop_impl(
                     emit_lifecycle=False,
                 )
                 tool_result = _pd_done.tool_result
-                step = Step(number=cur_step, tool_call=tool_call, tool_result=tool_result)
+                step = Step(
+                    number=cur_step,
+                    tool_call=tool_call,
+                    tool_result=tool_result,
+                    metadata=done_metadata,
+                )
                 state.steps.append(step)
                 yield step
                 # Emit ToolResultEvent + StepEndEvent for the done step
@@ -3308,6 +3432,7 @@ def _composable_loop_impl(
                             tool_name=tool_result.tool,
                             duration_ms=tool_result.duration_ms,
                             has_error=tool_result.error is not None,
+                            metadata=done_metadata.get("turn", {}),
                         )
                     )
                 if stream is not None and _StepEndEvent is not None:
@@ -3316,6 +3441,7 @@ def _composable_loop_impl(
                             step_num=cur_step,
                             classification="done",
                             new_entities_count=0,
+                            metadata=done_metadata.get("turn", {}),
                         )
                     )
                 # Record accepted done() to session_log + conversation

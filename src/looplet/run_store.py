@@ -7,15 +7,59 @@ import os
 import tempfile
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, Mapping, Protocol, Sequence, runtime_checkable
+from typing import Any, Iterator, Mapping, Protocol, Sequence, runtime_checkable
 
-from looplet.checkpoint import Checkpoint
+from looplet.checkpoint import Checkpoint, validate_checkpoint_identity
 from looplet.run_records import ArtifactRef, RunEvent, RunRecord
 from looplet.types import RunEnvelope, RunResult
 
 __all__ = ["RunStore", "MemoryRunStore", "FileRunStore"]
+
+
+class _InterProcessFileLock:
+    """Small standard-library advisory lock for file-store transactions."""
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+        self._handle: Any = None
+
+    def __enter__(self) -> "_InterProcessFileLock":
+        self._handle = self._path.open("a+b")
+        if self._handle.seek(0, os.SEEK_END) == 0:
+            self._handle.write(b"\0")
+            self._handle.flush()
+        self._handle.seek(0)
+        if os.name == "posix":
+            import fcntl
+
+            fcntl.flock(self._handle.fileno(), fcntl.LOCK_EX)
+        elif os.name == "nt":
+            import msvcrt
+
+            msvcrt.locking(self._handle.fileno(), msvcrt.LK_LOCK, 1)
+        else:  # pragma: no cover - unsupported platform fallback
+            raise OSError(f"FileRunStore locking is unsupported on {os.name!r}")
+        return self
+
+    def __exit__(self, *_exc: Any) -> None:
+        if self._handle is None:
+            return
+        try:
+            if os.name == "posix":
+                import fcntl
+
+                fcntl.flock(self._handle.fileno(), fcntl.LOCK_UN)
+            elif os.name == "nt":
+                import msvcrt
+
+                self._handle.seek(0)
+                msvcrt.locking(self._handle.fileno(), msvcrt.LK_UNLCK, 1)
+        finally:
+            self._handle.close()
+            self._handle = None
 
 
 @runtime_checkable
@@ -78,6 +122,10 @@ class MemoryRunStore:
     def save_checkpoint(self, run_id: str, checkpoint: Checkpoint) -> str:
         with self._lock:
             record = self._require(run_id)
+            if checkpoint.run_id is None:
+                checkpoint = replace(checkpoint, run_envelope={"run_id": run_id})
+            else:
+                validate_checkpoint_identity(checkpoint, run_id)
             key = f"step_{checkpoint.step_number}"
             self._records[run_id] = record.with_updates(
                 updated_at=checkpoint.created_at,
@@ -88,7 +136,10 @@ class MemoryRunStore:
 
     def load_checkpoint(self, run_id: str, key: str) -> Checkpoint | None:
         with self._lock:
-            return self._checkpoints.get((run_id, Path(key).name))
+            checkpoint = self._checkpoints.get((run_id, Path(key).name))
+            if checkpoint is not None:
+                validate_checkpoint_identity(checkpoint, run_id)
+            return checkpoint
 
     def complete(
         self,
@@ -119,8 +170,9 @@ class MemoryRunStore:
             return self._records.get(run_id)
 
     def events(self, run_id: str) -> tuple[RunEvent, ...]:
-        record = self._require(run_id)
-        return record.events
+        with self._lock:
+            record = self._require(run_id)
+            return record.events
 
     def _require(self, run_id: str) -> RunRecord:
         record = self._records.get(run_id)
@@ -130,17 +182,29 @@ class MemoryRunStore:
 
 
 class FileRunStore:
-    """Simple durable store using ``run.json``, ``events.jsonl`` and checkpoints."""
+    """Durable run store using locked ``run.json``, events, and checkpoints.
+
+    Each public operation takes both an in-process lock and an advisory
+    process lock, so separate workers sharing a directory cannot lose a
+    read/modify/write update. The lock file is an implementation detail and
+    is safe to retain with the store directory.
+    """
 
     def __init__(self, directory: str | Path) -> None:
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
 
+    @contextmanager
+    def _locked(self) -> Iterator[None]:
+        with self._lock:
+            with _InterProcessFileLock(self.directory / ".run-store.lock"):
+                yield
+
     def create(
         self, envelope: RunEnvelope, *, metadata: Mapping[str, Any] | None = None
     ) -> RunRecord:
-        with self._lock:
+        with self._locked():
             root = self._root(envelope.run_id)
             root.mkdir(parents=True, exist_ok=True)
             path = root / "run.json"
@@ -153,11 +217,11 @@ class FileRunStore:
             return record
 
     def append_event(self, event: RunEvent) -> None:
-        with self._lock:
+        with self._locked():
             if event.envelope is None:
                 raise ValueError("stored run events require a run envelope")
             run_id = event.envelope.run_id
-            record = self._require(run_id)
+            record = self._require_unlocked(run_id)
             with (self._root(run_id) / "events.jsonl").open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(event.to_dict(), default=str) + "\n")
                 handle.flush()
@@ -168,8 +232,12 @@ class FileRunStore:
             )
 
     def save_checkpoint(self, run_id: str, checkpoint: Checkpoint) -> str:
-        with self._lock:
-            record = self._require(run_id)
+        with self._locked():
+            record = self._require_unlocked(run_id)
+            if checkpoint.run_id is None:
+                checkpoint = replace(checkpoint, run_envelope={"run_id": run_id})
+            else:
+                validate_checkpoint_identity(checkpoint, run_id)
             key = f"step_{checkpoint.step_number}"
             path = self._root(run_id) / "checkpoints" / f"{key}.json"
             self._write(path, checkpoint.to_dict())
@@ -181,11 +249,13 @@ class FileRunStore:
             return key
 
     def load_checkpoint(self, run_id: str, key: str) -> Checkpoint | None:
-        with self._lock:
+        with self._locked():
             path = self._root(run_id) / "checkpoints" / f"{Path(key).name}.json"
             if not path.is_file():
                 return None
-            return Checkpoint.from_dict(json.loads(path.read_text(encoding="utf-8")))
+            checkpoint = Checkpoint.from_dict(json.loads(path.read_text(encoding="utf-8")))
+            validate_checkpoint_identity(checkpoint, run_id)
+            return checkpoint
 
     def complete(
         self,
@@ -194,8 +264,8 @@ class FileRunStore:
         *,
         artifacts: Sequence[ArtifactRef] = (),
     ) -> RunRecord:
-        with self._lock:
-            record = self._require(run_id)
+        with self._locked():
+            record = self._require_unlocked(run_id)
             updated = RunRecord(
                 run_id=record.run_id,
                 envelope=record.envelope,
@@ -206,30 +276,18 @@ class FileRunStore:
                 result=result.to_dict(),
                 checkpoint_keys=record.checkpoint_keys,
                 artifact_refs=tuple(artifacts),
-                events=self.events(run_id),
+                events=self._events_unlocked(run_id),
             )
             self._write(self._root(run_id) / "run.json", updated.to_dict())
             return updated
 
     def load(self, run_id: str) -> RunRecord | None:
-        with self._lock:
-            path = self._root(run_id) / "run.json"
-            if not path.is_file():
-                return None
-            return RunRecord.from_dict(
-                json.loads(path.read_text(encoding="utf-8")), events=self.events(run_id)
-            )
+        with self._locked():
+            return self._load_unlocked(run_id)
 
     def events(self, run_id: str) -> tuple[RunEvent, ...]:
-        with self._lock:
-            path = self._root(run_id) / "events.jsonl"
-            if not path.is_file():
-                return ()
-            events: list[RunEvent] = []
-            for line in path.read_text(encoding="utf-8").splitlines():
-                if line.strip():
-                    events.append(RunEvent.from_dict(json.loads(line)))
-            return tuple(events)
+        with self._locked():
+            return self._events_unlocked(run_id)
 
     def _root(self, run_id: str) -> Path:
         safe = Path(run_id).name
@@ -237,8 +295,26 @@ class FileRunStore:
             raise ValueError("run_id must be a non-empty path-safe name")
         return self.directory / safe
 
-    def _require(self, run_id: str) -> RunRecord:
-        record = self.load(run_id)
+    def _load_unlocked(self, run_id: str) -> RunRecord | None:
+        path = self._root(run_id) / "run.json"
+        if not path.is_file():
+            return None
+        return RunRecord.from_dict(
+            json.loads(path.read_text(encoding="utf-8")), events=self._events_unlocked(run_id)
+        )
+
+    def _events_unlocked(self, run_id: str) -> tuple[RunEvent, ...]:
+        path = self._root(run_id) / "events.jsonl"
+        if not path.is_file():
+            return ()
+        events: list[RunEvent] = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                events.append(RunEvent.from_dict(json.loads(line)))
+        return tuple(events)
+
+    def _require_unlocked(self, run_id: str) -> RunRecord:
+        record = self._load_unlocked(run_id)
         if record is None:
             raise KeyError(f"unknown run: {run_id}")
         return record

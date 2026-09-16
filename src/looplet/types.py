@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol, runtime_checkable
 from uuid import uuid4
 
@@ -554,6 +555,8 @@ class ToolContext:
                 return {"summary": summary, "raw_chars": len(raw)}
             return {"results": raw}
     """
+    execution_policy: Any = field(default=None, kw_only=True)
+    """Host-owned :class:`looplet.capabilities.ExecutionPolicy`, if supplied."""
     request_approval: Callable[[str, list[str] | None], str | None] | None = None
     """Optional handler that lets a tool request approval from the
     caller (user, upstream agent, webhook) mid-execution. Signature is
@@ -605,6 +608,13 @@ class ToolContext:
 
     Tools without a ``requires:`` list receive an empty dict here.
     """
+
+    def scratch_path(self, relative: str | Path = ".") -> Path:
+        """Return a path below the documented case-local scratch directory."""
+        policy = self.execution_policy
+        if policy is None or not hasattr(policy, "scratch_path"):
+            raise PermissionError("SCRATCH_UNAVAILABLE: no case-local scratch path was provisioned")
+        return policy.scratch_path(relative)
 
     def report_progress(self, stage: str, data: dict | None = None) -> None:
         """Invoke the progress callback if one is installed. Silent if not."""
@@ -924,6 +934,15 @@ class NativeToolBackend(Protocol):
             List of normalised content blocks (text and/or tool_use).
         """
         ...
+
+
+@runtime_checkable
+class CheckpointableLLMBackend(Protocol):
+    """Optional provider state that can survive Looplet checkpoints."""
+
+    def checkpoint_state(self) -> dict[str, Any]: ...
+
+    def restore_checkpoint_state(self, state: dict[str, Any]) -> None: ...
 
 
 # ── Data classes ──────────────────────────────────────────────────

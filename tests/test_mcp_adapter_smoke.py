@@ -13,7 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 from looplet import BaseToolRegistry, RunEnvelope
-from looplet.mcp import MCPToolAdapter
+from looplet.mcp import MCPToolAdapter, MCPToolError
 
 pytestmark = pytest.mark.smoke
 
@@ -36,7 +36,7 @@ class TestMCPToolAdapter:
             },
         }
         params = MCPToolAdapter._extract_params(schema)
-        assert params == {"path": "string", "encoding": "string"}
+        assert params == {"path": "string", "encoding": "(optional) string"}
 
     def test_extract_params_empty(self):
         schema = {"name": "noop", "inputSchema": {"type": "object"}}
@@ -86,14 +86,49 @@ class TestMCPToolAdapter:
 
         assert sent[0]["params"]["run_envelope"] == {"run_id": "run-1"}
 
-    def test_json_rpc_error_response_returns_none(self, caplog):
+    def test_json_rpc_error_response_is_a_tool_failure(self, caplog):
         adapter = MCPToolAdapter("echo test")
         adapter._proc = SimpleNamespace(
             stdout=io.BytesIO(b'{"error":{"code":-1,"message":"bad"}}\n')
         )
 
-        assert adapter._read_message() is None
+        with pytest.raises(MCPToolError, match="MCP request failed"):
+            adapter._read_message()
         assert "MCP error" in caplog.text
+
+    def test_discovered_tools_preserve_legacy_undeclared_authority_by_default(self):
+        adapter = MCPToolAdapter("echo test")
+        adapter._started = True
+        adapter._tool_schemas = [{"name": "echo", "inputSchema": {"type": "object"}}]
+
+        assert adapter.tools()[0].capabilities == []
+
+    def test_custom_capabilities_are_attached_to_discovered_tools(self):
+        adapter = MCPToolAdapter("echo test", capabilities=["workspace.read"])
+        adapter._started = True
+        adapter._tool_schemas = [{"name": "read", "inputSchema": {"type": "object"}}]
+
+        assert adapter.tools()[0].capabilities == ["workspace.read"]
+
+    def test_missing_result_or_error_is_rejected(self):
+        adapter = MCPToolAdapter("echo test")
+        adapter._proc = SimpleNamespace(stdout=io.BytesIO(b'{"jsonrpc":"2.0","id":1}\n'))
+
+        with pytest.raises(RuntimeError, match="result or error"):
+            adapter._read_message(expected_id=1)
+
+    def test_reader_skips_notifications_and_queues_other_responses(self):
+        adapter = MCPToolAdapter("echo test")
+        adapter._proc = SimpleNamespace(
+            stdout=io.BytesIO(
+                b'{"jsonrpc":"2.0","method":"notifications/progress"}\n'
+                b'{"jsonrpc":"2.0","id":2,"result":{"value":"later"}}\n'
+                b'{"jsonrpc":"2.0","id":1,"result":{"value":"now"}}\n'
+            )
+        )
+
+        assert adapter._read_message(expected_id=1) == {"value": "now"}
+        assert adapter._read_message(expected_id=2) == {"value": "later"}
 
     @pytest.mark.parametrize("payload", [b"[]\n", b"1\n"])
     def test_nonobject_response_returns_none(self, payload, caplog):
@@ -316,7 +351,6 @@ class TestMCPToolAdapter:
     @pytest.mark.parametrize(
         ("response", "expected"),
         [
-            (None, {"error": "MCP tool 'echo' returned no response"}),
             ({"content": [{"type": "text", "text": "hello"}]}, {"text": "hello"}),
             (
                 {"content": [{"type": "text", "text": "one"}, {"type": "text", "text": "two"}]},
@@ -329,6 +363,27 @@ class TestMCPToolAdapter:
         monkeypatch.setattr(adapter, "_send_request", lambda *_args, **_kwargs: response)
 
         assert adapter._make_executor("echo")() == expected
+
+    def test_executor_no_response_is_a_tool_failure(self, monkeypatch):
+        adapter = MCPToolAdapter("echo test")
+        monkeypatch.setattr(adapter, "_send_request", lambda *_args, **_kwargs: None)
+
+        with pytest.raises(MCPToolError, match="returned no response"):
+            adapter._make_executor("echo")()
+
+    def test_executor_is_error_is_a_tool_failure(self, monkeypatch):
+        adapter = MCPToolAdapter("echo test")
+        monkeypatch.setattr(
+            adapter,
+            "_send_request",
+            lambda *_args, **_kwargs: {
+                "isError": True,
+                "content": [{"type": "text", "text": "permission denied"}],
+            },
+        )
+
+        with pytest.raises(MCPToolError, match="permission denied"):
+            adapter._make_executor("echo")()
 
     @pytest.mark.parametrize("value", ["", "not-json"])
     def test_coerce_structured_args_ignores_empty_or_invalid_json(self, value):

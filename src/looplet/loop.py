@@ -13,6 +13,7 @@ from dataclasses import replace as _dc_replace
 from typing import TYPE_CHECKING, Any, Callable, Generator, Protocol, runtime_checkable
 from weakref import WeakKeyDictionary
 
+from looplet.capabilities import ExecutionPolicy
 from looplet.checkpoint import (
     Checkpoint as _Checkpoint,
 )
@@ -22,10 +23,11 @@ from looplet.checkpoint import (
 from looplet.checkpoint import (
     resume_loop_state as _resume_loop_state,
 )
+from looplet.checkpoint import validate_checkpoint_identity as _validate_checkpoint_identity
 from looplet.context_plan import ContextPlan
 from looplet.context_projection import ContextProjection
 from looplet.history import HistoryRecorder
-from looplet.hook_decision import normalize_hook_return
+from looplet.hook_decision import HookDecision, normalize_hook_return
 from looplet.native_tools import NativeToolPolicy
 from looplet.parse import parse_multi_tool_calls, to_text
 from looplet.recovery import FailureScenario as _FailureScenario
@@ -41,6 +43,7 @@ from looplet.recovery_strategies import (
 from looplet.scaffolding import (
     PARSE_RECOVERY_MAX,
     ContextBudgetSnapshot,
+    ContextOverflowError,
     LLMResult,
     NativeToolStats,
     build_parse_recovery_prompt,
@@ -477,7 +480,7 @@ class LoopConfig:
     """
 
     max_steps: int = 15
-    max_tokens: int = 2000
+    max_tokens: int | None = None
     system_prompt: str = ""
     temperature: float = 0.2
     recovery_temperature: float = 0.1
@@ -722,6 +725,9 @@ class LoopConfig:
       :class:`ApprovalHook` will stop the loop for external approval).
 
     Leave unset for fully-autonomous runs."""
+
+    execution_policy: ExecutionPolicy | None = field(default=None, kw_only=True)
+    """Host-owned capabilities available to declared tools in this run."""
 
     context_window: int = 128_000
     """Maximum context window (in tokens) for the backend.  Used by:
@@ -1011,10 +1017,15 @@ def _build_tool_ctx(
 
     return ToolContext(
         cancel_token=config.cancel_token,
+        cwd=(config.execution_policy.workspace_root if config.execution_policy else None),
+        workspace_root=(
+            config.execution_policy.workspace_root if config.execution_policy else None
+        ),
         request_approval=config.approval_handler,
         on_progress=_progress_fn,
         llm=_tool_llm,
         run_envelope=config.run_envelope,
+        execution_policy=config.execution_policy,
         metadata=_metadata,
     )
 
@@ -1657,8 +1668,10 @@ def _validate_hooks(hooks: list[Any]) -> None:
 
 def _validate_loop_inputs(task: Any, tools: BaseToolRegistry, config: LoopConfig) -> None:
     """Reject impossible loop wiring before prompt assembly begins."""
+    if isinstance(config.max_steps, bool) or not isinstance(config.max_steps, int):
+        raise ValueError("config.max_steps must be a positive integer")
     if config.max_steps <= 0:
-        raise ValueError("config.max_steps must be positive")
+        raise ValueError("config.max_steps must be a positive integer")
 
 
 def _set_context_overrides(config: LoopConfig) -> list[tuple[Any, Any]]:
@@ -2243,7 +2256,9 @@ def _composable_loop_impl(
         #   LoopConfig(checkpoint_dir="./ckpt")
         # - saves after every step, resumes on restart.
         if config.initial_checkpoint is None:
-            _latest = _ckpt_store.load_latest()
+            _latest = _ckpt_store.load_latest_for_resume(
+                run_id=(config.run_envelope.run_id if config.run_envelope is not None else None)
+            )
             if _latest is not None:
                 config = _dc_replace(config, initial_checkpoint=_latest)
                 logger.info(
@@ -2254,7 +2269,17 @@ def _composable_loop_impl(
     # ── Crash-resume from initial checkpoint ───────────────────
     _step_offset = 0
     if config.initial_checkpoint is not None:
+        _validate_checkpoint_identity(
+            config.initial_checkpoint,
+            config.run_envelope.run_id if config.run_envelope is not None else None,
+        )
         resumed = _resume_loop_state(config.initial_checkpoint)
+        restore_backend = (
+            config.router.select(purpose="reasoning") if config.router is not None else llm
+        )
+        restore_backend_state = getattr(restore_backend, "restore_checkpoint_state", None)
+        if callable(restore_backend_state):
+            restore_backend_state((resumed.get("domain_state") or {}).get("llm", {}))
         if config.run_envelope is None and isinstance(resumed.get("run_envelope"), dict):
             config = _dc_replace(
                 config,
@@ -2677,13 +2702,21 @@ def _composable_loop_impl(
                 stop_reason = _d.stop
                 _hook_requested_stop = True
 
-        if preflight_too_long and config.reactive_recovery:
+        if preflight_too_long:
             logger.warning(
-                "Pre-flight block: prompt ~%d tokens exceeds safe limit - "
-                "running recovery before LLM call",
+                "Pre-flight block: prompt ~%d tokens exceeds safe limit - %s",
                 estimated_tokens,
+                "running recovery before LLM call"
+                if config.reactive_recovery
+                else "stopping before LLM call",
             )
-            llm_result = LLMResult(None, Exception("pre-flight: prompt is too long"))
+            llm_result = LLMResult(
+                None,
+                ContextOverflowError(
+                    f"prompt estimate {estimated_tokens} tokens exceeds safe context "
+                    f"limit {config.context_window - 3_000}"
+                ),
+            )
         else:
             # ── LLM call with retry + reactive recovery ───────────
             # Emit LLMCallStartEvent
@@ -2846,7 +2879,11 @@ def _composable_loop_impl(
                 tool="__llm_error__",
                 args_summary="",
                 data=None,
-                error="LLM call failed after all retry attempts",
+                error=(
+                    str(llm_result.error)
+                    if llm_result.error is not None
+                    else "LLM call failed after all retry attempts"
+                ),
             )
             step = Step(number=step_num, tool_call=error_call, tool_result=error_result)
             state.steps.append(step)
@@ -3091,35 +3128,33 @@ def _composable_loop_impl(
                 # Save checkpoint after the session log and conversation include this step.
                 if _ckpt_store is not None:
                     loop_ctx.step_num = cur_step
-                    _ckpt_store.save(
-                        _Checkpoint(
-                            step_number=cur_step,
-                            session_log_data={
-                                "entries": session_log.to_list(),
-                                "current_theory": session_log.current_theory,
-                            },
-                            conversation_data=_conv.serialize(),
-                            config_snapshot={
-                                "max_steps": config.max_steps,
-                                "queries_used": getattr(state, "queries_used", 0),
-                                "budget_remaining": getattr(state, "budget_remaining", 0),
-                            },
-                            tool_results_store=tools.snapshot_results(),
-                            domain_state=(
-                                checkpoint_state(loop_ctx) if checkpoint_state is not None else {}
-                            ),
-                            run_envelope=(
-                                loop_ctx.run_envelope.to_dict()
-                                if loop_ctx.run_envelope is not None
-                                else None
-                            ),
-                            metadata={"task": str(task), **_policy_checkpoint_metadata(state)},
-                            run_status=loop_ctx.status.value,
-                            run_phase=loop_ctx.phase.value,
-                            termination_reason=loop_ctx.termination_reason,
+                    _checkpoint = _Checkpoint(
+                        step_number=cur_step,
+                        session_log_data={
+                            "entries": session_log.to_list(),
+                            "current_theory": session_log.current_theory,
+                        },
+                        conversation_data=_conv.serialize(),
+                        config_snapshot={
+                            "max_steps": config.max_steps,
+                            "queries_used": getattr(state, "queries_used", 0),
+                            "budget_remaining": getattr(state, "budget_remaining", 0),
+                        },
+                        tool_results_store=tools.snapshot_results(),
+                        domain_state=(
+                            checkpoint_state(loop_ctx) if checkpoint_state is not None else {}
                         ),
-                        key=f"step_{cur_step}",
+                        run_envelope=(
+                            loop_ctx.run_envelope.to_dict()
+                            if loop_ctx.run_envelope is not None
+                            else None
+                        ),
+                        metadata={"task": str(task), **_policy_checkpoint_metadata(state)},
+                        run_status=loop_ctx.status.value,
+                        run_phase=loop_ctx.phase.value,
+                        termination_reason=loop_ctx.termination_reason,
                     )
+                    _ckpt_store.save(_checkpoint, key=f"step_{cur_step}")
 
         if _deadline_expired(loop_ctx):
             stop_reason = "deadline_exceeded"
@@ -3143,16 +3178,20 @@ def _composable_loop_impl(
                         w = _call_check_done(hook, state, session_log, context, cur_step, tool_call)
                         _decision = normalize_hook_return(w, slot="check_done")
                     except Exception:  # noqa: BLE001
-                        # Isolate buggy hooks: a single check_done that
-                        # raises (or returns garbage normalize_hook_return
-                        # rejects) must not crash the loop. Log loudly,
-                        # treat as 'no decision', and let the agent's
-                        # done() through.
+                        # A broken quality gate must fail closed. The agent
+                        # gets one actionable rejection and can retry after
+                        # the host records the hook failure.
                         logger.exception(
-                            "check_done hook %s raised or returned invalid value; continuing",
+                            "check_done hook %s raised; rejecting done()",
                             type(hook).__name__,
                         )
-                        _decision = None
+                        _decision = HookDecision(
+                            block=(
+                                f"Quality gate {type(hook).__name__} failed; "
+                                "the final answer was not accepted."
+                            ),
+                            metadata={"hook_error": True},
+                        )
                     if _decision is not None:
                         _emit_hook_decision_event(
                             hooks,
@@ -3223,6 +3262,10 @@ def _composable_loop_impl(
                     highlights=[],
                     recall_key=tool_result.result_key or "",
                 )
+                for _hook in hooks:
+                    _post_step = getattr(_hook, "post_step", None)
+                    if _post_step is not None:
+                        _post_step(state, session_log, cur_step)
             else:
                 # done() dispatch intentionally bypasses permission checks - it's
                 # a loop signal, not a side-effecting tool. Permission-gating a
@@ -3297,39 +3340,37 @@ def _composable_loop_impl(
                 # Save checkpoint after done step (after yield, matching non-done pattern)
                 if _ckpt_store is not None:
                     loop_ctx.step_num = cur_step
-                    _ckpt_store.save(
-                        _Checkpoint(
-                            step_number=cur_step,
-                            session_log_data={
-                                "entries": session_log.to_list(),
-                                "current_theory": session_log.current_theory,
-                            },
-                            conversation_data=_conv.serialize(),
-                            config_snapshot={
-                                "max_steps": config.max_steps,
-                                "queries_used": getattr(state, "queries_used", 0),
-                                "budget_remaining": getattr(state, "budget_remaining", 0),
-                            },
-                            tool_results_store=tools.snapshot_results(),
-                            domain_state=(
-                                checkpoint_state(loop_ctx) if checkpoint_state is not None else {}
-                            ),
-                            run_envelope=(
-                                loop_ctx.run_envelope.to_dict()
-                                if loop_ctx.run_envelope is not None
-                                else None
-                            ),
-                            metadata={
-                                "task": str(task),
-                                "status": "done",
-                                **_policy_checkpoint_metadata(state),
-                            },
-                            run_status=loop_ctx.status.value,
-                            run_phase=loop_ctx.phase.value,
-                            termination_reason=loop_ctx.termination_reason,
+                    _checkpoint = _Checkpoint(
+                        step_number=cur_step,
+                        session_log_data={
+                            "entries": session_log.to_list(),
+                            "current_theory": session_log.current_theory,
+                        },
+                        conversation_data=_conv.serialize(),
+                        config_snapshot={
+                            "max_steps": config.max_steps,
+                            "queries_used": getattr(state, "queries_used", 0),
+                            "budget_remaining": getattr(state, "budget_remaining", 0),
+                        },
+                        tool_results_store=tools.snapshot_results(),
+                        domain_state=(
+                            checkpoint_state(loop_ctx) if checkpoint_state is not None else {}
                         ),
-                        key=f"step_{cur_step}_done",
+                        run_envelope=(
+                            loop_ctx.run_envelope.to_dict()
+                            if loop_ctx.run_envelope is not None
+                            else None
+                        ),
+                        metadata={
+                            "task": str(task),
+                            "status": "done",
+                            **_policy_checkpoint_metadata(state),
+                        },
+                        run_status=loop_ctx.status.value,
+                        run_phase=loop_ctx.phase.value,
+                        termination_reason=loop_ctx.termination_reason,
                     )
+                    _ckpt_store.save(_checkpoint, key=f"step_{cur_step}_done")
                 done = True
                 stop_reason = "done"
                 # DONE_ACCEPTED is observer-only; the loop is already terminating.

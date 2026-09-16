@@ -112,6 +112,29 @@ class TestSubagentLifecycleEvents:
         assert result["subagent_id"]  # non-empty
         assert len(result["subagent_id"]) == 12
 
+    def test_subagent_stop_fires_once_when_summary_fails(self):
+        recorder = _Recorder()
+
+        with pytest.raises(RuntimeError, match="summary failed"):
+            run_sub_loop(
+                llm=MockLLMBackend(
+                    responses=['{"tool":"done","args":{"answer":"ok"},"reasoning":"r"}']
+                ),
+                tools=_tools(),
+                max_steps=3,
+                hooks=[recorder],
+                build_summary=lambda *_args: (_ for _ in ()).throw(RuntimeError("summary failed")),
+            )
+
+        assert recorder.events.count(LifecycleEvent.SUBAGENT_START) == 1
+        assert recorder.events.count(LifecycleEvent.SUBAGENT_STOP) == 1
+        stop = [
+            payload
+            for payload in recorder.payloads
+            if payload.event is LifecycleEvent.SUBAGENT_STOP
+        ][0]
+        assert stop.termination_reason == "error"
+
 
 # ── parent_hooks=... forwards sub-loop events to parent observers ──
 

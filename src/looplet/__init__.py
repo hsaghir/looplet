@@ -48,6 +48,7 @@ from looplet.bundles import (
     validate_skill_bundle,
 )
 from looplet.cache import CachePolicy
+from looplet.capabilities import CapabilityDeniedError, ExecutionPolicy
 from looplet.cartridge import (
     Cartridge,
     CartridgeCompatibility,
@@ -58,7 +59,13 @@ from looplet.cartridge import (
     resource_ref_for,
 )
 from looplet.cartridge.scaffold import scaffold_cartridge
-from looplet.checkpoint import FileCheckpointStore
+from looplet.checkpoint import (
+    Checkpoint,
+    CheckpointHook,
+    CheckpointStore,
+    FileCheckpointStore,
+    resume_loop_state,
+)
 from looplet.compact import (
     CompactOutcome,
     CompactService,
@@ -145,6 +152,7 @@ from looplet.model_gateway import (
 from looplet.native_tools import (
     NativeToolPolicy,
     NativeToolProbeResult,
+    NativeToolUnsupportedError,
     probe_native_tool_support,
     supports_native_tools,
 )
@@ -229,6 +237,8 @@ __all__ = [
     "composable_loop",
     "async_composable_loop",
     "async_llm_call",
+    "ExecutionPolicy",
+    "CapabilityDeniedError",
     "LoopConfig",
     "LoopContext",
     "LoopHook",
@@ -306,6 +316,7 @@ __all__ = [
     "ModelGatewayHandle",
     "NativeToolProbeResult",
     "NativeToolPolicy",
+    "NativeToolUnsupportedError",
     "probe_native_tool_support",
     "supports_native_tools",
     # ── CONTEXT MANAGEMENT ──────────────────────────────────────

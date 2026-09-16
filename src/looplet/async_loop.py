@@ -42,6 +42,7 @@ from typing import Any, AsyncGenerator
 from looplet.checkpoint import Checkpoint as _Checkpoint
 from looplet.checkpoint import FileCheckpointStore as _FileCheckpointStore
 from looplet.checkpoint import resume_loop_state as _resume_loop_state
+from looplet.checkpoint import validate_checkpoint_identity as _validate_checkpoint_identity
 from looplet.context_projection import ContextProjection
 from looplet.loop import (
     ContextBudgetSnapshot,
@@ -55,6 +56,7 @@ from looplet.loop import (
     _call_check_done,
     _deadline_expired,
     _default_build_briefing,
+    _default_extract_entities,
     _emit_hook_decision_event_async,
     _intercept_tool_calls_async,
     _mark_failed_state,
@@ -67,10 +69,11 @@ from looplet.loop import (
     _validate_loop_inputs,
     emit_event_async,
 )
-from looplet.native_tools import NativeToolPolicy
+from looplet.native_tools import NativeToolPolicy, NativeToolUnsupportedError
 from looplet.parse import parse_multi_tool_calls, to_text
 from looplet.scaffolding import (
     PARSE_RECOVERY_MAX,
+    ContextOverflowError,
     LLMResult,
     NativeToolStats,
     _is_prompt_too_long,
@@ -78,6 +81,7 @@ from looplet.scaffolding import (
     estimate_prompt_tokens,
     truncate_tool_result,
 )
+from looplet.scaffolding import _accepts_kwarg as _sync_accepts_kwarg
 from looplet.session import SessionLog
 from looplet.tools import BaseToolRegistry, _summarize_args_dict
 from looplet.types import AgentState, DefaultState, Step, ToolCall, ToolResult
@@ -125,7 +129,7 @@ class _SyncBridgeLLM:
         self,
         prompt: str,
         *,
-        max_tokens: int = 2000,
+        max_tokens: int | None = None,
         system_prompt: str = "",
         temperature: float = 0.2,
     ) -> str:
@@ -157,7 +161,7 @@ async def async_llm_call(
     llm: Any,
     prompt: str,
     *,
-    max_tokens: int = 2000,
+    max_tokens: int | None = None,
     system_prompt: str = "",
     temperature: float = 0.2,
     max_retries: int = MAX_LLM_RETRIES,
@@ -191,6 +195,10 @@ async def async_llm_call(
         except (TypeError, ValueError):
             return False
 
+    def _method_accepts_kwarg(method_name: str, name: str) -> bool:
+        fn = getattr(llm, method_name, None)
+        return _sync_accepts_kwarg(fn, name) if fn is not None else False
+
     # Filter generate_kwargs to only keys the backend accepts
     def _filtered_kwargs(method_name: str) -> dict[str, Any]:
         fn = getattr(llm, method_name, None)
@@ -200,7 +208,9 @@ async def async_llm_call(
         for k, v in _gk.items():
             try:
                 sig = inspect.signature(fn)
-                if k in sig.parameters:
+                if k in sig.parameters or any(
+                    p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+                ):
                     out[k] = v
             except (TypeError, ValueError):
                 pass
@@ -210,6 +220,9 @@ async def async_llm_call(
     native_fallback = False
     native_attempted = False
     native_fallback_reason: str | None = None
+    # Reserve one extra slot for the native-to-text fallback. Ordinary native
+    # provider failures are handled by the explicit native retry budget below
+    # and never consume this fallback slot.
     attempt_limit = max_retries + 1 + int(use_native)
 
     for attempt in range(attempt_limit):
@@ -229,11 +242,15 @@ async def async_llm_call(
                     "generate_with_tools", "cache_breakpoints"
                 ):
                     call_kwargs["cache_breakpoints"] = cache_breakpoints
+                if cancel_token is not None and _method_accepts_kwarg(
+                    "generate_with_tools", "cancel_token"
+                ):
+                    call_kwargs["cancel_token"] = cancel_token
                 result = llm.generate_with_tools(prompt, **call_kwargs)
                 if inspect.isawaitable(result):
                     result = await result
                 if result is None:
-                    raise RuntimeError("native tool call returned no response")
+                    raise NativeToolUnsupportedError("native tool call returned no response")
                 return LLMResult(
                     result,
                     stop_reason=getattr(llm, "last_stop_reason", None),
@@ -250,6 +267,8 @@ async def async_llm_call(
             }
             if cache_breakpoints and _method_accepts("generate", "cache_breakpoints"):
                 call_kwargs["cache_breakpoints"] = cache_breakpoints
+            if cancel_token is not None and _method_accepts_kwarg("generate", "cancel_token"):
+                call_kwargs["cancel_token"] = cancel_token
             result = llm.generate(prompt, **call_kwargs)
             if inspect.isawaitable(result):
                 result = await result
@@ -295,7 +314,7 @@ async def async_llm_call(
             last_error = e
             if _is_prompt_too_long(e):
                 return LLMResult(None, e)
-            if use_native:
+            if use_native and isinstance(e, NativeToolUnsupportedError):
                 logger.warning(
                     "Async native tool call failed; falling back to regular generation: %s",
                     e,
@@ -305,6 +324,24 @@ async def async_llm_call(
                 native_fallback = True
                 native_fallback_reason = f"{type(e).__name__}: {e}"
                 continue
+            if use_native:
+                if attempt < max_retries:
+                    wait = RETRY_BACKOFF_BASE * (2**attempt)
+                    logger.warning(
+                        "Async native LLM call attempt %d/%d failed: %s - retrying in %.1fs",
+                        attempt + 1,
+                        max_retries + 1,
+                        e,
+                        wait,
+                    )
+                    await asyncio.sleep(wait)
+                    continue
+                return LLMResult(
+                    None,
+                    e,
+                    native_requested=bool(tools is not None and policy.enabled),
+                    native_attempted=native_attempted,
+                )
             if attempt < attempt_limit - 1:
                 wait = RETRY_BACKOFF_BASE * (2**attempt)
                 logger.warning(
@@ -452,7 +489,9 @@ async def _async_composable_loop_impl(
     if config.checkpoint_dir is not None:
         _ckpt_store = _FileCheckpointStore(config.checkpoint_dir)
         if config.initial_checkpoint is None:
-            _latest = _ckpt_store.load_latest()
+            _latest = _ckpt_store.load_latest_for_resume(
+                run_id=(config.run_envelope.run_id if config.run_envelope is not None else None)
+            )
             if _latest is not None:
                 config = _dc_replace(config, initial_checkpoint=_latest)
                 logger.info(
@@ -461,7 +500,17 @@ async def _async_composable_loop_impl(
 
     _step_offset = 0
     if config.initial_checkpoint is not None:
+        _validate_checkpoint_identity(
+            config.initial_checkpoint,
+            config.run_envelope.run_id if config.run_envelope is not None else None,
+        )
         resumed = _resume_loop_state(config.initial_checkpoint)
+        restore_backend = (
+            config.router.select(purpose="reasoning") if config.router is not None else llm
+        )
+        restore_backend_state = getattr(restore_backend, "restore_checkpoint_state", None)
+        if callable(restore_backend_state):
+            restore_backend_state((resumed.get("domain_state") or {}).get("llm", {}))
         if config.run_envelope is None and isinstance(resumed.get("run_envelope"), dict):
             config = _dc_replace(
                 config,
@@ -517,12 +566,25 @@ async def _async_composable_loop_impl(
     loop_ctx.step_num = _step_offset
 
     # Domain callables
-    _default_ee = lambda data: []  # noqa: E731
-    extract_entities = (
+    _raw_extract_entities = (
         config.extract_entities
         or (config.domain.extract_entities if config.domain else None)
-        or _default_ee
+        or _default_extract_entities
     )
+    try:
+        _ee_params = inspect.signature(_raw_extract_entities).parameters
+        _ee_takes_state = "state" in _ee_params or any(
+            parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in _ee_params.values()
+        )
+    except (TypeError, ValueError):
+        _ee_takes_state = False
+    if _ee_takes_state:
+
+        def extract_entities(data: Any) -> list[str]:
+            return _raw_extract_entities(data, state=state)
+
+    else:
+        extract_entities = _raw_extract_entities
     extract_step_metadata = (
         config.extract_step_metadata
         or (config.domain.extract_step_metadata if config.domain else None)
@@ -619,29 +681,30 @@ async def _async_composable_loop_impl(
         if status is not None:
             metadata["status"] = status
         loop_ctx.step_num = step_number
-        _ckpt_store.save(
-            _Checkpoint(
-                step_number=step_number,
-                session_log_data={
-                    "entries": session_log.to_list(),
-                    "current_theory": session_log.current_theory,
-                },
-                conversation_data=_conv.serialize(),
-                config_snapshot={
-                    "max_steps": config.max_steps,
-                    "queries_used": getattr(state, "queries_used", 0),
-                    "budget_remaining": getattr(state, "budget_remaining", 0),
-                },
-                tool_results_store=tools.snapshot_results(),
-                domain_state=(checkpoint_state(loop_ctx) if checkpoint_state is not None else {}),
-                run_envelope=(
-                    loop_ctx.run_envelope.to_dict() if loop_ctx.run_envelope is not None else None
-                ),
-                metadata={**metadata, **_policy_checkpoint_metadata(state)},
-                run_status=loop_ctx.status.value,
-                run_phase=loop_ctx.phase.value,
-                termination_reason=loop_ctx.termination_reason,
+        _checkpoint = _Checkpoint(
+            step_number=step_number,
+            session_log_data={
+                "entries": session_log.to_list(),
+                "current_theory": session_log.current_theory,
+            },
+            conversation_data=_conv.serialize(),
+            config_snapshot={
+                "max_steps": config.max_steps,
+                "queries_used": getattr(state, "queries_used", 0),
+                "budget_remaining": getattr(state, "budget_remaining", 0),
+            },
+            tool_results_store=tools.snapshot_results(),
+            domain_state=(checkpoint_state(loop_ctx) if checkpoint_state is not None else {}),
+            run_envelope=(
+                loop_ctx.run_envelope.to_dict() if loop_ctx.run_envelope is not None else None
             ),
+            metadata={**metadata, **_policy_checkpoint_metadata(state)},
+            run_status=loop_ctx.status.value,
+            run_phase=loop_ctx.phase.value,
+            termination_reason=loop_ctx.termination_reason,
+        )
+        _ckpt_store.save(
+            _checkpoint,
             key=f"step_{step_number}" if status is None else f"step_{step_number}_{status}",
         )
 
@@ -672,9 +735,14 @@ async def _async_composable_loop_impl(
         _want_compact = False
         for hook in hooks:
             method = getattr(hook, "should_compact", None)
-            if method is not None and await _maybe_await(
-                method(state, session_log, _conv, step_num)
-            ):
+            if method is None:
+                continue
+            try:
+                should_compact = await _maybe_await(method(state, session_log, _conv, step_num))
+            except Exception:  # noqa: BLE001
+                logger.exception("should_compact hook raised; skipping")
+                should_compact = False
+            if should_compact:
                 _want_compact = True
                 break
         if _want_compact and config.compact_service is not None:
@@ -894,19 +962,35 @@ async def _async_composable_loop_impl(
         _set_run_lifecycle(loop_ctx, phase=RunPhase.LLM)
         if stream is not None and _LLMCallStartEvent is not None:
             stream.emit(_LLMCallStartEvent(step_num=step_num))
-        llm_result = await async_llm_call(
-            effective_llm,
-            prompt,
-            max_tokens=config.max_tokens,
-            system_prompt=config.system_prompt,
-            temperature=config.temperature,
-            tools=_tool_schemas,
-            native_policy=native_policy,
-            cancel_token=config.cancel_token,
-            max_continuations=config.max_turn_continuations,
-            cache_breakpoints=_cache_bps,
-            generate_kwargs=config.generate_kwargs or None,
-        )
+        if loop_ctx.context_budget.pressure:
+            logger.warning(
+                "Async pre-flight block: prompt ~%d tokens exceeds safe limit - %s",
+                _estimated_tokens,
+                "running recovery before LLM call"
+                if config.reactive_recovery
+                else "stopping before LLM call",
+            )
+            llm_result = LLMResult(
+                None,
+                ContextOverflowError(
+                    f"prompt estimate {_estimated_tokens} tokens exceeds safe context "
+                    f"limit {config.context_window - 3_000}"
+                ),
+            )
+        else:
+            llm_result = await async_llm_call(
+                effective_llm,
+                prompt,
+                max_tokens=config.max_tokens,
+                system_prompt=config.system_prompt,
+                temperature=config.temperature,
+                tools=_tool_schemas,
+                native_policy=native_policy,
+                cancel_token=config.cancel_token,
+                max_continuations=config.max_turn_continuations,
+                cache_breakpoints=_cache_bps,
+                generate_kwargs=config.generate_kwargs or None,
+            )
         loop_ctx.native_tool_stats.record(llm_result)
         if _deadline_expired(loop_ctx):
             stop_reason = "deadline_exceeded"
@@ -940,7 +1024,11 @@ async def _async_composable_loop_impl(
                 tool="__llm_error__",
                 args_summary="",
                 data=None,
-                error="LLM call failed after all retry attempts",
+                error=(
+                    str(llm_result.error)
+                    if llm_result.error is not None
+                    else "LLM call failed after all retry attempts"
+                ),
             )
             step = Step(number=step_num, tool_call=error_call, tool_result=error_result)
             state.steps.append(step)
@@ -1198,10 +1286,18 @@ async def _async_composable_loop_impl(
                         )
                     except Exception:  # noqa: BLE001
                         logger.exception(
-                            "check_done hook %s raised; continuing",
+                            "check_done hook %s raised; rejecting done()",
                             type(hook).__name__,
                         )
-                        w = None
+                        from looplet.hook_decision import HookDecision  # noqa: PLC0415
+
+                        w = HookDecision(
+                            block=(
+                                f"Quality gate {type(hook).__name__} failed; "
+                                "the final answer was not accepted."
+                            ),
+                            metadata={"hook_error": True},
+                        )
                     _decision = normalize_hook_return(w, slot="check_done")
                     if _decision is not None:
                         await _emit_hook_decision_event_async(
@@ -1236,6 +1332,7 @@ async def _async_composable_loop_impl(
                     tool=done_tool_name,
                     args_summary="rejected",
                     data={"rejected": True, "reason": gate_warning},
+                    error=gate_warning,
                 )
                 step = Step(number=cur_step, tool_call=tool_call, tool_result=tool_result)
                 state.steps.append(step)

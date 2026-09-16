@@ -177,6 +177,25 @@ def test_preflight_warning_uses_ascii_separator(caplog):
     assert "exceeds safe limit - running recovery" in caplog.text
 
 
+def test_preflight_disabled_recovery_never_calls_backend():
+    class Backend:
+        def generate(self, *_args, **_kwargs):
+            raise AssertionError("oversized prompt must be blocked before backend")
+
+    steps = list(
+        composable_loop(
+            llm=Backend(),
+            tools=_done_tools(),
+            config=LoopConfig(max_steps=1, context_window=1, reactive_recovery=False),
+            state=DefaultState(max_steps=1),
+            task={},
+        )
+    )
+
+    assert steps[0].tool_call.tool == "__llm_error__"
+    assert "context" in steps[0].tool_result.error.lower()
+
+
 def test_aborted_parse_recovery_uses_ascii_error():
     registry = RecoveryRegistry()
     registry.register(

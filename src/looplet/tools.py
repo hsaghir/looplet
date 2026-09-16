@@ -353,6 +353,15 @@ class ToolSpec:
     timeout (the tool itself is responsible for timing out).
     """
 
+    infer_optional_from_signature: bool = False
+    """Infer optional simple-schema parameters from callable defaults.
+
+    Simple schemas treat bare descriptions as required for backward
+    compatibility. Set this explicitly when the callable signature is the
+    source of truth for requiredness. JSON Schema always uses its ``required``
+    list and ignores this flag.
+    """
+
     idempotency: str = "unknown"
     """Retry safety classification: ``safe``, ``keyed``, ``unsafe``, or ``unknown``."""
 
@@ -399,6 +408,13 @@ class ToolSpec:
     leave this empty.
     """
 
+    capabilities: list[str] = field(default_factory=list)
+    """Host authorities required before this tool may execute.
+
+    Examples include ``workspace.write``, ``network``, ``shell``, and
+    ``host.absolute_path``. An empty list preserves legacy behavior.
+    """
+
     _accepts_ctx: bool | None = field(default=None, repr=False, compare=False)
     """Cached result of ``inspect.signature(execute)`` for ``ctx`` detection."""
 
@@ -442,6 +458,25 @@ class ToolSpec:
             if not str(desc).lower().lstrip().startswith("(optional)"):
                 required.append(name)
         return required
+
+    def sync_required_parameters_from_callable(self) -> None:
+        """Infer optional simple-schema parameters from callable defaults."""
+        if self.is_json_schema or not self.infer_optional_from_signature:
+            return
+        try:
+            signature = inspect.signature(self.execute)
+        except (TypeError, ValueError):
+            return
+        for name, parameter in signature.parameters.items():
+            if name not in self.parameters or name == "ctx":
+                continue
+            descriptor = self.parameters[name]
+            if isinstance(descriptor, dict) or str(descriptor).lower().lstrip().startswith(
+                "(optional)"
+            ):
+                continue
+            if parameter.default is not inspect.Signature.empty:
+                self.parameters[name] = f"(optional) {descriptor}"
 
     def contract_errors(self) -> list[str]:
         """Return mismatches between the schema and the execute signature.
@@ -720,6 +755,7 @@ class BaseToolRegistry:
         overwrites are a common source of bugs when composing
         multiple ``Skill`` bundles that happen to share a tool name.
         """
+        spec.sync_required_parameters_from_callable()
         if spec.name in self._tools:
             existing = self._tools[spec.name]
             # Suppress the warning when the "new" registration is the
@@ -842,12 +878,39 @@ class BaseToolRegistry:
                 call_id=call.call_id,
             )
 
+        if spec.capabilities:
+            policy = getattr(ctx, "execution_policy", None) if ctx is not None else None
+            if policy is None or not policy.allows(spec.capabilities):
+                missing = (
+                    tuple(spec.capabilities)
+                    if policy is None
+                    else policy.missing(spec.capabilities)
+                )
+                error = ToolError(
+                    kind=ErrorKind.PERMISSION_DENIED,
+                    message=(
+                        f"Tool '{spec.name}' requires unavailable capabilities: "
+                        f"{', '.join(missing)}"
+                    ),
+                    retriable=False,
+                    context={"missing_capabilities": list(missing)},
+                )
+                return ToolResult(
+                    tool=call.tool,
+                    args_summary=self._summarize_args(call),
+                    data=None,
+                    error=error.message,
+                    error_detail=error,
+                    call_id=call.call_id,
+                )
+
         if spec._accepts_ctx is None:
             spec._accepts_ctx = _accepts_ctx(spec.execute)
 
-        sanitized: dict[str, Any] = {}
-        for key, value in clean_args.items():
-            sanitized[key] = value.strip() if isinstance(value, str) else value
+        # Preserve argument bytes exactly. Whitespace normalization is a
+        # tool-specific concern because strings may be source text, secrets,
+        # fixed-width records, or shell commands.
+        sanitized = dict(clean_args)
         exec_kwargs: dict[str, Any] = dict(sanitized)
         if spec._accepts_ctx:
             exec_kwargs["ctx"] = ctx
@@ -885,7 +948,7 @@ class BaseToolRegistry:
             if param not in sanitized:
                 continue
             value = sanitized[param]
-            if value is None or (isinstance(value, str) and not value):
+            if value is None or (isinstance(value, str) and not value.strip()):
                 schema_hint = _format_param_hint(spec)
                 error = ToolError(
                     kind=ErrorKind.VALIDATION,

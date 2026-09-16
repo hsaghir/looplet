@@ -29,11 +29,12 @@ if TYPE_CHECKING:
     from looplet.tools import BaseToolRegistry
 
 from looplet.cartridge._layout import (
+    SCHEMA_VERSION,
     CartridgeLayout,
     CartridgeSerializationError,
     _preset_origin_root,
 )
-from looplet.cartridge._manifest import Cartridge
+from looplet.cartridge._manifest import Cartridge, CartridgeCompatibility
 from looplet.cartridge._render import (
     _DataclassReprFailed,
     _hook_class,
@@ -53,7 +54,7 @@ def preset_to_cartridge(
     out_dir: str | Path,
     *,
     name: str | None = None,
-    description: str = "",
+    description: str | None = None,
     overwrite: bool = False,
     strict: bool = False,
 ) -> Cartridge:
@@ -101,10 +102,18 @@ def preset_to_cartridge(
                 stale_path.unlink()
     root.mkdir(parents=True, exist_ok=True)
 
+    manifest = dict(getattr(preset, "cartridge_manifest", {}) or {})
     workspace = Cartridge(
         path=root,
-        name=name or root.name,
-        description=description,
+        name=name or str(manifest.get("name") or root.name),
+        description=(
+            description if description is not None else str(manifest.get("description", ""))
+        ),
+        schema_version=int(manifest.get("schema_version", SCHEMA_VERSION)),
+        language=str(manifest.get("language", "python")),
+        metadata=dict(manifest.get("metadata", {})),
+        compatibility=CartridgeCompatibility.from_dict(manifest.get("compatibility")),
+        version=str(manifest.get("version", "")),
     )
     warnings: list[str] = []
 
@@ -840,6 +849,9 @@ def _write_tool(spec: Any, tools_root: Path, warnings: list[str], strict: bool) 
     requires = getattr(spec, "requires", None) or []
     if requires:
         yaml_payload["requires"] = list(requires)
+    capabilities = getattr(spec, "capabilities", None) or []
+    if capabilities:
+        yaml_payload["capabilities"] = list(capabilities)
     idempotency = getattr(spec, "idempotency", "unknown")
     retryable = bool(getattr(spec, "retryable", False))
     if idempotency != "unknown":

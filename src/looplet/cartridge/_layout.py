@@ -82,6 +82,7 @@ class CartridgeLayout:
         "approval_handler",
         "render_messages_override",
         "context_planner",
+        "execution_policy",
     )
 
     # ── Schema-v2 field tiering ─────────────────────────────────
@@ -133,6 +134,7 @@ class CartridgeLayout:
             "approval_handler",
             "cancel_token",
             "render_messages_override",
+            "execution_policy",
         }
     )
 

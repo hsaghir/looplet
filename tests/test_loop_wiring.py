@@ -304,7 +304,7 @@ def test_load_latest_returns_highest_step():
         assert latest.step_number == 3
 
 
-def test_load_latest_ignores_completed_checkpoint():
+def test_load_latest_for_resume_ignores_completed_checkpoint():
     from looplet.checkpoint import Checkpoint, FileCheckpointStore
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -337,10 +337,129 @@ def test_load_latest_ignores_completed_checkpoint():
             "step_2",
         )
 
-        latest = store.load_latest()
+        latest = store.load_latest_for_resume()
+
+        # A terminal snapshot is authoritative. Older running state must not
+        # be resurrected after a completed run.
+        assert latest is None
+
+        inspected = store.load_latest()
+        assert inspected is not None
+        assert inspected.step_number == 5
+
+
+def test_load_latest_filters_by_run_identity_and_terminal_state():
+    from looplet.checkpoint import Checkpoint, FileCheckpointStore
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        store = FileCheckpointStore(tmpdir)
+        for run_id, step, status in (("run-a", 8, "running"), ("run-b", 3, "running")):
+            store.save(
+                Checkpoint(
+                    step_number=step,
+                    session_log_data={"entries": [], "current_theory": ""},
+                    conversation_data=None,
+                    config_snapshot={},
+                    tool_results_store={},
+                    metadata={},
+                    run_envelope={"run_id": run_id},
+                    run_status=status,
+                    run_phase="dispatching",
+                ),
+                f"{run_id}_{step}",
+            )
+
+        latest = store.load_latest(run_id="run-b")
 
         assert latest is not None
-        assert latest.step_number == 2
+        assert latest.run_id == "run-b"
+        assert latest.step_number == 3
+
+        store.save(
+            Checkpoint(
+                step_number=4,
+                session_log_data={"entries": [], "current_theory": ""},
+                conversation_data=None,
+                config_snapshot={},
+                tool_results_store={},
+                metadata={},
+                run_envelope={"run_id": "run-b"},
+                run_status="completed",
+                run_phase="terminal",
+                termination_reason="done",
+            ),
+            "run-b_4_done",
+        )
+
+        assert store.load_latest_for_resume(run_id="run-b") is None
+        assert store.load_latest(run_id="run-a").step_number == 8
+
+
+def test_run_scoped_checkpoint_keys_do_not_collide():
+    from looplet.checkpoint import Checkpoint, FileCheckpointStore
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        store = FileCheckpointStore(tmpdir)
+        for run_id in ("run-a", "run-b"):
+            store.save(
+                Checkpoint(
+                    step_number=1,
+                    session_log_data={"entries": [run_id]},
+                    conversation_data=None,
+                    config_snapshot={},
+                    tool_results_store={},
+                    metadata={},
+                    run_envelope={"run_id": run_id},
+                    run_status="running",
+                    run_phase="dispatching",
+                ),
+                "step_1",
+            )
+
+        assert store.load_latest(run_id="run-a").session_log_data["entries"] == ["run-a"]
+        assert store.load_latest(run_id="run-b").session_log_data["entries"] == ["run-b"]
+
+
+def test_explicit_namespaced_checkpoint_load_accepts_run_id():
+    from looplet.checkpoint import Checkpoint, FileCheckpointStore
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        store = FileCheckpointStore(tmpdir)
+        checkpoint = Checkpoint(
+            step_number=1,
+            session_log_data={"entries": []},
+            conversation_data=None,
+            config_snapshot={},
+            tool_results_store={},
+            metadata={},
+            run_envelope={"run_id": "run-a"},
+        )
+        store.save(checkpoint, "step_1")
+
+        assert store.load("step_1", run_id="run-a") is not None
+
+
+def test_legacy_auto_resume_does_not_adopt_identity_bound_checkpoint():
+    from looplet.checkpoint import Checkpoint, FileCheckpointStore
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        store = FileCheckpointStore(tmpdir)
+        store.save(
+            Checkpoint(
+                step_number=9,
+                session_log_data={"entries": [], "current_theory": ""},
+                conversation_data=None,
+                config_snapshot={},
+                tool_results_store={},
+                metadata={},
+                run_envelope={"run_id": "other-run"},
+                run_status="running",
+                run_phase="dispatching",
+            ),
+            "other-run_9",
+        )
+
+        assert store.load_latest_for_resume() is None
 
 
 def test_explicit_checkpoint_load_rejects_wrong_json_shapes(tmp_path):

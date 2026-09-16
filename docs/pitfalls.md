@@ -92,13 +92,60 @@ return {
 return {"error": "ENOENT"}
 ```
 
-## 7. Do not swallow exceptions in hooks
+## 7. Tool arguments are not normalized by the registry
+
+The registry preserves string arguments exactly. This is intentional: leading
+and trailing whitespace may be meaningful in source text, secrets, regular
+expressions, fixed-width records, and shell commands. Normalize a value inside
+the tool only when that tool's contract calls for it.
+
+Simple-format `ToolSpec` parameters also inherit optionality from callable
+defaults at registration time. Prefer a JSON Schema `parameters` object for
+new tools when the full contract needs to be visible to a host or remote
+adapter.
+
+## 8. Checkpoint directories are run-scoped
+
+Use a unique checkpoint directory per logical task when possible. When a
+`RunEnvelope(run_id=...)` is configured, implicit resume selects only that
+run's checkpoints. A terminal checkpoint blocks implicit resurrection of
+older state. For legacy identity-less checkpoints, auto-resume considers only
+checkpoints without a run envelope. Use `load_latest()` to inspect the newest
+snapshot and `load_latest_for_resume()` when implementing crash recovery.
+
+`FileRunStore` coordinates readers and writers across threads and processes,
+but the store is still a persistence boundary: keep one logical run ID per
+directory entry and do not treat a checkpoint as a provenance artifact.
+
+## 9. Hook failures have explicit safety semantics
+
+Policy-bearing `check_done` hooks fail closed: if the gate raises, Looplet
+rejects the candidate `done()` call and exposes the rejection to the agent.
+Telemetry and observer hooks may still log and continue where their lifecycle
+contract says they are non-blocking. Do not rely on a hook exception to mean
+"allow"; return an explicit `Continue()` or `Block(...)` decision instead.
+
+Native tool fallback is also explicit. Backends should raise
+`NativeToolUnsupportedError` only when the native protocol is unavailable.
+Authentication, rate-limit, transport, and provider errors remain visible as
+failures and are never silently changed into JSON-text calls.
+
+## 10. Do not swallow exceptions in hooks
 
 A hook that eats `KeyError` can mask a real bug - for example, a
 missing `tool_call.args` key that should have surfaced as a prompt for
 the model. Let exceptions propagate unless you have a specific recovery.
 
-## 8. `composable_loop` is a generator
+## 11. Presets are single-use execution plans
+
+`AgentPreset` contains mutable state, hook instances, configuration, and live
+tool/resource wiring. It can be claimed by only one sync or async run. Reusing
+it or starting a concurrent second run raises a clear error. Build a fresh
+preset from the cartridge or factory for each run; use `AgentRuntime` when the
+host needs lifecycle, persistence, or cancellation management. Looplet does
+not deep-copy tool closures, sockets, MCP adapters, or external resources.
+
+## 12. `composable_loop` is a generator
 
 ```python
 # ✓ do this
@@ -111,6 +158,19 @@ list(composable_loop(...))
 # ✗ this does nothing - the loop never runs
 composable_loop(...)
 ```
+
+## 13. Token and context budgets are explicit
+
+`LoopConfig.max_tokens=None` means that Looplet does not impose a per-call
+output limit; the backend decides. Set an integer when the cartridge needs a
+specific ceiling. OpenAI-compatible backends omit `max_tokens` in the unset
+case; Anthropic supplies its API-required default when unset.
+
+`LoopConfig.context_window` is a hard pre-call safety boundary. Looplet records
+context pressure and, when `reactive_recovery=True`, runs the configured
+recovery chain before retrying. With recovery disabled, an oversized prompt is
+stopped before it reaches the provider and the run records a typed context
+overflow error.
 
 ## 9. `generate_with_tools` is surfaced via hasattr
 

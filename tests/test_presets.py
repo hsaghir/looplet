@@ -244,6 +244,91 @@ class TestMinimalPreset:
 
 
 class TestPresetIntegration:
+    def test_preset_run_is_single_use(self):
+        from looplet.presets import minimal_preset
+        from looplet.testing import MockLLMBackend
+
+        preset = minimal_preset()
+        list(preset.run(MockLLMBackend(['{"tool":"done","args":{"summary":"one"}}']), task={}))
+
+        with pytest.raises(RuntimeError, match="single-use"):
+            preset.run(MockLLMBackend(['{"tool":"done","args":{"summary":"two"}}']), task={})
+
+    def test_preset_rejects_concurrent_claims_before_execution(self):
+        from looplet.presets import minimal_preset
+        from looplet.testing import MockLLMBackend
+
+        preset = minimal_preset()
+        first = preset.run(MockLLMBackend(['{"tool":"done","args":{"summary":"one"}}']), task={})
+
+        with pytest.raises(RuntimeError, match="single-use"):
+            preset.run(MockLLMBackend(['{"tool":"done","args":{"summary":"two"}}']), task={})
+
+        steps = list(first)
+        assert len(steps) == 1
+
+    def test_closing_unstarted_preset_run_releases_claim(self):
+        from looplet.presets import minimal_preset
+        from looplet.testing import MockLLMBackend
+
+        preset = minimal_preset()
+        abandoned = preset.run(MockLLMBackend(['{"tool":"done","args":{}}']), task={})
+        abandoned.close()
+        assert not preset.run_claimed
+        assert list(preset.run(MockLLMBackend(['{"tool":"done","args":{}}']), task={}))
+
+    def test_first_iteration_failure_releases_claim(self):
+        from looplet.presets import minimal_preset
+        from looplet.testing import MockLLMBackend
+
+        class FailingHook:
+            def pre_loop(self, state, session_log, context):
+                raise RuntimeError("first iteration failed")
+
+        preset = minimal_preset()
+        preset.hooks.append(FailingHook())
+        run = preset.run(MockLLMBackend(), task={})
+        with pytest.raises(RuntimeError, match="first iteration failed"):
+            next(run)
+        assert not preset.run_claimed
+
+    @pytest.mark.asyncio
+    async def test_first_async_iteration_failure_releases_claim(self):
+        from looplet.presets import minimal_preset
+        from looplet.testing import AsyncMockLLMBackend
+
+        class FailingHook:
+            async def pre_loop(self, state, session_log, context):
+                raise RuntimeError("first async iteration failed")
+
+        preset = minimal_preset()
+        preset.hooks.append(FailingHook())
+        run = preset.run_async(AsyncMockLLMBackend(), task={})
+        with pytest.raises(RuntimeError, match="first async iteration failed"):
+            await run.__anext__()
+        assert not preset.run_claimed
+
+    @pytest.mark.asyncio
+    async def test_async_preset_run_is_single_use(self):
+        from looplet.async_loop import async_composable_loop
+        from looplet.presets import minimal_preset
+        from looplet.testing import AsyncMockLLMBackend
+
+        preset = minimal_preset()
+        first = preset.run_async(
+            AsyncMockLLMBackend(['{"tool":"done","args":{"summary":"one"}}']), task={}
+        )
+
+        with pytest.raises(RuntimeError, match="single-use"):
+            preset.run_async(
+                AsyncMockLLMBackend(['{"tool":"done","args":{"summary":"two"}}']), task={}
+            )
+
+        steps = []
+        async for step in first:
+            steps.append(step)
+        assert len(steps) == 1
+
     def test_coding_preset_runs_loop(self, tmp_path):
         """Verify a preset can drive composable_loop with a mock LLM."""
         from looplet import composable_loop

@@ -40,16 +40,24 @@ import os
 import signal
 import subprocess
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import Any
 
 from looplet.protocol_context import remaining_deadline
 from looplet.tools import BaseToolRegistry, ToolSpec
 from looplet.types import RunEnvelope
 
-__all__ = ["MCPToolAdapter"]
+__all__ = ["MCPProtocolError", "MCPToolError", "MCPToolAdapter"]
 
 logger = logging.getLogger(__name__)
+
+
+class MCPProtocolError(RuntimeError):
+    """The MCP server emitted an invalid JSON-RPC response envelope."""
+
+
+class MCPToolError(RuntimeError):
+    """An MCP server reported failure while executing a tool."""
 
 
 class MCPToolAdapter:
@@ -76,6 +84,7 @@ class MCPToolAdapter:
         env: dict[str, str] | None = None,
         timeout: float = 30.0,
         run_envelope: RunEnvelope | None = None,
+        capabilities: Iterable[str] | None = None,
     ) -> None:
         if timeout <= 0:
             raise ValueError("timeout must be greater than zero")
@@ -83,11 +92,13 @@ class MCPToolAdapter:
         self._env = env
         self._timeout = timeout
         self._run_envelope = run_envelope
+        self._capabilities = list(dict.fromkeys(capabilities or ()))
         self._proc: subprocess.Popen | None = None
         self._request_id = 0
         self._lock = threading.Lock()
         self._reader_lock = threading.Lock()
         self._reader_threads: set[threading.Thread] = set()
+        self._pending_messages: list[dict[str, Any]] = []
         self._tool_schemas: list[dict[str, Any]] = []
         self._started = False
 
@@ -114,6 +125,7 @@ class MCPToolAdapter:
                     description=desc,
                     parameters=params,
                     execute=self._make_executor(name, params),
+                    capabilities=list(self._capabilities),
                 )
             )
         return specs
@@ -259,7 +271,7 @@ class MCPToolAdapter:
         try:
             self._write_message(msg)
             return self._read_message(expected_id=msg.get("id"))
-        except OSError:
+        except (OSError, MCPProtocolError):
             self.close()
             raise
 
@@ -279,34 +291,56 @@ class MCPToolAdapter:
     def _read_message(self, expected_id: int | None = None) -> dict | None:
         """Read one newline-delimited JSON-RPC message from the server.
 
-        Returns the parsed ``result`` payload, or ``None`` on EOF / a
-        JSON-RPC error response (errors are logged at WARNING).
+        Returns the parsed ``result`` payload, or ``None`` on EOF. JSON-RPC
+        errors are raised so the dispatcher records a real failure.
         """
         if self._proc is None or self._proc.stdout is None:
             return None
-        line = self._run_io_with_timeout(
-            self._proc.stdout.readline,
-            operation="response",
-        )
-        if not line:
-            return None
-        try:
-            data = json.loads(line.decode("utf-8"))
-        except json.JSONDecodeError as exc:
-            logger.warning("MCP non-JSON line on stdout (%s): %r", exc, line[:200])
-            return None
-        if not isinstance(data, dict):
-            logger.warning("MCP response must be a JSON object: %r", data)
-            return None
-        if expected_id is not None and data.get("id") != expected_id:
-            logger.warning(
-                "MCP response id mismatch: expected %s, got %s", expected_id, data.get("id")
-            )
-            return None
-        if "error" in data:
-            logger.warning("MCP error: %s", data["error"])
-            return None
-        return data.get("result", data)
+        while True:
+            data = self._pop_pending_message(expected_id)
+            if data is None:
+                line = self._run_io_with_timeout(
+                    self._proc.stdout.readline,
+                    operation="response",
+                )
+                if not line:
+                    return None
+                try:
+                    data = json.loads(line.decode("utf-8"))
+                except json.JSONDecodeError as exc:
+                    logger.warning("MCP non-JSON line on stdout (%s): %r", exc, line[:200])
+                    continue
+                if not isinstance(data, dict):
+                    logger.warning("MCP response must be a JSON object: %r", data)
+                    continue
+
+            if expected_id is not None and data.get("id") is None:
+                logger.debug(
+                    "MCP notification received while awaiting response: %s", data.get("method")
+                )
+                continue
+            if expected_id is not None and data.get("id") != expected_id:
+                self._pending_messages.append(data)
+                logger.debug(
+                    "Queued MCP response id %s while awaiting %s", data.get("id"), expected_id
+                )
+                continue
+            if "error" in data:
+                error = data["error"]
+                logger.warning("MCP error: %s", error)
+                raise MCPToolError(f"MCP request failed: {error}")
+            if "result" not in data:
+                raise MCPProtocolError("MCP response must contain either result or error")
+            return data["result"]
+
+    def _pop_pending_message(self, expected_id: int | None) -> dict[str, Any] | None:
+        """Remove a queued response matching ``expected_id``, if available."""
+        if expected_id is None:
+            return self._pending_messages.pop(0) if self._pending_messages else None
+        for index, message in enumerate(self._pending_messages):
+            if message.get("id") == expected_id:
+                return self._pending_messages.pop(index)
+        return None
 
     def _stderr_tail_if_exited(self, proc: subprocess.Popen | None) -> str:
         """Read one bounded stderr chunk after a child has exited."""
@@ -416,7 +450,24 @@ class MCPToolAdapter:
                 },
             )
             if resp is None:
-                return {"error": f"MCP tool '{tool_name}' returned no response"}
+                raise MCPToolError(f"MCP tool '{tool_name}' returned no response")
+            if not isinstance(resp, dict):
+                raise MCPProtocolError(
+                    f"MCP tool '{tool_name}' result must be an object, got {type(resp).__name__}"
+                )
+            if resp.get("isError") is True:
+                content = resp.get("content", [])
+                messages = (
+                    [
+                        str(block.get("text", ""))
+                        for block in content
+                        if isinstance(block, dict) and block.get("text")
+                    ]
+                    if isinstance(content, list)
+                    else []
+                )
+                detail = "; ".join(messages) or "server returned isError=true"
+                raise MCPToolError(f"MCP tool '{tool_name}' failed: {detail}")
             # MCP returns content as list of content blocks
             content = resp.get("content", [])
             if isinstance(content, list) and len(content) == 1:
@@ -475,7 +526,9 @@ class MCPToolAdapter:
         """Convert MCP JSON-schema parameters to ToolSpec parameter dict."""
         input_schema = schema.get("inputSchema", {})
         props = input_schema.get("properties", {})
+        required = set(input_schema.get("required", []))
         params: dict[str, str] = {}
         for name, prop in props.items():
-            params[name] = prop.get("type", "str")
+            type_name = prop.get("type", "str") if isinstance(prop, dict) else "str"
+            params[name] = type_name if name in required else f"(optional) {type_name}"
         return params

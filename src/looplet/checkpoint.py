@@ -25,6 +25,20 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+class CheckpointIdentityError(ValueError):
+    """A checkpoint belongs to a different logical run."""
+
+
+def validate_checkpoint_identity(checkpoint: "Checkpoint", run_id: str | None) -> None:
+    """Reject a checkpoint carrying an identity different from ``run_id``."""
+    checkpoint_run_id = checkpoint.run_id
+    if run_id is not None and checkpoint_run_id != run_id:
+        raise CheckpointIdentityError(
+            f"checkpoint belongs to run {checkpoint_run_id!r}, not {run_id!r}"
+        )
+
+
 # ── Checkpoint dataclass ────────────────────────────────────────────
 
 
@@ -70,6 +84,22 @@ class Checkpoint:
 
     run_envelope: dict[str, Any] | None = None
     """JSON-safe host identity and policy context for this run."""
+
+    @property
+    def run_id(self) -> str | None:
+        """Return the logical run identity carried by this checkpoint."""
+        if isinstance(self.run_envelope, dict):
+            value = self.run_envelope.get("run_id")
+            if value is not None:
+                return str(value)
+        return None
+
+    @property
+    def is_terminal(self) -> bool:
+        """Whether this checkpoint is an authoritative terminal snapshot."""
+        return self.run_status in {"completed", "failed", "cancelled"} or (
+            self.run_phase == "terminal" or self.termination_reason is not None
+        )
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to a JSON-safe dictionary."""
@@ -161,7 +191,7 @@ class CheckpointStore(Protocol):
         """Persist a checkpoint under the given key."""
         ...
 
-    def load(self, key: str) -> Checkpoint | None:
+    def load(self, key: str, *, run_id: str | None = None) -> Checkpoint | None:
         """Load a checkpoint by key; returns None if not found."""
         ...
 
@@ -180,9 +210,15 @@ class FileCheckpointStore:
         self._dir = Path(directory)
         self._dir.mkdir(parents=True, exist_ok=True)
 
+    @staticmethod
+    def key_for(checkpoint: Checkpoint, key: str) -> str:
+        """Return a run-scoped checkpoint key, preserving legacy keys."""
+        safe_key = Path(key).name
+        return f"{checkpoint.run_id}__{safe_key}" if checkpoint.run_id else safe_key
+
     def save(self, checkpoint: Checkpoint, key: str) -> None:
         """Write checkpoint to ``{directory}/{key}.json``."""
-        safe_key = Path(key).name  # strip any directory separators to prevent traversal
+        safe_key = self.key_for(checkpoint, key)
         path = self._dir / f"{safe_key}.json"
         fd, temporary_name = tempfile.mkstemp(
             dir=self._dir,
@@ -200,34 +236,78 @@ class FileCheckpointStore:
             temporary.unlink(missing_ok=True)
         logger.debug("checkpoint saved: %s", path)
 
-    def load(self, key: str) -> Checkpoint | None:
+    def load(self, key: str, *, run_id: str | None = None) -> Checkpoint | None:
         """Read checkpoint from ``{directory}/{key}.json``; None if missing."""
         safe_key = Path(key).name  # strip any directory separators to prevent traversal
-        path = self._dir / f"{safe_key}.json"
+        path = (
+            self._dir / f"{run_id}__{safe_key}.json"
+            if run_id is not None
+            else self._dir / f"{safe_key}.json"
+        )
+        if run_id is not None and not path.exists():
+            path = self._dir / f"{safe_key}.json"
+        if not path.exists():
+            namespaced = sorted(self._dir.glob(f"*__{safe_key}.json"))
+            if len(namespaced) == 1:
+                path = namespaced[0]
+            elif len(namespaced) > 1:
+                raise ValueError(f"checkpoint key {key!r} is ambiguous; pass run_id explicitly")
         if not path.exists():
             return None
         data = json.loads(path.read_text())
-        return Checkpoint.from_dict(data)
+        checkpoint = Checkpoint.from_dict(data)
+        validate_checkpoint_identity(checkpoint, run_id)
+        return checkpoint
 
-    def load_latest(self) -> Checkpoint | None:
-        """Load the checkpoint with the highest step number, or None.
+    def load_latest(self, *, run_id: str | None = None) -> Checkpoint | None:
+        """Load the highest-step checkpoint for one logical run.
 
         Scans all ``*.json`` files in the directory, parses each, and
-        returns the one with the largest ``step_number``. Used by the
-        loop for auto-resume when ``checkpoint_dir`` is set.
+        returns the one with the largest ``step_number``. If ``run_id`` is
+        supplied, only checkpoints carrying that identity are considered.
+        This is an inspection API and may return a terminal checkpoint;
+        callers that want crash-resume semantics must use
+        :meth:`load_latest_for_resume`.
         """
         best: Checkpoint | None = None
         for path in sorted(self._dir.glob("*.json")):
             try:
                 data = json.loads(path.read_text())
                 cp = Checkpoint.from_dict(data)
-                if cp.run_status == "completed" or cp.termination_reason == "done":
+                if run_id is not None and cp.run_id != run_id:
                     continue
                 if best is None or cp.step_number > best.step_number:
                     best = cp
             except Exception:  # noqa: BLE001
                 logger.warning("Skipping corrupt checkpoint: %s", path)
         return best
+
+    def load_latest_for_resume(self, *, run_id: str | None = None) -> Checkpoint | None:
+        """Load the latest incomplete checkpoint unless the run is terminal.
+
+        A terminal checkpoint is authoritative: once present, older running
+        snapshots are not eligible for implicit auto-resume. ``run_id``
+        scopes selection to one logical run; leaving it unset preserves the
+        legacy identity-less checkpoint-directory behavior.
+        """
+        best: Checkpoint | None = None
+        terminal_found = False
+        for path in sorted(self._dir.glob("*.json")):
+            try:
+                data = json.loads(path.read_text())
+                cp = Checkpoint.from_dict(data)
+                if (run_id is None and cp.run_id is not None) or (
+                    run_id is not None and cp.run_id != run_id
+                ):
+                    continue
+                if cp.is_terminal:
+                    terminal_found = True
+                    continue
+                if best is None or cp.step_number > best.step_number:
+                    best = cp
+            except Exception:  # noqa: BLE001
+                logger.warning("Skipping corrupt checkpoint: %s", path)
+        return None if terminal_found else best
 
 
 # ── CheckpointHook ─────────────────────────────────────────────────

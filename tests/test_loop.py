@@ -189,7 +189,7 @@ class TestLoopConfig:
 
         c = LoopConfig()
         assert c.max_steps == 15
-        assert c.max_tokens == 2000
+        assert c.max_tokens is None
         assert c.temperature == 0.2
         assert c.recovery_temperature == 0.1
         assert c.done_tool == "done"
@@ -613,6 +613,82 @@ class TestComposableLoopHooks:
             and s.tool_result.data.get("rejected")
         ]
         assert len(rejected) >= 1
+
+    def test_rejected_terminal_step_runs_post_step(self):
+        from looplet.loop import LoopConfig, composable_loop
+        from tests.conftest import MockLLMBackend
+
+        events = []
+
+        class RejectOnce:
+            def __init__(self):
+                self.rejections = 0
+
+            def check_done(self, state, session_log, context, step_num):
+                if self.rejections == 0:
+                    self.rejections += 1
+                    return "retry"
+                return None
+
+            def post_step(self, state, session_log, step_num):
+                events.append(step_num)
+
+        steps = list(
+            composable_loop(
+                MockLLMBackend(['{"tool":"done","args":{}}', '{"tool":"done","args":{}}']),
+                state=SimpleState(),
+                tools=_make_registry_with_done(),
+                hooks=[RejectOnce()],
+                config=LoopConfig(max_steps=5),
+            )
+        )
+        assert [step.number for step in steps] == [1, 2]
+        assert events == [1, 2]
+
+    @pytest.mark.parametrize("max_steps", [True, 1.5])
+    def test_max_steps_must_be_positive_integer(self, max_steps):
+        from looplet.loop import LoopConfig, composable_loop
+        from tests.conftest import MockLLMBackend
+
+        with pytest.raises(ValueError, match="positive integer"):
+            list(
+                composable_loop(
+                    MockLLMBackend(['{"tool":"done","args":{}}']),
+                    state=SimpleState(),
+                    tools=_make_registry_with_done(),
+                    config=LoopConfig(max_steps=max_steps),
+                )
+            )
+
+    def test_explicit_identityless_checkpoint_is_rejected_for_identified_run(self):
+        from looplet.checkpoint import Checkpoint
+        from looplet.loop import LoopConfig, composable_loop
+        from looplet.types import RunEnvelope
+        from tests.conftest import MockLLMBackend
+
+        checkpoint = Checkpoint(
+            step_number=1,
+            session_log_data={"entries": [], "current_theory": ""},
+            conversation_data=None,
+            config_snapshot={"max_steps": 2},
+            tool_results_store={},
+            metadata={},
+        )
+        config = LoopConfig(
+            max_steps=2,
+            initial_checkpoint=checkpoint,
+            run_envelope=RunEnvelope(run_id="run-b"),
+        )
+
+        with pytest.raises(ValueError, match="belongs to run None"):
+            list(
+                composable_loop(
+                    MockLLMBackend(['{"tool":"done","args":{}}']),
+                    state=SimpleState(),
+                    tools=_make_registry_with_done(),
+                    config=config,
+                )
+            )
 
     def test_pre_dispatch_interception(self):
         from looplet.loop import LoopConfig, composable_loop

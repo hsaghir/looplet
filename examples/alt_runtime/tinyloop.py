@@ -520,7 +520,7 @@ def conformance_summary(cart: TinyCartridge) -> dict[str, Any]:
             model_summary = None
     return {
         "max_steps": int(cfg.get("max_steps", 15)),
-        "max_tokens": int(cfg.get("max_tokens", 2000)),
+        "max_tokens": (int(cfg["max_tokens"]) if cfg.get("max_tokens") is not None else None),
         "temperature": float(cfg.get("temperature", 0.2)),
         "done_tool": done_tool,
         "tools": sorted(

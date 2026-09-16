@@ -116,6 +116,161 @@ def test_runtime_store_can_checkpoint_each_step() -> None:
     record = store.load(result.run_envelope.run_id)
     assert record is not None
     assert record.checkpoint_keys == ("step_1",)
+    checkpoint = store.load_checkpoint(result.run_envelope.run_id, "step_1")
+    assert checkpoint is not None
+    assert checkpoint.is_terminal
+    assert checkpoint.run_status == "completed"
+    assert checkpoint.session_log_data["entries"]
+
+
+def test_runtime_failed_run_persists_terminal_checkpoint() -> None:
+    class FailingBackend:
+        def generate(self, prompt, **kwargs):
+            raise RuntimeError("backend failed")
+
+    store = MemoryRunStore()
+    with AgentRuntime(_preset(), store=store, checkpoint_every_n_steps=1) as runtime:
+        result = runtime.run(FailingBackend(), task={})
+
+    checkpoint = store.load_checkpoint(result.run_envelope.run_id, "step_1")
+    assert result.status is RunStatus.FAILED
+    assert checkpoint is not None
+    assert checkpoint.is_terminal
+    assert checkpoint.run_status == "failed"
+
+
+def test_runtime_checkpoint_carries_checkpointable_llm_state() -> None:
+    class CheckpointLLM(MockLLMBackend):
+        def __init__(self):
+            super().__init__(['{"tool":"done","args":{"summary":"ok"}}'])
+
+        def checkpoint_state(self):
+            return {"provider_response_id": "resp-1"}
+
+    store = MemoryRunStore()
+    with AgentRuntime(_preset(), store=store, checkpoint_every_n_steps=1) as runtime:
+        result = runtime.run(CheckpointLLM(), task={})
+
+    checkpoint = store.load_checkpoint(result.run_envelope.run_id, "step_1")
+    assert checkpoint is not None
+    assert checkpoint.domain_state["llm"] == {"provider_response_id": "resp-1"}
+
+
+def test_runtime_checkpoint_failure_is_reported_without_masking_result() -> None:
+    class BrokenStore(MemoryRunStore):
+        def save_checkpoint(self, run_id, checkpoint):
+            raise OSError("checkpoint disk full")
+
+    store = BrokenStore()
+    with AgentRuntime(_preset(), store=store, checkpoint_every_n_steps=1) as runtime:
+        result = runtime.run(
+            MockLLMBackend(['{"tool":"done","args":{"summary":"ok"}}']),
+            task={},
+        )
+
+    assert result.status is RunStatus.COMPLETED
+    assert any("checkpoint" in warning for warning in result.metadata["persistence_warnings"])
+
+
+def test_runtime_completion_store_failure_is_reported_without_masking_result() -> None:
+    class BrokenStore(MemoryRunStore):
+        def complete(self, run_id, result, *, artifacts=()):
+            raise OSError("store unavailable")
+
+    with AgentRuntime(_preset(), store=BrokenStore()) as runtime:
+        result = runtime.run(
+            MockLLMBackend(['{"tool":"done","args":{"summary":"ok"}}']),
+            task={},
+        )
+
+    assert result.status is RunStatus.COMPLETED
+    assert any("complete" in warning for warning in result.metadata["persistence_warnings"])
+
+
+def test_runtime_session_attach_failure_returns_failed_result_and_restores_config() -> None:
+    class BrokenSession:
+        def attach(self, run_id):
+            raise OSError("session unavailable")
+
+        def close(self):
+            pass
+
+    preset = _preset()
+    old_envelope = preset.config.run_envelope
+    old_token = preset.config.cancel_token
+    with AgentRuntime(preset, session=BrokenSession()) as runtime:
+        result = runtime.run(MockLLMBackend(), task={})
+
+    assert result.status is RunStatus.FAILED
+    assert "session unavailable" in result.metadata["error"]
+    assert preset.config.run_envelope is old_envelope
+    assert preset.config.cancel_token is old_token
+
+
+def test_runtime_store_create_failure_returns_failed_result_and_restores_config() -> None:
+    class BrokenStore(MemoryRunStore):
+        def create(self, envelope, *, metadata=None):
+            raise OSError("store unavailable")
+
+    preset = _preset()
+    old_envelope = preset.config.run_envelope
+    old_token = preset.config.cancel_token
+    with AgentRuntime(preset, store=BrokenStore()) as runtime:
+        result = runtime.run(MockLLMBackend(['{"tool":"done","args":{"summary":"ok"}}']), task={})
+
+    assert result.status is RunStatus.COMPLETED
+    assert any("create" in warning for warning in result.metadata["persistence_warnings"])
+    assert preset.config.run_envelope is old_envelope
+    assert preset.config.cancel_token is old_token
+
+
+def test_runtime_provider_checkpoint_failure_is_reported_without_masking_result() -> None:
+    class BrokenBackend(MockLLMBackend):
+        def checkpoint_state(self):
+            raise RuntimeError("provider state unavailable")
+
+    with AgentRuntime(_preset(), store=MemoryRunStore(), checkpoint_every_n_steps=1) as runtime:
+        result = runtime.run(
+            BrokenBackend(['{"tool":"done","args":{"summary":"ok"}}']),
+            task={},
+        )
+
+    assert result.status is RunStatus.COMPLETED
+    assert any(
+        "provider state unavailable" in warning
+        for warning in result.metadata["persistence_warnings"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_async_runtime_checkpoint_failure_is_reported_without_masking_result() -> None:
+    class BrokenStore(MemoryRunStore):
+        def save_checkpoint(self, run_id, checkpoint):
+            raise OSError("async checkpoint unavailable")
+
+    with AgentRuntime(_preset(), store=BrokenStore(), checkpoint_every_n_steps=1) as runtime:
+        result = await runtime.run_async(
+            AsyncMockLLMBackend(['{"tool":"done","args":{"summary":"ok"}}']),
+            task={},
+        )
+
+    assert result.status is RunStatus.COMPLETED
+    assert any(
+        "async checkpoint unavailable" in warning
+        for warning in result.metadata["persistence_warnings"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_runtime_handle_wait_shuts_down_executor() -> None:
+    runtime = AgentRuntime(_preset())
+    handle = runtime.start(MockLLMBackend(['{"tool":"done","args":{"summary":"ok"}}']))
+    try:
+        result = await handle.wait()
+        assert result.status is RunStatus.COMPLETED
+        assert handle._executor._shutdown is True
+    finally:
+        runtime.close()
 
 
 def test_runtime_rejects_reuse_after_first_run() -> None:

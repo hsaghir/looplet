@@ -24,6 +24,37 @@ pytestmark = [pytest.mark.smoke, pytest.mark.asyncio]
 
 
 class TestAsyncLlmCall:
+    async def test_forwards_cancel_token_and_kwargs_to_permissive_backend(self):
+        class Backend:
+            def __init__(self):
+                self.calls = []
+
+            async def generate(self, prompt, **kwargs):
+                self.calls.append(kwargs)
+                return '{"tool":"done","args":{}}'
+
+        from looplet.types import CancelToken
+
+        backend = Backend()
+        token = CancelToken()
+        await async_llm_call(
+            backend,
+            "prompt",
+            cancel_token=token,
+            generate_kwargs={"provider_flag": 7},
+            max_retries=0,
+        )
+
+        assert backend.calls == [
+            {
+                "max_tokens": None,
+                "system_prompt": "",
+                "temperature": 0.2,
+                "provider_flag": 7,
+                "cancel_token": token,
+            }
+        ]
+
     async def test_awaits_async_backend(self):
         mock = AsyncMockLLMBackend(responses=["hello"])
         result = await async_llm_call(mock, "test")
@@ -55,7 +86,9 @@ class TestAsyncLlmCall:
         class NativeFailureBackend:
             async def generate_with_tools(self, prompt, *, tools, **kwargs):
                 calls.append("native")
-                raise RuntimeError("tools endpoint unsupported")
+                from looplet.native_tools import NativeToolUnsupportedError
+
+                raise NativeToolUnsupportedError("tools endpoint unsupported")
 
             async def generate(self, prompt, **kwargs):
                 calls.append("regular")
@@ -71,6 +104,30 @@ class TestAsyncLlmCall:
         assert result.ok
         assert result.text == '{"tool": "done", "args": {}}'
         assert calls == ["native", "regular"]
+
+    async def test_provider_failure_does_not_fallback_to_text(self):
+        calls = []
+
+        class ProviderFailureBackend:
+            async def generate_with_tools(self, prompt, *, tools, **kwargs):
+                calls.append("native")
+                raise RuntimeError("authentication failed")
+
+            async def generate(self, prompt, **kwargs):
+                calls.append("regular")
+                return '{"tool": "done", "args": {}}'
+
+        result = await async_llm_call(
+            ProviderFailureBackend(),
+            "finish",
+            tools=[{"name": "done"}],
+            max_retries=0,
+        )
+
+        assert not result.ok
+        assert isinstance(result.error, RuntimeError)
+        assert "authentication failed" in str(result.error)
+        assert calls == ["native"]
 
     async def test_async_loop_awaits_async_tools(self):
         seen = []
@@ -118,7 +175,9 @@ class TestAsyncLlmCall:
 
             async def generate_with_tools(self, prompt, *, tools, **kwargs):
                 self.calls.append("native")
-                raise RuntimeError("unsupported native endpoint")
+                from looplet.native_tools import NativeToolUnsupportedError
+
+                raise NativeToolUnsupportedError("unsupported native endpoint")
 
             async def generate(self, prompt, **kwargs):
                 self.calls.append("regular")
@@ -141,8 +200,59 @@ class TestAsyncLlmCall:
 
         assert state.metadata["native_tool_stats"]["fallbacks"] == 1
 
+    async def test_check_done_hook_failure_rejects_completion(self):
+        class BrokenGate:
+            async def check_done(self, state, session_log, context, step_num, tool_call=None):
+                raise RuntimeError("gate unavailable")
+
+        llm = AsyncMockLLMBackend(
+            responses=[
+                '{"tool":"done","args":{"summary":"first"}}',
+                '{"tool":"done","args":{"summary":"second"}}',
+            ]
+        )
+        tools = BaseToolRegistry()
+        register_done_tool(tools)
+        state = DefaultState(max_steps=2)
+
+        steps = []
+        async for step in async_composable_loop(
+            llm=llm,
+            tools=tools,
+            state=state,
+            config=LoopConfig(max_steps=2),
+            hooks=[BrokenGate()],
+            task={},
+        ):
+            steps.append(step)
+
+        assert steps[0].tool_result.data["rejected"] is True
+        assert "quality gate" in steps[0].tool_result.error.lower()
+
 
 class TestAsyncComposableLoop:
+    async def test_preflight_disabled_recovery_never_calls_backend(self):
+        class Backend:
+            async def generate(self, *_args, **_kwargs):
+                raise AssertionError("oversized prompt must be blocked before backend")
+
+        from looplet import BaseToolRegistry, DefaultState, LoopConfig, register_done_tool
+
+        tools = BaseToolRegistry()
+        register_done_tool(tools)
+        steps = []
+        async for step in async_composable_loop(
+            llm=Backend(),
+            tools=tools,
+            state=DefaultState(max_steps=1),
+            config=LoopConfig(max_steps=1, context_window=1, reactive_recovery=False),
+            task={},
+        ):
+            steps.append(step)
+
+        assert steps[0].tool_call.tool == "__llm_error__"
+        assert "context" in steps[0].tool_result.error.lower()
+
     async def test_async_hook_slots_are_awaited_and_effects_apply(self):
         seen: list[str] = []
 
@@ -433,6 +543,37 @@ class TestAsyncComposableLoop:
         assert steps[0].tool_call.tool == "greet"
         assert steps[1].tool_call.tool == "done"
         assert mock.calls == 2
+
+    async def test_extract_entities_receives_live_state(self):
+        seen_states = []
+
+        def extract_entities(data, *, state):
+            seen_states.append(state)
+            return ["entity"]
+
+        tools = BaseToolRegistry()
+        register_done_tool(tools)
+        tools.register(
+            ToolSpec(
+                name="inspect", description="Inspect", parameters={}, execute=lambda: {"value": 1}
+            )
+        )
+        state = DefaultState(max_steps=3)
+        async for _ in async_composable_loop(
+            llm=AsyncMockLLMBackend(
+                responses=[
+                    '{"tool":"inspect","args":{}}',
+                    '{"tool":"done","args":{"summary":"ok"}}',
+                ]
+            ),
+            tools=tools,
+            state=state,
+            config=LoopConfig(max_steps=3, extract_entities=extract_entities),
+            task={},
+        ):
+            pass
+
+        assert seen_states == [state]
 
     async def test_max_steps_and_system_prompt_shorthand(self):
         """Regression: ``async_composable_loop`` accepts the same

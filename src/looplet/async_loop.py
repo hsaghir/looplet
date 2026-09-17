@@ -51,9 +51,11 @@ from looplet.loop import (
     RunEnvelope,
     RunPhase,
     RunStatus,
+    _annotate_tool_turn,
     _bind_loop_context_async,
     _build_tool_ctx,
     _call_check_done,
+    _call_reference,
     _deadline_expired,
     _default_build_briefing,
     _default_extract_entities,
@@ -66,6 +68,7 @@ from looplet.loop import (
     _run_post_dispatch_hooks_async,
     _set_context_overrides,
     _set_run_lifecycle,
+    _step_metadata,
     _validate_loop_inputs,
     emit_event_async,
 )
@@ -1107,6 +1110,21 @@ async def _async_composable_loop_impl(
             consecutive_parse_failures = 0
 
         # ── Dispatch tool calls ─────────────────────────────────
+        available_steps = max(0, int(getattr(state, "budget_remaining", 0)))
+        if available_steps <= 0:
+            stop_reason = "budget_exhausted"
+            done = True
+            break
+        original_tool_calls = tool_calls
+        budget_skipped = original_tool_calls[available_steps:]
+        tool_calls = original_tool_calls[:available_steps]
+        if len(original_tool_calls) > 1:
+            _annotate_tool_turn(
+                tool_calls,
+                turn_id=f"turn-{llm_calls}",
+                batch_size=len(original_tool_calls),
+                budget_skipped=budget_skipped,
+            )
         done_tool_name = config.done_tool
         terminal_set = {done_tool_name, *config.done_tools}
         done_idx = None
@@ -1161,6 +1179,12 @@ async def _async_composable_loop_impl(
                             calls_to_dispatch,
                             ctx=_tool_ctxs,
                         )
+                    elif type(tools).async_dispatch_batch is BaseToolRegistry.async_dispatch_batch:
+                        dispatch_results = await tools.async_dispatch_batch(
+                            calls_to_dispatch,
+                            ctx=_tool_ctxs,
+                            max_concurrent=config.max_parallel_calls,
+                        )
                     else:
                         dispatch_results = await tools.async_dispatch_batch(
                             calls_to_dispatch,
@@ -1196,6 +1220,17 @@ async def _async_composable_loop_impl(
                     persist_dir=config.tool_result_persist_dir,
                     persist_threshold=_get_persist_threshold(),
                 )
+                dispatch_mode = (
+                    "parallel"
+                    if config.concurrent_dispatch
+                    and tool_spec is not None
+                    and tool_spec.concurrent_safe
+                    else "serial"
+                )
+                event_metadata = _step_metadata(
+                    tool_call,
+                    dispatch_mode=dispatch_mode,
+                ).get("turn", {})
 
                 if stream is not None and _ToolDispatchEvent is not None:
                     stream.emit(
@@ -1203,6 +1238,7 @@ async def _async_composable_loop_impl(
                             step_num=cur_step,
                             tool_name=tool_call.tool,
                             args_summary=_summarize_args_dict(tool_call.args),
+                            metadata=event_metadata,
                         )
                     )
 
@@ -1221,7 +1257,15 @@ async def _async_composable_loop_impl(
                     stop_reason = _pd.stop_reason
                     done = True
 
-                step = Step(number=cur_step, tool_call=tool_call, tool_result=tool_result)
+                step = Step(
+                    number=cur_step,
+                    tool_call=tool_call,
+                    tool_result=tool_result,
+                    metadata=_step_metadata(
+                        tool_call,
+                        dispatch_mode=dispatch_mode,
+                    ),
+                )
                 state.steps.append(step)
                 yield step
 
@@ -1248,6 +1292,7 @@ async def _async_composable_loop_impl(
                             tool_name=tool_result.tool,
                             duration_ms=tool_result.duration_ms,
                             has_error=tool_result.error is not None,
+                            metadata=event_metadata,
                         )
                     )
                 if stream is not None and _StepEndEvent is not None:
@@ -1256,6 +1301,7 @@ async def _async_composable_loop_impl(
                             step_num=cur_step,
                             classification="continue",
                             new_entities_count=len(step_entities),
+                            metadata=event_metadata,
                         )
                     )
                 _save_checkpoint(cur_step)
@@ -1327,6 +1373,21 @@ async def _async_composable_loop_impl(
                         f"Output schema validation failed: {'; '.join(validation.errors)}"
                     )
 
+            ignored_after_terminal = tool_calls[done_idx + 1 :]
+            done_metadata = _step_metadata(
+                tool_call,
+                dispatch_mode="serial",
+                extra=(
+                    {
+                        "ignored_after_terminal": [
+                            _call_reference(call) for call in ignored_after_terminal
+                        ]
+                    }
+                    if ignored_after_terminal
+                    else None
+                ),
+            )
+
             if gate_warning is not None:
                 tool_result = ToolResult(
                     tool=done_tool_name,
@@ -1334,7 +1395,12 @@ async def _async_composable_loop_impl(
                     data={"rejected": True, "reason": gate_warning},
                     error=gate_warning,
                 )
-                step = Step(number=cur_step, tool_call=tool_call, tool_result=tool_result)
+                step = Step(
+                    number=cur_step,
+                    tool_call=tool_call,
+                    tool_result=tool_result,
+                    metadata=done_metadata,
+                )
                 state.steps.append(step)
                 yield step
                 if stream is not None and _ToolResultEvent is not None:
@@ -1344,6 +1410,7 @@ async def _async_composable_loop_impl(
                             tool_name=tool_result.tool,
                             duration_ms=tool_result.duration_ms,
                             has_error=tool_result.error is not None,
+                            metadata=done_metadata.get("turn", {}),
                         )
                     )
                 if stream is not None and _StepEndEvent is not None:
@@ -1352,6 +1419,7 @@ async def _async_composable_loop_impl(
                             step_num=cur_step,
                             classification="done",
                             new_entities_count=0,
+                            metadata=done_metadata.get("turn", {}),
                         )
                     )
                 _history.record_step(
@@ -1388,7 +1456,12 @@ async def _async_composable_loop_impl(
                 )
                 tool_result = _pd_done.tool_result
 
-                step = Step(number=cur_step, tool_call=tool_call, tool_result=tool_result)
+                step = Step(
+                    number=cur_step,
+                    tool_call=tool_call,
+                    tool_result=tool_result,
+                    metadata=done_metadata,
+                )
                 state.steps.append(step)
                 yield step
                 _history.record_step(

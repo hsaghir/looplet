@@ -1015,7 +1015,7 @@ class TestAsyncComposableLoop:
 
         assert "briefing truncated - token budget exceeded" in mock.last_prompt
 
-    async def test_async_batched_done_hook_receives_terminal_step_number(self):
+    async def test_async_batched_done_is_deferred_when_budget_is_exhausted(self):
         seen = []
 
         class Gate:
@@ -1033,7 +1033,8 @@ class TestAsyncComposableLoop:
             ToolSpec(name="search", description="search", parameters={}, execute=lambda: {})
         )
 
-        async for _ in async_composable_loop(
+        steps = []
+        async for step in async_composable_loop(
             llm=mock,
             tools=tools,
             state=DefaultState(max_steps=1),
@@ -1041,9 +1042,41 @@ class TestAsyncComposableLoop:
             hooks=[Gate()],
             task={},
         ):
-            pass
+            steps.append(step)
 
-        assert seen == [2]
+        assert seen == []
+        assert [step.tool_call.tool for step in steps] == ["search"]
+
+    async def test_async_multi_tool_turn_metadata_is_ordered(self):
+        mock = AsyncMockLLMBackend(
+            responses=[
+                '{"tools": [{"tool": "a", "args": {}}, {"tool": "b", "args": {}}]}',
+                '{"tool": "done", "args": {}}',
+            ]
+        )
+        tools = BaseToolRegistry()
+        register_done_tool(tools)
+        tools.register(
+            ToolSpec(name="a", description="a", parameters={}, execute=lambda: {"a": True})
+        )
+        tools.register(
+            ToolSpec(name="b", description="b", parameters={}, execute=lambda: {"b": True})
+        )
+
+        steps = []
+        async for step in async_composable_loop(
+            llm=mock,
+            tools=tools,
+            state=DefaultState(max_steps=5),
+            config=LoopConfig(max_steps=5),
+            task={},
+        ):
+            steps.append(step)
+
+        turns = [step.metadata["turn"] for step in steps[:2]]
+        assert [turn["call_index"] for turn in turns] == [0, 1]
+        assert {turn["turn_id"] for turn in turns} == {turns[0]["turn_id"]}
+        assert {turn["batch_size"] for turn in turns} == {2}
 
     async def test_async_loop_end_event_follows_cleanup_and_counts_extra_calls(self):
         order = []

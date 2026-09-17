@@ -246,6 +246,46 @@ class TestBatchDispatch:
         assert len(results) == 5
         assert all(r.error is None for r in results)
 
+    def test_concurrent_batch_honors_worker_cap(self):
+        import threading
+        import time
+
+        from looplet.tools import BaseToolRegistry, ToolSpec
+        from looplet.types import ToolCall
+
+        active = 0
+        peak = 0
+        lock = threading.Lock()
+
+        def read(**kwargs):
+            nonlocal active, peak
+            with lock:
+                active += 1
+                peak = max(peak, active)
+            time.sleep(0.01)
+            with lock:
+                active -= 1
+            return kwargs
+
+        reg = BaseToolRegistry()
+        reg.register(
+            ToolSpec(
+                name="read",
+                description="read",
+                parameters={"key": "key"},
+                execute=read,
+                concurrent_safe=True,
+            )
+        )
+
+        results = reg.dispatch_batch(
+            [ToolCall(tool="read", args={"key": str(i)}) for i in range(4)],
+            max_workers=1,
+        )
+
+        assert len(results) == 4
+        assert peak == 1
+
 
 # ── Think tool tests ──────────────────────────────────────────────
 

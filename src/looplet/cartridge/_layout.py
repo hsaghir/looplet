@@ -52,6 +52,7 @@ class CartridgeLayout:
         "max_turn_continuations",
         "use_native_tools",
         "concurrent_dispatch",
+        "max_parallel_calls",
         "reactive_recovery",
         "context_window",
         "max_briefing_tokens",
@@ -109,6 +110,7 @@ class CartridgeLayout:
             # Engine knobs.
             "use_native_tools",
             "concurrent_dispatch",
+            "max_parallel_calls",
             "reactive_recovery",
             # Context / window management.
             "context_window",

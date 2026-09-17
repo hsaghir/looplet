@@ -1119,13 +1119,24 @@ class Step:
     tool_result: ToolResult
     """The result returned after executing the tool call."""
 
+    metadata: dict[str, Any] = field(default_factory=dict)
+    """Host-owned annotations for this step.
+
+    Multi-tool responses use this to identify the originating model turn and
+    the call's position within that turn. Empty metadata preserves the legacy
+    single-call representation.
+    """
+
     def to_dict(self) -> dict[str, Any]:
         """Serialise to a plain dict for logging or state snapshots."""
-        return {
+        result = {
             "step": self.number,
             "tool_call": self.tool_call.to_dict(),
             "tool_result": self.tool_result.to_dict(),
         }
+        if self.metadata:
+            result["metadata"] = dict(self.metadata)
+        return result
 
     def summary(self) -> str:
         """One-line human-readable summary for compact context assembly."""

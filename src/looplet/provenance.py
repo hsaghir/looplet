@@ -719,10 +719,13 @@ class TrajectoryRecorder:
                 live_tr = getattr(live, "tool_result", None)
                 live_tc_meta = getattr(live_tc, "metadata", None) if live_tc is not None else None
                 live_tr_meta = getattr(live_tr, "metadata", None) if live_tr is not None else None
+                live_step_meta = getattr(live, "metadata", None)
                 if live_tc_meta:
                     sr.tool_call["metadata"] = dict(live_tc_meta)
                 if live_tr_meta:
                     sr.tool_result["metadata"] = dict(live_tr_meta)
+                if live_step_meta:
+                    sr.metadata = dict(live_step_meta)
         # Sweep ``state.steps`` for any Step that was yielded but not
         # routed through ``post_dispatch`` - notably the ``done`` step,
         # which the loop handles on its own termination path.
@@ -747,6 +750,7 @@ class TrajectoryRecorder:
                         tool_result=tr_dict,
                         context_before="",
                         llm_call_indices=[],
+                        metadata=dict(getattr(st, "metadata", {}) or {}),
                     )
                 )
         self.trajectory.steps.sort(key=lambda s: s.step_num)

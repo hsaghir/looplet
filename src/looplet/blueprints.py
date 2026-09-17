@@ -476,6 +476,7 @@ def _config_blueprint(preset: AgentPreset) -> dict[str, Any]:
         "max_turn_continuations",
         "use_native_tools",
         "concurrent_dispatch",
+        "max_parallel_calls",
         "reactive_recovery",
         "max_briefing_tokens",
         "checkpoint_dir",

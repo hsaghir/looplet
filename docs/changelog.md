@@ -18,6 +18,10 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   cleanly when a host deadline expires during an LLM call.
 - Prompt renderers can consume the immutable `ContextProjection` snapshot;
   blueprint inspection closes temporary presets after extracting structure.
+- Multi-tool model turns now preserve ordered turn metadata through steps,
+  trajectories, conversations, and streaming events; dispatch is bounded by
+  the remaining step budget and `max_parallel_calls` when concurrent dispatch
+  is enabled.
 - **Private-loop migration recipe.** `examples/private_loop_migration/` evolves
   one tiny agent from a hand-written loop to `composable_loop()`, captured
   provenance, and a required outcome grader, with no provider, network call, or

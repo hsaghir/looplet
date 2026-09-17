@@ -61,6 +61,17 @@ def test_runtime_yaml_loads_runtime_keys(tmp_path: Path) -> None:
     assert preset.config.max_steps == 5
 
 
+def test_runtime_yaml_loads_parallelism_cap(tmp_path: Path) -> None:
+    _write_minimal_cartridge(
+        tmp_path,
+        config_text="max_steps: 5\ndone_tool: done\n",
+        runtime_text="concurrent_dispatch: true\nmax_parallel_calls: 3\n",
+    )
+    preset = cartridge_to_preset(str(tmp_path))
+    assert preset.config.concurrent_dispatch is True
+    assert preset.config.max_parallel_calls == 3
+
+
 def test_runtime_yaml_does_not_mask_runtime_keys_in_config_yaml(tmp_path: Path) -> None:
     """A duplicate runtime key does not make an invalid config valid."""
     _write_minimal_cartridge(

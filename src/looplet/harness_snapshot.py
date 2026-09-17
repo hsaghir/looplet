@@ -63,6 +63,7 @@ def serialize_harness(
             "temperature",
             "use_native_tools",
             "concurrent_dispatch",
+            "max_parallel_calls",
             "done_tool",
         ):
             value = _getattr_present(config, key)

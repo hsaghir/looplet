@@ -9,7 +9,11 @@ This is the review unit for test-driven harness engineering. Prompt changes,
 tool implementations, hook policy, runtime wiring, and self-test cases become
 ordinary diffs instead of hidden framework state.
 
-This is the missing direction. With it, you can:
+A person or external builder can copy a version, edit it, and test it against
+recorded failures and fresh cases. The host keeps model access and release
+checks outside the editable copy. Looplet provides the loading and evaluation
+primitives; candidate search and promotion belong to the host or another
+system. For a supported preset, the conversion looks like this:
 
 ```python
 from looplet import preset_to_cartridge, cartridge_to_preset
@@ -35,8 +39,9 @@ Cartridges support two honest execution profiles. A **Python-host** cartridge
 may keep tool bodies, hook classes, and shared objects in process. A
 **portable** cartridge keeps the contract in data and moves author-owned
 capabilities behind MCP tools, LEP hooks, SSP state services, and the MGP model
-gateway. `looplet portability <path>` identifies every blocker without
-importing the cartridge.
+gateway. `looplet portability <path>` reports declared in-process blockers
+without importing Python bodies. A portable report is not a sandbox or proof
+that another runtime implements those protocols.
 
 Looplet ships both profiles of its coding harness. `coder.cartridge` remains
 the agent factory default and includes host-owned eval plus dynamic memory.

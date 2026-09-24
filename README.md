@@ -11,15 +11,21 @@
 ## Own the loop. Test every change.
 
 Looplet is for Python teams maintaining a tool-calling agent that is
-fundamentally one model in one loop. It helps answer the post-prototype
-question: when a prompt, tool, hook, model, or permission changes, what behavior
-broke?
+fundamentally one model in one loop. After the first working version, each
+prompt, tool, hook, or model change raises a harder question: what did it fix,
+and what did it break?
 
 - keep execution visible as an iterator of typed steps;
 - capture prompts, responses, tool calls, and stop reasons as readable files;
 - replay recorded model responses through changed harness code when that is a
   valid experiment;
 - collect actual world state and gate required outcomes in pytest or CI.
+
+An optional cartridge puts the supported editable behavior and its self-tests
+in a versioned directory. A person or external builder can change a copy; the
+host can compare outcomes using replay or fresh runs. Looplet supplies the loop
+and evidence, not an optimizer or protected release service. Keep acceptance
+checks and isolation for untrusted candidate code outside the candidate.
 
 No graph DSL, hosted control plane, or required third-party runtime
 dependencies.

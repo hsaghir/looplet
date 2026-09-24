@@ -14,6 +14,12 @@ model upgrade takes a different route. The question is no longer
 Looplet is a test-driven harness engineering toolkit for Python teams
 that want to answer that question while still owning the loop.
 
+Keep a failure and a case that already works. A person or external builder can
+edit a copy of the supported agent definition, and the host can compare the new
+version against those cases using captured evidence and outcome evals. The host
+must keep release checks outside the candidate's reach; Looplet does not supply
+an optimizer or a promotion service.
+
 ## What “harness” means here
 
 The model is one component. The **harness** is everything around it:
@@ -63,7 +69,8 @@ framework class hierarchy.
 
 ### 2. Make the harness reviewable
 
-A [cartridge](cartridge.md) stores the runnable harness as files:
+A [cartridge](cartridge.md) stores the supported editable agent definition as
+files, with self-tests alongside it:
 
 ```text
 agent.cartridge/
@@ -80,6 +87,11 @@ agent.cartridge/
 changes explicit in code review. Cartridges are optional. The same
 primitives work directly in Python, but cartridges provide a useful versioned
 unit for teams and CI.
+
+The model connection, credentials, and protected release checks stay with the
+host. Moving the directory between runtimes also requires
+[protocol-routed components](portability.md); a portable report is not proof
+that candidate code is isolated.
 
 ### 3. Preserve evidence
 

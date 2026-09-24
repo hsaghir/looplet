@@ -17,9 +17,9 @@ hide:
 <p class="hero-kicker">Own the loop. Test every change.</p>
 
 <p class="hero-sub" markdown>
-Keep prompts, tools, hooks, cases, and graders in code and files your team can
-review. Capture a failure, inspect the resulting world, and turn the behavior
-into a required pytest or CI contract.
+Once an agent is in use, own its loop. Version editable behavior as an
+optional cartridge for external builders. Turn failures into evals;
+host-owned checks decide what ships.
 </p>
 
 <div class="hero-cta">

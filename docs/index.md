@@ -17,9 +17,10 @@ hide:
 <p class="hero-kicker">Own the loop. Test every change.</p>
 
 <p class="hero-sub" markdown>
-Once an agent is in use, own its loop. Version editable behavior as an
-optional cartridge for external builders. Turn failures into evals;
-host-owned checks decide what ships.
+Like a game console, the host runs the loop while each optional cartridge
+holds one agent's editable instructions, tools, hooks, and configuration.
+Swap cartridges to change agents; turn failures into evals and keep release
+checks with the host.
 </p>
 
 <div class="hero-cta">

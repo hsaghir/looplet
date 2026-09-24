@@ -21,10 +21,13 @@ and what did it break?
   valid experiment;
 - collect actual world state and gate required outcomes in pytest or CI.
 
-An optional cartridge puts the supported editable behavior and its self-tests
-in a versioned directory. A person or external builder can change a copy; the
-host can compare outcomes using replay or fresh runs. Looplet supplies the loop
-and evidence, not an optimizer or protected release service. Keep acceptance
+Think of the host application using Looplet as a game console: it can run
+different agents by loading different cartridges without rewriting the loop.
+An optional cartridge is a versioned directory of an agent's editable
+instructions, tools, hooks, configuration, and self-tests. A person or external
+builder can change a copy; the host supplies model and service access and can
+compare outcomes using replay or fresh runs. Looplet supplies the loop and
+evidence, not an optimizer or protected release service. Keep acceptance
 checks and isolation for untrusted candidate code outside the candidate.
 
 No graph DSL, hosted control plane, or required third-party runtime

@@ -5,6 +5,11 @@ disk. A cartridge round-trips with an `AgentPreset` for the supported subset
 of the harness and keeps explicit Python bodies in tools, hooks, resources,
 and dynamic memory sources.
 
+Think of a host application running Looplet as a game console: it can load
+different cartridges to run different agents without rewriting the loop.
+Each cartridge holds that agent's instructions, tools, hooks, and configuration;
+the host still supplies model access, service authority, and release checks.
+
 This is the review unit for test-driven harness engineering. Prompt changes,
 tool implementations, hook policy, runtime wiring, and self-test cases become
 ordinary diffs instead of hidden framework state.

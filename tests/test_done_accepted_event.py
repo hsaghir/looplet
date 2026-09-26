@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from looplet import (
     BaseToolRegistry,
     DefaultState,
@@ -99,6 +101,65 @@ def test_done_accepted_does_not_fire_when_check_done_rejects_done() -> None:
     )
 
     assert recorder.done_accepted_payloads == []
+
+
+@pytest.mark.parametrize("accept_retry", [True, False])
+@pytest.mark.parametrize(
+    "rejection",
+    [
+        {"error": "not accepted yet", "status": "rejected"},
+        {"reason": "not accepted yet", "rejected": True},
+    ],
+)
+def test_dispatched_done_rejection_retries_within_budget(
+    accept_retry: bool,
+    rejection: dict[str, str | bool],
+) -> None:
+    attempts = 0
+
+    def submit(*, answer: str) -> dict[str, str | bool]:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1 or not accept_retry:
+            return rejection
+        return {"answer": answer}
+
+    tools = BaseToolRegistry()
+    tools.register(
+        ToolSpec(
+            name="done",
+            description="Finish.",
+            parameters={"answer": "str"},
+            execute=submit,
+        )
+    )
+    recorder = DoneAcceptedRecorder()
+    state = DefaultState(max_steps=2)
+    steps = list(
+        composable_loop(
+            llm=MockLLMBackend(
+                responses=['{"tool":"done","args":{"answer":"hi"},"reasoning":"finished"}'] * 2
+            ),
+            tools=tools,
+            state=state,
+            hooks=[recorder],
+            config=LoopConfig(max_steps=2),
+        )
+    )
+
+    assert len(steps) == attempts == 2
+    assert steps[0].tool_result.data["rejected"] is True
+    assert steps[0].tool_result.data["reason"] == "not accepted yet"
+    assert steps[0].tool_result.error == "not accepted yet"
+    if accept_retry:
+        assert [event.step_num for event in recorder.done_accepted_payloads] == [2]
+        assert recorder.stop_reasons == ["done"]
+        assert state.termination_reason == "done"
+    else:
+        assert steps[1].tool_result.data["rejected"] is True
+        assert recorder.done_accepted_payloads == []
+        assert recorder.stop_reasons == ["budget_exhausted"]
+        assert state.termination_reason == "budget_exhausted"
 
 
 def test_done_accepted_does_not_fire_on_max_steps_without_done() -> None:

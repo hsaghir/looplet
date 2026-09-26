@@ -3416,6 +3416,20 @@ def _composable_loop_impl(
                     emit_lifecycle=False,
                 )
                 tool_result = _pd_done.tool_result
+                rejected_done = isinstance(tool_result.data, dict) and (
+                    tool_result.data.get("rejected") is True
+                    or tool_result.data.get("status") == "rejected"
+                )
+                if rejected_done:
+                    reason = str(
+                        tool_result.data.get("reason")
+                        or tool_result.data.get("error")
+                        or tool_result.error
+                        or "Final answer was not accepted"
+                    )
+                    tool_result.data = {**tool_result.data, "rejected": True, "reason": reason}
+                    tool_result.error = reason
+                    quality_gate_message = reason
                 step = Step(
                     number=cur_step,
                     tool_call=tool_call,
@@ -3439,12 +3453,12 @@ def _composable_loop_impl(
                     stream.emit(
                         _StepEndEvent(
                             step_num=cur_step,
-                            classification="done",
+                            classification="rejected" if rejected_done else "done",
                             new_entities_count=0,
                             metadata=done_metadata.get("turn", {}),
                         )
                     )
-                # Record accepted done() to session_log + conversation
+                # Record done() to session_log + conversation
                 _history.record_step(
                     step,
                     theory=tool_call.args.get("__theory__", ""),
@@ -3453,6 +3467,12 @@ def _composable_loop_impl(
                     highlights=[],
                     recall_key="",
                 )
+                if rejected_done:
+                    for _hook in hooks:
+                        _post_step = getattr(_hook, "post_step", None)
+                        if _post_step is not None:
+                            _post_step(state, session_log, cur_step)
+                    continue
                 _set_run_lifecycle(
                     loop_ctx,
                     status=RunStatus.COMPLETED,

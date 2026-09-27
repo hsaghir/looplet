@@ -106,7 +106,9 @@ class TestLoopIntegration:
                 tools=_tools(),
                 state=DefaultState(max_steps=2),
                 hooks=[],
-                config=LoopConfig(max_steps=2, system_prompt="SYS", cache_policy=pol),
+                config=LoopConfig(
+                    max_steps=2, system_prompt="SYS", cache_policy=pol, use_native_tools=False
+                ),
             )
         )
         assert len(b.received) == 1
@@ -124,7 +126,7 @@ class TestLoopIntegration:
                 tools=_tools(),
                 state=DefaultState(max_steps=2),
                 hooks=[],
-                config=LoopConfig(max_steps=2),
+                config=LoopConfig(max_steps=2, use_native_tools=False),
             )
         )
         assert b.received == [None]
@@ -143,7 +145,7 @@ class TestLoopIntegration:
                 tools=_tools(),
                 state=DefaultState(max_steps=2),
                 hooks=[],
-                config=LoopConfig(max_steps=2, cache_policy=pol),
+                config=LoopConfig(max_steps=2, cache_policy=pol, use_native_tools=False),
             )
         )
 
@@ -166,7 +168,12 @@ class TestLoopIntegration:
                     tools=_tools(),
                     state=DefaultState(max_steps=2),
                     hooks=[det],
-                    config=LoopConfig(max_steps=2, system_prompt="S", cache_policy=pol),
+                    config=LoopConfig(
+                        max_steps=2,
+                        system_prompt="S",
+                        cache_policy=pol,
+                        use_native_tools=False,
+                    ),
                 )
             )
         # Detector recorded one turn, no breaks (only one turn).

@@ -103,7 +103,7 @@ class TestBudgetContinuation:
                 tools=reg,
                 state=DefaultState(max_steps=2),
                 hooks=[],
-                config=LoopConfig(max_steps=2, max_turn_continuations=2),
+                config=LoopConfig(max_steps=2, max_turn_continuations=2, use_native_tools=False),
             )
         )
         # Continuation stitched the truncated JSON back together -

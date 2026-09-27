@@ -103,7 +103,7 @@ class TestToolMetadata:
                 llm=mock,
                 tools=tools,
                 state=DefaultState(max_steps=5),
-                config=LoopConfig(max_steps=5),
+                config=LoopConfig(max_steps=5, use_native_tools=False),
                 task={},
             )
         )

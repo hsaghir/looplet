@@ -1213,7 +1213,7 @@ def replay_loop(
         hooks: Optional hooks to install on the replay loop.
         config: Optional :class:`LoopConfig` - if omitted, a default is
             constructed with ``max_steps`` matching the recorded call
-            count.
+            count and the protocol of the first recorded call.
         task: Optional task dict (defaults to ``{}``).
 
     Yields:
@@ -1241,7 +1241,10 @@ def replay_loop(
     calls = _load_trace_calls(trace_path)
     backend = _ReplayLLMBackend(calls)
     if config is None:
-        config = LoopConfig(max_steps=max(len(calls), 1))
+        config = LoopConfig(
+            max_steps=max(len(calls), 1),
+            use_native_tools=calls[0]["method"] == "generate_with_tools",
+        )
     if state is None:
         state = DefaultState(max_steps=max(len(calls), 1))
     yield from composable_loop(

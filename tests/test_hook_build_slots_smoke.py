@@ -95,6 +95,7 @@ class TestHookBuildBriefing:
         cfg = LoopConfig(
             max_steps=2,
             build_briefing=lambda *a, **k: "CONFIG-BRIEF",
+            use_native_tools=False,
         )
         list(
             composable_loop(
@@ -121,6 +122,7 @@ class TestHookBuildBriefing:
         cfg = LoopConfig(
             max_steps=2,
             build_briefing=lambda *a, **k: "CONFIG-BRIEF",
+            use_native_tools=False,
         )
         list(
             composable_loop(
@@ -144,6 +146,7 @@ class TestHookBuildPrompt:
         cfg = LoopConfig(
             max_steps=2,
             build_prompt=lambda **kw: "CONFIG-PROMPT",
+            use_native_tools=False,
         )
         list(
             composable_loop(
@@ -168,7 +171,7 @@ class TestHookBuildPrompt:
                 tools=_tools(),
                 state=DefaultState(max_steps=2),
                 hooks=[_PromptHook("FIRST"), _PromptHook("SECOND")],
-                config=LoopConfig(max_steps=2),
+                config=LoopConfig(max_steps=2, use_native_tools=False),
             )
         )
         assert b.prompts[0] == "FIRST"
@@ -189,7 +192,7 @@ class TestHookBuildPrompt:
                 tools=_tools(),
                 state=DefaultState(max_steps=2),
                 hooks=[_NoneHook("x")],
-                config=LoopConfig(max_steps=2),
+                config=LoopConfig(max_steps=2, use_native_tools=False),
             )
         )
         # Default template has "TASK" section.

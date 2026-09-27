@@ -932,7 +932,7 @@ class TestSkillBundles:
 
         assert rc == 0
         out = capsys.readouterr().out
-        assert "Tool protocol: native by default (automatic text fallback)" in out
+        assert "Tool protocol: native (use_native_tools=False for JSON-text)" in out
         assert "✏️  #2 write: math_utils.py" in out
         assert "Done: Created math_utils.add with tests." in out
         assert (tmp_path / "math_utils.py").exists()
@@ -2017,22 +2017,9 @@ class TestSkillBundles:
     def test_coder_bundle_no_trace_preserves_non_scripted_call_count(self, tmp_path, capsys):
         from tests.fixtures.coder_skill_bundle import _compat as coder
 
-        class FakeOpenAIBackend:
+        class FakeOpenAIBackend(MockLLMBackend):
             def __init__(self, *args, **kwargs):
-                self._responses = list(coder.scripted_responses())
-                self.calls = 0
-
-            def generate(
-                self,
-                prompt: str,
-                *,
-                max_tokens: int = 2000,
-                system_prompt: str = "",
-                temperature: float = 0.2,
-            ) -> str:
-                index = min(self.calls, len(self._responses) - 1)
-                self.calls += 1
-                return self._responses[index]
+                super().__init__(responses=coder.scripted_responses())
 
         bundle = load_skill_bundle(CODER_BUNDLE)
         with patch.object(bundle.module, "OpenAIBackend", FakeOpenAIBackend):

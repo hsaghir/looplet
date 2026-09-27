@@ -62,7 +62,7 @@ def _captured_dir(tmp_path: Path) -> Path:
         tools=_make_tools(),
         state=DefaultState(max_steps=5),
         hooks=[sink.trajectory_hook()],
-        config=LoopConfig(max_steps=5),
+        config=LoopConfig(max_steps=5, use_native_tools=False),
     ):
         pass
     return sink.flush()
@@ -227,8 +227,7 @@ class TestReplayLoopSmoke:
             replay_loop(
                 trace_dir,
                 tools=_make_tools(),
-                state=DefaultState(max_steps=3),
-                config=LoopConfig(max_steps=3, use_native_tools=True),
+                state=DefaultState(max_steps=2),
             )
         )
 

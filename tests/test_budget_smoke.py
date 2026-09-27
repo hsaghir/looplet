@@ -157,7 +157,7 @@ class TestLoopIntegration:
                 tools=reg,
                 state=DefaultState(max_steps=3),
                 hooks=[ThresholdCompactHook(b, fire_tier="warning")],
-                config=LoopConfig(max_steps=3, compact_service=svc),
+                config=LoopConfig(max_steps=3, compact_service=svc, use_native_tools=False),
             )
         )
         assert _CountingCompact.calls >= 1

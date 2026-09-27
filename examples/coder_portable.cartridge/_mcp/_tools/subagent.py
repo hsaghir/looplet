@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from coder_lib_tools import FileCache, make_tools
 
+from looplet.loop import LoopConfig
 from looplet.subagent import run_sub_loop
 from looplet.types import ToolContext
 
@@ -38,13 +39,17 @@ def execute(ctx: ToolContext, *, prompt: str, max_steps: int = 5, system_prompt:
     cfg = ctx.resources.get("workspace_config")
     workspace = cfg.path if cfg is not None else "."
     tools = make_tools(workspace, FileCache(workspace))
+    max_steps = max(1, int(max_steps or 5))
+    system_prompt = system_prompt or (
+        "You are a focused coding sub-agent. Investigate the requested task and return concise findings."
+    )
     result = run_sub_loop(
         llm=ctx.llm,
         task={"goal": prompt},
         tools=tools,
-        max_steps=max(1, int(max_steps or 5)),
-        system_prompt=system_prompt
-        or "You are a focused coding sub-agent. Investigate the requested task and return concise findings.",
+        max_steps=max_steps,
+        system_prompt=system_prompt,
+        config=LoopConfig(max_steps=max_steps, system_prompt=system_prompt, use_native_tools=False),
         state_mutating_tools=["done", "subagent"],
     )
     return {

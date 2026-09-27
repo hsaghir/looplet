@@ -72,7 +72,7 @@ class TestLoopPlumbsApproval:
         )
 
         handler = lambda prompt, options: "y"
-        cfg = LoopConfig(max_steps=3, approval_handler=handler)
+        cfg = LoopConfig(max_steps=3, approval_handler=handler, use_native_tools=False)
         llm = _LLM(
             '```json\n{"tool": "confirm", "args": {}}\n```',
             '```json\n{"tool": "done", "args": {"summary": "x"}}\n```',

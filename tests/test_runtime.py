@@ -18,11 +18,11 @@ from looplet import (
 from looplet.testing import AsyncMockLLMBackend
 
 
-def _preset() -> AgentPreset:
+def _preset(*, use_native_tools: bool = True) -> AgentPreset:
     tools = BaseToolRegistry()
     register_done_tool(tools)
     return AgentPreset(
-        config=LoopConfig(max_steps=1),
+        config=LoopConfig(max_steps=1, use_native_tools=use_native_tools),
         hooks=[],
         tools=tools,
         state=DefaultState(max_steps=1),
@@ -85,7 +85,7 @@ def test_runtime_close_cancels_active_handle() -> None:
             time.sleep(0.2)
             return '{"tool":"done","args":{"summary":"ok"}}'
 
-    runtime = AgentRuntime(_preset())
+    runtime = AgentRuntime(_preset(use_native_tools=False))
     handle = runtime.start(SlowBackend())
     report = runtime.close(timeout=1)
 

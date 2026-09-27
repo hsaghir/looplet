@@ -179,13 +179,27 @@ async def async_llm_call(
 
     Awaits ``llm.generate()`` or ``llm.generate_with_tools()`` when
     they are coroutines; calls them synchronously otherwise (supporting
-    sync backends used from async context). A failed native call
-    transparently falls back to ``generate()``.
+    sync backends used from async context). Native tool support is required
+    unless ``NativeToolPolicy(enabled=False)`` selects JSON-text mode.
     """
     if cancel_token is not None and getattr(cancel_token, "is_cancelled", False):
         return LLMResult(None, RuntimeError("cancelled before LLM call"))
 
     policy = native_policy or NativeToolPolicy()
+    if (
+        tools is not None
+        and policy.enabled
+        and not policy.demoted
+        and not policy.should_use(llm, tools)
+    ):
+        return LLMResult(
+            None,
+            NativeToolUnsupportedError(
+                "Backend does not support native tool calls; set use_native_tools=False "
+                "to explicitly use JSON-text tool calls"
+            ),
+            native_requested=True,
+        )
     use_native = policy.should_use(llm, tools)
     _gk = generate_kwargs or {}
 
@@ -220,13 +234,8 @@ async def async_llm_call(
         return out
 
     last_error: Exception | None = None
-    native_fallback = False
     native_attempted = False
-    native_fallback_reason: str | None = None
-    # Reserve one extra slot for the native-to-text fallback. Ordinary native
-    # provider failures are handled by the explicit native retry budget below
-    # and never consume this fallback slot.
-    attempt_limit = max_retries + 1 + int(use_native)
+    attempt_limit = max_retries + 1
 
     for attempt in range(attempt_limit):
         if cancel_token is not None and getattr(cancel_token, "is_cancelled", False):
@@ -306,11 +315,9 @@ async def async_llm_call(
                 result,
                 stop_reason=stop,
                 continuations=continuation_count,
-                native_fallback=native_fallback,
                 native_requested=bool(tools is not None and policy.enabled),
                 native_attempted=native_attempted,
                 native_succeeded=False,
-                native_fallback_reason=native_fallback_reason,
             )
 
         except Exception as e:
@@ -318,15 +325,8 @@ async def async_llm_call(
             if _is_prompt_too_long(e):
                 return LLMResult(None, e)
             if use_native and isinstance(e, NativeToolUnsupportedError):
-                logger.warning(
-                    "Async native tool call failed; falling back to regular generation: %s",
-                    e,
-                )
-                policy.demote()
-                use_native = False
-                native_fallback = True
-                native_fallback_reason = f"{type(e).__name__}: {e}"
-                continue
+                logger.error("Native tool call unsupported; set use_native_tools=False: %s", e)
+                return LLMResult(None, e, native_requested=True, native_attempted=True)
             if use_native:
                 if attempt < max_retries:
                     wait = RETRY_BACKOFF_BASE * (2**attempt)
@@ -1071,7 +1071,9 @@ async def _async_composable_loop_impl(
                     continue
                 if recovery_action is not None and recovery_action.message:
                     post_dispatch_parts.append(recovery_action.message)
-            if consecutive_parse_failures <= PARSE_RECOVERY_MAX:
+            if consecutive_parse_failures <= PARSE_RECOVERY_MAX and (
+                not native_policy.enabled or native_policy.demoted
+            ):
                 recovery_prompt = build_parse_recovery_prompt(prompt, to_text(raw_response) or "")
                 recovery_result = await async_llm_call(
                     llm,
@@ -1091,7 +1093,12 @@ async def _async_composable_loop_impl(
                     tool="__parse_error__",
                     args_summary="",
                     data=None,
-                    error=f"Could not parse: {(to_text(raw_response) or '')[:200]}",
+                    error=(
+                        "Native tool protocol error: expected structured tool_use block; "
+                        f"received {(to_text(raw_response) or '')[:200]}"
+                        if native_policy.enabled and not native_policy.demoted
+                        else f"Could not parse: {(to_text(raw_response) or '')[:200]}"
+                    ),
                 )
                 step = Step(number=step_num, tool_call=tc, tool_result=tr)
                 state.steps.append(step)

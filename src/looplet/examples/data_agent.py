@@ -290,7 +290,7 @@ def main(argv: list[str] | None = None) -> int:
         llm = OpenAIBackend(base_url=base_url, api_key=api_key, model=model)
         model_label = model
     print(f"# model: {model_label}")
-    print("# tool protocol: native by default (automatic text fallback)")
+    print("# tool protocol: json-text" if use_scripted else "# tool protocol: native")
 
     config = LoopConfig(
         max_steps=10,
@@ -306,7 +306,7 @@ def main(argv: list[str] | None = None) -> int:
         checkpoint_dir=str(CHECKPOINT_DIR),
         approval_handler=approval,
         context_window=4_000,
-        use_native_tools=True,
+        use_native_tools=not use_scripted,
     )
     hooks = [
         ApprovalHook(),

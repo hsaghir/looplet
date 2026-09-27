@@ -149,7 +149,7 @@ def test_briefing_budget_adds_ascii_truncation_marker():
             llm=backend,
             tools=_done_tools(),
             hooks=[Briefing()],
-            config=LoopConfig(max_steps=1, max_briefing_tokens=1),
+            config=LoopConfig(max_steps=1, max_briefing_tokens=1, use_native_tools=False),
             state=DefaultState(max_steps=1),
             task={},
         )
@@ -213,7 +213,7 @@ def test_aborted_parse_recovery_uses_ascii_error():
         composable_loop(
             llm=Backend(),
             tools=_done_tools(),
-            config=LoopConfig(max_steps=1, recovery_registry=registry),
+            config=LoopConfig(max_steps=1, recovery_registry=registry, use_native_tools=False),
             state=DefaultState(max_steps=1),
             task={},
         )

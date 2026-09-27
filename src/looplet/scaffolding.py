@@ -154,8 +154,8 @@ class LLMResult:
     ``continuations`` counts how many budget-aware continuation calls
     were stitched together to produce ``text`` - always ``0`` unless
     the caller requested continuation.
-    ``native_fallback`` is true when a native tool call was rejected and
-    the returned response came from the regular text path.
+    ``native_fallback`` is retained for compatibility; native calls now
+    report errors instead of silently switching to regular text generation.
     """
 
     __slots__ = (
@@ -287,12 +287,9 @@ def llm_call_with_retry(
     Prompt-too-long errors are not retried - retrying the same prompt
     against the same context window will always fail.
 
-    When ``tools`` is provided and the backend exposes ``generate_with_tools``,
-    native tool calling is used; otherwise the call uses ``generate`` (plain
-    text → JSON-text tool parsing upstream). A backend may raise
-    :class:`looplet.native_tools.NativeToolUnsupportedError` to explicitly
-    request a demotion to the text protocol; ordinary provider failures remain
-    failures.
+    When ``tools`` is provided, native tool calling is required by default.
+    Set ``NativeToolPolicy(enabled=False)`` to explicitly use ``generate`` and
+    JSON-text tool calls on a backend without native tool support.
 
     When ``cancel_token`` is provided:
       * If already cancelled before the call, returns an error result
@@ -306,15 +303,24 @@ def llm_call_with_retry(
         return LLMResult(None, RuntimeError("cancelled before LLM call"))
 
     policy = native_policy or NativeToolPolicy()
+    if (
+        tools is not None
+        and policy.enabled
+        and not policy.demoted
+        and not policy.should_use(llm, tools)
+    ):
+        return LLMResult(
+            None,
+            NativeToolUnsupportedError(
+                "Backend does not support native tool calls; set use_native_tools=False "
+                "to explicitly use JSON-text tool calls"
+            ),
+            native_requested=True,
+        )
     use_native = policy.should_use(llm, tools)
-    # Reserve one extra slot for the native-to-text fallback. Ordinary native
-    # provider failures are handled by the explicit native retry budget below
-    # and never consume this fallback slot.
-    attempt_limit = max_retries + 1 + int(use_native)
+    attempt_limit = max_retries + 1
     last_error: Exception | None = None
-    native_fallback = False
     native_attempted = False
-    native_fallback_reason: str | None = None
     for attempt in range(attempt_limit):
         # Re-check cancellation between retries - a long backoff could span it.
         if cancel_token is not None and getattr(cancel_token, "is_cancelled", False):
@@ -409,11 +415,9 @@ def llm_call_with_retry(
                 final_text,
                 stop_reason=stop,
                 continuations=_cont,
-                native_fallback=native_fallback,
                 native_requested=bool(tools is not None and policy.enabled),
                 native_attempted=native_attempted,
                 native_succeeded=False,
-                native_fallback_reason=native_fallback_reason,
             )
         except Exception as e:
             last_error = e
@@ -421,15 +425,8 @@ def llm_call_with_retry(
                 logger.warning("Prompt too long (not retrying): %s", e)
                 return LLMResult(None, e)
             if use_native and isinstance(e, NativeToolUnsupportedError):
-                logger.warning(
-                    "Native tool call failed; falling back to regular generation: %s",
-                    e,
-                )
-                policy.demote()
-                use_native = False
-                native_fallback = True
-                native_fallback_reason = f"{type(e).__name__}: {e}"
-                continue
+                logger.error("Native tool call unsupported; set use_native_tools=False: %s", e)
+                return LLMResult(None, e, native_requested=True, native_attempted=True)
             # MockLLMBackend(cycle=False) raises LLMResponsesExhausted when
             # a test scripted fewer responses than the loop asked for.
             # Retrying the same exhausted mock never helps; surface the

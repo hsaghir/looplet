@@ -24,6 +24,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from looplet.parse import parse_multi_tool_calls
+
 __all__ = [
     "AsyncMockLLMBackend",
     "LLMResponsesExhausted",
@@ -38,6 +40,22 @@ class LLMResponsesExhausted(RuntimeError):
     scripted" as a clear test failure instead of silently returning
     the first response again.
     """
+
+
+def _scripted_native_blocks(response: str) -> list[dict[str, Any]]:
+    """Adapt scripted tool fixtures to the same blocks as a native provider."""
+    calls = parse_multi_tool_calls(response)
+    if not calls:
+        return [{"type": "text", "text": response}]
+    return [
+        {
+            "type": "tool_use",
+            "name": call.tool,
+            "input": call.args,
+            **({"id": call.call_id} if call.call_id else {}),
+        }
+        for call in calls
+    ]
 
 
 class MockLLMBackend:
@@ -113,6 +131,24 @@ class MockLLMBackend:
         self._index += 1
         return response
 
+    def generate_with_tools(
+        self,
+        prompt: str,
+        *,
+        tools: list[dict[str, Any]],
+        max_tokens: int = 2000,
+        system_prompt: str = "",
+        temperature: float = 0.2,
+    ) -> list[dict[str, Any]]:
+        return _scripted_native_blocks(
+            self.generate(
+                prompt,
+                max_tokens=max_tokens,
+                system_prompt=system_prompt,
+                temperature=temperature,
+            )
+        )
+
     def reset(self) -> None:
         """Reset the response cursor and call counters."""
         self._index = 0
@@ -163,6 +199,24 @@ class AsyncMockLLMBackend:
         response = self._responses[self._index % len(self._responses)]
         self._index += 1
         return response
+
+    async def generate_with_tools(
+        self,
+        prompt: str,
+        *,
+        tools: list[dict[str, Any]],
+        max_tokens: int = 2000,
+        system_prompt: str = "",
+        temperature: float = 0.2,
+    ) -> list[dict[str, Any]]:
+        return _scripted_native_blocks(
+            await self.generate(
+                prompt,
+                max_tokens=max_tokens,
+                system_prompt=system_prompt,
+                temperature=temperature,
+            )
+        )
 
     def reset(self) -> None:
         self._index = 0

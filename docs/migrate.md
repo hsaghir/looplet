@@ -68,10 +68,10 @@ for step in composable_loop(
     existing_logger.info(step.pretty())
 ```
 
-Native tool calling is now the default, while backends that only support the
-previous text protocol continue to work through the automatic fallback. Set
-the same `use_native_tools` setting to `False` only for a deliberate
-text-protocol parity test.
+Native tool calling is now the default and requires a backend that supports
+structured `tool_use` responses. Backends without native support fail with a
+clear error. Set `use_native_tools=False` explicitly to use the JSON-text
+protocol instead.
 
 Run the same deterministic tool tests and a small set of representative tasks
 before adding any hook. If behavior changes, the loop replacement is the only

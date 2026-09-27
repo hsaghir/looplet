@@ -129,7 +129,7 @@ class TestLoopIntegration:
         ran: list[str] = []
         eng = PermissionEngine()
         eng.deny("danger", reason="forbidden")
-        cfg = LoopConfig(max_steps=3)
+        cfg = LoopConfig(max_steps=3, use_native_tools=False)
         llm = _LLM(
             '```json\n{"tool": "danger", "args": {"cmd": "rm -rf /"}}\n```',
             '```json\n{"tool": "done", "args": {"summary": "x"}}\n```',
@@ -155,7 +155,7 @@ class TestLoopIntegration:
     def test_engine_allows_tool_by_default(self):
         ran: list[str] = []
         eng = PermissionEngine(default=PermissionDecision.ALLOW)
-        cfg = LoopConfig(max_steps=3)
+        cfg = LoopConfig(max_steps=3, use_native_tools=False)
         llm = _LLM(
             '```json\n{"tool": "danger", "args": {"cmd": "ls"}}\n```',
             '```json\n{"tool": "done", "args": {"summary": "x"}}\n```',

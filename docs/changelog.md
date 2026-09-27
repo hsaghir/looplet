@@ -42,9 +42,11 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - `LoopConfig.max_tokens` is now unset by default, preserving provider
   decisions, and oversized prompts are blocked before provider calls when
   reactive recovery is disabled.
-- Native tool fallback now requires an explicit
-  `NativeToolUnsupportedError`; provider failures remain visible. Broken
-  `check_done` quality gates fail closed in sync and async loops.
+- Native tool calls now require structured `tool_use` blocks; unavailable
+  native APIs and text-only native responses fail visibly instead of
+  switching to JSON-text parsing. Set `use_native_tools=False` to opt in to
+  text mode. Broken `check_done` quality gates fail closed in sync and async
+  loops.
 
 ## [0.4.0] - 2026-08-28
 

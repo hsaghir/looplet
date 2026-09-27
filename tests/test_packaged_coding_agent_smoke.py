@@ -54,6 +54,6 @@ class TestPackagedCodingAgent:
         assert (tmp_path / "math_utils.py").exists()
         assert (tmp_path / "test_math_utils.py").exists()
         out = capsys.readouterr().out
-        assert "Tool protocol: native by default (automatic text fallback)" in out
+        assert "Tool protocol: json-text" in out
         assert "Tests: PASSED" in out
         assert "Step 4: done" in out

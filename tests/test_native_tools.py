@@ -3,12 +3,11 @@
 Covers:
  - OpenAI / Anthropic backends implement ``generate_with_tools`` that returns
    normalised Anthropic-style content blocks.
- - ``llm_call_with_retry`` routes to ``generate_with_tools`` when ``tools`` is
-   passed and the backend supports it; falls back to ``generate`` otherwise.
+ - ``llm_call_with_retry`` requires native tool support when enabled, and
+     uses ``generate`` only for explicitly selected text mode.
  - The composable loop passes tool schemas through when
-     ``LoopConfig.use_native_tools`` is enabled (the default), transparently
-     falls back to regular generation when native calls fail, and routes a
-     resulting ``list[dict]`` response through ``parse_native_tool_use``.
+         ``LoopConfig.use_native_tools`` is enabled (the default), rejects
+         text-only native responses, and parses structured ``tool_use`` blocks.
 """
 
 from __future__ import annotations
@@ -33,8 +32,9 @@ from looplet.backends import (
     _openai_message_to_blocks,
     _to_openai_tools,
 )
-from looplet.native_tools import NativeToolPolicy
+from looplet.native_tools import NativeToolPolicy, NativeToolUnsupportedError
 from looplet.scaffolding import llm_call_with_retry
+from looplet.testing import AsyncMockLLMBackend, MockLLMBackend
 from looplet.types import NativeToolBackend
 
 # ── Helpers ──────────────────────────────────────────────────────
@@ -327,29 +327,55 @@ def _echo(*, value: str) -> dict[str, str]:
 
 
 class TestLLMCallWithRetryNative:
+    def test_scripted_mock_returns_structured_native_calls(self):
+        backend = MockLLMBackend(responses=['{"tool":"done","args":{},"call_id":"mock-1"}'])
+        result = llm_call_with_retry(backend, "finish", tools=_weather_schema())
+
+        assert result.ok
+        assert result.text == [{"type": "tool_use", "name": "done", "input": {}, "id": "mock-1"}]
+        assert NativeToolPolicy().parse_response(result.text)[0].tool == "done"
+        assert backend.calls == 1
+
+    @pytest.mark.asyncio
+    async def test_async_scripted_mock_returns_structured_native_calls(self):
+        from looplet.async_loop import async_llm_call
+
+        backend = AsyncMockLLMBackend(responses=['{"tool":"done","args":{}}'])
+        result = await async_llm_call(backend, "finish", tools=_weather_schema())
+
+        assert result.ok
+        assert len(result.text) == 1
+        assert result.text[0]["type"] == "tool_use"
+        assert result.text[0]["name"] == "done"
+        assert result.text[0]["input"] == {}
+        assert isinstance(result.text[0]["id"], str)
+        assert NativeToolPolicy().parse_response(result.text)[0].tool == "done"
+        assert backend.calls == 1
+
     def test_native_stats_are_inactive_before_any_result(self):
         from looplet.scaffolding import NativeToolStats
 
         assert NativeToolStats().has_activity is False
 
-    def test_native_stats_record_success_and_fallback(self):
+    def test_native_stats_record_success_and_unsupported(self):
         from looplet.scaffolding import NativeToolStats
 
         stats = NativeToolStats()
         success = llm_call_with_retry(_NativeBackend(), "hi", tools=_weather_schema())
         stats.record(success)
-        fallback = llm_call_with_retry(
+        unsupported = llm_call_with_retry(
             _NativeFailureBackend(), "hi", tools=_weather_schema(), max_retries=0
         )
-        stats.record(fallback)
+        stats.record(unsupported)
 
         assert stats.to_dict() == {
             "requested": 2,
             "attempted": 2,
             "succeeded": 1,
-            "fallbacks": 1,
-            "last_fallback_reason": "NativeToolUnsupportedError: tools endpoint unsupported",
+            "fallbacks": 0,
+            "last_fallback_reason": None,
         }
+        assert isinstance(unsupported.error, NativeToolUnsupportedError)
 
     def test_native_policy_defaults_on_and_parses_after_demotion(self):
         policy = NativeToolPolicy()
@@ -367,6 +393,16 @@ class TestLLMCallWithRetryNative:
         assert not policy.should_use(backend, _weather_schema())
         assert policy.parse_response('{"tool": "done", "args": {}}')[0].tool == "done"
 
+    def test_native_policy_rejects_json_text_without_explicit_text_mode(self):
+        policy = NativeToolPolicy()
+        json_text = '{"tool": "done", "args": {}}'
+
+        assert policy.parse_response([{"type": "text", "text": json_text}]) == []
+        assert policy.parse_response(json_text) == []
+
+        policy.enabled = False
+        assert policy.parse_response(json_text)[0].tool == "done"
+
     def test_no_tools_uses_generate(self):
         backend = _NoToolBackend()
         result = llm_call_with_retry(backend, "hi")
@@ -381,13 +417,34 @@ class TestLLMCallWithRetryNative:
         assert result.text[0]["type"] == "tool_use"
         assert backend.calls[0]["tools"] == _weather_schema()
 
-    def test_tools_but_non_native_backend_falls_back_to_text(self):
+    def test_tools_but_non_native_backend_requires_explicit_text_mode(self):
         backend = _NoToolBackend()  # no generate_with_tools
         result = llm_call_with_retry(backend, "hi", tools=_weather_schema())
+        assert not result.ok
+        assert isinstance(result.error, NativeToolUnsupportedError)
+        assert "use_native_tools=False" in str(result.error)
+
+        result = llm_call_with_retry(
+            backend, "hi", tools=_weather_schema(), native_policy=NativeToolPolicy(enabled=False)
+        )
         assert result.ok
         assert isinstance(result.text, str)
 
-    def test_native_failure_falls_back_to_regular_generation(self):
+    def test_loop_missing_native_backend_reports_unsupported(self):
+        steps = list(
+            composable_loop(
+                llm=_NoToolBackend(),
+                task={"goal": "finish"},
+                tools=tools_from([_echo], include_done=True),
+                state=DefaultState(max_steps=2),
+                config=LoopConfig(max_steps=2),
+            )
+        )
+
+        assert [step.tool_call.tool for step in steps] == ["__llm_error__"]
+        assert "use_native_tools=False" in steps[0].tool_result.error
+
+    def test_native_failure_stays_error_without_regular_generation(self):
         backend = _NativeFailureBackend()
         result = llm_call_with_retry(
             backend,
@@ -395,10 +452,10 @@ class TestLLMCallWithRetryNative:
             tools=_weather_schema(),
             max_retries=0,
         )
-        assert result.ok
-        assert isinstance(result.text, str)
-        assert backend.calls == ["native", "regular"]
-        assert result.native_fallback is True
+        assert not result.ok
+        assert isinstance(result.error, NativeToolUnsupportedError)
+        assert backend.calls == ["native"]
+        assert result.native_fallback is False
 
     def test_provider_failure_does_not_fallback_to_text(self):
         class ProviderFailureBackend:
@@ -422,35 +479,133 @@ class TestLLMCallWithRetryNative:
         assert "authentication failed" in str(result.error)
         assert result.native_fallback is False
 
-    def test_native_failure_is_demoted_for_the_rest_of_the_loop(self):
-        backend = _StickyNativeFailureBackend()
-        tools = tools_from([_echo], include_done=True, done_parameters={"answer": "x"})
+    def test_text_only_native_response_retries_without_json_recovery(self):
+        class TextThenNativeBackend:
+            def __init__(self):
+                self.native_calls = 0
 
-        for _ in composable_loop(
-            llm=backend,
-            task={"goal": "echo then finish"},
-            tools=tools,
-            state=DefaultState(max_steps=3),
-            config=LoopConfig(max_steps=3),
-        ):
-            pass
+            def generate(self, prompt, **kwargs):
+                raise AssertionError("native mode must not call JSON-text recovery")
 
-        assert backend.native_calls == 1
-        assert backend.regular_calls == 2
+            def generate_with_tools(self, prompt, *, tools, **kwargs):
+                self.native_calls += 1
+                if self.native_calls == 1:
+                    return [{"type": "text", "text": '{"tool":"done","args":{}}'}]
+                return [{"type": "tool_use", "id": "n2", "name": "done", "input": {}}]
+
+        backend = TextThenNativeBackend()
+        tools = tools_from([_echo], include_done=True)
+        steps = list(
+            composable_loop(
+                llm=backend,
+                tools=tools,
+                task={"goal": "finish"},
+                state=DefaultState(max_steps=2),
+                config=LoopConfig(max_steps=2),
+            )
+        )
+
+        assert [step.tool_call.tool for step in steps] == ["__parse_error__", "done"]
+        assert "expected structured tool_use" in steps[0].tool_result.error
+        assert backend.native_calls == 2
 
     @pytest.mark.asyncio
-    async def test_async_native_failure_is_demoted_for_the_rest_of_the_loop(self):
+    async def test_async_text_only_native_response_retries_without_json_recovery(self):
+        class TextThenNativeBackend:
+            def __init__(self):
+                self.native_calls = 0
+
+            async def generate(self, prompt, **kwargs):
+                raise AssertionError("native mode must not call JSON-text recovery")
+
+            async def generate_with_tools(self, prompt, *, tools, **kwargs):
+                self.native_calls += 1
+                if self.native_calls == 1:
+                    return [{"type": "text", "text": '{"tool":"done","args":{}}'}]
+                return [{"type": "tool_use", "id": "n2", "name": "done", "input": {}}]
+
+        backend = TextThenNativeBackend()
+        tools = tools_from([_echo], include_done=True)
+        steps = []
+        async for step in async_composable_loop(
+            llm=backend,
+            tools=tools,
+            task={"goal": "finish"},
+            state=DefaultState(max_steps=2),
+            config=LoopConfig(max_steps=2),
+        ):
+            steps.append(step)
+
+        assert [step.tool_call.tool for step in steps] == ["__parse_error__", "done"]
+        assert "expected structured tool_use" in steps[0].tool_result.error
+        assert backend.native_calls == 2
+
+    def test_native_failure_stops_the_loop_without_demoting(self):
         backend = _StickyNativeFailureBackend()
         tools = tools_from([_echo], include_done=True, done_parameters={"answer": "x"})
 
-        async for _ in async_composable_loop(
+        steps = list(
+            composable_loop(
+                llm=backend,
+                task={"goal": "echo then finish"},
+                tools=tools,
+                state=DefaultState(max_steps=3),
+                config=LoopConfig(max_steps=3),
+            )
+        )
+
+        assert backend.native_calls == 1
+        assert backend.regular_calls == 0
+        assert [step.tool_call.tool for step in steps] == ["__llm_error__"]
+        assert "tools endpoint unsupported" in steps[0].tool_result.error
+
+    @pytest.mark.asyncio
+    async def test_async_native_failure_stops_the_loop_without_demoting(self):
+        backend = _StickyNativeFailureBackend()
+        tools = tools_from([_echo], include_done=True, done_parameters={"answer": "x"})
+
+        steps = []
+        async for step in async_composable_loop(
             llm=backend,
             task={"goal": "echo then finish"},
             tools=tools,
             state=DefaultState(max_steps=3),
             config=LoopConfig(max_steps=3),
         ):
-            pass
+            steps.append(step)
 
         assert backend.native_calls == 1
+        assert backend.regular_calls == 0
+        assert [step.tool_call.tool for step in steps] == ["__llm_error__"]
+        assert "tools endpoint unsupported" in steps[0].tool_result.error
+
+    @pytest.mark.parametrize("async_mode", [False, True])
+    @pytest.mark.asyncio
+    async def test_explicit_text_mode_completes_without_native_calls(self, async_mode):
+        backend = _StickyNativeFailureBackend()
+        tools = tools_from([_echo], include_done=True, done_parameters={"answer": "x"})
+        config = LoopConfig(max_steps=3, use_native_tools=False)
+        if async_mode:
+            steps = []
+            async for step in async_composable_loop(
+                llm=backend,
+                task={"goal": "echo then finish"},
+                tools=tools,
+                state=DefaultState(max_steps=3),
+                config=config,
+            ):
+                steps.append(step)
+        else:
+            steps = list(
+                composable_loop(
+                    llm=backend,
+                    task={"goal": "echo then finish"},
+                    tools=tools,
+                    state=DefaultState(max_steps=3),
+                    config=config,
+                )
+            )
+
+        assert [step.tool_call.tool for step in steps] == ["echo", "done"]
+        assert backend.native_calls == 0
         assert backend.regular_calls == 2

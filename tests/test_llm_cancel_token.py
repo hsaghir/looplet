@@ -95,7 +95,7 @@ class TestLoopThreadsCancelToken:
     def test_config_cancel_token_reaches_backend(self):
         llm = _CancelAwareLLM()
         tok = CancelToken()
-        cfg = LoopConfig(max_steps=2, cancel_token=tok)
+        cfg = LoopConfig(max_steps=2, cancel_token=tok, use_native_tools=False)
         list(
             composable_loop(
                 llm=llm,
@@ -145,7 +145,7 @@ class TestLoopThreadsCancelToken:
             )
         )
         llm = _CountingLLM()
-        cfg = LoopConfig(max_steps=5, cancel_token=tok)
+        cfg = LoopConfig(max_steps=5, cancel_token=tok, use_native_tools=False)
         steps = list(
             composable_loop(
                 llm=llm,
@@ -198,7 +198,7 @@ class TestToolContextSharesCancelToken:
                 return '```json\n{"tool": "done", "args": {"summary": "ok"}}\n```'
 
         tok = CancelToken()
-        cfg = LoopConfig(max_steps=5, cancel_token=tok)
+        cfg = LoopConfig(max_steps=5, cancel_token=tok, use_native_tools=False)
         list(
             composable_loop(
                 llm=_LLM(),

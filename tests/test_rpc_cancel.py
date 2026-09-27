@@ -113,6 +113,7 @@ def test_cancel_command_mid_run_emits_cancelled(tmp_path: Path) -> None:
     out = io.StringIO()
     server = RPCServer(in_stream=read_stream, out_stream=out)
     server.cmd_load_workspace({"path": str(ws), "runtime": {"workspace": str(tmp_path)}})
+    server.preset.config.use_native_tools = False
 
     block_call = 4  # pause while producing turn 4 → 3 steps already streamed
     backend = _BlockingBackend(block_call=block_call)
@@ -181,6 +182,7 @@ def test_cancel_command_creates_token_when_none_preinstalled(tmp_path: Path) -> 
     out = io.StringIO()
     server = RPCServer(in_stream=read_stream, out_stream=out)
     server.cmd_load_workspace({"path": str(ws), "runtime": {"workspace": str(tmp_path)}})
+    server.preset.config.use_native_tools = False
     assert server.preset.config.cancel_token is None  # fresh cartridge
 
     backend = _BlockingBackend(block_call=3)

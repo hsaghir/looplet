@@ -527,6 +527,7 @@ def run_coding_agent(
     max_steps: int = 20,
     workspace: str | None = None,
     trace_dir: str | None = None,
+    use_native_tools: bool = True,
 ) -> dict:
     """Run a harnessed coding agent.
 
@@ -537,13 +538,14 @@ def run_coding_agent(
         workspace: Directory to work in (default: temp dir).
         trace_dir: If set, save a full trajectory recording to this
             directory for replay/debugging.
+        use_native_tools: Set False explicitly for JSON-text-only backends.
 
     Returns:
         The trace dict with all steps, timing, etc.
     """
     ws = workspace or tempfile.mkdtemp(prefix="looplet_example_")
 
-    print("[harness] Tool protocol: native by default (automatic text fallback)")
+    print(f"[harness] Tool protocol: {'native' if use_native_tools else 'json-text'}")
 
     config = LoopConfig(
         max_steps=max_steps,
@@ -553,8 +555,7 @@ def run_coding_agent(
             "install packages, and execute commands. Use edit for targeted "
             "fixes, write for new files. Run tests before calling done."
         ),
-        # Native tool calling is the default; the loop falls back to text.
-        use_native_tools=True,
+        use_native_tools=use_native_tools,
         # Compaction chain: cheap → LLM → truncate
         compact_service=COMPACT_SERVICE,
         # Domain adapter bundles the briefing builder.
@@ -775,6 +776,7 @@ def main(argv: list[str] | None = None) -> int:
         max_steps=args.max_steps,
         workspace=args.workspace,
         trace_dir=args.trace,
+        use_native_tools=not args.scripted,
     )
     return 0
 

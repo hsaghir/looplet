@@ -84,7 +84,7 @@ class TestConversationIntegration:
         )
         state = _SimpleState()
         conv = Conversation()
-        config = LoopConfig(max_steps=5, done_tool="done")
+        config = LoopConfig(max_steps=5, done_tool="done", use_native_tools=False)
 
         steps = list(
             composable_loop(
@@ -116,7 +116,7 @@ class TestConversationIntegration:
         )
         state = _SimpleState()
         conv = Conversation()
-        config = LoopConfig(max_steps=5, done_tool="done")
+        config = LoopConfig(max_steps=5, done_tool="done", use_native_tools=False)
 
         list(
             composable_loop(
@@ -143,7 +143,7 @@ class TestConversationIntegration:
             ]
         )
         state = _SimpleState()
-        config = LoopConfig(max_steps=5, done_tool="done")
+        config = LoopConfig(max_steps=5, done_tool="done", use_native_tools=False)
 
         steps = list(
             composable_loop(
@@ -166,7 +166,7 @@ class TestConversationIntegration:
         )
         state = _SimpleState()
         conv = Conversation()
-        config = LoopConfig(max_steps=5, done_tool="done")
+        config = LoopConfig(max_steps=5, done_tool="done", use_native_tools=False)
 
         list(
             composable_loop(

@@ -176,7 +176,7 @@ def test_full_loop_with_all_capabilities():
             StreamingHook(emitter),
             SimpleCheckpointHook(),
         ]
-        config = LoopConfig(max_steps=10, done_tool="done")
+        config = LoopConfig(max_steps=10, done_tool="done", use_native_tools=False)
 
         steps = list(
             composable_loop(
@@ -229,7 +229,7 @@ def test_checkpoint_resume():
     state = _State(max_steps=10)
     session_log = SessionLog()
 
-    config = LoopConfig(max_steps=10, done_tool="done")
+    config = LoopConfig(max_steps=10, done_tool="done", use_native_tools=False)
     steps = list(
         composable_loop(
             llm, task={}, tools=registry, config=config, state=state, session_log=session_log
@@ -365,7 +365,7 @@ def test_validation_rejects_bad_done():
     )
 
     state = _State(max_steps=5)
-    config = LoopConfig(max_steps=5, done_tool="done")
+    config = LoopConfig(max_steps=5, done_tool="done", use_native_tools=False)
 
     steps = list(composable_loop(llm, task={}, tools=val_registry, config=config, state=state))
 
@@ -403,7 +403,7 @@ def test_streaming_event_sequence():
 
     events: list = []
     hook = StreamingHook(CallbackEmitter(events.append))
-    config = LoopConfig(max_steps=10, done_tool="done")
+    config = LoopConfig(max_steps=10, done_tool="done", use_native_tools=False)
 
     list(composable_loop(llm, task={}, tools=registry, hooks=[hook], config=config, state=state))
 

@@ -302,8 +302,8 @@ def _doctor_checks(*, probe_backend: bool) -> list[dict[str, str]]:
             checks.append(
                 {
                     "name": "tool_protocol",
-                    "status": "ok",
-                    "detail": "native tools are enabled by default; regular text calls are the automatic fallback",
+                    "status": "warn",
+                    "detail": "native tools unavailable; set use_native_tools=False for JSON-text mode",
                 }
             )
     except Exception as exc:  # noqa: BLE001
@@ -585,7 +585,7 @@ def _render_run(
     print(f"  Cartridge: {workspace}")
     print(f"  Model: {model_label} | Budget: {max_steps} steps")
     print(
-        "  Tool protocol: native by default (automatic text fallback)"
+        "  Tool protocol: native (use_native_tools=False for JSON-text)"
         if uses_native_protocol
         else "  Tool protocol: json-text"
     )

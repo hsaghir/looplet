@@ -55,7 +55,11 @@ class TestRecordingLLMBackendSmoke:
         assert "boom" in rec.calls[0].error
 
     def test_generate_with_tools_only_when_wrapped_supports_it(self):
-        plain = MockLLMBackend(responses=["ok"])
+        class TextBackend:
+            def generate(self, prompt, **kwargs):
+                return "ok"
+
+        plain = TextBackend()
         rec = RecordingLLMBackend(plain)
         assert not hasattr(rec, "generate_with_tools")
 

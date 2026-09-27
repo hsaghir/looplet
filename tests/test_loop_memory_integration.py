@@ -43,6 +43,7 @@ class TestLoopRendersMemory:
         cfg = LoopConfig(
             max_steps=2,
             memory_sources=[StaticMemorySource("Always use UTC timestamps.")],
+            use_native_tools=False,
         )
         list(
             composable_loop(
@@ -64,6 +65,7 @@ class TestLoopRendersMemory:
             memory_sources=[
                 CallableMemorySource(lambda s: f"step={s.step_count}; budget={s.budget_remaining}"),
             ],
+            use_native_tools=False,
         )
         state = DefaultState(max_steps=2)
         list(

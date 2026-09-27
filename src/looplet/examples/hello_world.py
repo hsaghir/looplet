@@ -103,14 +103,14 @@ def main(argv: list[str] | None = None) -> int:
 
     print("looplet hello world")
     print(f"Model: {model_label}")
-    print("Tool protocol: native by default (automatic text fallback)")
+    print("Tool protocol: json-text" if args.scripted else "Tool protocol: native")
     print()
 
     for step in composable_loop(
         llm=llm,
         tools=build_tools(),
         state=DefaultState(max_steps=args.max_steps),
-        config=LoopConfig(max_steps=args.max_steps, use_native_tools=True),
+        config=LoopConfig(max_steps=args.max_steps, use_native_tools=not args.scripted),
         task={"goal": "Greet Alice and Bob, then finish."},
         hooks=[
             EvalHook(

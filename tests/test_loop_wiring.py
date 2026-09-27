@@ -168,7 +168,7 @@ def test_router_selects_backend():
     reg = _make_registry()
     # pass a different llm directly - router should override it
     fallback_llm = TrackingLLM("fallback")
-    config = LoopConfig(router=FakeRouter())
+    config = LoopConfig(router=FakeRouter(), use_native_tools=False)
 
     list(composable_loop(fallback_llm, tools=reg, config=config, state=state))
 
@@ -207,7 +207,7 @@ def test_loop_context_exposes_same_registry_resource_as_tools() -> None:
         composable_loop(
             llm,
             tools=registry,
-            config=LoopConfig(max_steps=3),
+            config=LoopConfig(max_steps=3, use_native_tools=False),
             state=SimpleState(_max_steps=3),
             hooks=[ResourceHook()],
         )
@@ -235,7 +235,7 @@ def test_checkpoint_dir_saves_checkpoints():
     reg = _make_registry()
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        config = LoopConfig(checkpoint_dir=tmpdir)
+        config = LoopConfig(checkpoint_dir=tmpdir, use_native_tools=False)
         list(composable_loop(llm, tools=reg, config=config, state=state))
         # At least one checkpoint file should exist
         files = os.listdir(tmpdir)
@@ -253,7 +253,7 @@ def test_checkpoint_file_is_valid_json():
     reg = _make_registry()
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        config = LoopConfig(checkpoint_dir=tmpdir)
+        config = LoopConfig(checkpoint_dir=tmpdir, use_native_tools=False)
         list(composable_loop(llm, tools=reg, config=config, state=state))
         files = [f for f in os.listdir(tmpdir) if f.endswith(".json")]
         assert files
@@ -271,7 +271,7 @@ def test_checkpoint_records_run_lifecycle() -> None:
             composable_loop(
                 llm,
                 tools=_make_registry(),
-                config=LoopConfig(checkpoint_dir=tmpdir),
+                config=LoopConfig(checkpoint_dir=tmpdir, use_native_tools=False),
                 state=SimpleState(),
             )
         )
@@ -500,7 +500,7 @@ def test_auto_resume_from_checkpoint_dir():
         llm = _make_scripted_llm(responses)
         state = SimpleState()
         reg = _make_registry()
-        config = LoopConfig(checkpoint_dir=tmpdir, max_steps=5)
+        config = LoopConfig(checkpoint_dir=tmpdir, max_steps=5, use_native_tools=False)
         steps = list(composable_loop(llm, tools=reg, config=config, state=state))
         assert len(steps) >= 1
         # Step numbering should continue from the checkpoint
@@ -545,6 +545,7 @@ def test_checkpoint_callbacks_snapshot_and_restore_domain_state():
                     checkpoint_dir=tmpdir,
                     checkpoint_state=snapshot,
                     restore_checkpoint_state=restore,
+                    use_native_tools=False,
                 ),
             )
         )
@@ -593,6 +594,7 @@ def test_domain_adapter_checkpoint_callbacks_are_used():
                         checkpoint_state=snapshot,
                         restore_checkpoint_state=restore,
                     ),
+                    use_native_tools=False,
                 ),
             )
         )
@@ -617,7 +619,7 @@ def test_tracer_records_spans():
     reg = _make_registry()
 
     tracer = Tracer()
-    config = LoopConfig(tracer=tracer)
+    config = LoopConfig(tracer=tracer, use_native_tools=False)
     list(composable_loop(llm, tools=reg, config=config, state=state))
 
     # At least some spans should have been recorded
@@ -635,7 +637,7 @@ def test_tracer_span_names():
     reg = _make_registry()
 
     tracer = Tracer()
-    config = LoopConfig(tracer=tracer)
+    config = LoopConfig(tracer=tracer, use_native_tools=False)
     list(composable_loop(llm, tools=reg, config=config, state=state))
 
     all_span_names = {s.name for s in tracer.root_spans}
@@ -680,7 +682,7 @@ def test_recovery_registry_consulted_on_parse_error():
     llm = _make_scripted_llm(responses)
     state = SimpleState()
     reg = _make_registry()
-    config = LoopConfig(recovery_registry=registry, max_steps=10)
+    config = LoopConfig(recovery_registry=registry, max_steps=10, use_native_tools=False)
 
     list(composable_loop(llm, tools=reg, config=config, state=state))
 
@@ -720,7 +722,7 @@ def test_output_schema_rejects_invalid_done():
         )
     )
 
-    config = LoopConfig(output_schema=schema, max_steps=10)
+    config = LoopConfig(output_schema=schema, max_steps=10, use_native_tools=False)
     steps = list(composable_loop(llm, tools=reg, config=config, state=state))
 
     # Should have taken more than 1 step because first done() was rejected
@@ -742,7 +744,7 @@ def test_output_schema_allows_valid_done():
     llm = _make_scripted_llm(responses)
     state = SimpleState()
     reg = _make_registry()
-    config = LoopConfig(output_schema=schema, max_steps=5)
+    config = LoopConfig(output_schema=schema, max_steps=5, use_native_tools=False)
     steps = list(composable_loop(llm, tools=reg, config=config, state=state))
 
     assert any(s.tool_call.tool == "done" for s in steps)
@@ -763,7 +765,7 @@ def test_stream_receives_events():
     llm = _make_scripted_llm(responses)
     state = SimpleState()
     reg = _make_registry()
-    config = LoopConfig(max_steps=5)
+    config = LoopConfig(max_steps=5, use_native_tools=False)
     list(composable_loop(llm, tools=reg, config=config, state=state, stream=emitter))
 
     assert len(received) > 0
@@ -781,7 +783,7 @@ def test_stream_receives_loop_start_event():
     llm = _make_scripted_llm(responses)
     state = SimpleState()
     reg = _make_registry()
-    config = LoopConfig(max_steps=5)
+    config = LoopConfig(max_steps=5, use_native_tools=False)
     list(composable_loop(llm, tools=reg, config=config, state=state, stream=emitter))
 
     event_types = {type(e).__name__ for e in received}
@@ -800,7 +802,7 @@ def test_stream_receives_loop_end_event():
     llm = _make_scripted_llm(responses)
     state = SimpleState()
     reg = _make_registry()
-    config = LoopConfig(max_steps=5)
+    config = LoopConfig(max_steps=5, use_native_tools=False)
     list(composable_loop(llm, tools=reg, config=config, state=state, stream=emitter))
 
     event_types = {type(e).__name__ for e in received}
@@ -819,7 +821,7 @@ def test_stream_receives_tool_dispatch_event():
     llm = _make_scripted_llm(responses)
     state = SimpleState()
     reg = _make_registry()
-    config = LoopConfig(max_steps=5)
+    config = LoopConfig(max_steps=5, use_native_tools=False)
     list(composable_loop(llm, tools=reg, config=config, state=state, stream=emitter))
 
     dispatch_events = [e for e in received if isinstance(e, ToolDispatchEvent)]
@@ -857,7 +859,7 @@ def test_initial_checkpoint_restores_step_offset():
         tool_results_store={},
         metadata={"task_id": "test"},
     )
-    config = LoopConfig(initial_checkpoint=ckpt, max_steps=10)
+    config = LoopConfig(initial_checkpoint=ckpt, max_steps=10, use_native_tools=False)
     steps = list(composable_loop(TrackingLLM(), tools=reg, config=config, state=state))
 
     # The first step number yielded should be > 1 (offset from checkpoint)
@@ -899,7 +901,7 @@ def test_initial_checkpoint_restores_session_log():
         metadata={},
     )
     restored_log = SessionLog()
-    config = LoopConfig(initial_checkpoint=ckpt, max_steps=10)
+    config = LoopConfig(initial_checkpoint=ckpt, max_steps=10, use_native_tools=False)
     steps = list(
         composable_loop(llm, tools=reg, config=config, state=state, session_log=restored_log)
     )
@@ -928,11 +930,12 @@ def test_all_new_params_default_to_none():
 
 
 def test_loop_works_without_new_params():
-    """Existing loop usage (no new params) continues to work."""
+    """A native-capable scripted backend works with the default config."""
     from looplet.loop import LoopConfig, composable_loop
+    from looplet.testing import MockLLMBackend
 
     responses = ['{"tool": "done", "args": {"summary": "baseline"}}']
-    llm = _make_scripted_llm(responses)
+    llm = MockLLMBackend(responses)
     state = SimpleState()
     reg = _make_registry()
     steps = list(composable_loop(llm, tools=reg, config=LoopConfig(), state=state))

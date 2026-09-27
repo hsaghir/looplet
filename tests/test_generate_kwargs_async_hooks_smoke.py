@@ -47,6 +47,7 @@ class TestGenerateKwargs:
         config = LoopConfig(
             max_steps=3,
             generate_kwargs={"top_p": 0.9, "custom_param": "hello"},
+            use_native_tools=False,
         )
 
         list(
@@ -92,6 +93,7 @@ class TestGenerateKwargs:
             temperature=0.3,
             max_tokens=500,
             generate_kwargs={"temperature": 0.0, "max_tokens": 8000},
+            use_native_tools=False,
         )
 
         list(
@@ -175,6 +177,7 @@ class TestGenerateKwargs:
         config = LoopConfig(
             max_steps=2,
             generate_kwargs={"top_p": 0.9, "response_format": {"type": "json"}},
+            use_native_tools=False,
         )
 
         list(

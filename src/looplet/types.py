@@ -896,11 +896,9 @@ class NativeToolBackend(Protocol):
 
     Backends satisfying this protocol can accept tool schemas and return
     structured tool-use blocks (list of dicts) instead of free-text JSON.
-    The loop detects the capability via hasattr(backend, "generate_with_tools")
-    and uses it whenever ``LoopConfig.use_native_tools`` is True (the
-    default). When the backend lacks or rejects ``generate_with_tools``,
-    the loop transparently falls back to JSON-text generation - no second
-    configuration setting is needed.
+    The loop uses this protocol when ``LoopConfig.use_native_tools`` is True
+    (the default). Backends missing or rejecting ``generate_with_tools``
+    fail visibly; select ``use_native_tools=False`` to use JSON-text instead.
 
     The returned list is normalised to Anthropic-style content blocks:
         [{"type": "text", "text": "..."},

@@ -50,7 +50,7 @@ class TestDomainAdapter:
                 tools=_tools(),
                 state=DefaultState(max_steps=2),
                 hooks=[],
-                config=LoopConfig(max_steps=2, domain=dom),
+                config=LoopConfig(max_steps=2, domain=dom, use_native_tools=False),
             )
         )
         assert "ADAPTER-BRIEF" in b.prompts[0]
@@ -62,6 +62,7 @@ class TestDomainAdapter:
             max_steps=2,
             domain=dom,
             build_briefing=lambda *a, **k: "FLAT-WINS",
+            use_native_tools=False,
         )
         list(
             composable_loop(
@@ -85,7 +86,7 @@ class TestDomainAdapter:
             tools=_tools(),
             state=DefaultState(max_steps=2),
             hooks=[],
-            config=LoopConfig(max_steps=2, domain=dom),
+            config=LoopConfig(max_steps=2, domain=dom, use_native_tools=False),
             task={"goal": "hello"},
         )
         trace = None
@@ -104,7 +105,7 @@ class TestDomainAdapter:
                 tools=_tools(),
                 state=DefaultState(max_steps=2),
                 hooks=[],
-                config=LoopConfig(max_steps=2, domain=DomainAdapter()),
+                config=LoopConfig(max_steps=2, domain=DomainAdapter(), use_native_tools=False),
             )
         )
         # No crash; default briefing used.

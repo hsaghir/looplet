@@ -80,7 +80,7 @@ class TestAsyncLlmCall:
         assert result.text == "recovered"
         assert mock.calls == 2
 
-    async def test_native_failure_falls_back_to_regular_generation(self):
+    async def test_native_failure_stays_error_without_regular_generation(self):
         calls = []
 
         class NativeFailureBackend:
@@ -101,9 +101,32 @@ class TestAsyncLlmCall:
             max_retries=0,
         )
 
+        from looplet.native_tools import NativeToolUnsupportedError
+
+        assert not result.ok
+        assert isinstance(result.error, NativeToolUnsupportedError)
+        assert calls == ["native"]
+
+    async def test_non_native_backend_requires_explicit_text_mode(self):
+        from looplet.native_tools import NativeToolPolicy, NativeToolUnsupportedError
+
+        class TextOnlyBackend:
+            async def generate(self, prompt, **kwargs):
+                return '{"tool": "done", "args": {}}'
+
+        backend = TextOnlyBackend()
+        result = await async_llm_call(backend, "finish", tools=[{"name": "done"}])
+        assert not result.ok
+        assert isinstance(result.error, NativeToolUnsupportedError)
+
+        result = await async_llm_call(
+            backend,
+            "finish",
+            tools=[{"name": "done"}],
+            native_policy=NativeToolPolicy(enabled=False),
+        )
         assert result.ok
         assert result.text == '{"tool": "done", "args": {}}'
-        assert calls == ["native", "regular"]
 
     async def test_provider_failure_does_not_fallback_to_text(self):
         calls = []
@@ -159,7 +182,7 @@ class TestAsyncLlmCall:
             llm=mock,
             tools=tools,
             state=DefaultState(max_steps=3),
-            config=LoopConfig(max_steps=3),
+            config=LoopConfig(max_steps=3, use_native_tools=False),
             task={},
         ):
             steps.append(step)
@@ -168,7 +191,7 @@ class TestAsyncLlmCall:
         assert steps[0].tool_result.data == {"query": "hello"}
         assert steps[0].tool_result.error is None
 
-    async def test_native_fallback_stats_are_exposed_on_state(self):
+    async def test_native_unsupported_stats_are_exposed_on_state(self):
         class TrackingBackend:
             def __init__(self):
                 self.calls = []
@@ -198,7 +221,14 @@ class TestAsyncLlmCall:
         ):
             pass
 
-        assert state.metadata["native_tool_stats"]["fallbacks"] == 1
+        assert state.metadata["native_tool_stats"] == {
+            "requested": 1,
+            "attempted": 1,
+            "succeeded": 0,
+            "fallbacks": 0,
+            "last_fallback_reason": None,
+        }
+        assert backend.calls == ["native"]
 
     async def test_check_done_hook_failure_rejects_completion(self):
         class BrokenGate:
@@ -220,7 +250,7 @@ class TestAsyncLlmCall:
             llm=llm,
             tools=tools,
             state=state,
-            config=LoopConfig(max_steps=2),
+            config=LoopConfig(max_steps=2, use_native_tools=False),
             hooks=[BrokenGate()],
             task={},
         ):
@@ -297,7 +327,7 @@ class TestAsyncComposableLoop:
             llm=backend,
             tools=tools,
             state=DefaultState(max_steps=3),
-            config=LoopConfig(max_steps=3),
+            config=LoopConfig(max_steps=3, use_native_tools=False),
             hooks=[AsyncPolicy()],
             task={},
         ):
@@ -338,6 +368,7 @@ class TestAsyncComposableLoop:
             state=state,
             config=LoopConfig(
                 max_steps=2,
+                use_native_tools=False,
                 run_envelope=RunEnvelope(
                     run_id="late-async",
                     deadline_at=time.time() + 0.005,
@@ -534,7 +565,7 @@ class TestAsyncComposableLoop:
             llm=mock,
             tools=tools,
             state=DefaultState(max_steps=5),
-            config=LoopConfig(max_steps=5),
+            config=LoopConfig(max_steps=5, use_native_tools=False),
             task={"goal": "greet Alice"},
         ):
             steps.append(step)
@@ -568,7 +599,9 @@ class TestAsyncComposableLoop:
             ),
             tools=tools,
             state=state,
-            config=LoopConfig(max_steps=3, extract_entities=extract_entities),
+            config=LoopConfig(
+                max_steps=3, extract_entities=extract_entities, use_native_tools=False
+            ),
             task={},
         ):
             pass
@@ -580,11 +613,17 @@ class TestAsyncComposableLoop:
         ``max_steps`` / ``system_prompt`` keyword shorthands as
         ``composable_loop`` so callers don't need to construct a
         ``LoopConfig`` for one-liner agents."""
-        mock = AsyncMockLLMBackend(
-            responses=[
-                '{"tool": "done", "args": {"summary": "ok"}, "reasoning": "r"}',
-            ]
-        )
+
+        class NativeDoneBackend:
+            async def generate(self, prompt, **kwargs):
+                raise AssertionError("native shorthand must use generate_with_tools")
+
+            async def generate_with_tools(self, prompt, *, tools, **kwargs):
+                return [
+                    {"type": "tool_use", "id": "done_1", "name": "done", "input": {"summary": "ok"}}
+                ]
+
+        mock = NativeDoneBackend()
         tools = BaseToolRegistry()
         register_done_tool(tools)
 
@@ -625,7 +664,7 @@ class TestAsyncComposableLoop:
             llm=mock,
             tools=tools,
             state=DefaultState(max_steps=5),
-            config=LoopConfig(max_steps=5),
+            config=LoopConfig(max_steps=5, use_native_tools=False),
             task={},
         ):
             pass
@@ -700,7 +739,7 @@ class TestAsyncComposableLoop:
             llm=mock,
             tools=tools,
             state=DefaultState(max_steps=3),
-            config=LoopConfig(max_steps=3),
+            config=LoopConfig(max_steps=3, use_native_tools=False),
             hooks=[ResourceHook()],
             task={},
         ):
@@ -736,7 +775,7 @@ class TestAsyncComposableLoop:
             llm=mock,
             tools=tools,
             state=DefaultState(max_steps=5),
-            config=LoopConfig(max_steps=5),
+            config=LoopConfig(max_steps=5, use_native_tools=False),
             hooks=[CtxHook()],
             task={},
         ):
@@ -792,7 +831,7 @@ class TestAsyncComposableLoop:
             llm=mock,
             tools=tools,
             state=DefaultState(max_steps=3),
-            config=LoopConfig(max_steps=3, checkpoint_dir=tmp_path),
+            config=LoopConfig(max_steps=3, checkpoint_dir=tmp_path, use_native_tools=False),
             task={},
         ):
             pass
@@ -840,6 +879,7 @@ class TestAsyncComposableLoop:
             state=DefaultState(max_steps=3),
             config=LoopConfig(
                 max_steps=3,
+                use_native_tools=False,
                 checkpoint_dir=tmp_path,
                 checkpoint_state=snapshot,
                 restore_checkpoint_state=restore,
@@ -901,7 +941,7 @@ class TestAsyncComposableLoop:
             llm=mock,
             tools=tools,
             state=DefaultState(max_steps=3),
-            config=LoopConfig(max_steps=3, checkpoint_dir=tmp_path),
+            config=LoopConfig(max_steps=3, checkpoint_dir=tmp_path, use_native_tools=False),
             task={},
         ):
             pass
@@ -941,7 +981,7 @@ class TestAsyncComposableLoop:
             llm=mock,
             tools=tools,
             state=DefaultState(max_steps=3),
-            config=LoopConfig(max_steps=3),
+            config=LoopConfig(max_steps=3, use_native_tools=False),
             hooks=[StopOrderHook()],
             task={},
         ):
@@ -985,7 +1025,11 @@ class TestAsyncComposableLoop:
             llm=mock,
             tools=tools,
             state=DefaultState(max_steps=1),
-            config=LoopConfig(max_steps=1, build_briefing=lambda *_args: "configured briefing"),
+            config=LoopConfig(
+                max_steps=1,
+                use_native_tools=False,
+                build_briefing=lambda *_args: "configured briefing",
+            ),
             task={},
         ):
             pass
@@ -1007,7 +1051,7 @@ class TestAsyncComposableLoop:
             llm=mock,
             tools=tools,
             state=DefaultState(max_steps=1),
-            config=LoopConfig(max_steps=1, max_briefing_tokens=5),
+            config=LoopConfig(max_steps=1, max_briefing_tokens=5, use_native_tools=False),
             hooks=[BriefingHook()],
             task={},
         ):
@@ -1038,7 +1082,7 @@ class TestAsyncComposableLoop:
             llm=mock,
             tools=tools,
             state=DefaultState(max_steps=1),
-            config=LoopConfig(max_steps=1),
+            config=LoopConfig(max_steps=1, use_native_tools=False),
             hooks=[Gate()],
             task={},
         ):
@@ -1068,7 +1112,7 @@ class TestAsyncComposableLoop:
             llm=mock,
             tools=tools,
             state=DefaultState(max_steps=5),
-            config=LoopConfig(max_steps=5),
+            config=LoopConfig(max_steps=5, use_native_tools=False),
             task={},
         ):
             steps.append(step)
@@ -1170,6 +1214,7 @@ class TestAsyncComposableLoop:
             state=DefaultState(max_steps=3),
             config=LoopConfig(
                 max_steps=3,
+                use_native_tools=False,
                 system_prompt="SYS",
                 cache_policy=CachePolicy(system_prompt=CacheControl()),
             ),
@@ -1216,7 +1261,7 @@ class TestAsyncComposableLoop:
             llm=mock,
             tools=tools,
             state=DefaultState(max_steps=5),
-            config=LoopConfig(max_steps=5, recovery_registry=registry),
+            config=LoopConfig(max_steps=5, recovery_registry=registry, use_native_tools=False),
             task={},
         ):
             steps.append(step)
@@ -1268,7 +1313,7 @@ class TestAsyncComposableLoop:
             llm=mock,
             tools=tools,
             state=DefaultState(max_steps=5),
-            config=LoopConfig(max_steps=5, concurrent_dispatch=True),
+            config=LoopConfig(max_steps=5, concurrent_dispatch=True, use_native_tools=False),
             task={},
         ):
             pass

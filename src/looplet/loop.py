@@ -587,10 +587,9 @@ class LoopConfig:
 
     use_native_tools: bool = True
     """If True, pass tool schemas to the LLM and parse tool_use blocks
-    instead of JSON text. Default True - the loop uses
-    ``generate_with_tools`` when available and transparently falls back
-    to JSON-text generation when it is missing or rejected. Set to False
-    to force the JSON-text path even on native-capable backends."""
+    instead of JSON text. Default True - a missing or unsupported
+    ``generate_with_tools`` raises a visible error rather than switching
+    protocols. Set to False to explicitly use the JSON-text path."""
 
     concurrent_dispatch: bool = False
     """If True, dispatch non-dependent tool calls in parallel via
@@ -2972,7 +2971,9 @@ def _composable_loop_impl(
                     continue
                 if _recovery_action is not None and _recovery_action.message:
                     post_dispatch_parts.append(_recovery_action.message)
-            if consecutive_parse_failures <= PARSE_RECOVERY_MAX:
+            if consecutive_parse_failures <= PARSE_RECOVERY_MAX and (
+                not native_policy.enabled or native_policy.demoted
+            ):
                 logger.warning(
                     "Parse failure %d/%d at step %d - attempting recovery",
                     consecutive_parse_failures,
@@ -3002,7 +3003,12 @@ def _composable_loop_impl(
                     tool="__parse_error__",
                     args_summary="",
                     data=None,
-                    error=f"Could not parse JSON: {(to_text(raw_response) or '')[:200]}",
+                    error=(
+                        "Native tool protocol error: expected structured tool_use block; "
+                        f"received {(to_text(raw_response) or '')[:200]}"
+                        if native_policy.enabled and not native_policy.demoted
+                        else f"Could not parse JSON: {(to_text(raw_response) or '')[:200]}"
+                    ),
                 )
                 step = Step(number=step_num, tool_call=tool_call, tool_result=tool_result)
                 state.steps.append(step)

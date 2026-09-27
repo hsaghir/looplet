@@ -108,7 +108,7 @@ class TestSyncResetOnSuccess:
                 llm=llm,
                 task={"id": "T-1"},
                 tools=reg,
-                config=LoopConfig(max_steps=5),
+                config=LoopConfig(max_steps=5, use_native_tools=False),
                 state=state,
             )
         )

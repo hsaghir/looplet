@@ -62,7 +62,7 @@ class TestDefaultBuildPrompt:
         state = DefaultState(max_steps=3)
         reg = self._registry()
         # Intentionally omit build_prompt / build_briefing / extract_entities.
-        config = LoopConfig(max_steps=3)
+        config = LoopConfig(max_steps=3, use_native_tools=False)
         list(
             composable_loop(
                 llm=llm,
@@ -89,7 +89,7 @@ class TestDefaultBuildPrompt:
         def custom(**kw) -> str:
             return "CUSTOM PROMPT " + str(kw.get("step_number"))
 
-        config = LoopConfig(max_steps=3, build_prompt=custom)
+        config = LoopConfig(max_steps=3, build_prompt=custom, use_native_tools=False)
         list(
             composable_loop(
                 llm=llm,
@@ -112,7 +112,7 @@ class TestDefaultBuildPrompt:
                 llm=llm,
                 task={"id": "T-2", "title": "t"},
                 tools=reg,
-                config=LoopConfig(max_steps=2),
+                config=LoopConfig(max_steps=2, use_native_tools=False),
                 state=state,
             )
         )

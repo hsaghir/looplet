@@ -53,8 +53,8 @@ Host/runtime policy lives separately:
 use_native_tools: true
 ```
 
-Native tool calling is the default. If the backend does not support it, the
-loop automatically falls back to regular text calls.
+Native tool calling is the default. If the backend does not support it, select
+`use_native_tools: false` to use the JSON-text protocol explicitly.
 
 That split lets two hosts choose different provider or context behavior
 without pretending they are different agent contracts.

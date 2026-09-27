@@ -208,7 +208,7 @@ def run(
     if instructions:
         print(f"  Instructions: {len(instructions)} chars")
     print(f"  Model: {model_label} | Budget: {max_steps} steps")
-    print("  Tool protocol: native by default (automatic text fallback)\n")
+    print("  Tool protocol: native (use_native_tools=False for JSON-text)\n")
 
     effective_trace_dir = None
     if provenance:

@@ -18,9 +18,8 @@ class NativeToolUnsupportedError(RuntimeError):
     """Backend cannot serve the native tool-calling protocol.
 
     Raise this exception when a backend or proxy explicitly reports that
-    native tools are unavailable. Looplet may then demote the current run to
-    JSON-text tool calls. Authentication, rate-limit, transport, and provider
-    errors must use their original exception types so they remain visible.
+    native tools are unavailable. Looplet reports the error without switching
+    protocols; users can explicitly select JSON-text mode instead.
     """
 
 
@@ -43,9 +42,7 @@ class NativeToolPolicy:
     """Own native-tool selection for one loop run.
 
     ``enabled`` is the user-facing policy switch and defaults to ``True``.
-    ``demoted`` is transient run state: an explicit
-    :class:`NativeToolUnsupportedError` moves the current run to the regular
-    text protocol for all later calls.
+    Text-mode parsing requires ``enabled=False`` or an explicit ``demote()``.
     """
 
     enabled: bool = True
@@ -62,7 +59,7 @@ class NativeToolPolicy:
 
     def tool_schemas(self, llm: Any, tools: Any | None) -> list[dict[str, Any]] | None:
         """Return schemas for a native call, or ``None`` for text mode."""
-        if tools is None or not self.should_use(llm, tools):
+        if tools is None or not self.enabled or self.demoted:
             return None
         return tools.tool_schemas()
 
@@ -72,10 +69,8 @@ class NativeToolPolicy:
 
     def parse_response(self, response: Any) -> list[Any]:
         """Parse a response according to the protocol used by this run."""
-        if self.enabled and not self.demoted and isinstance(response, list):
-            tool_calls = parse_native_tool_use(response)
-            if tool_calls:
-                return tool_calls
+        if self.enabled and not self.demoted:
+            return parse_native_tool_use(response) if isinstance(response, list) else []
         return parse_multi_tool_calls(response)
 
 
@@ -132,7 +127,7 @@ def probe_native_tool_support(
 
     return NativeToolProbeResult(
         False,
-        "generate_with_tools returned no matching tool_use block; use JSON-text fallback",
+        "generate_with_tools returned no matching tool_use block; select use_native_tools=False for JSON-text mode",
         blocks,
     )
 

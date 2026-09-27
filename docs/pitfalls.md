@@ -125,10 +125,11 @@ Telemetry and observer hooks may still log and continue where their lifecycle
 contract says they are non-blocking. Do not rely on a hook exception to mean
 "allow"; return an explicit `Continue()` or `Block(...)` decision instead.
 
-Native tool fallback is also explicit. Backends should raise
-`NativeToolUnsupportedError` only when the native protocol is unavailable.
-Authentication, rate-limit, transport, and provider errors remain visible as
-failures and are never silently changed into JSON-text calls.
+Native tool calls fail closed. Backends should raise
+`NativeToolUnsupportedError` when the native protocol is unavailable; the loop
+will not demote that run to JSON-text calls. Select `use_native_tools=False`
+to use text mode deliberately. Authentication, rate-limit, transport, and
+provider errors likewise remain visible as failures.
 
 ## 10. Do not swallow exceptions in hooks
 

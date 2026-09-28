@@ -41,6 +41,7 @@ place to express concurrency.
 from __future__ import annotations
 
 import contextvars
+import time
 from pathlib import Path
 from typing import Any
 
@@ -75,6 +76,28 @@ def _execute(
             "depth": depth,
             "max_depth": max_depth,
         }
+    if ctx.parent_budget_remaining is not None and ctx.parent_budget_remaining <= 0:
+        return {"error": "parent step budget exhausted", "steps_used": 0}
+
+    from looplet.subagent import (  # noqa: PLC0415
+        ChildRunPolicy,
+        _ChildBudgetStopHook,
+        _restrict_tools,
+    )
+
+    policy = (ctx.metadata or {}).get("child_run_policy")
+    if policy is not None:
+        if not isinstance(policy, ChildRunPolicy) or not policy.parent_id:
+            return {"error": "child_run_policy must have a parent_id"}
+        if policy.max_steps is not None and policy.max_steps <= 0:
+            return {"error": "child_run_policy max_steps must be positive"}
+        if policy.cancel_token is not None and ctx.cancel_token is not None:
+            if policy.cancel_token is not ctx.cancel_token:
+                return {"error": "child_run_policy must share the parent's cancellation token"}
+        if policy.deadline is not None and time.monotonic() >= policy.deadline:
+            return {"error": "child run deadline exceeded"}
+        if policy.model_budget is not None and policy.model_budget.remaining <= 0:
+            return {"error": "model call budget exhausted"}
 
     # Resolve the host workspace path once. Both the path-resolution
     # below (for relative ``workspace=`` args) and the runtime
@@ -123,35 +146,54 @@ def _execute(
             fallback_used = True
     sub_preset = cartridge_to_preset(str(ws_path), runtime=runtime)
 
-    # Sub-loop budget: explicit ``max_steps`` overrides; otherwise
-    # inherit from sub_preset's own config.
-    if max_steps is not None and max_steps > 0:
-        steps = max_steps
-        # Apply the override to the sub-preset's config so the loop
-        # honours it and ``DefaultState(max_steps=...)`` matches.
-        sub_preset.config.max_steps = steps
-    else:
-        steps = sub_preset.config.max_steps
+    try:
+        if max_steps is not None and max_steps > 0:
+            steps = max_steps
+            sub_preset.config.max_steps = steps
+        else:
+            steps = sub_preset.config.max_steps
+        if ctx.parent_budget_remaining is not None:
+            steps = min(steps, ctx.parent_budget_remaining)
+            sub_preset.config.max_steps = steps
+        child_llm = ctx.llm
+        child_hooks = sub_preset.hooks
+        sub_preset.config.cancel_token = ctx.cancel_token
+        if policy is not None:
+            if policy.max_steps is not None:
+                steps = min(steps, policy.max_steps)
+                sub_preset.config.max_steps = steps
+            if policy.allowed_tools is not None:
+                sub_preset.tools = _restrict_tools(sub_preset.tools, policy.allowed_tools)
+            sub_preset.config.cancel_token = ctx.cancel_token or policy.cancel_token
+            if policy.model_budget is not None:
+                child_llm = policy.model_budget.wrap(
+                    child_llm,
+                    deadline=policy.deadline,
+                    cancel_token=sub_preset.config.cancel_token,
+                )
+            child_hooks = [*child_hooks, _ChildBudgetStopHook(policy)]
+        state = DefaultState(max_steps=steps)
+        token = _DEPTH_VAR.set(depth + 1)
+    except BaseException:
+        sub_preset.close()
+        raise
 
-    # Bump depth for any nested subagent calls inside this run.
-    token = _DEPTH_VAR.set(depth + 1)
-
-    state = DefaultState(max_steps=steps)
     last_step: Any = None
     sub_steps = 0
     try:
         for step in composable_loop(
-            llm=ctx.llm,
+            llm=child_llm,
             config=sub_preset.config,
             tools=sub_preset.tools,
             state=state,
-            hooks=sub_preset.hooks,
+            hooks=child_hooks,
             task={"goal": task},
         ):
             sub_steps += 1
             last_step = step
     finally:
         _DEPTH_VAR.reset(token)
+        sub_preset.close()
 
     # Surface the final tool result. By convention sub-agents end with
     # ``done(summary=...)``, so we expose the summary at the top level
@@ -171,7 +213,10 @@ def _execute(
         "summary": final_data.get("summary"),
         "result": final_data,
         "depth": depth + 1,
+        "stop_reason": getattr(state, "_stop_reason", None),
     }
+    if policy is not None:
+        result["parent_id"] = policy.parent_id
     if fallback_used:
         result["warning"] = (
             "no workspace_config resource on the parent and no "

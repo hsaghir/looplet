@@ -17,15 +17,106 @@ Usage:
 from __future__ import annotations
 
 import logging
+import threading
+import time
+from dataclasses import dataclass, field, replace
+from functools import wraps
+from pathlib import Path
 from typing import Any, Callable
+
+from looplet.types import CancelToken
 
 __all__ = [
     "run_sub_loop",
     "clone_tools_excluding",
+    "ChildRunPolicy",
+    "SharedModelBudget",
+    "ChildRunLimitExceeded",
 ]
 
 
 logger = logging.getLogger(__name__)
+
+
+class ChildRunLimitExceeded(RuntimeError):
+    """A child-run deadline, cancellation, or model allowance was exhausted."""
+
+
+@dataclass
+class SharedModelBudget:
+    """Atomic model-call allowance shared by host-owned parent and child backends."""
+
+    remaining: int
+    _lock: Any = field(default_factory=threading.Lock, repr=False)
+
+    def charge(
+        self, *, deadline: float | None = None, cancel_token: CancelToken | None = None
+    ) -> None:
+        if cancel_token is not None and cancel_token.is_cancelled:
+            raise ChildRunLimitExceeded("child run cancelled")
+        if deadline is not None and time.monotonic() >= deadline:
+            raise ChildRunLimitExceeded("child run deadline exceeded")
+        with self._lock:
+            if self.remaining <= 0:
+                raise ChildRunLimitExceeded("model call budget exhausted")
+            self.remaining -= 1
+
+    def wrap(
+        self,
+        backend: Any,
+        *,
+        deadline: float | None = None,
+        cancel_token: CancelToken | None = None,
+    ) -> Any:
+        if isinstance(backend, _BudgetedBackend) and backend.budget is self:
+            if backend.deadline is not None:
+                deadline = (
+                    min(backend.deadline, deadline) if deadline is not None else backend.deadline
+                )
+            if backend.cancel_token is not None and cancel_token is not None:
+                if backend.cancel_token is not cancel_token:
+                    raise ValueError("shared model budget cannot replace a cancellation token")
+            cancel_token = cancel_token or backend.cancel_token
+            backend = backend.backend
+        return _BudgetedBackend(backend, self, deadline, cancel_token)
+
+
+@dataclass(frozen=True)
+class ChildRunPolicy:
+    """Optional parent-owned limits for an in-process child loop."""
+
+    parent_id: str
+    allowed_tools: frozenset[str] | None = None
+    max_steps: int | None = None
+    model_budget: SharedModelBudget | None = None
+    deadline: float | None = None
+    cancel_token: CancelToken | None = None
+
+
+class _BudgetedBackend:
+    def __init__(
+        self,
+        backend: Any,
+        budget: SharedModelBudget,
+        deadline: float | None,
+        cancel_token: CancelToken | None,
+    ) -> None:
+        self.backend = backend
+        self.budget = budget
+        self.deadline = deadline
+        self.cancel_token = cancel_token
+
+    def __getattr__(self, name: str) -> Any:
+        attribute = getattr(self.backend, name)
+        if name not in ("generate", "generate_with_tools"):
+            return attribute
+
+        @wraps(attribute)
+        def guarded(*args: Any, **kwargs: Any) -> Any:
+            self.budget.charge(deadline=self.deadline, cancel_token=self.cancel_token)
+            return attribute(*args, **kwargs)
+
+        return guarded
 
 
 def run_sub_loop(
@@ -45,6 +136,7 @@ def run_sub_loop(
     conversation: Any | None = None,
     subagent_id: str | None = None,
     config: Any | None = None,
+    policy: ChildRunPolicy | None = None,
 ) -> dict[str, Any]:
     """Run a sub-agent loop with isolated state.
 
@@ -80,6 +172,7 @@ def run_sub_loop(
             ``max_steps`` and ``system_prompt`` override the matching
             kwargs so that callers who already have a LoopConfig can
             pass it through uniformly with ``composable_loop``.
+        policy: Optional parent-owned limits. Without it, child behavior is unchanged.
 
     Returns a dict with:
       - summary: one-line summary of what was found
@@ -95,6 +188,13 @@ def run_sub_loop(
 
     if task is None:
         task = {}
+    if policy is not None:
+        if not policy.parent_id or (policy.max_steps is not None and policy.max_steps <= 0):
+            raise ValueError("child policy requires a parent_id and positive max_steps")
+        if policy.deadline is not None and time.monotonic() >= policy.deadline:
+            raise ChildRunLimitExceeded("child run deadline exceeded")
+        if policy.model_budget is not None and policy.model_budget.remaining <= 0:
+            raise ChildRunLimitExceeded("model call budget exhausted")
 
     # Create minimal isolated state if not provided
     if state is None:
@@ -105,6 +205,8 @@ def run_sub_loop(
     if sub_tools is None:
         exclude = state_mutating_tools or ["done"]
         sub_tools = clone_tools_excluding(tools, exclude)
+    if policy is not None and policy.allowed_tools is not None:
+        sub_tools = _restrict_tools(sub_tools, policy.allowed_tools)
 
     # Fork conversation for sub-agent isolation (if provided)
     _sub_conv = None
@@ -144,34 +246,53 @@ def run_sub_loop(
     # composable_loop. If provided, its values override the shorthand
     # kwargs (max_steps, system_prompt).
     if config is not None:
-        sub_config = config
+        sub_config = replace(config) if policy is not None else config
     else:
         sub_config = LoopConfig(
             max_steps=max_steps,
             system_prompt=system_prompt,
         )
+    if policy is not None:
+        if policy.max_steps is not None:
+            sub_config.max_steps = min(sub_config.max_steps, policy.max_steps)
+        if isinstance(state, _MinimalState):
+            state.max_steps = min(state.max_steps, sub_config.max_steps)
+        if policy.cancel_token is not None:
+            sub_config.cancel_token = policy.cancel_token
+        sub_config.initial_checkpoint = None
+        if sub_config.checkpoint_dir is not None:
+            sub_config.checkpoint_dir = str(
+                Path(sub_config.checkpoint_dir) / f"child_{subagent_id}"
+            )
+        if policy.model_budget is not None:
+            llm = policy.model_budget.wrap(
+                llm, deadline=policy.deadline, cancel_token=sub_config.cancel_token
+            )
+        sub_hooks.append(_ChildBudgetStopHook(policy))
 
-    gen = composable_loop(
-        llm=llm,
-        task=task,
-        tools=sub_tools,
-        context=context,
-        hooks=sub_hooks,
-        config=sub_config,
-        state=state,
-        session_log=session_log,
-        conversation=_sub_conv,
-    )
-
+    steps: list[dict[str, Any]] = []
+    trace: Any = None
+    result: dict[str, Any] | None = None
+    gen = None
     try:
-        steps: list[dict[str, Any]] = []
-        trace: Any = None
-        try:
-            while True:
+        gen = composable_loop(
+            llm=llm,
+            task=task,
+            tools=sub_tools,
+            context=context,
+            hooks=sub_hooks,
+            config=sub_config,
+            state=state,
+            session_log=session_log,
+            conversation=_sub_conv,
+        )
+        while True:
+            try:
                 step = next(gen)
-                steps.append(step.to_dict())
-        except StopIteration as e:
-            trace = e.value
+            except StopIteration as finished:
+                trace = finished.value
+                break
+            steps.append(step.to_dict())
 
         all_findings: list[str] = []
         all_highlights: list[str] = []
@@ -191,35 +312,59 @@ def run_sub_loop(
 
         result["steps"] = steps
         result["llm_calls"] = trace.get("llm_calls", 0) if isinstance(trace, dict) else 0
+        result["stop_reason"] = getattr(state, "_stop_reason", None) or "budget_exhausted"
+        if policy is not None:
+            result["parent_id"] = policy.parent_id
         result.setdefault("findings", all_findings)
         result.setdefault("highlights", all_highlights)
         result["subagent_id"] = subagent_id
         return result
-    except BaseException as exc:
+    finally:
+        if gen is not None:
+            gen.close()
         emit_event(
             list(parent_hooks or []) + (hooks or []),
             _LE.SUBAGENT_STOP,
             state=state,
             context=context,
             subagent_id=subagent_id,
-            termination_reason="error",
-            extra={"error": f"{type(exc).__name__}: {exc}"},
+            termination_reason=result["stop_reason"] if result is not None else "error",
+            extra={
+                "llm_calls": result["llm_calls"] if result is not None else 0,
+                "step_count": len(steps),
+                "entities": result.get("entities", []) if result is not None else [],
+                "parent_id": policy.parent_id if policy is not None else None,
+            },
         )
-        raise
-    finally:
-        if "result" in locals():
-            emit_event(
-                list(parent_hooks or []) + (hooks or []),
-                _LE.SUBAGENT_STOP,
-                state=state,
-                context=context,
-                subagent_id=subagent_id,
-                extra={
-                    "llm_calls": result["llm_calls"],
-                    "step_count": len(result["steps"]),
-                    "entities": result.get("entities", []),
-                },
-            )
+
+
+class _ChildBudgetStopHook:
+    def __init__(self, policy: ChildRunPolicy) -> None:
+        self.policy = policy
+
+    def should_stop(self, state: Any, step_num: int, new_entities: int) -> Any:
+        from looplet.hook_decision import HookDecision  # noqa: PLC0415
+
+        if self.policy.cancel_token is not None and self.policy.cancel_token.is_cancelled:
+            return HookDecision(stop="cancelled")
+        if self.policy.deadline is not None and time.monotonic() >= self.policy.deadline:
+            return HookDecision(stop="deadline_exceeded")
+        if self.policy.model_budget is not None and self.policy.model_budget.remaining <= 0:
+            return HookDecision(stop="model_budget_exhausted")
+        return None
+
+
+def _restrict_tools(registry: Any, allowed: frozenset[str]) -> Any:
+    from looplet.tools import BaseToolRegistry  # noqa: PLC0415
+
+    if not isinstance(registry, BaseToolRegistry):
+        raise TypeError("child tool attenuation requires a BaseToolRegistry")
+    restricted = BaseToolRegistry()
+    restricted.set_resources(registry._resources)
+    for name, spec in registry._tools.items():
+        if name in allowed:
+            restricted.register(replace(spec))
+    return restricted
 
 
 class _ParentHookForwarder:

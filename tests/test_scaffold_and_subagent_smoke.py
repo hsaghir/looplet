@@ -153,6 +153,90 @@ def test_subagent_runs_child_loop_to_done(tmp_path: Path) -> None:
     assert result["steps_used"] >= 1
 
 
+def test_subagent_caps_parent_steps_and_closes_child_preset(tmp_path: Path, monkeypatch) -> None:
+    parent = _make_parent_with_subagent(tmp_path)
+    child = tmp_path / "child.workspace"
+    scaffold_cartridge(child, name="child", tools=[])
+
+    preset = cartridge_to_preset(parent)
+    closed = []
+    real_loader = cartridge_to_preset
+
+    def tracked_loader(*args, **kwargs):
+        loaded = real_loader(*args, **kwargs)
+        real_close = loaded.close
+
+        def close():
+            closed.append(True)
+            real_close()
+
+        loaded.close = close
+        return loaded
+
+    monkeypatch.setattr("looplet.cartridge_to_preset", tracked_loader)
+    ctx = ToolContext(
+        llm=MockLLMBackend(responses=['{"tool":"done","args":{"summary":"ok"}}']),
+        metadata={},
+        parent_budget_remaining=1,
+    )
+    result = preset.tools._tools["subagent"].execute(ctx, workspace=str(child), task="hi")
+    assert result["max_steps"] == 1
+    assert result["steps_used"] == 1
+    assert closed == [True]
+
+
+def test_subagent_applies_host_child_policy(tmp_path: Path) -> None:
+    from looplet.subagent import ChildRunPolicy, SharedModelBudget
+
+    parent = _make_parent_with_subagent(tmp_path)
+    child = tmp_path / "child.workspace"
+    scaffold_cartridge(child, name="child", tools=[])
+    preset = cartridge_to_preset(parent)
+    budget = SharedModelBudget(remaining=1)
+    ctx = ToolContext(
+        llm=MockLLMBackend(responses=['{"tool":"done","args":{"summary":"ok"}}']),
+        metadata={
+            "child_run_policy": ChildRunPolicy(
+                parent_id="parent-1",
+                allowed_tools=frozenset({"done"}),
+                model_budget=budget,
+            )
+        },
+    )
+    result = preset.tools._tools["subagent"].execute(ctx, workspace=str(child), task="hi")
+    assert result["summary"] == "ok"
+    assert result["parent_id"] == "parent-1"
+    assert budget.remaining == 0
+
+
+def test_subagent_closes_preset_when_setup_fails(tmp_path: Path, monkeypatch) -> None:
+    parent = _make_parent_with_subagent(tmp_path)
+    child = tmp_path / "child.workspace"
+    scaffold_cartridge(child, name="child", tools=[])
+    preset = cartridge_to_preset(parent)
+    closed = []
+    real_loader = cartridge_to_preset
+
+    def tracked_loader(*args, **kwargs):
+        loaded = real_loader(*args, **kwargs)
+        real_close = loaded.close
+
+        def close():
+            closed.append(True)
+            real_close()
+
+        loaded.close = close
+        return loaded
+
+    monkeypatch.setattr("looplet.cartridge_to_preset", tracked_loader)
+    ctx = ToolContext(llm=MockLLMBackend(responses=[]), metadata={})
+    with pytest.raises(TypeError):
+        preset.tools._tools["subagent"].execute(
+            ctx, workspace=str(child), task="hi", max_steps="invalid"
+        )
+    assert closed == [True]
+
+
 def test_subagent_recursion_guard(tmp_path: Path) -> None:
     parent = _make_parent_with_subagent(tmp_path)
     child = tmp_path / "child.workspace"

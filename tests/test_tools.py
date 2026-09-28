@@ -163,6 +163,136 @@ class TestBaseToolRegistry:
         assert "Available tools" in catalog
         assert "echo" in catalog
 
+    def test_tool_view_selects_both_surfaces_without_restricting_dispatch(self):
+        from looplet.tools import ToolSpec
+        from looplet.types import ToolCall
+
+        reg = self._make_registry_with_echo()
+        reg.register(
+            ToolSpec(name="hidden", description="Hidden", parameters={}, execute=lambda: 42)
+        )
+
+        view = reg.tool_view(("echo",))
+        assert view.names == ("echo",)
+        assert "echo" in view.catalog_text
+        assert "hidden" not in view.catalog_text
+        assert [schema["name"] for schema in view.schemas] == ["echo"]
+        assert reg.dispatch(ToolCall(tool="hidden", args={})).data == 42
+        assert reg.tool_view().catalog_text == reg.tool_catalog_text()
+        assert list(reg.tool_view().schemas) == reg.tool_schemas()
+
+        with pytest.raises(ValueError, match="Unknown tools"):
+            reg.tool_view(("missing",))
+        with pytest.raises(ValueError, match="Duplicate tool names"):
+            reg.tool_view(("echo", "echo"))
+
+    @pytest.mark.parametrize("async_mode", [False, True])
+    @pytest.mark.asyncio
+    async def test_host_tool_view_selects_prompt_schemas_and_cache_per_turn(self, async_mode):
+        from looplet import (
+            Conversation,
+            DefaultState,
+            LoopConfig,
+            async_composable_loop,
+            composable_loop,
+            tool,
+            tools_from,
+        )
+        from looplet.cache import CacheControl, CachePolicy
+        from looplet.tools import ToolSpec
+
+        class RecordingBackend:
+            def __init__(self):
+                self.calls = []
+
+            def generate(self, prompt, **kwargs):
+                raise AssertionError("Native view test must use generate_with_tools")
+
+            def generate_with_tools(self, prompt, *, tools, cache_breakpoints=None, **kwargs):
+                self.calls.append((prompt, tools, cache_breakpoints))
+                name = "echo" if len(self.calls) == 1 else "done"
+                args = {"value": "x"} if name == "echo" else {"summary": "ok"}
+                return [
+                    {
+                        "type": "tool_use",
+                        "id": f"call-{len(self.calls)}",
+                        "name": name,
+                        "input": args,
+                    }
+                ]
+
+        class AsyncRecordingBackend(RecordingBackend):
+            async def generate(self, prompt, **kwargs):
+                raise AssertionError("Native view test must use generate_with_tools")
+
+            async def generate_with_tools(self, prompt, *, tools, cache_breakpoints=None, **kwargs):
+                return super().generate_with_tools(
+                    prompt, tools=tools, cache_breakpoints=cache_breakpoints, **kwargs
+                )
+
+        @tool(description="Echo a value.")
+        def echo(*, value: str) -> dict[str, str]:
+            return {"value": value}
+
+        tools = tools_from([echo], include_done=True)
+        tools.register(
+            ToolSpec(name="hidden", description="Not exposed", parameters={}, execute=lambda: 42)
+        )
+        selected = []
+
+        def select_tools(*, step_num, state, tools, task):
+            assert task == {"goal": "echo then finish"}
+            selected.append(step_num)
+            return ("echo", "done") if step_num == 1 else ("done",)
+
+        config = LoopConfig(
+            max_steps=2,
+            tool_view_selector=select_tools,
+            build_prompt=lambda **kwargs: kwargs["tool_catalog"],
+            cache_policy=CachePolicy(tool_schemas=CacheControl()),
+        )
+        backend = AsyncRecordingBackend() if async_mode else RecordingBackend()
+        conversation = Conversation()
+        if async_mode:
+            steps = []
+            async for step in async_composable_loop(
+                llm=backend,
+                tools=tools,
+                task={"goal": "echo then finish"},
+                state=DefaultState(max_steps=2),
+                config=config,
+                conversation=conversation,
+            ):
+                steps.append(step)
+        else:
+            steps = list(
+                composable_loop(
+                    llm=backend,
+                    tools=tools,
+                    task={"goal": "echo then finish"},
+                    state=DefaultState(max_steps=2),
+                    config=config,
+                    conversation=conversation,
+                )
+            )
+
+        assert [step.tool_call.tool for step in steps] == ["echo", "done"]
+        assert selected == [1, 2]
+        prompt_records = [m for m in conversation.serialize()["messages"] if m["role"] == "user"]
+        for call, names, record in zip(
+            backend.calls, (("echo", "done"), ("done",)), prompt_records, strict=True
+        ):
+            prompt, schemas, breakpoints = call
+            assert prompt == tools.tool_view(names).catalog_text
+            assert [schema["name"] for schema in schemas] == list(names)
+            assert record["metadata"]["tool_view"] == {
+                "names": list(names),
+                "version": tools.tool_view(names).version,
+            }
+            assert breakpoints[0].label == "tool_schemas"
+            assert breakpoints[0].content == prompt
+            assert "hidden" not in prompt
+
     def test_to_api_schema(self):
         from looplet.tools import BaseToolRegistry
 

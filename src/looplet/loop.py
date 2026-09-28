@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
 from dataclasses import replace as _dc_replace
 from typing import TYPE_CHECKING, Any, Callable, Generator, Protocol, runtime_checkable
@@ -591,6 +592,13 @@ class LoopConfig:
     instead of JSON text. Default True - a missing or unsupported
     ``generate_with_tools`` raises a visible error rather than switching
     protocols. Set to False to explicitly use the JSON-text path."""
+
+    tool_view_selector: Callable[..., Sequence[str] | None] | None = None
+    """Optional host callback selecting model-visible tool names per turn.
+
+    Called with ``step_num``, ``state``, ``tools``, and ``task``. ``None``
+    exposes the full registry. Selection does not change dispatch authority.
+    """
 
     concurrent_dispatch: bool = False
     """If True, dispatch non-dependent tool calls in parallel via
@@ -2630,7 +2638,12 @@ def _composable_loop_impl(
         else:
             _rendered_memory = ""
 
-        _tool_catalog = str(tools.tool_catalog_text())
+        _tool_view = tools.tool_view(
+            config.tool_view_selector(step_num=step_num, state=state, tools=tools, task=task)
+            if config.tool_view_selector is not None
+            else None
+        )
+        _tool_catalog = _tool_view.catalog_text
         _state_summary_raw = state.snapshot()
         _state_summary = _state_summary_raw if isinstance(_state_summary_raw, dict) else {}
         _session_log_text = str(session_log.render())
@@ -2778,6 +2791,8 @@ def _composable_loop_impl(
                     attributes={"step": step_num},
                 )
             _tool_schemas = native_policy.tool_schemas(effective_llm, tools)
+            if _tool_schemas is not None:
+                _tool_schemas = list(_tool_view.schemas)
             # ── Prompt cache breakpoints (opt-in) ─────────────────
             # When a ``cache_policy`` is configured, compute hashes for
             # the stable sections and hand them to the backend. If a
@@ -2792,7 +2807,7 @@ def _composable_loop_impl(
                     compute_breakpoints as _compute_bps,
                 )
 
-                _schemas_text = tools.tool_catalog_text()
+                _schemas_text = _tool_view.catalog_text
                 _detector = next(
                     (h for h in hooks if isinstance(h, _CBD)),
                     None,
@@ -2872,7 +2887,13 @@ def _composable_loop_impl(
         raw_response = llm_result.text
 
         # ── Record LLM turn in conversation thread via unified recorder ──
-        _history.record_llm_turn(prompt=prompt, response=raw_response)
+        _history.record_llm_turn(
+            prompt=prompt,
+            response=raw_response,
+            metadata={
+                "tool_view": {"names": list(_tool_view.names), "version": _tool_view.version}
+            },
+        )
 
         # Surface provider token usage / cost onto state so budget hooks
         # read it from the declared view instead of a backend side-channel

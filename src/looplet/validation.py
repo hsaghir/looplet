@@ -13,8 +13,12 @@ Provides:
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    from looplet.tools import ToolView
 
 logger = logging.getLogger(__name__)
 
@@ -211,6 +215,10 @@ class ValidatingToolRegistry:
 
     def tool_catalog_text(self) -> str:
         return self._base.tool_catalog_text()
+
+    def tool_view(self, names: Sequence[str] | None = None) -> ToolView:
+        """Select a model-visible view without bypassing validated dispatch."""
+        return self._base.tool_view(names)
 
     @property
     def _tools(self) -> dict:

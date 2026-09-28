@@ -7,7 +7,9 @@ BaseToolRegistry and register their own tools.
 
 from __future__ import annotations
 
+import hashlib
 import inspect
+import json
 import time
 import types
 from collections.abc import Sequence
@@ -36,6 +38,7 @@ from looplet.types import (
 
 __all__ = [
     "ToolSpec",
+    "ToolView",
     "BaseToolRegistry",
     "register_think_tool",
     "register_done_tool",
@@ -700,6 +703,25 @@ def tools_from(
     return registry
 
 
+@dataclass(frozen=True)
+class ToolView:
+    """Model-visible tools for one turn; registry dispatch remains unchanged."""
+
+    names: tuple[str, ...]
+    catalog_text: str
+    schemas: tuple[dict[str, Any], ...]
+
+    @property
+    def version(self) -> str:
+        """Stable fingerprint of the catalog and native schemas."""
+        payload = json.dumps(
+            {"catalog": self.catalog_text, "schemas": self.schemas},
+            sort_keys=True,
+            default=str,
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
 @dataclass(slots=True)
 class _PreparedToolCall:
     call: ToolCall
@@ -831,6 +853,23 @@ class BaseToolRegistry:
         for spec in self._tools.values():
             lines.append(spec.spec_text())
         return "\n".join(lines)
+
+    def tool_view(self, names: Sequence[str] | None = None) -> ToolView:
+        """Select model-visible tools without restricting registry dispatch."""
+        if names is None:
+            specs = tuple(self._tools.values())
+        else:
+            if len(set(names)) != len(names):
+                raise ValueError("Duplicate tool names in tool view")
+            unknown = set(names) - self._tools.keys()
+            if unknown:
+                raise ValueError(f"Unknown tools in tool view: {sorted(unknown)}")
+            specs = tuple(self._tools[name] for name in names)
+        return ToolView(
+            names=tuple(spec.name for spec in specs),
+            catalog_text="\n".join(["Available tools:", *(spec.spec_text() for spec in specs)]),
+            schemas=tuple(spec.to_api_schema() for spec in specs),
+        )
 
     def _prepare_dispatch(
         self,

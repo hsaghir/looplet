@@ -363,6 +363,7 @@ def test_validation_rejects_bad_done():
         ToolSpec("done", "Finish task", {"summary": "final summary"}, lambda summary="": summary),
         schema,
     )
+    assert val_registry.tool_view(("done",)).names == ("done",)
 
     state = _State(max_steps=5)
     config = LoopConfig(max_steps=5, done_tool="done", use_native_tools=False)

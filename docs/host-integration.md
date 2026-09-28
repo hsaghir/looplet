@@ -124,6 +124,18 @@ loop's remaining step budget, even when a child requests more steps. Tool
 allowlists restrict the child's executable registry; they are not merely
 model-visible tool descriptions. The built-in recursion guard remains in place.
 
+## Per-turn tool visibility
+
+Set `LoopConfig.tool_view_selector` to a host callback receiving `step_num`,
+`state`, `tools`, and `task` and returning model-visible tool names. Return
+`None` for all registered tools or an empty sequence for none. Each turn uses
+one `ToolView` for prompt text, native tool schemas, and cache markers; the
+conversation records the selected names and a stable view version.
+
+This is a presentation choice, not an authority boundary: a model can still
+request a tool absent from its view. Use `ExecutionPolicy` or `PermissionHook`
+to restrict what the child or parent loop may actually execute.
+
 ## Cancellation and checkpoints
 
 Cancellation is cooperative and shared with LLM calls and tools:

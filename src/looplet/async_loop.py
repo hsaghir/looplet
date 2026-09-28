@@ -818,7 +818,12 @@ async def _async_composable_loop_impl(
             post_dispatch_parts.clear()
 
         _briefing = "\n".join(briefing_parts)
-        _catalog = tools.tool_catalog_text()
+        _tool_view = tools.tool_view(
+            config.tool_view_selector(step_num=step_num, state=state, tools=tools, task=task)
+            if config.tool_view_selector is not None
+            else None
+        )
+        _catalog = _tool_view.catalog_text
         _state_summary = state.snapshot() if hasattr(state, "snapshot") else {}
         _log_text = session_log.render() if hasattr(session_log, "render") else ""
         _context_history = state.context_summary() if hasattr(state, "context_summary") else ""
@@ -938,13 +943,15 @@ async def _async_composable_loop_impl(
 
         # ── Native tool schemas ─────────────────────────────────
         _tool_schemas = native_policy.tool_schemas(effective_llm, tools)
+        if _tool_schemas is not None:
+            _tool_schemas = list(_tool_view.schemas)
 
         _cache_bps: list[Any] | None = None
         if config.cache_policy is not None:
             from looplet.cache import CacheBreakDetector as _CBD  # noqa: PLC0415
             from looplet.cache import compute_breakpoints as _compute_bps  # noqa: PLC0415
 
-            _schemas_text = tools.tool_catalog_text()
+            _schemas_text = _tool_view.catalog_text
             _detector = next((h for h in hooks if isinstance(h, _CBD)), None)
             if _detector is not None:
                 _cache_bps = _detector.record(
@@ -1015,7 +1022,13 @@ async def _async_composable_loop_impl(
             )
 
         raw_response = llm_result.text
-        _history.record_llm_turn(prompt=prompt, response=raw_response)
+        _history.record_llm_turn(
+            prompt=prompt,
+            response=raw_response,
+            metadata={
+                "tool_view": {"names": list(_tool_view.names), "version": _tool_view.version}
+            },
+        )
 
         if raw_response is None:
             if config.cancel_token is not None and getattr(

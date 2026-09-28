@@ -144,7 +144,9 @@ class HistoryRecorder:
 
     # ── LLM turn recording ──────────────────────────────────────
 
-    def record_llm_turn(self, *, prompt: str, response: Any) -> None:
+    def record_llm_turn(
+        self, *, prompt: str, response: Any, metadata: dict[str, Any] | None = None
+    ) -> None:
         """Record a prompt/response pair on the conversation thread.
 
         Non-string responses (for example the list-of-blocks shape
@@ -159,6 +161,7 @@ class HistoryRecorder:
             Message(
                 role=MessageRole.USER,
                 content=str(prompt)[: self._max_chars],
+                metadata=dict(metadata or {}),
             )
         )
         if response is None:

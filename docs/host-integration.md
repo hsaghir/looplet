@@ -103,6 +103,12 @@ closed when the host has not granted every capability. Cartridges may declare
 tool requirements, but the policy itself remains host-owned and is never
 authored in `config.yaml`.
 
+An explicit `PermissionEngine.ask(...)` rule denies when there is no
+`ask_handler`, even if the engine's default is `ALLOW`. Hosts that previously
+relied on that fallback must install an approval handler or remove the rule.
+An approval is valid only for the same call ID, tool, arguments, and policy at
+dispatch; a hook that changes the approved call or policy causes a denial.
+
 ## Cancellation and checkpoints
 
 Cancellation is cooperative and shared with LLM calls and tools:

@@ -109,6 +109,21 @@ relied on that fallback must install an approval handler or remove the rule.
 An approval is valid only for the same call ID, tool, arguments, and policy at
 dispatch; a hook that changes the approved call or policy causes a denial.
 
+## Bounded delegation
+
+Pass a host-owned `ChildRunPolicy` to `run_sub_loop(..., policy=policy)` when a
+child must inherit a restricted tool set, a step cap, a monotonic deadline, or
+the parent's cancellation token. Supply a `SharedModelBudget` and wrap the
+parent backend with `budget.wrap(llm)` to count parent and child model calls
+against the same allowance. Child results and stop events carry `parent_id`.
+Without a policy, direct sub-loops retain their existing independent behavior.
+
+The bundled `subagent` tool accepts the same policy in the host-supplied
+`ToolContext.metadata["child_run_policy"]`. It cannot exceed the invoking
+loop's remaining step budget, even when a child requests more steps. Tool
+allowlists restrict the child's executable registry; they are not merely
+model-visible tool descriptions. The built-in recursion guard remains in place.
+
 ## Cancellation and checkpoints
 
 Cancellation is cooperative and shared with LLM calls and tools:

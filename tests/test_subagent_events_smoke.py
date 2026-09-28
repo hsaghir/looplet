@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from looplet import (
     BaseToolRegistry,
     LifecycleEvent,
+    LoopConfig,
 )
+from looplet.checkpoint import Checkpoint
 from looplet.subagent import run_sub_loop
 from looplet.testing import MockLLMBackend
 from looplet.tools import ToolSpec
@@ -48,6 +52,96 @@ class _Recorder:
 
 
 class TestSubagentLifecycleEvents:
+    def test_shared_budget_preserves_text_backend_and_limits_calls(self):
+        from looplet.subagent import ChildRunLimitExceeded, SharedModelBudget
+
+        class TextOnlyBackend:
+            def generate(self, prompt):
+                return "ok"
+
+        budget = SharedModelBudget(remaining=1)
+        backend = budget.wrap(TextOnlyBackend())
+        assert not hasattr(backend, "generate_with_tools")
+        assert backend.generate("parent") == "ok"
+        with pytest.raises(ChildRunLimitExceeded, match="model call budget exhausted"):
+            backend.generate("again")
+        assert budget.remaining == 0
+
+    def test_expired_child_deadline_stops_before_model_call(self):
+        from looplet.subagent import ChildRunLimitExceeded, ChildRunPolicy
+
+        backend = MockLLMBackend(responses=['{"tool":"add","args":{"a":1,"b":2}}'])
+        with pytest.raises(ChildRunLimitExceeded, match="deadline exceeded"):
+            run_sub_loop(
+                llm=backend,
+                tools=_tools(),
+                policy=ChildRunPolicy(parent_id="parent-1", deadline=time.monotonic() - 1),
+            )
+        assert backend.calls == 0
+
+    def test_child_policy_does_not_resume_parent_checkpoint(self):
+        from looplet.subagent import ChildRunPolicy
+
+        parent_checkpoint = Checkpoint(
+            step_number=3,
+            session_log_data={"entries": []},
+            conversation_data=None,
+            config_snapshot={},
+            tool_results_store={},
+            metadata={},
+        )
+        config = LoopConfig(
+            max_steps=4, initial_checkpoint=parent_checkpoint, use_native_tools=False
+        )
+        result = run_sub_loop(
+            llm=MockLLMBackend(responses=['{"tool":"add","args":{"a":1,"b":2}}']),
+            tools=_tools(),
+            config=config,
+            policy=ChildRunPolicy(parent_id="parent-1", max_steps=1),
+        )
+        assert [step["step"] for step in result["steps"]] == [1]
+        assert config.initial_checkpoint is parent_checkpoint
+
+    def test_child_policy_limits_tools_and_shared_model_calls(self):
+        from looplet.subagent import ChildRunPolicy, SharedModelBudget
+
+        effects = []
+        tools = _tools()
+        tools.register(
+            ToolSpec(
+                name="write", description="Write", parameters={}, execute=lambda: effects.append(1)
+            )
+        )
+        budget = SharedModelBudget(remaining=2)
+        backend = budget.wrap(
+            MockLLMBackend(
+                responses=[
+                    '{"tool":"write","args":{},"call_id":"w"}',
+                    '{"tool":"add","args":{"a":1,"b":2},"call_id":"a"}',
+                ],
+                cycle=False,
+            )
+        )
+        result = run_sub_loop(
+            llm=backend,
+            tools=tools,
+            max_steps=5,
+            policy=ChildRunPolicy(
+                parent_id="parent-1",
+                allowed_tools=frozenset({"add"}),
+                max_steps=4,
+                model_budget=budget,
+            ),
+        )
+        assert effects == []
+        assert [step["tool_call"]["tool"] for step in result["steps"]] == ["write", "add"]
+        assert result["steps"][0]["tool_result"]["error"]
+        assert result["steps"][1]["tool_result"]["data"] == {"sum": 3}
+        assert budget.remaining == 0
+        assert result["llm_calls"] == 2
+        assert result["stop_reason"] == "model_budget_exhausted"
+        assert result["parent_id"] == "parent-1"
+
     def test_subagent_start_and_stop_fire(self):
         r = _Recorder()
         run_sub_loop(

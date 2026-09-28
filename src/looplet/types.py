@@ -557,6 +557,8 @@ class ToolContext:
     """
     execution_policy: Any = field(default=None, kw_only=True)
     """Host-owned :class:`looplet.capabilities.ExecutionPolicy`, if supplied."""
+    parent_budget_remaining: int | None = field(default=None, kw_only=True)
+    """Steps left in the invoking loop, available for bounded child runs."""
     request_approval: Callable[[str, list[str] | None], str | None] | None = None
     """Optional handler that lets a tool request approval from the
     caller (user, upstream agent, webhook) mid-execution. Signature is

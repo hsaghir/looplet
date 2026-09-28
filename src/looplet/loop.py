@@ -1027,6 +1027,7 @@ def _build_tool_ctx(
         request_approval=config.approval_handler,
         on_progress=_progress_fn,
         llm=_tool_llm,
+        parent_budget_remaining=getattr(state, "budget_remaining", None),
         run_envelope=config.run_envelope,
         execution_policy=config.execution_policy,
         metadata=_metadata,

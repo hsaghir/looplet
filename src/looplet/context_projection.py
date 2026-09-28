@@ -31,6 +31,8 @@ class ContextProjection:
     briefing: str = ""
     memory: str = ""
     context_plan: ContextPlan | None = None
+    scoped_context: str = ""
+    scoped_context_plan: ContextPlan | None = None
 
     def __post_init__(self) -> None:
         """Detach nested prompt inputs from live loop state."""
@@ -52,4 +54,8 @@ class ContextProjection:
             "briefing": self.briefing,
             "memory": self.memory,
             "context_plan": self.context_plan.to_dict() if self.context_plan else None,
+            "scoped_context": self.scoped_context,
+            "scoped_context_plan": (
+                self.scoped_context_plan.to_dict() if self.scoped_context_plan else None
+            ),
         }

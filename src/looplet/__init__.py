@@ -77,7 +77,12 @@ from looplet.compact import (
     default_compact_service,
     run_compact,
 )
-from looplet.context_plan import ContextPlan
+from looplet.context_plan import (
+    ContextPlan,
+    ContextSourceDecision,
+    ContextSourceSelector,
+    ScopedContextSource,
+)
 from looplet.context_projection import ContextProjection
 from looplet.conversation import Conversation, Message
 from looplet.done_steps import (
@@ -422,6 +427,9 @@ __all__ = [
     "Message",
     "ContextProjection",
     "ContextPlan",
+    "ScopedContextSource",
+    "ContextSourceDecision",
+    "ContextSourceSelector",
     "ArtifactRef",
     "RunEvent",
     "RunRecord",

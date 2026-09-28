@@ -33,6 +33,7 @@ _DEFAULT_HEADERS: dict[str, str] = {
     "results": "RECENT RESULTS",
     "step": "STEP",
     "memory": "MEMORY",
+    "scoped_context": "SCOPED CONTEXT",
 }
 
 
@@ -47,6 +48,7 @@ def build_prompt(
     briefing: str = "",
     *,
     memory: str | None = "",
+    scoped_context: str = "",
     render_facts: Callable[[dict], list[str]] | None = None,
     task_fields: list[str] | None = None,
     action_prompt: str = (
@@ -94,6 +96,11 @@ def build_prompt(
             parts.append(f"═══ {headers['memory']} ═══")
             parts.append(mem_text)
             parts.append("")
+
+    if scoped_context:
+        parts.append(f"═══ {headers['scoped_context']} ═══")
+        parts.append(scoped_context)
+        parts.append("")
 
     # ── §1 TASK (stable - never changes) ────────────────────
     parts.append(f"═══ {headers['task']} ═══")

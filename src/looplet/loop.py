@@ -23,6 +23,7 @@ from looplet.checkpoint import (
 from looplet.checkpoint import (
     resume_loop_state as _resume_loop_state,
 )
+from looplet.checkpoint import save_pending_dispatch as _save_pending_dispatch
 from looplet.checkpoint import validate_checkpoint_identity as _validate_checkpoint_identity
 from looplet.context_plan import ContextPlan
 from looplet.context_projection import ContextProjection
@@ -3081,6 +3082,32 @@ def _composable_loop_impl(
             calls_to_dispatch = [tc for _, tc in dispatch_items]
 
             if calls_to_dispatch:
+                if _ckpt_store is not None:
+                    _save_pending_dispatch(
+                        _ckpt_store,
+                        calls=regular_calls,
+                        dispatching=calls_to_dispatch,
+                        step_number=step_num + len(regular_calls) - 1,
+                        session_log=session_log,
+                        conversation_data=_conv.serialize(),
+                        config_snapshot={
+                            "max_steps": config.max_steps,
+                            "queries_used": getattr(state, "queries_used", 0),
+                            "budget_remaining": getattr(state, "budget_remaining", 0),
+                        },
+                        tool_results_store=tools.snapshot_results(),
+                        domain_state=(
+                            checkpoint_state(loop_ctx) if checkpoint_state is not None else {}
+                        ),
+                        run_envelope=(
+                            loop_ctx.run_envelope.to_dict()
+                            if loop_ctx.run_envelope is not None
+                            else None
+                        ),
+                        metadata={"task": str(task), **_policy_checkpoint_metadata(state)},
+                        run_status=loop_ctx.status.value,
+                        run_phase=loop_ctx.phase.value,
+                    )
 
                 def _ctx_for(_c: ToolCall, _cur_step: int) -> ToolContext | None:
                     return _build_tool_ctx(
@@ -3405,6 +3432,32 @@ def _composable_loop_impl(
                     session_log=session_log,
                     llm=effective_llm,
                 )
+                if _ckpt_store is not None:
+                    _save_pending_dispatch(
+                        _ckpt_store,
+                        calls=tool_calls[done_idx:],
+                        dispatching=[tool_call],
+                        step_number=step_num + len(tool_calls) - 1,
+                        session_log=session_log,
+                        conversation_data=_conv.serialize(),
+                        config_snapshot={
+                            "max_steps": config.max_steps,
+                            "queries_used": getattr(state, "queries_used", 0),
+                            "budget_remaining": getattr(state, "budget_remaining", 0),
+                        },
+                        tool_results_store=tools.snapshot_results(),
+                        domain_state=(
+                            checkpoint_state(loop_ctx) if checkpoint_state is not None else {}
+                        ),
+                        run_envelope=(
+                            loop_ctx.run_envelope.to_dict()
+                            if loop_ctx.run_envelope is not None
+                            else None
+                        ),
+                        metadata={"task": str(task), **_policy_checkpoint_metadata(state)},
+                        run_status=loop_ctx.status.value,
+                        run_phase=loop_ctx.phase.value,
+                    )
                 tool_result = tools.dispatch(tool_call, ctx=_ctx)
                 # Run post_dispatch hooks for done() too - otherwise
                 # MetricsHook / TracingHook / AuditHook silently miss

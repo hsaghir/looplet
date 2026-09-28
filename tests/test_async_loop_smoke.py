@@ -842,6 +842,40 @@ class TestAsyncComposableLoop:
         assert checkpoint.metadata["status"] == "done"
         assert len(checkpoint.session_log_data["entries"]) == 1
 
+    async def test_interrupted_dispatch_blocks_implicit_retry(self, tmp_path):
+        from looplet.checkpoint import FileCheckpointStore
+
+        effects = []
+        tools = BaseToolRegistry()
+
+        def interrupt():
+            effects.append("started")
+            raise KeyboardInterrupt
+
+        tools.register(ToolSpec("effect", "Side effect", {}, interrupt))
+        config = LoopConfig(max_steps=2, checkpoint_dir=tmp_path, use_native_tools=False)
+        response = '{"tool":"effect","args":{},"call_id":"effect-1"}'
+        with pytest.raises(KeyboardInterrupt):
+            async for _ in async_composable_loop(
+                llm=AsyncMockLLMBackend(responses=[response]),
+                tools=tools,
+                state=DefaultState(max_steps=2),
+                config=config,
+            ):
+                pass
+
+        pending = FileCheckpointStore(tmp_path).load_latest_for_resume()
+        assert pending is not None
+        assert pending.metadata["pending_calls"][0]["execution_status"] == "effect_unknown"
+        retry = AsyncMockLLMBackend(responses=[response])
+        with pytest.raises(RuntimeError, match="Tool effects unknown"):
+            async for _ in async_composable_loop(
+                llm=retry, tools=tools, state=DefaultState(max_steps=2), config=config
+            ):
+                pass
+        assert effects == ["started"]
+        assert retry.calls == 0
+
     async def test_domain_checkpoint_state_round_trips(self, tmp_path):
         from looplet.checkpoint import Checkpoint, FileCheckpointStore
         from looplet.loop import LoopConfig

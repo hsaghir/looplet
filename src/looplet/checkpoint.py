@@ -30,6 +30,15 @@ class CheckpointIdentityError(ValueError):
     """A checkpoint belongs to a different logical run."""
 
 
+class UncertainToolEffect(RuntimeError):
+    """A pending dispatch must be reconciled before this run can resume."""
+
+    def __init__(self, calls: list[dict[str, Any]]) -> None:
+        self.calls = calls
+        ids = ", ".join(str(call.get("call_id")) for call in calls)
+        super().__init__(f"Tool effects unknown for calls {ids}; reconcile before resuming")
+
+
 def validate_checkpoint_identity(checkpoint: "Checkpoint", run_id: str | None) -> None:
     """Reject a checkpoint carrying an identity different from ``run_id``."""
     checkpoint_run_id = checkpoint.run_id
@@ -310,6 +319,56 @@ class FileCheckpointStore:
         return None if terminal_found else best
 
 
+def save_pending_dispatch(
+    store: CheckpointStore,
+    *,
+    calls: list[ToolCall],
+    dispatching: list[ToolCall],
+    step_number: int,
+    session_log: SessionLog,
+    conversation_data: dict[str, Any],
+    config_snapshot: dict[str, Any],
+    tool_results_store: dict[str, Any],
+    domain_state: dict[str, Any],
+    run_envelope: dict[str, Any] | None,
+    metadata: dict[str, Any],
+    run_status: str,
+    run_phase: str,
+) -> None:
+    """Persist pending calls before execution, including the state needed for reconciliation."""
+    dispatching_ids = {id(call) for call in dispatching}
+    pending_calls = [
+        {
+            "call_id": call.call_id,
+            "tool": call.tool,
+            "proposed_args": call.metadata.get("proposed_args", call.args),
+            "effective_args": call.args,
+            "execution_status": (
+                "effect_unknown" if id(call) in dispatching_ids else "not_executed"
+            ),
+        }
+        for call in calls
+    ]
+    store.save(
+        Checkpoint(
+            step_number=step_number,
+            session_log_data={
+                "entries": session_log.to_list(),
+                "current_theory": session_log.current_theory,
+            },
+            conversation_data=conversation_data,
+            config_snapshot=config_snapshot,
+            tool_results_store=tool_results_store,
+            domain_state=domain_state,
+            run_envelope=run_envelope,
+            metadata={**metadata, "pending_calls": pending_calls},
+            run_status=run_status,
+            run_phase=run_phase,
+        ),
+        key=f"step_{step_number}_pending",
+    )
+
+
 # ── CheckpointHook ─────────────────────────────────────────────────
 
 
@@ -439,6 +498,9 @@ def resume_loop_state(checkpoint: Checkpoint) -> dict[str, Any]:
     should be forwarded so multi-turn LLM context is preserved.
     """
     from looplet.session import SessionLog
+
+    if checkpoint.metadata.get("pending_calls"):
+        raise UncertainToolEffect(checkpoint.metadata["pending_calls"])
 
     log = SessionLog()
     entries = checkpoint.session_log_data.get("entries", [])

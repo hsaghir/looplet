@@ -10,6 +10,16 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from looplet import (
+    BaseToolRegistry,
+    DefaultState,
+    LoopConfig,
+    MockLLMBackend,
+    RunEnvelope,
+    ToolSpec,
+    composable_loop,
+    register_done_tool,
+)
 from looplet.checkpoint import (
     Checkpoint,
     CheckpointHook,
@@ -533,3 +543,86 @@ class TestResumeLoopState:
         log: SessionLog = result["session_log"]
         assert len(log.entries) == 0
         assert result["step_offset"] == 0
+
+
+def test_interrupted_dispatch_blocks_implicit_retry(tmp_path: Path) -> None:
+    effects: list[str] = []
+    tools = BaseToolRegistry()
+
+    def interrupt() -> None:
+        effects.append("started")
+        raise KeyboardInterrupt
+
+    tools.register(ToolSpec("effect", "Side effect", {}, interrupt))
+    config = LoopConfig(max_steps=2, use_native_tools=False, checkpoint_dir=str(tmp_path))
+    response = '{"tool":"effect","args":{},"call_id":"effect-1"}'
+    with pytest.raises(KeyboardInterrupt):
+        list(
+            composable_loop(
+                MockLLMBackend([response]),
+                tools=tools,
+                config=config,
+                state=DefaultState(max_steps=2),
+            )
+        )
+
+    pending = FileCheckpointStore(tmp_path).load_latest_for_resume()
+    assert pending is not None
+    assert pending.metadata["pending_calls"][0]["execution_status"] == "effect_unknown"
+    retry = MockLLMBackend([response])
+    with pytest.raises(RuntimeError, match="Tool effects unknown"):
+        list(composable_loop(retry, tools=tools, config=config, state=DefaultState(max_steps=2)))
+    assert effects == ["started"]
+    assert retry.calls == 0
+
+
+def test_pending_dispatch_stays_scoped_to_its_run(tmp_path: Path) -> None:
+    tools = BaseToolRegistry()
+
+    def interrupt() -> None:
+        raise KeyboardInterrupt
+
+    tools.register(ToolSpec("effect", "Side effect", {}, interrupt))
+    config = LoopConfig(
+        max_steps=2,
+        use_native_tools=False,
+        checkpoint_dir=str(tmp_path),
+        run_envelope=RunEnvelope(run_id="run-a"),
+    )
+    with pytest.raises(KeyboardInterrupt):
+        list(
+            composable_loop(
+                MockLLMBackend(['{"tool":"effect","args":{}}']),
+                tools=tools,
+                config=config,
+                state=DefaultState(max_steps=2),
+            )
+        )
+
+    store = FileCheckpointStore(tmp_path)
+    pending = store.load_latest_for_resume(run_id="run-a")
+    assert pending is not None
+    assert pending.run_id == "run-a"
+    assert store.load_latest_for_resume(run_id="run-b") is None
+
+
+def test_completed_dispatch_does_not_block_resume(tmp_path: Path) -> None:
+    tools = BaseToolRegistry()
+    tools.register(ToolSpec("effect", "Side effect", {}, lambda: "ok"))
+    register_done_tool(tools)
+    config = LoopConfig(max_steps=2, use_native_tools=False, checkpoint_dir=str(tmp_path))
+    steps = list(
+        composable_loop(
+            MockLLMBackend(
+                [
+                    '{"tool":"effect","args":{}}',
+                    '{"tool":"done","args":{"summary":"ok"}}',
+                ]
+            ),
+            tools=tools,
+            config=config,
+            state=DefaultState(max_steps=2),
+        )
+    )
+    assert [step.tool_call.tool for step in steps] == ["effect", "done"]
+    assert FileCheckpointStore(tmp_path).load_latest_for_resume() is None

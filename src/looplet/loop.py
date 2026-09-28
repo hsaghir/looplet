@@ -26,7 +26,7 @@ from looplet.checkpoint import (
 )
 from looplet.checkpoint import save_pending_dispatch as _save_pending_dispatch
 from looplet.checkpoint import validate_checkpoint_identity as _validate_checkpoint_identity
-from looplet.context_plan import ContextPlan
+from looplet.context_plan import ContextPlan, ContextSourceSelector, ScopedContextSource
 from looplet.context_projection import ContextProjection
 from looplet.history import HistoryRecorder
 from looplet.hook_decision import HookDecision, normalize_hook_return
@@ -703,6 +703,12 @@ class LoopConfig:
     is user-supplied, the loop still renders memory but passes it to
     the custom function as a ``memory=`` kwarg.
     """
+
+    scoped_context_sources: list[ScopedContextSource] = field(default_factory=list)
+    """Host-selected, scoped sources evaluated each turn. Disabled by default."""
+
+    scoped_context_budget_tokens: int | None = None
+    """Token budget for selected scoped sources, separate from the full prompt budget."""
 
     cache_policy: "CachePolicy | None" = None
     """Optional :class:`looplet.cache.CachePolicy` declaring which
@@ -2301,6 +2307,14 @@ def _composable_loop_impl(
             return config.router.select(purpose="reasoning")  # pyright: ignore[reportOptionalMemberAccess]
         return llm
 
+    _context_sources = (
+        ContextSourceSelector(
+            config.scoped_context_sources, budget_tokens=config.scoped_context_budget_tokens
+        )
+        if config.scoped_context_sources
+        else None
+    )
+
     # ── Checkpoint store setup ──────────────────────────────────
     _ckpt_store = None
     if config.checkpoint_dir is not None:
@@ -2643,6 +2657,12 @@ def _composable_loop_impl(
             if config.tool_view_selector is not None
             else None
         )
+        _scoped_context, _scoped_plan = (
+            _context_sources.select(task=task, state=state, step_num=step_num)
+            if _context_sources is not None
+            else ("", None)
+        )
+        _selected_memory = "\n\n".join(part for part in (_rendered_memory, _scoped_context) if part)
         _tool_catalog = _tool_view.catalog_text
         _state_summary_raw = state.snapshot()
         _state_summary = _state_summary_raw if isinstance(_state_summary_raw, dict) else {}
@@ -2658,7 +2678,7 @@ def _composable_loop_impl(
                 step_number=step_num,
                 session_log=_session_log_text,
                 briefing=_briefing_text,
-                memory=_rendered_memory,
+                memory=_selected_memory,
             )
         _prompt_kwargs = dict(
             task=task,
@@ -2669,7 +2689,7 @@ def _composable_loop_impl(
             max_steps=config.max_steps,
             session_log=_session_log_text,
             briefing=_briefing_text,
-            memory=_rendered_memory,
+            memory=_selected_memory,
         )
 
         # First-hook-wins ``build_prompt`` slot on LoopHook takes
@@ -2695,7 +2715,10 @@ def _composable_loop_impl(
                     build_prompt as _default_build_prompt,  # noqa: PLC0415
                 )
 
-                prompt = _default_build_prompt(**_prompt_kwargs)  # pyright: ignore[reportArgumentType]
+                prompt = _default_build_prompt(
+                    **{**_prompt_kwargs, "memory": _rendered_memory},
+                    scoped_context=_scoped_context,
+                )  # pyright: ignore[reportArgumentType]
 
         # ── Byte-exact escape hatch (render_messages_override) ──
         # If configured, the user takes full control of the prompt
@@ -2713,8 +2736,10 @@ def _composable_loop_impl(
                 context_history=context_history,
                 session_log=_session_log_text,
                 briefing=_briefing_text,
-                memory=_rendered_memory,
+                memory=_selected_memory,
                 context_plan=context_plan,
+                scoped_context=_scoped_context,
+                scoped_context_plan=_scoped_plan,
             )
             prompt = _render_projection(config.render_messages_override, projection)
 
@@ -2891,7 +2916,12 @@ def _composable_loop_impl(
             prompt=prompt,
             response=raw_response,
             metadata={
-                "tool_view": {"names": list(_tool_view.names), "version": _tool_view.version}
+                "tool_view": {"names": list(_tool_view.names), "version": _tool_view.version},
+                **(
+                    {"scoped_context_plan": _scoped_plan.to_dict()}
+                    if _scoped_plan is not None
+                    else {}
+                ),
             },
         )
 

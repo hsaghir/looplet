@@ -82,6 +82,48 @@ class TestEngineEvaluate:
         out = eng.evaluate(ToolCall(tool="bash", args={}))
         assert out.decision == PermissionDecision.DENY
 
+    def test_explicit_ask_without_handler_denies_even_when_default_allows(self):
+        eng = PermissionEngine(default=PermissionDecision.ALLOW)
+        eng.ask("bash", reason="human review")
+        assert eng.evaluate(ToolCall(tool="bash", args={})).denied
+        assert eng.evaluate(ToolCall(tool="read", args={})).allowed
+        assert len(eng.denials) == 1
+
+    def test_handler_cannot_approve_changed_action_or_policy(self):
+        eng = PermissionEngine()
+        eng.ask("bash", reason="review")
+
+        def change_action(call, rule):
+            call.args["cmd"] = "different"
+            return PermissionDecision.ALLOW
+
+        eng.ask_handler = change_action
+        assert eng.evaluate(ToolCall(tool="bash", args={"cmd": "original"})).denied
+
+        def change_policy(call, rule):
+            eng.rules.clear()
+            return PermissionDecision.ALLOW
+
+        eng.ask_handler = change_policy
+        assert eng.evaluate(ToolCall(tool="bash", args={"cmd": "original"})).denied
+
+    def test_ask_handler_failure_denies(self):
+        def unavailable(call, rule):
+            raise RuntimeError("unavailable")
+
+        eng = PermissionEngine(ask_handler=unavailable)
+        eng.ask("bash")
+        assert eng.evaluate(ToolCall(tool="bash", args={})).denied
+
+    def test_ask_matcher_failure_denies_even_with_approval_handler(self):
+        approvals = []
+        eng = PermissionEngine(
+            ask_handler=lambda call, rule: approvals.append(call) or PermissionDecision.ALLOW
+        )
+        eng.ask("bash", arg_matcher=lambda args: 1 / 0)
+        assert eng.evaluate(ToolCall(tool="bash", args={})).denied
+        assert approvals == []
+
     def test_denials_are_recorded(self):
         eng = PermissionEngine()
         eng.deny("bash", reason="blocked")
@@ -150,6 +192,97 @@ class TestLoopIntegration:
         assert denied_step.tool_result.error is not None
         assert denied_step.tool_result.error_kind == ErrorKind.PERMISSION_DENIED
         # Engine recorded the denial.
+        assert len(eng.denials) == 1
+
+    def test_ask_prompts_once_for_exact_call(self):
+        ran: list[str] = []
+        approvals: list[str] = []
+
+        def approve(call, rule):
+            approvals.append(call.args["cmd"])
+            return PermissionDecision.ALLOW
+
+        eng = PermissionEngine(ask_handler=approve)
+        eng.ask("danger")
+        steps = list(
+            composable_loop(
+                llm=_LLM(
+                    '{"tool":"danger","args":{"cmd":"ls"}}',
+                    '{"tool":"done","args":{"summary":"ok"}}',
+                ),
+                tools=self._reg(ran),
+                config=LoopConfig(max_steps=3, use_native_tools=False),
+                state=DefaultState(max_steps=3),
+                hooks=[PermissionHook(eng)],
+            )
+        )
+        assert approvals == ["ls"]
+        assert ran == ["ls"]
+        assert steps[0].tool_result.call_id == steps[0].tool_call.call_id
+
+    def test_changed_approved_args_are_denied_without_second_approval(self):
+        ran: list[str] = []
+        approvals: list[str] = []
+
+        def approve(call, rule):
+            approvals.append(call.args["cmd"])
+            return PermissionDecision.ALLOW
+
+        class ChangeArgs:
+            def pre_dispatch(self, state, session_log, tool_call, step_num):
+                if tool_call.tool == "danger":
+                    tool_call.args["cmd"] = "rm"
+
+        eng = PermissionEngine(ask_handler=approve)
+        eng.ask("danger")
+        steps = list(
+            composable_loop(
+                llm=_LLM(
+                    '{"tool":"danger","args":{"cmd":"ls"}}',
+                    '{"tool":"done","args":{"summary":"ok"}}',
+                ),
+                tools=self._reg(ran),
+                config=LoopConfig(max_steps=3, use_native_tools=False),
+                state=DefaultState(max_steps=3),
+                hooks=[PermissionHook(eng), ChangeArgs()],
+            )
+        )
+        assert approvals == ["ls"]
+        assert ran == []
+        assert steps[0].tool_result.error_kind == ErrorKind.PERMISSION_DENIED
+        assert len(eng.denials) == 1
+
+    def test_changed_approved_policy_is_denied_without_second_approval(self):
+        ran: list[str] = []
+        approvals: list[str] = []
+
+        def approve(call, rule):
+            approvals.append(call.args["cmd"])
+            return PermissionDecision.ALLOW
+
+        eng = PermissionEngine(ask_handler=approve, policy_version="v1")
+        eng.ask("danger")
+
+        class ChangePolicy:
+            def pre_dispatch(self, state, session_log, tool_call, step_num):
+                if tool_call.tool == "danger":
+                    eng.policy_version = "v2"
+
+        steps = list(
+            composable_loop(
+                llm=_LLM(
+                    '{"tool":"danger","args":{"cmd":"ls"}}',
+                    '{"tool":"done","args":{"summary":"ok"}}',
+                ),
+                tools=self._reg(ran),
+                config=LoopConfig(max_steps=3, use_native_tools=False),
+                state=DefaultState(max_steps=3),
+                hooks=[PermissionHook(eng), ChangePolicy()],
+            )
+        )
+        assert approvals == ["ls"]
+        assert ran == []
+        assert steps[0].tool_result.error_kind == ErrorKind.PERMISSION_DENIED
         assert len(eng.denials) == 1
 
     def test_engine_allows_tool_by_default(self):

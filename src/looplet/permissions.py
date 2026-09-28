@@ -18,6 +18,7 @@ while staying domain-agnostic.
 from __future__ import annotations
 
 import logging
+from copy import deepcopy
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Callable
@@ -59,20 +60,24 @@ class PermissionRule:
     reason: str = ""
 
     def matches(self, call: ToolCall) -> bool:
+        matched, _ = self._match(call)
+        return matched
+
+    def _match(self, call: ToolCall) -> tuple[bool, bool]:
         if self.tool != "*" and self.tool != call.tool:
-            return False
+            return False, False
         if self.arg_matcher is None:
-            return True
+            return True, False
         try:
-            return bool(self.arg_matcher(call.args))
+            return bool(self.arg_matcher(call.args)), False
         except Exception as exc:
             # A buggy matcher must fail closed, which means different things
             # depending on the rule's decision:
             #   DENY  → act as if it matched (block the call)
             #   ALLOW → act as if it did NOT match (don't grant access)
-            #   ASK   → act as if it did NOT match (don't escalate to human)
+            #   ASK   → deny without calling the approval handler
             #   DEFAULT → act as if it did NOT match
-            fail_closed_match = self.decision == PermissionDecision.DENY
+            fail_closed_match = self.decision in (PermissionDecision.DENY, PermissionDecision.ASK)
             logger.warning(
                 "PermissionRule arg_matcher for '%s' (decision=%s) raised %s - "
                 "failing closed (matches=%s)",
@@ -81,7 +86,7 @@ class PermissionRule:
                 exc,
                 fail_closed_match,
             )
-            return fail_closed_match
+            return fail_closed_match, True
 
 
 @dataclass
@@ -108,8 +113,8 @@ class PermissionEngine:
     ``default`` controls what happens when no rule matches. ``ask_handler``
     is an optional callable that turns an ``ASK`` outcome into a concrete
     ``ALLOW`` or ``DENY`` - typically by prompting a human or another
-    agent. Without a handler, ``ASK`` falls back to ``default`` so the
-    engine never blocks indefinitely.
+    agent. An explicit ``ASK`` without a handler denies the call; the
+    ``default`` applies only when no rule matches.
 
     The engine keeps an append-only ``denials`` log for auditability;
     each entry captures the tool name, args, and the rule (if any)
@@ -120,6 +125,18 @@ class PermissionEngine:
     default: PermissionDecision = PermissionDecision.ALLOW
     ask_handler: Callable[[ToolCall, PermissionRule], PermissionDecision] | None = None
     denials: list[dict[str, Any]] = field(default_factory=list)
+    policy_version: str | int | None = None
+
+    def _policy_snapshot(self) -> tuple[Any, ...]:
+        return (
+            self.policy_version,
+            self.default,
+            self.ask_handler,
+            tuple(
+                (id(rule), rule.tool, rule.decision, rule.arg_matcher, rule.reason)
+                for rule in self.rules
+            ),
+        )
 
     def allow(
         self, tool: str, *, arg_matcher: ArgMatcher | None = None, reason: str = ""
@@ -167,14 +184,31 @@ class PermissionEngine:
         - If an ``ask_handler`` is set, it is called and must return
           ``ALLOW`` or ``DENY``. Any other value (including ``ASK`` or
           ``DEFAULT``) is treated as ``DENY`` to fail closed.
-        - Without a handler, the engine's ``default`` is used.
+        - Without a handler, the call is denied, regardless of ``default``.
         """
         for rule in self.rules:
-            if rule.matches(call):
+            matched, matcher_failed = rule._match(call)
+            if matched:
                 decision = rule.decision
-                if decision == PermissionDecision.ASK:
+                if matcher_failed and decision == PermissionDecision.ASK:
+                    decision = PermissionDecision.DENY
+                elif decision == PermissionDecision.ASK:
                     if self.ask_handler is not None:
-                        decision = self.ask_handler(call, rule)
+                        try:
+                            original = (call.call_id, call.tool, deepcopy(call.args))
+                            policy = self._policy_snapshot()
+                            decision = self.ask_handler(call, rule)
+                            if decision == PermissionDecision.ALLOW and (
+                                (call.call_id, call.tool, call.args) != original
+                                or self._policy_snapshot() != policy
+                            ):
+                                logger.warning(
+                                    "Approval changed the action or policy for '%s'", call.tool
+                                )
+                                decision = PermissionDecision.DENY
+                        except Exception:
+                            logger.exception("Approval failed for '%s'", call.tool)
+                            decision = PermissionDecision.DENY
                         # Guard: handler must return ALLOW or DENY.
                         if decision not in (PermissionDecision.ALLOW, PermissionDecision.DENY):
                             logger.warning(
@@ -185,7 +219,7 @@ class PermissionEngine:
                             )
                             decision = PermissionDecision.DENY
                     else:
-                        decision = self._resolve_default(call)
+                        decision = PermissionDecision.DENY
                 outcome = PermissionOutcome(
                     decision=decision,
                     rule=rule,
@@ -260,6 +294,7 @@ class PermissionHook:
 
     def __init__(self, engine: "PermissionEngine") -> None:
         self.engine = engine
+        self._approved: tuple[int, str, str, dict[str, Any], tuple[Any, ...]] | None = None
 
     def to_config(self) -> dict:
         """Cartridge round-trip: emit ``engine`` as an ``@ref`` so the
@@ -287,6 +322,7 @@ class PermissionHook:
             return None
         if payload.tool_call is None:
             return None
+        self._approved = None
         outcome = self.engine.evaluate(payload.tool_call)
         audit = PolicyDecision(
             decision=outcome.decision.value,
@@ -295,6 +331,14 @@ class PermissionHook:
             reason=outcome.reason,
         )
         if outcome.allowed:
+            if outcome.rule is not None and outcome.rule.decision == PermissionDecision.ASK:
+                self._approved = (
+                    id(payload.tool_call),
+                    payload.tool_call.call_id,
+                    payload.tool_call.tool,
+                    deepcopy(payload.tool_call.args),
+                    self.engine._policy_snapshot(),
+                )
             return Allow(policy_decision=audit)
         if outcome.denied:
             return Deny(
@@ -308,5 +352,18 @@ class PermissionHook:
     # this hook behaves correctly even if someone calls the per-method
     # surface directly (e.g. in tests).
     def check_permission(self, tool_call: ToolCall, state: AgentState) -> bool:
+        approved = self._approved
+        self._approved = None
+        if approved is not None:
+            if approved == (
+                id(tool_call),
+                tool_call.call_id,
+                tool_call.tool,
+                tool_call.args,
+                self.engine._policy_snapshot(),
+            ):
+                return True
+            self.engine._record_denial(tool_call, None, "Approved action or policy changed")
+            return False
         outcome = self.engine.evaluate(tool_call)
         return not outcome.denied

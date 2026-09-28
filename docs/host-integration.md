@@ -123,6 +123,14 @@ domain state, session data, and conversation data. A worker can reconstruct
 resume inputs with `resume_loop_state(checkpoint)` and continue with the same
 agent version and host envelope.
 
+When `checkpoint_dir` is configured, sync and async loops persist a pending
+dispatch before calling a tool. An interrupted dispatch records the call ID,
+proposed and effective arguments, and `effect_unknown` status. A later resume
+raises `UncertainToolEffect` before calling the model or tool again. The host
+must reconcile the external effect and persist a consistent checkpoint before
+resuming; clearing the pending record without reconciliation can repeat an
+effect. This guard is not exactly-once execution.
+
 ## Evaluation and evidence
 
 Attach `EvalHook` for live collectors and graders, or use

@@ -567,9 +567,9 @@ class RPCServer:
         watcher.start()
 
         # Checkpoint-frame emission. The loop writes a JSON checkpoint after
-        # every step when ``checkpoint_dir`` is set (keyed ``step_N``). We never
-        # touch the loop or the on-disk format - we observe the directory and
-        # announce each NEW file. Stems present before this run started are
+        # every step when ``checkpoint_dir`` is set (keyed ``step_N``). Pending
+        # dispatch records are not resumable checkpoints, so only announce
+        # completed step files. Stems present before this run started are
         # skipped so a resume that reuses the same directory does not re-announce
         # the checkpoints the original run already reported.
         ckpt_path = Path(config.checkpoint_dir) if getattr(config, "checkpoint_dir", None) else None
@@ -582,7 +582,7 @@ class RPCServer:
             if ckpt_path is None or not ckpt_path.exists():
                 return
             for p in sorted(ckpt_path.glob("*.json")):
-                if p.stem in pre_existing or p.stem in emitted:
+                if p.stem.endswith("_pending") or p.stem in pre_existing or p.stem in emitted:
                     continue
                 try:
                     data = json.loads(p.read_text())

@@ -552,7 +552,7 @@ def test_checkpoint_callbacks_snapshot_and_restore_domain_state():
         saved = store.load("step_2_done")
 
     assert restored == [(resource, 1, {"cursor": 7})]
-    assert observed_resources == [resource]
+    assert observed_resources == [resource, resource]
     assert saved is not None
     assert saved.domain_state == {"cursor": 2, "status": "completed"}
 

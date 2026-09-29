@@ -1221,6 +1221,29 @@ class TestAsyncComposableLoop:
         assert sum(isinstance(event, LoopStartEvent) for event in events) == 1
         assert sum(isinstance(event, LoopEndEvent) for event in events) == 1
 
+    async def test_async_direct_stream_exposes_only_public_usage(self):
+        from looplet.streaming import CallbackEmitter, LLMCallEndEvent
+
+        events = []
+        mock = AsyncMockLLMBackend(responses=['{"tool": "done", "args": {"summary": "finished"}}'])
+        setattr(mock, "last_usage", {"input": 12, "output": 3, "secret": "private"})
+        tools = BaseToolRegistry()
+        register_done_tool(tools)
+
+        async for _ in async_composable_loop(
+            llm=mock,
+            tools=tools,
+            state=DefaultState(max_steps=1),
+            config=LoopConfig(max_steps=1),
+            task={},
+            stream=CallbackEmitter(events.append),
+        ):
+            pass
+
+        ended = [event for event in events if isinstance(event, LLMCallEndEvent)]
+        assert len(ended) == 1
+        assert ended[0].usage == {"input": 12, "output": 3}
+
     async def test_cache_policy_threads_breakpoints_into_async_backend(self):
         class CacheAwareAsyncBackend:
             def __init__(self) -> None:

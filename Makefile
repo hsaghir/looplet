@@ -29,7 +29,7 @@ format-check:
 	uv run ruff format --check .
 
 typecheck:
-	uv run pyright src/looplet/
+	uv run pyright --threads 2 src/looplet/
 
 test:
 	uv run pytest --tb=short

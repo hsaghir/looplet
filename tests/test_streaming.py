@@ -9,6 +9,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from looplet.events import EventPayload, LifecycleEvent
 from looplet.streaming import (
     CallbackEmitter,
     CompositeEmitter,
@@ -307,6 +308,43 @@ def test_streaming_hook_on_loop_end_emits_loop_end():
 
     le_events = [e for e in received if isinstance(e, LoopEndEvent)]
     assert len(le_events) == 1
+
+
+def test_streaming_hook_emits_private_usage_metadata():
+    received: list[Event] = []
+    hook = StreamingHook(CallbackEmitter(received.append))
+    hook.on_event(
+        EventPayload(
+            event=LifecycleEvent.PRE_LLM_CALL,
+            step_num=2,
+            context_budget={"estimated_tokens": 32},
+        )
+    )
+    hook.on_event(
+        EventPayload(
+            event=LifecycleEvent.POST_LLM_RESPONSE,
+            step_num=2,
+            raw_response="private response",
+            usage={
+                "input": 20,
+                "output": 4,
+                "cache_read": 3,
+                "cache_write": -1,
+                "unknown": "private",
+                "other": True,
+            },
+        )
+    )
+
+    starts = [event for event in received if isinstance(event, LLMCallStartEvent)]
+    ends = [event for event in received if isinstance(event, LLMCallEndEvent)]
+    assert len(starts) == len(ends) == 1
+    assert starts[0].prompt_tokens_est == 32
+    assert ends[0].step_num == 2
+    assert ends[0].response_length == len("private response")
+    assert ends[0].duration_ms >= 0
+    assert ends[0].usage == {"input": 20, "output": 4, "cache_read": 3}
+    assert "private response" not in str(ends[0])
 
 
 def test_streaming_hook_loop_end_accumulates_step_count():

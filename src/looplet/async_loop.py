@@ -1018,6 +1018,9 @@ async def _async_composable_loop_impl(
                     step_num=step_num,
                     response_length=len(llm_result.text or ""),
                     duration_ms=_llm_dur_ms,
+                    usage=(getattr(effective_llm, "last_usage", None) or {})
+                    if llm_result.ok
+                    else {},
                 )
             )
 

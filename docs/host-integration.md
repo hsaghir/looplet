@@ -68,6 +68,20 @@ contains status, phase, termination reason, accepted `done()` output, steps,
 run envelope, and persistent metadata. It does not replace the iterator or
 trajectory artifacts.
 
+## Model-call telemetry
+
+Attach `StreamingHook(CallbackEmitter(callback))` through `hooks`, or supply a
+`stream` emitter to either loop variant. `LLMCallEndEvent.usage` contains only
+nonnegative integer `input`, `output`, `cache_read`, and `cache_write` token
+counts. It may be empty or all zero when a provider omits usage; neither shape
+proves a call was free. The event also has response length and duration, not
+response text. Prices and cost estimates belong to the host's versioned model
+catalog, not the execution event.
+
+Do not persist streaming events wholesale as a privacy control: tool argument
+summaries and optional text chunks can include customer data. A host should
+allowlist the fields it retains and protect full provenance separately.
+
 For applications that need lifecycle ownership, use the optional runtime
 wrapper. It keeps direct loop usage available while coordinating run events,
 logical persistence, cancellation, and preset cleanup:

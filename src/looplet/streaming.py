@@ -19,6 +19,7 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Protocol, runtime_checkable
 
+from looplet.events import LifecycleEvent
 from looplet.session import SessionLog
 from looplet.types import ToolCall, ToolResult
 
@@ -105,9 +106,16 @@ class LLMCallEndEvent(Event):
     step_num: int = 0
     response_length: int = 0
     duration_ms: float = 0.0
+    usage: dict[str, int] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self.event_type = type(self).__name__
+        usage = self.usage if isinstance(self.usage, dict) else {}
+        self.usage = {
+            name: value
+            for name in ("input", "output", "cache_read", "cache_write")
+            if type(value := usage.get(name)) is int and value >= 0
+        }
 
 
 @dataclass
@@ -306,6 +314,7 @@ class StreamingHook:
         self._emitter = emitter
         self._total_llm_calls: int = 0
         self._step_llm_calls: int = 0
+        self._llm_started_at: dict[int, float] = {}
 
     def to_config(self) -> dict:
         """Cartridge round-trip: emit ``emitter`` as an ``@ref``.
@@ -469,5 +478,29 @@ class StreamingHook:
         return 0
 
     def on_event(self, payload: Any) -> None:
-        """No-op - :class:`StreamingHook` uses the per-method API."""
+        """Emit metadata-only LLM call events from lifecycle callbacks."""
+        if payload.event == LifecycleEvent.PRE_LLM_CALL:
+            self._llm_started_at[payload.step_num] = time.perf_counter()
+            budget = payload.context_budget if isinstance(payload.context_budget, dict) else {}
+            estimate = budget.get("estimated_tokens")
+            self._emitter.emit(
+                LLMCallStartEvent(
+                    step_num=payload.step_num,
+                    prompt_tokens_est=estimate if type(estimate) is int and estimate >= 0 else 0,
+                )
+            )
+        elif payload.event == LifecycleEvent.POST_LLM_RESPONSE:
+            started_at = self._llm_started_at.pop(payload.step_num, None)
+            self._emitter.emit(
+                LLMCallEndEvent(
+                    step_num=payload.step_num,
+                    response_length=len(payload.raw_response)
+                    if isinstance(payload.raw_response, str)
+                    else 0,
+                    duration_ms=(time.perf_counter() - started_at) * 1000
+                    if started_at is not None
+                    else 0.0,
+                    usage=payload.usage if isinstance(payload.usage, dict) else {},
+                )
+            )
         return None

@@ -19,6 +19,7 @@ from looplet.streaming import (
     LoopStartEvent,
     StepEndEvent,
     StepStartEvent,
+    StreamingHook,
     ToolDispatchEvent,
     ToolResultEvent,
 )
@@ -49,16 +50,19 @@ def _tools() -> BaseToolRegistry:
     return reg
 
 
-def _run_collect() -> list[Event]:
+def _run_collect(usage: dict[str, object] | None = None) -> list[Event]:
     events: list[Event] = []
     emitter = CallbackEmitter(events.append)
     responses = [
         '{"tool":"add","args":{"a":1,"b":2},"reasoning":"r"}',
         '{"tool":"done","args":{"answer":"ok"},"reasoning":"r"}',
     ]
+    llm = MockLLMBackend(responses=responses)
+    if usage is not None:
+        setattr(llm, "last_usage", usage)
     list(
         composable_loop(
-            llm=MockLLMBackend(responses=responses),
+            llm=llm,
             tools=_tools(),
             state=DefaultState(max_steps=5),
             config=LoopConfig(max_steps=5),
@@ -79,6 +83,32 @@ class TestStreamingEmitsAllEvents:
         starts = [e for e in events if isinstance(e, LLMCallStartEvent)]
         ends = [e for e in events if isinstance(e, LLMCallEndEvent)]
         assert len(starts) == len(ends) == 2
+        assert all(event.usage == {} for event in ends)
+
+    def test_direct_stream_exposes_only_public_usage(self):
+        events = _run_collect({"input": 14, "output": 6, "cache_read": 2, "secret": "private"})
+        ends = [event for event in events if isinstance(event, LLMCallEndEvent)]
+        assert len(ends) == 2
+        assert all(event.usage == {"input": 14, "output": 6, "cache_read": 2} for event in ends)
+
+    def test_hook_stream_delivers_usage_from_live_loop(self):
+        events: list[Event] = []
+        backend = MockLLMBackend(responses=['{"tool":"done","args":{"answer":"ok"}}'])
+        setattr(backend, "last_usage", {"input": 12, "output": 3, "secret": "private"})
+
+        list(
+            composable_loop(
+                llm=backend,
+                tools=_tools(),
+                state=DefaultState(max_steps=1),
+                config=LoopConfig(max_steps=1),
+                hooks=[StreamingHook(CallbackEmitter(events.append))],
+            )
+        )
+
+        ended = [event for event in events if isinstance(event, LLMCallEndEvent)]
+        assert len(ended) == 1
+        assert ended[0].usage == {"input": 12, "output": 3}
 
     def test_tool_result_fires_per_dispatch(self):
         events = _run_collect()

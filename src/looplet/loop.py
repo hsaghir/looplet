@@ -2860,6 +2860,9 @@ def _composable_loop_impl(
                         step_num=step_num,
                         response_length=len(llm_result.text or ""),
                         duration_ms=_llm_dur_ms,
+                        usage=(getattr(effective_llm, "last_usage", None) or {})
+                        if llm_result.ok
+                        else {},
                     )
                 )
 
@@ -2898,7 +2901,7 @@ def _composable_loop_impl(
         # Surface provider token usage / cost onto state so budget hooks
         # read it from the declared view instead of a backend side-channel
         # (keeps cost/budget hooks portable across runtimes - §9 T9).
-        _step_usage = getattr(effective_llm, "last_usage", None) or None
+        _step_usage = getattr(effective_llm, "last_usage", None) if llm_result.ok else None
         if _step_usage:
             try:
                 _meta = getattr(state, "metadata", None)

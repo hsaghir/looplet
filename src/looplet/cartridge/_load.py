@@ -1693,10 +1693,11 @@ def _workspace_to_preset_inner(
         elif inspect.isclass(_state_directive):
             # Class reference - try ``Class(max_steps=...)`` first,
             # fall back to ``Class()`` for stateless types.
+            state_class: Any = _state_directive
             try:
-                state = _state_directive(max_steps=max_steps)
+                state = state_class(max_steps=max_steps)
             except TypeError:
-                state = _state_directive()
+                state = state_class()
         else:
             # Pre-built instance - use as-is.
             state = _state_directive

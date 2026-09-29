@@ -105,6 +105,41 @@ be static, callable, filesystem-backed, or backed by a customer vector/hybrid
 search service. Filter by tenant and agent/deployment identity before creating
 the source.
 
+For task-dependent context, provide host-authorized sources with explicit
+scopes and provenance. Looplet does not discover paths or infer trust:
+
+```python
+from looplet import ScopedContextSource
+
+config = LoopConfig(
+    scoped_context_sources=[
+        ScopedContextSource(
+            source_id="case-a",
+            source=authorized_case_source,  # implements load(state) -> str | None
+            scope=lambda *, task, state, step_num: task.get("case_id") == "a",
+            origin="host/cases/a",
+            trust="host-checked",
+            retention="run",
+        ),
+    ],
+    scoped_context_budget_tokens=1000,
+)
+```
+
+Scopes are checked before loading. Eligible sources are selected in declaration
+order within the scoped-source token budget; an oversized source may still be
+loaded to estimate its size. Duplicate identical IDs are deduplicated, while
+conflicting IDs fail early. `retention="run"` keeps the first included value
+for later turns even when its predicate no longer matches, but never across
+runs; `"turn"` rechecks scope and reloads each turn. The default prompt uses a
+separate `SCOPED CONTEXT` section; custom prompt builders receive selected
+content alongside persistent memory through their existing `memory` argument.
+Message renderers can inspect `projection.scoped_context` and
+`projection.scoped_context_plan`. Prompt messages record provenance and hashes
+in `metadata["scoped_context_plan"]`, not a second copy of source text.
+`trust` is a host-provided label, not a security guarantee. This budget does
+not cap other prompt sections or `memory_sources`.
+
 Use Looplet hooks for runtime policy. `PermissionHook` handles declarative
 allow/deny rules. `ApprovalHook` turns a tool result containing
 `needs_approval=True` into `waiting_for_approval`; the host persists the

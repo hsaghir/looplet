@@ -30,6 +30,10 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Sync and async turns now share post-step stop and observer rules for normal,
+  rejected, and synthetic/error steps. Pending stops prevent extra parse-repair
+  calls; async rejected steps notify observers and emit rejected classifications.
+  Accepted completion and fatal model errors retain their distinct precedence.
 - Cartridge self-tests now own evaluation and replace embedded `EvalHook`
   observers; reference coder defaults no longer grade normal runs implicitly.
   Explicit host hooks and reusable eval helpers remain supported.

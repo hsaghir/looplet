@@ -6,6 +6,7 @@ Domain-specific behavior is injected via hooks and LoopConfig callables.
 
 from __future__ import annotations
 
+import inspect
 import logging
 import time
 from collections.abc import Sequence
@@ -1636,6 +1637,96 @@ def _accepts_tool_call_kwarg(method: Any) -> bool:
     return accepts
 
 
+def _notify_post_step(hooks: list[Any], state: Any, session_log: Any, step_num: int) -> None:
+    """Notify step observers for every recorded step kind."""
+    for hook in hooks:
+        method = getattr(hook, "post_step", None)
+        if method is not None:
+            method(state, session_log, step_num)
+
+
+async def _notify_post_step_async(
+    hooks: list[Any], state: Any, session_log: Any, step_num: int
+) -> None:
+    """Await the same step observer contract in the async driver."""
+    for hook in hooks:
+        method = getattr(hook, "post_step", None)
+        if method is not None:
+            result = method(state, session_log, step_num)
+            if inspect.isawaitable(result):
+                await result
+
+
+def _post_step_stop_reason(
+    hooks: list[Any],
+    *,
+    state: Any,
+    session_log: Any,
+    context: Any,
+    step_num: int,
+    new_entities: int,
+    requested_reason: str | None,
+) -> str | None:
+    """Apply post-step stopping to ordinary, rejected, and synthetic turns."""
+    if requested_reason is not None:
+        return requested_reason
+    for hook in hooks:
+        if hasattr(hook, "should_stop"):
+            decision = normalize_hook_return(
+                _invoke_hook(hook, "should_stop", state, step_num, new_entities),
+                slot="should_stop",
+            )
+            if decision is not None:
+                _emit_hook_decision_event(
+                    hooks,
+                    decision=decision,
+                    hook_slot="should_stop",
+                    hook_name=type(hook).__name__,
+                    step_num=step_num,
+                    state=state,
+                    session_log=session_log,
+                    context=context,
+                )
+                if decision.is_stop():
+                    return decision.stop or "hook_stop"
+    return None
+
+
+async def _post_step_stop_reason_async(
+    hooks: list[Any],
+    *,
+    state: Any,
+    session_log: Any,
+    context: Any,
+    step_num: int,
+    new_entities: int,
+    requested_reason: str | None,
+) -> str | None:
+    """Await hook invocations with the same post-step stopping policy."""
+    if requested_reason is not None:
+        return requested_reason
+    for hook in hooks:
+        if hasattr(hook, "should_stop"):
+            raw = _invoke_hook(hook, "should_stop", state, step_num, new_entities)
+            if inspect.isawaitable(raw):
+                raw = await raw
+            decision = normalize_hook_return(raw, slot="should_stop")
+            if decision is not None:
+                await _emit_hook_decision_event_async(
+                    hooks,
+                    decision=decision,
+                    hook_slot="should_stop",
+                    hook_name=type(hook).__name__,
+                    step_num=step_num,
+                    state=state,
+                    session_log=session_log,
+                    context=context,
+                )
+                if decision.is_stop():
+                    return decision.stop or "hook_stop"
+    return None
+
+
 def _call_check_done(
     hook: Any,
     state: Any,
@@ -2930,6 +3021,7 @@ def _composable_loop_impl(
             _history.record_step(
                 step, theory="", entities=[], findings=[], highlights=[], recall_key=""
             )
+            _notify_post_step(hooks, state, session_log, step_num)
             break
 
         # ── Parse response (native tool_use or JSON text) ────
@@ -2960,11 +3052,27 @@ def _composable_loop_impl(
                     _history.record_step(
                         step, theory="", entities=[], findings=[], highlights=[], recall_key=""
                     )
+                    _notify_post_step(hooks, state, session_log, step_num)
+                    reason = _post_step_stop_reason(
+                        hooks,
+                        state=state,
+                        session_log=session_log,
+                        context=context,
+                        step_num=step_num,
+                        new_entities=0,
+                        requested_reason=stop_reason if _hook_requested_stop else None,
+                    )
+                    if reason is not None:
+                        stop_reason = reason
+                        done = True
+                        break
                     continue
                 if _recovery_action is not None and _recovery_action.message:
                     post_dispatch_parts.append(_recovery_action.message)
-            if consecutive_parse_failures <= PARSE_RECOVERY_MAX and (
-                not native_policy.enabled or native_policy.demoted
+            if (
+                not _hook_requested_stop
+                and consecutive_parse_failures <= PARSE_RECOVERY_MAX
+                and (not native_policy.enabled or native_policy.demoted)
             ):
                 logger.warning(
                     "Parse failure %d/%d at step %d - attempting recovery",
@@ -3008,6 +3116,20 @@ def _composable_loop_impl(
                 _history.record_step(
                     step, theory="", entities=[], findings=[], highlights=[], recall_key=""
                 )
+                _notify_post_step(hooks, state, session_log, step_num)
+                reason = _post_step_stop_reason(
+                    hooks,
+                    state=state,
+                    session_log=session_log,
+                    context=context,
+                    step_num=step_num,
+                    new_entities=0,
+                    requested_reason=stop_reason if _hook_requested_stop else None,
+                )
+                if reason is not None:
+                    stop_reason = reason
+                    done = True
+                    break
                 continue
         else:
             consecutive_parse_failures = 0
@@ -3242,10 +3364,7 @@ def _composable_loop_impl(
                     highlights=step_highlights,
                     recall_key=recall_key,
                 )
-                for _hook in hooks:
-                    _post_step = getattr(_hook, "post_step", None)
-                    if _post_step is not None:
-                        _post_step(state, session_log, cur_step)
+                _notify_post_step(hooks, state, session_log, cur_step)
 
                 # Save checkpoint after the session log and conversation include this step.
                 if _ckpt_store is not None:
@@ -3518,10 +3637,7 @@ def _composable_loop_impl(
                     recall_key="",
                 )
                 if rejected_done:
-                    for _hook in hooks:
-                        _post_step = getattr(_hook, "post_step", None)
-                        if _post_step is not None:
-                            _post_step(state, session_log, cur_step)
+                    _notify_post_step(hooks, state, session_log, cur_step)
                     continue
                 _set_run_lifecycle(
                     loop_ctx,
@@ -3529,10 +3645,7 @@ def _composable_loop_impl(
                     phase=RunPhase.TERMINAL,
                     termination_reason="done",
                 )
-                for _hook in hooks:
-                    _post_step = getattr(_hook, "post_step", None)
-                    if _post_step is not None:
-                        _post_step(state, session_log, cur_step)
+                _notify_post_step(hooks, state, session_log, cur_step)
                 # Save checkpoint after done step (after yield, matching non-done pattern)
                 if _ckpt_store is not None:
                     loop_ctx.step_num = cur_step
@@ -3584,33 +3697,18 @@ def _composable_loop_impl(
         if done:
             continue
 
-        # Honor HookDecision.stop signalled during post_dispatch.
-        if _hook_requested_stop:
+        reason = _post_step_stop_reason(
+            hooks,
+            state=state,
+            session_log=session_log,
+            context=context,
+            step_num=step_num,
+            new_entities=len(all_step_entities),
+            requested_reason=stop_reason if _hook_requested_stop else None,
+        )
+        if reason is not None:
+            stop_reason = reason
             done = True
-            break
-
-        for hook in hooks:
-            if hasattr(hook, "should_stop"):
-                _raw = _invoke_hook(hook, "should_stop", state, step_num, len(all_step_entities))
-                _decision = normalize_hook_return(_raw, slot="should_stop")
-                if _decision is not None:
-                    _emit_hook_decision_event(
-                        hooks,
-                        decision=_decision,
-                        hook_slot="should_stop",
-                        hook_name=type(hook).__name__,
-                        step_num=step_num,
-                        state=state,
-                        session_log=session_log,
-                        context=context,
-                    )
-                _stopped = _decision.is_stop() if _decision else False
-                if _stopped:
-                    logger.info("Hook %s requested stop at step %d", type(hook).__name__, step_num)
-                    done = True
-                    stop_reason = _decision.stop if _decision and _decision.stop else "hook_stop"
-                    break
-        if done:
             break
 
     # ── Post-loop hooks ─────────────────────────────────────

@@ -67,7 +67,9 @@ from looplet.loop import (
     _emit_hook_decision_event_async,
     _intercept_tool_calls_async,
     _mark_failed_state,
+    _notify_post_step_async,
     _policy_checkpoint_metadata,
+    _post_step_stop_reason_async,
     _reset_context_overrides,
     _run_post_dispatch_hooks_async,
     _set_context_overrides,
@@ -1122,6 +1124,10 @@ async def _async_composable_loop_impl(
             state.steps.append(step)
             yield step
             stop_reason = "llm_error"
+            _history.record_step(
+                step, theory="", entities=[], findings=[], highlights=[], recall_key=""
+            )
+            await _notify_post_step_async(hooks, state, session_log, step_num)
             break
 
         # ── Parse response ──────────────────────────────────────
@@ -1152,12 +1158,28 @@ async def _async_composable_loop_impl(
                     _history.record_step(
                         step, theory="", entities=[], findings=[], highlights=[], recall_key=""
                     )
+                    await _notify_post_step_async(hooks, state, session_log, step_num)
                     _save_checkpoint(step_num)
+                    reason = await _post_step_stop_reason_async(
+                        hooks,
+                        state=state,
+                        session_log=session_log,
+                        context=context,
+                        step_num=step_num,
+                        new_entities=0,
+                        requested_reason=stop_reason if _hook_requested_stop else None,
+                    )
+                    if reason is not None:
+                        stop_reason = reason
+                        done = True
+                        break
                     continue
                 if recovery_action is not None and recovery_action.message:
                     post_dispatch_parts.append(recovery_action.message)
-            if consecutive_parse_failures <= PARSE_RECOVERY_MAX and (
-                not native_policy.enabled or native_policy.demoted
+            if (
+                not _hook_requested_stop
+                and consecutive_parse_failures <= PARSE_RECOVERY_MAX
+                and (not native_policy.enabled or native_policy.demoted)
             ):
                 recovery_prompt = build_parse_recovery_prompt(prompt, to_text(raw_response) or "")
                 recovery_result = await async_llm_call(
@@ -1196,7 +1218,21 @@ async def _async_composable_loop_impl(
                     highlights=[],
                     recall_key="",
                 )
+                await _notify_post_step_async(hooks, state, session_log, step_num)
                 _save_checkpoint(step_num)
+                reason = await _post_step_stop_reason_async(
+                    hooks,
+                    state=state,
+                    session_log=session_log,
+                    context=context,
+                    step_num=step_num,
+                    new_entities=0,
+                    requested_reason=stop_reason if _hook_requested_stop else None,
+                )
+                if reason is not None:
+                    stop_reason = reason
+                    done = True
+                    break
                 continue
         else:
             consecutive_parse_failures = 0
@@ -1399,10 +1435,7 @@ async def _async_composable_loop_impl(
                     highlights=step_highlights,
                     recall_key=tool_result.result_key or "",
                 )
-                for _hook in hooks:
-                    _post_step = getattr(_hook, "post_step", None)
-                    if _post_step is not None:
-                        await _maybe_await(_post_step(state, session_log, cur_step))
+                await _notify_post_step_async(hooks, state, session_log, cur_step)
                 if stream is not None and _ToolResultEvent is not None:
                     stream.emit(
                         _ToolResultEvent(
@@ -1535,7 +1568,7 @@ async def _async_composable_loop_impl(
                     stream.emit(
                         _StepEndEvent(
                             step_num=cur_step,
-                            classification="done",
+                            classification="rejected",
                             new_entities_count=0,
                             metadata=done_metadata.get("turn", {}),
                         )
@@ -1548,6 +1581,7 @@ async def _async_composable_loop_impl(
                     highlights=[],
                     recall_key="",
                 )
+                await _notify_post_step_async(hooks, state, session_log, cur_step)
                 _save_checkpoint(cur_step)
             else:
                 _ctx = _build_tool_ctx(
@@ -1622,10 +1656,7 @@ async def _async_composable_loop_impl(
                     phase=RunPhase.TERMINAL,
                     termination_reason="done",
                 )
-                for _hook in hooks:
-                    _post_step = getattr(_hook, "post_step", None)
-                    if _post_step is not None:
-                        await _maybe_await(_post_step(state, session_log, cur_step))
+                await _notify_post_step_async(hooks, state, session_log, cur_step)
                 _save_checkpoint(cur_step, status="done")
                 done = True
                 stop_reason = "done"
@@ -1643,34 +1674,19 @@ async def _async_composable_loop_impl(
         if done:
             continue
 
-        if _hook_requested_stop:
+        reason = await _post_step_stop_reason_async(
+            hooks,
+            state=state,
+            session_log=session_log,
+            context=context,
+            step_num=step_num,
+            new_entities=len(all_step_entities),
+            requested_reason=stop_reason if _hook_requested_stop else None,
+        )
+        if reason is not None:
+            stop_reason = reason
             done = True
             break
-
-        # Should-stop check
-        for hook in hooks:
-            if hasattr(hook, "should_stop"):
-                from looplet.hook_decision import normalize_hook_return  # noqa: PLC0415
-
-                _raw = await _maybe_await(
-                    _invoke_hook(hook, "should_stop", state, step_num, len(all_step_entities))
-                )
-                _decision = normalize_hook_return(_raw, slot="should_stop")
-                if _decision is not None:
-                    await _emit_hook_decision_event_async(
-                        hooks,
-                        decision=_decision,
-                        hook_slot="should_stop",
-                        hook_name=type(hook).__name__,
-                        step_num=step_num,
-                        state=state,
-                        session_log=session_log,
-                        context=context,
-                    )
-                if _decision is not None and _decision.is_stop():
-                    stop_reason = _decision.stop or "hook_requested_stop"
-                    done = True
-                    break
 
     final_status = (
         RunStatus.COMPLETED

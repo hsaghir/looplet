@@ -15,7 +15,6 @@ import os
 import sys
 
 from looplet import (
-    DefaultState,
     EvalContext,
     EvalHook,
     LoopConfig,
@@ -70,8 +69,8 @@ def eval_greeted_everyone(ctx: EvalContext) -> float:
 
 
 def eval_completed(ctx: EvalContext) -> bool:
-    """Did the agent call done()?"""
-    return "done" in ctx.tool_sequence
+    """Was the agent's completion accepted?"""
+    return ctx.completed
 
 
 # ── Main ─────────────────────────────────────────────────────────
@@ -109,7 +108,6 @@ def main(argv: list[str] | None = None) -> int:
     for step in composable_loop(
         llm=llm,
         tools=build_tools(),
-        state=DefaultState(max_steps=args.max_steps),
         config=LoopConfig(max_steps=args.max_steps, use_native_tools=not args.scripted),
         task={"goal": "Greet Alice and Bob, then finish."},
         hooks=[

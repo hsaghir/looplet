@@ -39,7 +39,6 @@ from typing import Any
 
 from looplet import (
     ApprovalHook,
-    DefaultState,
     LoopConfig,
     composable_loop,
     tool,
@@ -154,6 +153,7 @@ def main(argv: list[str] | None = None) -> int:
 
     config = LoopConfig(
         max_steps=6,
+        use_native_tools=False,
         approval_handler=handler,
         system_prompt=(
             "You are a data cleanup agent. Head the table, count by "
@@ -173,7 +173,6 @@ def main(argv: list[str] | None = None) -> int:
     for step in composable_loop(
         llm=llm,
         tools=tools,
-        state=DefaultState(max_steps=6),
         config=config,
         task={"goal": "Clean up cancelled rows in orders."},
         hooks=[DebugHook(), ApprovalHook()],

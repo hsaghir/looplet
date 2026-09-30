@@ -20,7 +20,6 @@ import os
 import sys
 
 from looplet import (
-    DefaultState,
     LoopConfig,
     MockLLMBackend,
     composable_loop,
@@ -89,7 +88,6 @@ def main(argv: list[str] | None = None) -> int:
     for step in composable_loop(
         llm=llm,
         tools=build_tools(),
-        state=DefaultState(max_steps=args.max_steps),
         config=LoopConfig(
             max_steps=args.max_steps,
             use_native_tools=not args.scripted,

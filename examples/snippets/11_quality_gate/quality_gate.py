@@ -61,11 +61,11 @@ class QualityGate:
 
 # Usage:
 #
-#     from looplet import composable_loop, LoopConfig, DefaultState
+#     from looplet import composable_loop, LoopConfig
 #
 #     hook = QualityGate(cmd="uv run pytest -q && uv run ruff check .")
 #     for step in composable_loop(
-#         llm=my_llm, tools=my_tools, state=DefaultState(max_steps=20),
+#         llm=my_llm, tools=my_tools,
 #         config=LoopConfig(max_steps=20), hooks=[hook],
 #         task={"goal": "Implement feature X with tests"},
 #     ):

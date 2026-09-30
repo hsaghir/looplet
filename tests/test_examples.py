@@ -2,9 +2,117 @@
 
 from __future__ import annotations
 
+import importlib.util
+import json
+from pathlib import Path
+
 import pytest
 
 pytestmark = pytest.mark.smoke
+
+EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
+CARTRIDGES = sorted(path.parent for path in EXAMPLES.rglob("cartridge.json"))
+
+
+@pytest.mark.parametrize("cartridge", CARTRIDGES, ids=lambda path: str(path.relative_to(EXAMPLES)))
+def test_every_example_cartridge_has_a_valid_owned_preset(cartridge, tmp_path):
+    from looplet import cartridge_to_preset, validate_preset_contract
+
+    with cartridge_to_preset(
+        cartridge, runtime={"project_root": str(tmp_path)}, strict=True
+    ) as preset:
+        validation = validate_preset_contract(preset)
+        assert validation.ok, validation.errors
+        for spec in preset.tools.tool_specs.values():
+            assert spec.to_api_schema()["input_schema"] == spec.to_json_schema()
+
+
+def _snippet(relative):
+    path = EXAMPLES / "snippets" / relative
+    spec = importlib.util.spec_from_file_location(path.stem, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_portability_snippet_executes_all_three_paths():
+    snippet = _snippet("08_portability/run_three_ways.py")
+    assert snippet.via_local_loop() == 2
+    assert snippet.via_subagent() == 2
+    assert snippet.via_scripted_rerun() == 2
+
+
+def test_delegation_snippet_keeps_child_resources_and_hooks(monkeypatch):
+    from looplet import MockLLMBackend
+
+    snippet = _snippet("04_subagent/demo.py")
+    backend = MockLLMBackend(
+        [
+            '{"tool":"ask_helper","args":{"question":"Greet Alice"}}',
+            '{"tool":"greet","args":{"name":"Alice"}}',
+            '{"tool":"done","args":{"summary":"greeted"}}',
+            '{"tool":"done","args":{"summary":"helper finished"}}',
+        ],
+        cycle=False,
+    )
+    monkeypatch.setattr(snippet, "_backend", lambda: backend)
+    assert snippet.main(["Delegate greeting Alice"]) == 0
+    assert backend.calls == 4
+
+
+def test_lifecycle_snippet_runs_cartridge_wiring(monkeypatch, capsys):
+    import sys
+
+    snippet = _snippet("09_lifecycle/tag_trajectory.py")
+    monkeypatch.setattr(sys, "argv", ["tag_trajectory.py", str(EXAMPLES / "hello.cartridge")])
+    snippet.main()
+    record = json.loads(capsys.readouterr().out)
+    assert [step["tool"] for step in record["trajectory"]] == ["greet", "done"]
+    assert all(step["ok"] for step in record["trajectory"])
+
+
+@pytest.mark.parametrize(
+    ("relative", "arguments"),
+    [
+        ("02_ablation/ablate.py", []),
+        ("03_diff/diff_workspaces.py", ["hello.cartridge", "hello.cartridge"]),
+        ("06_registry/registry.py", ["list", "."]),
+        ("07_admission/admit.py", ["hello.cartridge"]),
+        ("10_evolution/evolve.py", ["hello.cartridge", "1"]),
+    ],
+)
+def test_static_snippet_commands_execute(relative, arguments):
+    import subprocess
+    import sys
+
+    command = [
+        sys.executable,
+        str(EXAMPLES / "snippets" / relative),
+        *[
+            str(EXAMPLES / argument)
+            if argument.endswith(".cartridge") or argument == "."
+            else argument
+            for argument in arguments
+        ],
+    ]
+    result = subprocess.run(
+        command, cwd=EXAMPLES.parent, capture_output=True, text=True, timeout=30, check=False
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_quality_gate_snippet_preserves_completion_rejection():
+    import shlex
+    import sys
+
+    snippet = _snippet("11_quality_gate/quality_gate.py")
+    interpreter = shlex.quote(sys.executable)
+    passing = snippet.QualityGate(cmd=f"{interpreter} -c 'raise SystemExit(0)'")
+    failing = snippet.QualityGate(cmd=f"{interpreter} -c 'raise SystemExit(1)'")
+    assert passing.check_done(None, None, None, 1) is None
+    decision = failing.check_done(None, None, None, 1)
+    assert decision.is_block()
+    assert "exit 1" in decision.block
 
 
 # ── hello_world ──────────────────────────────────────────────────

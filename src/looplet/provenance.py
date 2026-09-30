@@ -1251,7 +1251,7 @@ def replay_loop(
             use_native_tools=calls[0]["method"] == "generate_with_tools",
         )
     if state is None:
-        state = DefaultState(max_steps=max(len(calls), 1))
+        state = DefaultState(max_steps=config.max_steps)
     yield from composable_loop(
         llm=backend,
         tools=tools,

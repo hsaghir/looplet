@@ -48,7 +48,6 @@ from looplet import (
     ApprovalHook,
     ContextBudget,
     DefaultCompactService,
-    DefaultState,
     LoopConfig,
     MockLLMBackend,
     ThresholdCompactHook,
@@ -317,7 +316,6 @@ def main(argv: list[str] | None = None) -> int:
     for step in composable_loop(
         llm=llm,
         tools=tools,
-        state=DefaultState(max_steps=10),
         config=config,
         task={"goal": (f"inspect the orders CSV at {csv_path} and clean up cancelled orders")},
         hooks=hooks,

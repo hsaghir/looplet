@@ -342,10 +342,8 @@ from looplet import cartridge_to_preset
 preset = cartridge_to_preset(str(root), runtime={"workspace": "."})
 
 # 4. Run.
-from looplet import composable_loop
-for step in composable_loop(
-    llm=my_llm, config=preset.config, tools=preset.tools,
-    state=preset.state, hooks=preset.hooks,
+for step in preset.run(
+    my_llm,
     task={"goal": "Summarize https://example.com"},
 ):
     print(step.pretty())
@@ -360,7 +358,7 @@ For class-wraps (singleton resources), write `resources/<name>.py` with a `build
 ## Recipe 1 - Minimal agent (5 lines)
 
 ```python
-from looplet import composable_loop, LoopConfig, DefaultState, tool, tools_from
+from looplet import composable_loop, LoopConfig, tool, tools_from
 
 @tool
 def greet(*, name: str) -> dict:
@@ -370,7 +368,7 @@ def greet(*, name: str) -> dict:
 tools = tools_from([greet], include_done=True, done_parameters={"answer": "Final answer"})
 
 for step in composable_loop(
-    llm=my_llm, tools=tools, state=DefaultState(max_steps=5),
+    llm=my_llm, tools=tools,
     config=LoopConfig(max_steps=5), task={"goal": "Greet Alice, then finish."},
 ):
     print(step.pretty())
@@ -383,12 +381,8 @@ from looplet.presets import coding_agent_preset
 
 preset = coding_agent_preset(workspace="/path/to/project")
 
-for step in composable_loop(
-    llm=my_llm,
-    tools=preset.tools,
-    state=preset.state,
-    config=preset.config,
-    hooks=preset.hooks,
+for step in preset.run(
+    my_llm,
     task={"description": "Implement a REST API with tests"},
 ):
     print(step.pretty())
@@ -398,7 +392,7 @@ for step in composable_loop(
 
 ```python
 from looplet import (
-    composable_loop, LoopConfig, DefaultState, tool, tools_from,
+    composable_loop, LoopConfig, tool, tools_from,
     HookDecision, InjectContext, StaticMemorySource,
     DefaultCompactService,
     ContextBudget, ThresholdCompactHook, EvalHook,
@@ -446,7 +440,7 @@ config = LoopConfig(
 
 # 4. Run
 for step in composable_loop(
-    llm=my_llm, tools=tools, state=DefaultState(max_steps=20),
+    llm=my_llm, tools=tools,
     config=config, hooks=[MyHook(), ThresholdCompactHook(ContextBudget(context_window=128_000))],
     task={"description": "Build a fibonacci module with tests"},
 ):
@@ -496,7 +490,7 @@ class SecurityGuard:
 ## Recipe 6 - Test without a real LLM
 
 ```python
-from looplet import composable_loop, LoopConfig, DefaultState, MockLLMBackend, tool, tools_from
+from looplet import composable_loop, LoopConfig, MockLLMBackend, tool, tools_from
 
 def test_my_agent():
     llm = MockLLMBackend(responses=[
@@ -511,7 +505,7 @@ def test_my_agent():
     tools = tools_from([bash], include_done=True, done_parameters={"summary": "Summary"})
 
     steps = list(composable_loop(
-        llm=llm, tools=tools, state=DefaultState(max_steps=5),
+        llm=llm, tools=tools,
         config=LoopConfig(max_steps=5), task={"goal": "run echo"},
     ))
 
@@ -725,14 +719,17 @@ config = LoopConfig(
 These are the sharp edges coding agents hit most often. All have
 principled fixes in the library; the notes below are the "right way."
 
-1. **`LoopConfig.max_steps` and `DefaultState(max_steps=...)` must
-   match.** The loop warns and syncs to the config value, but pass the
-   same N to both to silence it:
+1. **Configure default-state limits once.** `LoopConfig.max_steps` is
+    authoritative. Omit `state` unless you need custom or restored state:
    ```python
-   N = 20
-   config = LoopConfig(max_steps=N)
-   state  = DefaultState(max_steps=N)
+    config = LoopConfig(max_steps=20)
+    for step in composable_loop(llm=my_llm, tools=tools, config=config):
+         print(step.pretty())
    ```
+    The loop creates its default state from the config. A supplied
+    `DefaultState` with a different limit is synchronized with a warning;
+    the lower limit does not win. An explicit `max_steps=` convenience
+    argument overrides the config value.
 
 2. **`redact=` in `ProvenanceSink` / `RecordingLLMBackend` scrubs
    UPSTREAM by default.** Secrets never reach the provider OR the
@@ -780,7 +777,9 @@ principled fixes in the library; the notes below are the "right way."
 9. **`NativeToolBackend.generate_with_tools`** is surfaced via
    `hasattr` on the wrapped backend. Recording/redacting wrappers
    preserve this automatically; custom wrappers must forward it or
-   native tool-calling silently falls back to JSON parsing.
+    explicitly configure `use_native_tools=False` for JSON-text calls.
+    Missing native capability is an error when native tools are enabled,
+    not a silent fallback.
 
 10. **Prefer Protocol-conforming classes over inheritance.** All hooks,
     LLM backends, and states are `@runtime_checkable` Protocols -
@@ -945,9 +944,10 @@ only touch the first group.
 **Escape hatches (rare - only when `build_prompt` isn't enough):**
 `render_messages_override`
 
-> **Footgun:** `LoopConfig(max_steps=N)` and `DefaultState(max_steps=M)`
-> must match. The loop now warns and syncs to the config value, but you
-> should still pass the same N to both.
+> **Default path:** set `LoopConfig(max_steps=N)` and omit `state`.
+> Supply a state only for custom fields, host inspection, or recovery.
+> A supplied `DefaultState` follows the config limit, with a warning if
+> it initially differs. Use a fresh preset for each independent run.
 
 ## Canonical hook return values
 

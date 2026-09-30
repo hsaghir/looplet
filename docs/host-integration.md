@@ -228,3 +228,18 @@ the host needs lifecycle, identity, cancellation, and persistence. Always
 close the preset and any host-owned resources. `AgentPreset.close()` and
 `EvalRunRecord.cleanup()` distinguish clean-up of temporary execution state
 from persisted evidence.
+
+`preset.run()` and `preset.run_async()` share validation and protocol binding,
+including envelope-aware extra hooks. A setup failure releases the preset
+claim so the host can repair the binding and retry before execution. Gateway
+binding errors fail before execution in both modes; the sync path no longer
+continues with an unbound or stale gateway. Closing an unstarted iterator also
+releases its claim. Once execution starts, use a fresh preset for another run.
+The synchronous iterator preserves the loop's return trace in
+`StopIteration.value`, so manual iteration remains available.
+
+The optional runtime shares event/checkpoint setup, config restoration,
+persistence warnings, and claim release across sync and async drivers.
+External async task cancellation still propagates as `CancelledError` while
+restoring the runtime's temporary config. Background handles and bounded
+shutdown remain optional host capabilities, not requirements for direct loops.

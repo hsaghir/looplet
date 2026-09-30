@@ -18,6 +18,98 @@ from looplet import (
 from looplet.testing import AsyncMockLLMBackend
 
 
+@pytest.mark.parametrize("async_run", [False, True])
+@pytest.mark.parametrize(
+    "fault", ["create", "append_event", "save_checkpoint", "complete", "session"]
+)
+async def test_runtime_faults_share_restoration_and_persistence_contract(async_run, fault):
+    from looplet import CancelToken, RunEnvelope
+
+    class BrokenStore(MemoryRunStore):
+        def create(self, *args, **kwargs):
+            if fault == "create":
+                raise OSError("injected create")
+            return super().create(*args, **kwargs)
+
+        def append_event(self, *args, **kwargs):
+            if fault == "append_event":
+                raise OSError("injected append_event")
+            return super().append_event(*args, **kwargs)
+
+        def save_checkpoint(self, *args, **kwargs):
+            if fault == "save_checkpoint":
+                raise OSError("injected save_checkpoint")
+            return super().save_checkpoint(*args, **kwargs)
+
+        def complete(self, *args, **kwargs):
+            if fault == "complete":
+                raise OSError("injected complete")
+            return super().complete(*args, **kwargs)
+
+    class BrokenSession:
+        def attach(self, run_id):
+            raise OSError("injected session")
+
+        def close(self):
+            pass
+
+    preset = _preset(use_native_tools=False)
+    original_envelope = RunEnvelope(run_id="original")
+    original_token = CancelToken()
+    preset.config.run_envelope = original_envelope
+    preset.config.cancel_token = original_token
+    backend = (AsyncMockLLMBackend if async_run else MockLLMBackend)(
+        ['{"tool":"done","args":{"summary":"ok"}}']
+    )
+    with AgentRuntime(
+        preset,
+        store=BrokenStore(),
+        session=BrokenSession() if fault == "session" else None,
+        checkpoint_every_n_steps=1,
+    ) as runtime:
+        result = await runtime.run_async(backend) if async_run else runtime.run(backend)
+        assert not runtime._active_tokens
+
+    assert preset.config.run_envelope is original_envelope
+    assert preset.config.cancel_token is original_token
+    assert result.status is (RunStatus.FAILED if fault == "session" else RunStatus.COMPLETED)
+    assert result.metadata["runtime_duration_ms"] >= 0
+    if fault == "session":
+        assert "injected session" in result.metadata["error"]
+    else:
+        assert any(
+            f"injected {fault}" in warning for warning in result.metadata["persistence_warnings"]
+        )
+
+
+async def test_external_async_cancellation_restores_and_releases_runtime():
+    entered = asyncio.Event()
+    blocked = asyncio.Event()
+
+    class Backend:
+        async def generate(self, prompt, **kwargs):
+            entered.set()
+            await blocked.wait()
+            return '{"tool":"done","args":{"summary":"ok"}}'
+
+    preset = _preset(use_native_tools=False)
+    envelope = preset.config.run_envelope
+    token = preset.config.cancel_token
+    runtime = AgentRuntime(preset)
+    pending = asyncio.create_task(runtime.run_async(Backend()))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        pending.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await pending
+        assert not runtime._active_tokens
+        assert preset.config.run_envelope is envelope
+        assert preset.config.cancel_token is token
+    finally:
+        blocked.set()
+        runtime.close()
+
+
 def _preset(*, use_native_tools: bool = True) -> AgentPreset:
     tools = BaseToolRegistry()
     register_done_tool(tools)

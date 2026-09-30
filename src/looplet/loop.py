@@ -32,6 +32,7 @@ from looplet.history import HistoryRecorder
 from looplet.hook_decision import HookDecision, normalize_hook_return
 from looplet.native_tools import NativeToolPolicy
 from looplet.parse import parse_multi_tool_calls, to_text
+from looplet.prompt_preparation import PreparedPrompt, prepare_prompt, render_projection
 from looplet.recovery import FailureScenario as _FailureScenario
 from looplet.recovery_strategies import (
     rebuild_prompt as _rebuild_prompt,
@@ -49,9 +50,11 @@ from looplet.scaffolding import (
     LLMResult,
     NativeToolStats,
     build_parse_recovery_prompt,
-    estimate_prompt_tokens,
     llm_call_with_retry,
     truncate_tool_result,
+)
+from looplet.scaffolding import (
+    estimate_prompt_tokens as estimate_prompt_tokens,
 )
 from looplet.session import SessionLog
 from looplet.tools import BaseToolRegistry, _summarize_args_dict
@@ -1773,19 +1776,7 @@ def _render_projection(
     projection: ContextProjection,
 ) -> str:
     """Invoke a new projection renderer or a legacy keyword renderer."""
-    import inspect  # noqa: PLC0415
-
-    try:
-        parameters = inspect.signature(renderer).parameters
-    except (TypeError, ValueError):
-        parameters = {}
-    if "projection" in parameters:
-        return renderer(projection=projection)
-    return renderer(
-        messages=list(projection.messages),
-        default_prompt=projection.default_prompt,
-        step_num=projection.step_num,
-    )
+    return render_projection(renderer, projection)
 
 
 # ── Composable Agent Loop ───────────────────────────────────────
@@ -2644,119 +2635,27 @@ def _composable_loop_impl(
             context_history += "\n" + quality_gate_message
             quality_gate_message = ""
 
-        # Persistent memory: rendered once
-        # per turn, placed above TASK by the default prompt builder.
-        _memory_sources = getattr(config, "memory_sources", None)
-        if _memory_sources:
-            from looplet.memory import render_memory as _render_memory  # noqa: PLC0415
-
-            _rendered_memory = _render_memory(_memory_sources, state)
-        else:
-            _rendered_memory = ""
-
-        _tool_view = tools.tool_view(
-            config.tool_view_selector(step_num=step_num, state=state, tools=tools, task=task)
-            if config.tool_view_selector is not None
-            else None
-        )
-        _scoped_context, _scoped_plan = (
-            _context_sources.select(task=task, state=state, step_num=step_num)
-            if _context_sources is not None
-            else ("", None)
-        )
-        _selected_memory = "\n\n".join(part for part in (_rendered_memory, _scoped_context) if part)
-        _tool_catalog = _tool_view.catalog_text
-        _state_summary_raw = state.snapshot()
-        _state_summary = _state_summary_raw if isinstance(_state_summary_raw, dict) else {}
-        _session_log_text = str(session_log.render())
-        _briefing_text = "\n".join(str(part) for part in briefing_parts)
-        context_plan = None
-        if config.context_planner is not None:
-            context_plan = config.context_planner(
-                task=task,
-                tool_catalog=_tool_catalog,
-                state_summary=_state_summary,
-                context_history=context_history,
-                step_number=step_num,
-                session_log=_session_log_text,
-                briefing=_briefing_text,
-                memory=_selected_memory,
-            )
-        _prompt_kwargs = dict(
+        _prepared = prepare_prompt(
+            config=config,
+            state=state,
+            tools=tools,
+            session_log=session_log,
             task=task,
-            tool_catalog=_tool_catalog,
-            state_summary=_state_summary,
+            step_num=step_num,
+            briefing="\n".join(briefing_parts),
+            context_sources=_context_sources,
             context_history=context_history,
-            step_number=step_num,
-            max_steps=config.max_steps,
-            session_log=_session_log_text,
-            briefing=_briefing_text,
-            memory=_selected_memory,
+            hooks=hooks,
+            builder=build_prompt_fn,
+            conversation=_conv,
         )
-
-        # First-hook-wins ``build_prompt`` slot on LoopHook takes
-        # precedence over ``config.build_prompt`` / the default.
-        prompt: str | None = None
-        for hook in hooks:
-            if hasattr(hook, "build_prompt"):
-                try:
-                    _hp = hook.build_prompt(**_prompt_kwargs)
-                except Exception:  # noqa: BLE001
-                    logger.exception("build_prompt hook raised; falling back")
-                    _hp = None
-                if _hp is not None:
-                    prompt = _hp
-                    break
-
-        if prompt is None:
-            if build_prompt_fn is not None:
-                prompt = build_prompt_fn(**_prompt_kwargs)
-            else:
-                # Domain-agnostic default: 7-section structured prompt.
-                from looplet.prompts import (
-                    build_prompt as _default_build_prompt,  # noqa: PLC0415
-                )
-
-                prompt = _default_build_prompt(
-                    **{**_prompt_kwargs, "memory": _rendered_memory},
-                    scoped_context=_scoped_context,
-                )  # pyright: ignore[reportArgumentType]
-
-        # ── Byte-exact escape hatch (render_messages_override) ──
-        # If configured, the user takes full control of the prompt
-        # bytes after seeing the live conversation thread. We pass
-        # the would-be default prompt so the user can fall back to
-        # it for sections they don't want to change.
-        if config.render_messages_override is not None:
-            projection = ContextProjection(
-                messages=tuple(_conv.messages),
-                default_prompt=prompt,
-                step_num=step_num,
-                task=task,
-                tool_catalog=_tool_catalog,
-                state_summary=_state_summary,
-                context_history=context_history,
-                session_log=_session_log_text,
-                briefing=_briefing_text,
-                memory=_selected_memory,
-                context_plan=context_plan,
-                scoped_context=_scoped_context,
-                scoped_context_plan=_scoped_plan,
-            )
-            prompt = _render_projection(config.render_messages_override, projection)
-
-        # ── Pre-flight context check ──────────────────────────
-        estimated_tokens = estimate_prompt_tokens(prompt)
-        preflight_too_long = estimated_tokens > config.context_window - 3_000
-        briefing_text = "\n".join(briefing_parts)
-        loop_ctx.context_budget = ContextBudgetSnapshot(
-            prompt_chars=len(prompt),
-            estimated_tokens=estimated_tokens,
-            context_window_tokens=config.context_window,
-            briefing_chars=len(briefing_text),
-            context_history_chars=len(context_history),
-            pressure=preflight_too_long,
-        )
+        prompt = _prepared.prompt
+        _tool_view = _prepared.tool_view
+        _rendered_memory = _prepared.rendered_memory
+        _scoped_plan = _prepared.scoped_context_plan
+        loop_ctx.context_budget = _prepared.budget
+        estimated_tokens = _prepared.budget.estimated_tokens
+        preflight_too_long = _prepared.budget.pressure
         _state_metadata = getattr(state, "metadata", None)
         if loop_ctx.context_budget.pressure and isinstance(_state_metadata, dict):
             _state_metadata["context_budget"] = loop_ctx.context_budget.to_dict()
@@ -2895,6 +2794,29 @@ def _composable_loop_impl(
 
         # Reactive recovery: if prompt-too-long, try chained strategies
         if not llm_result.ok and llm_result.is_prompt_too_long and config.reactive_recovery:
+
+            def _prepare_recovery_prompt() -> PreparedPrompt:
+                nonlocal prompt, _tool_view, _rendered_memory, _scoped_plan
+                prepared = prepare_prompt(
+                    config=config,
+                    state=state,
+                    tools=tools,
+                    session_log=session_log,
+                    task=task,
+                    step_num=step_num,
+                    briefing="\n".join(briefing_parts),
+                    context_sources=_context_sources,
+                    hooks=hooks,
+                    builder=build_prompt_fn,
+                    conversation=_conv,
+                )
+                prompt = prepared.prompt
+                _tool_view = prepared.tool_view
+                _rendered_memory = prepared.rendered_memory
+                _scoped_plan = prepared.scoped_context_plan
+                loop_ctx.context_budget = prepared.budget
+                return prepared
+
             raw_response = _recovery_chain(
                 llm_result,
                 recovery_state,
@@ -2910,6 +2832,8 @@ def _composable_loop_impl(
                 step_num,
                 hooks=hooks,
                 conversation=_conv,
+                prepare_prompt_fn=_prepare_recovery_prompt,
+                native_policy=native_policy,
             )
             llm_calls += recovery_state.get("_last_recovery_llm_calls", 0)
             llm_result = LLMResult(raw_response)
@@ -3791,6 +3715,8 @@ def _recovery_chain(
     *,
     hooks: list[Any] | None = None,
     conversation: Any | None = None,
+    prepare_prompt_fn: Callable[[], PreparedPrompt] | None = None,
+    native_policy: NativeToolPolicy | None = None,
 ) -> Any:
     """Multi-strategy recovery chain for prompt-too-long errors.
 
@@ -3842,24 +3768,37 @@ def _recovery_chain(
         strategy_llm_calls = strategy_fn(state, session_log, llm, step_num)
         extra_llm_calls += strategy_llm_calls
 
-        prompt = _rebuild_prompt(
-            state,
-            session_log,
-            context,
-            build_briefing,
-            build_prompt_fn,
-            task,
-            tools,
-            config,
-            step_num,
+        prepared = prepare_prompt_fn() if prepare_prompt_fn is not None else None
+        if prepared is not None and prepared.budget.pressure:
+            continue
+        prompt = (
+            prepared.prompt
+            if prepared is not None
+            else _rebuild_prompt(
+                state,
+                session_log,
+                context,
+                build_briefing,
+                build_prompt_fn,
+                task,
+                tools,
+                config,
+                step_num,
+            )
         )
+        tool_schemas = native_policy.tool_schemas(llm, tools) if native_policy is not None else None
+        if tool_schemas is not None and prepared is not None:
+            tool_schemas = list(prepared.tool_view.schemas)
         retry_result = llm_call_with_retry(
             llm,
             prompt,
             max_tokens=config.max_tokens,
             system_prompt=config.system_prompt,
             temperature=config.temperature,
+            tools=tool_schemas,
+            native_policy=native_policy,
             cancel_token=config.cancel_token,
+            max_continuations=config.max_turn_continuations,
             generate_kwargs=config.generate_kwargs or None,
         )
         extra_llm_calls += 1

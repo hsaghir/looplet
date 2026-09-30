@@ -146,3 +146,89 @@ class _AsyncFlakyLLM:
         if isinstance(item, Exception):
             raise item
         return item
+
+
+@pytest.mark.parametrize("async_mode", [False, True])
+async def test_repeated_overflow_recovers_without_repeating_pre_prompt(async_mode):
+    from looplet import async_composable_loop
+
+    script = [
+        _PromptTooLongError(),
+        '{"tool":"noop","args":{}}',
+        _PromptTooLongError(),
+        '{"tool":"done","args":{"summary":"ok"}}',
+    ]
+    backend = (_AsyncFlakyLLM if async_mode else _FlakyLLM)(script)
+    calls = []
+
+    class Hook:
+        def pre_prompt(self, state, session_log, context, step_num):
+            calls.append(step_num)
+            return "retained briefing"
+
+    kwargs = dict(
+        llm=backend,
+        tools=_registry(),
+        hooks=[Hook()],
+        config=LoopConfig(max_steps=3, use_native_tools=False),
+    )
+    steps = (
+        [step async for step in async_composable_loop(**kwargs)]
+        if async_mode
+        else list(composable_loop(**kwargs))
+    )
+    assert [step.tool_call.tool for step in steps] == ["noop", "done"]
+    assert backend.calls == 4
+    assert calls == [1, 2]
+
+
+@pytest.mark.parametrize("async_mode", [False, True])
+@pytest.mark.parametrize("routed", [False, True])
+async def test_parse_recovery_keeps_explicit_text_policy_and_effective_backend(async_mode, routed):
+    from looplet import async_composable_loop
+
+    class Backend:
+        def __init__(self):
+            self.text_calls = 0
+            self.native_calls = 0
+
+        def generate(self, prompt, **kwargs):
+            self.text_calls += 1
+            return (
+                "not a tool call"
+                if self.text_calls == 1
+                else '{"tool":"done","args":{"summary":"ok"}}'
+            )
+
+        def generate_with_tools(self, prompt, **kwargs):
+            self.native_calls += 1
+            return [{"type": "text", "text": "wrong protocol"}]
+
+    class AsyncBackend(Backend):
+        async def generate(self, prompt, **kwargs):
+            return super().generate(prompt, **kwargs)
+
+        async def generate_with_tools(self, prompt, **kwargs):
+            return super().generate_with_tools(prompt, **kwargs)
+
+    backend = (AsyncBackend if async_mode else Backend)()
+    original = (AsyncBackend if async_mode else Backend)()
+
+    class Router:
+        def select(self, *, purpose):
+            return backend
+
+    kwargs = dict(
+        llm=original if routed else backend,
+        tools=_registry(),
+        config=LoopConfig(max_steps=3, use_native_tools=False, router=Router() if routed else None),
+    )
+    steps = (
+        [step async for step in async_composable_loop(**kwargs)]
+        if async_mode
+        else list(composable_loop(**kwargs))
+    )
+
+    assert [step.tool_call.tool for step in steps] == ["done"]
+    assert backend.text_calls == 2
+    assert backend.native_calls == original.native_calls == original.text_calls == 0

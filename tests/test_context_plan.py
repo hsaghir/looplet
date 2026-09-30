@@ -164,6 +164,222 @@ def test_loop_passes_plan_to_message_projection() -> None:
 
 @pytest.mark.parametrize("async_mode", [False, True])
 @pytest.mark.asyncio
+@pytest.mark.parametrize("native", [False, True])
+async def test_recovery_uses_the_same_prompt_preparation(async_mode, native):
+    from looplet import ToolSpec, async_composable_loop
+
+    class Backend:
+        def __init__(self):
+            self.prompts = []
+            self.schemas = []
+
+        def reply(self, prompt, schemas=None):
+            self.prompts.append(prompt)
+            self.schemas.append(schemas)
+            if len(self.prompts) == 1:
+                raise RuntimeError("prompt is too long: 200000 tokens > 180000 limit")
+            if schemas is not None:
+                return [
+                    {"type": "tool_use", "id": "done-1", "name": "done", "input": {"summary": "ok"}}
+                ]
+            return '{"tool":"done","args":{"summary":"ok"}}'
+
+        def generate(self, prompt, **kwargs):
+            return self.reply(prompt)
+
+    class AsyncBackend(Backend):
+        async def generate(self, prompt, **kwargs):
+            return self.reply(prompt)
+
+    backend = AsyncBackend() if async_mode else Backend()
+    if native:
+
+        def generate_with_tools(prompt, *, tools, **kwargs):
+            return backend.reply(prompt, tools)
+
+        async def async_generate_with_tools(prompt, *, tools, **kwargs):
+            return backend.reply(prompt, tools)
+
+        backend.generate_with_tools = (
+            async_generate_with_tools if async_mode else generate_with_tools
+        )
+
+    loaded = []
+    sources = [
+        ScopedContextSource(
+            "allowed",
+            CallableMemorySource(lambda state: loaded.append("allowed") or "allowed guidance"),
+            retention="run",
+        ),
+        ScopedContextSource(
+            "private",
+            CallableMemorySource(lambda state: loaded.append("private") or "private guidance"),
+            scope=lambda **kwargs: False,
+        ),
+    ]
+    projections = []
+
+    class Builder:
+        def build_prompt(self, **kwargs):
+            return "HOOK\n" + kwargs["memory"] + "\n" + kwargs["tool_catalog"]
+
+    def render(*, projection):
+        projections.append(projection)
+        return "RENDER\n" + projection.default_prompt
+
+    tools = BaseToolRegistry()
+    register_done_tool(tools)
+    tools.register(ToolSpec("hidden", "Hidden tool", {}, lambda: None))
+    state = DefaultState(max_steps=2)
+    config = LoopConfig(
+        max_steps=2,
+        use_native_tools=native,
+        reactive_recovery=True,
+        scoped_context_sources=sources,
+        scoped_context_budget_tokens=50,
+        context_planner=lambda **kwargs: ContextPlan(
+            ("task",), estimated_tokens=100, budget_tokens=1
+        ),
+        render_messages_override=render,
+        tool_view_selector=lambda **kwargs: ("done",),
+    )
+    kwargs = dict(llm=backend, tools=tools, config=config, state=state, hooks=[Builder()])
+    steps = (
+        [step async for step in async_composable_loop(**kwargs)]
+        if async_mode
+        else list(composable_loop(**kwargs))
+    )
+
+    assert [step.tool_call.tool for step in steps] == ["done"]
+    assert len(backend.prompts) == len(projections) == 2
+    assert loaded == ["allowed"]
+    assert all(
+        "RENDER\nHOOK" in prompt and "allowed guidance" in prompt and "hidden(" not in prompt
+        for prompt in backend.prompts
+    )
+    assert all(projection.scoped_context_plan.sources == ("allowed",) for projection in projections)
+    assert all(not projection.context_plan.within_budget for projection in projections)
+    if native:
+        assert all(
+            [schema["name"] for schema in schemas] == ["done"] for schemas in backend.schemas
+        )
+
+
+@pytest.mark.parametrize("async_mode", [False, True])
+async def test_dynamic_memory_is_rendered_for_each_turn(async_mode):
+    from looplet import ToolSpec, async_composable_loop
+    from looplet.testing import AsyncMockLLMBackend
+
+    rendered = []
+    memory = CallableMemorySource(
+        lambda state: rendered.append(state.step_count) or f"turn-{state.step_count}"
+    )
+    tools = BaseToolRegistry()
+    register_done_tool(tools)
+    tools.register(ToolSpec("advance", "Advance", {}, lambda: None))
+    backend = (AsyncMockLLMBackend if async_mode else MockLLMBackend)(
+        [
+            '{"tool":"advance","args":{}}',
+            '{"tool":"done","args":{"summary":"ok"}}',
+        ]
+    )
+    kwargs = dict(
+        llm=backend,
+        tools=tools,
+        config=LoopConfig(max_steps=2, use_native_tools=False, memory_sources=[memory]),
+    )
+    if async_mode:
+        [step async for step in async_composable_loop(**kwargs)]
+    else:
+        list(composable_loop(**kwargs))
+    assert rendered == [0, 1]
+
+
+@pytest.mark.parametrize("async_mode", [False, True])
+async def test_permanently_oversized_renderer_never_reaches_provider(async_mode):
+    from looplet import async_composable_loop
+    from looplet.testing import AsyncMockLLMBackend
+
+    backend = (AsyncMockLLMBackend if async_mode else MockLLMBackend)(
+        ['{"tool":"done","args":{"summary":"ok"}}']
+    )
+    tools = BaseToolRegistry()
+    register_done_tool(tools)
+    state = DefaultState(max_steps=2)
+    config = LoopConfig(
+        max_steps=2,
+        context_window=6000,
+        use_native_tools=False,
+        render_messages_override=lambda **kwargs: "x" * 24_000,
+    )
+    kwargs = dict(llm=backend, tools=tools, config=config, state=state)
+    steps = (
+        [step async for step in async_composable_loop(**kwargs)]
+        if async_mode
+        else list(composable_loop(**kwargs))
+    )
+
+    assert [step.tool_call.tool for step in steps] == ["__llm_error__"]
+    assert backend.last_prompt == ""
+    assert state._stop_reason == "llm_error"
+
+
+@pytest.mark.parametrize("async_mode", [False, True])
+async def test_async_callbacks_builder_fallback_and_legacy_renderer(async_mode):
+    from looplet import async_composable_loop
+    from looplet.testing import AsyncMockLLMBackend
+
+    class BrokenBuilder:
+        def build_prompt(self, **kwargs):
+            raise ValueError("broken builder")
+
+    class EmptyBuilder:
+        def build_prompt(self, **kwargs):
+            return None
+
+    def builder(**kwargs):
+        return "CONFIG " + str(kwargs["step_number"])
+
+    async def async_builder(**kwargs):
+        return builder(**kwargs)
+
+    def planner(**kwargs):
+        return ContextPlan(("task",), estimated_tokens=100, budget_tokens=1)
+
+    async def async_planner(**kwargs):
+        return planner(**kwargs)
+
+    rendered = []
+
+    def legacy_renderer(*, messages, default_prompt, step_num):
+        rendered.append((messages, step_num))
+        return default_prompt + " RENDERED"
+
+    tools = BaseToolRegistry()
+    register_done_tool(tools)
+    backend = (AsyncMockLLMBackend if async_mode else MockLLMBackend)(
+        ['{"tool":"done","args":{"summary":"ok"}}']
+    )
+    config = LoopConfig(
+        max_steps=1,
+        use_native_tools=False,
+        build_prompt=async_builder if async_mode else builder,
+        context_planner=async_planner if async_mode else planner,
+        render_messages_override=legacy_renderer,
+    )
+    kwargs = dict(llm=backend, tools=tools, config=config, hooks=[BrokenBuilder(), EmptyBuilder()])
+    steps = (
+        [step async for step in async_composable_loop(**kwargs)]
+        if async_mode
+        else list(composable_loop(**kwargs))
+    )
+    assert steps[0].tool_call.tool == "done"
+    assert backend.last_prompt == "CONFIG 1 RENDERED"
+    assert rendered == [([], 1)]
+
+
+@pytest.mark.parametrize("async_mode", [False, True])
+@pytest.mark.asyncio
 async def test_scoped_context_reaches_prompt_and_projection_in_both_loops(async_mode):
     from looplet import Conversation, ToolSpec, async_composable_loop
 

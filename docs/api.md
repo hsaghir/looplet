@@ -132,6 +132,23 @@ from one review and distribution unit. It is optional. Read
 [cartridges](cartridge.md) for schema, inheritance, references, and trust
 boundaries.
 
+## Prompt preparation
+
+Both loop drivers share a prompt-preparation pipeline: render ordinary memory
+for the current state, select model-visible tools, select scoped sources,
+gather prompt inputs, run an optional advisory planner, choose the first
+non-`None` hook builder or configured/default builder, render through a
+detached `ContextProjection`, and check the final prompt budget.
+
+Overflow recovery uses the same pipeline, selected native schemas, and budget
+check. It rebuilds state-dependent inputs without repeating `pre_prompt`
+side effects. Hook builder failures fall back in both drivers; async planners
+and builders are awaited by the async driver. Scoped-source budgets and run
+retention remain separate from the full rendered-prompt limit. An advisory
+`ContextPlan` does not become an enforced policy, and tool visibility does not
+grant execution authority. Existing custom builders and legacy keyword
+renderers remain supported.
+
 ## Evidence and replay
 
 | API | Use it for |

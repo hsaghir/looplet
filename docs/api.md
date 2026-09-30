@@ -20,19 +20,11 @@ list of re-exported names for a given release.
 | --- | --- |
 | `composable_loop(...)` | Synchronous iterator-first tool loop that yields one `Step` per dispatch. |
 | `async_composable_loop(...)` | Async generator with the same loop contract. |
-| `AgentRuntime` / `RunHandle` | Optional host lifecycle wrapper with cancellation, events, persistence, and cleanup. |
 | `LoopConfig` | Runtime limits, prompt settings, native tools, compaction, checkpointing, cancellation, and related policy. |
 | `LoopContext` | Host context made available to loop and tool execution. |
-| `ExecutionSession` | Optional grouping for related run IDs and forked host sessions. |
 | `DefaultState` | Default mutable loop state. Supply a compatible custom state when the domain needs more fields. |
 | `Step` | One parsed tool call and its result, timing, classification, and related metadata. |
 | `ToolCall` / `ToolResult` | Typed call and result records used by registries, hooks, and tests. |
-| `RunResult` | Stable host-facing summary of status, termination, output, steps, envelope, and metadata. |
-| `RunEnvelope` | Host-supplied identity, deployment, policy, trace, and deadline context for one run. |
-| `RunStatus` / `RunPhase` | Lifecycle enums used by host observers and result consumers. |
-| `RunEvent` / `ArtifactRef` | Stable host event and artifact-reference records. |
-| `MemoryRunStore` / `FileRunStore` | Optional logical run persistence over existing checkpoints and artifacts. |
-| `ContextPlan` | Advisory prompt selection and budget plan passed through `ContextProjection`. |
 
 The loop accepts explicit dependencies and returns control after each
 dispatch:
@@ -132,7 +124,7 @@ boundaries.
 | API | Use it for |
 | --- | --- |
 | `ProvenanceSink` | Capture model calls and trajectory records into readable files. |
-| `TrajectoryRecorder` | Record step-level trajectory evidence directly. |
+| `TrajectoryRecorder` | Lower-level step recording for custom hosts; start with `ProvenanceSink`. |
 | `replay_loop(...)` | Feed captured model responses through fresh harness execution. |
 | `serialize_harness(...)` | Preserve a reviewable snapshot of the active harness. |
 
@@ -143,20 +135,27 @@ networks, state, permissions, or randomness. Start with
 
 ## Behavioral evals
 
+Choose one evaluation owner: Python hosts attach `EvalHook` explicitly;
+cartridge authors use `run_cartridge_evals()` or `looplet eval run`. Both write
+the same durable record through `save_eval_run()` and read it through
+`load_eval_run()`. Neither adds a second execution kernel.
+
 | API | Use it for |
 | --- | --- |
-| `EvalCase` | Task input, grader-only expected data, marks, and notes. |
+| `EvalCase` / `load_cases(...)` / `save_case(...)` | Task input, grader-only expected data, marks, and notes as reviewable JSON. |
 | `EvalContext` | Final output, observed artifacts, steps, stop reason, and grader task view. |
-| `EvalResult` | Normalized score, label, metrics, and error information. |
-| `EvalHook` | Collect and score at the end of a live loop. |
-| `eval_discover(...)` | Find locally defined `eval_*` functions. |
-| `eval_run(...)` / `eval_run_batch(...)` | Execute graders for one or many contexts. |
+| `EvalResult` | Explicit gate score, passive metrics, details, or error information. Boolean graders also work. |
+| `EvalHook` | Host-attached collection and scoring at the end of a live loop. |
 | `eval_mark(...)` | Attach selection marks such as `required`, `smoke`, or `slow`. |
-| `load_cases(...)` / `save_case(...)` | Read and write JSON case corpora. |
-| `parametrize_cases(...)` | Turn case files into ordinary pytest parameters. |
-| `assert_evals_pass(...)` | Run discovered graders and raise one useful assertion on failure. |
-| `run_cartridge_evals(...)` | Execute a cartridge's cases, collectors, and graders end to end. No-output records expose `cleanup()` and support `with`; persisted records retain their evidence. |
+| `run_cartridge_evals(...)` | Own collection and grading for a cartridge's self-tests, replacing embedded eval observers. |
 | `save_eval_run(...)` / `load_eval_run(...)` | Persist and restore one self-contained eval record. |
+
+For custom runners or pytest, compose `eval_discover()`, `eval_run()`,
+`eval_run_batch()`, `parametrize_cases()`, and `assert_evals_pass()` as needed.
+They reuse the same graders and verdict rules. No-output records expose
+`cleanup()` and support `with`; persisted records retain their evidence.
+`EvalHook.save()` and implicit dictionary score inference are deprecated
+compatibility paths, not recommended alternatives.
 
 Required graders fail closed when skipped, errored, or below the pass boundary.
 Collector errors are explicit results rather than silent missing evidence. See
@@ -196,6 +195,22 @@ from looplet.testing import MockLLMBackend
 
 llm = MockLLMBackend(responses=[first_tool_call, done_call])
 ```
+
+## Optional host integration
+
+These are not prerequisites for running or evaluating an agent. Add them when
+the host needs lifecycle ownership; see [Host integration](host-integration.md).
+
+| API | Use it for |
+| --- | --- |
+| `AgentRuntime` / `RunHandle` | Host lifecycle wrapper with cancellation, events, persistence, and cleanup. |
+| `ExecutionSession` | Group related run IDs and forked host sessions. |
+| `RunResult` | Host-facing summary of status, termination, output, steps, envelope, and metadata. |
+| `RunEnvelope` | Host-supplied identity, deployment, policy, trace, and deadline context. |
+| `RunStatus` / `RunPhase` | Lifecycle enums for host observers and result consumers. |
+| `RunEvent` / `ArtifactRef` | Host event and artifact-reference records. |
+| `MemoryRunStore` / `FileRunStore` | Logical run persistence over checkpoints and artifacts. |
+| `ContextPlan` | Advisory prompt selection and budget plan through `ContextProjection`. |
 
 ## Specialized surfaces
 

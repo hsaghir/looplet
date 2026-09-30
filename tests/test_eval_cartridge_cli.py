@@ -17,7 +17,10 @@ import pytest
 
 from looplet import (
     EvalRunRecord,
+    assert_evals_pass,
     eval_cli,
+    eval_discover,
+    eval_run,
     load_eval_run,
     run_cartridge_evals,
 )
@@ -161,6 +164,26 @@ def _scripted() -> list[str]:
     ]
 
 
+def _add_embedded_eval_hook(cartridge: Path) -> None:
+    hook_dir = cartridge / "hooks" / "09_EmbeddedEvaluation"
+    hook_dir.mkdir(parents=True)
+    (hook_dir / "config.yaml").write_text(
+        "class_name: EmbeddedEvaluation\nkwargs:\n  project_root: '@project_dir'\n"
+    )
+    (hook_dir / "hook.py").write_text(
+        "from pathlib import Path\n"
+        "from looplet import EvalHook\n\n"
+        "class EmbeddedEvaluation(EvalHook):\n"
+        "    def __init__(self, project_root):\n"
+        "        def collect_existing(state):\n"
+        "            marker = Path(project_root) / 'embedded-collector-count.txt'\n"
+        "            count = int(marker.read_text()) if marker.exists() else 0\n"
+        "            marker.write_text(str(count + 1))\n"
+        "            return {'embedded_count': count + 1}\n"
+        "        super().__init__([lambda ctx: True], collectors=[collect_existing])\n"
+    )
+
+
 # ── run_cartridge_evals (the CLI core) ───────────────────────────
 
 
@@ -205,6 +228,169 @@ def test_run_cartridge_evals_no_output_uses_tempdir(tmp_path: Path) -> None:
     assert len(records) == 1
     # sandbox dir exists and was seeded.
     assert (records[0].directory / "test_greeting.py").is_file()
+
+
+def test_self_test_runner_collects_once_instead_of_using_embedded_eval_hook(tmp_path: Path) -> None:
+    cart = _make_cartridge(tmp_path)
+    _add_embedded_eval_hook(cart)
+    collector_file = cart / "evals" / "collect_outcome.py"
+    collector_file.write_text(
+        _COLLECTOR + "\ndef collect_count(state, runtime):\n"
+        "    from pathlib import Path\n"
+        "    marker = Path(runtime['project_root']) / 'self-test-collector-count.txt'\n"
+        "    count = int(marker.read_text()) if marker.exists() else 0\n"
+        "    marker.write_text(str(count + 1))\n"
+        "    return {'collection_count': count + 1}\n"
+    )
+
+    record = run_cartridge_evals(
+        cart,
+        llm=MockLLMBackend(responses=_scripted()),
+        output_dir=tmp_path / "runs",
+    )[0]
+
+    workspace = record.directory / "workspace"
+    assert record.context.artifacts["collection_count"] == 1
+    assert record.context.artifacts["expected_leaked"] is False
+    assert (workspace / "self-test-collector-count.txt").read_text() == "1"
+    assert not (workspace / "embedded-collector-count.txt").exists()
+    assert "<lambda>" not in {result.name for result in record.results}
+
+
+def test_host_can_still_explicitly_load_an_embedded_eval_hook(tmp_path: Path) -> None:
+    from looplet import cartridge_to_preset
+
+    cart = _make_cartridge(tmp_path)
+    _add_embedded_eval_hook(cart)
+    workspace = tmp_path / "host-workspace"
+    workspace.mkdir()
+    with cartridge_to_preset(cart, runtime={"project_root": str(workspace)}) as preset:
+        list(preset.run(MockLLMBackend(responses=_scripted()), task={"goal": "Write greeting.py"}))
+
+    assert (workspace / "embedded-collector-count.txt").read_text() == "1"
+
+
+@pytest.mark.parametrize(
+    ("body", "required", "judge", "collector_body", "passed"),
+    [
+        pytest.param("return True", False, False, None, True, id="boolean-pass"),
+        pytest.param("return False", False, False, None, False, id="boolean-fail"),
+        pytest.param("return 0.5", False, False, None, True, id="score-boundary"),
+        pytest.param("return 0.4999", False, False, None, False, id="score-below-boundary"),
+        pytest.param("return 0.0", False, False, None, False, id="zero-score"),
+        pytest.param("return 'correct'", False, False, None, True, id="legacy-pass-label"),
+        pytest.param("return 'partial'", False, False, None, False, id="unknown-label"),
+        pytest.param("return {'score': 0.0}", True, False, None, False, id="explicit-zero"),
+        pytest.param("return {'steps': 20}", False, False, None, True, id="metric-only"),
+        pytest.param("return {'steps': 20}", True, False, None, False, id="required-metric"),
+        pytest.param(
+            "return EvalResult(metrics={'f1': 0.1})", False, False, None, True, id="passive-f1"
+        ),
+        pytest.param("return {'f1': 0.1}", False, False, None, False, id="legacy-f1-gate"),
+        pytest.param("return True", False, True, None, True, id="optional-judge-skipped"),
+        pytest.param("return True", True, True, None, False, id="required-judge-skipped"),
+        pytest.param(
+            "return EvalResult(score=1.0, label='wrong')",
+            False,
+            False,
+            None,
+            False,
+            id="contradictory-fail",
+        ),
+        pytest.param(
+            "return EvalResult(score=0.0, label='pass')",
+            False,
+            False,
+            None,
+            False,
+            id="contradictory-pass",
+        ),
+        pytest.param("return float('nan')", False, False, None, False, id="invalid-score"),
+        pytest.param(
+            "return {'latency': float('inf')}", False, False, None, False, id="invalid-metric"
+        ),
+        pytest.param(
+            "raise RuntimeError('grader exploded')", False, False, None, False, id="grader-error"
+        ),
+        pytest.param("return EvalResult()", False, False, None, False, id="empty-result"),
+        pytest.param("return None", False, False, None, False, id="missing-return"),
+        pytest.param(
+            "return EvalResult(name='not_eval_gate', score=1.0)",
+            False,
+            False,
+            None,
+            False,
+            id="spoofed-grader-name",
+        ),
+        pytest.param(
+            "return True",
+            False,
+            False,
+            "raise RuntimeError('collector exploded')",
+            False,
+            id="collector-error",
+        ),
+        pytest.param(
+            "return True", False, False, "return 'not a dict'", False, id="collector-shape-error"
+        ),
+    ],
+)
+@pytest.mark.filterwarnings("ignore:Inferring an eval gate score:DeprecationWarning")
+def test_verdict_agrees_live_saved_pytest_and_cli(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+    body: str,
+    required: bool,
+    judge: bool,
+    collector_body: str | None,
+    passed: bool,
+) -> None:
+    cart = _make_cartridge(tmp_path)
+    (cart / "evals" / "eval_correctness.py").write_text(
+        "from looplet import EvalResult, eval_mark\n\n"
+        + ("@eval_mark('required')\n" if required else "")
+        + f"def eval_gate(ctx{', llm' if judge else ''}):\n    {body}\n"
+    )
+    if collector_body is not None:
+        (cart / "evals" / "collect_outcome.py").write_text(
+            _COLLECTOR + f"\ndef collect_fault(state):\n    {collector_body}\n"
+        )
+
+    record = run_cartridge_evals(
+        cart,
+        llm=MockLLMBackend(responses=_scripted()),
+        output_dir=tmp_path / "live",
+    )[0]
+    reloaded = load_eval_run(record.directory)
+    graders = eval_discover(cart / "evals", strict=True)
+    offline = eval_run(graders, reloaded.context)
+    signature = lambda results: [
+        (result.name, result.score, result.label, result.metrics, result.explanation)
+        for result in results
+    ]
+    assert signature(offline) == signature(record.results)
+    assert record.context.artifacts["expected_leaked"] is False
+    if passed:
+        assert_evals_pass(reloaded.context, graders)
+    else:
+        with pytest.raises(AssertionError):
+            assert_evals_pass(reloaded.context, graders)
+
+    expected_exit = 0 if passed else 1
+    assert eval_cli([str(tmp_path / "live"), "--evals", str(cart / "evals")]) == expected_exit
+    capsys.readouterr()
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://looplet.invalid/v1")
+    monkeypatch.setattr(
+        "looplet.backends.OpenAIBackend",
+        lambda **kwargs: MockLLMBackend(responses=_scripted()),
+    )
+    assert eval_cli(["run", str(cart), "--out", str(tmp_path / "cli")]) == expected_exit
+    capsys.readouterr()
+    assert eval_cli(["run", str(cart), "--json"]) == expected_exit
+    report = json.loads(capsys.readouterr().out)
+    assert report["passed"] is passed
+    assert report["state"] == ("pass" if passed else "fail")
 
 
 def test_no_output_eval_record_cleans_up_owned_tempdir(tmp_path: Path) -> None:

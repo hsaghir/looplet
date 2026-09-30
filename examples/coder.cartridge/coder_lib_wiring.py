@@ -17,10 +17,9 @@ Defaults follow the "steer, don't restrict" principle (see
   multiple times across edits) don't trigger a nudge.
 * ``PerToolLimitHook`` exposes one high cap as a runaway safety
   net, not as a per-tool process budget.
-* :func:`build_eval_hook` ships a ``collect_test_results``
-  collector that re-runs pytest after the loop and surfaces the
-  outcome via ``ctx.artifacts`` - outcome-grading rather than
-  trajectory-grading.
+Evaluation is host-owned. Hosts may explicitly attach
+:func:`build_eval_hook`; cartridge self-tests instead use the adjacent
+``evals/`` bundle through ``run_cartridge_evals``.
 """
 
 from __future__ import annotations
@@ -178,8 +177,8 @@ def build_default_hooks(
 
     * ``TestGuardHook`` is registered in **observe-only** mode
       (``test_strict=False``); failures inject a briefing nudge but
-      ``done()`` is never blocked. Outcome is graded post-run via
-      :func:`build_eval_hook`.
+            ``done()`` is never blocked. Hosts can opt into post-run grading
+            with :func:`build_eval_hook`.
     * ``StagnationHook`` uses :func:`result_size_fingerprint` and a
       lenient threshold (6) - it ignores legitimate retries that
       change the world (e.g. running the test suite three times
@@ -258,7 +257,7 @@ def make_test_collector(workspace: str, *, timeout_s: int = 60):
 
 
 def build_eval_hook(workspace: str) -> EvalHook:
-    """Outcome-grounded post-run evaluation hook.
+    """Build an optional, host-attached post-run evaluation hook.
 
     Demonstrates the "trajectory-blind" eval pattern from
     ``docs/evals.md``: the collector re-runs the test suite, the

@@ -483,28 +483,14 @@ def test_hello_workspace_loads_and_runs_end_to_end() -> None:
 
 
 def test_coder_workspace_loads_with_shared_filecache(tmp_path) -> None:
-    """examples/coder.cartridge migrates the v1 coder bundle to the
-    v2 layout. Validates that:
-      * Declarative + setup.py-injected hooks load (8 total - TestGuard,
-        FileCache, StaleFile, Stagnation, ThresholdCompact, PerToolLimit
-        from YAML; LinterHook + EvalHook appended by setup.py to match
-        looplet.examples coder reference feature-for-feature)
-    * Coder tools (bash/list_dir/read/write/edit/glob/grep/think/done plus optional helpers) load
-      * FileCacheHook and StaleFileHook share the SAME FileCache instance
-        via @file_cache (proves the shared-resource registry under load)
-      * setup.py wires WORKSPACE_CONFIG + FILE_CACHE module globals into
-        every tool that needs them
-      * setup.py also attaches compact_service + project-context memory
-    """
+    """The coder loads its tools, shared state, and policy hooks, not evals."""
     import json as _json
     from pathlib import Path as _P
 
-    from looplet import composable_loop
+    from looplet import EvalHook, composable_loop
     from looplet.testing import MockLLMBackend
 
     workspace_dir = _P(__file__).resolve().parents[1] / "examples" / "coder.cartridge"
-    # Use a tmp_path workspace so EvalHook's pytest collector doesn't
-    # recurse into the looplet test suite when it runs at on_loop_end.
     target_repo = tmp_path / "target"
     target_repo.mkdir()
     preset = cartridge_to_preset(
@@ -514,17 +500,15 @@ def test_coder_workspace_loads_with_shared_filecache(tmp_path) -> None:
     )
 
     hook_names = [type(h).__name__ for h in preset.hooks]
+    assert not any(isinstance(hook, EvalHook) for hook in preset.hooks)
     # Order: directory hooks (sorted by ``order:``) first, then
     # ``builtin_hooks:`` entries in declaration order, then the
     # auto-installed ``permissions:`` PermissionHook (v1.0 spec slot).
-    # ``08_ShellSafetyGate`` is the portable ``kind: lep`` guardrail and
-    # lands last among the directory hooks (after EvalHook).
     assert hook_names == [
         "TestGuardHook",
         "FileCacheHook",
         "StaleFileHook",
         "LinterHook",
-        "EvalHook",
         "LEPHookAdapter",
         "StagnationHook",
         "ThresholdCompactHook",
@@ -757,11 +741,10 @@ def test_coder_workspace_runtime_kwarg_routes_files(tmp_path):
 
 
 def test_coder_workspace_bidirectional_round_trip(tmp_path) -> None:
-    """Load coder.cartridge → snapshot to a fresh dir → reload. The
-    declarative hooks (with to_config()) and tools survive in-process
-    round-trip; setup.py-appended hooks (EvalHook) drop on reload
-    because their callable evaluators don't round-trip."""
+    """Policy hooks survive round-trip; evaluation stays host-owned."""
     from pathlib import Path as _P
+
+    from looplet import EvalHook
 
     workspace_dir = _P(__file__).resolve().parents[1] / "examples" / "coder.cartridge"
     target = tmp_path / "target"
@@ -769,6 +752,7 @@ def test_coder_workspace_bidirectional_round_trip(tmp_path) -> None:
     snap_dir = tmp_path / "snapshot"
 
     preset = cartridge_to_preset(workspace_dir, strict=True, runtime={"workspace": str(target)})
+    assert not any(isinstance(hook, EvalHook) for hook in preset.hooks)
     preset_to_cartridge(preset, snap_dir, name="coder-snap")
 
     # The coder workspace ships co-located ``lib_*.py`` helper modules
@@ -788,21 +772,14 @@ def test_coder_workspace_bidirectional_round_trip(tmp_path) -> None:
     # runtime['workspace']; pass it on reload.
     reloaded = cartridge_to_preset(snap_dir, runtime={"workspace": str(target)})
 
-    # All 8 declarative hooks survive the round-trip - including
-    # EvalHook now that its evaluators + collectors live in
-    # resources/eval_evaluators.py and resources/eval_collectors.py
-    # (referenced via @ref instead of injected via setup.py).
     # The 3 generic guards (Stagnation, ThresholdCompact, PerToolLimit)
     # are wired via ``builtin_hooks:`` and land at the end of the list.
     reloaded_names = [type(h).__name__ for h in reloaded.hooks]
-    # The portable ``kind: lep`` ShellSafetyGate round-trips too and
-    # keeps its position after EvalHook among the directory hooks.
     assert reloaded_names == [
         "TestGuardHook",
         "FileCacheHook",
         "StaleFileHook",
         "LinterHook",
-        "EvalHook",
         "LEPHookAdapter",
         "StagnationHook",
         "ThresholdCompactHook",

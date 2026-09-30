@@ -209,11 +209,17 @@ effect. This guard is not exactly-once execution.
 
 ## Evaluation and evidence
 
-Attach `EvalHook` for live collectors and graders, or use
-`run_cartridge_evals()` for shipped case suites. Persist the resulting
-`EvalRunRecord` and trajectory/provenance directory in the host's artifact
-store. The host may use the evaluated result as a release gate; Looplet does
-not own deployment promotion.
+Choose one evaluation owner. Python hosts explicitly attach one `EvalHook`
+for live collection and grading. Cartridge authors use `run_cartridge_evals()`
+for shipped case suites; it replaces embedded eval observers while preserving
+policy hooks. The reference coder no longer grades normal runs implicitly.
+
+Use `save_eval_run()` / `load_eval_run()` for the same durable record in either
+path, and persist that directory intact in the host's artifact store. Use
+explicit `EvalResult(score=...)` for gates and `metrics=...` for measurements.
+The host may use the evaluated result as a release gate; Looplet does not own
+deployment promotion. Protected holdouts still stay outside the candidate's
+task, runtime, and writable cartridge.
 
 `AgentPreset` is a single-use execution plan. Build a fresh preset from the
 cartridge or factory for each sequential or concurrent run; its mutable state,

@@ -75,13 +75,28 @@ class TestEvalResultFromReturn:
         assert r.label == "partial" and r.score is None
 
     def test_dict_with_metrics(self):
-        r = EvalResult.from_return(
-            {"precision": 0.9, "recall": 0.7, "f1": 0.8, "missed": ["a", "b"]},
-            name="q",
-        )
+        with pytest.warns(DeprecationWarning, match="Inferring an eval gate score"):
+            r = EvalResult.from_return(
+                {"precision": 0.9, "recall": 0.7, "f1": 0.8, "missed": ["a", "b"]},
+                name="q",
+            )
         assert r.score == 0.8  # picks f1
         assert r.metrics["precision"] == 0.9
         assert any("missed" in d for d in r.details)
+
+    def test_explicit_metrics_do_not_infer_a_gate_score(self):
+        result = EvalResult(metrics={"f1": 0.8, "accuracy": 0.9})
+        assert EvalResult.from_return(result) is result
+        assert result.score is None
+        assert result.passed is False
+        assert "f1=0.80" in result.pretty()
+        assert "accuracy=0.90" in result.pretty()
+
+    @pytest.mark.parametrize("key", ["f1", "accuracy", "overall"])
+    def test_legacy_inference_preserves_zero_with_a_warning(self, key):
+        with pytest.warns(DeprecationWarning, match="set score explicitly"):
+            result = EvalResult.from_return({key: 0.0})
+        assert result.score == 0.0
 
     def test_dict_preserves_zero_primary_score(self):
         r = EvalResult.from_return({"score": 0.0, "accuracy": 0.9}, name="zero")
@@ -128,6 +143,35 @@ class TestEvalResultFromReturn:
 
 
 class TestEvalRun:
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            None,
+            {},
+            [None],
+            [{"name": "not_a_collector", "label": "error"}],
+            [{"name": "collector:broken", "label": "pass"}],
+            [{"name": "collector:broken", "label": "error", "score": float("nan")}],
+        ],
+    )
+    def test_malformed_recorded_collector_errors_fail_closed(self, raw):
+        ctx = EvalContext(steps=[], metadata={"eval_collector_errors": raw})
+        results = eval_run([lambda ctx: True], ctx)
+        assert results[-1].name == "collector:recorded_errors"
+        assert results[-1].label == "error"
+        assert results[-1].passed is False
+
+    def test_grader_cannot_erase_a_captured_collector_failure(self):
+        failure = {"name": "collector:broken", "label": "error", "explanation": "unavailable"}
+        ctx = EvalContext(steps=[], metadata={"eval_collector_errors": [failure]})
+
+        def eval_clear_metadata(ctx):
+            ctx.metadata.clear()
+            return True
+
+        results = eval_run([eval_clear_metadata], ctx)
+        assert results[-1].to_dict() == failure
+
     def test_runs_simple_evaluators(self):
         def eval_step_count(ctx: EvalContext) -> float:
             return min(ctx.step_count / 5, 1.0)
@@ -412,14 +456,16 @@ class TestEvalHookIntegration:
             )
         )
         with tempfile.TemporaryDirectory() as d:
-            hook.save(Path(d) / "results.json")
+            with pytest.warns(DeprecationWarning, match="save_eval_run"):
+                hook.save(Path(d) / "results.json")
             data = json.loads((Path(d) / "results.json").read_text())
             assert data["results"][0]["score"] == 0.5
 
     def test_save_keeps_grader_expected_out_of_recorded_task(self, tmp_path: Path):
         hook = EvalHook(evaluators=[], expected={"answer": 42})
         hook._task = {"goal": "answer", "expected": {"answer": 42}}
-        hook.save(tmp_path / "results.json")
+        with pytest.warns(DeprecationWarning, match="standalone report"):
+            hook.save(tmp_path / "results.json")
         data = json.loads((tmp_path / "results.json").read_text())
         assert data["task"] == {"goal": "answer"}
         assert data["expected"] == {"answer": 42}
@@ -497,6 +543,22 @@ class TestEvalMark:
 
 
 class TestEvalRunBatch:
+    def test_collector_failure_stays_attached_to_the_correct_run(self):
+        failure = {"name": "collector:broken", "label": "error", "explanation": "unavailable"}
+        contexts = [
+            EvalContext(steps=[]),
+            EvalContext(steps=[], metadata={"eval_collector_errors": [failure]}),
+        ]
+
+        def eval_ok(ctx):
+            return True
+
+        table = eval_run_batch([eval_ok], contexts)
+        collector = next(row for row in table if row["name"] == "collector:broken")
+        assert collector["runs"] == 2
+        assert collector["per_run"][0]["label"] == "skipped"
+        assert collector["per_run"][1] == failure
+
     def test_batch_across_contexts(self):
         def eval_steps(ctx):
             return min(ctx.step_count / 5, 1.0)
@@ -541,6 +603,39 @@ class TestEvalCliIntegrity:
         traces = self._trace(tmp_path)
         eval_file = tmp_path / "eval_verdict.py"
         eval_file.write_text("def eval_verdict(ctx):\n    return 'wrong'\n")
+        assert eval_cli([str(traces), "--evals", str(eval_file)]) == 1
+
+    def test_accepts_versioned_provenance_without_eval_sidecars(self, tmp_path: Path):
+        from looplet.artifact_compat import write_artifact_descriptor
+
+        traces = self._trace(tmp_path)
+        write_artifact_descriptor(traces / "one", kind="provenance", components=["trajectory"])
+        eval_file = tmp_path / "eval_completed.py"
+        eval_file.write_text("def eval_completed(ctx):\n    return ctx.completed\n")
+
+        assert eval_cli([str(traces), "--evals", str(eval_file)]) == 0
+
+    def test_accepts_mixed_provenance_and_eval_run_records(self, tmp_path: Path):
+        from looplet import save_eval_run
+        from looplet.artifact_compat import write_artifact_descriptor
+
+        traces = self._trace(tmp_path)
+        write_artifact_descriptor(traces / "one", kind="provenance", components=["trajectory"])
+        save_eval_run(traces / "two", context=EvalContext(steps=[], stop_reason="done"))
+        eval_file = tmp_path / "eval_completed.py"
+        eval_file.write_text("def eval_completed(ctx):\n    return ctx.completed\n")
+
+        assert eval_cli([str(traces), "--evals", str(eval_file)]) == 0
+
+    def test_incomplete_eval_record_does_not_fall_back_to_provenance(self, tmp_path: Path):
+        from looplet import save_eval_run
+
+        traces = tmp_path / "runs"
+        run = save_eval_run(traces / "one", context=EvalContext(steps=[], stop_reason="done"))
+        (run / "evals.json").unlink()
+        eval_file = tmp_path / "eval_completed.py"
+        eval_file.write_text("def eval_completed(ctx):\n    return ctx.completed\n")
+
         assert eval_cli([str(traces), "--evals", str(eval_file)]) == 1
 
     def test_required_skip_returns_nonzero(self, tmp_path: Path, capsys):
@@ -595,6 +690,29 @@ class TestEvalCliIntegrity:
         eval_file = tmp_path / "eval_near_threshold.py"
         eval_file.write_text("def eval_near_threshold(ctx):\n    return 0.6996\n")
         assert eval_cli([str(traces), "--evals", str(eval_file), "--threshold", "0.7"]) == 1
+
+    def test_default_threshold_matches_pytest_pass_boundary(self, tmp_path: Path):
+        traces = self._trace(tmp_path)
+        eval_file = tmp_path / "eval_score.py"
+        eval_file.write_text("def eval_score(ctx):\n    return 0.4\n")
+        assert eval_cli([str(traces), "--evals", str(eval_file)]) == 1
+
+    def test_average_cannot_hide_a_failed_run(self, tmp_path: Path):
+        traces = self._trace(tmp_path)
+        first = traces / "one" / "trajectory.json"
+        first.write_text(json.dumps({"steps": [], "task": {"score": 1.0}}))
+        second = traces / "two"
+        second.mkdir()
+        (second / "trajectory.json").write_text(json.dumps({"steps": [], "task": {"score": 0.4}}))
+        eval_file = tmp_path / "eval_score.py"
+        eval_file.write_text("def eval_score(ctx):\n    return ctx.task['score']\n")
+        assert eval_cli([str(traces), "--evals", str(eval_file), "--threshold", "0.7"]) == 1
+
+    def test_metric_only_result_is_neutral(self, tmp_path: Path):
+        traces = self._trace(tmp_path)
+        eval_file = tmp_path / "eval_cost.py"
+        eval_file.write_text("def eval_cost(ctx):\n    return {'steps': 20}\n")
+        assert eval_cli([str(traces), "--evals", str(eval_file)]) == 0
 
     @pytest.mark.parametrize("threshold", ["nan", "inf", "-0.1", "1.1"])
     def test_invalid_threshold_returns_nonzero(self, tmp_path: Path, threshold: str):

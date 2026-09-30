@@ -30,6 +30,20 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Cartridge self-tests now own evaluation and replace embedded `EvalHook`
+  observers; reference coder defaults no longer grade normal runs implicitly.
+  Explicit host hooks and reusable eval helpers remain supported.
+- Eval CLI thresholds now default to `0.5`, matching pytest, and apply to each
+  scored result rather than an average. `--threshold 0` retains the old numeric
+  default; required graders still enforce their `0.5` floor.
+- Pytest eval assertions use the shared result-state classifier: passive
+  metrics and optional skipped judges are neutral, while missing or filtered
+  required graders fail closed. The eval guide now teaches one entry path per
+  audience and one durable `save_eval_run()` / `load_eval_run()` round trip.
+- Collector failures now survive offline rescoring and batch CLI aggregation;
+  older eval records recover those failures from their saved results. Missing
+  grader identities and malformed recorded failure evidence cannot pass a gate.
+
 - Expanded the hook guide to document the complete hook extension surface,
   including async-capable methods, permission/compaction hooks, prompt
   builders, lifecycle events, and `pre_loop(tools=...)`.
@@ -47,6 +61,14 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   switching to JSON-text parsing. Set `use_native_tools=False` to opt in to
   text mode. Broken `check_done` quality gates fail closed in sync and async
   loops.
+
+### Deprecated
+
+- `EvalHook.save()` retains its standalone report but warns; use
+  `save_eval_run()` for durable evidence.
+- Dictionary gate-score inference from `f1`, `accuracy`, or `overall` warns
+  while preserving legacy behavior. New graders should return a boolean or
+  explicit `EvalResult(score=..., metrics=...)`.
 
 ## [0.4.0] - 2026-08-28
 

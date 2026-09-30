@@ -7,12 +7,35 @@ Python code:
 2. **Collector:** inspect the resulting world state independently of the
     agent's claim.
 3. **Grader:** score the observed outcome against grader-only expectations.
-4. **Required mark:** turn the behavior into a fail-closed CI gate.
+4. **Run record:** save the case, observed outcome, and grades together.
+5. **Required mark:** turn the behavior into a fail-closed CI gate.
 
 Write functions named `eval_*` and Looplet discovers and runs them. Unlike
 ordinary assertions, evals may return scores from 0–1 because some quality
 dimensions are continuous. Required release contracts still produce ordinary
 pass/fail exit codes.
+
+## Choose one entry path
+
+**Cartridge authors:** put cases, collectors, and graders under `evals/`, then
+run the self-tests:
+
+```bash
+looplet eval run ./agent.cartridge --out eval-runs/run-001 --json
+```
+
+The Python equivalent is `run_cartridge_evals()`. This runner owns evaluation
+and replaces embedded `EvalHook` observers with the self-test bundle's hook.
+Policy hooks still run. The reference coder ships no implicit eval hook.
+
+**Python hosts:** explicitly attach one `EvalHook` to your existing loop, then
+save its record with `save_eval_run()`; see [Attach to your loop](#attach-to-your-loop).
+Use the same `load_eval_run()` reader afterward. Live scoring, offline
+rescoring, and pytest use the same graders, not different eval formats.
+
+Case files, expected data, collectors, and graders belong to the evaluation
+owner. Colocated cartridge cases are self-tests; protected promotion holdouts
+remain host-owned. Fresh case workspaces are not an OS security boundary.
 
 The [network-free regression proof](regression-demo.md) shows this pipeline
 end to end: one captured run, one tool fix, the same model responses, and a
@@ -21,6 +44,9 @@ required outcome grader moving from red to green.
 ```python
 # eval_my_agent.py - discovered automatically by eval_discover()
 
+from looplet import EvalResult, eval_mark
+
+@eval_mark("required")
 def eval_tests_passed(ctx):
     """Did the agent get tests to pass?
 
@@ -37,11 +63,11 @@ def eval_step_cost(ctx):
     `EvalResult.metrics` lets you plot cost-vs-quality without a
     fast-but-wrong run beating a slow-but-correct one.
     """
-    return {"steps": float(ctx.step_count)}
+    return EvalResult(metrics={"steps": float(ctx.step_count)})
 
 def eval_ioc_quality(ctx):
     """Return multiple metrics at once."""
-    return {"precision": 0.9, "recall": 0.75, "f1": 0.82}
+    return EvalResult(metrics={"precision": 0.9, "recall": 0.75, "f1": 0.82})
 
 def eval_reasoning_gaps(ctx, llm):
     """LLM-as-judge: are conclusions supported by data?"""
@@ -49,9 +75,16 @@ def eval_reasoning_gaps(ctx, llm):
     return float(resp.strip())
 ```
 
-**Return anything:** `float`, `bool`, `str`, `dict`, or `EvalResult`.
-The framework normalises. If your function takes an `llm` parameter,
-the framework passes the judge LLM automatically.
+For new graders, return a **boolean** or **`EvalResult`**. Set `score=` when a
+number should decide the gate; use `metrics=` for passive measurements.
+`EvalResult(metrics={"f1": 0.82})` is not a gate, while
+`EvalResult(score=0.82, metrics={"f1": 0.82})` is.
+
+Numeric, string, and dictionary returns remain compatible. Dictionary score
+inference from `f1`, `accuracy`, or `overall` is deprecated and warns; it still
+preserves the legacy score. A dictionary's explicit `score` remains supported.
+If a grader takes an `llm` parameter, the framework passes the judge backend
+when supplied. Optional judges may be skipped; required judges may not.
 
 ## Trajectory-blind evals: grade outcomes, not process
 
@@ -71,7 +104,7 @@ process, not outcome. Two patterns to use instead.
 
 ```python
 def eval_answer_correct(ctx):
-    return ctx.final_output.get("answer") == ctx.task.get("expected")
+    return ctx.final_output.get("answer") == ctx.task.get("expected", {}).get("answer")
 ```
 
 The agent's `done()` arguments are the agent's own claim about the
@@ -115,18 +148,25 @@ because collectors are observers. `EvalHook` still records a synthetic
 that result instead of reporting a false green. Multiple successful
 collectors merge their dicts in order; later keys win.
 
-For saved trajectories, drop an `artifacts.json` next to
-`trajectory.json`. `EvalContext.from_trajectory_dir` loads it
-automatically and fails loudly if it is malformed. New trajectories
+Collector failures remain in the run record when graders are re-run offline.
+Rescoring does not repeat collection or clear a failed host observation.
+`load_eval_run()` also restores collector failures from older records whose
+trajectory metadata predates failure retention.
+
+Persist the collected outcome with `save_eval_run()`, then reload through
+`load_eval_run()`. Its `context.artifacts` has the same shape online and
+offline; malformed evidence fails loudly. New trajectories
 also persist `session_log_text`, so an LLM judge sees the same evidence
 online and after reload. Treat eval-run directories as sensitive prompt
 evidence and apply the provenance recorder's `redact=` option where
 needed:
 
 ```
-traces/run_1/
+eval-runs/run_1/
+├── artifact.json
 ├── trajectory.json
-├── metrics.json
+├── evals.json
+├── expected.json
 └── artifacts.json   ← {"tests_passing": true, "files_changed": 3}
 ```
 
@@ -174,10 +214,10 @@ untrusted.
 
 ## Attach to your loop
 
-For live scoring during development:
+For a Python host, evaluation is explicit and attached once:
 
 ```python
-from looplet import EvalHook
+from looplet import EvalHook, save_eval_run
 
 hook = EvalHook(
     evaluators=[eval_tests_passed, eval_step_cost],
@@ -187,17 +227,21 @@ hook = EvalHook(
 for step in composable_loop(..., hooks=[hook]):
     ...
 print(hook.summary())          # "1 scored (avg 1.00), 1 labeled"
-hook.save("evals/run_1.json")
+save_eval_run("eval-runs/run_1", eval_hook=hook)
 ```
+
+`EvalHook.save()` remains a deprecated, one-way standalone report for old
+callers. It is not another durable format to choose from. `promote_to_offline()`
+is a compatibility convenience over `save_eval_run()`, not a second lifecycle.
 
 ## Discover and batch-run across saved trajectories
 
 ```python
-from looplet import eval_discover, eval_run, EvalContext
+from looplet import eval_discover, eval_run, load_eval_run
 
 evals = eval_discover("eval_my_agent.py")       # finds all eval_* functions
-ctx = EvalContext.from_trajectory_dir("traces/run_1/")
-results = eval_run(evals, ctx, judge_llm=my_judge)
+record = load_eval_run("eval-runs/run_1")
+results = eval_run(evals, record.context, judge_llm=my_judge)
 for r in results:
     print(r.pretty())
 ```
@@ -347,13 +391,19 @@ failures, and raises `AssertionError` with each failed result's
 `pretty()` block on its own line. Discovery is cached, so calling it
 once per parametrized case is free.
 
+The fixture's `run(case)` should return an observed, ungraded context when
+`assert_evals_pass()` owns grading. Do not attach an eval hook and then invoke
+the same graders again just to assert their results. Metric-only results and
+optional skipped judges are neutral; required, errored, missing, or failing
+graders fail the assertion. Numeric scores use the default $0.5$ boundary.
+
 If you want more control over selected evaluators, judge models, or individual
 results, drop down to the primitives:
 
 ```python
 import pytest
 from looplet import (
-    EvalContext, eval_discover, eval_run, load_cases, pytest_param_cases,
+    EvalContext, assert_evals_pass, eval_discover, load_cases, pytest_param_cases,
 )
 
 CASES = load_cases("evals/cases")
@@ -363,9 +413,7 @@ EVALS = eval_discover("evals/")
 @pytest.mark.parametrize("case", pytest_param_cases(CASES))
 def test_coder(case, my_agent):
     ctx: EvalContext = my_agent.run(case)
-    results = eval_run(EVALS, ctx, judge_llm=my_agent.llm)
-    failed = [r for r in results if not r.passed]
-    assert not failed, "\n".join(r.pretty() for r in failed)
+    assert_evals_pass(ctx, EVALS, judge_llm=my_agent.llm)
 ```
 
 The same `EVALS` list also drives `EvalHook` for live grading and
@@ -402,8 +450,13 @@ looplet eval traces/ --evals eval_agent.py --threshold 0.7 -v
   ✓ eval_no_tool_errors            avg=1.00  min=1.00  max=1.00  (5 runs)
 
   overall: 0.81
-  threshold: 0.70  → PASS
+    threshold: 0.70  → FAIL
 ```
+
+Both CLI paths default to `--threshold 0.5`, matching pytest. A scored result
+below the threshold fails its run; an average cannot hide it. Aggregate scores
+are descriptive only. An explicit `--threshold 0` retains the old numeric
+default, but required graders still enforce their $0.5$ floor.
 
 For a cartridge's colocated cases, `--json` emits the stable transient CI
 schema `looplet.eval-summary` version 1:

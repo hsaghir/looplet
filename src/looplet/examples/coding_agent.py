@@ -48,7 +48,6 @@ from looplet import (
     DefaultState,
     DomainAdapter,
     EvalContext,
-    EvalHook,
     HookDecision,
     InjectContext,
     LoopConfig,
@@ -576,7 +575,6 @@ def run_coding_agent(
     hooks: list[Any] = [
         CodingGuardrailHook(),
         ThresholdCompactHook(budget),
-        EvalHook(evaluators=CODING_EVALS, verbose=True),
     ]
 
     # Trajectory recording - saves full run for replay/debugging
@@ -631,13 +629,6 @@ def run_coding_agent(
     if _recorder and trace_dir:
         _recorder.save(trace_dir)
         print(f"[harness] Trajectory saved to {trace_dir}")
-
-    # Save eval results alongside trajectory
-    if trace_dir:
-        _eval_hook = next((h for h in hooks if isinstance(h, EvalHook)), None)
-        if _eval_hook and _eval_hook.results:
-            _eval_hook.save(os.path.join(trace_dir, "eval_results.json"))
-            print(f"[harness] Eval results saved to {trace_dir}/eval_results.json")
 
     return trace or {}
 

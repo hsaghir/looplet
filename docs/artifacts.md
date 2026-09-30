@@ -65,7 +65,8 @@ them without inspection and redaction.
 
 ## Persisted eval run
 
-`save_eval_run()` and `looplet eval run --out` add independent outcome data,
+Use `save_eval_run()` / `load_eval_run()` as the durable eval round trip.
+`looplet eval run --out` uses the same writer. These add independent outcome data,
 grader results, and case identity to the trajectory:
 
 ```text
@@ -104,6 +105,9 @@ print(record.case.id if record.case else "no case metadata")
 
 A missing `trajectory.json` or malformed JSON fails loudly. Collector errors
 remain explicit eval results rather than disappearing as absent data.
+The context's `metadata["eval_collector_errors"]` retains failed host
+observations across rescoring. The reader recovers this metadata from older
+`evals.json` records too; malformed recorded failures fail evaluation closed.
 
 ### Writer inventory
 
@@ -112,15 +116,20 @@ remain explicit eval results rather than disappearing as absent data.
 | `RecordingLLMBackend.save()` and its async twin | `artifact.json`, `manifest.jsonl`, and indexed `call_NN_{prompt,response}.txt` pairs |
 | `TrajectoryRecorder.save()` | `artifact.json`, `trajectory.json`, `steps/step_NN.json`, and the model-call files when a recording backend is attached |
 | `ProvenanceSink.flush()` | The union selected by its attached recorder/backend; an unused sink may create only its directory |
-| `EvalHook.save()` | One legacy standalone JSON report with `task`, `results`, `summary`, and optional `expected` / `artifacts` |
+| `EvalHook.save()` | Deprecated compatibility-only standalone report with `task`, `results`, `summary`, and optional `expected` / `artifacts` |
 | `save_eval_run()` | A versioned eval-run directory: required trajectory, artifacts, and eval results; optional case, expectations, and recorded calls |
 | `promote_to_offline()` | The same layout as `save_eval_run()` |
 | `run_cartridge_evals(..., output_dir=...)` | One `save_eval_run()` directory per case plus a `workspace/` owned by the evaluated application |
 
-`EvalHook.save()` remains an unversioned compatibility report. It has no
+`EvalHook.save()` warns but retains its unversioned compatibility report. It has no
 supported round-trip reader and should not be used as a long-lived CI wire
 format. Use `save_eval_run()` for durable evidence; use the documented
 `looplet eval run --json` schema for transient CI decisions.
+
+`promote_to_offline()` is only a convenience alias for the durable writer.
+Lower-level provenance writers remain available for hosts that capture without
+grading; they are not competing eval lifecycles. Checkpoints remain recovery
+state, not eval evidence. Artifact version and completeness checks still apply.
 
 ### Agent-visible and grader-only data
 

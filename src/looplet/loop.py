@@ -466,13 +466,15 @@ class LoopConfig:
     first agent, you only need::
 
         config = LoopConfig(max_steps=10)
-        state = DefaultState(max_steps=10)  # must match
+
+    Omit ``state`` when calling the loop to create its default state from
+    this config. Supply a custom or restored state when the host needs it.
 
     Essential fields (set these first):
       - ``max_steps`` - how many tool calls before the loop stops.
-        **Important:** also pass the same value to ``DefaultState(max_steps=N)``
-                because state tracks budget_remaining while config tracks the loop limit.
-        If they differ, the lower one wins.
+        This is authoritative for ``DefaultState``; a supplied state with a
+        different limit is synchronized with a warning. The loop's explicit
+        ``max_steps=`` convenience argument overrides the config value.
       - ``system_prompt`` - who the agent is
       - ``compact_service`` - how to manage growing context
       - ``checkpoint_dir`` - crash-safe auto-resume (one directory path)

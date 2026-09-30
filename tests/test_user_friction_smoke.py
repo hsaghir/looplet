@@ -10,6 +10,7 @@ Covers the small UX wins:
 from __future__ import annotations
 
 import os
+import warnings
 from typing import Any
 from unittest import mock
 
@@ -41,6 +42,37 @@ class _FakeAnthropicClient:
 
 
 class TestComposableLoopShortcuts:
+    @pytest.mark.parametrize("state_limit", [None, 1, 9])
+    @pytest.mark.parametrize("override", [None, 2])
+    def test_config_is_the_single_default_state_limit(self, state_limit, override):
+        from looplet import DefaultState, LoopConfig, ToolSpec
+
+        registry = BaseToolRegistry()
+        registry.register(ToolSpec("ping", "Ping", {}, lambda: {}))
+        state = DefaultState(max_steps=state_limit) if state_limit is not None else None
+        config = LoopConfig(max_steps=3, use_native_tools=False)
+        with warnings.catch_warnings(record=True) as recorded:
+            warnings.simplefilter("always")
+            steps = list(
+                composable_loop(
+                    llm=MockLLMBackend(['{"tool": "ping", "args": {}}']),
+                    tools=registry,
+                    config=config,
+                    state=state,
+                    max_steps=override,
+                )
+            )
+
+        expected = override if override is not None else 3
+        assert len(steps) == expected
+        assert config.max_steps == expected
+        if state is not None:
+            assert state.max_steps == expected
+            assert state.budget_remaining == 0
+        assert bool([warning for warning in recorded if "max_steps" in str(warning.message)]) is (
+            state_limit is not None
+        )
+
     def test_max_steps_kwarg_seeds_default_config(self) -> None:
         registry = BaseToolRegistry()
         gen = composable_loop(

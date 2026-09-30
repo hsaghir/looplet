@@ -1132,7 +1132,7 @@ async def _async_composable_loop_impl(
             ):
                 recovery_prompt = build_parse_recovery_prompt(prompt, to_text(raw_response) or "")
                 recovery_result = await async_llm_call(
-                    llm,
+                    effective_llm,
                     recovery_prompt,
                     max_tokens=config.max_tokens,
                     system_prompt=config.system_prompt,

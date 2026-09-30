@@ -30,6 +30,10 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- `ValidatingToolRegistry` now uses the base registry's single preparation and
+  execution path for sync/async calls and batches. Optional schemas fail closed
+  with structured validation errors, and mixed batches preserve per-call
+  contexts, resources, order, and call IDs without a second dispatcher.
 - Cartridge self-tests now own evaluation and replace embedded `EvalHook`
   observers; reference coder defaults no longer grade normal runs implicitly.
   Explicit host hooks and reusable eval helpers remain supported.

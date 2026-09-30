@@ -74,6 +74,13 @@ The base registry checks argument names and required fields, not every JSON
 Schema keyword. Keep semantic and richer constraint validation in the tool,
 MCP server, or an explicit `ValidatingToolRegistry` contract.
 
+`ValidatingToolRegistry.register_with_schema(spec, schema)` adds optional typed
+argument validation to the same registry execution path. Its inherited
+`dispatch`, `dispatch_batch`, `async_dispatch`, and `async_dispatch_batch` keep
+the base cancellation, resource, timeout, result, and call-ID contracts. Tools
+registered without a schema still use ordinary registry argument checks; model
+visibility is not execution authority.
+
 ## Backends
 
 | API | Import | Notes |

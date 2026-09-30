@@ -29,7 +29,7 @@ from looplet.checkpoint import validate_checkpoint_identity as _validate_checkpo
 from looplet.context_plan import ContextPlan, ContextSourceSelector, ScopedContextSource
 from looplet.context_projection import ContextProjection
 from looplet.history import HistoryRecorder
-from looplet.hook_decision import HookDecision, normalize_hook_return
+from looplet.hook_decision import HookDecision, _invoke_hook, normalize_hook_return
 from looplet.native_tools import NativeToolPolicy
 from looplet.parse import parse_multi_tool_calls, to_text
 from looplet.prompt_preparation import PreparedPrompt, prepare_prompt, render_projection
@@ -422,8 +422,10 @@ class LoopHook(Protocol):
         populated. Returning a :class:`HookDecision` for
         :attr:`LifecycleEvent.PRE_TOOL_USE`,
         :attr:`LifecycleEvent.POST_TOOL_USE`, or
-        :attr:`LifecycleEvent.STOP` has the same effect as returning
-        it from the matching per-method hook.
+        :attr:`LifecycleEvent.POST_TOOL_FAILURE` follows the corresponding
+        tool-slot contract. Model events support context and stop effects;
+        terminal :attr:`LifecycleEvent.STOP` is observation-only. See
+        ``hook_effect_fields`` for explicit applicability.
 
         Implementing ``on_event`` is strictly additive - hooks can
         still implement per-method slots and mix both styles.
@@ -1195,6 +1197,7 @@ def emit_event(
         if isinstance(result, HookDecision):
             from looplet.events import LifecycleEvent as _LE  # noqa: PLC0415
 
+            normalize_hook_return(result, slot=getattr(event, "value", str(event)))
             if event != _LE.HOOK_DECISION and not result.is_noop():
                 _emit_hook_decision_event(
                     hooks,
@@ -1255,6 +1258,7 @@ async def emit_event_async(
         if isinstance(result, HookDecision):
             from looplet.events import LifecycleEvent as _LE  # noqa: PLC0415
 
+            normalize_hook_return(result, slot=getattr(event, "value", str(event)))
             if event != _LE.HOOK_DECISION and not result.is_noop():
                 await _emit_hook_decision_event_async(
                     hooks,
@@ -1381,7 +1385,7 @@ async def _intercept_tool_calls_async(
             method = getattr(hook, "pre_dispatch", None)
             if method is None:
                 continue
-            raw = method(state, session_log, tc, cur_step)
+            raw = _invoke_hook(hook, "pre_dispatch", state, session_log, tc, cur_step)
             if _inspect.isawaitable(raw):
                 raw = await raw
             decision = normalize_hook_return(raw, slot="pre_dispatch")
@@ -1428,7 +1432,7 @@ async def _intercept_tool_calls_async(
             method = getattr(hook, "check_permission", None)
             if method is None:
                 continue
-            raw = method(tc, state)
+            raw = _invoke_hook(hook, "check_permission", tc, state)
             if _inspect.isawaitable(raw):
                 raw = await raw
             decision = normalize_hook_return(raw, slot="check_permission")
@@ -1482,7 +1486,9 @@ async def _run_post_dispatch_hooks_async(
         method = getattr(hook, "post_dispatch", None)
         if method is None:
             continue
-        raw = method(state, session_log, tool_call, tool_result, step_num)
+        raw = _invoke_hook(
+            hook, "post_dispatch", state, session_log, tool_call, tool_result, step_num
+        )
         if _inspect.isawaitable(raw):
             raw = await raw
         decision = normalize_hook_return(raw, slot="post_dispatch")
@@ -1643,8 +1649,10 @@ def _call_check_done(
     pending ``done()`` answer without breaking legacy hooks."""
     method = hook.check_done
     if _accepts_tool_call_kwarg(method):
-        return method(state, session_log, context, step_num, tool_call=tool_call)
-    return method(state, session_log, context, step_num)
+        return _invoke_hook(
+            hook, "check_done", state, session_log, context, step_num, tool_call=tool_call
+        )
+    return _invoke_hook(hook, "check_done", state, session_log, context, step_num)
 
 
 # ── Hook method names (for typo detection) ──────────────────────
@@ -1908,7 +1916,7 @@ def _intercept_tool_calls(
         for hook in hooks:
             if not hasattr(hook, "pre_dispatch"):
                 continue
-            cached = hook.pre_dispatch(state, session_log, tc, cur_step)
+            cached = _invoke_hook(hook, "pre_dispatch", state, session_log, tc, cur_step)
             _decision = normalize_hook_return(cached, slot="pre_dispatch")
             if _decision is None:
                 if cached is not None and isinstance(cached, ToolResult):
@@ -1957,7 +1965,7 @@ def _intercept_tool_calls(
         for hook in hooks:
             if not hasattr(hook, "check_permission"):
                 continue
-            _raw = hook.check_permission(tc, state)
+            _raw = _invoke_hook(hook, "check_permission", tc, state)
             _decision = normalize_hook_return(_raw, slot="check_permission")
             if _decision is not None:
                 _emit_hook_decision_event(
@@ -2041,7 +2049,9 @@ def _run_post_dispatch_hooks(
     for hook in hooks:
         if not hasattr(hook, "post_dispatch"):
             continue
-        text = hook.post_dispatch(state, session_log, tool_call, tool_result, step_num)
+        text = _invoke_hook(
+            hook, "post_dispatch", state, session_log, tool_call, tool_result, step_num
+        )
         _decision = normalize_hook_return(text, slot="post_dispatch")
         if _decision is not None:
             _emit_hook_decision_event(
@@ -2601,7 +2611,7 @@ def _composable_loop_impl(
 
         for hook in hooks:
             if hasattr(hook, "pre_prompt"):
-                text = hook.pre_prompt(state, session_log, context, step_num)
+                text = _invoke_hook(hook, "pre_prompt", state, session_log, context, step_num)
                 # HookDecision-aware: accept both legacy str and decisions.
                 _decision = normalize_hook_return(text, slot="pre_prompt")
                 if _decision is not None:
@@ -3581,7 +3591,7 @@ def _composable_loop_impl(
 
         for hook in hooks:
             if hasattr(hook, "should_stop"):
-                _raw = hook.should_stop(state, step_num, len(all_step_entities))
+                _raw = _invoke_hook(hook, "should_stop", state, step_num, len(all_step_entities))
                 _decision = normalize_hook_return(_raw, slot="should_stop")
                 if _decision is not None:
                     _emit_hook_decision_event(

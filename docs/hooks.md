@@ -84,6 +84,37 @@ Hook methods may be synchronous or `async def` when using
 register or inspect derived tools before the run starts. The `build_prompt`
 callable receives the prompt-part keyword arguments documented in the API map.
 
+## Effect Applicability
+
+Return one `HookDecision` from decision slots; the slot determines which
+fields apply. Builders, compaction votes, and cleanup keep their dedicated
+return shapes. `hook_effect_fields(slot)` in `looplet.hook_decision` exposes
+the contract, and `decision.ignored_effects(slot)` reports unsupported fields.
+Normalization logs ignored field names, without their values, but leaves the
+decision unchanged for compatibility.
+
+| Slot | Applied Effects |
+| --- | --- |
+| `pre_prompt` | `additional_context` |
+| `pre_dispatch` / `pre_tool_use` | `updated_args`, `updated_result`, denial, and context |
+| `check_permission` | `permission="deny"`, with `block` as its reason |
+| `post_dispatch` / `post_tool_use` / `post_tool_failure` | `updated_result`, context, and `stop` |
+| `check_done` | `Block` or denial rejects completion; `Stop` is ignored |
+| `should_stop` | `stop`, including its original reason |
+| `pre_llm_call` / `post_llm_response` | Context and stop-after-step |
+| `pre_compact` / `post_compact` | Abort compaction / `rewrite_thread`, respectively |
+
+Other lifecycle events, including terminal `stop`, are observation-only.
+Metadata and `policy_decision` are audit data, not execution authority.
+Use `Deny` at tool gates; a block-only Python decision does not deny dispatch.
+Use `Block` to reject completion and `Stop` in a stopping slot. Accepted
+completion remains distinct from passing an outcome evaluation.
+
+LEP hooks use this same host contract without discarding supported effects.
+The adapter's directly called methods retain their existing boolean/string
+returns. Legacy LEP block-only `check_permission` decisions remain denials;
+use `Deny` when the same policy must work identically in Python and LEP.
+
 ## Hook Composition
 
 Hooks are passed as a list. All hooks fire in order for each hook point:
@@ -94,10 +125,11 @@ composable_loop(llm, tools=reg, hooks=hooks, ...)
 ```
 
 - `pre_prompt`: All non-None returns are concatenated into the briefing
-- `pre_dispatch`: First hook to return non-None wins (intercepts the call)
-- `post_dispatch`: All non-None returns are accumulated for the next prompt
-- `check_done`: First hook to return non-None rejects the done() call
-- `should_stop`: First True stops the loop
+- `pre_dispatch`: Argument rewrites flow in order; the first denial or cached result short-circuits dispatch.
+- `check_permission`: All permission gates must allow; an allow does not override another denial.
+- `post_dispatch`: Result rewrites flow in order; context accumulates and stop requests retain their reasons.
+- `check_done`: The first blocking decision rejects completion; a nonblocking decision does not.
+- `should_stop`: The first stop decision or legacy True stops the loop.
 
 > When a hook terminates the loop via `should_stop`, return
 > `HookDecision(stop="my_reason")` instead of a plain `True`. The reason

@@ -46,6 +46,7 @@ from looplet.checkpoint import save_pending_dispatch as _save_pending_dispatch
 from looplet.checkpoint import validate_checkpoint_identity as _validate_checkpoint_identity
 from looplet.context_plan import ContextSourceSelector
 from looplet.context_projection import ContextProjection as ContextProjection
+from looplet.hook_decision import _invoke_hook
 from looplet.loop import (
     ContextBudgetSnapshot as ContextBudgetSnapshot,
 )
@@ -795,6 +796,7 @@ async def _async_composable_loop_impl(
             done = True
             break
         _set_run_lifecycle(loop_ctx, phase=RunPhase.PROMPTING)
+        _hook_requested_stop = False
 
         if stream is not None and _StepStartEvent is not None:
             stream.emit(_StepStartEvent(step_num=step_num))
@@ -860,7 +862,9 @@ async def _async_composable_loop_impl(
             method = getattr(hook, "pre_prompt", None)
             if method is None:
                 continue
-            raw = await _maybe_await(method(state, session_log, context, step_num))
+            raw = await _maybe_await(
+                _invoke_hook(hook, "pre_prompt", state, session_log, context, step_num)
+            )
             from looplet.hook_decision import normalize_hook_return  # noqa: PLC0415
 
             decision = normalize_hook_return(raw, slot="pre_prompt")
@@ -915,7 +919,7 @@ async def _async_composable_loop_impl(
         if loop_ctx.context_budget.pressure and isinstance(_state_metadata, dict):
             _state_metadata["context_budget"] = loop_ctx.context_budget.to_dict()
 
-        await emit_event_async(
+        _pre_llm_decisions = await emit_event_async(
             hooks,
             _LE.PRE_LLM_CALL,
             step_num=step_num,
@@ -925,6 +929,12 @@ async def _async_composable_loop_impl(
             prompt=prompt,
             context_budget=loop_ctx.context_budget.to_dict(),
         )
+        for decision in _pre_llm_decisions:
+            if decision.additional_context:
+                post_dispatch_parts.append(decision.additional_context)
+            if decision.stop is not None:
+                stop_reason = decision.stop
+                _hook_requested_stop = True
 
         if _deadline_expired(loop_ctx):
             stop_reason = "deadline_exceeded"
@@ -1071,6 +1081,25 @@ async def _async_composable_loop_impl(
                 ),
             },
         )
+
+        _post_llm_decisions = await emit_event_async(
+            hooks,
+            _LE.POST_LLM_RESPONSE,
+            step_num=step_num,
+            state=state,
+            session_log=session_log,
+            context=context,
+            prompt=prompt,
+            raw_response=raw_response,
+            usage=getattr(effective_llm, "last_usage", None) if llm_result.ok else None,
+            extra={"native_tool_stats": loop_ctx.native_tool_stats.to_dict()},
+        )
+        for decision in _post_llm_decisions:
+            if decision.additional_context:
+                post_dispatch_parts.append(decision.additional_context)
+            if decision.stop is not None:
+                stop_reason = decision.stop
+                _hook_requested_stop = True
 
         if raw_response is None:
             if config.cancel_token is not None and getattr(
@@ -1614,13 +1643,30 @@ async def _async_composable_loop_impl(
         if done:
             continue
 
+        if _hook_requested_stop:
+            done = True
+            break
+
         # Should-stop check
         for hook in hooks:
             if hasattr(hook, "should_stop"):
                 from looplet.hook_decision import normalize_hook_return  # noqa: PLC0415
 
-                _raw = await _maybe_await(hook.should_stop(state, step_num, len(all_step_entities)))
+                _raw = await _maybe_await(
+                    _invoke_hook(hook, "should_stop", state, step_num, len(all_step_entities))
+                )
                 _decision = normalize_hook_return(_raw, slot="should_stop")
+                if _decision is not None:
+                    await _emit_hook_decision_event_async(
+                        hooks,
+                        decision=_decision,
+                        hook_slot="should_stop",
+                        hook_name=type(hook).__name__,
+                        step_num=step_num,
+                        state=state,
+                        session_log=session_log,
+                        context=context,
+                    )
                 if _decision is not None and _decision.is_stop():
                     stop_reason = _decision.stop or "hook_requested_stop"
                     done = True

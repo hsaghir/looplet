@@ -6,6 +6,9 @@ import asyncio
 import concurrent.futures
 import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
 from typing import Any, Iterable
 from uuid import uuid4
 
@@ -213,6 +216,12 @@ class RunHandle:
         return tuple(self._events)
 
 
+@dataclass
+class _RuntimeExecution:
+    hooks: list[Any]
+    result: RunResult | None = None
+
+
 class AgentRuntime:
     """Lifecycle wrapper around an existing :class:`AgentPreset`.
 
@@ -241,6 +250,78 @@ class AgentRuntime:
         self._active_tokens: dict[str, CancelToken] = {}
         self._active_handles: dict[str, RunHandle] = {}
 
+    @contextmanager
+    def _execution(
+        self,
+        llm: Any,
+        envelope: RunEnvelope,
+        token: CancelToken,
+        *,
+        events: list[RunEvent] | None = None,
+        claimed: bool = False,
+    ) -> Iterator[_RuntimeExecution]:
+        """Own setup, persistence, restoration, and release for either driver."""
+        if not claimed:
+            self._claim(envelope.run_id, token)
+        try:
+            with self._lock:
+                self._ensure_open()
+            persistence_errors: list[str] = []
+            observer = _RuntimeEventHook(
+                envelope, events if events is not None else [], self.store, persistence_errors
+            )
+            checkpoint_hook = (
+                _RunStoreCheckpointHook(
+                    self.store,
+                    envelope.run_id,
+                    self.preset.tools,
+                    llm,
+                    self.checkpoint_every_n_steps,
+                    persistence_errors,
+                )
+                if self.store is not None and self.checkpoint_every_n_steps is not None
+                else None
+            )
+            execution = _RuntimeExecution(
+                [observer, *([checkpoint_hook] if checkpoint_hook is not None else [])]
+            )
+            old_envelope = self.preset.config.run_envelope
+            old_token = self.preset.config.cancel_token
+            self.preset.config.run_envelope = envelope
+            self.preset.config.cancel_token = token
+            started = time.perf_counter()
+            try:
+                if self.store is not None:
+                    try:
+                        self.store.create(envelope, metadata={"runtime": "AgentRuntime"})
+                    except Exception as exc:
+                        persistence_errors.append(f"create: {type(exc).__name__}: {exc}")
+                yield execution
+            finally:
+                try:
+                    if checkpoint_hook is not None and execution.result is not None:
+                        checkpoint_hook.finalize(execution.result)
+                finally:
+                    with self._lock:
+                        self.preset.config.run_envelope = old_envelope
+                        self.preset.config.cancel_token = old_token
+                if execution.result is not None:
+                    result = execution.result
+                    result.metadata.setdefault(
+                        "runtime_duration_ms", (time.perf_counter() - started) * 1000
+                    )
+                    if persistence_errors:
+                        result.metadata["persistence_warnings"] = persistence_errors
+                    if self.store is not None:
+                        try:
+                            self.store.complete(envelope.run_id, result)
+                        except Exception as exc:
+                            result.metadata.setdefault("persistence_warnings", []).append(
+                                f"complete: {type(exc).__name__}: {exc}"
+                            )
+        finally:
+            self._release(envelope.run_id)
+
     def run(
         self,
         llm: Any,
@@ -255,74 +336,22 @@ class AgentRuntime:
         """Run synchronously and always return a host-facing result."""
         run_envelope = envelope or self._new_envelope()
         cancel_token = _cancel_token or self.preset.config.cancel_token or CancelToken()
-        if not _claimed:
-            self._claim(run_envelope.run_id, cancel_token)
-        try:
-            with self._lock:
-                self._ensure_open()
-            events = _event_buffer if _event_buffer is not None else []
-            persistence_errors: list[str] = []
-            observer = _RuntimeEventHook(run_envelope, events, self.store, persistence_errors)
-            checkpoint_hook = (
-                _RunStoreCheckpointHook(
-                    self.store,
-                    run_envelope.run_id,
-                    self.preset.tools,
-                    llm,
-                    self.checkpoint_every_n_steps,
-                    persistence_errors,
-                )
-                if self.store is not None and self.checkpoint_every_n_steps is not None
-                else None
-            )
-            old_envelope = self.preset.config.run_envelope
-            old_cancel_token = self.preset.config.cancel_token
-            self.preset.config.run_envelope = run_envelope
-            self.preset.config.cancel_token = cancel_token
-            if self.store is not None:
-                try:
-                    self.store.create(run_envelope, metadata={"runtime": "AgentRuntime"})
-                except Exception as exc:  # noqa: BLE001
-                    persistence_errors.append(f"create: {type(exc).__name__}: {exc}")
-            started = time.perf_counter()
-            result: RunResult | None = None
+        with self._execution(
+            llm, run_envelope, cancel_token, events=_event_buffer, claimed=_claimed
+        ) as execution:
             try:
                 if self.session is not None:
                     self.session.attach(run_envelope.run_id)
                 for _ in self.preset.run(
                     llm,
                     task=task,
-                    extra_hooks=[
-                        *extra_hooks,
-                        observer,
-                        *([checkpoint_hook] if checkpoint_hook is not None else []),
-                    ],
+                    extra_hooks=[*extra_hooks, *execution.hooks],
                 ):
                     pass
-                result = RunResult.from_state(self.preset.state)
+                execution.result = RunResult.from_state(self.preset.state)
             except Exception as exc:  # noqa: BLE001 - host boundary returns a failed result
-                result = _failed_runtime_result(self.preset.state, run_envelope, exc)
-            finally:
-                if checkpoint_hook is not None and result is not None:
-                    checkpoint_hook.finalize(result)
-                self.preset.config.run_envelope = old_envelope
-                self.preset.config.cancel_token = old_cancel_token
-            assert result is not None
-            result.metadata.setdefault(
-                "runtime_duration_ms", (time.perf_counter() - started) * 1000
-            )
-            if persistence_errors:
-                result.metadata["persistence_warnings"] = persistence_errors
-            if self.store is not None:
-                try:
-                    self.store.complete(run_envelope.run_id, result)
-                except Exception as exc:  # noqa: BLE001
-                    result.metadata.setdefault("persistence_warnings", []).append(
-                        f"complete: {type(exc).__name__}: {exc}"
-                    )
-            return result
-        finally:
-            self._release(run_envelope.run_id)
+                execution.result = _failed_runtime_result(self.preset.state, run_envelope, exc)
+            return execution.result
 
     async def run_async(
         self,
@@ -335,74 +364,20 @@ class AgentRuntime:
         """Run with the async loop while sharing the same lifecycle contract."""
         run_envelope = envelope or self._new_envelope()
         cancel_token = self.preset.config.cancel_token or CancelToken()
-        self._claim(run_envelope.run_id, cancel_token)
-        try:
-            with self._lock:
-                self._ensure_open()
-            events: list[RunEvent] = []
-            persistence_errors: list[str] = []
-            observer = _RuntimeEventHook(run_envelope, events, self.store, persistence_errors)
-            checkpoint_hook = (
-                _RunStoreCheckpointHook(
-                    self.store,
-                    run_envelope.run_id,
-                    self.preset.tools,
-                    llm,
-                    self.checkpoint_every_n_steps,
-                    persistence_errors,
-                )
-                if self.store is not None and self.checkpoint_every_n_steps is not None
-                else None
-            )
-            old_envelope = self.preset.config.run_envelope
-            old_cancel_token = self.preset.config.cancel_token
-            self.preset.config.run_envelope = run_envelope
-            self.preset.config.cancel_token = cancel_token
-            if self.store is not None:
-                try:
-                    self.store.create(run_envelope, metadata={"runtime": "AgentRuntime"})
-                except Exception as exc:  # noqa: BLE001
-                    persistence_errors.append(f"create: {type(exc).__name__}: {exc}")
-            started = time.perf_counter()
-            result: RunResult | None = None
+        with self._execution(llm, run_envelope, cancel_token) as execution:
             try:
                 if self.session is not None:
                     self.session.attach(run_envelope.run_id)
                 async for _ in self.preset.run_async(
                     llm,
                     task=task,
-                    extra_hooks=[
-                        *extra_hooks,
-                        observer,
-                        *([checkpoint_hook] if checkpoint_hook is not None else []),
-                    ],
+                    extra_hooks=[*extra_hooks, *execution.hooks],
                 ):
                     pass
-                result = RunResult.from_state(self.preset.state)
+                execution.result = RunResult.from_state(self.preset.state)
             except Exception as exc:  # noqa: BLE001
-                result = _failed_runtime_result(self.preset.state, run_envelope, exc)
-            finally:
-                if checkpoint_hook is not None and result is not None:
-                    checkpoint_hook.finalize(result)
-                with self._lock:
-                    self.preset.config.run_envelope = old_envelope
-                    self.preset.config.cancel_token = old_cancel_token
-            assert result is not None
-            result.metadata.setdefault(
-                "runtime_duration_ms", (time.perf_counter() - started) * 1000
-            )
-            if persistence_errors:
-                result.metadata["persistence_warnings"] = persistence_errors
-            if self.store is not None:
-                try:
-                    self.store.complete(run_envelope.run_id, result)
-                except Exception as exc:  # noqa: BLE001
-                    result.metadata.setdefault("persistence_warnings", []).append(
-                        f"complete: {type(exc).__name__}: {exc}"
-                    )
-            return result
-        finally:
-            self._release(run_envelope.run_id)
+                execution.result = _failed_runtime_result(self.preset.state, run_envelope, exc)
+            return execution.result
 
     def start(
         self, llm: Any, *, task: Any = None, envelope: RunEnvelope | None = None

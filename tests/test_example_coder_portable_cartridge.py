@@ -166,6 +166,43 @@ def test_coder_portable_cross_process_tools(monkeypatch, tmp_path) -> None:
         assert preset.mcp_adapters == []
 
 
+@pytest.mark.parametrize("async_mode", [False, True])
+@pytest.mark.timeout(90)
+async def test_portable_preset_run_recognizes_handle_owned_client(
+    monkeypatch, tmp_path, async_mode
+):
+    from looplet import validate_preset_contract
+    from looplet.testing import AsyncMockLLMBackend, MockLLMBackend
+
+    monkeypatch.setenv("LOOPLET_PROJECT_ROOT", str(tmp_path))
+    (tmp_path / "test_sum.py").write_text("def test_sum():\n    assert sum([1, 2, 3]) == 6\n")
+    preset = cartridge_to_preset(_CARTRIDGE)
+    handle = preset.state_service_handles[0]
+    preset.config.use_native_tools = False
+    try:
+        assert preset.resources["file_cache"] is handle.client
+        assert validate_preset_contract(preset).ok
+        backend = (AsyncMockLLMBackend if async_mode else MockLLMBackend)(
+            [
+                '{"tool":"bash","args":{"command":"python -m pytest -q"}}',
+                '{"tool":"done","args":{"summary":"Verified tests"}}',
+            ],
+            cycle=False,
+        )
+        steps = (
+            [step async for step in preset.run_async(backend)]
+            if async_mode
+            else list(preset.run(backend))
+        )
+        assert [step.tool_call.tool for step in steps] == ["bash", "done"]
+        assert preset.state._stop_reason == "done"
+    finally:
+        preset.close()
+        assert handle.proc.poll() is not None
+        assert handle.client._sock.fileno() == -1
+        assert not Path(handle.socket_path).exists()
+
+
 def test_coder_portable_structured_param_schema_and_coercion(monkeypatch, tmp_path) -> None:
     """Regression: structured tool params (``multi_edit.edits: list``) must
     advertise as JSON-Schema ``array`` - not ``string`` - and a JSON-string

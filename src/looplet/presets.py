@@ -355,6 +355,10 @@ class AgentPreset:
                 + ", ".join(missing_resources)
             )
         owned_ids = {id(resource) for resource in self.owned_resources}
+        for handle in self.state_service_handles:
+            client = getattr(handle, "client", None)
+            if client is not None:
+                owned_ids.add(id(client))
         unowned_closeables = sorted(
             name
             for name, resource in self.resources.items()
@@ -378,6 +382,32 @@ class AgentPreset:
                 f"({self.config.max_steps} != {runtime_max_steps})"
             )
         return warnings
+
+    def _prepare_run(self, llm: Any, extra_hooks: Iterable[Any]) -> list[Any]:
+        """Claim, validate, and bind the same wiring for both loop drivers."""
+        self._claim_run()
+        try:
+            errors = self._contract_errors()
+            if errors:
+                raise ValueError("invalid agent preset: " + "; ".join(errors))
+            hooks = [*self.hooks, *extra_hooks]
+            components = [*self.mcp_adapters, *hooks, *self.state_service_handles]
+            if self.model_gateway is not None:
+                components.append(self.model_gateway)
+            bound: set[int] = set()
+            for component in components:
+                if id(component) in bound:
+                    continue
+                bound.add(id(component))
+                setter = getattr(component, "set_run_envelope", None)
+                if callable(setter):
+                    setter(self.config.run_envelope)
+            if self.model_gateway is not None:
+                self.model_gateway.set_backend(llm)
+            return hooks
+        except BaseException:
+            self._release_failed_claim()
+            raise
 
     def run(
         self,
@@ -403,51 +433,27 @@ class AgentPreset:
         """
         from looplet.loop import composable_loop  # noqa: PLC0415
 
-        self._claim_run()
-
-        errors = self._contract_errors()
-        if errors:
+        hooks = self._prepare_run(llm, extra_hooks)
+        try:
+            loop = composable_loop(
+                llm=llm,
+                tools=self.tools,
+                state=self.state,
+                config=self.config,
+                hooks=hooks,
+                task=task,
+                context=context,
+                session_log=session_log,
+                conversation=conversation,
+                stream=stream,
+            )
+        except BaseException:
             self._release_failed_claim()
-            raise ValueError("invalid agent preset: " + "; ".join(errors))
-
-        for component in [*self.mcp_adapters, *self.hooks, *self.state_service_handles]:
-            setter = getattr(component, "set_run_envelope", None)
-            if callable(setter):
-                setter(self.config.run_envelope)
-        if self.model_gateway is not None:
-            setter = getattr(self.model_gateway, "set_run_envelope", None)
-            if callable(setter):
-                setter(self.config.run_envelope)
-
-        # Bind the live LLM backend to the model gateway (if any) so
-        # out-of-process MCP tools / LEP hooks can reach the same model
-        # this run is driving, instead of degrading ``ctx.llm`` to None.
-        if self.model_gateway is not None:
-            try:
-                self.model_gateway.set_backend(llm)
-            except Exception:  # pragma: no cover - defensive
-                import logging  # noqa: PLC0415
-
-                logging.getLogger(__name__).warning(
-                    "error binding LLM backend to model gateway", exc_info=True
-                )
-
-        loop = composable_loop(
-            llm=llm,
-            tools=self.tools,
-            state=self.state,
-            config=self.config,
-            hooks=[*self.hooks, *extra_hooks],
-            task=task,
-            context=context,
-            session_log=session_log,
-            conversation=conversation,
-            stream=stream,
-        )
+            raise
 
         def _drive() -> Any:
             try:
-                yield from loop
+                return (yield from loop)
             finally:
                 self._mark_run_finished()
 
@@ -467,35 +473,23 @@ class AgentPreset:
         """Drive the async loop with this preset's wiring."""
         from looplet.async_loop import async_composable_loop  # noqa: PLC0415
 
-        self._claim_run()
-
-        errors = self._contract_errors()
-        if errors:
+        hooks = self._prepare_run(llm, extra_hooks)
+        try:
+            loop = async_composable_loop(
+                llm=llm,
+                tools=self.tools,
+                state=self.state,
+                config=self.config,
+                hooks=hooks,
+                task=task,
+                context=context,
+                session_log=session_log,
+                conversation=conversation,
+                stream=stream,
+            )
+        except BaseException:
             self._release_failed_claim()
-            raise ValueError("invalid agent preset: " + "; ".join(errors))
-
-        for component in [*self.mcp_adapters, *self.hooks, *self.state_service_handles]:
-            setter = getattr(component, "set_run_envelope", None)
-            if callable(setter):
-                setter(self.config.run_envelope)
-        if self.model_gateway is not None:
-            setter = getattr(self.model_gateway, "set_run_envelope", None)
-            if callable(setter):
-                setter(self.config.run_envelope)
-            self.model_gateway.set_backend(llm)
-
-        loop = async_composable_loop(
-            llm=llm,
-            tools=self.tools,
-            state=self.state,
-            config=self.config,
-            hooks=[*self.hooks, *extra_hooks],
-            task=task,
-            context=context,
-            session_log=session_log,
-            conversation=conversation,
-            stream=stream,
-        )
+            raise
 
         async def _drive() -> Any:
             try:

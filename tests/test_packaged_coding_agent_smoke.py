@@ -57,3 +57,4 @@ class TestPackagedCodingAgent:
         assert "Tool protocol: json-text" in out
         assert "Tests: PASSED" in out
         assert "Step 4: done" in out
+        assert "Eval results" not in out

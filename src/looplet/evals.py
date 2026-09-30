@@ -70,6 +70,7 @@ import shutil
 import sys
 import tempfile
 import time
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, NamedTuple, cast
@@ -543,19 +544,7 @@ class EvalResult:
         Returns ``False`` otherwise, including when both ``score`` and
         ``label`` are unset.
         """
-        if self.label is not None and self.label.lower() in {
-            "error",
-            "fail",
-            "wrong",
-            "no",
-            "skipped",
-        }:
-            return False
-        if self.score is not None:
-            return math.isfinite(self.score) and 0.0 <= self.score <= 1.0 and self.score >= 0.5
-        if self.label is not None:
-            return self.label.lower() in {"pass", "correct", "yes"}
-        return False
+        return _eval_result_state(self, required=False, threshold=0.5) == "pass"
 
     @classmethod
     def from_return(cls, value: Any, *, name: str = "") -> "EvalResult":
@@ -592,12 +581,18 @@ class EvalResult:
                     details=details,
                     explanation=f"metric {key!r} must be finite, got {metric!r}",
                 )
-            # Test key presence rather than truthiness so a real 0.0 score
-            # is not silently downgraded to a metric-only result.
-            score = next(
-                (metrics[key] for key in ("score", "f1", "accuracy", "overall") if key in metrics),
+            score_key = next(
+                (key for key in ("score", "f1", "accuracy", "overall") if key in metrics),
                 None,
             )
+            score = metrics[score_key] if score_key is not None else None
+            if score_key is not None and score_key != "score":
+                warnings.warn(
+                    f"Inferring an eval gate score from {score_key!r} is deprecated; "
+                    "return EvalResult(metrics=...) for passive metrics or set score explicitly.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
             if score is not None and (not math.isfinite(score) or not 0.0 <= score <= 1.0):
                 return cls(
                     name=name,
@@ -624,7 +619,7 @@ class EvalResult:
             metric_strs = [
                 f"{k}={v:.2f}"
                 for k, v in self.metrics.items()
-                if k not in ("score", "f1", "accuracy", "overall")
+                if k != "score" or self.score is None
             ]
             if metric_strs:
                 parts.append(" ".join(metric_strs))
@@ -1347,6 +1342,14 @@ def load_eval_run(directory: str | Path) -> "EvalRunRecord":
             except (TypeError, ValueError) as exc:
                 raise ValueError(f"Invalid evals.json in {root}: result {index}: {exc}") from exc
 
+    collector_errors = [
+        result.to_dict()
+        for result in results
+        if result.name.startswith("collector:") and result.label == "error"
+    ]
+    if collector_errors:
+        context.metadata["eval_collector_errors"] = collector_errors
+
     case: EvalCase | None = None
     case_path = root / "case.json"
     if case_path.exists():
@@ -1413,7 +1416,9 @@ def run_cartridge_evals(
 
     Each case's ``expected`` mapping is injected into the evaluator's
     context only after the loop ends; it is not included in the task the
-    agent sees.
+    agent sees. This runner owns evaluation: embedded :class:`EvalHook`
+    observers are replaced by the case bundle's hook, so collectors run
+    once. Other cartridge hooks remain unchanged.
 
     Returns one :class:`EvalRunRecord` per executed case (``context`` is
     the online run's :class:`EvalContext`, ``directory`` is the persisted
@@ -1475,7 +1480,8 @@ def run_cartridge_evals(
             judge_llm=judge_llm,
             expected=case.expected,
         )
-        preset.hooks = list(preset.hooks) + [hook]
+        preset.hooks = [existing for existing in preset.hooks if not isinstance(existing, EvalHook)]
+        preset.hooks.append(hook)
 
         task = {k: v for k, v in (case.task or {}).items() if k != "files"}
         try:
@@ -1598,9 +1604,33 @@ def assert_evals_pass(
         evaluators: list[Callable] = list(_discover_cached(str(Path(evals))))
     else:
         evaluators = list(evals)
+    required_names = {
+        evaluator.__name__
+        for evaluator in evaluators
+        if _REQUIRED_EVAL_MARK in _get_marks(evaluator)
+    }
+    expected_names = required_names | {
+        evaluator.__name__ for evaluator in _filter_evals(evaluators, include, exclude)
+    }
     results = eval_run(evaluators, ctx, judge_llm=judge_llm, include=include, exclude=exclude)
-    failed = [r for r in results if not r.passed]
-    assert not failed, "\n".join(r.pretty() for r in failed)
+    failed = [
+        result
+        for result in results
+        if _eval_state_fails(
+            _eval_result_state(
+                result,
+                required=result.name in required_names,
+                threshold=0.5,
+            ),
+            required=result.name in required_names,
+        )
+    ]
+    messages = [result.pretty() for result in failed]
+    messages.extend(
+        f"{name}: {'required grader' if name in required_names else 'grader'} missing from run result"
+        for name in sorted(expected_names - {result.name for result in results})
+    )
+    assert not messages, "\n".join(messages)
 
 
 def eval_discover(
@@ -1675,6 +1705,47 @@ def eval_discover(
 # ── Runner ───────────────────────────────────────────────────────
 
 
+def _recorded_collector_errors(ctx: EvalContext) -> list[EvalResult]:
+    """Restore host observation failures before a grader can mutate context."""
+    raw = ctx.metadata.get("eval_collector_errors", [])
+    if not isinstance(raw, list):
+        return [
+            EvalResult(
+                name="collector:recorded_errors",
+                label="error",
+                explanation="recorded collector errors must be a list",
+            )
+        ]
+    failures: list[EvalResult] = []
+    for item in raw:
+        try:
+            if (
+                not isinstance(item, dict)
+                or not isinstance(item.get("name"), str)
+                or not item["name"].startswith("collector:")
+                or item.get("label") != "error"
+            ):
+                raise ValueError("expected a named collector error")
+            failures.append(
+                EvalResult(
+                    **{
+                        key: value
+                        for key, value in item.items()
+                        if key in EvalResult.__dataclass_fields__
+                    }
+                )
+            )
+        except (TypeError, ValueError) as exc:
+            failures.append(
+                EvalResult(
+                    name="collector:recorded_errors",
+                    label="error",
+                    explanation=f"invalid recorded collector failure: {exc}",
+                )
+            )
+    return failures
+
+
 def eval_run(
     evaluators: list[Callable],
     ctx: EvalContext,
@@ -1699,6 +1770,7 @@ def eval_run(
         include: Only run evals with these marks (via ``@eval_mark``).
         exclude: Skip evals with these marks.
     """
+    collector_errors = _recorded_collector_errors(ctx)
     filtered = _filter_evals(evaluators, include, exclude)
     results: list[EvalResult] = []
     for fn in filtered:
@@ -1729,6 +1801,7 @@ def eval_run(
             result = EvalResult(name=name, label="error", explanation=str(e))
         result.duration_ms = (time.time() - t0) * 1000
         results.append(result)
+    results.extend(collector_errors)
     return results
 
 
@@ -1768,7 +1841,7 @@ class EvalHook:
         for step in composable_loop(..., hooks=[hook]):
             ...
         print(hook.summary())
-        hook.save("evals/run_1.json")
+        save_eval_run("eval-runs/run_1", eval_hook=hook)
 
     Collectors are callables ``(state) -> dict[str, Any]`` that run
     once at end-of-loop and merge their return values into
@@ -1862,7 +1935,16 @@ class EvalHook:
         return "\n".join(lines)
 
     def save(self, path: str | Path) -> None:
-        """Save eval results to a JSON file."""
+        """Write the deprecated standalone report for compatibility.
+
+        Use :func:`save_eval_run` for durable, reloadable evidence.
+        """
+        warnings.warn(
+            "EvalHook.save() writes a deprecated standalone report; "
+            "use save_eval_run(directory, eval_hook=hook) for durable evidence.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         p = Path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
         task = dict(self._task)
@@ -1978,6 +2060,11 @@ class EvalHook:
         context_metadata = dict(state_metadata)
         if stop_reason is not None:
             context_metadata["termination_reason"] = stop_reason
+        context_metadata.pop("eval_collector_errors", None)
+        if collector_failures:
+            context_metadata["eval_collector_errors"] = [
+                result.to_dict() for result in collector_failures
+            ]
 
         ctx = EvalContext(
             steps=list(steps),
@@ -1991,7 +2078,6 @@ class EvalHook:
         self._context = ctx
 
         self._results = eval_run(self.evaluators, ctx, judge_llm=self.judge_llm)
-        self._results.extend(collector_failures)
 
         if self.verbose:
             print(f"\n{'─' * 50}")
@@ -2058,33 +2144,14 @@ def _result_is_integrity_failure(
     required: bool = False,
 ) -> bool:
     """Whether a non-numeric result makes a CLI run untrustworthy."""
-    if isinstance(result, EvalResult):
-        score = result.score
-        label = result.label
-    else:
-        score = result.get("score")
-        label = result.get("label")
-    normalized = str(label).lower() if label is not None else ""
-    if normalized in {"error", "fail", "wrong", "no"}:
-        return True
-    if normalized == "skipped":
-        return required
-    if score is not None:
-        try:
-            numeric_score = float(score)
-        except (TypeError, ValueError):
-            return True
-        if not math.isfinite(numeric_score) or not 0.0 <= numeric_score <= 1.0:
-            return True
-        return required and numeric_score < 0.5
-    if label is None:
-        metrics = result.metrics if isinstance(result, EvalResult) else result.get("metrics", {})
-        return required or not bool(metrics)
-    return normalized not in {"pass", "correct", "yes"}
+    return _eval_state_fails(
+        _eval_result_state(result, required=required, threshold=0.0),
+        required=required,
+    )
 
 
 def _eval_result_state(
-    result: EvalResult | None,
+    result: EvalResult | dict[str, Any] | None,
     *,
     required: bool,
     threshold: float,
@@ -2093,7 +2160,11 @@ def _eval_result_state(
     """Classify one result using the stable eval-summary v1 vocabulary."""
     if result is None:
         return "missing"
-    label = (result.label or "").lower()
+    if isinstance(result, EvalResult):
+        score, raw_label, metrics = result.score, result.label, result.metrics
+    else:
+        score, raw_label, metrics = result.get("score"), result.get("label"), result.get("metrics")
+    label = str(raw_label).lower() if raw_label is not None else ""
     if collector and label == "error":
         return "collector_error"
     if label == "error":
@@ -2102,13 +2173,19 @@ def _eval_result_state(
         return "skipped"
     if label in {"fail", "wrong", "no"}:
         return "explicit_fail"
-    if result.score is not None:
-        if required and result.score < 0.5:
+    if score is not None:
+        try:
+            numeric_score = float(score)
+        except (TypeError, ValueError, OverflowError):
+            return "grader_error"
+        if not math.isfinite(numeric_score) or not 0.0 <= numeric_score <= 1.0:
+            return "grader_error"
+        if required and numeric_score < 0.5:
             return "explicit_fail"
-        if result.score < threshold:
+        if numeric_score < threshold:
             return "threshold_fail"
         return "pass"
-    if result.metrics and not label:
+    if metrics and not label:
         return "metric_only"
     if label in {"pass", "correct", "yes"}:
         return "pass"
@@ -2294,6 +2371,7 @@ def eval_run_batch(
     """
     filtered = _filter_evals(evaluators, include, exclude)
     all_results: list[list[EvalResult]] = []
+    grader_names = [evaluator.__name__ for evaluator in filtered]
 
     for ctx in contexts:
         results = eval_run(filtered, ctx, judge_llm=judge_llm)
@@ -2301,16 +2379,24 @@ def eval_run_batch(
 
     # Pivot: per-evaluator aggregation
     summary: list[dict[str, Any]] = []
-    for i, fn in enumerate(filtered):
-        scores: list[float] = [
-            s
-            for s in (
-                all_results[j][i].score for j in range(len(contexts)) if i < len(all_results[j])
+    names = grader_names + sorted(
+        {result.name for results in all_results for result in results} - set(grader_names)
+    )
+    for name in names:
+        per_run = [
+            next(
+                (result for result in results if result.name == name),
+                EvalResult(
+                    name=name,
+                    label="error" if name in grader_names else "skipped",
+                    explanation="grader missing from run result" if name in grader_names else "",
+                ),
             )
-            if s is not None
+            for results in all_results
         ]
+        scores = [result.score for result in per_run if result.score is not None]
         entry: dict[str, Any] = {
-            "name": fn.__name__,
+            "name": name,
             "scores": scores,
             "runs": len(contexts),
         }
@@ -2318,9 +2404,7 @@ def eval_run_batch(
             entry["avg_score"] = round(sum(scores) / len(scores), 3)
             entry["min_score"] = round(min(scores), 3)
             entry["max_score"] = round(max(scores), 3)
-        entry["per_run"] = [
-            all_results[j][i].to_dict() for j in range(len(contexts)) if i < len(all_results[j])
-        ]
+        entry["per_run"] = [result.to_dict() for result in per_run]
         summary.append(entry)
 
     return summary
@@ -2355,7 +2439,7 @@ def eval_cli(args: list[str] | None = None) -> int:
 
         looplet eval traces/                          # score all runs
         looplet eval traces/ --evals eval_agent.py    # specific eval file
-        looplet eval traces/ --threshold 0.7          # fail if avg < 0.7
+        looplet eval traces/ --threshold 0.7          # fail if any score < 0.7
         looplet eval traces/ --include accuracy       # only accuracy evals
         looplet eval traces/ --exclude slow           # skip slow evals
 
@@ -2398,8 +2482,8 @@ def eval_cli(args: list[str] | None = None) -> int:
     parser.add_argument(
         "--threshold",
         type=float,
-        default=0.0,
-        help="Fail if any eval avg score < threshold (default: 0)",
+        default=0.5,
+        help="Fail if any scored result < threshold (default: 0.5)",
     )
     parser.add_argument(
         "--include", nargs="*", default=None, help="Only run evals with these marks"
@@ -2435,7 +2519,15 @@ def eval_cli(args: list[str] | None = None) -> int:
     for d in sorted(traces_root.iterdir()):
         if d.is_dir() and (d / "trajectory.json").exists():
             try:
-                contexts.append(EvalContext.from_trajectory_dir(d))
+                descriptor = read_artifact_descriptor(d, expected_kinds=("eval_run", "provenance"))
+                is_eval_run = (
+                    descriptor["kind"] == "eval_run"
+                    if descriptor is not None
+                    else (d / "evals.json").is_file()
+                )
+                contexts.append(
+                    load_eval_run(d).context if is_eval_run else EvalContext.from_trajectory_dir(d)
+                )
                 names.append(d.name)
             except Exception as e:  # noqa: BLE001
                 failure = f"{d.name}: {e}"
@@ -2449,6 +2541,7 @@ def eval_cli(args: list[str] | None = None) -> int:
     print(f"Found {len(evaluators)} evals, {len(contexts)} trajectories\n")
 
     # Run batch
+    required_names = {fn.__name__ for fn in evaluators if _REQUIRED_EVAL_MARK in _get_marks(fn)}
     table = eval_run_batch(
         evaluators,
         contexts,
@@ -2462,18 +2555,21 @@ def eval_cli(args: list[str] | None = None) -> int:
     # Print results
     below_threshold = False
     integrity_failures: list[str] = []
-    required_names = {fn.__name__ for fn in evaluators if _REQUIRED_EVAL_MARK in _get_marks(fn)}
     selected_names = {row["name"] for row in table}
     for omitted in sorted(required_names - selected_names):
         integrity_failures.append(f"{omitted}: required evaluator was filtered out")
     for row in table:
+        required = row["name"] in required_names
+        states = [
+            _eval_result_state(run, required=required, threshold=parsed.threshold)
+            for run in row.get("per_run", [])
+        ]
+        below_threshold |= "threshold_fail" in states
         avg = row.get("avg_score")
         if avg is not None:
-            scores = row.get("scores", [])
-            raw_avg = sum(scores) / len(scores) if scores else avg
-            marker = "✓" if raw_avg >= parsed.threshold else "✗"
-            if raw_avg < parsed.threshold:
-                below_threshold = True
+            marker = (
+                "✗" if any(_eval_state_fails(state, required=required) for state in states) else "✓"
+            )
             print(
                 f"  {marker} {row['name']:40s} avg={avg:.2f}  "
                 f"min={row.get('min_score', 0):.2f}  "
@@ -2493,13 +2589,10 @@ def eval_cli(args: list[str] | None = None) -> int:
                     print(f"        {d}")
 
         for j, run in enumerate(row.get("per_run", [])):
-            if _result_is_integrity_failure(
-                run,
-                required=row["name"] in required_names,
-            ):
+            if states[j] != "threshold_fail" and _eval_state_fails(states[j], required=required):
                 run_name = names[j] if j < len(names) else f"run_{j}"
                 integrity_failures.append(
-                    f"{run_name}/{row['name']}: {run.get('label') or 'invalid result'}"
+                    f"{run_name}/{row['name']}: {run.get('label') or states[j]}"
                 )
 
     # Summary
@@ -2566,8 +2659,8 @@ def _run_cartridge_cli(args: list[str]) -> int:
     parser.add_argument(
         "--threshold",
         type=float,
-        default=0.0,
-        help="Fail (exit 1) if any scored grader is below this on any case.",
+        default=0.5,
+        help="Fail (exit 1) if any scored grader is below this on any case (default: 0.5).",
     )
     parser.add_argument(
         "--json",

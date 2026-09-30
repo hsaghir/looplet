@@ -208,6 +208,25 @@ def test_save_eval_run_without_hook_writes_empty_artifacts(tmp_path: Path) -> No
     assert rec.case is None
 
 
+def test_reload_recovers_collector_errors_from_older_records(tmp_path: Path) -> None:
+    failure = EvalResult(
+        name="collector:unavailable", label="error", explanation="source unavailable"
+    )
+    save_eval_run(
+        tmp_path / "run",
+        recorder=_FakeRecorder(_sample_steps(), task={}),
+        results=[EvalResult(name="_grader_completed", score=1.0), failure],
+    )
+    trajectory = json.loads((tmp_path / "run" / "trajectory.json").read_text())
+    assert "eval_collector_errors" not in trajectory.get("metadata", {})
+
+    record = load_eval_run(tmp_path / "run")
+    offline = eval_run([_grader_completed], record.context)
+
+    assert record.context.metadata["eval_collector_errors"] == [failure.to_dict()]
+    assert offline[-1].to_dict() == failure.to_dict()
+
+
 def test_failed_save_without_source_does_not_leave_pending_marker(tmp_path: Path) -> None:
     root = tmp_path / "run"
 

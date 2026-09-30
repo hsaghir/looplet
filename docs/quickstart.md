@@ -183,6 +183,11 @@ That collector assumes the real harness has a tool that writes
 `assignment.json`; the host reads the artifact after the loop. It does
 not require the model to call a particular tool sequence.
 
+Evaluation is opt-in: attach this hook to the loop once, then use
+`save_eval_run(directory, eval_hook=eval_hook)` to persist the outcome and
+grades. `load_eval_run(directory)` is the matching reader. Cartridge authors
+can use `looplet eval run` instead; that runner owns collection and grading.
+
 For a complete executable version of this pattern, including protected
 expected data and persisted eval runs, use the
 [failure-to-regression demo](regression-demo.md).

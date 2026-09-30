@@ -160,6 +160,11 @@ bundle: case data, `collect_*` outcome collectors, and `eval_*` graders.
 workspaces and persist trajectories, artifacts, scores, and grader-only
 expected data.
 
+The self-test runner owns evaluation and replaces any embedded `EvalHook`
+observers for that run, so a collector is not invoked twice. Policy hooks
+remain active. The reference coder's normal runs do not grade implicitly;
+hosts that want live scoring attach their own eval hook explicitly.
+
 Those evals define what the cartridge claims about itself and should travel
 with its version. They are analogous to package tests. They are not a secure
 promotion oracle when the candidate or generator can modify the cartridge.

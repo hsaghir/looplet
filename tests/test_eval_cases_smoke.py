@@ -10,8 +10,10 @@ import pytest
 from looplet.evals import (
     EvalCase,
     EvalContext,
+    EvalResult,
     assert_evals_pass,
     eval_cli,
+    eval_mark,
     load_cases,
     parametrize_cases,
     pytest_param_cases,
@@ -284,6 +286,49 @@ class TestAssertEvalsPass:
         eval_file.write_text("def eval_always_pass(ctx):\n    return True\n")
         # Should not raise - discovers and runs the single passing eval.
         assert_evals_pass(self._ctx(), tmp_path)
+
+    def test_metric_only_result_is_not_a_release_gate(self) -> None:
+        def eval_cost(ctx):
+            return {"steps": 20.0}
+
+        assert_evals_pass(self._ctx(), [_eval_passing, eval_cost])
+
+    def test_required_metric_only_result_fails(self) -> None:
+        @eval_mark("required")
+        def eval_gate(ctx):
+            return EvalResult(metrics={"steps": 20.0})
+
+        with pytest.raises(AssertionError, match="eval_gate"):
+            assert_evals_pass(self._ctx(), [eval_gate])
+
+    def test_optional_judge_without_backend_is_neutral(self) -> None:
+        def eval_judge(ctx, llm):
+            return True
+
+        assert_evals_pass(self._ctx(), [_eval_passing, eval_judge])
+
+    def test_required_judge_without_backend_fails(self) -> None:
+        @eval_mark("required")
+        def eval_judge(ctx, llm):
+            return True
+
+        with pytest.raises(AssertionError, match="eval_judge"):
+            assert_evals_pass(self._ctx(), [eval_judge])
+
+    def test_filtered_required_grader_fails(self) -> None:
+        @eval_mark("required", "release")
+        def eval_gate(ctx):
+            return True
+
+        with pytest.raises(AssertionError, match="eval_gate: required grader missing"):
+            assert_evals_pass(self._ctx(), [eval_gate], exclude=["release"])
+
+    def test_numeric_score_below_pass_boundary_fails(self) -> None:
+        def eval_score(ctx):
+            return 0.4
+
+        with pytest.raises(AssertionError, match="eval_score"):
+            assert_evals_pass(self._ctx(), [eval_score])
 
 
 class TestEvalCliHelp:

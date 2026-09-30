@@ -274,6 +274,68 @@ class TestToolSpecJsonSchema:
         schema = spec.to_json_schema()
         assert schema == params
 
+    def test_compatibility_schemas_share_requiredness_and_rich_types(self):
+        from looplet import BaseToolRegistry, ToolCall, ToolSpec
+
+        parameters = {
+            "mode": {"type": "string", "enum": ["safe", "fast"]},
+            "rows": {"type": "array", "items": {"type": "integer"}},
+            "limit": {"type": "integer", "minimum": 1, "default": 10},
+            "options": "(optional) object",
+        }
+        spec = ToolSpec(
+            "query",
+            "Query rows",
+            parameters,
+            lambda *, mode, rows, limit=10, options=None: {"rows": rows, "limit": limit},
+        )
+        registry = BaseToolRegistry()
+        registry.register(spec)
+        canonical = spec.to_json_schema()
+
+        assert canonical["required"] == spec.required_parameters() == ["mode", "rows"]
+        assert canonical["properties"]["rows"] == parameters["rows"]
+        assert canonical["properties"]["mode"] == parameters["mode"]
+        assert canonical["properties"]["limit"] == parameters["limit"]
+        assert canonical["properties"]["options"]["type"] == "object"
+        assert registry.tool_schemas()[0]["input_schema"] == canonical
+        assert registry.introspect()["tools"][0]["parameters"] == canonical
+        assert registry.dispatch(ToolCall("query", {"mode": "safe", "rows": [1]})).data == {
+            "rows": [1],
+            "limit": 10,
+        }
+
+    @pytest.mark.parametrize(
+        ("descriptor", "expected"),
+        [("int", "integer"), ("bool", "boolean"), ("list", "array"), ("file path", "string")],
+    )
+    def test_shorthand_type_normalization(self, descriptor, expected):
+        from looplet import ToolSpec
+
+        spec = ToolSpec("echo", "Echo", {"value": descriptor}, lambda *, value: value)
+
+        assert spec.to_json_schema()["properties"]["value"]["type"] == expected
+
+    def test_signature_optionality_and_edits_reach_every_schema_view(self):
+        from looplet import BaseToolRegistry, ToolSpec
+
+        spec = ToolSpec(
+            "echo",
+            "Echo",
+            {"value": "str", "limit": "int"},
+            lambda *, value, limit=10: value,
+            infer_optional_from_signature=True,
+        )
+        registry = BaseToolRegistry()
+        registry.register(spec)
+        assert spec.required_parameters() == ["value"]
+        assert spec.to_api_schema()["input_schema"]["required"] == ["value"]
+        spec.parameters["limit"] = {"type": "integer", "default": 5, "maximum": 20}
+
+        assert spec.to_json_schema()["properties"]["limit"]["maximum"] == 20
+        assert registry.introspect()["tools"][0]["parameters"] == spec.to_json_schema()
+        assert spec.contract_errors() == []
+
     def test_dispatch_works_with_json_schema(self):
         from looplet.tools import BaseToolRegistry, ToolSpec
         from looplet.types import ToolCall

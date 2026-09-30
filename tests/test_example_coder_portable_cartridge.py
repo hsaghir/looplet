@@ -183,10 +183,11 @@ def test_coder_portable_structured_param_schema_and_coercion(monkeypatch, tmp_pa
     try:
         reg = preset.tools
         multi_edit = reg._tools["multi_edit"]
-        assert (multi_edit.parameters or {}).get("edits") == "array"
+        assert multi_edit.to_json_schema()["properties"]["edits"]["type"] == "array"
         # subagent.max_steps is an int param → integer, not string.
         subagent = reg._tools["subagent"]
-        assert (subagent.parameters or {}).get("max_steps", "").endswith("integer")
+        assert subagent.to_json_schema()["properties"]["max_steps"]["type"] == "integer"
+        assert "max_steps" not in subagent.required_parameters()
 
         target = "frob.py"
         (tmp_path / target).write_text("VALUE = 1\n")

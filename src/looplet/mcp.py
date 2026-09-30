@@ -41,6 +41,7 @@ import signal
 import subprocess
 import threading
 from collections.abc import Callable, Iterable
+from copy import deepcopy
 from typing import Any
 
 from looplet.protocol_context import remaining_deadline
@@ -118,13 +119,22 @@ class MCPToolAdapter:
         for schema in self._tool_schemas:
             name = schema["name"]
             desc = schema.get("description", "")
-            params = self._extract_params(schema)
+            params = deepcopy(schema.get("inputSchema", {}))
+            params.setdefault("type", "object")
+            params.setdefault("properties", {})
+            for name_key, descriptor in params["properties"].items():
+                type_name = descriptor.get("type") if isinstance(descriptor, dict) else None
+                if isinstance(type_name, str) and type_name.startswith("(optional)"):
+                    descriptor["type"] = type_name[len("(optional)") :].strip()
+                    params["required"] = [
+                        key for key in params.get("required", []) if key != name_key
+                    ]
             specs.append(
                 ToolSpec(
                     name=name,
                     description=desc,
                     parameters=params,
-                    execute=self._make_executor(name, params),
+                    execute=self._make_executor(name, self._extract_params(schema)),
                     capabilities=list(self._capabilities),
                 )
             )
@@ -523,12 +533,14 @@ class MCPToolAdapter:
 
     @staticmethod
     def _extract_params(schema: dict) -> dict[str, str]:
-        """Convert MCP JSON-schema parameters to ToolSpec parameter dict."""
+        """Extract type hints only for JSON-text structured-argument repair."""
         input_schema = schema.get("inputSchema", {})
         props = input_schema.get("properties", {})
         required = set(input_schema.get("required", []))
         params: dict[str, str] = {}
         for name, prop in props.items():
             type_name = prop.get("type", "str") if isinstance(prop, dict) else "str"
+            if isinstance(type_name, list):
+                type_name = " ".join(type_name)
             params[name] = type_name if name in required else f"(optional) {type_name}"
         return params

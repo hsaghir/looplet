@@ -578,15 +578,16 @@ def run_coding_agent(
     ]
 
     # Trajectory recording - saves full run for replay/debugging
-    _recorder = None
+    sink = None
     if trace_dir:
-        from looplet.provenance import TrajectoryRecorder  # noqa: PLC0415
+        from looplet import ProvenanceSink  # noqa: PLC0415
 
-        _recorder = TrajectoryRecorder()
-        hooks.append(_recorder)
+        sink = ProvenanceSink(trace_dir)
+        llm = sink.wrap_llm(llm)
+        hooks.append(sink.trajectory_hook())
 
     tools = build_tools(ws)
-    state = DefaultState(max_steps=max_steps)
+    state = DefaultState(max_steps=config.max_steps)
 
     print(f"[harness] Cartridge: {ws}")
     print(f"[harness] Task: {task}")
@@ -603,7 +604,12 @@ def run_coding_agent(
         task={"description": task, "workspace": ws},
     )
 
-    for step in gen:
+    while True:
+        try:
+            step = next(gen)
+        except StopIteration as stopped:
+            trace = stopped.value
+            break
         tc = step.tool_call
         tr = step.tool_result
         status = "✓" if not (tr and tr.error) else "✗"
@@ -617,17 +623,11 @@ def run_coding_agent(
             if "pytest" in cmd:
                 print(f"    Tests: {'PASSED ✓' if ec == 0 else 'FAILED ✗'}")
 
-    # Get trace from generator return value
-    try:
-        gen.send(None)
-    except StopIteration as e:
-        trace = e.value
-
     print()
     print(f"[harness] Done. {state.step_count} steps, workspace: {ws}")
 
-    if _recorder and trace_dir:
-        _recorder.save(trace_dir)
+    if sink is not None:
+        sink.flush()
         print(f"[harness] Trajectory saved to {trace_dir}")
 
     return trace or {}

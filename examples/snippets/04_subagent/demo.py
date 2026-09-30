@@ -16,7 +16,6 @@ import sys
 from pathlib import Path
 
 from looplet import (
-    DefaultState,
     LoopConfig,
     cartridge_to_preset,
     composable_loop,
@@ -43,18 +42,19 @@ def main(argv: list[str] | None = None) -> int:
     parent_task = argv[0] if argv else "Use ask_helper to greet Alice, then call done."
 
     backend = _backend()
-    sub_preset = cartridge_to_preset(str(HELLO_WS), runtime={"workspace": str(REPO)})
 
     @tool(description="Run the hello.cartridge sub-agent on a question.")
     def ask_helper(*, question: str) -> dict:
-        result = run_sub_loop(
-            llm=backend,
-            tools=sub_preset.tools,
-            config=sub_preset.config,
-            task={"goal": question},
-            max_steps=4,
-            system_prompt=sub_preset.config.system_prompt,
-        )
+        with cartridge_to_preset(str(HELLO_WS), runtime={"project_root": str(REPO)}) as sub_preset:
+            sub_preset.config.max_steps = 4
+            result = run_sub_loop(
+                llm=backend,
+                sub_tools=sub_preset.tools,
+                config=sub_preset.config,
+                hooks=sub_preset.hooks,
+                task={"goal": question},
+                max_steps=sub_preset.config.max_steps,
+            )
         return {"summary": str(result.get("summary", ""))[:240]}
 
     parent_tools = tools_from(
@@ -69,12 +69,9 @@ def main(argv: list[str] | None = None) -> int:
             "with what you learned. Never do work yourself."
         ),
     )
-    state = DefaultState(max_steps=parent_config.max_steps)
-
     for step in composable_loop(
         llm=backend,
         tools=parent_tools,
-        state=state,
         config=parent_config,
         task={"goal": parent_task},
     ):

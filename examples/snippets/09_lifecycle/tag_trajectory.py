@@ -16,7 +16,7 @@ import json
 import sys
 from pathlib import Path
 
-from looplet import DefaultState, cartridge_to_preset, composable_loop
+from looplet import cartridge_to_preset
 from looplet.testing import MockLLMBackend
 
 
@@ -59,27 +59,18 @@ def main() -> None:
             json.dumps({"tool": "done", "args": {"summary": "greeted"}, "reasoning": "wrap up"}),
         ]
     )
-    preset = cartridge_to_preset(
-        str(cartridge),
-        runtime={"project_root": str(cartridge.parent)},
-    )
-    state = DefaultState(max_steps=preset.config.max_steps)
-
     trajectory = []
-    for step in composable_loop(
-        llm=backend,
-        tools=preset.tools,
-        state=state,
-        config=preset.config,
-        task={"goal": "greet Alice"},
-    ):
-        trajectory.append(
-            {
-                "tool": step.tool_call.tool,
-                "ok": step.tool_result.error is None,
-                "duration_ms": round(step.tool_result.duration_ms, 2),
-            }
-        )
+    with cartridge_to_preset(
+        str(cartridge), runtime={"project_root": str(cartridge.parent)}
+    ) as preset:
+        for step in preset.run(backend, task={"goal": "greet Alice"}):
+            trajectory.append(
+                {
+                    "tool": step.tool_call.tool,
+                    "ok": step.tool_result.error is None,
+                    "duration_ms": round(step.tool_result.duration_ms, 2),
+                }
+            )
 
     record = {"cartridge": identity, "trajectory": trajectory}
     print(json.dumps(record, indent=2))

@@ -71,6 +71,7 @@ INPROCESS = "inprocess"
 _RUNTIME_SERVICE_FACTORIES = frozenset(
     {
         "default_compact_service",
+        "default_workspace_config",
         "build_skill_manager_for_workspace",
     }
 )

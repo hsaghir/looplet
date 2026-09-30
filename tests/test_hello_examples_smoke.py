@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from looplet.examples import hello_world, ollama_hello
@@ -10,6 +12,13 @@ pytestmark = pytest.mark.smoke
 
 
 class TestHelloWorldExample:
+    def test_completion_grader_requires_accepted_completion(self) -> None:
+        rejected = SimpleNamespace(tool_sequence=["done"], completed=False)
+        accepted = SimpleNamespace(tool_sequence=["done"], completed=True)
+
+        assert hello_world.eval_completed(rejected) is False
+        assert hello_world.eval_completed(accepted) is True
+
     def test_build_tools_uses_decorator_schema_and_done(self) -> None:
         registry = hello_world.build_tools()
         info = {tool["name"]: tool for tool in registry.introspect()["tools"]}

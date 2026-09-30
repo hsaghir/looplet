@@ -8,7 +8,6 @@ from typing import Any
 
 from looplet import (
     BaseToolRegistry,
-    DefaultState,
     EvalHook,
     LoopConfig,
     ProvenanceSink,
@@ -107,7 +106,6 @@ def run_owned_loop(
             hooks=hooks,
             task=live_task(),
             config=_loop_config(),
-            state=DefaultState(max_steps=MAX_STEPS),
         )
     )
     if sink is not None:
@@ -130,7 +128,6 @@ def replay_with_fixed_tools(
         replay_loop(
             trace_dir,
             tools=active_registry,
-            state=DefaultState(max_steps=MAX_STEPS),
             hooks=[eval_hook],
             config=_loop_config(),
             task=live_task(),

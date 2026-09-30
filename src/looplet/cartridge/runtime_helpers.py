@@ -26,6 +26,7 @@ from __future__ import annotations
 import os
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 
@@ -63,3 +64,8 @@ def resolve_project_root(runtime: dict[str, Any] | None = None) -> str:
 
     # 5: last resort.
     return str(Path.cwd().resolve())
+
+
+def default_workspace_config(runtime: dict[str, Any] | None = None) -> SimpleNamespace:
+    """Provide the host's resolved project path as a standard runtime resource."""
+    return SimpleNamespace(path=resolve_project_root(runtime))

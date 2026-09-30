@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import sys
+import warnings
 from pathlib import Path
 
 import pytest
@@ -69,6 +70,20 @@ def _captured_dir(tmp_path: Path) -> Path:
 
 
 class TestReplayLoopSmoke:
+    def test_omitted_replay_state_uses_configured_limit_without_warning(self, tmp_path):
+        trace_dir = _captured_dir(tmp_path)
+        with warnings.catch_warnings(record=True) as recorded:
+            warnings.simplefilter("always")
+            steps = list(
+                replay_loop(
+                    trace_dir,
+                    tools=_make_tools(),
+                    config=LoopConfig(max_steps=7, use_native_tools=False),
+                )
+            )
+        assert len(steps) == 3
+        assert not recorded
+
     def test_replays_captured_run(self, tmp_path: Path):
         trace_dir = _captured_dir(tmp_path)
         out_steps = []

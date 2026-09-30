@@ -55,13 +55,13 @@ ABLATIONS = [
 
 
 def _measure(ws_path: Path) -> dict:
-    preset = cartridge_to_preset(str(ws_path), runtime={"workspace": "."})
-    tools = sorted(t["name"] for t in preset.tools.introspect()["tools"])
-    return {
-        "n_tools": len(tools),
-        "max_steps": preset.config.max_steps,
-        "prompt_len": len(preset.config.system_prompt),
-    }
+    with cartridge_to_preset(str(ws_path), runtime={"project_root": "."}) as preset:
+        tools = sorted(t["name"] for t in preset.tools.introspect()["tools"])
+        return {
+            "n_tools": len(tools),
+            "max_steps": preset.config.max_steps,
+            "prompt_len": len(preset.config.system_prompt),
+        }
 
 
 def main() -> None:

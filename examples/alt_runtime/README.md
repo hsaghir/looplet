@@ -1,9 +1,9 @@
 # `tinyloop` - a second runtime for the cartridge format
 
-A 200-line stand-alone Python script that loads and runs Cartridge
-Spec v1.0 cartridges without importing `looplet`. Its purpose is
-narrow: prove that the cartridge is portable by demonstrating a
-second loader that doesn't share code with the reference one.
+A stand-alone Python script that loads a small declarative cartridge subset
+without importing `looplet`. It checks that this subset can be represented by
+a second loader that does not share code with the reference one. It is not
+a replacement for the current Looplet runtime or its hooks, schemas, and evidence.
 
 ## What it implements
 
@@ -12,7 +12,8 @@ second loader that doesn't share code with the reference one.
   use (`max_steps:` / `max_tokens:` / `temperature:` / `done_tool:`,
   inline `{ ... }` in `tool.yaml`).
 - Tool discovery: `tools/<name>/{tool.yaml, execute.py}` pairs.
-- A `conformance_summary()` matching the v1.0 spec-pinned subset.
+- A `conformance_summary()` matching the pinned declarative fixtures, plus
+  current schema-v2 hard-rejection fixtures.
 - A scripted loop that dispatches a hard-coded list of tool calls
   against the loaded tool bodies.
 
@@ -51,12 +52,7 @@ python examples/alt_runtime/tinyloop.py run \
 
 ## Why this matters
 
-The Cartridge Spec v1.0 claims:
-
-> Because the cartridge declares no runtime, any conformant runtime
-> can execute it.
-
-The way to verify that claim is to write a second runtime that
-shares no code with the first and check that it produces the same
-loader output for the spec-pinned subset. `tinyloop` is that second
-runtime, kept deliberately tiny so it can be read end-to-end.
+`tinyloop` independently checks loader output for the documented fixture
+subset. Matching that subset does not establish full behavior equivalence for
+arbitrary cartridges, MCP/LEP/SSP/MGP components, model calls, or side effects.
+Use Looplet's example composition tests for those supported runtime paths.

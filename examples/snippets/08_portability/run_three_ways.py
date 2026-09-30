@@ -14,11 +14,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from looplet import (
-    DefaultState,
-    cartridge_to_preset,
-    composable_loop,
-)
+from looplet import cartridge_to_preset
 from looplet.subagent import run_sub_loop
 from looplet.testing import MockLLMBackend
 
@@ -37,35 +33,28 @@ def make_backend() -> MockLLMBackend:
 
 
 def via_local_loop() -> int:
-    print("=== runtime 1: local composable_loop ===")
+    print("=== runtime 1: local preset.run ===")
     backend = make_backend()
-    preset = cartridge_to_preset(str(HELLO_WS), runtime={"workspace": str(REPO)})
-    state = DefaultState(max_steps=preset.config.max_steps)
-    n = 0
-    for step in composable_loop(
-        llm=backend,
-        tools=preset.tools,
-        state=state,
-        config=preset.config,
-        task={"goal": "say hi to Alice"},
-    ):
-        print(" ", step.pretty())
-        n += 1
-    return n
+    with cartridge_to_preset(str(HELLO_WS), runtime={"project_root": str(REPO)}) as preset:
+        count = 0
+        for step in preset.run(backend, task={"goal": "say hi to Alice"}):
+            print(" ", step.pretty())
+            count += 1
+        return count
 
 
 def via_subagent() -> int:
     print("=== runtime 2: sub-agent invocation ===")
     backend = make_backend()
-    preset = cartridge_to_preset(str(HELLO_WS), runtime={"workspace": str(REPO)})
-    result = run_sub_loop(
-        llm=backend,
-        tools=preset.tools,
-        config=preset.config,
-        task={"goal": "say hi to Alice"},
-        max_steps=preset.config.max_steps,
-        system_prompt=preset.config.system_prompt,
-    )
+    with cartridge_to_preset(str(HELLO_WS), runtime={"project_root": str(REPO)}) as preset:
+        result = run_sub_loop(
+            llm=backend,
+            sub_tools=preset.tools,
+            config=preset.config,
+            hooks=preset.hooks,
+            task={"goal": "say hi to Alice"},
+            max_steps=preset.config.max_steps,
+        )
     steps = result.get("steps", []) or []
     n = len(steps) if isinstance(steps, list) else int(steps)
     print(f"  sub-agent ran {n} step(s)")
@@ -80,17 +69,10 @@ def via_scripted_rerun() -> int:
     """
     print("=== runtime 3: fresh scripted run ===")
     backend = make_backend()
-    preset = cartridge_to_preset(str(HELLO_WS), runtime={"workspace": str(REPO)})
-    state = DefaultState(max_steps=preset.config.max_steps)
-    seen_tools = []
-    for step in composable_loop(
-        llm=backend,
-        tools=preset.tools,
-        state=state,
-        config=preset.config,
-        task={"goal": "say hi to Alice"},
-    ):
-        seen_tools.append(step.tool_call.tool)
+    with cartridge_to_preset(str(HELLO_WS), runtime={"project_root": str(REPO)}) as preset:
+        seen_tools = [
+            step.tool_call.tool for step in preset.run(backend, task={"goal": "say hi to Alice"})
+        ]
     print("  trajectory tools:", seen_tools)
     return len(seen_tools)
 

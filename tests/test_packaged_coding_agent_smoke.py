@@ -12,6 +12,26 @@ pytestmark = pytest.mark.smoke
 
 
 class TestPackagedCodingAgent:
+    def test_run_returns_trace_and_captures_replayable_model_calls(self, tmp_path: Path) -> None:
+        from looplet import MockLLMBackend
+        from looplet.provenance import _load_trace_calls
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        evidence = tmp_path / "trace"
+        result = coding_agent.run_coding_agent(
+            MockLLMBackend(coding_agent.scripted_responses(), cycle=False),
+            "Implement an add function with tests",
+            workspace=str(workspace),
+            trace_dir=str(evidence),
+            max_steps=8,
+            use_native_tools=False,
+        )
+
+        assert result["llm_calls"] == 4
+        assert len(result["steps"]) == 4
+        assert len(_load_trace_calls(evidence)) == 4
+
     def test_build_tools_uses_decorator_schema_and_helpers(self, tmp_path: Path) -> None:
         registry = coding_agent.build_tools(str(tmp_path))
         info = {tool["name"]: tool for tool in registry.introspect()["tools"]}

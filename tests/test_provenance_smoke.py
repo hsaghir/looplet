@@ -318,6 +318,137 @@ class TestTrajectoryRecorderSmoke:
 
 
 class TestProvenanceSinkSmoke:
+    @pytest.mark.parametrize("native", [False, True])
+    @pytest.mark.parametrize("hook_first", [False, True])
+    @pytest.mark.parametrize("async_run", [False, True])
+    async def test_setup_order_preserves_replayable_model_evidence(
+        self, tmp_path, hook_first, async_run, native
+    ):
+        from looplet import LoopConfig, async_composable_loop, composable_loop, tool, tools_from
+        from looplet.provenance import replay_loop
+        from looplet.testing import AsyncMockLLMBackend
+
+        effects = []
+
+        @tool
+        def echo(*, value: int) -> dict:
+            effects.append(value)
+            return {"value": value}
+
+        tools = tools_from([echo], include_done=True, done_parameters={"summary": "Summary"})
+        responses = [
+            '{"tool": "echo", "args": {"value": 7}}',
+            '{"tool": "done", "args": {"summary": "ok"}}',
+        ]
+        backend = (AsyncMockLLMBackend if async_run else MockLLMBackend)(responses=responses)
+        if native:
+            blocks = iter(
+                [
+                    [{"type": "tool_use", "id": "echo-1", "name": "echo", "input": {"value": 7}}],
+                    [
+                        {
+                            "type": "tool_use",
+                            "id": "done-1",
+                            "name": "done",
+                            "input": {"summary": "ok"},
+                        }
+                    ],
+                ]
+            )
+
+            def generate_with_tools(prompt, **kwargs):
+                return next(blocks)
+
+            async def async_generate_with_tools(prompt, **kwargs):
+                return generate_with_tools(prompt, **kwargs)
+
+            backend.generate_with_tools = (
+                async_generate_with_tools if async_run else generate_with_tools
+            )
+        sink = ProvenanceSink(
+            tmp_path / "run", redact=lambda text: text.replace("SENSITIVE", "[redacted]")
+        )
+        hook = sink.trajectory_hook() if hook_first else None
+        llm = sink.wrap_llm(backend)
+        hook = hook if hook is not None else sink.trajectory_hook()
+        kwargs = {
+            "llm": llm,
+            "tools": tools,
+            "hooks": [hook],
+            "task": {"goal": "echo SENSITIVE"},
+            "config": LoopConfig(max_steps=3, use_native_tools=native),
+        }
+        if async_run:
+            steps = [step async for step in async_composable_loop(**kwargs)]
+        else:
+            steps = list(composable_loop(**kwargs))
+        output = sink.flush()
+
+        assert sink.trajectory_hook() is hook
+        assert len(hook.trajectory.llm_calls) == 2
+        assert hook.trajectory.steps[0].llm_call_indices == [0]
+        assert len((output / "manifest.jsonl").read_text().split("\n")) == 3
+        assert all("SENSITIVE" not in path.read_text() for path in output.glob("*.txt"))
+        replayed = list(replay_loop(output, tools=tools))
+        assert [(step.tool_call.tool, step.tool_result.data) for step in replayed] == [
+            (step.tool_call.tool, step.tool_result.data) for step in steps
+        ]
+        assert effects == [7, 7]
+
+    @pytest.mark.parametrize("async_run", [False, True])
+    async def test_hook_first_failed_call_is_saved(self, tmp_path, async_run):
+        from looplet.provenance import _load_trace_calls
+
+        class Backend:
+            def generate(self, prompt, **kwargs):
+                raise RuntimeError("provider unavailable")
+
+        class AsyncBackend(Backend):
+            async def generate(self, prompt, **kwargs):
+                return super().generate(prompt, **kwargs)
+
+        sink = ProvenanceSink(tmp_path)
+        hook = sink.trajectory_hook()
+        llm = sink.wrap_llm(AsyncBackend() if async_run else Backend())
+        hook.pre_prompt(None, None, None, step_num=1)
+        with pytest.raises(RuntimeError, match="provider unavailable"):
+            if async_run:
+                await llm.generate("request")
+            else:
+                llm.generate("request")
+        hook.on_loop_end(None, None, None, llm)
+        sink.flush()
+
+        assert len(hook.trajectory.llm_calls) == 1
+        assert _load_trace_calls(tmp_path)[0]["error"] == "RuntimeError: provider unavailable"
+
+    def test_rebinding_before_run_and_reset_keep_the_current_capture(self, tmp_path):
+        from looplet.provenance import _load_trace_calls
+
+        sink = ProvenanceSink(tmp_path, metadata={"parent_run_id": "parent"})
+        first_hook = sink.trajectory_hook()
+        sink.wrap_llm(MockLLMBackend(responses=["unused"]))
+        llm = sink.wrap_llm(MockLLMBackend(responses=["first", "second", "fresh"]))
+        llm.generate("first")
+        llm.generate("second")
+        first_hook.on_loop_end(None, None, None, llm)
+        sink.flush()
+        assert len(_load_trace_calls(tmp_path)) == 2
+
+        sink.reset()
+        second_hook = sink.trajectory_hook()
+        assert second_hook is not first_hook
+        assert second_hook.trajectory.metadata == {"parent_run_id": "parent"}
+        second_hook.pre_prompt(None, None, None, step_num=1)
+        llm.generate("fresh")
+        second_hook.on_loop_end(None, None, None, llm)
+        sink.flush()
+        sink.flush()
+
+        assert len(second_hook.trajectory.llm_calls) == 1
+        assert _load_trace_calls(tmp_path)[0]["response"] == "fresh"
+        assert not (tmp_path / "call_01_response.txt").exists()
+
     def test_wrap_llm_and_flush(self, tmp_path: Path):
         sink = ProvenanceSink(dir=tmp_path / "run")
         llm = sink.wrap_llm(MockLLMBackend(responses=["r1"]))

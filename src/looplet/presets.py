@@ -355,6 +355,10 @@ class AgentPreset:
                 + ", ".join(missing_resources)
             )
         owned_ids = {id(resource) for resource in self.owned_resources}
+        for handle in self.state_service_handles:
+            client = getattr(handle, "client", None)
+            if client is not None:
+                owned_ids.add(id(client))
         unowned_closeables = sorted(
             name
             for name, resource in self.resources.items()

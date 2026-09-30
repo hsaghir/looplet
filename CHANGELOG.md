@@ -30,6 +30,10 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Skill-bundle execution now delegates to `AgentPreset.run()` for validation,
+  single-use claims, envelope and gateway binding, and trace returns. Unstarted
+  and failed runs clean up helper-owned presets; caller-supplied presets remain
+  caller-owned, and bundle-local import context is preserved.
 - Cartridge self-tests now own evaluation and replace embedded `EvalHook`
   observers; reference coder defaults no longer grade normal runs implicitly.
   Explicit host hooks and reusable eval helpers remain supported.

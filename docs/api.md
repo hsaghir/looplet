@@ -74,6 +74,13 @@ The base registry checks argument names and required fields, not every JSON
 Schema keyword. Keep semantic and richer constraint validation in the tool,
 MCP server, or an explicit `ValidatingToolRegistry` contract.
 
+Bundle execution is an adapter over the preset's execution contract, not a
+second runtime. `run_skill_bundle()` binds extra hooks and the gateway through
+`AgentPreset.run()`, preserves the iterator's returned trace, and closes
+helper-built presets even when an unstarted iterator is explicitly closed.
+Caller-supplied presets remain caller-owned and follow the same single-use
+rule as direct preset runs; use a fresh preset for another execution.
+
 ## Backends
 
 | API | Import | Notes |

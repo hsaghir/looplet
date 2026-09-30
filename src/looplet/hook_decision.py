@@ -8,11 +8,11 @@ intercept, etc. That sprawl makes it painful to add new capabilities
 without breaking everyone.
 
 ``HookDecision`` collapses those slots into **one dataclass with
-optional fields**. Every hook method now returns
+optional fields**. Decision-returning slots accept
 ``HookDecision | None``; ``None`` means "no opinion, proceed as
-default". Fields that don't apply to the current call site are
-silently ignored, so a hook can safely set fields that only matter
-for one slot without guessing which method the loop will call.
+default". Effect applicability is explicit per slot. Unsupported fields
+remain ignored for compatibility, but normalization reports their names
+without logging their values.
 
 The dataclass is intentionally flat - no inheritance, no variants,
 one level of optional attributes. That keeps the API surface small
@@ -26,7 +26,8 @@ release for backward compatibility. New code should return
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import logging
+from dataclasses import dataclass, field, fields
 from typing import Any
 
 from looplet.types import PolicyDecision, ToolResult
@@ -42,7 +43,49 @@ __all__ = [
     "RewriteThread",
     "PolicyDecision",
     "normalize_hook_return",
+    "hook_effect_fields",
 ]
+
+logger = logging.getLogger(__name__)
+
+_PRE_TOOL_FIELDS = frozenset(
+    {"updated_args", "updated_result", "permission", "block", "additional_context"}
+)
+_POST_TOOL_FIELDS = frozenset({"updated_result", "additional_context", "stop"})
+_MODEL_FIELDS = frozenset({"additional_context", "stop"})
+_HOOK_SLOT_EFFECTS = {
+    "pre_prompt": frozenset({"additional_context"}),
+    "pre_dispatch": _PRE_TOOL_FIELDS,
+    "check_permission": frozenset({"permission", "block"}),
+    "post_dispatch": _POST_TOOL_FIELDS,
+    "check_done": frozenset({"block", "permission"}),
+    "should_stop": frozenset({"stop"}),
+    "pre_tool_use": _PRE_TOOL_FIELDS,
+    "post_tool_use": _POST_TOOL_FIELDS,
+    "post_tool_failure": _POST_TOOL_FIELDS,
+    "pre_llm_call": _MODEL_FIELDS,
+    "post_llm_response": _MODEL_FIELDS,
+    "pre_compact": frozenset({"stop"}),
+    "post_compact": frozenset({"rewrite_thread"}),
+    "session_start": frozenset(),
+    "tool_progress": frozenset(),
+    "hook_decision": frozenset(),
+    "done_accepted": frozenset(),
+    "stop": frozenset(),
+    "subagent_start": frozenset(),
+    "subagent_stop": frozenset(),
+}
+
+
+def hook_effect_fields(slot: str) -> frozenset[str]:
+    """Return applicable effect fields; audit metadata is separate.
+
+    At tool/permission gates, ``block`` supplies the reason only when
+    ``permission='deny'``. ``pre_compact.stop`` aborts compaction rather
+    than terminating the run. Unknown host-owned slots define their own
+    applicability outside this loop contract.
+    """
+    return _HOOK_SLOT_EFFECTS.get(slot, frozenset())
 
 
 @dataclass
@@ -50,20 +93,18 @@ class HookDecision:
     """The single unified return type for every hook method.
 
     Fields are evaluated per call site. A hook that runs in a slot the
-    field doesn't apply to - e.g. setting ``updated_args`` in
-    ``on_loop_end`` - is a silent no-op, never a crash. This lets one
-    hook cover multiple lifecycle events without switching on method
-    name.
+    field doesn't apply to remains a no-op. :meth:`ignored_effects` and
+    normalization diagnostics make that boundary inspectable. Prompt
+    builders, compaction votes, and cleanup retain their dedicated return
+    shapes; they are not general decision slots.
 
     Attributes:
-        block: When set, short-circuits a tool call (``pre_tool_use``)
-            or a ``done()`` acceptance (``check_done``) with this
-            message. The string is surfaced to the model in the next
-            briefing. ``None`` means "allow".
-        stop: When set on any hook during a step, signals the loop to
-            terminate after the current step completes. The string is
-            the ``termination_reason`` - captured in trajectories and
-            logs. ``None`` means "continue".
+        block: Rejects completion in ``check_done``. At tool and permission
+            gates, supplies the reason for ``permission='deny'``; use
+            ``Deny`` rather than a block-only decision there.
+        stop: Stops after the current step from ``post_dispatch``,
+            ``should_stop``, or model lifecycle events. It is unsupported
+            in ``check_done``; ``pre_compact`` uses it to abort compaction.
         updated_args: When set on ``pre_tool_use``, replaces the tool
             call's arguments before dispatch. Enables auto-correction
             hooks without re-prompting the model. ``None`` means
@@ -74,15 +115,12 @@ class HookDecision:
             ``post_tool_use``, **rewrites** the real result before it
             lands in history. ``None`` in either slot means "use the
             real tool output".
-        permission: When set on ``pre_tool_use``, grants or refuses
-            the call directly - ``"allow"`` proceeds to dispatch;
-            ``"deny"`` converts to a ``ToolError(kind=PERMISSION_DENIED)``
-            using ``block`` as the human-readable reason. Collapses
-            the old ``check_permission`` + ``PermissionEngine`` duality
-            into one field.
+        permission: ``"deny"`` refuses the call at tool/permission gates.
+            ``"allow"`` does not override another hook's denial or grant
+            host execution authority.
         additional_context: Plain text appended to the next briefing.
-            Works on every hook slot - pre-prompt, post-dispatch,
-            on_compact, etc. Subject to ``max_briefing_tokens``.
+            Applies to prompt, tool, and model slots listed by
+            :func:`hook_effect_fields`, not every lifecycle event.
         metadata: Free-form dict preserved in trajectory records.
             Good for hook-specific telemetry that shouldn't leak
             into the prompt.
@@ -121,6 +159,27 @@ class HookDecision:
             and self.policy_decision is None
             and not self.metadata
         )
+
+    def ignored_effects(self, slot: str) -> tuple[str, ...]:
+        """List unapplied fields without changing the decision or its values."""
+        applicable = _HOOK_SLOT_EFFECTS.get(slot)
+        if applicable is None:
+            return ()
+        ignored = {
+            descriptor.name
+            for descriptor in fields(self)
+            if descriptor.name not in applicable | {"metadata", "policy_decision"}
+            and getattr(self, descriptor.name) is not None
+        }
+        if (
+            self.block is not None
+            and slot in {"pre_dispatch", "pre_tool_use", "check_permission"}
+            and self.permission != "deny"
+        ):
+            ignored.add("block")
+        if self.permission is not None and self.permission not in {"allow", "deny"}:
+            ignored.add("permission")
+        return tuple(sorted(ignored))
 
     # ── Wire round-trip (Loop Effect Protocol §3) ───────────────
     #
@@ -304,8 +363,7 @@ def Deny(
 
 
 def Block(reason: str) -> HookDecision:
-    """Reject a ``done()`` call or abort a tool without a permission
-    judgement. The reason is surfaced to the model."""
+    """Reject completion in ``check_done``. Use ``Deny`` for tool gates."""
     return HookDecision(block=reason)
 
 
@@ -352,6 +410,14 @@ def RewriteThread(
 # ── Legacy → HookDecision coercion ─────────────────────────────
 
 
+def _invoke_hook(hook: Any, slot: str, *args: Any, **kwargs: Any) -> Any:
+    """Keep transport decisions intact without changing legacy direct calls."""
+    invoke = getattr(hook, "_invoke_hook_return", None)
+    if callable(invoke):
+        return invoke(slot, *args, **kwargs)
+    return getattr(hook, slot)(*args, **kwargs)
+
+
 def normalize_hook_return(
     value: Any,
     *,
@@ -376,32 +442,31 @@ def normalize_hook_return(
     Anything else raises ``TypeError`` - hooks that return garbage
     should fail loud, not silently drop.
     """
+    decision: HookDecision | None
     if value is None:
         return None
     if isinstance(value, HookDecision):
-        return value
-    # ToolResult - dispatch intercept.
-    if isinstance(value, ToolResult):
-        return HookDecision(updated_result=value)
-    if isinstance(value, bool):
+        decision = value
+    elif isinstance(value, ToolResult):
+        decision = HookDecision(updated_result=value)
+    elif isinstance(value, bool):
         if slot == "check_permission":
-            return Allow() if value else Deny("permission denied")
-        if slot == "should_stop":
-            return Stop("hook_requested_stop") if value else None
-        # Bools from other slots are nonsense - signal cleanly.
+            decision = Allow() if value else Deny("permission denied")
+        elif slot == "should_stop":
+            decision = Stop("hook_requested_stop") if value else None
+        else:
+            raise TypeError(
+                f"hook slot {slot!r} received bool {value!r}; expected HookDecision | str | None"
+            )
+    elif isinstance(value, str):
+        decision = Block(value) if slot == "check_done" else InjectContext(value)
+    else:
         raise TypeError(
-            f"hook slot {slot!r} received bool {value!r}; expected HookDecision | str | None"
+            f"hook slot {slot!r} returned {type(value).__name__} "
+            f"{value!r}; expected HookDecision | str | bool | ToolResult | None"
         )
-    if isinstance(value, str):
-        if slot in ("pre_prompt", "post_dispatch"):
-            return InjectContext(value)
-        if slot == "check_done":
-            return Block(value)
-        # Strings from unexpected slots - accept as briefing rather
-        # than crash; the old "return a string" behaviour was additive
-        # in every case that shipped.
-        return InjectContext(value)
-    raise TypeError(
-        f"hook slot {slot!r} returned {type(value).__name__} "
-        f"{value!r}; expected HookDecision | str | bool | ToolResult | None"
-    )
+    if decision is not None:
+        ignored = decision.ignored_effects(slot)
+        if ignored:
+            logger.warning("hook slot %r ignores effect fields: %s", slot, ", ".join(ignored))
+    return decision

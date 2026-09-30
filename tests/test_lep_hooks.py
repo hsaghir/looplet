@@ -106,6 +106,46 @@ class TestLEPAuthoritySlots:
 
 
 class TestFailurePolicy:
+    def test_legacy_block_permission_remains_a_denial_in_the_loop(self, tmp_path):
+        adapter = _adapter(
+            tmp_path,
+            """
+            def decide(self, slot, view):
+                if slot == "check_permission" and view.get("tool") == "add":
+                    return {"kind": "Block", "reason": "legacy denial"}
+                return {"kind": "Continue"}
+        """,
+        )
+        try:
+            steps = list(
+                composable_loop(
+                    MockLLMBackend(
+                        [
+                            '{"tool":"add","args":{"a":1,"b":2}}',
+                            '{"tool":"done","args":{"answer":"ok"}}',
+                        ]
+                    ),
+                    tools=_tools(),
+                    hooks=[adapter],
+                    config=LoopConfig(max_steps=2, use_native_tools=False),
+                )
+            )
+            assert "legacy denial" in steps[0].tool_result.error
+        finally:
+            adapter.close()
+
+    def test_subclass_named_method_override_is_not_bypassed(self):
+        from looplet import HookDecision
+        from looplet.hook_decision import _invoke_hook
+
+        class Adapter(LEPHookAdapter):
+            def pre_dispatch(self, state, session_log, tool_call, step_num):
+                return HookDecision(updated_args={"a": 4, "b": 6})
+
+        adapter = Adapter(["unused"])
+        result = _invoke_hook(adapter, "pre_dispatch", None, None, ToolCall("add"), 1)
+        assert result.updated_args == {"a": 4, "b": 6}
+
     def test_fail_closed_denies_on_broken_server(self, tmp_path):
         # Server exits immediately → every RPC fails. fail_closed must deny.
         bad = tmp_path / "bad.py"
@@ -201,6 +241,120 @@ def _tools() -> BaseToolRegistry:
         )
     )
     return reg
+
+
+@pytest.mark.parametrize("async_mode", [False, True])
+@pytest.mark.parametrize("transport", ["python", "lep"])
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "args",
+        "pre_context",
+        "post_result",
+        "post_stop",
+        "should_stop",
+        "deny_reason",
+        "completion_stop",
+        "block_only",
+    ],
+)
+async def test_named_effects_conform_across_drivers_and_transports(
+    tmp_path, async_mode, transport, scenario
+):
+    from looplet import Block, HookDecision, Stop, ToolResult, async_composable_loop
+    from looplet.testing import AsyncMockLLMBackend
+
+    cases = {
+        "args": ("pre_dispatch", HookDecision(updated_args={"a": 4, "b": 6})),
+        "pre_context": ("pre_dispatch", HookDecision(additional_context="context from hook")),
+        "post_result": (
+            "post_dispatch",
+            HookDecision(updated_result=ToolResult("add", "", {"sum": 42})),
+        ),
+        "post_stop": ("post_dispatch", Stop("specific_stop")),
+        "should_stop": ("should_stop", Stop("specific_stop")),
+        "deny_reason": ("check_permission", Deny("specific denial")),
+        "completion_stop": ("check_done", Stop("unsupported_completion_stop")),
+        "block_only": ("pre_dispatch", Block("unsupported_tool_block")),
+    }
+    target_slot, effect = cases[scenario]
+
+    class Policy:
+        def decide(self, slot, call=None):
+            if slot == target_slot and (
+                slot in {"should_stop", "check_done"} or getattr(call, "tool", None) == "add"
+            ):
+                return effect
+            return None
+
+        def pre_dispatch(self, state, session_log, tool_call, step_num):
+            return self.decide("pre_dispatch", tool_call)
+
+        def check_permission(self, tool_call, state):
+            return self.decide("check_permission", tool_call)
+
+        def post_dispatch(self, state, session_log, tool_call, tool_result, step_num):
+            return self.decide("post_dispatch", tool_call)
+
+        def check_done(self, state, session_log, context, step_num):
+            return self.decide("check_done")
+
+        def should_stop(self, state, step_num, new_entities):
+            return self.decide("should_stop")
+
+    hook = (
+        Policy()
+        if transport == "python"
+        else _adapter(
+            tmp_path,
+            f"""
+        def decide(self, slot, view):
+            if slot == {target_slot!r} and (slot in {{'should_stop', 'check_done'}} or view.get('tool') == 'add'):
+                return {effect.to_wire()!r}
+            return {{'kind': 'Continue'}}
+        """,
+            view=ViewSpec(fields=frozenset({"tool", "args"})),
+        )
+    )
+    backend = (AsyncMockLLMBackend if async_mode else MockLLMBackend)(
+        [
+            '{"tool":"add","args":{"a":1,"b":2}}',
+            '{"tool":"done","args":{"answer":"ok"}}',
+        ]
+    )
+    state = DefaultState(max_steps=2)
+    kwargs = dict(
+        llm=backend,
+        tools=_tools(),
+        state=state,
+        hooks=[hook],
+        config=LoopConfig(max_steps=2, use_native_tools=False),
+    )
+    try:
+        steps = (
+            [step async for step in async_composable_loop(**kwargs)]
+            if async_mode
+            else list(composable_loop(**kwargs))
+        )
+        assert steps[0].tool_call.tool == "add"
+        if scenario == "deny_reason":
+            assert "specific denial" in steps[0].tool_result.error
+        else:
+            assert steps[0].tool_result.data == {
+                "sum": 10 if scenario == "args" else 42 if scenario == "post_result" else 3
+            }
+        if scenario in {"post_stop", "should_stop"}:
+            assert len(steps) == 1
+            assert state._stop_reason == "specific_stop"
+        else:
+            assert steps[-1].tool_call.tool == "done"
+            assert state._stop_reason == "done"
+        if scenario == "pre_context":
+            assert "context from hook" in backend.last_prompt
+    finally:
+        close = getattr(hook, "close", None)
+        if close is not None:
+            close()
 
 
 class TestH4Composition:

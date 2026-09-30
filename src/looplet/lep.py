@@ -11,14 +11,15 @@ every lifecycle slot the adapter:
   2. ships the slot tag + that view over line-delimited JSON-RPC;
   3. reconstructs the returned *effect* into a
      :class:`~looplet.hook_decision.HookDecision` via
-     :meth:`HookDecision.from_wire`, then maps it to the exact value the
-     loop expects from that slot.
+    :meth:`HookDecision.from_wire`. The loop consumes this complete
+    decision under the same slot contract as a Python hook. Direct calls
+    to the adapter's named methods retain their legacy return shapes.
 
-The adapter carries **zero decision logic** - it is pure transport plus
-the §3 fidelity map. That is what makes an out-of-process hook
-behaviourally indistinguishable from the same hook in-process, and hence
-what makes a ``kind: lep`` cartridge entry a lossless translation of a
-library hook (HOOK_CARTRIDGE_DESIGN.md §5).
+Policy remains in the remote process; the host owns effect applicability and
+transport-failure behavior. The process boundary does not discard supported
+rewrites, stop reasons, denial reasons, or decision metadata. Legacy LEP
+block-only permission decisions remain denials; use ``Deny`` for the portable
+cross-transport permission contract.
 
 :class:`LEPServerBase` is the symmetric convenience for *writing* a
 Python policy server: subclass it, declare capabilities, implement
@@ -29,11 +30,13 @@ or Go server would speak only the wire protocol.
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import os
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -197,6 +200,24 @@ class LEPHookAdapter:
         if slot == "check_done":
             return HookDecision(block="policy server unavailable")
         return None
+
+    def _invoke_hook_return(self, slot: str, *args: Any, **kwargs: Any) -> Any:
+        """Return the complete effect to the loop; direct methods stay legacy."""
+        method = getattr(self, slot)
+        if getattr(method, "__func__", None) is not getattr(LEPHookAdapter, slot):
+            return method(*args, **kwargs)
+        arguments = inspect.signature(method).bind(*args, **kwargs).arguments
+        decision = self._decision(
+            slot,
+            state=arguments.get("state"),
+            session_log=arguments.get("session_log"),
+            tool_call=arguments.get("tool_call"),
+            tool_result=arguments.get("tool_result"),
+            step=arguments.get("step_num"),
+        )
+        if slot == "check_permission" and decision is not None and decision.is_block():
+            decision = replace(decision, permission="deny")
+        return decision
 
     # ── lifecycle: session open ──────────────────────────────────
     @staticmethod

@@ -75,6 +75,34 @@ class TestHookDecisionDataclass:
 
 
 class TestNormaliseHookReturn:
+    @pytest.mark.parametrize(
+        ("slot", "decision", "ignored"),
+        [
+            ("check_done", Stop("not a completion gate"), ("stop",)),
+            ("pre_dispatch", Block("not a permission decision"), ("block",)),
+            ("pre_prompt", HookDecision(updated_args={"x": 1}), ("updated_args",)),
+            ("stop", Stop("already terminal"), ("stop",)),
+        ],
+    )
+    def test_unsupported_effects_are_visible_without_changing_legacy_behavior(
+        self, caplog, slot, decision, ignored
+    ):
+        assert normalize_hook_return(decision, slot=slot) is decision
+        assert decision.ignored_effects(slot) == ignored
+        assert "ignores effect fields" in caplog.text
+        assert all(name in caplog.text for name in ignored)
+
+    def test_applicability_is_shared_and_audit_metadata_is_not_an_effect(self, caplog):
+        from looplet.hook_decision import hook_effect_fields
+
+        assert hook_effect_fields("pre_dispatch") == hook_effect_fields("pre_tool_use")
+        assert hook_effect_fields("post_dispatch") == hook_effect_fields("post_tool_use")
+        assert hook_effect_fields("post_dispatch") == hook_effect_fields("post_tool_failure")
+        decision = HookDecision(additional_context="hint", metadata={"host": True})
+        assert normalize_hook_return(decision, slot="pre_prompt") is decision
+        assert decision.ignored_effects("pre_prompt") == ()
+        assert not caplog.text
+
     def test_none_is_none(self):
         assert normalize_hook_return(None, slot="pre_prompt") is None
 
@@ -137,6 +165,56 @@ def _tools_with_add_and_done() -> BaseToolRegistry:
 
 
 class TestHookDecisionWiringPreDispatch:
+    @pytest.mark.parametrize("async_mode", [False, True])
+    @pytest.mark.parametrize("event_slot", ["pre_llm_call", "post_llm_response"])
+    @pytest.mark.parametrize("request_stop", [False, True])
+    async def test_model_event_effects_conform_between_drivers(
+        self, async_mode, event_slot, request_stop
+    ):
+        from looplet import async_composable_loop
+        from looplet.testing import AsyncMockLLMBackend
+
+        seen = []
+
+        class Hook:
+            def on_event(self, payload):
+                if payload.event.value == event_slot:
+                    seen.append(payload.step_num)
+                    return (
+                        Stop("model_event_stop")
+                        if request_stop
+                        else InjectContext("model event context")
+                    )
+                return None
+
+        backend = (AsyncMockLLMBackend if async_mode else MockLLMBackend)(
+            [
+                '{"tool":"add","args":{"a":1,"b":2}}',
+                '{"tool":"done","args":{"answer":"ok"}}',
+            ]
+        )
+        state = DefaultState(max_steps=3)
+        kwargs = dict(
+            llm=backend,
+            tools=_tools_with_add_and_done(),
+            state=state,
+            hooks=[Hook()],
+            config=LoopConfig(max_steps=3, use_native_tools=False),
+        )
+        steps = (
+            [step async for step in async_composable_loop(**kwargs)]
+            if async_mode
+            else list(composable_loop(**kwargs))
+        )
+        if request_stop:
+            assert [step.tool_call.tool for step in steps] == ["add"]
+            assert state._stop_reason == "model_event_stop"
+            assert seen == [1]
+        else:
+            assert [step.tool_call.tool for step in steps] == ["add", "done"]
+            assert "model event context" in backend.last_prompt
+            assert seen == [1, 2]
+
     def test_check_done_hook_failure_rejects_completion(self):
         llm = MockLLMBackend(
             responses=[

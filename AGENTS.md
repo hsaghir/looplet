@@ -951,23 +951,30 @@ only touch the first group.
 
 ## Canonical hook return values
 
-Every hook method accepts a `HookDecision` (or one of its factory
-helpers). Legacy returns (`str`, `bool`, raw `ToolResult`) still work
-via `normalize_hook_return`, but new code should use the factory
-helpers - they read naturally and compose:
+Decision-returning slots accept `HookDecision` (or a factory helper).
+Builders, compaction votes, and cleanup retain their dedicated return
+shapes. Legacy returns (`str`, `bool`, raw `ToolResult`) still work via
+`normalize_hook_return`. Choose the helper for its slot:
 
 | Intent | Use |
 |---|---|
 | Allow / no opinion | `return None` |
 | Append text to next prompt | `return InjectContext("...")` |
-| Block tool call or `done()` | `return Block("reason for the model")` |
-| Deny permission | `return Deny("reason")` |
+| Reject `done()` in `check_done` | `return Block("reason for the model")` |
+| Deny dispatch in a tool/permission slot | `return Deny("reason")` |
 | Stop the loop cleanly | `return Stop("done-ish reason")` |
 | Short-circuit with a cached result | `return HookDecision(updated_result=ToolResult(...))` |
 | Rewrite the model's tool args | `return HookDecision(updated_args={"path": "..."})` |
 
 Prefer the helpers (`Allow`, `Block`, `Deny`, `Stop`, `InjectContext`)
 over bare `HookDecision(...)` for single-intent cases.
+
+`hook_effect_fields(slot)` and `decision.ignored_effects(slot)` in
+`looplet.hook_decision` make applicability inspectable. Unsupported fields
+are logged and remain ignored: `Stop` in `check_done` does not stop or reject
+completion, and a block-only decision in `pre_dispatch` does not deny a tool.
+Use `Block` for completion rejection and `Deny` for tool gates. Model lifecycle
+events apply context/stop in both drivers; terminal `stop` is observation-only.
 
 ## Symbol index (A–Z)
 

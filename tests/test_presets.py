@@ -37,6 +37,104 @@ class TestPresetsImports:
 
 
 class TestAgentPreset:
+    @pytest.mark.parametrize("async_run", [False, True])
+    @pytest.mark.parametrize(
+        "component_slot",
+        ["hooks", "mcp_adapters", "state_service_handles", "model_gateway", "extra_hooks"],
+    )
+    async def test_setup_failure_releases_claim_and_can_be_retried(self, async_run, component_slot):
+        from looplet import MockLLMBackend, RunEnvelope, minimal_preset
+        from looplet.testing import AsyncMockLLMBackend
+
+        class Binding:
+            fail = True
+
+            def set_run_envelope(self, envelope):
+                if self.fail:
+                    raise RuntimeError("binding failed")
+                self.envelope = envelope
+
+            def set_backend(self, backend):
+                self.backend = backend
+
+            def pre_loop(self, state, session_log, context):
+                pass
+
+            def close(self):
+                pass
+
+        preset = minimal_preset(max_steps=1)
+        preset.config.use_native_tools = False
+        preset.config.run_envelope = RunEnvelope(run_id="binding-run")
+        binding = Binding()
+        extra_hooks = [binding] if component_slot == "extra_hooks" else []
+        if component_slot != "extra_hooks":
+            setattr(
+                preset, component_slot, binding if component_slot == "model_gateway" else [binding]
+            )
+        backend = (AsyncMockLLMBackend if async_run else MockLLMBackend)(
+            responses=['{"tool": "done", "args": {"summary": "ok"}}']
+        )
+        try:
+            with pytest.raises(RuntimeError, match="binding failed"):
+                if async_run:
+                    iterator = preset.run_async(backend, extra_hooks=extra_hooks)
+                    await iterator.__anext__()
+                else:
+                    next(preset.run(backend, extra_hooks=extra_hooks))
+            assert not preset.run_claimed
+
+            binding.fail = False
+            if async_run:
+                steps = [step async for step in preset.run_async(backend, extra_hooks=extra_hooks)]
+            else:
+                steps = list(preset.run(backend, extra_hooks=extra_hooks))
+            assert steps[0].tool_call.tool == "done"
+            assert binding.envelope is preset.config.run_envelope
+            assert preset.run_claimed
+        finally:
+            preset.close()
+
+    def test_sync_iterator_preserves_custom_loop_return_trace(self):
+        from looplet import MockLLMBackend, minimal_preset
+
+        preset = minimal_preset(max_steps=1)
+        preset.config.use_native_tools = False
+        trace = {"custom": "trace"}
+        preset.config.build_trace = lambda **kwargs: trace
+        iterator = preset.run(MockLLMBackend(['{"tool": "done", "args": {"summary": "ok"}}']))
+        try:
+            assert next(iterator).tool_call.tool == "done"
+            with pytest.raises(StopIteration) as stopped:
+                next(iterator)
+            assert stopped.value.value is trace
+        finally:
+            preset.close()
+
+    @pytest.mark.parametrize("async_run", [False, True])
+    async def test_gateway_binding_failure_is_fail_closed_and_releases_claim(self, async_run):
+        from looplet import MockLLMBackend, minimal_preset
+
+        class Gateway:
+            def set_backend(self, backend):
+                raise RuntimeError("gateway binding failed")
+
+            def close(self):
+                pass
+
+        preset = minimal_preset(max_steps=1)
+        preset.model_gateway = Gateway()
+        try:
+            with pytest.raises(RuntimeError, match="gateway binding failed"):
+                if async_run:
+                    preset.run_async(MockLLMBackend())
+                else:
+                    preset.run(MockLLMBackend())
+            assert not preset.run_claimed
+            assert preset.state.step_count == 0
+        finally:
+            preset.close()
+
     def test_run_rejects_missing_configured_terminal_tool(self):
         from looplet import BaseToolRegistry, DefaultState, LoopConfig, MockLLMBackend
         from looplet.presets import AgentPreset

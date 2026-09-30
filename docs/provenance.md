@@ -66,6 +66,12 @@ for step in composable_loop(llm=llm, tools=tools, state=state, hooks=hooks):
 sink.flush()
 ```
 
+You may call `trajectory_hook()` before or after `wrap_llm()`; both setup
+orders capture the same model-call evidence for sync and async loops. Build
+the recording wrapper before executing the run. Replacing it during a run
+does not merge separate call streams. Prefer a fresh sink for each run, or
+call `reset()` before reusing the sink and obtain its new trajectory hook.
+
 After `flush()`, the directory contains:
 
 ```

@@ -882,6 +882,8 @@ class ProvenanceSink:
     The sink is safe to reuse across runs - call :meth:`reset` between
     them, or construct a fresh sink per run (cheaper and clearer).
     ``metadata`` is copied into the trajectory when its hook is created.
+    :meth:`wrap_llm` and :meth:`trajectory_hook` may be called in either
+    order before execution.
     """
 
     def __init__(
@@ -906,6 +908,7 @@ class ProvenanceSink:
     def wrap_llm(self, backend: Any, *, async_: bool | None = None) -> Any:
         """Wrap ``backend`` in a recording backend and stash a reference.
 
+        A previously created trajectory hook is bound to this wrapper.
         Pass ``async_=True`` to force the async variant; otherwise the
         sink inspects ``generate`` - if it is a coroutine function the
         async wrapper is used.
@@ -922,6 +925,8 @@ class ProvenanceSink:
             redact=self._redact,
             redact_upstream=self._redact_upstream,
         )
+        if self._hook is not None:
+            self._hook._recording_llm = self._recording_llm
         return self._recording_llm
 
     def trajectory_hook(self) -> TrajectoryRecorder:

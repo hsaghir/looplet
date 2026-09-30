@@ -68,6 +68,84 @@ class TestMCPToolAdapter:
         assert adapter.register_all(registry) == 1
         assert registry.tool_names == ["echo"]
 
+    def test_discovered_schema_keeps_constraints_and_structured_repair(self, monkeypatch):
+        from looplet import ToolCall
+
+        input_schema = {
+            "type": "object",
+            "properties": {
+                "mode": {"type": "string", "enum": ["safe", "fast"]},
+                "rows": {"type": "array", "items": {"type": "integer"}, "minItems": 1},
+                "limit": {"type": "integer", "minimum": 1, "default": 10},
+            },
+            "required": ["mode", "rows"],
+            "additionalProperties": False,
+        }
+        adapter = MCPToolAdapter("echo test")
+        adapter._started = True
+        adapter._tool_schemas = [{"name": "query", "inputSchema": input_schema}]
+        sent = []
+        monkeypatch.setattr(
+            adapter,
+            "_send_request",
+            lambda method, params: sent.append((method, params)) or {"content": []},
+        )
+        registry = BaseToolRegistry()
+        adapter.register_all(registry)
+
+        assert registry.tool_schemas()[0]["input_schema"] == input_schema
+        assert registry.introspect()["tools"][0]["parameters"] == input_schema
+        assert registry.tool_specs["query"].required_parameters() == ["mode", "rows"]
+        assert (
+            registry.dispatch(ToolCall("query", {"mode": "safe", "rows": "[1, 2]"})).error is None
+        )
+        assert sent == [
+            ("tools/call", {"name": "query", "arguments": {"mode": "safe", "rows": [1, 2]}})
+        ]
+
+    @pytest.mark.parametrize(
+        ("type_name", "value", "expected"),
+        [(["array", "null"], "[1]", [1]), (["object", "null"], '{"a": 1}', {"a": 1})],
+    )
+    def test_nullable_structured_schema_keeps_repair(self, monkeypatch, type_name, value, expected):
+        adapter = MCPToolAdapter("echo test")
+        adapter._started = True
+        adapter._tool_schemas = [
+            {
+                "name": "echo",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"value": {"type": type_name}},
+                    "required": ["value"],
+                },
+            }
+        ]
+        sent = []
+        monkeypatch.setattr(
+            adapter, "_send_request", lambda method, params: sent.append(params) or {"content": []}
+        )
+        spec = adapter.tools()[0]
+
+        assert spec.to_json_schema()["properties"]["value"]["type"] == type_name
+        spec.execute(value=value)
+        assert sent[0]["arguments"]["value"] == expected
+
+    def test_legacy_optional_type_marker_is_normalized_without_mutating_server_schema(self):
+        adapter = MCPToolAdapter("echo test")
+        adapter._started = True
+        original = {
+            "type": "object",
+            "properties": {"items": {"type": "(optional) array"}},
+            "required": ["items"],
+        }
+        adapter._tool_schemas = [{"name": "echo", "inputSchema": original}]
+        spec = adapter.tools()[0]
+
+        assert spec.to_json_schema()["properties"]["items"]["type"] == "array"
+        assert spec.required_parameters() == []
+        assert original["properties"]["items"]["type"] == "(optional) array"
+        assert original["required"] == ["items"]
+
     def test_protocol_guards_without_process(self):
         adapter = MCPToolAdapter("echo test")
 

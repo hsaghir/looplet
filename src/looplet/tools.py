@@ -14,6 +14,7 @@ import time
 import types
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import (
     Any,
@@ -432,9 +433,7 @@ class ToolSpec:
 
     def parameter_names(self) -> list[str]:
         """Return the list of parameter names regardless of schema format."""
-        if self.is_json_schema:
-            return list(self.parameters.get("properties", {}).keys())
-        return list(self.parameters.keys())
+        return list(self.to_json_schema()["properties"])
 
     def required_parameters(self) -> list[str]:
         """Return required parameter names.
@@ -448,19 +447,7 @@ class ToolSpec:
         whose description starts with ``(optional)`` are excluded;
         the rest are required.
         """
-        if self.is_json_schema:
-            return list(self.parameters.get("required", []))
-        required: list[str] = []
-        for name, desc in self.parameters.items():
-            # Cartridge ``tool.yaml`` form: dict descriptor.
-            if isinstance(desc, dict):
-                if "default" not in desc:
-                    required.append(name)
-                continue
-            # Simple form: bare-string description.
-            if not str(desc).lower().lstrip().startswith("(optional)"):
-                required.append(name)
-        return required
+        return list(self.to_json_schema().get("required", []))
 
     def sync_required_parameters_from_callable(self) -> None:
         """Infer optional simple-schema parameters from callable defaults."""
@@ -559,49 +546,60 @@ class ToolSpec:
         """Generate API-compatible tool schema for native tool calling.
 
         When ``parameters`` is already JSON Schema, it is used directly
-        as the ``input_schema``.  Otherwise, the simple format is
-        auto-converted (all params typed as ``string``).
+        as the ``input_schema``. Compatibility inputs use the same
+        normalization as dispatch and introspection.
         """
-        if self.is_json_schema:
-            return {
-                "name": self.name,
-                "description": self.description,
-                "input_schema": self.parameters,
-            }
-        properties: dict[str, Any] = {}
-        for param_name, param_desc in self.parameters.items():
-            properties[param_name] = {
-                "type": "string",
-                "description": str(param_desc),
-            }
         return {
             "name": self.name,
             "description": self.description,
-            "input_schema": {
-                "type": "object",
-                "properties": properties,
-                "required": list(self.parameters.keys()),
-            },
+            "input_schema": self.parameters if self.is_json_schema else self.to_json_schema(),
         }
 
     def to_json_schema(self) -> dict[str, Any]:
         """Return the parameter schema as a JSON Schema object.
 
-        If ``parameters`` is already JSON Schema, returns it directly.
-        Otherwise, auto-converts the simple format.
+        Preserves JSON Schema constraints and cartridge descriptors.
+        Shorthand type aliases and optional markers are normalized here;
+        unknown descriptions retain the legacy string type. The public
+        ``parameters`` mapping remains editable, so this view is not cached.
         """
         if self.is_json_schema:
             return dict(self.parameters)
         properties: dict[str, Any] = {}
-        for param_name, param_desc in self.parameters.items():
-            properties[param_name] = {
-                "type": "string",
-                "description": str(param_desc),
-            }
+        required: list[str] = []
+        aliases = {
+            "str": "string",
+            "string": "string",
+            "int": "integer",
+            "integer": "integer",
+            "float": "number",
+            "number": "number",
+            "bool": "boolean",
+            "boolean": "boolean",
+            "list": "array",
+            "array": "array",
+            "dict": "object",
+            "object": "object",
+        }
+        for name, descriptor in self.parameters.items():
+            if isinstance(descriptor, dict):
+                properties[name] = deepcopy(descriptor)
+                if "default" not in descriptor:
+                    required.append(name)
+            else:
+                text = str(descriptor).strip()
+                optional = text.lower().startswith("(optional)")
+                type_text = text[len("(optional)") :].strip() if optional else text
+                properties[name] = {
+                    "type": aliases.get(type_text.lower(), "string"),
+                    "description": str(descriptor),
+                }
+                if not optional:
+                    required.append(name)
         return {
             "type": "object",
             "properties": properties,
-            "required": list(self.parameters.keys()),
+            "required": required,
         }
 
 

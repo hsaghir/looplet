@@ -211,14 +211,6 @@ def _schema_from_signature(name: str, fn) -> dict:
     over an injected ``PYTHONPATH`` but has no guaranteed PyYAML). The
     keyword-only params are the tool arguments; the leading positional
     ``ctx`` (when present) is the host wiring and is excluded.
-
-    Optionality note: looplet's MCP adapter flattens an inputSchema to a
-    simple ``{name: type_string}`` dict and DROPS the JSON-Schema
-    ``required`` list - it then treats a param as optional only when its
-    type/description string begins with ``(optional)``. So we encode a
-    Python default as an ``"(optional) <type>"`` type string; that keeps
-    the param *known* (passable) while marking it not-required, exactly
-    matching the original ``tool.yaml`` ``default:`` semantics.
     """
     properties: dict = {}
     required: list[str] = []
@@ -232,7 +224,7 @@ def _schema_from_signature(name: str, fn) -> dict:
             properties[param.name] = {"type": jtype}
             required.append(param.name)
         else:
-            properties[param.name] = {"type": f"(optional) {jtype}"}
+            properties[param.name] = {"type": jtype, "default": param.default}
     doc = (inspect.getdoc(fn) or name).strip().splitlines()
     return {
         "name": name,

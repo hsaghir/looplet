@@ -61,6 +61,19 @@ Prefer explicit schemas for public or high-risk tools. Decorator inference is
 convenient, but a release contract should still test required fields, invalid
 arguments, and side effects.
 
+`ToolSpec.to_json_schema()` is the shared parameter view for dispatch names
+and requiredness, native-tool presentation, and registry introspection.
+Python shorthand and cartridge descriptors remain supported; known type
+aliases and optional markers are normalized without discarding defaults,
+enums, nested schemas, or other declared constraints. MCP discovery preserves
+the server's full `inputSchema`, rather than flattening it to descriptions.
+New MCP servers should use standard JSON Schema `required` lists; legacy
+`(optional)` type markers and JSON-string array/object repair remain supported.
+
+The base registry checks argument names and required fields, not every JSON
+Schema keyword. Keep semantic and richer constraint validation in the tool,
+MCP server, or an explicit `ValidatingToolRegistry` contract.
+
 ## Backends
 
 | API | Import | Notes |

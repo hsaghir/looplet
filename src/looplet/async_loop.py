@@ -45,9 +45,11 @@ from looplet.checkpoint import resume_loop_state as _resume_loop_state
 from looplet.checkpoint import save_pending_dispatch as _save_pending_dispatch
 from looplet.checkpoint import validate_checkpoint_identity as _validate_checkpoint_identity
 from looplet.context_plan import ContextSourceSelector
-from looplet.context_projection import ContextProjection
+from looplet.context_projection import ContextProjection as ContextProjection
 from looplet.loop import (
-    ContextBudgetSnapshot,
+    ContextBudgetSnapshot as ContextBudgetSnapshot,
+)
+from looplet.loop import (
     LoopConfig,
     LoopContext,
     RunEnvelope,
@@ -65,7 +67,6 @@ from looplet.loop import (
     _intercept_tool_calls_async,
     _mark_failed_state,
     _policy_checkpoint_metadata,
-    _render_projection,
     _reset_context_overrides,
     _run_post_dispatch_hooks_async,
     _set_context_overrides,
@@ -74,8 +75,13 @@ from looplet.loop import (
     _validate_loop_inputs,
     emit_event_async,
 )
+from looplet.loop import (
+    _render_projection as _render_projection,
+)
 from looplet.native_tools import NativeToolPolicy, NativeToolUnsupportedError
 from looplet.parse import parse_multi_tool_calls, to_text
+from looplet.prompt_preparation import prepare_prompt_async
+from looplet.recovery_strategies import recovery_aggressive_budget, recovery_clear_old_results
 from looplet.scaffolding import (
     PARSE_RECOVERY_MAX,
     ContextOverflowError,
@@ -83,10 +89,12 @@ from looplet.scaffolding import (
     NativeToolStats,
     _is_prompt_too_long,
     build_parse_recovery_prompt,
-    estimate_prompt_tokens,
     truncate_tool_result,
 )
 from looplet.scaffolding import _accepts_kwarg as _sync_accepts_kwarg
+from looplet.scaffolding import (
+    estimate_prompt_tokens as estimate_prompt_tokens,
+)
 from looplet.session import SessionLog
 from looplet.tools import BaseToolRegistry, _summarize_args_dict
 from looplet.types import AgentState, DefaultState, Step, ToolCall, ToolResult
@@ -98,6 +106,74 @@ __all__ = [
     "async_composable_loop",
     "async_llm_call",
 ]
+
+
+async def _recover_prompt(
+    llm: Any,
+    result: LLMResult,
+    recovery_state: dict[str, Any],
+    *,
+    state: Any,
+    session_log: Any,
+    tools: Any,
+    config: Any,
+    step_num: int,
+    hooks: list[Any],
+    conversation: Any,
+    native_policy: NativeToolPolicy,
+    prepare: Any,
+    loop_ctx: Any,
+) -> tuple[LLMResult, int]:
+    from looplet.compact import TruncateCompact, run_compact_async
+
+    calls = 0
+    for name in ("budget_enforcement", "emergency_truncate", "result_clearing"):
+        if recovery_state.get(name):
+            continue
+        recovery_state[name] = True
+        if name == "emergency_truncate":
+            outcome = await run_compact_async(
+                config.compact_service or TruncateCompact(),
+                hooks=hooks,
+                state=state,
+                session_log=session_log,
+                llm=llm,
+                conversation=conversation,
+                step_num=step_num,
+                reason="prompt_too_long",
+            )
+            calls += outcome.llm_calls_spent
+        else:
+            strategy = (
+                recovery_aggressive_budget
+                if name == "budget_enforcement"
+                else recovery_clear_old_results
+            )
+            calls += strategy(state, session_log, llm, step_num)
+        prepared = await prepare()
+        if prepared.budget.pressure:
+            continue
+        schemas = native_policy.tool_schemas(llm, tools)
+        result = await async_llm_call(
+            llm,
+            prepared.prompt,
+            max_tokens=config.max_tokens,
+            system_prompt=config.system_prompt,
+            temperature=config.temperature,
+            tools=list(prepared.tool_view.schemas) if schemas is not None else None,
+            native_policy=native_policy,
+            cancel_token=config.cancel_token,
+            max_continuations=config.max_turn_continuations,
+            generate_kwargs=config.generate_kwargs or None,
+        )
+        loop_ctx.native_tool_stats.record(result)
+        calls += 1
+        if result.ok or not result.is_prompt_too_long:
+            break
+    if result.ok:
+        recovery_state.clear()
+    return result, calls
+
 
 # ── Retry constants (mirror scaffolding.py) ──────────────────────
 MAX_LLM_RETRIES = 2
@@ -470,7 +546,6 @@ async def _async_composable_loop_impl(
     from looplet.conversation import Conversation  # noqa: PLC0415
     from looplet.events import LifecycleEvent as _LE  # noqa: PLC0415
     from looplet.history import HistoryRecorder  # noqa: PLC0415
-    from looplet.prompts import build_prompt as _build_prompt  # noqa: PLC0415
 
     _LoopStartEvent = _StepStartEvent = _LLMCallStartEvent = None
     _ToolDispatchEvent = _LoopEndEvent = None
@@ -650,17 +725,6 @@ async def _async_composable_loop_impl(
         task_id = task.get("id", "") if isinstance(task, dict) else str(task)[:80]
         stream.emit(_LoopStartEvent(task_summary=str(task_id), max_steps=config.max_steps))
 
-    # ── Render memory once (stable across steps) ────────────────
-    _rendered_memory = ""
-    if config.memory_sources:
-        parts = []
-        for src in config.memory_sources:
-            if hasattr(src, "load"):
-                text = src.load(state)
-                if text:
-                    parts.append(text)
-        _rendered_memory = "\n".join(parts)
-
     _context_sources = (
         ContextSourceSelector(
             config.scoped_context_sources, budget_tokens=config.scoped_context_budget_tokens
@@ -676,6 +740,7 @@ async def _async_composable_loop_impl(
     consecutive_parse_failures = 0
     native_policy = NativeToolPolicy(enabled=config.use_native_tools)
     post_dispatch_parts: list[str] = []
+    recovery_state: dict[str, Any] = {}
     all_step_entities: list[str] = []
     # Wrap async LLM in a sync bridge so tools can use ctx.llm.generate()
     # without needing to await. The bridge handles the async→sync
@@ -827,115 +892,25 @@ async def _async_composable_loop_impl(
             post_dispatch_parts.clear()
 
         _briefing = "\n".join(briefing_parts)
-        _tool_view = tools.tool_view(
-            config.tool_view_selector(step_num=step_num, state=state, tools=tools, task=task)
-            if config.tool_view_selector is not None
-            else None
+        _prepared = await prepare_prompt_async(
+            config=config,
+            state=state,
+            tools=tools,
+            session_log=session_log,
+            task=task,
+            step_num=step_num,
+            briefing=_briefing,
+            context_sources=_context_sources,
+            hooks=hooks,
+            builder=build_prompt_fn,
+            conversation=_conv,
         )
-        _scoped_context, _scoped_plan = (
-            _context_sources.select(task=task, state=state, step_num=step_num)
-            if _context_sources is not None
-            else ("", None)
-        )
-        _selected_memory = "\n\n".join(part for part in (_rendered_memory, _scoped_context) if part)
-        _catalog = _tool_view.catalog_text
-        _state_summary = state.snapshot() if hasattr(state, "snapshot") else {}
-        _log_text = session_log.render() if hasattr(session_log, "render") else ""
-        _context_history = state.context_summary() if hasattr(state, "context_summary") else ""
-        context_plan = None
-        if config.context_planner is not None:
-            context_plan = await _maybe_await(
-                config.context_planner(
-                    task=task,
-                    tool_catalog=_catalog,
-                    state_summary=_state_summary,
-                    context_history=_context_history,
-                    step_number=step_num,
-                    session_log=_log_text,
-                    briefing=_briefing,
-                    memory=_selected_memory,
-                )
-            )
-
-        _hook_prompt: str | None = None
-        for hook in hooks:
-            method = getattr(hook, "build_prompt", None)
-            if method is None:
-                continue
-            candidate = await _maybe_await(
-                method(
-                    task=task,
-                    tool_catalog=_catalog,
-                    state_summary=_state_summary,
-                    context_history=_context_history,
-                    step_number=step_num,
-                    max_steps=config.max_steps,
-                    session_log=_log_text,
-                    briefing=_briefing,
-                    memory=_selected_memory,
-                )
-            )
-            if candidate is not None:
-                _hook_prompt = str(candidate)
-                break
-
-        if _hook_prompt is not None:
-            prompt = _hook_prompt
-        elif build_prompt_fn is not None:
-            prompt = await _maybe_await(
-                build_prompt_fn(
-                    task=task,
-                    tool_catalog=_catalog,
-                    state_summary=_state_summary,
-                    context_history=_context_history,
-                    step_number=step_num,
-                    max_steps=config.max_steps,
-                    session_log=_log_text,
-                    briefing=_briefing,
-                    memory=_selected_memory,
-                )
-            )
-        else:
-            prompt = _build_prompt(
-                task=task,
-                tool_catalog=_catalog,
-                state_summary=_state_summary,
-                context_history=_context_history,
-                step_number=step_num,
-                max_steps=config.max_steps,
-                session_log=_log_text,
-                briefing=_briefing,
-                memory=_rendered_memory,
-                scoped_context=_scoped_context,
-            )
-
-        if config.render_messages_override is not None:
-            projection = ContextProjection(
-                messages=tuple(_conv.messages),
-                default_prompt=prompt,
-                step_num=step_num,
-                task=task,
-                tool_catalog=_catalog,
-                state_summary=_state_summary,
-                context_history=_context_history,
-                session_log=_log_text,
-                briefing=_briefing,
-                memory=_selected_memory,
-                context_plan=context_plan,
-                scoped_context=_scoped_context,
-                scoped_context_plan=_scoped_plan,
-            )
-            prompt = _render_projection(config.render_messages_override, projection)
-
-        _estimated_tokens = estimate_prompt_tokens(prompt)
-        loop_ctx.context_budget = ContextBudgetSnapshot(
-            prompt_chars=len(prompt),
-            estimated_tokens=_estimated_tokens,
-            context_window_tokens=config.context_window,
-            briefing_chars=len(_briefing),
-            context_history_chars=len(_context_history),
-            pressure=_estimated_tokens > config.context_window - 3_000,
-        )
+        prompt = _prepared.prompt
+        _tool_view = _prepared.tool_view
+        _rendered_memory = _prepared.rendered_memory
+        _scoped_plan = _prepared.scoped_context_plan
+        loop_ctx.context_budget = _prepared.budget
+        _estimated_tokens = _prepared.budget.estimated_tokens
         _state_metadata = getattr(state, "metadata", None)
         if loop_ctx.context_budget.pressure and isinstance(_state_metadata, dict):
             _state_metadata["context_budget"] = loop_ctx.context_budget.to_dict()
@@ -1043,6 +1018,47 @@ async def _async_composable_loop_impl(
             )
 
         raw_response = llm_result.text
+        if not llm_result.ok and llm_result.is_prompt_too_long and config.reactive_recovery:
+
+            async def _prepare_recovery_prompt():
+                nonlocal prompt, _tool_view, _rendered_memory, _scoped_plan
+                prepared = await prepare_prompt_async(
+                    config=config,
+                    state=state,
+                    tools=tools,
+                    session_log=session_log,
+                    task=task,
+                    step_num=step_num,
+                    briefing=_briefing,
+                    context_sources=_context_sources,
+                    hooks=hooks,
+                    builder=build_prompt_fn,
+                    conversation=_conv,
+                )
+                prompt = prepared.prompt
+                _tool_view = prepared.tool_view
+                _rendered_memory = prepared.rendered_memory
+                _scoped_plan = prepared.scoped_context_plan
+                loop_ctx.context_budget = prepared.budget
+                return prepared
+
+            llm_result, recovery_calls = await _recover_prompt(
+                effective_llm,
+                llm_result,
+                recovery_state,
+                state=state,
+                session_log=session_log,
+                tools=tools,
+                config=config,
+                step_num=step_num,
+                hooks=hooks,
+                conversation=_conv,
+                native_policy=native_policy,
+                prepare=_prepare_recovery_prompt,
+                loop_ctx=loop_ctx,
+            )
+            llm_calls += recovery_calls
+            raw_response = llm_result.text
         _history.record_llm_turn(
             prompt=prompt,
             response=raw_response,

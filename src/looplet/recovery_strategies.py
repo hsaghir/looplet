@@ -52,42 +52,27 @@ def rebuild_prompt(
     config: Any,
     step_num: int,
 ) -> str:
-    """Rebuild prompt after a recovery strategy modified state."""
-    context_history = state.context_summary()
-    briefing = build_briefing(state, session_log, context) if build_briefing else ""
+    """Compatibility helper using the same preparation stages as the loop."""
+    from looplet.context_plan import ContextSourceSelector
+    from looplet.conversation import Conversation
+    from looplet.prompt_preparation import prepare_prompt
 
-    # Render persistent memory - same as the main loop body.
-    _memory_sources = getattr(config, "memory_sources", None)
-    if _memory_sources:
-        from looplet.memory import render_memory as _render_memory  # noqa: PLC0415
-
-        _rendered_memory = _render_memory(_memory_sources, state)
-    else:
-        _rendered_memory = ""
-
-    if build_prompt_fn is not None:
-        return build_prompt_fn(
-            task=task,
-            tool_catalog=tools.tool_catalog_text(),
-            state_summary=state.snapshot(),
-            context_history=context_history,
-            step_number=step_num,
-            max_steps=config.max_steps,
-            session_log=session_log.render(),
-            briefing=briefing,
-            memory=_rendered_memory,
-        )
-    # Fallback: use the same structured default prompt as the main loop.
-    from looplet.prompts import build_prompt as _default_build_prompt  # noqa: PLC0415
-
-    return _default_build_prompt(
-        task=task,
-        tool_catalog=tools.tool_catalog_text(),
-        state_summary=state.snapshot(),
-        context_history=context_history,
-        step_number=step_num,
-        max_steps=config.max_steps,
-        session_log=session_log.render(),
-        briefing=briefing,
-        memory=_rendered_memory,
+    sources = config.scoped_context_sources
+    selector = (
+        ContextSourceSelector(sources, budget_tokens=config.scoped_context_budget_tokens)
+        if sources
+        else None
     )
+    return prepare_prompt(
+        config=config,
+        state=state,
+        tools=tools,
+        session_log=session_log,
+        task=task,
+        step_num=step_num,
+        briefing=build_briefing(state, session_log, context) if build_briefing else "",
+        context_sources=selector,
+        hooks=[],
+        builder=build_prompt_fn,
+        conversation=Conversation(),
+    ).prompt

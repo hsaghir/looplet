@@ -146,3 +146,37 @@ class _AsyncFlakyLLM:
         if isinstance(item, Exception):
             raise item
         return item
+
+
+@pytest.mark.parametrize("async_mode", [False, True])
+async def test_repeated_overflow_recovers_without_repeating_pre_prompt(async_mode):
+    from looplet import async_composable_loop
+
+    script = [
+        _PromptTooLongError(),
+        '{"tool":"noop","args":{}}',
+        _PromptTooLongError(),
+        '{"tool":"done","args":{"summary":"ok"}}',
+    ]
+    backend = (_AsyncFlakyLLM if async_mode else _FlakyLLM)(script)
+    calls = []
+
+    class Hook:
+        def pre_prompt(self, state, session_log, context, step_num):
+            calls.append(step_num)
+            return "retained briefing"
+
+    kwargs = dict(
+        llm=backend,
+        tools=_registry(),
+        hooks=[Hook()],
+        config=LoopConfig(max_steps=3, use_native_tools=False),
+    )
+    steps = (
+        [step async for step in async_composable_loop(**kwargs)]
+        if async_mode
+        else list(composable_loop(**kwargs))
+    )
+    assert [step.tool_call.tool for step in steps] == ["noop", "done"]
+    assert backend.calls == 4
+    assert calls == [1, 2]

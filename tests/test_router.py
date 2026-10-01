@@ -77,6 +77,59 @@ def test_wrappers_preserve_supported_options_and_active_usage(kind, native):
     assert wrapped.last_usage == {"total_tokens": 7}
 
 
+@pytest.mark.parametrize("kind", ["routing", "fallback"])
+@pytest.mark.parametrize("call_first", [False, True])
+def test_mutable_provider_fields_reach_the_capability_owner(kind, call_first):
+    from looplet.provenance import RecordingLLMBackend
+    from looplet.resilient import ResilientBackend
+
+    class Backend:
+        def __init__(self, *, fail=False):
+            self.fail = fail
+            self._client = object()
+            self._state_path = "original"
+            self.last_usage = {"total_tokens": 1}
+
+        def generate(self, prompt, **kwargs):
+            if self.fail:
+                raise RuntimeError("primary failed")
+            return "ok"
+
+    first = Backend(fail=kind == "fallback")
+    second = Backend()
+    if kind == "routing":
+        routed = RoutingLLMBackend(
+            SimpleRouter(
+                {"next": ModelProfile("next", second)},
+                default_profile=ModelProfile("first", first),
+            )
+        )
+    else:
+        routed = FallbackRouter(primary=first, fallback=second).select("reasoning")
+    wrapped = ResilientBackend(CostTracker(RecordingLLMBackend(routed)), retries=1)
+    if call_first:
+        wrapped.generate("prompt")
+        if kind == "routing":
+            routed.set_purpose("next")
+    owner = second if kind == "fallback" and call_first else first
+    untouched = first if owner is second else second
+    untouched_client = untouched._client
+    replacement = object()
+    assert wrapped._client is owner._client
+
+    wrapped._client = replacement
+    wrapped._state_path = "restored"
+    wrapped.last_usage = {"total_tokens": 9}
+
+    assert owner._client is replacement and wrapped._client is replacement
+    assert owner._state_path == wrapped._state_path == "restored"
+    assert owner.last_usage == wrapped.last_usage == {"total_tokens": 9}
+    assert untouched._client is untouched_client
+    assert untouched._state_path == "original"
+    assert untouched.last_usage == {"total_tokens": 1}
+    assert not {"_client", "_state_path", "last_usage"}.intersection(routed.__dict__)
+
+
 def test_retry_ownership_follows_next_route_but_usage_follows_last_call():
     from looplet._backend_contract import attempt_limit
     from looplet.resilient import ResilientBackend

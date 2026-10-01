@@ -125,6 +125,12 @@ class _FallbackLLM:
     def __getattr__(self, name: str) -> Any:
         return backend_attribute(self._active, name)
 
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name in MUTABLE_CAPABILITIES and "_active" in self.__dict__:
+            setattr(self._active, name, value)
+        else:
+            object.__setattr__(self, name, value)
+
     def generate(
         self,
         prompt: str,
@@ -460,6 +466,13 @@ class RoutingLLMBackend:
             else self._active
         )
         return backend_attribute(backend, name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name in MUTABLE_CAPABILITIES and "_router" in self.__dict__:
+            backend = self._router.select(self._purpose) if self._active is None else self._active
+            setattr(backend, name, value)
+        else:
+            object.__setattr__(self, name, value)
 
     @property
     def _supports_native_tools(self) -> bool:

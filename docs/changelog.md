@@ -34,7 +34,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   recording, resilience, routing, and legacy cost tracking preserve provider
   usage/state and cancellation/cache options. Explicit resilience owns retries
   without multiplication by the core call helper or nested wrappers; provider
-  SDK retries remain separately configured.
+  SDK retries remain separately configured. Routing and fallback wrappers also
+  forward mutable provider handles to the backend that owns their exposed state.
 - Cartridge self-tests now own evaluation and replace embedded `EvalHook`
   observers; reference coder defaults no longer grade normal runs implicitly.
   Explicit host hooks and reusable eval helpers remain supported.

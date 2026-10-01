@@ -40,6 +40,10 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   execution path for sync/async calls and batches. Optional schemas fail closed
   with structured validation errors, and mixed batches preserve per-call
   contexts, resources, order, and call IDs without a second dispatcher.
+- Skill-bundle execution now delegates to `AgentPreset.run()` for validation,
+  single-use claims, envelope and gateway binding, and trace returns. Unstarted
+  and failed runs clean up helper-owned presets; caller-supplied presets remain
+  caller-owned, and bundle-local import context is preserved.
 - Cartridge self-tests now own evaluation and replace embedded `EvalHook`
   observers; reference coder defaults no longer grade normal runs implicitly.
   Explicit host hooks and reusable eval helpers remain supported.

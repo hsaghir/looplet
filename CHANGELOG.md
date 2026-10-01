@@ -35,6 +35,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   replay beside offline grades. `capture=False` / `--no-capture` retain
   grading-only records, redaction remains independent of capture, and
   interrupted runs save available incomplete evidence before re-raising.
+  Captured case directories use owner-only permissions on POSIX; hosts still
+  control evidence retention and access when exporting it to other storage.
 - Cartridge self-tests now own evaluation and replace embedded `EvalHook`
   observers; reference coder defaults no longer grade normal runs implicitly.
   Explicit host hooks and reusable eval helpers remain supported.

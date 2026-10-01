@@ -1467,6 +1467,8 @@ def run_cartridge_evals(
                 run_dir.unlink()
             elif run_dir.exists():
                 shutil.rmtree(run_dir)
+            if capture:
+                run_dir.mkdir(parents=True, mode=0o700)
             sandbox = run_dir / "workspace"
         else:
             run_dir = None

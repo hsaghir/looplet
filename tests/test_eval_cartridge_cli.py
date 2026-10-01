@@ -11,6 +11,8 @@ the ``looplet eval run`` CLI preflight/error paths.
 from __future__ import annotations
 
 import json
+import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -245,6 +247,31 @@ def test_persisted_eval_capture_can_be_disabled_explicitly(tmp_path):
     assert record.context.completed
     assert not (record.directory / "manifest.jsonl").exists()
     assert "model_calls" not in read_artifact_descriptor(record.directory)["components"]
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX directory permissions")
+def test_captured_eval_directory_is_private_before_model_call(tmp_path):
+    cart = _make_cartridge(tmp_path)
+    out = tmp_path / "runs"
+    run_dir = out / "make_greeting"
+    calls = []
+
+    class Backend(MockLLMBackend):
+        def generate(self, prompt, **kwargs):
+            assert stat.S_IMODE(run_dir.stat().st_mode) == 0o700
+            calls.append(prompt)
+            return super().generate(prompt, **kwargs)
+
+    previous_umask = os.umask(0)
+    try:
+        record = run_cartridge_evals(cart, llm=Backend(_scripted()), output_dir=out)[0]
+    finally:
+        os.umask(previous_umask)
+
+    assert len(calls) == 2 and record.context.completed
+    assert stat.S_IMODE(record.directory.stat().st_mode) == 0o700
+    assert (record.directory / "manifest.jsonl").is_file()
+    assert load_eval_run(record.directory).context.completed
 
 
 @pytest.mark.parametrize("native", [False, True])

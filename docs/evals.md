@@ -44,6 +44,12 @@ record-only redaction. Redaction does not rewrite the sandbox's source files or
 work products. Interrupted runs save available partial evidence before raising,
 without inventing completion or missing grades.
 
+On POSIX, captured case-run directories are created with owner-only permissions
+(0700) before files are seeded or model calls begin. This does not prevent access
+by same-user code or protect evidence uploaded to Git, artifact storage, or other
+services. Keep captured runs out of public repositories and apply your host's
+retention policy. Non-POSIX hosts must enforce equivalent access controls.
+
 **Python hosts:** explicitly attach one `EvalHook` to your existing loop, then
 save its record with `save_eval_run()`; see [Attach to your loop](#attach-to-your-loop).
 Use the same `load_eval_run()` reader afterward. Live scoring, offline

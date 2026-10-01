@@ -49,6 +49,110 @@ class ToolsCapableFlakyBackend(FlakyBackend):
 
 
 class TestRetryBehavior:
+    @pytest.mark.parametrize("timeout", [None, 1.0])
+    def test_nested_resilience_uses_outer_attempt_policy(self, timeout):
+        backend = FlakyBackend([ConnectionError("failure")] * 20)
+        inner = ResilientBackend(backend, retries=5, sleep=lambda delay: None)
+        outer = ResilientBackend(inner, retries=3, timeout_s=timeout, sleep=lambda delay: None)
+
+        with pytest.raises(RetryExhausted):
+            outer.generate("prompt")
+        assert backend.calls == 3
+
+    @pytest.mark.parametrize("native", [False, True])
+    async def test_async_call_helper_respects_managed_retry_policy(self, native):
+        from looplet.async_loop import async_llm_call
+        from looplet.native_tools import NativeToolPolicy
+        from looplet.provenance import RecordingLLMBackend
+
+        backend = ToolsCapableFlakyBackend([ConnectionError("failure")] * 20)
+        wrapped = RecordingLLMBackend(
+            ResilientBackend(backend, retries=3, sleep=lambda delay: None)
+        )
+        result = await async_llm_call(
+            wrapped,
+            "prompt",
+            tools=[] if native else None,
+            native_policy=NativeToolPolicy(enabled=native),
+        )
+
+        assert not result.ok
+        assert backend.calls == 3
+
+    def test_forwarded_mutable_provider_handles_reach_inner_backend(self):
+        from looplet.provenance import RecordingLLMBackend
+
+        backend = FlakyBackend([])
+        backend._client = object()
+        backend._state_path = "initial"
+        wrapped = RecordingLLMBackend(ResilientBackend(backend, retries=1))
+        replacement = object()
+        wrapped._client = replacement
+        wrapped._state_path = "changed"
+
+        assert backend._client is replacement and wrapped._client is replacement
+        assert backend._state_path == "changed"
+        assert not hasattr(wrapped, "_errors")
+
+    @pytest.mark.parametrize("order", ["recording_outer", "resilient_outer"])
+    def test_composed_wrappers_preserve_backend_contract(self, order):
+        from looplet.provenance import RecordingLLMBackend
+
+        class Backend:
+            last_usage = {"total_tokens": 7}
+
+            def generate(
+                self,
+                prompt,
+                *,
+                cache_breakpoints=None,
+                cancel_token=None,
+                reasoning_effort=None,
+                **kwargs,
+            ):
+                self.options = (cache_breakpoints, cancel_token, reasoning_effort)
+                return "ok"
+
+            def checkpoint_state(self):
+                return {"provider": "ready"}
+
+        backend = Backend()
+        wrapped = (
+            RecordingLLMBackend(ResilientBackend(backend, retries=1))
+            if order == "recording_outer"
+            else ResilientBackend(RecordingLLMBackend(backend), retries=1)
+        )
+        token = object()
+        assert (
+            wrapped.generate(
+                "prompt", cache_breakpoints=["cache"], cancel_token=token, reasoning_effort="high"
+            )
+            == "ok"
+        )
+        assert backend.options == (["cache"], token, "high")
+        assert wrapped.last_usage == {"total_tokens": 7}
+        assert wrapped.checkpoint_state() == {"provider": "ready"}
+        assert not hasattr(wrapped, "generate_with_tools")
+
+    @pytest.mark.parametrize("recording_outer", [False, True])
+    def test_loop_retry_does_not_multiply_resilient_attempts(self, recording_outer, monkeypatch):
+        from looplet.native_tools import NativeToolPolicy
+        from looplet.provenance import RecordingLLMBackend
+        from looplet.scaffolding import llm_call_with_retry
+
+        backend = FlakyBackend([ConnectionError("failure")] * 20)
+        wrapped = ResilientBackend(backend, retries=3, sleep=lambda delay: None)
+        if recording_outer:
+            wrapped = RecordingLLMBackend(wrapped)
+        monkeypatch.setattr("looplet.scaffolding.time.sleep", lambda delay: None)
+
+        result = llm_call_with_retry(
+            wrapped, "prompt", max_retries=2, native_policy=NativeToolPolicy(enabled=False)
+        )
+
+        assert not result.ok
+        assert backend.calls == 3
+
     def test_success_first_try(self) -> None:
         inner = FlakyBackend(errors=[], result="hi")
         llm = ResilientBackend(inner, retries=3, sleep=lambda _s: None)

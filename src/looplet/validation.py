@@ -13,12 +13,14 @@ Provides:
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from looplet.tools import BaseToolRegistry, _summarize_args_dict
+from looplet.types import ErrorKind, ToolCall, ToolContext, ToolError, ToolResult
+
 if TYPE_CHECKING:
-    from looplet.tools import ToolView
+    from looplet.tools import _PreparedToolCall
 
 logger = logging.getLogger(__name__)
 
@@ -159,7 +161,7 @@ def validate_args(schema: OutputSchema, args: dict[str, Any]) -> ValidationResul
 # ── ValidatingToolRegistry ────────────────────────────────────────────
 
 
-class ValidatingToolRegistry:
+class ValidatingToolRegistry(BaseToolRegistry):
     """BaseToolRegistry subclass that validates args against a schema before dispatch.
 
     Tools registered with register_with_schema() have their args validated
@@ -168,126 +170,40 @@ class ValidatingToolRegistry:
     """
 
     def __init__(self) -> None:
-        # Import lazily to avoid circular dependencies and allow tools.py to be optional
-        from looplet.tools import BaseToolRegistry
-
-        self._base = BaseToolRegistry.__new__(BaseToolRegistry)
-        BaseToolRegistry.__init__(self._base)
+        super().__init__()
         self._schemas: dict[str, OutputSchema] = {}
 
     def register_with_schema(self, spec: Any, schema: OutputSchema) -> None:
         """Register a ToolSpec with an accompanying validation schema."""
-        self._base.register(spec)
+        self.register(spec)
         self._schemas[spec.name] = schema
 
-    def register(self, spec: Any) -> None:
-        """Register a tool without a schema (no validation applied)."""
-        self._base.register(spec)
-
-    # Backward-compat alias
-    _register = register
-
     @property
-    def tool_names(self) -> list[str]:
-        return self._base.tool_names
+    def _base(self) -> BaseToolRegistry:
+        """Compatibility access to the registry that owns execution and results."""
+        return self
 
-    @property
-    def tool_specs(self) -> dict[str, Any]:
-        """Expose the wrapped registry's tool specifications."""
-        return self._base.tool_specs
-
-    @property
-    def resources(self) -> dict[str, Any]:
-        """Expose the wrapped registry's shared resource snapshot."""
-        return self._base.resources
-
-    def set_resources(self, resources: dict[str, Any]) -> None:
-        """Delegate shared-resource wiring to the wrapped registry."""
-        self._base.set_resources(resources)
-
-    def snapshot_results(self) -> dict[str, Any]:
-        """Delegate checkpoint result snapshots to the wrapped registry."""
-        return self._base.snapshot_results()
-
-    def restore_results(self, snapshot: dict[str, Any]) -> None:
-        """Restore checkpointed results through the wrapped registry."""
-        self._base.restore_results(snapshot)
-
-    def tool_catalog_text(self) -> str:
-        return self._base.tool_catalog_text()
-
-    def tool_view(self, names: Sequence[str] | None = None) -> ToolView:
-        """Select a model-visible view without bypassing validated dispatch."""
-        return self._base.tool_view(names)
-
-    @property
-    def _tools(self) -> dict:
-        """Proxy to the underlying registry's tool dict for budget accounting."""
-        return self._base._tools
-
-    def tool_schemas(self) -> list:
-        """Proxy for native tool calling."""
-        return self._base.tool_schemas()
-
-    def dispatch(self, call: Any, **kwargs: Any) -> Any:
-        """Validate args (if schema exists) then dispatch. Returns error ToolResult on failure."""
-        from looplet.types import ToolResult
-
+    def _prepare_dispatch(
+        self, call: ToolCall, *, ctx: ToolContext | None
+    ) -> _PreparedToolCall | ToolResult:
+        """Apply optional schemas once before the shared execution contract."""
         clean_args = {k: v for k, v in call.args.items() if not k.startswith("__")}
-
         if call.tool in self._schemas:
             schema = self._schemas[call.tool]
             result = validate_args(schema, clean_args)
             if not result.valid:
-                from looplet.tools import _summarize_args_dict  # noqa: PLC0415
-
                 error_msg = "Validation failed: " + "; ".join(result.errors)
                 return ToolResult(
                     tool=call.tool,
                     args_summary=_summarize_args_dict(clean_args),
                     data=None,
                     error=error_msg,
+                    error_detail=ToolError(
+                        kind=ErrorKind.VALIDATION, message=error_msg, retriable=False
+                    ),
                     call_id=call.call_id,
                 )
-
-        return self._base.dispatch(call, **kwargs)
-
-    def dispatch_batch(self, calls: list[Any], **kwargs: Any) -> list[Any]:
-        """Validate all calls, dispatch valid ones in batch, return errors for invalid.
-
-        Preserves concurrent dispatch optimization from BaseToolRegistry for
-        calls that pass validation.
-        """
-        from looplet.types import ToolResult
-
-        results: dict[int, Any] = {}
-        valid_calls: list[tuple[int, Any]] = []
-
-        for i, call in enumerate(calls):
-            clean_args = {k: v for k, v in call.args.items() if not k.startswith("__")}
-            if call.tool in self._schemas:
-                schema = self._schemas[call.tool]
-                validation = validate_args(schema, clean_args)
-                if not validation.valid:
-                    from looplet.tools import _summarize_args_dict  # noqa: PLC0415
-
-                    error_msg = "Validation failed: " + "; ".join(validation.errors)
-                    results[i] = ToolResult(
-                        tool=call.tool,
-                        args_summary=_summarize_args_dict(clean_args),
-                        data=None,
-                        error=error_msg,
-                        call_id=call.call_id,
-                    )
-                    continue
-            valid_calls.append((i, call))
-
-        if valid_calls:
-            batch_results = self._base.dispatch_batch([c for _, c in valid_calls], **kwargs)
-            for (idx, _), result in zip(valid_calls, batch_results):
-                results[idx] = result
-
-        return [results[i] for i in range(len(calls))]
+        return super()._prepare_dispatch(call, ctx=ctx)
 
 
 # ── DoneValidator Protocol ────────────────────────────────────────────

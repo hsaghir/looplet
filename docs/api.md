@@ -119,6 +119,13 @@ separate; configure them explicitly when an exact HTTP attempt bound is needed.
 
 ## Hook decisions
 
+Post-step stopping applies to normal, rejected-completion, and synthetic
+parse-error turns in both drivers. A stop requested by a model lifecycle event
+still permits the current step to be recorded and yielded, but does not start a
+new parse-repair/model call. `post_step` observers see each recorded error step
+too; async observers are awaited. Fatal model failure remains `llm_error`, not
+accepted completion, and a legitimately accepted terminal call remains `done`.
+
 Hooks are duck-typed objects. Implement only the lifecycle methods the policy
 needs. Return values are normalized through these decisions:
 

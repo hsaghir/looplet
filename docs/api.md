@@ -91,6 +91,18 @@ Install provider extras separately. See [install and configure](install.md).
 the caller's perspective; it cannot guarantee that a provider SDK cancels the
 underlying socket operation. Configure provider-level timeouts too.
 
+Recording, resilience, routing, and legacy cost wrappers share supported-option
+forwarding and declared usage/state capabilities. Native generation is surfaced
+only when the underlying backend supports it; unsupported arbitrary attributes
+are not forwarded. Provider checkpoint methods apply to the active underlying
+backend, not an invented cross-model recovery format.
+
+When a resilience wrapper owns retries, the sync/async call helper does not retry
+its exhausted call again. Nested resilience wrappers use the outer wrapper's
+attempt policy, including in timeout workers. Each fallback backend may retain
+its own resilience budget. Provider SDK retries and socket timeouts remain
+separate; configure them explicitly when an exact HTTP attempt bound is needed.
+
 ## Hook decisions
 
 Hooks are duck-typed objects. Implement only the lifecycle methods the policy

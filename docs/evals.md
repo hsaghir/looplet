@@ -28,6 +28,28 @@ The Python equivalent is `run_cartridge_evals()`. This runner owns evaluation
 and replaces embedded `EvalHook` observers with the self-test bundle's hook.
 Policy hooks still run. The reference coder ships no implicit eval hook.
 
+With `--out`, the same run now records agent model prompts/responses beside
+trajectory, collected outcomes, grades, and grader-only expectations. Reload
+grades with `load_eval_run()` and replay captured responses with `replay_loop()`
+against a fresh tool registry/workspace. Replay executes fresh tool effects;
+it is not deterministic simulation or checkpoint restoration. Judge-model calls
+are separate host grading work and are not included in agent model-call capture.
+
+Use `--no-capture` or `run_cartridge_evals(..., capture=False)` for a grading-only
+record without persisted model calls. Such a record supports offline rescoring,
+not captured-response replay. Persisted runs may contain sensitive data; the
+Python API accepts `redact=...`, which scrubs upstream by default and redacts
+saved evidence even with capture disabled. `redact_upstream=False` selects
+record-only redaction. Redaction does not rewrite the sandbox's source files or
+work products. Interrupted runs save available partial evidence before raising,
+without inventing completion or missing grades.
+
+On POSIX, captured case-run directories are created with owner-only permissions
+(0700) before files are seeded or model calls begin. This does not prevent access
+by same-user code or protect evidence uploaded to Git, artifact storage, or other
+services. Keep captured runs out of public repositories and apply your host's
+retention policy. Non-POSIX hosts must enforce equivalent access controls.
+
 **Python hosts:** explicitly attach one `EvalHook` to your existing loop, then
 save its record with `save_eval_run()`; see [Attach to your loop](#attach-to-your-loop).
 Use the same `load_eval_run()` reader afterward. Live scoring, offline

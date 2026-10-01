@@ -1082,6 +1082,7 @@ def save_eval_run(
     eval_hook: Any = None,
     case: "EvalCase | None" = None,
     results: list["EvalResult"] | None = None,
+    redact: Callable[[str], str] | None = None,
 ) -> Path:
     """Persist ONE eval case's run into a directory the reader understands.
 
@@ -1124,6 +1125,7 @@ def save_eval_run(
             the run directory is self-describing.
         results: optional explicit grader results, overriding
             ``eval_hook.results`` (e.g. when graders were run offline).
+        redact: optional evidence redactor, including when no recorder is used.
 
     Returns the run directory path. Raises :class:`ValueError` when no
     trajectory source is available.
@@ -1148,7 +1150,7 @@ def save_eval_run(
         grader_expected = dict(eval_hook.expected)
 
     raw_recorder_redact = getattr(recorder, "_redact", None) if recorder is not None else None
-    recorder_redact = (
+    recorder_redact = redact or (
         cast(Callable[[str], str], raw_recorder_redact) if callable(raw_recorder_redact) else None
     )
     has_model_calls = False
@@ -1175,13 +1177,13 @@ def save_eval_run(
             )
     elif src_context is not None:
         traj = _eval_context_to_trajectory(src_context, expected=grader_expected)
-        _write_json(root / "trajectory.json", traj)
+        _write_json(root / "trajectory.json", traj, redact=recorder_redact)
         steps_dir = root / "steps"
         steps_dir.mkdir(exist_ok=True)
         for old_step in steps_dir.glob("step_*.json"):
             old_step.unlink()
         for i, step in enumerate(traj["steps"]):
-            _write_json(steps_dir / f"step_{i:02d}.json", step)
+            _write_json(steps_dir / f"step_{i:02d}.json", step, redact=recorder_redact)
     else:  # pragma: no cover - guarded above
         raise AssertionError("trajectory source disappeared during save")
 
@@ -1383,6 +1385,9 @@ def run_cartridge_evals(
     judge_llm: "LLMBackend | None" = None,
     workspace_key: str = "project_root",
     cases: list[str] | None = None,
+    capture: bool = True,
+    redact: Callable[[str], str] | None = None,
+    redact_upstream: bool = True,
 ) -> list["EvalRunRecord"]:
     """Run a cartridge against its shipped eval cases, end to end.
 
@@ -1413,6 +1418,10 @@ def run_cartridge_evals(
         workspace_key: runtime key the cartridge reads for its working
             directory (``project_root`` by convention).
         cases: optional list of case ids to run (default: all).
+        capture: capture agent model calls when output_dir is set (default: True).
+            False retains a grading-only record with no captured-response replay.
+        redact: optional provenance redactor for captured/persisted evidence.
+        redact_upstream: scrub model inputs as well as recorded evidence by default.
 
     Each case's ``expected`` mapping is injected into the evaluator's
     context only after the loop ends; it is not included in the task the
@@ -1458,6 +1467,8 @@ def run_cartridge_evals(
                 run_dir.unlink()
             elif run_dir.exists():
                 shutil.rmtree(run_dir)
+            if capture:
+                run_dir.mkdir(parents=True, mode=0o700)
             sandbox = run_dir / "workspace"
         else:
             run_dir = None
@@ -1484,14 +1495,54 @@ def run_cartridge_evals(
         preset.hooks.append(hook)
 
         task = {k: v for k, v in (case.task or {}).items() if k != "files"}
+        recorder = None
+        run_llm = llm
+        if capture and run_dir is not None:
+            from looplet.provenance import ProvenanceSink  # noqa: PLC0415
+
+            sink = ProvenanceSink(dir=run_dir, redact=redact, redact_upstream=redact_upstream)
+            run_llm = sink.wrap_llm(llm)
+            recorder = sink.trajectory_hook()
+        elif redact is not None:
+            from looplet.provenance import RecordingLLMBackend  # noqa: PLC0415
+
+            run_llm = RecordingLLMBackend(llm, redact=redact, redact_upstream=redact_upstream)
+        failed = False
+        interrupted_context = None
         try:
-            for _ in preset.run(llm, task=task):
+            for _ in preset.run(
+                run_llm, task=task, extra_hooks=[recorder] if recorder is not None else []
+            ):
                 pass
+        except BaseException as exc:
+            failed = True
+            interrupted_context = hook.context or EvalContext(
+                steps=list(preset.state.steps), task=task, stop_reason="error"
+            )
+            interrupted_context.metadata["eval_run_error"] = {
+                "type": type(exc).__name__,
+                "message": str(exc),
+            }
+            raise
         finally:
-            preset.close()
+            try:
+                if run_dir is not None:
+                    save_eval_run(
+                        run_dir,
+                        recorder=recorder,
+                        context=interrupted_context,
+                        eval_hook=hook,
+                        case=case,
+                        redact=redact,
+                    )
+            finally:
+                preset.close()
+                if failed and run_dir is None:
+                    shutil.rmtree(sandbox, ignore_errors=True)
+                    for previous in records:
+                        previous.cleanup()
 
         if run_dir is not None:
-            save_eval_run(run_dir, eval_hook=hook, case=case)
             directory = run_dir
         else:
             directory = sandbox
@@ -2635,13 +2686,18 @@ def _run_cartridge_cli(args: list[str]) -> int:
     parser.add_argument(
         "--out",
         default=None,
-        help="Persist each run under <out>/<case_id>/ (trajectory + artifacts + scores).",
+        help="Persist each run under <out>/<case_id>/ (agent model calls + trajectory + outcomes + scores; use --no-capture to omit model calls).",
     )
     parser.add_argument("--model", default=None, help="Model name (else $OPENAI_MODEL).")
     parser.add_argument(
         "--base-url", default=None, help="OpenAI-compatible base URL (else $OPENAI_BASE_URL)."
     )
     parser.add_argument("--max-steps", type=int, default=None, help="Override max_steps per case.")
+    parser.add_argument(
+        "--no-capture",
+        action="store_true",
+        help="Persist grades/outcomes without agent model prompts/responses or captured-response replay.",
+    )
     parser.add_argument(
         "--case", action="append", default=None, help="Run only this case id (repeatable)."
     )
@@ -2736,6 +2792,7 @@ def _run_cartridge_cli(args: list[str]) -> int:
             max_steps=parsed.max_steps,
             cases=parsed.case,
             judge_llm=judge_llm,
+            capture=not parsed.no_capture,
         )
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)

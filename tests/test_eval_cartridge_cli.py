@@ -11,6 +11,8 @@ the ``looplet eval run`` CLI preflight/error paths.
 from __future__ import annotations
 
 import json
+import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -214,6 +216,11 @@ def test_run_cartridge_evals_end_to_end(tmp_path: Path) -> None:
     persisted = out / "make_greeting"
     assert (persisted / "trajectory.json").is_file()
     assert (persisted / "artifacts.json").is_file()
+    assert (persisted / "manifest.jsonl").is_file()
+    model_calls = [
+        json.loads(line) for line in (persisted / "manifest.jsonl").read_text().split("\n") if line
+    ]
+    assert len(model_calls) == 2
     trajectory = json.loads((persisted / "trajectory.json").read_text())
     assert "expected" not in trajectory["task"]
     assert json.loads((persisted / "expected.json").read_text()) == {"file_written": True}
@@ -228,6 +235,170 @@ def test_run_cartridge_evals_no_output_uses_tempdir(tmp_path: Path) -> None:
     assert len(records) == 1
     # sandbox dir exists and was seeded.
     assert (records[0].directory / "test_greeting.py").is_file()
+
+
+def test_persisted_eval_capture_can_be_disabled_explicitly(tmp_path):
+    from looplet.artifact_compat import read_artifact_descriptor
+
+    cart = _make_cartridge(tmp_path)
+    record = run_cartridge_evals(
+        cart, llm=MockLLMBackend(_scripted()), output_dir=tmp_path / "runs", capture=False
+    )[0]
+    assert record.context.completed
+    assert not (record.directory / "manifest.jsonl").exists()
+    assert "model_calls" not in read_artifact_descriptor(record.directory)["components"]
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX directory permissions")
+def test_captured_eval_directory_is_private_before_model_call(tmp_path):
+    cart = _make_cartridge(tmp_path)
+    out = tmp_path / "runs"
+    run_dir = out / "make_greeting"
+    calls = []
+
+    class Backend(MockLLMBackend):
+        def generate(self, prompt, **kwargs):
+            assert stat.S_IMODE(run_dir.stat().st_mode) == 0o700
+            calls.append(prompt)
+            return super().generate(prompt, **kwargs)
+
+    previous_umask = os.umask(0)
+    try:
+        record = run_cartridge_evals(cart, llm=Backend(_scripted()), output_dir=out)[0]
+    finally:
+        os.umask(previous_umask)
+
+    assert len(calls) == 2 and record.context.completed
+    assert stat.S_IMODE(record.directory.stat().st_mode) == 0o700
+    assert (record.directory / "manifest.jsonl").is_file()
+    assert load_eval_run(record.directory).context.completed
+
+
+@pytest.mark.parametrize("native", [False, True])
+def test_saved_eval_replays_captured_responses_with_fresh_tool_effects(tmp_path, native):
+    from looplet import cartridge_to_preset
+    from looplet.provenance import replay_loop
+
+    cart = _make_cartridge(tmp_path)
+    if native:
+        (cart / "runtime.yaml").write_text("use_native_tools: true\n")
+
+        class Backend:
+            def __init__(self):
+                self.responses = iter(_scripted())
+
+            def generate(self, prompt, **kwargs):
+                raise AssertionError("native protocol expected")
+
+            def generate_with_tools(self, prompt, **kwargs):
+                response = json.loads(next(self.responses))
+                return [
+                    {
+                        "type": "tool_use",
+                        "id": response["tool"],
+                        "name": response["tool"],
+                        "input": response["args"],
+                    }
+                ]
+
+        backend = Backend()
+    else:
+        backend = MockLLMBackend(_scripted())
+    record = run_cartridge_evals(cart, llm=backend, output_dir=tmp_path / "runs")[0]
+    fresh = tmp_path / "fresh"
+    fresh.mkdir()
+    with cartridge_to_preset(cart, runtime={"project_root": str(fresh)}) as preset:
+        steps = list(replay_loop(record.directory, tools=preset.tools, config=preset.config))
+    assert [step.tool_call.tool for step in steps] == ["write_file", "done"]
+    assert (fresh / "greeting.py").read_text() == "def hi():\n    return 'hi'\n"
+    assert (record.directory / "workspace" / "greeting.py").is_file()
+
+
+@pytest.mark.parametrize("capture", [False, True])
+def test_eval_evidence_redaction_scrubs_upstream_and_persisted_records(tmp_path, capture):
+    cart = _make_cartridge(tmp_path)
+    marker = "PRIVATE_MARKER"
+    case_file = cart / "evals" / "cases" / "make_greeting.json"
+    case = json.loads(case_file.read_text())
+    case["task"]["goal"] += marker
+    case["expected"]["private"] = marker
+    case_file.write_text(json.dumps(case))
+    seen = []
+
+    class Backend(MockLLMBackend):
+        def generate(self, prompt, **kwargs):
+            seen.append(prompt)
+            return super().generate(prompt, **kwargs)
+
+    record = run_cartridge_evals(
+        cart,
+        llm=Backend(_scripted()),
+        output_dir=tmp_path / "runs",
+        capture=capture,
+        redact=lambda text: text.replace(marker, "[REDACTED]"),
+    )[0]
+    assert seen and all(marker not in prompt for prompt in seen)
+    for path in record.directory.rglob("*"):
+        if path.is_file() and "workspace" not in path.relative_to(record.directory).parts:
+            assert marker not in path.read_text()
+    assert (record.directory / "manifest.jsonl").exists() is capture
+
+
+def test_interrupted_eval_persists_partial_capture_without_claiming_completion(tmp_path):
+    cart = _make_cartridge(tmp_path)
+    hook_dir = cart / "hooks" / "01_Interrupt"
+    hook_dir.mkdir(parents=True)
+    (hook_dir / "config.yaml").write_text("class_name: Interrupt\n")
+    (hook_dir / "hook.py").write_text(
+        "class Interrupt:\n    def pre_prompt(self, state, session_log, context, step_num):\n        if state.steps:\n            raise RuntimeError('interrupted run')\n"
+    )
+    output = tmp_path / "runs"
+    with pytest.raises(RuntimeError, match="interrupted run"):
+        run_cartridge_evals(cart, llm=MockLLMBackend(_scripted()), output_dir=output)
+    record = load_eval_run(output / "make_greeting")
+    assert not record.context.completed
+    assert record.context.stop_reason == "error"
+    assert record.context.tool_sequence == ["write_file"]
+    assert len((record.directory / "manifest.jsonl").read_text().strip().split("\n")) == 1
+
+
+@pytest.mark.parametrize("capture", [False, True])
+def test_cli_capture_policy_matches_api(tmp_path, monkeypatch, capture):
+    cart = _make_cartridge(tmp_path)
+    monkeypatch.setattr(
+        "looplet.backends.OpenAIBackend", lambda **kwargs: MockLLMBackend(_scripted())
+    )
+    out = tmp_path / "runs"
+    args = ["run", str(cart), "--out", str(out), "--base-url", "http://unused.invalid/v1", "--json"]
+    if not capture:
+        args.append("--no-capture")
+    assert eval_cli(args) == 0
+    assert (out / "make_greeting" / "manifest.jsonl").exists() is capture
+
+
+def test_failed_no_output_run_cleans_owned_sandbox(tmp_path, monkeypatch):
+    import tempfile
+
+    cart = _make_cartridge(tmp_path)
+    hook_dir = cart / "hooks" / "01_Interrupt"
+    hook_dir.mkdir(parents=True)
+    (hook_dir / "config.yaml").write_text("class_name: Interrupt\n")
+    (hook_dir / "hook.py").write_text(
+        "class Interrupt:\n    def pre_prompt(self, *args, **kwargs):\n        raise RuntimeError('interrupted run')\n"
+    )
+    created = []
+    original = tempfile.mkdtemp
+
+    def make(*args, **kwargs):
+        path = Path(original(*args, **kwargs))
+        if kwargs.get("prefix", "").startswith("evalcase_"):
+            created.append(path)
+        return str(path)
+
+    monkeypatch.setattr("looplet.evals.tempfile.mkdtemp", make)
+    with pytest.raises(RuntimeError, match="interrupted run"):
+        run_cartridge_evals(cart, llm=MockLLMBackend(_scripted()))
+    assert created and all(not path.exists() for path in created)
 
 
 def test_self_test_runner_collects_once_instead_of_using_embedded_eval_hook(tmp_path: Path) -> None:

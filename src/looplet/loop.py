@@ -1754,6 +1754,7 @@ _KNOWN_HOOK_METHODS = frozenset(
         "pre_prompt",
         "pre_dispatch",
         "post_dispatch",
+        "post_step",
         "check_done",
         "check_permission",
         "should_stop",
@@ -3524,10 +3525,7 @@ def _composable_loop_impl(
                     highlights=[],
                     recall_key=tool_result.result_key or "",
                 )
-                for _hook in hooks:
-                    _post_step = getattr(_hook, "post_step", None)
-                    if _post_step is not None:
-                        _post_step(state, session_log, cur_step)
+                _notify_post_step(hooks, state, session_log, cur_step)
             else:
                 # done() dispatch intentionally bypasses permission checks - it's
                 # a loop signal, not a side-effecting tool. Permission-gating a

@@ -30,6 +30,157 @@ CODER_BUNDLE = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "cod
 
 
 class TestSkillBundles:
+    def test_bundle_uses_preset_claim_gateway_extra_hooks_and_return_trace(self, tmp_path):
+        from types import SimpleNamespace
+
+        from looplet import DefaultState, LoopConfig, tools_from
+
+        trace = {"bundle": "trace"}
+        envelopes = []
+        backends = []
+        hook = SimpleNamespace(
+            set_run_envelope=envelopes.append, pre_prompt=lambda *args, **kwargs: None
+        )
+        gateway = SimpleNamespace(
+            set_run_envelope=lambda envelope: None, set_backend=backends.append, close=lambda: None
+        )
+        preset = AgentPreset(
+            tools=tools_from([], include_done=True),
+            hooks=[],
+            config=LoopConfig(
+                max_steps=1, use_native_tools=False, build_trace=lambda **kwargs: trace
+            ),
+            state=DefaultState(max_steps=1),
+            model_gateway=gateway,
+        )
+        llm = MockLLMBackend(responses=['{"tool":"done","args":{},"reasoning":"finish"}'])
+        iterator = run_skill_bundle(
+            CODER_BUNDLE,
+            llm=llm,
+            task="finish",
+            preset=preset,
+            extra_hooks=[hook],
+            provenance=False,
+            runtime=SkillRuntime(workspace=tmp_path, max_steps=1),
+        )
+        assert preset.run_claimed
+        assert backends == [llm]
+        assert envelopes == [preset.config.run_envelope]
+        assert next(iterator).tool_call.tool == "done"
+        with pytest.raises(StopIteration) as finished:
+            next(iterator)
+        assert finished.value.value is trace
+        with pytest.raises(RuntimeError):
+            run_skill_bundle(CODER_BUNDLE, llm=llm, task="again", preset=preset, provenance=False)
+        preset.close()
+
+    @pytest.mark.parametrize("owned", [False, True])
+    def test_unstarted_bundle_close_preserves_resource_ownership(self, tmp_path, owned):
+        from types import SimpleNamespace
+
+        from looplet import DefaultState, LoopConfig, tools_from
+
+        closed = []
+        resource = SimpleNamespace(close=lambda: closed.append(True))
+        preset = AgentPreset(
+            tools=tools_from([], include_done=True),
+            hooks=[],
+            config=LoopConfig(max_steps=1, use_native_tools=False),
+            state=DefaultState(max_steps=1),
+            resources={"shared": resource},
+            owned_resources=[resource],
+        )
+        bundle = replace(load_skill_bundle(CODER_BUNDLE), build=lambda runtime: preset)
+        iterator = run_skill_bundle(
+            bundle,
+            llm=MockLLMBackend([]),
+            task="unused",
+            preset=None if owned else preset,
+            provenance=False,
+            runtime=SkillRuntime(workspace=tmp_path, max_steps=1),
+        )
+        iterator.close()
+        iterator.close()
+        assert closed == ([True] if owned else [])
+        assert not preset.run_claimed
+        if not owned:
+            preset.close()
+            assert closed == [True]
+
+    @pytest.mark.parametrize("owned", [False, True])
+    def test_bundle_setup_failure_releases_claim_and_keeps_caller_ownership(self, tmp_path, owned):
+        from types import SimpleNamespace
+
+        from looplet import DefaultState, LoopConfig, tools_from
+
+        closed = []
+        resource = SimpleNamespace(close=lambda: closed.append(True))
+        preset = AgentPreset(
+            tools=tools_from([], include_done=True),
+            hooks=[],
+            config=LoopConfig(max_steps=1, use_native_tools=False),
+            state=DefaultState(max_steps=1),
+            resources={"shared": resource},
+            owned_resources=[resource],
+        )
+        bundle = replace(load_skill_bundle(CODER_BUNDLE), build=lambda runtime: preset)
+
+        def fail(envelope):
+            raise RuntimeError("binding failed")
+
+        hook = SimpleNamespace(set_run_envelope=fail)
+        with pytest.raises(RuntimeError, match="binding failed"):
+            run_skill_bundle(
+                bundle,
+                llm=MockLLMBackend([]),
+                task="unused",
+                preset=None if owned else preset,
+                extra_hooks=[hook],
+                provenance=False,
+                runtime=SkillRuntime(workspace=tmp_path, max_steps=1),
+            )
+        assert not preset.run_claimed
+        assert closed == ([True] if owned else [])
+        preset.close()
+        assert closed == [True]
+
+    @pytest.mark.parametrize("owned", [False, True])
+    def test_bundle_trace_failure_still_flushes_and_closes_only_owned_preset(self, tmp_path, owned):
+        from types import SimpleNamespace
+
+        from looplet import DefaultState, LoopConfig, tools_from
+
+        closed = []
+        resource = SimpleNamespace(close=lambda: closed.append(True))
+
+        def fail_trace(**kwargs):
+            raise RuntimeError("trace failed")
+
+        preset = AgentPreset(
+            tools=tools_from([], include_done=True),
+            hooks=[],
+            config=LoopConfig(max_steps=1, use_native_tools=False, build_trace=fail_trace),
+            state=DefaultState(max_steps=1),
+            resources={"shared": resource},
+            owned_resources=[resource],
+        )
+        bundle = replace(load_skill_bundle(CODER_BUNDLE), build=lambda runtime: preset)
+        trace_dir = tmp_path / "trace"
+        iterator = run_skill_bundle(
+            bundle,
+            llm=MockLLMBackend(['{"tool":"done","args":{},"reasoning":"finish"}']),
+            task="finish",
+            preset=None if owned else preset,
+            trace_dir=trace_dir,
+            runtime=SkillRuntime(workspace=tmp_path, max_steps=1),
+        )
+        with pytest.raises(RuntimeError, match="trace failed"):
+            list(iterator)
+        assert (trace_dir / "manifest.jsonl").is_file()
+        assert closed == ([True] if owned else [])
+        preset.close()
+        assert closed == [True]
+
     def test_imports_from_top_level(self):
         from looplet import BundleCard, BundleValidation, SkillBundle  # noqa: F401
 

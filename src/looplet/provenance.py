@@ -50,6 +50,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 from uuid import uuid4
 
+from looplet._backend_contract import MUTABLE_CAPABILITIES, backend_attribute, invoke_backend
 from looplet.artifact_compat import (
     begin_artifact_write,
     read_artifact_descriptor,
@@ -171,6 +172,15 @@ class _RecordingBase:
         # Set by a TrajectoryRecorder hook so captured calls link back to
         # the step they happened in; optional.
         self.current_step_num: int | None = None
+
+    def __getattr__(self, name: str) -> Any:
+        return backend_attribute(self._backend, name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name in MUTABLE_CAPABILITIES and "_backend" in self.__dict__:
+            setattr(self._backend, name, value)
+        else:
+            object.__setattr__(self, name, value)
 
     def _upstream(self, s: str) -> str:
         """Scrub a prompt before it is sent to the wrapped backend."""
@@ -332,6 +342,7 @@ class RecordingLLMBackend(_RecordingBase):
         max_tokens: int = 2000,
         system_prompt: str = "",
         temperature: float = 0.2,
+        **options: Any,
     ) -> str:
         started = time.time()
         error: str | None = None
@@ -339,11 +350,15 @@ class RecordingLLMBackend(_RecordingBase):
         upstream_prompt = self._upstream(prompt)
         upstream_system = self._upstream(system_prompt)
         try:
-            response = self._backend.generate(
+            response = invoke_backend(
+                self._backend.generate,
                 upstream_prompt,
-                max_tokens=max_tokens,
-                system_prompt=upstream_system,
-                temperature=temperature,
+                {
+                    **options,
+                    "max_tokens": max_tokens,
+                    "system_prompt": upstream_system,
+                    "temperature": temperature,
+                },
             )
             return response
         except Exception as exc:
@@ -370,6 +385,7 @@ class RecordingLLMBackend(_RecordingBase):
         max_tokens: int = 2000,
         system_prompt: str = "",
         temperature: float = 0.2,
+        **options: Any,
     ) -> list[dict[str, Any]]:
         started = time.time()
         error: str | None = None
@@ -377,12 +393,16 @@ class RecordingLLMBackend(_RecordingBase):
         upstream_prompt = self._upstream(prompt)
         upstream_system = self._upstream(system_prompt)
         try:
-            response = self._backend.generate_with_tools(
+            response = invoke_backend(
+                self._backend.generate_with_tools,
                 upstream_prompt,
-                tools=tools,
-                max_tokens=max_tokens,
-                system_prompt=upstream_system,
-                temperature=temperature,
+                {
+                    **options,
+                    "tools": tools,
+                    "max_tokens": max_tokens,
+                    "system_prompt": upstream_system,
+                    "temperature": temperature,
+                },
             )
             return response
         except Exception as exc:
@@ -429,6 +449,7 @@ class AsyncRecordingLLMBackend(_RecordingBase):
         max_tokens: int = 2000,
         system_prompt: str = "",
         temperature: float = 0.2,
+        **options: Any,
     ) -> str:
         started = time.time()
         error: str | None = None
@@ -436,11 +457,15 @@ class AsyncRecordingLLMBackend(_RecordingBase):
         upstream_prompt = self._upstream(prompt)
         upstream_system = self._upstream(system_prompt)
         try:
-            response = await self._backend.generate(
+            response = await invoke_backend(
+                self._backend.generate,
                 upstream_prompt,
-                max_tokens=max_tokens,
-                system_prompt=upstream_system,
-                temperature=temperature,
+                {
+                    **options,
+                    "max_tokens": max_tokens,
+                    "system_prompt": upstream_system,
+                    "temperature": temperature,
+                },
             )
             return response
         except Exception as exc:
@@ -467,6 +492,7 @@ class AsyncRecordingLLMBackend(_RecordingBase):
         max_tokens: int = 2000,
         system_prompt: str = "",
         temperature: float = 0.2,
+        **options: Any,
     ) -> list[dict[str, Any]]:
         started = time.time()
         error: str | None = None
@@ -474,12 +500,16 @@ class AsyncRecordingLLMBackend(_RecordingBase):
         upstream_prompt = self._upstream(prompt)
         upstream_system = self._upstream(system_prompt)
         try:
-            response = await self._backend.generate_with_tools(
+            response = await invoke_backend(
+                self._backend.generate_with_tools,
                 upstream_prompt,
-                tools=tools,
-                max_tokens=max_tokens,
-                system_prompt=upstream_system,
-                temperature=temperature,
+                {
+                    **options,
+                    "tools": tools,
+                    "max_tokens": max_tokens,
+                    "system_prompt": upstream_system,
+                    "temperature": temperature,
+                },
             )
             return response
         except Exception as exc:

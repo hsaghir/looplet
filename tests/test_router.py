@@ -45,6 +45,115 @@ class FailingLLM:
         raise RuntimeError("primary failed")
 
 
+@pytest.mark.parametrize("kind", ["cost", "routing", "fallback"])
+@pytest.mark.parametrize("native", [False, True])
+def test_wrappers_preserve_supported_options_and_active_usage(kind, native):
+    class Backend(MockLLM):
+        last_usage = {"total_tokens": 7}
+
+        def generate(self, prompt, **kwargs):
+            self.options = kwargs
+            return "ok"
+
+        def generate_with_tools(self, prompt, *, tools, **kwargs):
+            self.options = kwargs
+            return [{"type": "tool_use", "name": "done", "input": {}}]
+
+    backend = Backend()
+    if kind == "cost":
+        wrapped = CostTracker(backend)
+    elif kind == "routing":
+        wrapped = RoutingLLMBackend(
+            SimpleRouter({}, default_profile=ModelProfile("default", backend))
+        )
+    else:
+        wrapped = FallbackRouter(primary=FailingLLM(), fallback=backend).select("reasoning")
+        if native:
+            wrapped = FallbackRouter(primary=backend, fallback=backend).select("reasoning")
+    method = wrapped.generate_with_tools if native else wrapped.generate
+    method("prompt", reasoning_effort="high", **({"tools": []} if native else {}))
+
+    assert backend.options["reasoning_effort"] == "high"
+    assert wrapped.last_usage == {"total_tokens": 7}
+
+
+@pytest.mark.parametrize("kind", ["routing", "fallback"])
+@pytest.mark.parametrize("call_first", [False, True])
+def test_mutable_provider_fields_reach_the_capability_owner(kind, call_first):
+    from looplet.provenance import RecordingLLMBackend
+    from looplet.resilient import ResilientBackend
+
+    class Backend:
+        def __init__(self, *, fail=False):
+            self.fail = fail
+            self._client = object()
+            self._state_path = "original"
+            self.last_usage = {"total_tokens": 1}
+
+        def generate(self, prompt, **kwargs):
+            if self.fail:
+                raise RuntimeError("primary failed")
+            return "ok"
+
+    first = Backend(fail=kind == "fallback")
+    second = Backend()
+    if kind == "routing":
+        routed = RoutingLLMBackend(
+            SimpleRouter(
+                {"next": ModelProfile("next", second)},
+                default_profile=ModelProfile("first", first),
+            )
+        )
+    else:
+        routed = FallbackRouter(primary=first, fallback=second).select("reasoning")
+    wrapped = ResilientBackend(CostTracker(RecordingLLMBackend(routed)), retries=1)
+    if call_first:
+        wrapped.generate("prompt")
+        if kind == "routing":
+            routed.set_purpose("next")
+    owner = second if kind == "fallback" and call_first else first
+    untouched = first if owner is second else second
+    untouched_client = untouched._client
+    replacement = object()
+    assert wrapped._client is owner._client
+
+    wrapped._client = replacement
+    wrapped._state_path = "restored"
+    wrapped.last_usage = {"total_tokens": 9}
+
+    assert owner._client is replacement and wrapped._client is replacement
+    assert owner._state_path == wrapped._state_path == "restored"
+    assert owner.last_usage == wrapped.last_usage == {"total_tokens": 9}
+    assert untouched._client is untouched_client
+    assert untouched._state_path == "original"
+    assert untouched.last_usage == {"total_tokens": 1}
+    assert not {"_client", "_state_path", "last_usage"}.intersection(routed.__dict__)
+
+
+def test_retry_ownership_follows_next_route_but_usage_follows_last_call():
+    from looplet._backend_contract import attempt_limit
+    from looplet.resilient import ResilientBackend
+
+    first = MockLLM("first")
+    first.last_usage = {"total_tokens": 7}
+    second = MockLLM("second")
+    second.last_usage = {"total_tokens": 9}
+    managed = ResilientBackend(first, retries=1)
+    router = SimpleRouter(
+        {"managed": ModelProfile("first", managed), "plain": ModelProfile("second", second)},
+        default_profile=ModelProfile("first", managed),
+    )
+    wrapped = RoutingLLMBackend(router, default_purpose="managed")
+    assert attempt_limit(wrapped, 2) == 1
+    wrapped.generate("prompt")
+    wrapped.set_purpose("plain")
+
+    assert attempt_limit(wrapped, 2) == 3
+    assert wrapped.last_usage == {"total_tokens": 7}
+    wrapped.generate("prompt")
+    assert wrapped.last_usage == {"total_tokens": 9}
+
+
 # ── ModelProfile ─────────────────────────────────────────────────
 
 

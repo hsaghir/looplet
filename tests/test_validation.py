@@ -228,6 +228,163 @@ class TestValidateArgs:
 
 
 class TestValidatingToolRegistry:
+    @pytest.mark.parametrize("async_mode", [False, True])
+    @pytest.mark.parametrize("native", [False, True])
+    async def test_real_loops_share_validated_execution(self, async_mode, native):
+        import json
+
+        from looplet import LoopConfig, composable_loop
+        from looplet.async_loop import async_composable_loop
+        from looplet.tools import ToolSpec
+
+        executed = []
+        registry = ValidatingToolRegistry()
+        registry.register_with_schema(
+            ToolSpec(
+                name="work",
+                description="work",
+                parameters={"value": "value"},
+                execute=lambda value: executed.append(value) or {"value": value},
+            ),
+            OutputSchema(fields={"value": FieldSpec("value", "int")}),
+        )
+        registry.register(
+            ToolSpec(
+                name="done",
+                description="finish",
+                parameters={"answer": "answer"},
+                execute=lambda answer: {"answer": answer},
+            )
+        )
+
+        class Backend:
+            def __init__(self):
+                self.calls = iter(
+                    [("work", {"value": "bad"}), ("work", {"value": 7}), ("done", {"answer": "7"})]
+                )
+
+            def generate(self, prompt, **kwargs):
+                name, args = next(self.calls)
+                return json.dumps({"tool": name, "args": args, "reasoning": "check"})
+
+            def generate_with_tools(self, prompt, **kwargs):
+                name, args = next(self.calls)
+                return [{"type": "tool_use", "id": name, "name": name, "input": args}]
+
+        kwargs = {
+            "llm": Backend(),
+            "tools": registry,
+            "config": LoopConfig(max_steps=3, use_native_tools=native),
+        }
+        steps = (
+            [step async for step in async_composable_loop(**kwargs)]
+            if async_mode
+            else list(composable_loop(**kwargs))
+        )
+
+        assert executed == [7]
+        assert len(steps) == 3
+        assert steps[0].tool_result.error_detail.kind.value == "validation"
+        assert steps[-1].tool_call.tool == "done"
+
+    @pytest.mark.parametrize("async_mode", [False, True])
+    async def test_resources_cancellation_and_views_keep_base_contract(self, async_mode):
+        from looplet.tools import ToolSpec
+        from looplet.types import CancelToken, ErrorKind, ToolContext
+
+        registry = ValidatingToolRegistry()
+        resource = object()
+        observed = []
+
+        def execute(ctx, value):
+            observed.append(ctx.resources["shared"])
+            return value
+
+        registry.set_resources({"shared": resource})
+        registry.register_with_schema(
+            ToolSpec(
+                name="work",
+                description="work",
+                parameters={"value": "value"},
+                execute=execute,
+                requires=("shared",),
+            ),
+            OutputSchema(fields={"value": FieldSpec("value", "int")}),
+        )
+        registry.register(
+            ToolSpec(name="plain", description="plain", parameters={}, execute=lambda: True)
+        )
+        assert registry.tool_view(["plain"]).names == ("plain",)
+        call = ToolCall(
+            tool="work", args={"value": 7, "__internal": "hidden"}, reasoning="", call_id="work"
+        )
+        result = await registry.async_dispatch(call) if async_mode else registry.dispatch(call)
+        assert result.error is None and observed == [resource]
+        token = CancelToken()
+        token.cancel()
+        ctx = ToolContext(cancel_token=token)
+        result = (
+            await registry.async_dispatch(call, ctx=ctx)
+            if async_mode
+            else registry.dispatch(call, ctx=ctx)
+        )
+        assert result.error_detail.kind is ErrorKind.CANCELLED
+        assert observed == [resource]
+
+    @pytest.mark.parametrize("async_mode", [False, True])
+    @pytest.mark.parametrize("batch", [False, True])
+    async def test_validation_and_context_use_one_dispatch_contract(self, async_mode, batch):
+        from looplet.tools import ToolSpec
+        from looplet.types import ErrorKind, ToolContext
+
+        observed = []
+        registry = ValidatingToolRegistry()
+
+        def execute(ctx, value):
+            observed.append((value, ctx.metadata["slot"]))
+            return {"value": value, "step": ctx.metadata["slot"]}
+
+        spec = ToolSpec(
+            name="work",
+            description="work",
+            parameters={"value": "value"},
+            execute=execute,
+            concurrent_safe=True,
+        )
+        registry.register_with_schema(
+            spec, OutputSchema(fields={"value": FieldSpec("value", "int")})
+        )
+        calls = [
+            ToolCall(
+                tool="work",
+                args={"value": "bad", "__note": "internal"},
+                reasoning="",
+                call_id="bad",
+            ),
+            ToolCall(tool="work", args={"value": 7}, reasoning="", call_id="good"),
+        ]
+        contexts = [ToolContext(metadata={"slot": 10}), ToolContext(metadata={"slot": 20})]
+        if async_mode:
+            results = (
+                await registry.async_dispatch_batch(calls, ctx=contexts)
+                if batch
+                else [
+                    await registry.async_dispatch(call, ctx=ctx)
+                    for call, ctx in zip(calls, contexts)
+                ]
+            )
+        else:
+            results = (
+                registry.dispatch_batch(calls, ctx=contexts)
+                if batch
+                else [registry.dispatch(call, ctx=ctx) for call, ctx in zip(calls, contexts)]
+            )
+
+        assert observed == [(7, 20)]
+        assert [result.call_id for result in results] == ["bad", "good"]
+        assert results[0].error_detail.kind is ErrorKind.VALIDATION
+        assert results[1].data == {"value": 7, "step": 20}
+
     def test_result_store_checkpoint_methods_delegate(self) -> None:
         registry = ValidatingToolRegistry()
         assert registry.snapshot_results() == {}

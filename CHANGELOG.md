@@ -30,6 +30,20 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Backend wrappers now share supported-option and capability forwarding, so
+  recording, resilience, routing, and legacy cost tracking preserve provider
+  usage/state and cancellation/cache options. Explicit resilience owns retries
+  without multiplication by the core call helper or nested wrappers; provider
+  SDK retries remain separately configured. Routing and fallback wrappers also
+  forward mutable provider handles to the backend that owns their exposed state.
+- `ValidatingToolRegistry` now uses the base registry's single preparation and
+  execution path for sync/async calls and batches. Optional schemas fail closed
+  with structured validation errors, and mixed batches preserve per-call
+  contexts, resources, order, and call IDs without a second dispatcher.
+- Skill-bundle execution now delegates to `AgentPreset.run()` for validation,
+  single-use claims, envelope and gateway binding, and trace returns. Unstarted
+  and failed runs clean up helper-owned presets; caller-supplied presets remain
+  caller-owned, and bundle-local import context is preserved.
 - Sync and async turns now share post-step stop and observer rules for normal,
   rejected, and synthetic/error steps. Pending stops prevent extra parse-repair
   calls; async rejected steps notify observers and emit rejected classifications.

@@ -74,6 +74,20 @@ The base registry checks argument names and required fields, not every JSON
 Schema keyword. Keep semantic and richer constraint validation in the tool,
 MCP server, or an explicit `ValidatingToolRegistry` contract.
 
+`ValidatingToolRegistry.register_with_schema(spec, schema)` adds optional typed
+argument validation to the same registry execution path. Its inherited
+`dispatch`, `dispatch_batch`, `async_dispatch`, and `async_dispatch_batch` keep
+the base cancellation, resource, timeout, result, and call-ID contracts. Tools
+registered without a schema still use ordinary registry argument checks; model
+visibility is not execution authority.
+
+Bundle execution is an adapter over the preset's execution contract, not a
+second runtime. `run_skill_bundle()` binds extra hooks and the gateway through
+`AgentPreset.run()`, preserves the iterator's returned trace, and closes
+helper-built presets even when an unstarted iterator is explicitly closed.
+Caller-supplied presets remain caller-owned and follow the same single-use
+rule as direct preset runs; use a fresh preset for another execution.
+
 ## Backends
 
 | API | Import | Notes |
@@ -90,6 +104,18 @@ Install provider extras separately. See [install and configure](install.md).
 `ResilientBackend` is synchronous. Its timeout abandons a daemon worker from
 the caller's perspective; it cannot guarantee that a provider SDK cancels the
 underlying socket operation. Configure provider-level timeouts too.
+
+Recording, resilience, routing, and legacy cost wrappers share supported-option
+forwarding and declared usage/state capabilities. Native generation is surfaced
+only when the underlying backend supports it; unsupported arbitrary attributes
+are not forwarded. Provider checkpoint methods apply to the active underlying
+backend, not an invented cross-model recovery format.
+
+When a resilience wrapper owns retries, the sync/async call helper does not retry
+its exhausted call again. Nested resilience wrappers use the outer wrapper's
+attempt policy, including in timeout workers. Each fallback backend may retain
+its own resilience budget. Provider SDK retries and socket timeouts remain
+separate; configure them explicitly when an exact HTTP attempt bound is needed.
 
 ## Hook decisions
 

@@ -14,15 +14,14 @@ import logging
 import re
 import sys
 import uuid
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Generator, Iterable, Iterator, Mapping
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import ModuleType
 from typing import Any, NotRequired, TypedDict, cast
 
-from looplet.loop import composable_loop
-from looplet.presets import AgentPreset
+from looplet.presets import AgentPreset, _PresetRunIterator
 from looplet.skills import Skill, SkillCard
 from looplet.types import LLMBackend, Step
 
@@ -356,7 +355,7 @@ def run_skill_bundle(
     trace_dir: str | Path | None = None,
     preset: AgentPreset | None = None,
 ) -> Iterator[Step]:
-    """Run a loaded bundle with ``composable_loop``.
+    """Run a loaded bundle through its preset's shared execution contract.
 
     This helper is the console/bundle adapter: it loads a bundle,
     asks the bundle for normal looplet primitives, and delegates to the
@@ -368,49 +367,22 @@ def run_skill_bundle(
     owns_preset = preset is None
     if owns_preset:
         preset = loaded.build_preset(runtime)
-    try:
-        errors, _ = _validate_preset_contract(preset, runtime)
-        if errors:
-            raise ValueError("invalid bundle preset: " + "; ".join(errors))
-    except Exception:
-        if owns_preset and isinstance(preset, AgentPreset):
-            preset.close()
-        raise
-    preset = cast(AgentPreset, preset)
-    for component in [*preset.mcp_adapters, *preset.hooks, *preset.state_service_handles]:
-        setter = getattr(component, "set_run_envelope", None)
-        if callable(setter):
-            setter(preset.config.run_envelope)
-    if preset.model_gateway is not None:
-        setter = getattr(preset.model_gateway, "set_run_envelope", None)
-        if callable(setter):
-            setter(preset.config.run_envelope)
-    loop_task = {"description": task} if isinstance(task, str) else dict(task)
-    hooks = [*preset.hooks, *extra_hooks]
-    run_llm: Any = llm
-    sink = None
-    if provenance:
-        from looplet.provenance import ProvenanceSink  # noqa: PLC0415
-
-        sink = ProvenanceSink(
-            dir=trace_dir or runtime.output_dir or _default_trace_dir(loaded, runtime)
+    if not isinstance(preset, AgentPreset):
+        raise ValueError(
+            f"invalid bundle preset: build returned {type(preset).__name__}, expected AgentPreset"
         )
-        run_llm = sink.wrap_llm(llm)
-        hooks.append(sink.trajectory_hook())
+    sink = None
+    loop: Any = None
+    finished = False
 
-    def _steps() -> Iterator[Step]:
+    def _cleanup() -> None:
+        nonlocal finished
+        if finished:
+            return
+        finished = True
         try:
-            with loaded.import_context():
-                yield from composable_loop(
-                    llm=run_llm,
-                    task=loop_task,
-                    tools=preset.tools,
-                    state=preset.state,
-                    config=preset.config,
-                    hooks=hooks,
-                    session_log=session_log,
-                    conversation=conversation,
-                )
+            if loop is not None:
+                loop.close()
         finally:
             try:
                 if sink is not None:
@@ -419,7 +391,38 @@ def run_skill_bundle(
                 if owns_preset:
                     preset.close()
 
-    return _steps()
+    try:
+        loop_task = {"description": task} if isinstance(task, str) else dict(task)
+        hooks = list(extra_hooks)
+        run_llm: Any = llm
+        if provenance:
+            from looplet.provenance import ProvenanceSink  # noqa: PLC0415
+
+            sink = ProvenanceSink(
+                dir=trace_dir or runtime.output_dir or _default_trace_dir(loaded, runtime)
+            )
+            run_llm = sink.wrap_llm(llm)
+            hooks.append(sink.trajectory_hook())
+        with loaded.import_context():
+            loop = preset.run(
+                run_llm,
+                task=loop_task,
+                extra_hooks=hooks,
+                session_log=session_log,
+                conversation=conversation,
+            )
+    except BaseException:
+        _cleanup()
+        raise
+
+    def _steps() -> Generator[Step, None, Any]:
+        try:
+            with loaded.import_context():
+                return (yield from loop)
+        finally:
+            _cleanup()
+
+    return _PresetRunIterator(_steps(), _cleanup)
 
 
 def _validate_preset_contract(

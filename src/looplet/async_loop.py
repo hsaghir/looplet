@@ -39,6 +39,7 @@ import time
 from dataclasses import replace as _dc_replace
 from typing import Any, AsyncGenerator
 
+from looplet._backend_contract import attempt_limit as _attempt_limit
 from looplet.checkpoint import Checkpoint as _Checkpoint
 from looplet.checkpoint import FileCheckpointStore as _FileCheckpointStore
 from looplet.checkpoint import resume_loop_state as _resume_loop_state
@@ -289,7 +290,7 @@ async def async_llm_call(
         if fn is None:
             return False
         try:
-            return name in inspect.signature(fn).parameters
+            return _sync_accepts_kwarg(fn, name)
         except (TypeError, ValueError):
             return False
 
@@ -316,7 +317,7 @@ async def async_llm_call(
 
     last_error: Exception | None = None
     native_attempted = False
-    attempt_limit = max_retries + 1
+    attempt_limit = _attempt_limit(llm, max_retries)
 
     for attempt in range(attempt_limit):
         if cancel_token is not None and getattr(cancel_token, "is_cancelled", False):

@@ -21,6 +21,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from looplet._backend_contract import attempt_limit as _attempt_limit
 from looplet.native_tools import NativeToolPolicy, NativeToolUnsupportedError
 
 logger = logging.getLogger(__name__)
@@ -318,7 +319,7 @@ def llm_call_with_retry(
             native_requested=True,
         )
     use_native = policy.should_use(llm, tools)
-    attempt_limit = max_retries + 1
+    attempt_limit = _attempt_limit(llm, max_retries)
     last_error: Exception | None = None
     native_attempted = False
     for attempt in range(attempt_limit):

@@ -34,13 +34,16 @@ from __future__ import annotations
 import logging
 import random
 import threading
+from contextvars import ContextVar, copy_context
 from typing import Any, Callable
 
+from looplet._backend_contract import MUTABLE_CAPABILITIES, backend_attribute, invoke_backend
 from looplet.types import LLMBackend
 
 __all__ = ["ResilientBackend", "RetryExhausted"]
 
 logger = logging.getLogger("looplet.resilient")
+_RETRY_ACTIVE: ContextVar[bool] = ContextVar("looplet_resilient_retry_active", default=False)
 
 
 class RetryExhausted(RuntimeError):
@@ -90,7 +93,8 @@ def _run_with_timeout(
         except BaseException as exc:  # noqa: BLE001 - forward to caller
             error.append(exc)
 
-    t = threading.Thread(target=_target, daemon=True)
+    context = copy_context()
+    t = threading.Thread(target=lambda: context.run(_target), daemon=True)
     t.start()
     t.join(timeout_s)
     if t.is_alive():
@@ -148,6 +152,17 @@ class ResilientBackend:
         if hasattr(inner, "generate_with_tools"):
             self.generate_with_tools = self._generate_with_tools_impl
 
+    _looplet_manages_retries = True
+
+    def __getattr__(self, name: str) -> Any:
+        return backend_attribute(self._inner, name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name in MUTABLE_CAPABILITIES and "_inner" in self.__dict__:
+            setattr(self._inner, name, value)
+        else:
+            object.__setattr__(self, name, value)
+
     # ── public API ────────────────────────────────────────────
 
     def generate(
@@ -157,13 +172,18 @@ class ResilientBackend:
         max_tokens: int = 2000,
         system_prompt: str = "",
         temperature: float = 0.2,
+        **options: Any,
     ) -> str:
         def _call() -> str:
-            return self._inner.generate(
+            return invoke_backend(
+                self._inner.generate,
                 prompt,
-                max_tokens=max_tokens,
-                system_prompt=system_prompt,
-                temperature=temperature,
+                {
+                    **options,
+                    "max_tokens": max_tokens,
+                    "system_prompt": system_prompt,
+                    "temperature": temperature,
+                },
             )
 
         return self._attempt(_call, op="generate")
@@ -176,14 +196,19 @@ class ResilientBackend:
         max_tokens: int = 2000,
         system_prompt: str = "",
         temperature: float = 0.2,
+        **options: Any,
     ) -> Any:
         def _call() -> Any:
-            return self._inner.generate_with_tools(  # pyright: ignore[reportAttributeAccessIssue]
+            return invoke_backend(
+                getattr(self._inner, "generate_with_tools"),
                 prompt,
-                tools=tools,
-                max_tokens=max_tokens,
-                system_prompt=system_prompt,
-                temperature=temperature,
+                {
+                    **options,
+                    "tools": tools,
+                    "max_tokens": max_tokens,
+                    "system_prompt": system_prompt,
+                    "temperature": temperature,
+                },
             )
 
         return self._attempt(_call, op="generate_with_tools")
@@ -191,6 +216,15 @@ class ResilientBackend:
     # ── internals ─────────────────────────────────────────────
 
     def _attempt(self, fn: Callable[[], Any], *, op: str) -> Any:
+        if _RETRY_ACTIVE.get():
+            return _run_with_timeout(fn, self._timeout_s)
+        token = _RETRY_ACTIVE.set(True)
+        try:
+            return self._owned_attempt(fn, op=op)
+        finally:
+            _RETRY_ACTIVE.reset(token)
+
+    def _owned_attempt(self, fn: Callable[[], Any], *, op: str) -> Any:
         errors: list[BaseException] = []
         for attempt in range(1, self._retries + 1):
             try:

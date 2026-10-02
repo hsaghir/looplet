@@ -12,7 +12,16 @@ import time
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
 from dataclasses import replace as _dc_replace
-from typing import TYPE_CHECKING, Any, Callable, Generator, Protocol, runtime_checkable
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Generator,
+    Protocol,
+    TypeVar,
+    overload,
+    runtime_checkable,
+)
 from weakref import WeakKeyDictionary
 
 from looplet.capabilities import ExecutionPolicy
@@ -100,6 +109,7 @@ if TYPE_CHECKING:
 # streaming.py imports looplet.loop.LoopHook
 
 logger = logging.getLogger(__name__)
+_CallbackResult = TypeVar("_CallbackResult")
 
 
 # ── LoopContext ──────────────────────────────────────────────────
@@ -831,6 +841,123 @@ class LoopConfig:
             },
         )
     """
+
+    @overload
+    def resolve_callable(
+        self, name: str, default: Callable[..., _CallbackResult]
+    ) -> Callable[..., _CallbackResult]: ...
+
+    @overload
+    def resolve_callable(self, name: str, default: None = None) -> Callable[..., Any] | None: ...
+
+    def resolve_callable(
+        self, name: str, default: Callable[..., Any] | None = None
+    ) -> Callable[..., Any] | None:
+        """Resolve one domain callback; explicit config wins over the adapter."""
+        if name not in (
+            "build_briefing",
+            "build_prompt",
+            "build_trace",
+            "extract_entities",
+            "extract_step_metadata",
+            "checkpoint_state",
+            "restore_checkpoint_state",
+        ):
+            raise ValueError(f"not a domain callback: {name}")
+        configured = getattr(self, name)
+        adapted = getattr(self.domain, name, None) if self.domain is not None else None
+        return configured or adapted or default
+
+    def record_sources(self, sources: dict[str, str]) -> None:
+        """Record known declaration origins without adding serialized config fields."""
+        origins = dict(getattr(self, "_configuration_sources", {}))
+        snapshots = dict(getattr(self, "_configuration_source_values", {}))
+        for name, source in sources.items():
+            if name not in self.__dataclass_fields__:
+                continue
+            origins[name] = source
+            snapshots[name] = _configuration_value(getattr(self, name))
+        self._configuration_sources = origins
+        self._configuration_source_values = snapshots
+
+    def explain(self, *, include_sensitive: bool = False) -> dict[str, dict[str, Any]]:
+        """Describe effective values and known origins without running components.
+
+        Python constructors do not distinguish an explicitly supplied default
+        from an omitted one. Such values are honestly labelled ``config``.
+        Prompts, tool metadata, provider kwargs and host envelopes are hidden
+        unless the host explicitly requests them. Opaque objects expose only
+        their type, never ``repr`` or executable state.
+        """
+        origins = getattr(self, "_configuration_sources", {})
+        snapshots = getattr(self, "_configuration_source_values", {})
+        sensitive = {"system_prompt", "tool_metadata", "generate_kwargs", "run_envelope"}
+        explained: dict[str, dict[str, Any]] = {}
+        for name in self.__dataclass_fields__:
+            value = getattr(self, name)
+            source = origins.get(name, "config")
+            described = _configuration_value(value)
+            if name in snapshots and described != snapshots[name]:
+                source = "host mutation"
+            if (
+                name
+                in (
+                    "build_briefing",
+                    "build_prompt",
+                    "build_trace",
+                    "extract_entities",
+                    "extract_step_metadata",
+                    "checkpoint_state",
+                    "restore_checkpoint_state",
+                )
+                and not value
+                and self.domain is not None
+            ):
+                adapted = getattr(self.domain, name, None)
+                if adapted:
+                    described = _configuration_value(adapted)
+                    source = "domain"
+            hidden = name in sensitive and not include_sensitive
+            explained[name] = {
+                "value": None if hidden else described,
+                "source": source,
+                "redacted": hidden,
+            }
+        return explained
+
+
+def _configuration_value(value: Any, *, depth: int = 0) -> Any:
+    """Bounded structural description that never invokes user code."""
+    if type(value) in (str, int, float, bool, type(None)):
+        return value
+    if depth < 5 and type(value) in (list, tuple):
+        return [_configuration_value(item, depth=depth + 1) for item in value[:100]]
+    if depth < 5 and type(value) is dict:
+        return {
+            name: _configuration_value(item, depth=depth + 1)
+            for name, item in list(value.items())[:100]
+            if type(name) is str
+        }
+    return {"type": f"{type(value).__module__}.{type(value).__qualname__}"}
+
+
+def _resolve_loop_config(
+    config: LoopConfig | None,
+    *,
+    max_steps: int | None = None,
+    system_prompt: str | None = None,
+) -> LoopConfig:
+    """Resolve entry-point overrides without replacing live host controls."""
+    effective = config if config is not None else LoopConfig()
+    sources = {name: "default" for name in effective.__dataclass_fields__} if config is None else {}
+    if max_steps is not None:
+        effective.max_steps = max_steps
+        sources["max_steps"] = "loop argument"
+    if system_prompt is not None:
+        effective.system_prompt = system_prompt
+        sources["system_prompt"] = "loop argument"
+    effective.record_sources(sources)
+    return effective
 
 
 def _default_extract_entities(data: Any, state: Any = None) -> list[str]:
@@ -2209,11 +2336,9 @@ def composable_loop(
     system_prompt: str | None = None,
 ) -> Generator[Step, None, Any]:
     """Run the synchronous loop with exception-safe per-run cleanup."""
-    effective_config = config or LoopConfig()
-    if max_steps is not None:
-        effective_config.max_steps = max_steps
-    if system_prompt is not None:
-        effective_config.system_prompt = system_prompt
+    effective_config = _resolve_loop_config(
+        config, max_steps=max_steps, system_prompt=system_prompt
+    )
     tokens = _set_context_overrides(effective_config)
     try:
         trace = yield from _composable_loop_impl(
@@ -2310,12 +2435,8 @@ def _composable_loop_impl(
             "``from looplet import tools_from; tools = tools_from([greet, ...], "
             "include_done=True, done_parameters={'answer': 'Final answer'})``."
         )
-    if config is None:
-        config = LoopConfig()
-    if max_steps is not None:
-        config.max_steps = max_steps
-    if system_prompt is not None:
-        config.system_prompt = system_prompt
+    if config is None or max_steps is not None or system_prompt is not None:
+        config = _resolve_loop_config(config, max_steps=max_steps, system_prompt=system_prompt)
     if hooks is None:
         hooks = []
     _validate_loop_inputs(task, tools, config)
@@ -2480,15 +2601,8 @@ def _composable_loop_impl(
     # to each adapter field only if the flat field is still ``None``.
     # Flat fields therefore override the adapter; adapter overrides
     # built-in defaults.
-    _dom = config.domain
-    build_briefing = (
-        config.build_briefing or (_dom.build_briefing if _dom else None) or _default_build_briefing
-    )
-    _raw_extract_entities = (
-        config.extract_entities
-        or (_dom.extract_entities if _dom else None)
-        or _default_extract_entities
-    )
+    build_briefing = config.resolve_callable("build_briefing", _default_build_briefing)
+    _raw_extract_entities = config.resolve_callable("extract_entities", _default_extract_entities)
     # Adapt the extractor's call signature: callables that accept a
     # ``state`` kwarg (or take 2+ positional args) get the live state
     # passed; legacy 1-arg ``extract_entities(data)`` callables keep
@@ -2513,11 +2627,9 @@ def _composable_loop_impl(
             return _raw_extract_entities(data, state=state)
     else:
         extract_entities = _raw_extract_entities
-    build_prompt_fn = config.build_prompt or (_dom.build_prompt if _dom else None)
-    checkpoint_state = config.checkpoint_state or (_dom.checkpoint_state if _dom else None)
-    restore_checkpoint_state = config.restore_checkpoint_state or (
-        _dom.restore_checkpoint_state if _dom else None
-    )
+    build_prompt_fn = config.resolve_callable("build_prompt")
+    checkpoint_state = config.resolve_callable("checkpoint_state")
+    restore_checkpoint_state = config.resolve_callable("restore_checkpoint_state")
 
     # ── Loop state ──────────────────────────────────────────
     consecutive_parse_failures = 0
@@ -2534,10 +2646,8 @@ def _composable_loop_impl(
         "result_clearing": False,
     }
 
-    extract_step_metadata = (
-        config.extract_step_metadata
-        or (_dom.extract_step_metadata if _dom else None)
-        or _default_extract_step_metadata
+    extract_step_metadata = config.resolve_callable(
+        "extract_step_metadata", _default_extract_step_metadata
     )
 
     # ── Pre-loop hooks ──────────────────────────────────────────
@@ -3763,7 +3873,7 @@ def _composable_loop_impl(
 
     # Build trace via injected callable
     elapsed = (time.time() - t0) * 1000
-    _build_trace_fn = config.build_trace or (config.domain.build_trace if config.domain else None)
+    _build_trace_fn = config.resolve_callable("build_trace")
     if _build_trace_fn is not None:
         # Pass ``context`` through when the callable's signature
         # accepts it. Domain trace-builders that need the live loop

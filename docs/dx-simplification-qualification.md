@@ -106,6 +106,10 @@ The five PRs form a reviewable dependency stack, not automatic deployment. The
 downstream integration keeps prompts, tools, domain rules, and graders unchanged.
 Primary dirty checkouts and active environments were not modified.
 
+The downstream declared pin is older than the published control used here.
+Its draft PR does not claim this pair directly qualifies the complete upgrade
+from that older pin; earlier upgrade evidence remains a separate study.
+
 ## Local Evidence
 
 - Frozen inputs and post-run audits: `/tmp/looplet-dx-qualification-20261001/`.

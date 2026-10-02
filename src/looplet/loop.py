@@ -12,7 +12,16 @@ import time
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
 from dataclasses import replace as _dc_replace
-from typing import TYPE_CHECKING, Any, Callable, Generator, Protocol, runtime_checkable
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Generator,
+    Protocol,
+    TypeVar,
+    overload,
+    runtime_checkable,
+)
 from weakref import WeakKeyDictionary
 
 from looplet.capabilities import ExecutionPolicy
@@ -30,7 +39,12 @@ from looplet.checkpoint import validate_checkpoint_identity as _validate_checkpo
 from looplet.context_plan import ContextPlan, ContextSourceSelector, ScopedContextSource
 from looplet.context_projection import ContextProjection
 from looplet.history import HistoryRecorder
-from looplet.hook_decision import HookDecision, _invoke_hook, normalize_hook_return
+from looplet.hook_decision import (
+    HookDecision,
+    _hook_accepts_keyword,
+    _invoke_hook,
+    normalize_hook_return,
+)
 from looplet.native_tools import NativeToolPolicy
 from looplet.parse import parse_multi_tool_calls, to_text
 from looplet.prompt_preparation import PreparedPrompt, prepare_prompt, render_projection
@@ -100,6 +114,7 @@ if TYPE_CHECKING:
 # streaming.py imports looplet.loop.LoopHook
 
 logger = logging.getLogger(__name__)
+_CallbackResult = TypeVar("_CallbackResult")
 
 
 # ── LoopContext ──────────────────────────────────────────────────
@@ -526,6 +541,19 @@ class LoopConfig:
     ``LoopConfig`` for hand-built loops.
     """
 
+    def resolve_terminal_outcomes(self) -> dict[str, OutputSchema | None]:
+        """Return the effective terminal name-to-schema table.
+
+        The primary output schema wins over its plural-map entry. Schema
+        entries alone never make ordinary tools terminal. Returned tables
+        are independent snapshots; schema objects retain their identity.
+        """
+        names = dict.fromkeys((self.done_tool, *self.done_tools))
+        outcomes = {name: self.done_tool_schemas.get(name) for name in names}
+        if self.output_schema is not None:
+            outcomes[self.done_tool] = self.output_schema
+        return outcomes
+
     tool_result_persist_dir: str | None = None
     """Optional directory for Layer-1 persist-and-preview of large
     tool results. When set, tool results whose serialized size exceeds
@@ -831,6 +859,123 @@ class LoopConfig:
             },
         )
     """
+
+    @overload
+    def resolve_callable(
+        self, name: str, default: Callable[..., _CallbackResult]
+    ) -> Callable[..., _CallbackResult]: ...
+
+    @overload
+    def resolve_callable(self, name: str, default: None = None) -> Callable[..., Any] | None: ...
+
+    def resolve_callable(
+        self, name: str, default: Callable[..., Any] | None = None
+    ) -> Callable[..., Any] | None:
+        """Resolve one domain callback; explicit config wins over the adapter."""
+        if name not in (
+            "build_briefing",
+            "build_prompt",
+            "build_trace",
+            "extract_entities",
+            "extract_step_metadata",
+            "checkpoint_state",
+            "restore_checkpoint_state",
+        ):
+            raise ValueError(f"not a domain callback: {name}")
+        configured = getattr(self, name)
+        adapted = getattr(self.domain, name, None) if self.domain is not None else None
+        return configured or adapted or default
+
+    def record_sources(self, sources: dict[str, str]) -> None:
+        """Record known declaration origins without adding serialized config fields."""
+        origins = dict(getattr(self, "_configuration_sources", {}))
+        snapshots = dict(getattr(self, "_configuration_source_values", {}))
+        for name, source in sources.items():
+            if name not in self.__dataclass_fields__:
+                continue
+            origins[name] = source
+            snapshots[name] = _configuration_value(getattr(self, name))
+        self._configuration_sources = origins
+        self._configuration_source_values = snapshots
+
+    def explain(self, *, include_sensitive: bool = False) -> dict[str, dict[str, Any]]:
+        """Describe effective values and known origins without running components.
+
+        Python constructors do not distinguish an explicitly supplied default
+        from an omitted one. Such values are honestly labelled ``config``.
+        Prompts, tool metadata, provider kwargs and host envelopes are hidden
+        unless the host explicitly requests them. Opaque objects expose only
+        their type, never ``repr`` or executable state.
+        """
+        origins = getattr(self, "_configuration_sources", {})
+        snapshots = getattr(self, "_configuration_source_values", {})
+        sensitive = {"system_prompt", "tool_metadata", "generate_kwargs", "run_envelope"}
+        explained: dict[str, dict[str, Any]] = {}
+        for name in self.__dataclass_fields__:
+            value = getattr(self, name)
+            source = origins.get(name, "config")
+            described = _configuration_value(value)
+            if name in snapshots and described != snapshots[name]:
+                source = "host mutation"
+            if (
+                name
+                in (
+                    "build_briefing",
+                    "build_prompt",
+                    "build_trace",
+                    "extract_entities",
+                    "extract_step_metadata",
+                    "checkpoint_state",
+                    "restore_checkpoint_state",
+                )
+                and not value
+                and self.domain is not None
+            ):
+                adapted = getattr(self.domain, name, None)
+                if adapted:
+                    described = _configuration_value(adapted)
+                    source = "domain"
+            hidden = name in sensitive and not include_sensitive
+            explained[name] = {
+                "value": None if hidden else described,
+                "source": source,
+                "redacted": hidden,
+            }
+        return explained
+
+
+def _configuration_value(value: Any, *, depth: int = 0) -> Any:
+    """Bounded structural description that never invokes user code."""
+    if type(value) in (str, int, float, bool, type(None)):
+        return value
+    if depth < 5 and type(value) in (list, tuple):
+        return [_configuration_value(item, depth=depth + 1) for item in value[:100]]
+    if depth < 5 and type(value) is dict:
+        return {
+            name: _configuration_value(item, depth=depth + 1)
+            for name, item in list(value.items())[:100]
+            if type(name) is str
+        }
+    return {"type": f"{type(value).__module__}.{type(value).__qualname__}"}
+
+
+def _resolve_loop_config(
+    config: LoopConfig | None,
+    *,
+    max_steps: int | None = None,
+    system_prompt: str | None = None,
+) -> LoopConfig:
+    """Resolve entry-point overrides without replacing live host controls."""
+    effective = config if config is not None else LoopConfig()
+    sources = {name: "default" for name in effective.__dataclass_fields__} if config is None else {}
+    if max_steps is not None:
+        effective.max_steps = max_steps
+        sources["max_steps"] = "loop argument"
+    if system_prompt is not None:
+        effective.system_prompt = system_prompt
+        sources["system_prompt"] = "loop argument"
+    effective.record_sources(sources)
+    return effective
 
 
 def _default_extract_entities(data: Any, state: Any = None) -> list[str]:
@@ -1160,6 +1305,18 @@ class _ScopedLLMProxy:
             call.scope = self._scope
 
 
+def _event_hook_callbacks(hooks: list[Any], event: Any) -> Generator[tuple[Any, Any], None, None]:
+    """Select ordered event subscribers without invoking or flattening effects."""
+    for hook in hooks:
+        callback = getattr(hook, "on_event", None)
+        if callback is None:
+            continue
+        equivalent = _EVENT_METHOD_EQUIV.get(event)
+        if equivalent is not None and hasattr(hook, equivalent):
+            continue
+        yield hook, callback
+
+
 def emit_event(
     hooks: list[Any],
     event: Any,
@@ -1194,16 +1351,7 @@ def emit_event(
                 envelope.to_dict() if hasattr(envelope, "to_dict") else envelope,
             )
     payload = EventPayload(event=event, **payload_kwargs)
-    for hook in hooks:
-        fn = getattr(hook, "on_event", None)
-        if fn is None:
-            continue
-        # Deduplicate: when the event has a per-method equivalent
-        # (PRE_TOOL_USE → pre_dispatch, POST_TOOL_USE/FAILURE → post_dispatch),
-        # skip hooks that implement the per-method slot - they already fired.
-        _equiv = _EVENT_METHOD_EQUIV.get(event)
-        if _equiv is not None and hasattr(hook, _equiv):
-            continue
+    for hook, fn in _event_hook_callbacks(hooks, event):
         try:
             result = fn(payload)
         except Exception:  # noqa: BLE001
@@ -1256,13 +1404,7 @@ async def emit_event_async(
                 envelope.to_dict() if hasattr(envelope, "to_dict") else envelope,
             )
     payload = EventPayload(event=event, **payload_kwargs)
-    for hook in hooks:
-        fn = getattr(hook, "on_event", None)
-        if fn is None:
-            continue
-        equivalent = _EVENT_METHOD_EQUIV.get(event)
-        if equivalent is not None and hasattr(hook, equivalent):
-            continue
+    for hook, fn in _event_hook_callbacks(hooks, event):
         try:
             result = fn(payload)
             if _inspect.isawaitable(result):
@@ -1633,17 +1775,7 @@ def _accepts_tool_call_kwarg(method: Any) -> bool:
         cached = None
     if cached is not None:
         return cached
-    import inspect  # noqa: PLC0415
-
-    try:
-        sig = inspect.signature(method)
-    except (TypeError, ValueError):
-        accepts = False
-    else:
-        params = sig.parameters
-        accepts = "tool_call" in params or any(
-            p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
-        )
+    accepts = _hook_accepts_keyword(method, "tool_call")
     try:
         _CHECK_DONE_ACCEPTS_TOOL_CALL[key] = accepts
     except TypeError:
@@ -1752,12 +1884,15 @@ def _call_check_done(
     """Invoke a hook's ``check_done`` with or without the ``tool_call``
     kwarg depending on its signature. Lets new gates inspect the agent's
     pending ``done()`` answer without breaking legacy hooks."""
-    method = hook.check_done
-    if _accepts_tool_call_kwarg(method):
-        return _invoke_hook(
-            hook, "check_done", state, session_log, context, step_num, tool_call=tool_call
-        )
-    return _invoke_hook(hook, "check_done", state, session_log, context, step_num)
+    return _invoke_hook(
+        hook,
+        "check_done",
+        state,
+        session_log,
+        context,
+        step_num,
+        _optional_kwargs={"tool_call": tool_call},
+    )
 
 
 # ── Hook method names (for typo detection) ──────────────────────
@@ -2223,11 +2358,9 @@ def composable_loop(
     system_prompt: str | None = None,
 ) -> Generator[Step, None, Any]:
     """Run the synchronous loop with exception-safe per-run cleanup."""
-    effective_config = config or LoopConfig()
-    if max_steps is not None:
-        effective_config.max_steps = max_steps
-    if system_prompt is not None:
-        effective_config.system_prompt = system_prompt
+    effective_config = _resolve_loop_config(
+        config, max_steps=max_steps, system_prompt=system_prompt
+    )
     tokens = _set_context_overrides(effective_config)
     try:
         trace = yield from _composable_loop_impl(
@@ -2324,12 +2457,8 @@ def _composable_loop_impl(
             "``from looplet import tools_from; tools = tools_from([greet, ...], "
             "include_done=True, done_parameters={'answer': 'Final answer'})``."
         )
-    if config is None:
-        config = LoopConfig()
-    if max_steps is not None:
-        config.max_steps = max_steps
-    if system_prompt is not None:
-        config.system_prompt = system_prompt
+    if config is None or max_steps is not None or system_prompt is not None:
+        config = _resolve_loop_config(config, max_steps=max_steps, system_prompt=system_prompt)
     if hooks is None:
         hooks = []
     _validate_loop_inputs(task, tools, config)
@@ -2494,15 +2623,8 @@ def _composable_loop_impl(
     # to each adapter field only if the flat field is still ``None``.
     # Flat fields therefore override the adapter; adapter overrides
     # built-in defaults.
-    _dom = config.domain
-    build_briefing = (
-        config.build_briefing or (_dom.build_briefing if _dom else None) or _default_build_briefing
-    )
-    _raw_extract_entities = (
-        config.extract_entities
-        or (_dom.extract_entities if _dom else None)
-        or _default_extract_entities
-    )
+    build_briefing = config.resolve_callable("build_briefing", _default_build_briefing)
+    _raw_extract_entities = config.resolve_callable("extract_entities", _default_extract_entities)
     # Adapt the extractor's call signature: callables that accept a
     # ``state`` kwarg (or take 2+ positional args) get the live state
     # passed; legacy 1-arg ``extract_entities(data)`` callables keep
@@ -2527,11 +2649,9 @@ def _composable_loop_impl(
             return _raw_extract_entities(data, state=state)
     else:
         extract_entities = _raw_extract_entities
-    build_prompt_fn = config.build_prompt or (_dom.build_prompt if _dom else None)
-    checkpoint_state = config.checkpoint_state or (_dom.checkpoint_state if _dom else None)
-    restore_checkpoint_state = config.restore_checkpoint_state or (
-        _dom.restore_checkpoint_state if _dom else None
-    )
+    build_prompt_fn = config.resolve_callable("build_prompt")
+    checkpoint_state = config.resolve_callable("checkpoint_state")
+    restore_checkpoint_state = config.resolve_callable("restore_checkpoint_state")
 
     # ── Loop state ──────────────────────────────────────────
     consecutive_parse_failures = 0
@@ -2548,10 +2668,8 @@ def _composable_loop_impl(
         "result_clearing": False,
     }
 
-    extract_step_metadata = (
-        config.extract_step_metadata
-        or (_dom.extract_step_metadata if _dom else None)
-        or _default_extract_step_metadata
+    extract_step_metadata = config.resolve_callable(
+        "extract_step_metadata", _default_extract_step_metadata
     )
 
     # ── Pre-loop hooks ──────────────────────────────────────────
@@ -2599,24 +2717,9 @@ def _composable_loop_impl(
 
     for hook in hooks:
         if hasattr(hook, "pre_loop"):
-            # Sig-aware dispatch: hooks that declare ``tools=`` (or
-            # ``**kwargs``) get the live tool registry so they can
-            # register derived tools at load time. Legacy 3-arg hooks
-            # are called as before. Same pattern as ``extract_entities``
-            # and ``build_trace`` callable signature detection.
-            import inspect as _inspect  # noqa: PLC0415
-
-            try:
-                _pl_params = _inspect.signature(hook.pre_loop).parameters
-                _pl_takes_tools = "tools" in _pl_params or any(
-                    p.kind == _inspect.Parameter.VAR_KEYWORD for p in _pl_params.values()
-                )
-            except (TypeError, ValueError):
-                _pl_takes_tools = False
-            if _pl_takes_tools:
-                hook.pre_loop(state, session_log, context, tools=tools)
-            else:
-                hook.pre_loop(state, session_log, context)
+            _invoke_hook(
+                hook, "pre_loop", state, session_log, context, _optional_kwargs={"tools": tools}
+            )
 
     # Fire SESSION_START - single-slot subscribers to lifecycle
     # events get it in one place alongside the per-method pre_loop.
@@ -3179,7 +3282,7 @@ def _composable_loop_impl(
         # invokes ends the loop; the legacy field stays the canonical
         # name used in error messages and pretty-printers.
         done_tool_name = config.done_tool
-        terminal_set = {done_tool_name, *config.done_tools}
+        terminal_set = config.resolve_terminal_outcomes()
         done_idx = None
         for i, tc in enumerate(tool_calls):
             if tc.tool in terminal_set:
@@ -3466,20 +3569,11 @@ def _composable_loop_impl(
                         gate_warning = _decision.block or "blocked by hook"
                         break
 
-            # Output schema validation - reject done() if payload is invalid.
-            # Cartridge output schemas attach validation to the
-            # PRIMARY ``done_tool``. v2 extends this to *every* sentinel
-            # via :attr:`LoopConfig.done_tool_schemas` (populated by the
-            # cartridge loader from each sentinel's ``tool.yaml:
-            # output_schema:`` block). The primary sentinel's schema
-            # remains :attr:`output_schema` for backwards compatibility;
-            # ``done_tool_schemas`` covers the secondary sentinels.
-            _schema_for_call: OutputSchema | None = None
-            if gate_warning is None:
-                if tool_call.tool == config.done_tool and config.output_schema is not None:
-                    _schema_for_call = config.output_schema
-                elif tool_call.tool in config.done_tool_schemas:
-                    _schema_for_call = config.done_tool_schemas[tool_call.tool]
+            _schema_for_call = (
+                config.resolve_terminal_outcomes().get(tool_call.tool)
+                if gate_warning is None
+                else None
+            )
             if _schema_for_call is not None:
                 validation = _validate_args(_schema_for_call, tool_call.args)
                 if not validation.valid:
@@ -3784,7 +3878,7 @@ def _composable_loop_impl(
     # Build trace via injected callable
     elapsed = (time.time() - t0) * 1000
     _record_run_stats(state, llm_calls=llm_calls, duration_ms=elapsed)
-    _build_trace_fn = config.build_trace or (config.domain.build_trace if config.domain else None)
+    _build_trace_fn = config.resolve_callable("build_trace")
     if _build_trace_fn is not None:
         # Pass ``context`` through when the callable's signature
         # accepts it. Domain trace-builders that need the live loop

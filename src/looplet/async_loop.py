@@ -73,6 +73,7 @@ from looplet.loop import (
     _post_step_stop_reason_async,
     _record_run_stats,
     _reset_context_overrides,
+    _resolve_loop_config,
     _run_post_dispatch_hooks_async,
     _set_context_overrides,
     _set_run_lifecycle,
@@ -463,11 +464,9 @@ async def async_composable_loop(
     system_prompt: str | None = None,
 ) -> AsyncGenerator[Step, None]:
     """Run the async loop with exception-safe per-run cleanup."""
-    effective_config = config or LoopConfig()
-    if max_steps is not None:
-        effective_config.max_steps = max_steps
-    if system_prompt is not None:
-        effective_config.system_prompt = system_prompt
+    effective_config = _resolve_loop_config(
+        config, max_steps=max_steps, system_prompt=system_prompt
+    )
     tokens = _set_context_overrides(effective_config)
     try:
         async for step in _async_composable_loop_impl(
@@ -526,12 +525,8 @@ async def _async_composable_loop_impl(
         task = {}
     if tools is None:
         raise ValueError("tools is required")
-    if config is None:
-        config = LoopConfig()
-    if max_steps is not None:
-        config.max_steps = max_steps
-    if system_prompt is not None:
-        config.system_prompt = system_prompt
+    if config is None or max_steps is not None or system_prompt is not None:
+        config = _resolve_loop_config(config, max_steps=max_steps, system_prompt=system_prompt)
     if hooks is None:
         hooks = []
     _validate_loop_inputs(task, tools, config)
@@ -651,11 +646,7 @@ async def _async_composable_loop_impl(
     loop_ctx.step_num = _step_offset
 
     # Domain callables
-    _raw_extract_entities = (
-        config.extract_entities
-        or (config.domain.extract_entities if config.domain else None)
-        or _default_extract_entities
-    )
+    _raw_extract_entities = config.resolve_callable("extract_entities", _default_extract_entities)
     try:
         _ee_params = inspect.signature(_raw_extract_entities).parameters
         _ee_takes_state = "state" in _ee_params or any(
@@ -670,23 +661,13 @@ async def _async_composable_loop_impl(
 
     else:
         extract_entities = _raw_extract_entities
-    extract_step_metadata = (
-        config.extract_step_metadata
-        or (config.domain.extract_step_metadata if config.domain else None)
-        or (lambda state, step_num: ([], []))
+    extract_step_metadata = config.resolve_callable(
+        "extract_step_metadata", lambda state, step_num: ([], [])
     )
-    build_prompt_fn = config.build_prompt or (config.domain.build_prompt if config.domain else None)
-    build_briefing_fn = (
-        config.build_briefing
-        or (config.domain.build_briefing if config.domain else None)
-        or _default_build_briefing
-    )
-    checkpoint_state = config.checkpoint_state or (
-        config.domain.checkpoint_state if config.domain else None
-    )
-    restore_checkpoint_state = config.restore_checkpoint_state or (
-        config.domain.restore_checkpoint_state if config.domain else None
-    )
+    build_prompt_fn = config.resolve_callable("build_prompt")
+    build_briefing_fn = config.resolve_callable("build_briefing", _default_build_briefing)
+    checkpoint_state = config.resolve_callable("checkpoint_state")
+    restore_checkpoint_state = config.resolve_callable("restore_checkpoint_state")
     if config.initial_checkpoint is not None and restore_checkpoint_state is not None:
         restore_checkpoint_state(loop_ctx, resumed.get("domain_state", {}))
     if config.initial_checkpoint is not None:
@@ -700,19 +681,9 @@ async def _async_composable_loop_impl(
 
     for hook in hooks:
         if hasattr(hook, "pre_loop"):
-            import inspect as _inspect  # noqa: PLC0415
-
-            try:
-                _pl_params = _inspect.signature(hook.pre_loop).parameters
-                _pl_takes_tools = "tools" in _pl_params or any(
-                    p.kind == _inspect.Parameter.VAR_KEYWORD for p in _pl_params.values()
-                )
-            except (TypeError, ValueError):
-                _pl_takes_tools = False
-            if _pl_takes_tools:
-                result = hook.pre_loop(state, session_log, context, tools=tools)
-            else:
-                result = hook.pre_loop(state, session_log, context)
+            result = _invoke_hook(
+                hook, "pre_loop", state, session_log, context, _optional_kwargs={"tools": tools}
+            )
             await _maybe_await(result)
 
     await emit_event_async(
@@ -1260,7 +1231,7 @@ async def _async_composable_loop_impl(
                 budget_skipped=budget_skipped,
             )
         done_tool_name = config.done_tool
-        terminal_set = {done_tool_name, *config.done_tools}
+        terminal_set = config.resolve_terminal_outcomes()
         done_idx = None
         for i, tc in enumerate(tool_calls):
             if tc.tool in terminal_set:
@@ -1517,12 +1488,11 @@ async def _async_composable_loop_impl(
                         gate_warning = _decision.block or "blocked by hook"
                         break
 
-            schema_for_call = None
-            if gate_warning is None:
-                if tool_call.tool == config.done_tool and config.output_schema is not None:
-                    schema_for_call = config.output_schema
-                elif tool_call.tool in config.done_tool_schemas:
-                    schema_for_call = config.done_tool_schemas[tool_call.tool]
+            schema_for_call = (
+                config.resolve_terminal_outcomes().get(tool_call.tool)
+                if gate_warning is None
+                else None
+            )
             if schema_for_call is not None:
                 validation = _validate_args(schema_for_call, tool_call.args)
                 if not validation.valid:

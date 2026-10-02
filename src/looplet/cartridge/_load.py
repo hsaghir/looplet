@@ -1134,6 +1134,9 @@ def _workspace_to_preset_inner(
     }
 
     config = LoopConfig(**cfg_kwargs)
+    config.record_sources(
+        {name: config_sources.get(name, "default") for name in config.__dataclass_fields__}
+    )
 
     # Tools
     registry = BaseToolRegistry()

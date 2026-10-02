@@ -103,6 +103,62 @@ def test_done_accepted_does_not_fire_when_check_done_rejects_done() -> None:
     assert recorder.done_accepted_payloads == []
 
 
+@pytest.mark.parametrize("is_async", [False, True])
+async def test_secondary_terminal_uses_its_own_schema_before_dispatch(is_async: bool) -> None:
+    from looplet.async_loop import async_composable_loop
+    from looplet.testing import AsyncMockLLMBackend
+    from looplet.validation import FieldSpec, OutputSchema
+
+    dispatched = []
+
+    def escalate(*, reason: str) -> dict[str, str]:
+        dispatched.append(reason)
+        return {"reason": reason}
+
+    tools = _tools()
+    tools.register(
+        ToolSpec(
+            name="escalate", description="Escalate", parameters={"reason": "str"}, execute=escalate
+        )
+    )
+    config = LoopConfig(
+        max_steps=2,
+        use_native_tools=False,
+        done_tools=["escalate"],
+        output_schema=OutputSchema(fields={"answer": FieldSpec("answer", "str")}),
+        done_tool_schemas={"escalate": OutputSchema(fields={"reason": FieldSpec("reason", "str")})},
+    )
+    responses = [
+        '{"tool":"escalate","args":{},"reasoning":"not ready"}',
+        '{"tool":"escalate","args":{"reason":"human review"},"reasoning":"ready"}',
+    ]
+    recorder = DoneAcceptedRecorder()
+    if is_async:
+        steps = [
+            step
+            async for step in async_composable_loop(
+                llm=AsyncMockLLMBackend(responses=responses),
+                tools=tools,
+                config=config,
+                hooks=[recorder],
+            )
+        ]
+    else:
+        steps = list(
+            composable_loop(
+                llm=MockLLMBackend(responses=responses),
+                tools=tools,
+                config=config,
+                hooks=[recorder],
+            )
+        )
+    assert len(steps) == 2
+    assert "schema" in steps[0].tool_result.error.lower()
+    assert dispatched == ["human review"]
+    assert len(recorder.done_accepted_payloads) == 1
+    assert recorder.done_accepted_payloads[0].tool_call.tool == "escalate"
+
+
 @pytest.mark.parametrize("accept_retry", [True, False])
 @pytest.mark.parametrize(
     "rejection",

@@ -68,6 +68,40 @@ contains status, phase, termination reason, accepted `done()` output, steps,
 run envelope, and persistent metadata. It does not replace the iterator or
 trajectory artifacts.
 
+## Shared execution diagnostics
+
+`RunResult.diagnostics()`, `RunRecord.diagnostics()`,
+`EvalContext.diagnostics()`, and `EvalRunRecord.diagnostics()` expose the same
+`looplet.run-diagnostics.v1` content-redacted view. It reports existing run
+identity, lifecycle phase, terminal category, step and typed-error counts,
+logical LLM calls, elapsed time, observed provider usage, persistence warning
+counts, and available lifecycle-event counts. A store's active record can show
+an unmatched `pre_llm_call` without pretending the response arrived.
+
+```python
+result = RunResult.from_state(state)
+diagnostic = result.diagnostics()
+saved_diagnostic = run_store.load(result.run_envelope.run_id).diagnostics()
+```
+
+Direct runs must receive the host's `RunEnvelope` for cross-record identity;
+anonymous/older records remain explicit about missing IDs. Existing logical
+counters remain private during execution and are copied into host result
+metadata under `looplet_run_stats`; they are not injected into tool metadata.
+These are not provider retry or billing counts. Runtime elapsed time includes
+the host wrapper; direct elapsed time comes from the loop driver.
+
+Missing usage and cost are `None`, never assumed zero. Measured zero remains a
+valid measurement. Invalid, non-finite, negative, and boolean measurements are
+excluded. Failed runtime results retain already observed state metadata.
+
+The view omits prompts, arguments, outputs, error messages, arbitrary metadata,
+artifacts, protected case data, and grader scores. Structural IDs and labels are
+not anonymized, and custom termination text is categorized as `custom`.
+Completion is execution status, not correctness. Full records and their
+`to_dict()` serializers remain content-bearing, host-owned evidence; raw model
+capture and replay retain their existing explicit policy and side-effect limits.
+
 ## Model-call telemetry
 
 Attach `StreamingHook(CallbackEmitter(callback))` through `hooks`, or supply a

@@ -127,6 +127,9 @@ class RunResult:
 
         metadata = getattr(state, "metadata", {})
         metadata_copy = dict(metadata) if isinstance(metadata, dict) else {}
+        stats = getattr(state, "_looplet_run_stats", None)
+        if isinstance(stats, dict):
+            metadata_copy["looplet_run_stats"] = dict(stats)
         raw_status = getattr(state, "run_status", None)
         if raw_status is None:
             raw_status = metadata_copy.get("run_status", RunStatus.CREATED)
@@ -150,6 +153,12 @@ class RunResult:
             run_envelope=getattr(state, "run_envelope", None),
             metadata=metadata_copy,
         )
+
+    def diagnostics(self) -> dict[str, Any]:
+        """Return the content-redacted diagnostic view shared with saved records."""
+        from looplet.run_records import run_diagnostics
+
+        return run_diagnostics(self)
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-friendly host summary."""

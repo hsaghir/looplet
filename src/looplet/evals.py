@@ -212,6 +212,10 @@ class EvalRunRecord(NamedTuple):
     directory: Path
     cleanup_directory: Path | None = None
 
+    def diagnostics(self) -> dict[str, Any]:
+        """Inspect execution only; protected case data and scores stay separate."""
+        return self.context.diagnostics()
+
     def cleanup(self) -> None:
         """Remove an owned no-output sandbox, if one exists.
 
@@ -280,6 +284,21 @@ class EvalContext:
     def completed(self) -> bool:
         """True when the agent called ``done()`` itself (not stopped by a hook)."""
         return self.stop_reason == "done"
+
+    def diagnostics(self) -> dict[str, Any]:
+        """Return the shared redacted view without artifacts or grader inputs."""
+        from looplet.run_records import run_diagnostics
+
+        return run_diagnostics(
+            {
+                "status": self.metadata.get("run_status"),
+                "phase": self.metadata.get("run_phase"),
+                "termination_reason": self.stop_reason,
+                "steps": self.steps,
+                "metadata": self.metadata,
+                "run_envelope": self.metadata.get("run_envelope"),
+            }
+        )
 
     @property
     def tool_sequence(self) -> list[str]:
@@ -1526,6 +1545,28 @@ def run_cartridge_evals(
             raise
         finally:
             try:
+                final_context = interrupted_context or hook.context
+                if final_context is not None:
+                    state_metadata = getattr(preset.state, "metadata", {})
+                    if isinstance(state_metadata, dict):
+                        for key in (
+                            "run_status",
+                            "run_phase",
+                            "termination_reason",
+                            "llm_calls",
+                            "usage_total",
+                            "looplet_run_stats",
+                        ):
+                            if key in state_metadata:
+                                final_context.metadata[key] = state_metadata[key]
+                    envelope = getattr(preset.state, "run_envelope", None)
+                    if envelope is not None:
+                        final_context.metadata["run_envelope"] = envelope.to_dict()
+                    stats = getattr(preset.state, "_looplet_run_stats", None)
+                    if isinstance(stats, dict):
+                        final_context.metadata["looplet_run_stats"] = dict(stats)
+                    if failed:
+                        final_context.metadata.update(run_status="failed", run_phase="terminal")
                 if run_dir is not None:
                     save_eval_run(
                         run_dir,
@@ -2109,6 +2150,12 @@ class EvalHook:
         if not isinstance(state_metadata, dict):
             state_metadata = {}
         context_metadata = dict(state_metadata)
+        stats = getattr(state, "_looplet_run_stats", None)
+        if isinstance(stats, dict):
+            context_metadata["looplet_run_stats"] = dict(stats)
+        envelope = getattr(state, "run_envelope", None)
+        if envelope is not None:
+            context_metadata["run_envelope"] = envelope.to_dict()
         if stop_reason is not None:
             context_metadata["termination_reason"] = stop_reason
         context_metadata.pop("eval_collector_errors", None)

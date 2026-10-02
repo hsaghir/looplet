@@ -13,6 +13,31 @@ from looplet.done_steps import (
 from looplet.types import DefaultState, Step, ToolCall, ToolResult
 
 
+def test_terminal_outcome_table_preserves_legacy_precedence_and_schema_identity() -> None:
+    from looplet.loop import LoopConfig
+    from looplet.validation import FieldSpec, OutputSchema
+
+    primary = OutputSchema(fields={"answer": FieldSpec("answer", "str", required=True)})
+    alternate = OutputSchema(fields={"reason": FieldSpec("reason", "str", required=True)})
+    config = LoopConfig(
+        done_tool="report",
+        done_tools=["escalate", "report", "escalate"],
+        output_schema=primary,
+        done_tool_schemas={"report": alternate, "escalate": alternate, "ordinary": primary},
+    )
+    outcomes = config.resolve_terminal_outcomes()
+    assert list(outcomes) == ["report", "escalate"]
+    assert outcomes["report"] is primary
+    assert outcomes["escalate"] is alternate
+    assert "ordinary" not in outcomes
+    outcomes.clear()
+    assert len(config.resolve_terminal_outcomes()) == 2
+    config.output_schema = None
+    assert config.resolve_terminal_outcomes()["report"] is alternate
+    config.done_tools.append("abort")
+    assert config.resolve_terminal_outcomes()["abort"] is None
+
+
 def _make_step(
     number: int,
     tool: str,

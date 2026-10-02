@@ -37,6 +37,32 @@ for step in composable_loop(
     print(step.pretty())
 ```
 
+## Inspect before instantiating
+
+`looplet describe agent.cartridge` reads declarations without importing tool,
+hook, resource, memory, or entrypoint code and without starting protocol servers.
+It resolves inheritance in memory, reports configuration file origins, and
+labels dynamic factories, missing runtime values and protocol discovery as
+requiring runtime inspection. It does not materialize inheritance directories.
+
+```bash
+looplet describe agent.cartridge --json
+looplet describe agent.cartridge --instantiate
+```
+
+`--instantiate` explicitly opts into the old live inspection behavior: code and
+resources may run, and owned resources are closed afterward. Declaration-only
+inspection is not executable validation, compatibility admission, or a sandbox.
+Authored prompts and sensitive config blocks are redacted in declaration JSON
+unless `--include-sensitive` is explicitly requested; this is not a guarantee
+that arbitrary authored tool or manifest metadata contains no secrets.
+
+Python hosts can use `looplet.cartridge.inspect_cartridge(path)` or
+`looplet.blueprints.blueprint_from_cartridge(path)`. For Python-factory bundles,
+`blueprint_from_bundle(path, instantiate=False)` reads the existing `SKILL.md`
+metadata without importing the entrypoint. Its factory output remains unknown.
+Use instantiated blueprints for exact comparisons and executable validation.
+
 A cartridge is a normal directory; everything below is plain text or
 Python. Diff-friendly. Git-friendly. Editor-friendly. Agent-friendly.
 
@@ -118,6 +144,20 @@ permission, completion, compaction, and stop slots retain their own ordering,
 precedence, and supported effects. Unsupported decision fields remain visible
 in diagnostics instead of acquiring new authority. Remote hooks still receive
 only their declared capability-scoped views.
+
+## Resolved terminal outcomes
+
+Python hosts can inspect `config.resolve_terminal_outcomes()` to obtain one
+name-to-schema table used by both loop drivers. It combines the primary
+`done_tool`, additive host-side `done_tools`, `output_schema`, and
+`done_tool_schemas`. The primary schema takes precedence; a schema entry alone
+does not make an ordinary tool terminal. Each returned mapping is independent,
+while its schema objects preserve their identity.
+
+This does not change cartridge declarations or introduce another outcome
+format. Gates still run before schema validation and dispatch. Configuration
+changes made by a gate remain visible to the subsequent schema check, and
+completion remains distinct from host-owned correctness grading.
 
 ## Compatibility metadata
 

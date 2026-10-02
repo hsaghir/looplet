@@ -34,6 +34,34 @@ The host should pass a fresh `RunEnvelope` and runtime configuration for each
 run. Looplet carries that identity into hooks, checkpoints, policy records, and
 provenance metadata.
 
+## Inspect configuration
+
+Sync and async entry points share configuration resolution. Explicit loop
+arguments override the supplied `LoopConfig`; the same mutable config and live
+control objects remain available to hooks. Flat domain callbacks override the
+matching `DomainAdapter` callback, which overrides the built-in fallback.
+
+```python
+config = LoopConfig(max_steps=20, system_prompt="Private instructions")
+explanation = config.explain()
+assert explanation["max_steps"]["value"] == 20
+assert explanation["system_prompt"]["redacted"]
+```
+
+Cartridge-loaded configs record the effective declaration tier: `config.yaml`,
+`runtime.yaml`, or `prompts/system.md`. Loop argument overrides and observable
+host changes are labelled separately. Inherited files report their merged tier,
+not a claim about which ancestor supplied each nested value. Python construction
+is labelled `config`: supplying a default explicitly cannot be distinguished
+from omitting it. Unset options remain unset in this view; environment-backed
+defaults are still resolved by their owning services.
+
+`explain()` does not invoke callbacks, render prompts, load memory, start
+resources, or call a model. Prompts, tool metadata, provider kwargs and host
+envelopes are hidden by default. `include_sensitive=True` is an explicit host
+decision, not a safe logging default. Opaque live objects expose only their
+type; the view is not a serialization or a complete change audit.
+
 ## Sync and async hosts
 
 Both loop variants yield the same `Step` objects. Consume the iterator, then

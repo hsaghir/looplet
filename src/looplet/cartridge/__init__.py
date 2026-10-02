@@ -71,6 +71,7 @@ __all__ = [
     "CartridgePortabilityReport",
     "ComponentReport",
     "analyse_cartridge",
+    "inspect_cartridge",
 ]
 
 logger = logging.getLogger(__name__)
@@ -83,6 +84,7 @@ logger = logging.getLogger(__name__)
 # callers as of round-2 cleanup and are now imported from their
 # defining module directly when needed.
 from looplet.cartridge._imports import _import_module_from_path  # noqa: E402, F401
+from looplet.cartridge._inspection import inspect_cartridge  # noqa: E402
 from looplet.cartridge._layout import (  # noqa: E402, F401
     SCHEMA_VERSION,
     CartridgeLayout,

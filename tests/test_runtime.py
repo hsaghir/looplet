@@ -80,6 +80,22 @@ def test_unknown_usage_and_cost_are_not_zero() -> None:
     assert diagnostics["cost_usd"] is None
 
 
+@pytest.mark.parametrize("reason", ["budget_exhausted", "cancelled", "llm_error", "done"])
+def test_diagnostics_preserve_standard_kernel_stop_reasons(reason: str) -> None:
+    from looplet import RunPhase, RunResult
+    from looplet.run_records import RunRecord
+
+    result = RunResult(
+        status=RunStatus.STOPPED,
+        phase=RunPhase.TERMINAL,
+        termination_reason=reason,
+        output=None,
+        steps=(),
+    )
+    assert result.diagnostics()["termination_reason"] == reason
+    assert RunRecord.from_result(result).diagnostics()["termination_reason"] == reason
+
+
 def test_diagnostics_count_typed_errors_and_reject_invalid_measurements() -> None:
     import json
 

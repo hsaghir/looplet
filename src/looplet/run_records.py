@@ -186,6 +186,7 @@ def run_diagnostics(
     safe_reasons = {
         "done",
         "budget",
+        "budget_exhausted",
         "max_steps",
         "cancelled",
         "deadline",

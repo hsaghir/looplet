@@ -39,6 +39,101 @@ def _write_v_cartridge(root: Path, schema_version: int, *, config_text: str) -> 
 # ── v2 hard-errors ──────────────────────────────────────────────────
 
 
+def test_declaration_inspection_resolves_inheritance_without_writing(tmp_path: Path) -> None:
+    from looplet.cartridge import inspect_cartridge
+
+    parent, child = tmp_path / "parent", tmp_path / "child"
+    parent.mkdir()
+    child.mkdir()
+    _write_v_cartridge(parent, schema_version=2, config_text="max_steps: 7\ndone_tool: done\n")
+    _write_v_cartridge(child, schema_version=2, config_text="extends: ../parent\n")
+    (parent / "runtime.yaml").write_text("temperature: 0.1\nmax_tokens: 80\n")
+    (child / "runtime.yaml").write_text("temperature: 0.7\n")
+    before = {
+        str(path.relative_to(tmp_path)): path.read_bytes()
+        for path in tmp_path.rglob("*")
+        if path.is_file()
+    }
+    report = inspect_cartridge(child)
+    assert report["config"]["max_steps"] == 7
+    assert report["config"]["temperature"] == 0.7
+    assert report["config"]["max_tokens"] == 80
+    assert report["configuration_sources"]["max_steps"] == str(parent / "config.yaml")
+    assert report["configuration_sources"]["temperature"] == str(child / "runtime.yaml")
+    assert report["configuration_sources"]["max_tokens"] == str(parent / "runtime.yaml")
+    after = {
+        str(path.relative_to(tmp_path)): path.read_bytes()
+        for path in tmp_path.rglob("*")
+        if path.is_file()
+    }
+    assert after == before
+
+
+def test_declaration_inspection_preserves_unresolved_runtime_and_redacts(tmp_path: Path) -> None:
+    from looplet.cartridge import inspect_cartridge
+
+    _write_v_cartridge(tmp_path, schema_version=2, config_text="max_steps: ${runtime.limit}\n")
+    (tmp_path / "runtime.yaml").write_text("generate_kwargs:\n  api_key: private-key\n")
+    report = inspect_cartridge(tmp_path)
+    assert report["config"]["max_steps"] == "${runtime.limit}"
+    assert "${runtime.limit}" in report["runtime_required"]
+    assert "private-key" not in json.dumps(report)
+    assert report["config"]["system_prompt"] == "[redacted]"
+    resolved = inspect_cartridge(tmp_path, runtime={"limit": 4}, include_sensitive=True)
+    assert resolved["config"]["max_steps"] == 4
+    assert resolved["config"]["generate_kwargs"]["api_key"] == "private-key"
+
+
+def test_declaration_inspection_rejects_extends_cycle(tmp_path: Path) -> None:
+    from looplet.cartridge import inspect_cartridge
+
+    _write_v_cartridge(tmp_path, schema_version=2, config_text="extends: .\n")
+    with pytest.raises(CartridgeSerializationError, match="circular extends"):
+        inspect_cartridge(tmp_path)
+
+
+def test_declaration_inspection_compiles_model_defaults_and_marks_refs(tmp_path: Path) -> None:
+    from looplet.blueprints import blueprint_from_cartridge, compare_blueprints
+    from looplet.cartridge import inspect_cartridge
+
+    _write_v_cartridge(tmp_path, schema_version=2, config_text="model:\n  max_tokens: 123\n")
+    (tmp_path / "runtime.yaml").write_text("max_tokens: 20\ncompact_service: ${ref:compact}\n")
+    report = inspect_cartridge(tmp_path)
+    assert report["config"]["max_tokens"] == 123
+    assert report["configuration_sources"]["max_tokens"] == str(tmp_path / "config.yaml")
+    assert "${ref:compact}" in report["runtime_required"]
+    blueprint = blueprint_from_cartridge(tmp_path)
+    assert blueprint.name == "x"
+    assert [tool.name for tool in blueprint.tools] == ["done"]
+    assert not compare_blueprints(blueprint, blueprint).ok
+
+
+@pytest.mark.parametrize("hooks", ["true", "[3]", "[{}]", "[{a: {}, b: {}}]"])
+def test_declaration_inspection_rejects_malformed_builtin_hooks(tmp_path: Path, hooks: str) -> None:
+    from looplet.cartridge import inspect_cartridge
+
+    _write_v_cartridge(tmp_path, schema_version=2, config_text=f"builtin_hooks: {hooks}\n")
+    with pytest.raises(CartridgeSerializationError, match="builtin_hooks"):
+        inspect_cartridge(tmp_path)
+
+
+def test_declaration_inspection_redacts_protocol_connection_config(tmp_path: Path) -> None:
+    from looplet.cartridge import inspect_cartridge
+
+    _write_v_cartridge(tmp_path, schema_version=2, config_text="max_steps: 4\n")
+    (tmp_path / "runtime.yaml").write_text(
+        "mcp_servers:\n  remote:\n    command: not-a-program\n    env:\n      TOKEN: connection-secret\n"
+    )
+    report = inspect_cartridge(tmp_path)
+    assert "connection-secret" not in json.dumps(report)
+    assert (
+        inspect_cartridge(tmp_path, include_sensitive=True)["config"]["mcp_servers"]["remote"][
+            "env"
+        ]["TOKEN"]
+        == "connection-secret"
+    )
+
+
 def test_v2_rejects_runtime_keys_in_config_yaml(tmp_path: Path) -> None:
     _write_v_cartridge(
         tmp_path,

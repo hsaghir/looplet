@@ -32,6 +32,7 @@ __all__ = [
     "SourceBlueprint",
     "ToolBlueprint",
     "blueprint_from_bundle",
+    "blueprint_from_cartridge",
     "blueprint_from_preset",
     "claude_skill_compatibility",
     "compare_blueprints",
@@ -146,8 +147,44 @@ class ClaudeSkillCompatibility:
 def blueprint_from_bundle(
     bundle_root: SkillBundle | str | Path,
     runtime: SkillRuntime | None = None,
+    *,
+    instantiate: bool = True,
 ) -> AgentBlueprint:
-    """Load a bundle and return its structural blueprint."""
+    """Return a live structural blueprint, or explicitly inspect declarations.
+
+    ``instantiate=False`` never imports an entrypoint or builds resources.
+    Its incomplete declaration view cannot establish behavioral equivalence.
+    """
+    if not instantiate:
+        if isinstance(bundle_root, SkillBundle):
+            root, skill = bundle_root.root, bundle_root.skill
+        else:
+            root = Path(bundle_root).resolve()
+            if root.is_file():
+                root = root.parent
+            skill_file = root / "SKILL.md"
+            skill = Skill.from_markdown(
+                skill_file.read_text(encoding="utf-8"),
+                source_path=skill_file,
+                default_name=root.name,
+            )
+        entrypoint = (root / str(skill.metadata.get("entrypoint") or "looplet.py")).resolve()
+        if not entrypoint.is_relative_to(root.resolve()):
+            raise ValueError("bundle entrypoint must remain inside its root")
+        return AgentBlueprint(
+            name=skill.name,
+            description=skill.description,
+            tags=list(skill.tags),
+            instructions=skill.instructions,
+            source=SourceBlueprint(
+                kind="bundle-declaration", path=str(root), entrypoint=str(entrypoint)
+            ),
+            metadata={
+                "inspection_mode": "declaration-only",
+                "runtime_validated": False,
+                "runtime_required": [str(entrypoint)],
+            },
+        )
     bundle = bundle_root if isinstance(bundle_root, SkillBundle) else load_skill_bundle(bundle_root)
     preset = bundle.build_preset(runtime or SkillRuntime())
     try:
@@ -166,6 +203,38 @@ def blueprint_from_bundle(
         )
     finally:
         preset.close()
+
+
+def blueprint_from_cartridge(cartridge_dir: str | Path) -> AgentBlueprint:
+    """Inspect a cartridge declaration without loading executable components."""
+    from looplet.cartridge import inspect_cartridge
+
+    report = inspect_cartridge(cartridge_dir)
+    manifest = report["manifest"]
+    return AgentBlueprint(
+        name=manifest["name"],
+        description=str(manifest.get("description", "")),
+        source=SourceBlueprint(kind="cartridge-declaration", path=report["root"]),
+        config=report["config"],
+        tools=[
+            ToolBlueprint(
+                name=str(spec["name"]),
+                description=str(spec.get("description", "")),
+                parameters=dict(spec.get("parameters", {})),
+            )
+            for spec in report["tools"]
+        ],
+        hooks=[
+            ComponentBlueprint(kind=str(hook["kind"]), config={"name": hook["name"]})
+            for hook in report["hooks"]
+        ],
+        metadata={
+            "inspection_mode": "declaration-only",
+            "runtime_validated": False,
+            "runtime_required": report["runtime_required"],
+            "configuration_sources": report["configuration_sources"],
+        },
+    )
 
 
 def blueprint_from_preset(
@@ -202,6 +271,16 @@ def compare_blueprints(
     ignore_metadata: bool = False,
 ) -> BlueprintComparison:
     """Compare two blueprints and return human-readable differences."""
+    if any(
+        blueprint.metadata.get("inspection_mode") == "declaration-only"
+        for blueprint in (left, right)
+    ):
+        return BlueprintComparison(
+            ok=False,
+            differences=[
+                "declaration-only blueprints require instantiated inspection for exact comparison"
+            ],
+        )
     left_payload = _comparison_payload(left, include_metadata=not ignore_metadata)
     right_payload = _comparison_payload(right, include_metadata=not ignore_metadata)
     differences: list[str] = []

@@ -245,13 +245,41 @@ def _print_summary_diff(expected: dict, actual: dict) -> None:
 
 
 def cmd_describe(args: argparse.Namespace) -> int:
-    """Print a one-screen structural summary of a cartridge."""
-    from looplet.cartridge import cartridge_to_preset  # noqa: PLC0415
+    """Inspect declarations by default; instantiate only when explicitly requested."""
+    from looplet.cartridge import cartridge_to_preset, inspect_cartridge  # noqa: PLC0415
 
     cartridge_path = Path(args.cartridge)
     if not cartridge_path.is_dir():
         print(_red(f"error: not a directory: {cartridge_path}"), file=sys.stderr)
         return 2
+
+    if not getattr(args, "instantiate", False):
+        try:
+            report = inspect_cartridge(
+                cartridge_path, include_sensitive=getattr(args, "include_sensitive", False)
+            )
+        except Exception as exc:
+            print(_red(f"error inspecting cartridge: {type(exc).__name__}: {exc}"), file=sys.stderr)
+            return 1
+        if getattr(args, "json", False):
+            print(json.dumps(report, indent=2))
+            return 0
+        print(_bold(cartridge_path.name))
+        print(_dim("  declaration-only; executable wiring has not been validated"))
+        print(_bold("config"))
+        for name in ("max_steps", "max_tokens", "temperature", "done_tool"):
+            value = report["config"].get(name, "default")
+            origin = report["configuration_sources"].get(name, "default")
+            print(f"  {name:16s} {value}  {_dim(str(origin))}")
+        for label in ("tools", "hooks"):
+            print(_bold(f"{label} ({len(report[label])})"))
+            for component in report[label]:
+                print(f"  {component['name']:20s} {_dim(component['kind'])}")
+        if report["runtime_required"]:
+            print(_bold("runtime inspection required"))
+            for name in report["runtime_required"]:
+                print(f"  {name}")
+        return 0
 
     try:
         preset = cartridge_to_preset(str(cartridge_path), strict=False)
@@ -707,12 +735,21 @@ def add_subparsers(sub: "argparse._SubParsersAction") -> None:
         "describe",
         help="Print a one-screen structural summary of a cartridge",
         description=(
-            "Load a cartridge and print its anatomy: tools, hooks, "
-            "config knobs, system prompt preview. Answers 'what does "
-            "this agent do?' from a directory listing."
+            "Read cartridge declarations without importing code or starting resources. "
+            "Use --instantiate for executable wiring and dynamic tool discovery."
         ),
     )
     describe_p.add_argument("cartridge", type=str, help="Path to a cartridge directory")
+    inspection_mode = describe_p.add_mutually_exclusive_group()
+    inspection_mode.add_argument(
+        "--instantiate", action="store_true", help="Explicitly build and close live resources"
+    )
+    inspection_mode.add_argument("--json", action="store_true", help="Emit declaration-only JSON")
+    describe_p.add_argument(
+        "--include-sensitive",
+        action="store_true",
+        help="Include authored prompts and metadata in declaration JSON",
+    )
     describe_p.set_defaults(_handler=cmd_describe)
 
     diff_p = sub.add_parser(

@@ -1,7 +1,0 @@
-max_steps: 12
-done_tool: done
-builtin_hooks:
-  - stagnation
-  -
-    per_tool_limit:
-      default_limit: 5

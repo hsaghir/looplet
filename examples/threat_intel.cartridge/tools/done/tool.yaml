@@ -1,6 +1,0 @@
-name: done
-description: Signal that the briefing is complete.
-parameters:
-  summary:
-    type: string
-    description: The structured threat-intel briefing.

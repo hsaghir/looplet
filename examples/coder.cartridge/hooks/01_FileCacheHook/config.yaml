@@ -1,3 +1,0 @@
-class_name: FileCacheHook
-kwargs:
-  cache: "@file_cache"

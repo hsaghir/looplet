@@ -1,5 +1,0 @@
-extends: ../coder.cartridge
-max_steps: 80
-builtin_tools:
-  - scaffold_cartridge
-

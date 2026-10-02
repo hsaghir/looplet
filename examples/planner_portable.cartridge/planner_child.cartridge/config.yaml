@@ -1,7 +1,0 @@
-max_steps: 3
-done_tool: done
-
-mcp_servers:
-  planner_tools:
-    command: '"${runtime.python_executable}" "${runtime.cartridge_root}/_mcp/done_server.py"'
-    timeout_s: 10

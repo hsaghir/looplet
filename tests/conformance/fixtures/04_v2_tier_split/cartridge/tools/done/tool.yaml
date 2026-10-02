@@ -1,6 +1,0 @@
-name: done
-description: Finish the task.
-parameters:
-  summary:
-    type: string
-    description: One-line summary.

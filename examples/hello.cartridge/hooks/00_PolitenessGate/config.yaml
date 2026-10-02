@@ -1,3 +1,0 @@
-class_name: PolitenessGate
-kwargs:
-  log: "@greeting_log"

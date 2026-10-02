@@ -1,6 +1,0 @@
-kind: lep
-server: server.py
-view:
-  fields: [step]
-  fidelity: digest
-on_failure: fail_open

@@ -1,7 +1,0 @@
-max_steps: 25
-done_tool: done
-builtin_tools:
-  - search_skills
-  - activate_skill
-builtin_hooks:
-  - skill_activation

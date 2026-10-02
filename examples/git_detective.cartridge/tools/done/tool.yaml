@@ -1,6 +1,0 @@
-name: done
-description: Signal completion with the final report.
-parameters:
-  summary:
-    type: string
-    description: Codebase health report.

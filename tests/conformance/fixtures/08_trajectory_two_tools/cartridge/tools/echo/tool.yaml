@@ -1,6 +1,0 @@
-name: echo
-description: Return the message verbatim.
-parameters:
-  message:
-    type: string
-    description: The message to echo back.

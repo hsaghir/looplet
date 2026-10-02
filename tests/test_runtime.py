@@ -18,6 +18,280 @@ from looplet import (
 from looplet.testing import AsyncMockLLMBackend
 
 
+def test_diagnostics_match_saved_results_without_exposing_content() -> None:
+    import json
+
+    from looplet import RunEnvelope, RunPhase, RunResult
+    from looplet.run_records import RunRecord
+
+    class MustNotInspect:
+        def __repr__(self):
+            pytest.fail("diagnostics must not inspect opaque content")
+
+    result = RunResult(
+        status=RunStatus.FAILED,
+        phase=RunPhase.TERMINAL,
+        termination_reason="private-reason",
+        output=MustNotInspect(),
+        steps=(),
+        run_envelope=RunEnvelope(run_id="same-run"),
+        metadata={
+            "llm_calls": 3,
+            "usage_total": {"input_tokens": 0, "output_tokens": 8},
+            "error": "private-error",
+            "expected": MustNotInspect(),
+            "api_key": "private-key",
+        },
+    )
+    diagnostics = result.diagnostics()
+    stored = RunRecord(
+        run_id="same-run",
+        envelope=result.run_envelope,
+        status="failed",
+        result={
+            "status": "failed",
+            "phase": "terminal",
+            "termination_reason": "private-reason",
+            "metadata": result.metadata,
+            "run_envelope": {"run_id": "same-run"},
+            "steps": [],
+        },
+    )
+    assert stored.diagnostics() == diagnostics
+    assert diagnostics["run_id"] == "same-run"
+    assert diagnostics["usage_known"] is True
+    assert diagnostics["usage"]["input_tokens"] == 0
+    assert diagnostics["cost_usd"] is None
+    assert diagnostics["run_error"] is True
+    assert "private" not in json.dumps(diagnostics, allow_nan=False)
+
+
+def test_unknown_usage_and_cost_are_not_zero() -> None:
+    from looplet import RunPhase, RunResult
+
+    result = RunResult(
+        status=RunStatus.RUNNING, phase=RunPhase.LLM, termination_reason=None, output=None, steps=()
+    )
+    diagnostics = result.diagnostics()
+    assert diagnostics["phase"] == "llm"
+    assert diagnostics["llm_calls"] is None
+    assert diagnostics["usage"] is None
+    assert diagnostics["usage_known"] is False
+    assert diagnostics["cost_usd"] is None
+
+
+@pytest.mark.parametrize("reason", ["budget_exhausted", "cancelled", "llm_error", "done"])
+def test_diagnostics_preserve_standard_kernel_stop_reasons(reason: str) -> None:
+    from looplet import RunPhase, RunResult
+    from looplet.run_records import RunRecord
+
+    result = RunResult(
+        status=RunStatus.STOPPED,
+        phase=RunPhase.TERMINAL,
+        termination_reason=reason,
+        output=None,
+        steps=(),
+    )
+    assert result.diagnostics()["termination_reason"] == reason
+    assert RunRecord.from_result(result).diagnostics()["termination_reason"] == reason
+
+
+def test_diagnostics_count_typed_errors_and_reject_invalid_measurements() -> None:
+    import json
+
+    from looplet import RunPhase, RunResult
+    from looplet.types import ErrorKind, Step, ToolCall, ToolError, ToolResult
+
+    step = Step(
+        number=1,
+        tool_call=ToolCall(tool="slow", args={}),
+        tool_result=ToolResult(
+            tool="slow",
+            args_summary="private-args",
+            data={"secret": "private-output"},
+            error="private-error",
+            error_detail=ToolError(kind=ErrorKind.TIMEOUT, message="private-error"),
+        ),
+    )
+    result = RunResult(
+        status=RunStatus.FAILED,
+        phase=RunPhase.TERMINAL,
+        termination_reason="llm_error",
+        output=None,
+        steps=(step,),
+        metadata={
+            "usage_total": {"input_tokens": True, "output_tokens": float("nan"), "cost_usd": -1},
+            "looplet_run_stats": {"llm_calls": 2, "duration_ms": float("inf")},
+        },
+    )
+    diagnostic = result.diagnostics()
+    assert diagnostic["tool_error_count"] == 1
+    assert diagnostic["tool_error_kinds"] == {"timeout": 1}
+    assert diagnostic["usage"] is None
+    assert diagnostic["cost_usd"] is None
+    assert diagnostic["duration_ms"] is None
+    assert diagnostic["run_error"] is True
+    assert "private" not in json.dumps(diagnostic, allow_nan=False)
+
+
+def test_result_does_not_promote_historical_output_without_new_acceptance() -> None:
+    from looplet import RunPhase, RunResult
+    from looplet.types import Step, ToolCall, ToolResult
+
+    state = DefaultState()
+    state.steps.append(
+        Step(
+            number=1,
+            tool_call=ToolCall(tool="done", args={"summary": "old"}),
+            tool_result=ToolResult(tool="done", args_summary="", data={"summary": "old"}),
+        )
+    )
+    state.run_status = RunStatus.CANCELLED
+    state.run_phase = RunPhase.TERMINAL
+    state._accepted_terminal_tool = None
+    assert RunResult.from_state(state).output is None
+    assert RunResult.from_state(state, tool_name="done").output == {"summary": "old"}
+
+
+def test_failed_bootstrap_does_not_reuse_previous_run_measurements() -> None:
+    from looplet import RunResult, composable_loop
+
+    state = DefaultState()
+    state._looplet_run_stats = {"llm_calls": 999, "duration_ms": 999}
+
+    class BrokenBootstrap:
+        def pre_loop(self, *args):
+            raise RuntimeError("bootstrap failed")
+
+    tools = BaseToolRegistry()
+    register_done_tool(tools)
+    with pytest.raises(RuntimeError, match="bootstrap failed"):
+        list(
+            composable_loop(
+                llm=MockLLMBackend([]),
+                tools=tools,
+                state=state,
+                config=LoopConfig(use_native_tools=False),
+                hooks=[BrokenBootstrap()],
+            )
+        )
+    diagnostic = RunResult.from_state(state).diagnostics()
+    assert diagnostic["llm_calls"] == 0
+    assert diagnostic["duration_ms"] is None
+
+
+def test_active_record_retains_unmatched_model_event_and_phase() -> None:
+    from looplet import RunEnvelope
+    from looplet.run_records import RunEvent, RunRecord
+
+    envelope = RunEnvelope(run_id="active")
+    event = RunEvent(
+        envelope=envelope,
+        sequence=0,
+        timestamp=1,
+        kind="pre_llm_call",
+        payload={"run_phase": "llm"},
+    )
+    record = RunRecord(run_id="active", envelope=envelope, status="running", events=(event,))
+    diagnostic = record.diagnostics()
+    assert diagnostic["status"] == "running"
+    assert diagnostic["phase"] == "llm"
+    assert diagnostic["completed"] is False
+    assert diagnostic["event_counts"] == {"pre_llm_call": 1}
+    assert diagnostic["usage_known"] is False
+
+
+def test_failed_runtime_preserves_observed_usage_and_steps() -> None:
+    from looplet import RunEnvelope
+    from looplet.runtime import _failed_runtime_result
+
+    state = DefaultState()
+    state.metadata.update(usage_total={"input_tokens": 7}, llm_calls=2)
+    result = _failed_runtime_result(
+        state, RunEnvelope(run_id="failed"), RuntimeError("private-error")
+    )
+    diagnostic = result.diagnostics()
+    assert diagnostic["usage"]["input_tokens"] == 7
+    assert diagnostic["llm_calls"] == 2
+    assert diagnostic["run_error"] is True
+    assert state.metadata == {"usage_total": {"input_tokens": 7}, "llm_calls": 2}
+
+
+@pytest.mark.parametrize("async_run", [False, True])
+@pytest.mark.parametrize("entrypoint", ["direct", "preset", "runtime"])
+@pytest.mark.parametrize("terminal_name", ["done", "escalate"])
+async def test_diagnostics_share_observed_counters_across_entrypoints(
+    async_run, entrypoint, terminal_name
+):
+    import json
+
+    from looplet import EvalHook, RunEnvelope, RunResult, async_composable_loop, composable_loop
+    from looplet.tools import ToolSpec
+
+    preset = _preset(use_native_tools=False)
+    if terminal_name == "escalate":
+        preset.config.done_tools = [terminal_name]
+        preset.tools.register(
+            ToolSpec(
+                name=terminal_name,
+                description="Escalate",
+                parameters={"summary": "str"},
+                execute=lambda *, summary: {"summary": summary},
+            )
+        )
+    eval_hook = EvalHook(evaluators=[])
+    preset.hooks.append(eval_hook)
+    preset.config.run_envelope = RunEnvelope(run_id=f"{entrypoint}-{async_run}")
+    backend = (AsyncMockLLMBackend if async_run else MockLLMBackend)(
+        [json.dumps({"tool": terminal_name, "args": {"summary": "ok"}})]
+    )
+    try:
+        if entrypoint == "runtime":
+            with AgentRuntime(preset) as runtime:
+                result = await runtime.run_async(backend) if async_run else runtime.run(backend)
+        elif entrypoint == "preset":
+            if async_run:
+                async for _ in preset.run_async(backend):
+                    pass
+            else:
+                for _ in preset.run(backend):
+                    pass
+            result = RunResult.from_state(preset.state)
+        else:
+            kwargs = dict(
+                llm=backend,
+                tools=preset.tools,
+                state=preset.state,
+                config=preset.config,
+                hooks=preset.hooks,
+            )
+            if async_run:
+                async for _ in async_composable_loop(**kwargs):
+                    pass
+            else:
+                for _ in composable_loop(**kwargs):
+                    pass
+            result = RunResult.from_state(preset.state)
+        diagnostic = result.diagnostics()
+        assert diagnostic["completed"] is True
+        assert diagnostic["phase"] == "terminal"
+        assert diagnostic["run_id"] is not None
+        assert diagnostic["llm_calls"] == 1
+        assert diagnostic["duration_ms"] >= 0
+        assert diagnostic["usage_known"] is False
+        assert diagnostic["cost_usd"] is None
+        assert result.output is not None
+        assert result.output["summary"] == "ok"
+        if terminal_name == "escalate":
+            assert RunResult.from_state(preset.state, tool_name="done").output is None
+        assert eval_hook.context is not None
+        assert eval_hook.context.final_output["summary"] == "ok"
+        assert eval_hook.context.diagnostics()["llm_calls"] == diagnostic["llm_calls"]
+        assert eval_hook.context.diagnostics()["run_id"] == diagnostic["run_id"]
+    finally:
+        preset.close()
+
+
 @pytest.mark.parametrize("async_run", [False, True])
 @pytest.mark.parametrize(
     "fault", ["create", "append_event", "save_checkpoint", "complete", "session"]

@@ -71,6 +71,7 @@ from looplet.loop import (
     _notify_post_step_async,
     _policy_checkpoint_metadata,
     _post_step_stop_reason_async,
+    _record_run_stats,
     _reset_context_overrides,
     _resolve_loop_config,
     _run_post_dispatch_hooks_async,
@@ -712,6 +713,7 @@ async def _async_composable_loop_impl(
     done = False
     stop_reason = "budget_exhausted"
     llm_calls = 0
+    _loop_t0 = time.perf_counter()
     consecutive_parse_failures = 0
     native_policy = NativeToolPolicy(enabled=config.use_native_tools)
     post_dispatch_parts: list[str] = []
@@ -989,6 +991,7 @@ async def _async_composable_loop_impl(
             _state_metadata["native_tool_stats"] = loop_ctx.native_tool_stats.to_dict()
         _llm_dur_ms = (time.perf_counter() - _llm_t0) * 1000.0
         llm_calls += 1
+        _record_run_stats(state, llm_calls=llm_calls)
         if stream is not None and _LLMCallEndEvent is not None:
             stream.emit(
                 _LLMCallEndEvent(
@@ -1042,6 +1045,7 @@ async def _async_composable_loop_impl(
                 loop_ctx=loop_ctx,
             )
             llm_calls += recovery_calls
+            _record_run_stats(state, llm_calls=llm_calls)
             raw_response = llm_result.text
         _history.record_llm_turn(
             prompt=prompt,
@@ -1164,6 +1168,7 @@ async def _async_composable_loop_impl(
                     generate_kwargs=config.generate_kwargs or None,
                 )
                 llm_calls += 1
+                _record_run_stats(state, llm_calls=llm_calls)
                 if recovery_result.ok:
                     tool_calls = parse_multi_tool_calls(recovery_result.text)
             if not tool_calls:
@@ -1626,6 +1631,7 @@ async def _async_composable_loop_impl(
                     status=RunStatus.COMPLETED,
                     phase=RunPhase.TERMINAL,
                     termination_reason="done",
+                    terminal_tool=tool_call.tool,
                 )
                 await _notify_post_step_async(hooks, state, session_log, cur_step)
                 _save_checkpoint(cur_step, status="done")
@@ -1680,6 +1686,8 @@ async def _async_composable_loop_impl(
         except AttributeError:
             pass
 
+    _record_run_stats(state, llm_calls=llm_calls)
+
     await emit_event_async(
         hooks,
         _LE.STOP,
@@ -1697,7 +1705,11 @@ async def _async_composable_loop_impl(
                 result = await result
             if isinstance(result, int):
                 llm_calls += result
+                _record_run_stats(state, llm_calls=llm_calls)
 
+    _record_run_stats(
+        state, llm_calls=llm_calls, duration_ms=(time.perf_counter() - _loop_t0) * 1000
+    )
     if stream is not None and _LoopEndEvent is not None and not _has_streaming_hook:
         stream.emit(
             _LoopEndEvent(

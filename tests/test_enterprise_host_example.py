@@ -35,6 +35,11 @@ def test_enterprise_host_runs_coder_cartridge(tmp_path: Path) -> None:
     assert summary["steps"] == 5
     assert summary["run_envelope"]["tenant_id"] == "reference-tenant"
     assert summary["policy_decisions"]
+    assert summary["diagnostics"]["completed"] is True
+    assert summary["diagnostics"]["run_id"] == summary["run_envelope"]["run_id"]
+    assert summary["diagnostics"]["cost_usd"] is None
+    assert summary["configuration"]["system_prompt"]["redacted"] is True
+    assert "done" in summary["terminal_outcomes"]
     assert Path(summary["trace_dir"]).joinpath("trajectory.json").is_file()
     assert list(Path(summary["checkpoint_dir"]).glob("*.json"))
 
@@ -54,3 +59,5 @@ def test_enterprise_host_api_returns_audit_summary(tmp_path: Path) -> None:
     assert summary["run_envelope"]["run_id"] == "api-run"
     assert summary["run_envelope"]["tenant_id"] == "tenant-api"
     assert summary["policy_decisions"]
+    assert summary["diagnostics"]["run_id"] == "api-run"
+    assert summary["diagnostics"]["completed"] is True

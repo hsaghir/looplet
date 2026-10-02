@@ -6,14 +6,16 @@ small, JSON-safe envelope without changing the loop's hook contracts.
 
 from __future__ import annotations
 
+import math
 import time
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 from looplet.events import EventPayload
-from looplet.types import RunEnvelope, RunResult
+from looplet.types import ErrorKind, RunEnvelope, RunPhase, RunResult, RunStatus, Step
 
-__all__ = ["ArtifactRef", "RunEvent", "RunRecord", "event_from_payload"]
+__all__ = ["ArtifactRef", "RunEvent", "RunRecord", "event_from_payload", "run_diagnostics"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,6 +106,129 @@ def event_from_payload(
     )
 
 
+def run_diagnostics(
+    result: RunResult | Mapping[str, Any],
+    *,
+    events: tuple[RunEvent, ...] = (),
+) -> dict[str, Any]:
+    """Summarize execution evidence without traversing content or grading data.
+
+    Unknown measurements stay ``None``. Event counts are observations, not
+    provider retry counts or proof of tool side effects. Completion is not
+    correctness, and this view is not an anonymizer for structural labels.
+    """
+    if isinstance(result, RunResult):
+        status, phase, reason = result.status, result.phase, result.termination_reason
+        steps, metadata, envelope = result.steps, result.metadata, result.run_envelope
+    else:
+        status, phase = result.get("status"), result.get("phase")
+        reason = result.get("termination_reason")
+        steps = result.get("steps", ())
+        metadata = result.get("metadata", {})
+        envelope = result.get("run_envelope")
+    if type(metadata) is not dict:
+        metadata = {}
+    if not isinstance(steps, (list, tuple)):
+        steps = ()
+
+    def number(value: Any) -> int | float | None:
+        if type(value) is int and value >= 0:
+            return value
+        if type(value) is float and value >= 0 and math.isfinite(value):
+            return value
+        return None
+
+    raw_usage = metadata.get("usage_total")
+    stats = metadata.get("looplet_run_stats")
+    if type(stats) is not dict:
+        stats = {}
+    usage = {
+        name: number(raw_usage.get(name))
+        for name in (
+            "input_tokens",
+            "output_tokens",
+            "total_tokens",
+            "cache_read_tokens",
+            "cache_write_tokens",
+            "cost_usd",
+        )
+        if type(raw_usage) is dict and number(raw_usage.get(name)) is not None
+    }
+    tool_errors: Counter[str] = Counter()
+    for step in steps:
+        if type(step) is Step:
+            error = step.tool_result.error
+            detail = step.tool_result.error_detail
+            kind = detail.kind if detail is not None else None
+        elif type(step) is dict and type(step.get("tool_result")) is dict:
+            tool_result = step["tool_result"]
+            error = tool_result.get("error")
+            detail = tool_result.get("error_detail")
+            kind = detail.get("kind") if type(detail) is dict else None
+        else:
+            continue
+        if type(error) is str and error:
+            kind_name = kind.value if isinstance(kind, ErrorKind) else kind
+            tool_errors[
+                kind_name
+                if type(kind_name) is str and kind_name in ErrorKind._value2member_map_
+                else "unknown"
+            ] += 1
+    status_name = status.value if isinstance(status, RunStatus) else status
+    phase_name = phase.value if isinstance(phase, RunPhase) else phase
+    run_id = (
+        envelope.run_id
+        if isinstance(envelope, RunEnvelope)
+        else envelope.get("run_id")
+        if type(envelope) is dict
+        else metadata.get("run_id")
+    )
+    safe_reasons = {
+        "done",
+        "budget",
+        "budget_exhausted",
+        "max_steps",
+        "cancelled",
+        "deadline",
+        "deadline_exceeded",
+        "error",
+        "llm_error",
+        "hook_stop",
+        "hook_requested_stop",
+    }
+    return {
+        "schema": "looplet.run-diagnostics.v1",
+        "run_id": run_id if type(run_id) is str else None,
+        "status": status_name
+        if type(status_name) is str and status_name in RunStatus._value2member_map_
+        else "unknown",
+        "phase": phase_name
+        if type(phase_name) is str and phase_name in RunPhase._value2member_map_
+        else "unknown",
+        "termination_reason": reason
+        if type(reason) is str and reason in safe_reasons
+        else "custom"
+        if reason is not None
+        else None,
+        "completed": status_name == "completed" if type(status_name) is str else False,
+        "step_count": len(steps),
+        "tool_error_count": sum(tool_errors.values()),
+        "tool_error_kinds": dict(tool_errors),
+        "llm_calls": number(stats.get("llm_calls", metadata.get("llm_calls"))),
+        "duration_ms": number(metadata.get("runtime_duration_ms", stats.get("duration_ms"))),
+        "usage": usage or None,
+        "usage_known": bool(usage),
+        "cost_usd": usage.get("cost_usd"),
+        "run_error": (type(status_name) is str and status_name == "failed")
+        or metadata.get("error") is not None
+        or metadata.get("eval_run_error") is not None,
+        "persistence_warning_count": len(metadata["persistence_warnings"])
+        if type(metadata.get("persistence_warnings")) is list
+        else 0,
+        "event_counts": dict(Counter(event.kind for event in events)),
+    }
+
+
 @dataclass(frozen=True, slots=True)
 class RunRecord:
     """Durable index record for one logical run."""
@@ -118,6 +243,22 @@ class RunRecord:
     checkpoint_keys: tuple[str, ...] = ()
     artifact_refs: tuple[ArtifactRef, ...] = ()
     events: tuple[RunEvent, ...] = ()
+
+    def diagnostics(self) -> dict[str, Any]:
+        """Return the same redacted view for terminal and in-flight records."""
+        payload = (
+            dict(self.result)
+            if self.result is not None
+            else {
+                "status": self.status,
+                "metadata": dict(self.metadata),
+            }
+        )
+        if payload.get("run_envelope") is None:
+            payload["run_envelope"] = {"run_id": self.run_id}
+        if self.events and not payload.get("phase"):
+            payload["phase"] = self.events[-1].payload.get("run_phase")
+        return run_diagnostics(payload, events=self.events)
 
     @classmethod
     def create(

@@ -1039,6 +1039,7 @@ def _set_run_lifecycle(
     status: RunStatus | None = None,
     phase: RunPhase | None = None,
     termination_reason: str | None = None,
+    terminal_tool: str | None = None,
 ) -> None:
     """Update the live lifecycle view and compatible state metadata."""
 
@@ -1059,6 +1060,16 @@ def _set_run_lifecycle(
         loop_ctx.termination_reason = termination_reason
 
     state = loop_ctx.state
+    if loop_ctx.phase is RunPhase.STARTING:
+        try:
+            setattr(state, "_looplet_run_stats", {"llm_calls": 0})
+        except AttributeError:
+            pass
+    if loop_ctx.phase is RunPhase.STARTING or terminal_tool is not None:
+        try:
+            setattr(state, "_accepted_terminal_tool", terminal_tool)
+        except AttributeError:
+            pass
     for name, value in (
         ("run_status", loop_ctx.status.value),
         ("run_phase", loop_ctx.phase.value),
@@ -1078,6 +1089,20 @@ def _set_run_lifecycle(
         )
         if loop_ctx.termination_reason is not None:
             metadata["termination_reason"] = loop_ctx.termination_reason
+
+
+def _record_run_stats(state: Any, *, llm_calls: int, duration_ms: float | None = None) -> None:
+    """Retain host-only measurements without changing model/tool metadata."""
+    stats = getattr(state, "_looplet_run_stats", None)
+    if not isinstance(stats, dict):
+        stats = {}
+        try:
+            setattr(state, "_looplet_run_stats", stats)
+        except AttributeError:
+            return
+    stats["llm_calls"] = llm_calls
+    if duration_ms is not None:
+        stats["duration_ms"] = duration_ms
 
 
 def _record_policy_decision(state: Any, decision: Any) -> None:
@@ -2984,6 +3009,7 @@ def _composable_loop_impl(
                 config.tracer.end_span(_llm_span)
             llm_calls += 1
             # Emit LLMCallEndEvent
+            _record_run_stats(state, llm_calls=llm_calls)
             if stream is not None and _LLMCallEndEvent is not None:
                 stream.emit(
                     _LLMCallEndEvent(
@@ -3040,6 +3066,7 @@ def _composable_loop_impl(
                 native_policy=native_policy,
             )
             llm_calls += recovery_state.get("_last_recovery_llm_calls", 0)
+            _record_run_stats(state, llm_calls=llm_calls)
             llm_result = LLMResult(raw_response)
 
         raw_response = llm_result.text
@@ -3194,6 +3221,7 @@ def _composable_loop_impl(
                     generate_kwargs=config.generate_kwargs or None,
                 )
                 llm_calls += 1
+                _record_run_stats(state, llm_calls=llm_calls)
                 if recovery_result.ok:
                     tool_calls = parse_multi_tool_calls(recovery_result.text)
 
@@ -3735,6 +3763,7 @@ def _composable_loop_impl(
                     status=RunStatus.COMPLETED,
                     phase=RunPhase.TERMINAL,
                     termination_reason="done",
+                    terminal_tool=tool_call.tool,
                 )
                 _notify_post_step(hooks, state, session_log, cur_step)
                 # Save checkpoint after done step (after yield, matching non-done pattern)
@@ -3825,6 +3854,8 @@ def _composable_loop_impl(
         except AttributeError:
             pass
 
+    _record_run_stats(state, llm_calls=llm_calls)
+
     # Fire STOP - event-style hooks see termination reason before
     # on_loop_end cleanup runs. Return values are ignored (the loop
     # is already exiting); hooks should use on_loop_end for llm-call
@@ -3843,6 +3874,7 @@ def _composable_loop_impl(
             extra = hook.on_loop_end(state, session_log, context, llm)
             if isinstance(extra, int):
                 llm_calls += extra
+                _record_run_stats(state, llm_calls=llm_calls)
 
     # Emit LoopEndEvent - skip if StreamingHook already emits it
     if stream is not None and _LoopEndEvent is not None and not _has_streaming_hook:
@@ -3856,6 +3888,7 @@ def _composable_loop_impl(
 
     # Build trace via injected callable
     elapsed = (time.time() - t0) * 1000
+    _record_run_stats(state, llm_calls=llm_calls, duration_ms=elapsed)
     _build_trace_fn = config.resolve_callable("build_trace")
     if _build_trace_fn is not None:
         # Pass ``context`` through when the callable's signature

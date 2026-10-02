@@ -31,6 +31,29 @@ from looplet import (
 from looplet.provenance import TrajectoryRecorder
 
 
+def test_eval_diagnostics_omit_protected_case_artifacts_and_scores(tmp_path: Path) -> None:
+    context = EvalContext(
+        steps=[],
+        task={"secret": "protected-task"},
+        final_output={"answer": "protected-output"},
+        artifacts={"expected": "protected-artifact"},
+        stop_reason="done",
+        metadata={"run_status": "completed", "run_phase": "terminal", "run_id": "shared"},
+    )
+    record = EvalRunRecord(
+        case=EvalCase(id="case", task={}, expected={"answer": "protected-answer"}),
+        context=context,
+        results=[EvalResult(name="protected-grader", score=0.0)],
+        directory=tmp_path,
+    )
+    diagnostic = record.diagnostics()
+    assert diagnostic == context.diagnostics()
+    assert diagnostic["completed"] is True
+    assert diagnostic["run_id"] == "shared"
+    assert "protected" not in json.dumps(diagnostic)
+    assert record.results[0].score == 0.0
+
+
 class _FakeRecorder:
     """Stand-in for TrajectoryRecorder.save - writes the trajectory.json
     + steps/ layout that the real recorder produces, without driving a

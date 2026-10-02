@@ -28,6 +28,12 @@ def _failed_runtime_result(
     envelope: RunEnvelope,
     exc: BaseException,
 ) -> RunResult:
+    state_metadata = getattr(state, "metadata", {})
+    metadata = dict(state_metadata) if isinstance(state_metadata, dict) else {}
+    stats = getattr(state, "_looplet_run_stats", None)
+    if isinstance(stats, dict):
+        metadata["looplet_run_stats"] = dict(stats)
+    metadata["error"] = f"{type(exc).__name__}: {exc}"
     return RunResult(
         status=RunStatus.FAILED,
         phase=RunPhase.TERMINAL,
@@ -35,7 +41,7 @@ def _failed_runtime_result(
         output=None,
         steps=tuple(getattr(state, "steps", ())),
         run_envelope=envelope,
-        metadata={"error": f"{type(exc).__name__}: {exc}"},
+        metadata=metadata,
     )
 
 

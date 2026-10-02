@@ -119,14 +119,21 @@ class RunResult:
         state: Any,
         *,
         output: Any | None = None,
-        tool_name: str = "done",
+        tool_name: str | None = None,
         steps: list["Step"] | tuple["Step", ...] | None = None,
     ) -> "RunResult":
-        """Build a result from a live ``AgentState`` implementation."""
+        """Build a result, selecting the actual accepted terminal by default.
+
+        Explicit ``tool_name`` selections preserve legacy collector behavior.
+        States without an acceptance record retain the ``done`` fallback.
+        """
         from looplet.done_steps import done_output  # noqa: PLC0415
 
         metadata = getattr(state, "metadata", {})
         metadata_copy = dict(metadata) if isinstance(metadata, dict) else {}
+        stats = getattr(state, "_looplet_run_stats", None)
+        if isinstance(stats, dict):
+            metadata_copy["looplet_run_stats"] = dict(stats)
         raw_status = getattr(state, "run_status", None)
         if raw_status is None:
             raw_status = metadata_copy.get("run_status", RunStatus.CREATED)
@@ -141,15 +148,29 @@ class RunResult:
         if reason is None:
             reason = metadata_copy.get("termination_reason")
         selected_steps = tuple(steps if steps is not None else getattr(state, "steps", ()))
+        selected_tool = (
+            tool_name
+            if tool_name is not None
+            else getattr(state, "_accepted_terminal_tool", "done")
+        )
+        selected_output = output
+        if selected_output is None and selected_tool is not None:
+            selected_output = done_output(state, tool_name=selected_tool)
         return cls(
             status=status,
             phase=phase,
             termination_reason=str(reason) if reason is not None else None,
-            output=done_output(state, tool_name=tool_name) if output is None else output,
+            output=selected_output,
             steps=selected_steps,
             run_envelope=getattr(state, "run_envelope", None),
             metadata=metadata_copy,
         )
+
+    def diagnostics(self) -> dict[str, Any]:
+        """Return the content-redacted diagnostic view shared with saved records."""
+        from looplet.run_records import run_diagnostics
+
+        return run_diagnostics(self)
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-friendly host summary."""

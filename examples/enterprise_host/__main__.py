@@ -13,6 +13,7 @@ from looplet import (
     PermissionEngine,
     PermissionHook,
     RunEnvelope,
+    RunResult,
     SkillRuntime,
     load_skill_bundle,
     run_skill_bundle,
@@ -94,6 +95,7 @@ def run_host(
                 preset=preset,
             )
         )
+        result = RunResult.from_state(preset.state, steps=steps)
         return {
             "run_envelope": envelope.to_dict(),
             "status": getattr(preset.state, "run_status", None),
@@ -104,6 +106,9 @@ def run_host(
             ),
             "checkpoint_dir": str(root / "checkpoints"),
             "trace_dir": str(root / "traces"),
+            "diagnostics": result.diagnostics(),
+            "configuration": preset.config.explain(),
+            "terminal_outcomes": list(preset.config.resolve_terminal_outcomes()),
         }
     finally:
         preset.close()

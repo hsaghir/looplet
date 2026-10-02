@@ -27,6 +27,55 @@ def test_every_example_cartridge_has_a_valid_owned_preset(cartridge, tmp_path):
             assert spec.to_api_schema()["input_schema"] == spec.to_json_schema()
 
 
+@pytest.mark.parametrize("cartridge", CARTRIDGES, ids=lambda path: str(path.relative_to(EXAMPLES)))
+def test_every_example_cartridge_has_an_offline_declaration_view(cartridge, tmp_path):
+    from looplet.cartridge import inspect_cartridge
+
+    report = inspect_cartridge(cartridge, runtime={"project_root": str(tmp_path)})
+    assert report["mode"] == "declaration-only"
+    assert report["runtime_validated"] is False
+    assert isinstance(report["tools"], list)
+    assert "config" in report
+    json.dumps(report, allow_nan=False)
+
+
+@pytest.mark.parametrize("approval", [None, "no", "yes"])
+def test_scripted_demo_changes_real_rows_only_after_approval(approval):
+    from looplet.examples.scripted_demo import build_tools
+    from looplet.types import ToolCall, ToolContext
+
+    rows = [
+        {"id": 1, "status": "paid"},
+        {"id": 2, "status": "cancelled"},
+        {"id": 3, "status": "cancelled"},
+    ]
+    original = list(rows)
+    tools = build_tools(rows)
+    before = tools.dispatch(ToolCall(tool="count_by_status", args={}))
+    assert before.data == {"counts": {"paid": 1, "cancelled": 2}}
+    context = ToolContext(request_approval=lambda prompt, options: approval)
+    result = tools.dispatch(
+        ToolCall(tool="delete_rows", args={"where_status": "cancelled"}), ctx=context
+    )
+    assert result.error is None
+    if approval == "yes":
+        assert rows == [original[0]]
+        assert result.data == {"deleted": 2, "remaining": 1}
+        assert tools.dispatch(ToolCall(tool="count_by_status", args={})).data == {
+            "counts": {"paid": 1}
+        }
+    else:
+        assert rows == original
+
+
+def test_scripted_demo_executes_four_steps_without_waiting(monkeypatch, capsys):
+    from looplet.examples import scripted_demo
+
+    monkeypatch.setattr(scripted_demo.time, "sleep", lambda delay: None)
+    assert scripted_demo.main([]) == 0
+    assert "1 approval prompt, 4 tools" in capsys.readouterr().out
+
+
 def _snippet(relative):
     path = EXAMPLES / "snippets" / relative
     spec = importlib.util.spec_from_file_location(path.stem, path)

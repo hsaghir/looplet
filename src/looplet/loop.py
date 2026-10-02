@@ -1036,6 +1036,7 @@ def _set_run_lifecycle(
     status: RunStatus | None = None,
     phase: RunPhase | None = None,
     termination_reason: str | None = None,
+    terminal_tool: str | None = None,
 ) -> None:
     """Update the live lifecycle view and compatible state metadata."""
 
@@ -1056,6 +1057,11 @@ def _set_run_lifecycle(
         loop_ctx.termination_reason = termination_reason
 
     state = loop_ctx.state
+    if loop_ctx.phase is RunPhase.STARTING or terminal_tool is not None:
+        try:
+            setattr(state, "_accepted_terminal_tool", terminal_tool)
+        except AttributeError:
+            pass
     for name, value in (
         ("run_status", loop_ctx.status.value),
         ("run_phase", loop_ctx.phase.value),
@@ -3753,6 +3759,7 @@ def _composable_loop_impl(
                     status=RunStatus.COMPLETED,
                     phase=RunPhase.TERMINAL,
                     termination_reason="done",
+                    terminal_tool=tool_call.tool,
                 )
                 _notify_post_step(hooks, state, session_log, cur_step)
                 # Save checkpoint after done step (after yield, matching non-done pattern)

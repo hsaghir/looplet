@@ -157,15 +157,31 @@ def test_failed_runtime_preserves_observed_usage_and_steps() -> None:
 
 @pytest.mark.parametrize("async_run", [False, True])
 @pytest.mark.parametrize("entrypoint", ["direct", "preset", "runtime"])
-async def test_diagnostics_share_observed_counters_across_entrypoints(async_run, entrypoint):
+@pytest.mark.parametrize("terminal_name", ["done", "escalate"])
+async def test_diagnostics_share_observed_counters_across_entrypoints(
+    async_run, entrypoint, terminal_name
+):
+    import json
+
     from looplet import EvalHook, RunEnvelope, RunResult, async_composable_loop, composable_loop
+    from looplet.tools import ToolSpec
 
     preset = _preset(use_native_tools=False)
+    if terminal_name == "escalate":
+        preset.config.done_tools = [terminal_name]
+        preset.tools.register(
+            ToolSpec(
+                name=terminal_name,
+                description="Escalate",
+                parameters={"summary": "str"},
+                execute=lambda *, summary: {"summary": summary},
+            )
+        )
     eval_hook = EvalHook(evaluators=[])
     preset.hooks.append(eval_hook)
     preset.config.run_envelope = RunEnvelope(run_id=f"{entrypoint}-{async_run}")
     backend = (AsyncMockLLMBackend if async_run else MockLLMBackend)(
-        ['{"tool":"done","args":{"summary":"ok"}}']
+        [json.dumps({"tool": terminal_name, "args": {"summary": "ok"}})]
     )
     try:
         if entrypoint == "runtime":
@@ -202,7 +218,12 @@ async def test_diagnostics_share_observed_counters_across_entrypoints(async_run,
         assert diagnostic["duration_ms"] >= 0
         assert diagnostic["usage_known"] is False
         assert diagnostic["cost_usd"] is None
+        assert result.output is not None
+        assert result.output["summary"] == "ok"
+        if terminal_name == "escalate":
+            assert RunResult.from_state(preset.state, tool_name="done").output is None
         assert eval_hook.context is not None
+        assert eval_hook.context.final_output["summary"] == "ok"
         assert eval_hook.context.diagnostics()["llm_calls"] == diagnostic["llm_calls"]
         assert eval_hook.context.diagnostics()["run_id"] == diagnostic["run_id"]
     finally:

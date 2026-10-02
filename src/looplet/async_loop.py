@@ -1631,6 +1631,7 @@ async def _async_composable_loop_impl(
                     status=RunStatus.COMPLETED,
                     phase=RunPhase.TERMINAL,
                     termination_reason="done",
+                    terminal_tool=tool_call.tool,
                 )
                 await _notify_post_step_async(hooks, state, session_log, cur_step)
                 _save_checkpoint(cur_step, status="done")

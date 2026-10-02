@@ -98,6 +98,10 @@ trajectory artifacts.
 
 ## Shared execution diagnostics
 
+`RunResult.from_state()` selects the actual accepted terminal tool by default,
+including secondary host-side outcomes. An explicit `tool_name=` selection
+retains legacy collector behavior; old states still fall back to `done`.
+
 `RunResult.diagnostics()`, `RunRecord.diagnostics()`,
 `EvalContext.diagnostics()`, and `EvalRunRecord.diagnostics()` expose the same
 `looplet.run-diagnostics.v1` content-redacted view. It reports existing run

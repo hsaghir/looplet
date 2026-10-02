@@ -13,7 +13,7 @@ What the GIF shows:
    loop pauses on an ``APPROVAL NEEDED`` prompt. A scripted ``"yes"``
    lets it resume - the same flow your ops engineer, Slack bot, or
    HITL pipeline would use.
-3. The loop returns cleanly. All 5 steps are visible. No magic.
+3. The loop returns cleanly. All 4 steps are visible. No magic.
 
 For a real usage example, see instead:
 
@@ -35,6 +35,7 @@ from __future__ import annotations
 import json
 import sys
 import time
+from collections import Counter
 from typing import Any
 
 from looplet import (
@@ -79,7 +80,7 @@ def build_tools(rows: list[dict[str, Any]]):
 
     @tool(description="Count rows grouped by status.")
     def count_by_status() -> dict:
-        return {"counts": {"paid": 2, "cancelled": 2}}
+        return {"counts": dict(Counter(row["status"] for row in rows))}
 
     @tool(description="Destructive row deletion that requires approval.")
     def delete_rows(*, where_status: str, ctx: Any = None) -> dict:
@@ -102,7 +103,9 @@ def build_tools(rows: list[dict[str, Any]]):
         if reply != "yes":
             return {"deleted": 0, "reason": f"denied: {reply!r}"}
         survivors = [row for row in rows if row["status"] != where_status]
-        return {"deleted": len(rows) - len(survivors), "remaining": len(survivors)}
+        deleted = len(rows) - len(survivors)
+        rows[:] = survivors
+        return {"deleted": deleted, "remaining": len(rows)}
 
     @tool(description="Finish with a summary.")
     def done(*, summary: str) -> dict:

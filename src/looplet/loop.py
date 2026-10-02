@@ -1755,17 +1755,13 @@ def _cache_key(method: Any) -> Any:
 
 def _accepts_tool_call_kwarg(method: Any) -> bool:
     key = _cache_key(method)
-    try:
-        cached = _CHECK_DONE_ACCEPTS_TOOL_CALL.get(key)
-    except TypeError:
-        cached = None
+    cacheable = inspect.isfunction(key)
+    cached = _CHECK_DONE_ACCEPTS_TOOL_CALL.get(key) if cacheable else None
     if cached is not None:
         return cached
     accepts = _hook_accepts_keyword(method, "tool_call")
-    try:
+    if cacheable:
         _CHECK_DONE_ACCEPTS_TOOL_CALL[key] = accepts
-    except TypeError:
-        pass
     return accepts
 
 

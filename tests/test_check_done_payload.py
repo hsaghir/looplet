@@ -260,3 +260,34 @@ def test_signature_cache_does_not_retain_local_hook_functions() -> None:
     gc.collect()
 
     assert function_ref() is None
+
+
+@pytest.mark.parametrize("legacy_adapter", [False, True])
+def test_equal_callable_objects_do_not_share_signature_plans(legacy_adapter: bool) -> None:
+    from looplet.hook_decision import _hook_accepts_keyword
+    from looplet.loop import _accepts_tool_call_kwarg
+
+    class ComparableCallback:
+        def __hash__(self):
+            return 7
+
+        def __eq__(self, other):
+            return isinstance(other, ComparableCallback)
+
+    class WithKeyword(ComparableCallback):
+        def __call__(self, *, tool_call=None):
+            return None
+
+    class WithoutKeyword(ComparableCallback):
+        def __call__(self):
+            return None
+
+    with_keyword = WithKeyword()
+    without_keyword = WithoutKeyword()
+    assert with_keyword == without_keyword
+    if legacy_adapter:
+        assert _accepts_tool_call_kwarg(with_keyword)
+        assert not _accepts_tool_call_kwarg(without_keyword)
+    else:
+        assert _hook_accepts_keyword(with_keyword, "tool_call")
+        assert not _hook_accepts_keyword(without_keyword, "tool_call")

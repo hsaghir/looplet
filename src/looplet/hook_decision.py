@@ -418,10 +418,8 @@ _HOOK_CALL_PLANS: WeakKeyDictionary[Any, tuple[frozenset[str], bool]] = WeakKeyD
 def _hook_accepts_keyword(method: Any, name: str) -> bool:
     """Inspect optional keyword support using callable identity, not method IDs."""
     key = getattr(method, "__func__", method)
-    try:
-        plan = _HOOK_CALL_PLANS.get(key)
-    except TypeError:
-        plan = None
+    cacheable = inspect.isfunction(key)
+    plan = _HOOK_CALL_PLANS.get(key) if cacheable else None
     if plan is None:
         try:
             parameters = inspect.signature(method).parameters.values()
@@ -440,10 +438,8 @@ def _hook_accepts_keyword(method: Any, name: str) -> bool:
                 ),
                 any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters),
             )
-        try:
+        if cacheable:
             _HOOK_CALL_PLANS[key] = plan
-        except TypeError:
-            pass
     return name in plan[0] or plan[1]
 
 

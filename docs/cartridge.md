@@ -130,8 +130,8 @@ Traditional callback names and `on_event(payload)` remain supported without
 mandatory inheritance. Both loop drivers use the same optional-keyword call
 plan: `pre_loop(..., tools=...)` and `check_done(..., tool_call=...)` receive
 those values only when their signature accepts the keyword or `**kwargs`.
-Legacy callbacks keep their positional arguments. Plans use weak callable
-identities rather than ephemeral bound-method IDs.
+Legacy callbacks keep their positional arguments. Ordinary functions use
+weakly cached identity plans; arbitrary callable objects are inspected directly.
 
 Bootstrap `pre_loop` remains direct; `SESSION_START` owns its remote lifecycle
 event. Transport decisions retain their complete `HookDecision` payload.

@@ -38,6 +38,13 @@ def test_terminal_outcome_table_preserves_legacy_precedence_and_schema_identity(
     assert config.resolve_terminal_outcomes()["abort"] is None
 
 
+def test_terminal_outcomes_preserve_legacy_null_plural_settings() -> None:
+    from looplet.loop import LoopConfig
+
+    config = LoopConfig(done_tool="report", done_tools=None, done_tool_schemas=None)
+    assert config.resolve_terminal_outcomes() == {"report": None}
+
+
 def _make_step(
     number: int,
     tool: str,

@@ -79,6 +79,122 @@ def _make_scripted_llm(responses: list[str]):
 # ── LoopConfig new fields ────────────────────────────────────────
 
 
+@pytest.mark.parametrize("asynchronous", [False, True])
+def test_shared_configuration_resolution_preserves_live_config_and_budget(asynchronous):
+    import asyncio
+
+    from looplet.async_loop import async_composable_loop
+    from looplet.loop import LoopConfig, composable_loop
+    from looplet.testing import AsyncMockLLMBackend, MockLLMBackend
+    from looplet.types import CancelToken, DefaultState
+
+    token = CancelToken()
+    config = LoopConfig(
+        max_steps=9, system_prompt="original", cancel_token=token, use_native_tools=False
+    )
+    state = DefaultState(max_steps=3)
+    bound = []
+
+    class ObserveConfig:
+        def bind(self, ctx):
+            bound.append(ctx.config)
+
+        def pre_loop(self, state, session_log, context):
+            return None
+
+    responses = ['{"tool":"noop","args":{}}'] * 4
+    backend = AsyncMockLLMBackend(responses) if asynchronous else MockLLMBackend(responses)
+    kwargs = dict(
+        llm=backend,
+        tools=_make_registry([("noop", lambda: {"ok": True})]),
+        config=config,
+        state=state,
+        hooks=[ObserveConfig()],
+        max_steps=3,
+        system_prompt="effective",
+    )
+    if asynchronous:
+
+        async def consume():
+            return [step async for step in async_composable_loop(**kwargs)]
+
+        steps = asyncio.run(consume())
+    else:
+        steps = list(composable_loop(**kwargs))
+
+    assert len(steps) == 3
+    assert bound == [config]
+    assert bound[0] is config
+    assert config.max_steps == state.max_steps == 3
+    assert config.system_prompt == "effective"
+    assert config.cancel_token is token
+
+
+def test_explicit_callback_does_not_read_unselected_domain():
+    from looplet.loop import DomainAdapter, LoopConfig
+
+    class UnavailableDomain(DomainAdapter):
+        def __getattribute__(self, name):
+            if name == "build_briefing":
+                raise AssertionError("the unselected domain callback must not be read")
+            return super().__getattribute__(name)
+
+    def briefing(state):
+        return "explicit briefing"
+
+    config = LoopConfig(build_briefing=briefing, domain=UnavailableDomain())
+    assert config.resolve_callable("build_briefing") is briefing
+
+
+def test_shared_configuration_resolution_accepts_empty_prompt_override():
+    from looplet.loop import LoopConfig, _resolve_loop_config
+
+    config = LoopConfig(system_prompt="original")
+    assert _resolve_loop_config(config, system_prompt="") is config
+    assert config.system_prompt == ""
+    assert _resolve_loop_config(None).max_steps == LoopConfig().max_steps
+
+
+def test_configuration_explanation_resolves_callbacks_and_hides_sensitive_values():
+    from looplet.loop import DomainAdapter, LoopConfig, _resolve_loop_config
+
+    def adapted_prompt(**kwargs):
+        return "adapted"
+
+    config = LoopConfig(
+        system_prompt="private prompt",
+        generate_kwargs={"api_key": "private-key"},
+        tool_metadata={"secret": "private-metadata"},
+        domain=DomainAdapter(build_prompt=adapted_prompt),
+    )
+    assert config.resolve_callable("build_prompt") is adapted_prompt
+    explained = config.explain()
+    assert explained["build_prompt"]["source"] == "domain"
+    assert explained["system_prompt"]["redacted"]
+    assert "private" not in json.dumps(explained)
+    assert config.explain(include_sensitive=True)["system_prompt"]["value"] == "private prompt"
+    _resolve_loop_config(config, max_steps=7)
+    assert config.explain()["max_steps"] == {
+        "value": 7,
+        "source": "loop argument",
+        "redacted": False,
+    }
+    config.max_steps = 8
+    assert config.explain()["max_steps"]["source"] == "host mutation"
+
+
+def test_configuration_explanation_does_not_call_opaque_components():
+    from looplet.loop import LoopConfig
+
+    class Opaque:
+        def __repr__(self):
+            raise AssertionError("must not inspect executable state")
+
+    config = LoopConfig(compact_service=Opaque())
+    description = config.explain()["compact_service"]["value"]
+    assert description["type"].endswith("Opaque")
+
+
 def test_loopconfig_has_router_field():
     from looplet.loop import LoopConfig
 

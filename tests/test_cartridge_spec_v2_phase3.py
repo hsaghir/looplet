@@ -117,20 +117,25 @@ def test_declaration_inspection_rejects_malformed_builtin_hooks(tmp_path: Path, 
         inspect_cartridge(tmp_path)
 
 
-def test_declaration_inspection_redacts_protocol_connection_config(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "secret", ["connection-secret", "@connection-secret", "${ref:connection-secret}"]
+)
+def test_declaration_inspection_redacts_protocol_connection_config(
+    tmp_path: Path, secret: str
+) -> None:
     from looplet.cartridge import inspect_cartridge
 
     _write_v_cartridge(tmp_path, schema_version=2, config_text="max_steps: 4\n")
     (tmp_path / "runtime.yaml").write_text(
-        "mcp_servers:\n  remote:\n    command: not-a-program\n    env:\n      TOKEN: connection-secret\n"
+        f"mcp_servers:\n  remote:\n    command: not-a-program\n    env:\n      TOKEN: {json.dumps(secret)}\n"
     )
     report = inspect_cartridge(tmp_path)
-    assert "connection-secret" not in json.dumps(report)
+    assert secret not in json.dumps(report)
     assert (
         inspect_cartridge(tmp_path, include_sensitive=True)["config"]["mcp_servers"]["remote"][
             "env"
         ]["TOKEN"]
-        == "connection-secret"
+        == secret
     )
 
 

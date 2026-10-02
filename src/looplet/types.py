@@ -151,13 +151,16 @@ class RunResult:
         selected_tool = (
             tool_name
             if tool_name is not None
-            else getattr(state, "_accepted_terminal_tool", None) or "done"
+            else getattr(state, "_accepted_terminal_tool", "done")
         )
+        selected_output = output
+        if selected_output is None and selected_tool is not None:
+            selected_output = done_output(state, tool_name=selected_tool)
         return cls(
             status=status,
             phase=phase,
             termination_reason=str(reason) if reason is not None else None,
-            output=done_output(state, tool_name=selected_tool) if output is None else output,
+            output=selected_output,
             steps=selected_steps,
             run_envelope=getattr(state, "run_envelope", None),
             metadata=metadata_copy,

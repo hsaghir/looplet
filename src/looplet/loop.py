@@ -1057,6 +1057,11 @@ def _set_run_lifecycle(
         loop_ctx.termination_reason = termination_reason
 
     state = loop_ctx.state
+    if loop_ctx.phase is RunPhase.STARTING:
+        try:
+            setattr(state, "_looplet_run_stats", {"llm_calls": 0})
+        except AttributeError:
+            pass
     if loop_ctx.phase is RunPhase.STARTING or terminal_tool is not None:
         try:
             setattr(state, "_accepted_terminal_tool", terminal_tool)

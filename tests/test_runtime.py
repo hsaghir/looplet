@@ -118,6 +118,52 @@ def test_diagnostics_count_typed_errors_and_reject_invalid_measurements() -> Non
     assert "private" not in json.dumps(diagnostic, allow_nan=False)
 
 
+def test_result_does_not_promote_historical_output_without_new_acceptance() -> None:
+    from looplet import RunPhase, RunResult
+    from looplet.types import Step, ToolCall, ToolResult
+
+    state = DefaultState()
+    state.steps.append(
+        Step(
+            number=1,
+            tool_call=ToolCall(tool="done", args={"summary": "old"}),
+            tool_result=ToolResult(tool="done", args_summary="", data={"summary": "old"}),
+        )
+    )
+    state.run_status = RunStatus.CANCELLED
+    state.run_phase = RunPhase.TERMINAL
+    state._accepted_terminal_tool = None
+    assert RunResult.from_state(state).output is None
+    assert RunResult.from_state(state, tool_name="done").output == {"summary": "old"}
+
+
+def test_failed_bootstrap_does_not_reuse_previous_run_measurements() -> None:
+    from looplet import RunResult, composable_loop
+
+    state = DefaultState()
+    state._looplet_run_stats = {"llm_calls": 999, "duration_ms": 999}
+
+    class BrokenBootstrap:
+        def pre_loop(self, *args):
+            raise RuntimeError("bootstrap failed")
+
+    tools = BaseToolRegistry()
+    register_done_tool(tools)
+    with pytest.raises(RuntimeError, match="bootstrap failed"):
+        list(
+            composable_loop(
+                llm=MockLLMBackend([]),
+                tools=tools,
+                state=state,
+                config=LoopConfig(use_native_tools=False),
+                hooks=[BrokenBootstrap()],
+            )
+        )
+    diagnostic = RunResult.from_state(state).diagnostics()
+    assert diagnostic["llm_calls"] == 0
+    assert diagnostic["duration_ms"] is None
+
+
 def test_active_record_retains_unmatched_model_event_and_phase() -> None:
     from looplet import RunEnvelope
     from looplet.run_records import RunEvent, RunRecord

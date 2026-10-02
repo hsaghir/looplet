@@ -79,6 +79,22 @@ def test_blueprint_from_bundle_closes_temporary_preset(monkeypatch, tmp_path):
     assert len(closed) == 1
 
 
+def test_bundle_declaration_blueprint_never_imports_entrypoint(tmp_path, monkeypatch):
+    from looplet import blueprints
+
+    (tmp_path / "SKILL.md").write_text(
+        "---\nname: offline\ndescription: Offline bundle\n---\n\nInstructions\n"
+    )
+    (tmp_path / "looplet.py").write_text('raise AssertionError("must not import entrypoint")\n')
+    monkeypatch.setattr(blueprints, "load_skill_bundle", lambda *args: pytest.fail("must not load"))
+    blueprint = blueprint_from_bundle(tmp_path, instantiate=False)
+    assert blueprint.name == "offline"
+    assert blueprint.source.kind == "bundle-declaration"
+    assert blueprint.metadata["runtime_validated"] is False
+    assert blueprint.metadata["runtime_required"] == [str(tmp_path / "looplet.py")]
+    assert not compare_blueprints(blueprint, blueprint, ignore_metadata=True).ok
+
+
 def test_preset_blueprint_is_the_canonical_introspection_path(tmp_path):
     runtime = SkillRuntime(workspace=tmp_path / "workspace", max_steps=8)
     preset = load_skill_bundle(CODER_BUNDLE).build_preset(runtime)

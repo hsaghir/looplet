@@ -70,10 +70,41 @@ def test_describe_closes_loaded_preset(tmp_path, monkeypatch):
     preset.close = lambda: closed.append(True)  # type: ignore[method-assign]
     monkeypatch.setattr(cartridge, "cartridge_to_preset", lambda *args, **kwargs: preset)
 
-    result = spec_commands.cmd_describe(SimpleNamespace(cartridge=root))
+    result = spec_commands.cmd_describe(SimpleNamespace(cartridge=root, instantiate=True))
 
     assert result == 0
     assert closed == [True]
+
+
+def test_describe_reads_declarations_without_loading_code(tmp_path, monkeypatch, capsys):
+    from looplet import cartridge
+
+    root = tmp_path / "agent.cartridge"
+    (root / "resources").mkdir(parents=True)
+    (root / "hooks" / "guard").mkdir(parents=True)
+    (root / "cartridge.json").write_text('{"name":"agent","schema_version":2}')
+    (root / "config.yaml").write_text(
+        "max_steps: 3\nmcp_servers:\n  remote:\n    command: missing-executable\n"
+    )
+    (root / "resources" / "private.py").write_text(
+        'raise AssertionError("must not import resources")\n'
+    )
+    (root / "hooks" / "guard" / "hook.py").write_text(
+        'raise AssertionError("must not import hooks")\n'
+    )
+    (root / "hooks" / "guard" / "config.yaml").write_text("class_name: Guard\n")
+
+    def unexpected_load(*args, **kwargs):
+        raise AssertionError("must not instantiate")
+
+    monkeypatch.setattr(cartridge, "cartridge_to_preset", unexpected_load)
+    assert spec_commands.cmd_describe(SimpleNamespace(cartridge=root, json=True)) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["mode"] == "declaration-only"
+    assert report["runtime_validated"] is False
+    assert report["resources"] == ["private"]
+    assert "mcp:remote" in report["runtime_required"]
+    assert "resources/private.py" in report["runtime_required"]
 
 
 def test_text_style_skips_deleted_tracked_path(tmp_path, monkeypatch):

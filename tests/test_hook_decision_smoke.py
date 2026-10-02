@@ -33,6 +33,43 @@ from looplet.tools import ToolSpec
 from looplet.types import ToolResult
 
 
+@pytest.mark.parametrize("is_async", [False, True])
+async def test_event_dispatch_preserves_deduplication_errors_and_live_order(is_async: bool, caplog):
+    from looplet.loop import emit_event, emit_event_async
+
+    seen = []
+    hooks = []
+
+    class DualHook:
+        def pre_dispatch(self, *args):
+            return None
+
+        def on_event(self, payload):
+            pytest.fail("method-equivalent event must be deduplicated")
+
+    class BrokenHook:
+        def on_event(self, payload):
+            raise RuntimeError("observer failure")
+
+    class LateHook:
+        def on_event(self, payload):
+            seen.append("late")
+
+    class RegisterHook:
+        def on_event(self, payload):
+            seen.append("register")
+            hooks.append(LateHook())
+
+    hooks.extend([DualHook(), BrokenHook(), RegisterHook()])
+    if is_async:
+        decisions = await emit_event_async(hooks, LifecycleEvent.PRE_TOOL_USE)
+    else:
+        decisions = emit_event(hooks, LifecycleEvent.PRE_TOOL_USE)
+    assert decisions == []
+    assert seen == ["register", "late"]
+    assert "observer failure" in caplog.text
+
+
 class TestHookDecisionDataclass:
     def test_defaults_are_noop(self):
         d = HookDecision()

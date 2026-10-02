@@ -26,9 +26,11 @@ release for backward compatibility. New code should return
 
 from __future__ import annotations
 
+import inspect
 import logging
 from dataclasses import dataclass, field, fields
 from typing import Any
+from weakref import WeakKeyDictionary
 
 from looplet.types import PolicyDecision, ToolResult
 
@@ -410,12 +412,62 @@ def RewriteThread(
 # ── Legacy → HookDecision coercion ─────────────────────────────
 
 
-def _invoke_hook(hook: Any, slot: str, *args: Any, **kwargs: Any) -> Any:
-    """Keep transport decisions intact without changing legacy direct calls."""
+_HOOK_CALL_PLANS: WeakKeyDictionary[Any, tuple[frozenset[str], bool]] = WeakKeyDictionary()
+
+
+def _hook_accepts_keyword(method: Any, name: str) -> bool:
+    """Inspect optional keyword support using callable identity, not method IDs."""
+    key = getattr(method, "__func__", method)
+    cacheable = inspect.isfunction(key)
+    plan = _HOOK_CALL_PLANS.get(key) if cacheable else None
+    if plan is None:
+        try:
+            parameters = inspect.signature(method).parameters.values()
+        except (TypeError, ValueError):
+            plan = (frozenset(), False)
+        else:
+            plan = (
+                frozenset(
+                    parameter.name
+                    for parameter in parameters
+                    if parameter.kind
+                    in (
+                        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                        inspect.Parameter.KEYWORD_ONLY,
+                    )
+                ),
+                any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters),
+            )
+        if cacheable:
+            _HOOK_CALL_PLANS[key] = plan
+    return name in plan[0] or plan[1]
+
+
+def _invoke_hook(
+    hook: Any,
+    slot: str,
+    *args: Any,
+    _optional_kwargs: dict[str, Any] | None = None,
+    **kwargs: Any,
+) -> Any:
+    """Preserve transport decisions and legacy direct bootstrap calls.
+
+    ``pre_loop`` is bootstrap, not another remote SESSION_START dispatch.
+    Event transport remains owned by its dedicated lifecycle emission.
+    """
+    method = getattr(hook, slot)
+    if _optional_kwargs:
+        kwargs.update(
+            {
+                name: value
+                for name, value in _optional_kwargs.items()
+                if _hook_accepts_keyword(method, name)
+            }
+        )
     invoke = getattr(hook, "_invoke_hook_return", None)
-    if callable(invoke):
+    if slot != "pre_loop" and callable(invoke):
         return invoke(slot, *args, **kwargs)
-    return getattr(hook, slot)(*args, **kwargs)
+    return method(*args, **kwargs)
 
 
 def normalize_hook_return(

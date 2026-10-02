@@ -13,6 +13,8 @@ import gc
 import weakref
 from typing import Any
 
+import pytest
+
 from looplet import (
     BaseToolRegistry,
     Block,
@@ -161,6 +163,52 @@ def test_check_done_with_var_kwargs_signature() -> None:
     assert captured[0].tool == "done"
 
 
+def test_shared_call_plan_filters_keywords_and_preserves_transport_results() -> None:
+    from looplet.hook_decision import HookDecision, _invoke_hook
+
+    calls = []
+    decision = HookDecision(additional_context="preserved", metadata={"remote": True})
+
+    class RemoteHook:
+        def check_done(self, state, session_log, context, *, tool_call=None):
+            pytest.fail("must preserve the transport return")
+
+        def _invoke_hook_return(self, slot, *args, **kwargs):
+            calls.append((slot, args, kwargs))
+            return decision
+
+    tool_registry = object()
+    result = _invoke_hook(
+        RemoteHook(),
+        "check_done",
+        1,
+        2,
+        3,
+        _optional_kwargs={"tool_call": tool_registry, "unsupported": "not forwarded"},
+    )
+    assert result is decision
+    assert calls == [("check_done", (1, 2, 3), {"tool_call": tool_registry})]
+
+
+def test_bootstrap_uses_shared_keywords_without_duplicate_transport_dispatch() -> None:
+    from looplet.hook_decision import _invoke_hook
+
+    registry = object()
+
+    class Hook:
+        def pre_loop(self, state, session_log, context, *, tools=None):
+            assert tools is registry
+            return "bootstrapped"
+
+        def _invoke_hook_return(self, *args, **kwargs):
+            pytest.fail("SESSION_START owns remote event dispatch")
+
+    assert (
+        _invoke_hook(Hook(), "pre_loop", None, None, None, _optional_kwargs={"tools": registry})
+        == "bootstrapped"
+    )
+
+
 def test_signature_cache_keys_on_func_not_bound_method_id() -> None:
     """Regression: the ``_accepts_tool_call_kwarg`` cache must key on the
     underlying function, not the bound-method object's ``id()``. Bound
@@ -212,3 +260,34 @@ def test_signature_cache_does_not_retain_local_hook_functions() -> None:
     gc.collect()
 
     assert function_ref() is None
+
+
+@pytest.mark.parametrize("legacy_adapter", [False, True])
+def test_equal_callable_objects_do_not_share_signature_plans(legacy_adapter: bool) -> None:
+    from looplet.hook_decision import _hook_accepts_keyword
+    from looplet.loop import _accepts_tool_call_kwarg
+
+    class ComparableCallback:
+        def __hash__(self):
+            return 7
+
+        def __eq__(self, other):
+            return isinstance(other, ComparableCallback)
+
+    class WithKeyword(ComparableCallback):
+        def __call__(self, *, tool_call=None):
+            return None
+
+    class WithoutKeyword(ComparableCallback):
+        def __call__(self):
+            return None
+
+    with_keyword = WithKeyword()
+    without_keyword = WithoutKeyword()
+    assert with_keyword == without_keyword
+    if legacy_adapter:
+        assert _accepts_tool_call_kwarg(with_keyword)
+        assert not _accepts_tool_call_kwarg(without_keyword)
+    else:
+        assert _hook_accepts_keyword(with_keyword, "tool_call")
+        assert not _hook_accepts_keyword(without_keyword, "tool_call")

@@ -39,7 +39,12 @@ from looplet.checkpoint import validate_checkpoint_identity as _validate_checkpo
 from looplet.context_plan import ContextPlan, ContextSourceSelector, ScopedContextSource
 from looplet.context_projection import ContextProjection
 from looplet.history import HistoryRecorder
-from looplet.hook_decision import HookDecision, _invoke_hook, normalize_hook_return
+from looplet.hook_decision import (
+    HookDecision,
+    _hook_accepts_keyword,
+    _invoke_hook,
+    normalize_hook_return,
+)
 from looplet.native_tools import NativeToolPolicy
 from looplet.parse import parse_multi_tool_calls, to_text
 from looplet.prompt_preparation import PreparedPrompt, prepare_prompt, render_projection
@@ -1289,6 +1294,18 @@ class _ScopedLLMProxy:
             call.scope = self._scope
 
 
+def _event_hook_callbacks(hooks: list[Any], event: Any) -> Generator[tuple[Any, Any], None, None]:
+    """Select ordered event subscribers without invoking or flattening effects."""
+    for hook in hooks:
+        callback = getattr(hook, "on_event", None)
+        if callback is None:
+            continue
+        equivalent = _EVENT_METHOD_EQUIV.get(event)
+        if equivalent is not None and hasattr(hook, equivalent):
+            continue
+        yield hook, callback
+
+
 def emit_event(
     hooks: list[Any],
     event: Any,
@@ -1323,16 +1340,7 @@ def emit_event(
                 envelope.to_dict() if hasattr(envelope, "to_dict") else envelope,
             )
     payload = EventPayload(event=event, **payload_kwargs)
-    for hook in hooks:
-        fn = getattr(hook, "on_event", None)
-        if fn is None:
-            continue
-        # Deduplicate: when the event has a per-method equivalent
-        # (PRE_TOOL_USE → pre_dispatch, POST_TOOL_USE/FAILURE → post_dispatch),
-        # skip hooks that implement the per-method slot - they already fired.
-        _equiv = _EVENT_METHOD_EQUIV.get(event)
-        if _equiv is not None and hasattr(hook, _equiv):
-            continue
+    for hook, fn in _event_hook_callbacks(hooks, event):
         try:
             result = fn(payload)
         except Exception:  # noqa: BLE001
@@ -1385,13 +1393,7 @@ async def emit_event_async(
                 envelope.to_dict() if hasattr(envelope, "to_dict") else envelope,
             )
     payload = EventPayload(event=event, **payload_kwargs)
-    for hook in hooks:
-        fn = getattr(hook, "on_event", None)
-        if fn is None:
-            continue
-        equivalent = _EVENT_METHOD_EQUIV.get(event)
-        if equivalent is not None and hasattr(hook, equivalent):
-            continue
+    for hook, fn in _event_hook_callbacks(hooks, event):
         try:
             result = fn(payload)
             if _inspect.isawaitable(result):
@@ -1756,27 +1758,13 @@ def _cache_key(method: Any) -> Any:
 
 def _accepts_tool_call_kwarg(method: Any) -> bool:
     key = _cache_key(method)
-    try:
-        cached = _CHECK_DONE_ACCEPTS_TOOL_CALL.get(key)
-    except TypeError:
-        cached = None
+    cacheable = inspect.isfunction(key)
+    cached = _CHECK_DONE_ACCEPTS_TOOL_CALL.get(key) if cacheable else None
     if cached is not None:
         return cached
-    import inspect  # noqa: PLC0415
-
-    try:
-        sig = inspect.signature(method)
-    except (TypeError, ValueError):
-        accepts = False
-    else:
-        params = sig.parameters
-        accepts = "tool_call" in params or any(
-            p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
-        )
-    try:
+    accepts = _hook_accepts_keyword(method, "tool_call")
+    if cacheable:
         _CHECK_DONE_ACCEPTS_TOOL_CALL[key] = accepts
-    except TypeError:
-        pass
     return accepts
 
 
@@ -1881,12 +1869,15 @@ def _call_check_done(
     """Invoke a hook's ``check_done`` with or without the ``tool_call``
     kwarg depending on its signature. Lets new gates inspect the agent's
     pending ``done()`` answer without breaking legacy hooks."""
-    method = hook.check_done
-    if _accepts_tool_call_kwarg(method):
-        return _invoke_hook(
-            hook, "check_done", state, session_log, context, step_num, tool_call=tool_call
-        )
-    return _invoke_hook(hook, "check_done", state, session_log, context, step_num)
+    return _invoke_hook(
+        hook,
+        "check_done",
+        state,
+        session_log,
+        context,
+        step_num,
+        _optional_kwargs={"tool_call": tool_call},
+    )
 
 
 # ── Hook method names (for typo detection) ──────────────────────
@@ -2711,24 +2702,9 @@ def _composable_loop_impl(
 
     for hook in hooks:
         if hasattr(hook, "pre_loop"):
-            # Sig-aware dispatch: hooks that declare ``tools=`` (or
-            # ``**kwargs``) get the live tool registry so they can
-            # register derived tools at load time. Legacy 3-arg hooks
-            # are called as before. Same pattern as ``extract_entities``
-            # and ``build_trace`` callable signature detection.
-            import inspect as _inspect  # noqa: PLC0415
-
-            try:
-                _pl_params = _inspect.signature(hook.pre_loop).parameters
-                _pl_takes_tools = "tools" in _pl_params or any(
-                    p.kind == _inspect.Parameter.VAR_KEYWORD for p in _pl_params.values()
-                )
-            except (TypeError, ValueError):
-                _pl_takes_tools = False
-            if _pl_takes_tools:
-                hook.pre_loop(state, session_log, context, tools=tools)
-            else:
-                hook.pre_loop(state, session_log, context)
+            _invoke_hook(
+                hook, "pre_loop", state, session_log, context, _optional_kwargs={"tools": tools}
+            )
 
     # Fire SESSION_START - single-slot subscribers to lifecycle
     # events get it in one place alongside the per-method pre_loop.

@@ -134,6 +134,17 @@ def test_declaration_inspection_redacts_protocol_connection_config(tmp_path: Pat
     )
 
 
+def test_v2_configuration_explanation_reports_file_origins(tmp_path: Path) -> None:
+    _write_v_cartridge(tmp_path, schema_version=2, config_text="max_steps: 3\ndone_tool: done\n")
+    (tmp_path / "runtime.yaml").write_text("temperature: 0.7\n")
+    with cartridge_to_preset(tmp_path) as preset:
+        explained = preset.config.explain()
+        assert explained["max_steps"]["source"] == "config.yaml"
+        assert explained["temperature"]["source"] == "runtime.yaml"
+        assert explained["system_prompt"]["source"] == "prompts/system.md"
+        assert explained["max_tokens"]["source"] == "default"
+
+
 def test_v2_rejects_runtime_keys_in_config_yaml(tmp_path: Path) -> None:
     _write_v_cartridge(
         tmp_path,

@@ -752,6 +752,7 @@ def _workspace_to_preset_inner(
 
     # Config
     cfg_kwargs: dict[str, Any] = {}
+    config_sources: dict[str, str] = {}
     cfg_path = root / CartridgeLayout.CONFIG_YAML
     if cfg_path.is_file():
         raw_cfg_text = cfg_path.read_text(encoding="utf-8")
@@ -759,6 +760,7 @@ def _workspace_to_preset_inner(
         # cartridge authors can parameterise config.yaml declaratively.
         raw_cfg_text = _apply_runtime_substitutions(raw_cfg_text, render_runtime)
         cfg_kwargs.update(_load_yaml(raw_cfg_text, source_path=cfg_path) or {})
+        config_sources.update({name: "config.yaml" for name in cfg_kwargs})
 
     runtime_yaml_path = root / "runtime.yaml"
 
@@ -798,10 +800,12 @@ def _workspace_to_preset_inner(
             for k in _bad:
                 runtime_yaml_kwargs.pop(k, None)
         cfg_kwargs.update(runtime_yaml_kwargs)
+        config_sources.update({name: "runtime.yaml" for name in runtime_yaml_kwargs})
 
     sys_prompt_path = root / CartridgeLayout.SYSTEM_PROMPT_MD
     if sys_prompt_path.is_file():
         cfg_kwargs["system_prompt"] = sys_prompt_path.read_text(encoding="utf-8")
+        config_sources["system_prompt"] = "prompts/system.md"
 
     # Memory sources - file-based (``memory/*.md`` + ``memory/*.py``)
     # come first; yaml-declared ``memory_sources: ['${ref:...}']``
@@ -1125,6 +1129,9 @@ def _workspace_to_preset_inner(
     }
 
     config = LoopConfig(**cfg_kwargs)
+    config.record_sources(
+        {name: config_sources.get(name, "default") for name in config.__dataclass_fields__}
+    )
 
     # Tools
     registry = BaseToolRegistry()

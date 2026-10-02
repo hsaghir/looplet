@@ -200,7 +200,6 @@ def inspect_cartridge(
             for item in value:
                 references(item)
 
-    references(effective)
     if not include_sensitive:
         for name in (
             "system_prompt",
@@ -218,6 +217,7 @@ def inspect_cartridge(
         model = effective.get("model")
         if isinstance(model, dict) and "extra" in model:
             model["extra"] = "[redacted]"
+    references(effective)
     return {
         "mode": "declaration-only",
         "runtime_validated": False,

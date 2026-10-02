@@ -548,8 +548,9 @@ class LoopConfig:
         entries alone never make ordinary tools terminal. Returned tables
         are independent snapshots; schema objects retain their identity.
         """
-        names = dict.fromkeys((self.done_tool, *self.done_tools))
-        outcomes = {name: self.done_tool_schemas.get(name) for name in names}
+        names = dict.fromkeys((self.done_tool, *(self.done_tools or ())))
+        schemas = self.done_tool_schemas or {}
+        outcomes = {name: schemas.get(name) for name in names}
         if self.output_schema is not None:
             outcomes[self.done_tool] = self.output_schema
         return outcomes
@@ -883,8 +884,10 @@ class LoopConfig:
         ):
             raise ValueError(f"not a domain callback: {name}")
         configured = getattr(self, name)
-        adapted = getattr(self.domain, name, None) if self.domain is not None else None
-        return configured or adapted or default
+        if configured:
+            return configured
+        adapted = getattr(self.domain, name, None) if self.domain else None
+        return adapted or default
 
     def record_sources(self, sources: dict[str, str]) -> None:
         """Record known declaration origins without adding serialized config fields."""

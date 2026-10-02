@@ -110,6 +110,43 @@ The downstream declared pin is older than the published control used here.
 Its draft PR does not claim this pair directly qualifies the complete upgrade
 from that older pin; earlier upgrade evidence remains a separate study.
 
+## Detailed Review (2026-10-02)
+
+A separate review produced the qualified runtime
+`13d49122cadbdfcaf6479ef3536ad767accad4a5`. The original `4debaaf` study and
+its outcomes above remain unchanged; they are not measurements of this repair.
+
+Seven reproduced defects were corrected with regression tests:
+
+- Explicit callbacks now short-circuit unavailable, unselected domain callbacks.
+- Compiled model overrides report their winning declaration origins.
+- Loader provenance is recorded after memory and output-schema assembly.
+- Legacy null plural-terminal settings continue to mean empty settings.
+- Equal-but-distinct callable objects cannot alias shared or legacy signature plans.
+- The canonical `budget_exhausted` reason survives the redacted diagnostic projection.
+- Reference-shaped protocol credentials cannot leak through `runtime_required`.
+
+The final source and noneditable installed-wheel gates each passed 3,118 tests,
+with two optional skips; 280 focused contracts and all style, lint, formatting,
+and source typing gates passed. Edited source files had no editor diagnostics.
+Dependency-order merges separately revalidate each integrated base and require
+green hosted Python 3.11-3.13, lint, distribution, and docs checks at its exact head.
+
+Installed Analytics at its actual declared core pin
+`0f1dd9f7ca94e6b4525212a3a524b0c2003e547d` passed 685 tests; the reviewed-core
+preview `1572fa979ebd2ddd89f0fe55c1b74023acaad3f8` passed 695. Both retained the
+same six existing warnings and the exact same complete multiset of 75 existing
+type diagnostics, using explicit installed interpreters. Non-core dependency
+lock entries are unchanged. No analytical prompts, tools, rules, or graders changed.
+
+The complete actual-pin live admission pair is still pending. Its first attempt
+was interrupted without terminal receipts and remains preserved, with an unknown
+cause. A new complete nine-case control-then-candidate pair was launched at
+2026-10-02 20:48:44 UTC with frozen packages/settings and durable terminal receipts.
+Partial outcomes are not admission evidence. Analytics remains draft until the
+complete pair and immutable offline audits support adoption; no accuracy,
+efficiency, or billing improvement is claimed.
+
 ## Local Evidence
 
 - Frozen inputs and post-run audits: `/tmp/looplet-dx-qualification-20261001/`.

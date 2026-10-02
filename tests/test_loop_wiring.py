@@ -130,6 +130,22 @@ def test_shared_configuration_resolution_preserves_live_config_and_budget(asynch
     assert config.cancel_token is token
 
 
+def test_explicit_callback_does_not_read_unselected_domain():
+    from looplet.loop import DomainAdapter, LoopConfig
+
+    class UnavailableDomain(DomainAdapter):
+        def __getattribute__(self, name):
+            if name == "build_briefing":
+                raise AssertionError("the unselected domain callback must not be read")
+            return super().__getattribute__(name)
+
+    def briefing(state):
+        return "explicit briefing"
+
+    config = LoopConfig(build_briefing=briefing, domain=UnavailableDomain())
+    assert config.resolve_callable("build_briefing") is briefing
+
+
 def test_shared_configuration_resolution_accepts_empty_prompt_override():
     from looplet.loop import LoopConfig, _resolve_loop_config
 

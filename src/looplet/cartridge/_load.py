@@ -826,6 +826,8 @@ def _workspace_to_preset_inner(
     yaml_declared_memory = cfg_kwargs.get("memory_sources") or []
     if yaml_declared_memory or file_memory_sources:
         cfg_kwargs["memory_sources"] = list(file_memory_sources) + list(yaml_declared_memory)
+        if file_memory_sources:
+            config_sources["memory_sources"] = "memory/"
 
     # Resolve ``"@<name>"`` references in config kwargs against the
     # shared-resource registry so callable / opaque LoopConfig fields
@@ -1081,6 +1083,9 @@ def _workspace_to_preset_inner(
             logger.warning("%s; ignoring model block", msg)
             model_overrides = {}
         cfg_kwargs.update(model_overrides)
+        config_sources.update(
+            {name: config_sources.get("model", "config.yaml") for name in model_overrides}
+        )
 
     # Catch unknown top-level keys in ``config.yaml`` BEFORE the
     # ``LoopConfig`` constructor would silently raise an obscure
@@ -1358,8 +1363,10 @@ def _workspace_to_preset_inner(
                     else:
                         if _is_primary:
                             config.output_schema = compiled
+                            config_sources["output_schema"] = str(spec_path.relative_to(root))
                         if _is_secondary:
                             config.done_tool_schemas[spec.name] = compiled
+                            config_sources["done_tool_schemas"] = str(spec_path.relative_to(root))
 
     # Built-in tools - opt-in via ``builtin_tools:`` in config.yaml.
     # These are looplet-shipped tools (``subagent``, future helpers)
@@ -1894,6 +1901,11 @@ def _workspace_to_preset_inner(
         if preset.config.memory_sources is None:
             preset.config.memory_sources = []
         preset.config.memory_sources = list(preset.config.memory_sources) + [long_term_source]
+        config_sources["memory_sources"] = (
+            config_sources.get("memory", "config.yaml")
+            if explicit_long_term_declared
+            else "memory/long_term.md"
+        )
 
     # Portability classification (advisory, non-mutating): label every
     # assembled hook ``portable`` (faithfully reproducible across runtimes)
@@ -1915,4 +1927,7 @@ def _workspace_to_preset_inner(
     except Exception:  # noqa: BLE001 - diagnostics must never break load
         logger.debug("hook portability classification skipped", exc_info=True)
 
+    config.record_sources(
+        {name: config_sources.get(name, "default") for name in config.__dataclass_fields__}
+    )
     return preset

@@ -117,20 +117,25 @@ def test_declaration_inspection_rejects_malformed_builtin_hooks(tmp_path: Path, 
         inspect_cartridge(tmp_path)
 
 
-def test_declaration_inspection_redacts_protocol_connection_config(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "secret", ["connection-secret", "@connection-secret", "${ref:connection-secret}"]
+)
+def test_declaration_inspection_redacts_protocol_connection_config(
+    tmp_path: Path, secret: str
+) -> None:
     from looplet.cartridge import inspect_cartridge
 
     _write_v_cartridge(tmp_path, schema_version=2, config_text="max_steps: 4\n")
     (tmp_path / "runtime.yaml").write_text(
-        "mcp_servers:\n  remote:\n    command: not-a-program\n    env:\n      TOKEN: connection-secret\n"
+        f"mcp_servers:\n  remote:\n    command: not-a-program\n    env:\n      TOKEN: {json.dumps(secret)}\n"
     )
     report = inspect_cartridge(tmp_path)
-    assert "connection-secret" not in json.dumps(report)
+    assert secret not in json.dumps(report)
     assert (
         inspect_cartridge(tmp_path, include_sensitive=True)["config"]["mcp_servers"]["remote"][
             "env"
         ]["TOKEN"]
-        == "connection-secret"
+        == secret
     )
 
 
@@ -143,6 +148,33 @@ def test_v2_configuration_explanation_reports_file_origins(tmp_path: Path) -> No
         assert explained["temperature"]["source"] == "runtime.yaml"
         assert explained["system_prompt"]["source"] == "prompts/system.md"
         assert explained["max_tokens"]["source"] == "default"
+
+
+def test_model_overrides_report_their_declaration_origin(tmp_path: Path) -> None:
+    _write_v_cartridge(
+        tmp_path,
+        schema_version=2,
+        config_text="model:\n  max_tokens: 123\n  temperature: 0.8\n",
+    )
+    (tmp_path / "runtime.yaml").write_text("max_tokens: 20\ntemperature: 0.4\n")
+    with cartridge_to_preset(tmp_path) as preset:
+        explained = preset.config.explain()
+        assert explained["max_tokens"]["value"] == 123
+        assert explained["temperature"]["value"] == 0.8
+        assert explained["max_tokens"]["source"] == "config.yaml"
+        assert explained["temperature"]["source"] == "config.yaml"
+
+
+def test_loader_memory_is_not_reported_as_host_mutation(tmp_path: Path) -> None:
+    _write_v_cartridge(tmp_path, schema_version=2, config_text="max_steps: 3\n")
+    (tmp_path / "memory").mkdir()
+    (tmp_path / "memory" / "long_term.md").write_text("Remember the approved workflow.")
+    with cartridge_to_preset(tmp_path) as preset:
+        explained = preset.config.explain()
+        assert len(explained["memory_sources"]["value"]) == 1
+        assert explained["memory_sources"]["source"] == "memory/long_term.md"
+        preset.config.memory_sources.append(preset.config.memory_sources[0])
+        assert preset.config.explain()["memory_sources"]["source"] == "host mutation"
 
 
 def test_v2_rejects_runtime_keys_in_config_yaml(tmp_path: Path) -> None:

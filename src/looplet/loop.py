@@ -879,8 +879,10 @@ class LoopConfig:
         ):
             raise ValueError(f"not a domain callback: {name}")
         configured = getattr(self, name)
-        adapted = getattr(self.domain, name, None) if self.domain is not None else None
-        return configured or adapted or default
+        if configured:
+            return configured
+        adapted = getattr(self.domain, name, None) if self.domain else None
+        return adapted or default
 
     def record_sources(self, sources: dict[str, str]) -> None:
         """Record known declaration origins without adding serialized config fields."""

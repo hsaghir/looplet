@@ -699,19 +699,9 @@ async def _async_composable_loop_impl(
 
     for hook in hooks:
         if hasattr(hook, "pre_loop"):
-            import inspect as _inspect  # noqa: PLC0415
-
-            try:
-                _pl_params = _inspect.signature(hook.pre_loop).parameters
-                _pl_takes_tools = "tools" in _pl_params or any(
-                    p.kind == _inspect.Parameter.VAR_KEYWORD for p in _pl_params.values()
-                )
-            except (TypeError, ValueError):
-                _pl_takes_tools = False
-            if _pl_takes_tools:
-                result = hook.pre_loop(state, session_log, context, tools=tools)
-            else:
-                result = hook.pre_loop(state, session_log, context)
+            result = _invoke_hook(
+                hook, "pre_loop", state, session_log, context, _optional_kwargs={"tools": tools}
+            )
             await _maybe_await(result)
 
     await emit_event_async(

@@ -98,6 +98,27 @@ to the format is: (a) it cannot be expressed as a hook / tool /
 preset / subagent, AND (b) every cartridge author pays for it whether
 they want it or not. **Both** must hold.
 
+## Hook dispatch contract
+
+Traditional callback names and `on_event(payload)` remain supported without
+mandatory inheritance. Both loop drivers use the same optional-keyword call
+plan: `pre_loop(..., tools=...)` and `check_done(..., tool_call=...)` receive
+those values only when their signature accepts the keyword or `**kwargs`.
+Legacy callbacks keep their positional arguments. Plans use weak callable
+identities rather than ephemeral bound-method IDs.
+
+Bootstrap `pre_loop` remains direct; `SESSION_START` owns its remote lifecycle
+event. Transport decisions retain their complete `HookDecision` payload.
+Event observers are selected in registration order, method-equivalent events
+are deduplicated, and observer failures are logged without interrupting the
+loop. Traditional controlling callback failures still propagate.
+
+This is shared invocation, not a catch-all effect handler. Prompt, dispatch,
+permission, completion, compaction, and stop slots retain their own ordering,
+precedence, and supported effects. Unsupported decision fields remain visible
+in diagnostics instead of acquiring new authority. Remote hooks still receive
+only their declared capability-scoped views.
+
 ## Compatibility metadata
 
 Cartridges may declare optional runtime compatibility metadata in

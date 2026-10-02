@@ -526,6 +526,19 @@ class LoopConfig:
     ``LoopConfig`` for hand-built loops.
     """
 
+    def resolve_terminal_outcomes(self) -> dict[str, OutputSchema | None]:
+        """Return the effective terminal name-to-schema table.
+
+        The primary output schema wins over its plural-map entry. Schema
+        entries alone never make ordinary tools terminal. Returned tables
+        are independent snapshots; schema objects retain their identity.
+        """
+        names = dict.fromkeys((self.done_tool, *self.done_tools))
+        outcomes = {name: self.done_tool_schemas.get(name) for name in names}
+        if self.output_schema is not None:
+            outcomes[self.done_tool] = self.output_schema
+        return outcomes
+
     tool_result_persist_dir: str | None = None
     """Optional directory for Layer-1 persist-and-preview of large
     tool results. When set, tool results whose serialized size exceeds
@@ -3162,7 +3175,7 @@ def _composable_loop_impl(
         # invokes ends the loop; the legacy field stays the canonical
         # name used in error messages and pretty-printers.
         done_tool_name = config.done_tool
-        terminal_set = {done_tool_name, *config.done_tools}
+        terminal_set = config.resolve_terminal_outcomes()
         done_idx = None
         for i, tc in enumerate(tool_calls):
             if tc.tool in terminal_set:
@@ -3449,20 +3462,11 @@ def _composable_loop_impl(
                         gate_warning = _decision.block or "blocked by hook"
                         break
 
-            # Output schema validation - reject done() if payload is invalid.
-            # Cartridge output schemas attach validation to the
-            # PRIMARY ``done_tool``. v2 extends this to *every* sentinel
-            # via :attr:`LoopConfig.done_tool_schemas` (populated by the
-            # cartridge loader from each sentinel's ``tool.yaml:
-            # output_schema:`` block). The primary sentinel's schema
-            # remains :attr:`output_schema` for backwards compatibility;
-            # ``done_tool_schemas`` covers the secondary sentinels.
-            _schema_for_call: OutputSchema | None = None
-            if gate_warning is None:
-                if tool_call.tool == config.done_tool and config.output_schema is not None:
-                    _schema_for_call = config.output_schema
-                elif tool_call.tool in config.done_tool_schemas:
-                    _schema_for_call = config.done_tool_schemas[tool_call.tool]
+            _schema_for_call = (
+                config.resolve_terminal_outcomes().get(tool_call.tool)
+                if gate_warning is None
+                else None
+            )
             if _schema_for_call is not None:
                 validation = _validate_args(_schema_for_call, tool_call.args)
                 if not validation.valid:

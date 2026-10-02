@@ -1255,7 +1255,7 @@ async def _async_composable_loop_impl(
                 budget_skipped=budget_skipped,
             )
         done_tool_name = config.done_tool
-        terminal_set = {done_tool_name, *config.done_tools}
+        terminal_set = config.resolve_terminal_outcomes()
         done_idx = None
         for i, tc in enumerate(tool_calls):
             if tc.tool in terminal_set:
@@ -1512,12 +1512,11 @@ async def _async_composable_loop_impl(
                         gate_warning = _decision.block or "blocked by hook"
                         break
 
-            schema_for_call = None
-            if gate_warning is None:
-                if tool_call.tool == config.done_tool and config.output_schema is not None:
-                    schema_for_call = config.output_schema
-                elif tool_call.tool in config.done_tool_schemas:
-                    schema_for_call = config.done_tool_schemas[tool_call.tool]
+            schema_for_call = (
+                config.resolve_terminal_outcomes().get(tool_call.tool)
+                if gate_warning is None
+                else None
+            )
             if schema_for_call is not None:
                 validation = _validate_args(schema_for_call, tool_call.args)
                 if not validation.valid:

@@ -98,6 +98,20 @@ to the format is: (a) it cannot be expressed as a hook / tool /
 preset / subagent, AND (b) every cartridge author pays for it whether
 they want it or not. **Both** must hold.
 
+## Resolved terminal outcomes
+
+Python hosts can inspect `config.resolve_terminal_outcomes()` to obtain one
+name-to-schema table used by both loop drivers. It combines the primary
+`done_tool`, additive host-side `done_tools`, `output_schema`, and
+`done_tool_schemas`. The primary schema takes precedence; a schema entry alone
+does not make an ordinary tool terminal. Each returned mapping is independent,
+while its schema objects preserve their identity.
+
+This does not change cartridge declarations or introduce another outcome
+format. Gates still run before schema validation and dispatch. Configuration
+changes made by a gate remain visible to the subsequent schema check, and
+completion remains distinct from host-owned correctness grading.
+
 ## Compatibility metadata
 
 Cartridges may declare optional runtime compatibility metadata in

@@ -50,6 +50,10 @@ export OPENAI_API_KEY=...
 export OPENAI_MODEL=...
 ```
 
+For OpenAI cloud, only `OPENAI_API_KEY` is required; the URL and model have
+defaults. A local compatible URL can omit the key. See
+[provider configuration](install.md) for Anthropic and provider selection.
+
 ```python title="my_agent.py"
 from looplet import OpenAIBackend, composable_loop, tool, tools_from
 
@@ -137,6 +141,10 @@ Inspect the result from the shell:
 ```bash
 python -m looplet show traces/owner_lookup
 ```
+
+The current source checkout also accepts `looplet inspect traces/owner_lookup`;
+`inspect` is the same entry point for cartridge declarations and bundle metadata.
+It is an unreleased addition; `show` remains available in PyPI `0.4.0`.
 
 The directory contains exact prompt/response bodies, a model-call
 manifest, the trajectory, per-step JSON, stop reason, and metadata.

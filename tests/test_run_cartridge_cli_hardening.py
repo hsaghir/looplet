@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from looplet.__main__ import main
 from looplet.cli import factory_commands
 from looplet.testing import MockLLMBackend
 
@@ -238,3 +239,53 @@ def test_runner_reports_trace_failure_and_closes_preset(
     finally:
         if "preset" in captured:
             captured["preset"].close()
+
+
+def test_run_dispatches_cartridge_and_preserves_scalar_result(tmp_path: Path, capsys) -> None:
+    cartridge = _custom_terminal_cartridge(tmp_path, name="finish", return_expression="answer")
+
+    assert (
+        main(
+            [
+                "run",
+                str(cartridge),
+                "finish",
+                "--workspace",
+                str(tmp_path),
+                "--json",
+                "--no-trace",
+                "--scripted-response",
+                '{"tool":"finish","args":{"answer":"ok"}}',
+            ]
+        )
+        == 0
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["completed"] is True
+    assert payload["result"] == "ok"
+
+
+def test_run_rejects_ambiguous_package_before_backend(tmp_path, monkeypatch, capsys) -> None:
+    cartridge = _custom_terminal_cartridge(tmp_path, name="finish", return_expression="answer")
+    (cartridge / "SKILL.md").write_text("---\nname: also-a-bundle\n---\n")
+    monkeypatch.setattr(
+        factory_commands, "_build_backend", lambda: pytest.fail("ambiguous format must fail early")
+    )
+    assert main(["run", str(cartridge), "finish", "--project-root", str(tmp_path)]) == 1
+    assert "use run-cartridge or run-bundle explicitly" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "flag, message",
+    [
+        ("--scripted", "use --scripted-response for cartridges"),
+        ("--no-tests", "--no-tests is only for skill bundles"),
+    ],
+)
+def test_run_rejects_bundle_only_flags_for_cartridges(tmp_path, monkeypatch, capsys, flag, message):
+    cartridge = _custom_terminal_cartridge(tmp_path, name="finish", return_expression="answer")
+    monkeypatch.setattr(
+        factory_commands, "_build_backend", lambda: pytest.fail("unsupported flags must fail early")
+    )
+    assert main(["run", str(cartridge), "finish", "--project-root", str(tmp_path), flag]) == 1
+    assert message in capsys.readouterr().err

@@ -14,6 +14,7 @@ import json
 import os
 import stat
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -553,7 +554,7 @@ def test_verdict_agrees_live_saved_pytest_and_cli(
     capsys.readouterr()
     monkeypatch.setenv("OPENAI_BASE_URL", "http://looplet.invalid/v1")
     monkeypatch.setattr(
-        "looplet.backends.OpenAIBackend",
+        "looplet.backends.make_backend",
         lambda **kwargs: MockLLMBackend(responses=_scripted()),
     )
     assert eval_cli(["run", str(cart), "--out", str(tmp_path / "cli")]) == expected_exit
@@ -677,7 +678,7 @@ def test_cli_run_with_judge_flag(tmp_path: Path, monkeypatch) -> None:
     shared = MockLLMBackend(responses=_scripted() + ["0.8"])
     import looplet.backends as _backends
 
-    monkeypatch.setattr(_backends, "OpenAIBackend", lambda **kw: shared)
+    monkeypatch.setattr(_backends, "make_backend", lambda **kw: shared)
     out = tmp_path / "runs"
     rc = eval_cli(["run", str(cart), "--judge", "--out", str(out)])
     assert rc == 0
@@ -692,7 +693,7 @@ def test_cli_run_without_judge_skips_judge_grader(tmp_path: Path, monkeypatch) -
     shared = MockLLMBackend(responses=_scripted())  # only agent calls, no judge
     import looplet.backends as _backends
 
-    monkeypatch.setattr(_backends, "OpenAIBackend", lambda **kw: shared)
+    monkeypatch.setattr(_backends, "make_backend", lambda **kw: shared)
     out = tmp_path / "runs"
     rc = eval_cli(["run", str(cart), "--out", str(out)])
     assert rc == 0
@@ -708,7 +709,7 @@ def test_cli_run_json_emits_one_eval_report(tmp_path: Path, monkeypatch, capsys)
 
     monkeypatch.setattr(
         _backends,
-        "OpenAIBackend",
+        "make_backend",
         lambda **kw: MockLLMBackend(responses=_scripted()),
     )
     out = tmp_path / "runs"
@@ -751,7 +752,7 @@ def test_cli_run_json_preserves_threshold_failure_exit(tmp_path: Path, monkeypat
 
     monkeypatch.setattr(
         _backends,
-        "OpenAIBackend",
+        "make_backend",
         lambda **kw: MockLLMBackend(responses=_scripted()),
     )
 
@@ -775,7 +776,7 @@ def test_cli_run_unknown_case_returns_failure(tmp_path: Path, monkeypatch) -> No
 
     monkeypatch.setattr(
         _backends,
-        "OpenAIBackend",
+        "make_backend",
         lambda **kw: MockLLMBackend(responses=[]),
     )
     assert eval_cli(["run", str(cart), "--case", "typo"]) == 1
@@ -796,7 +797,7 @@ def test_cli_run_fails_on_evaluator_error(tmp_path: Path, monkeypatch, capsys) -
 
     monkeypatch.setattr(
         _backends,
-        "OpenAIBackend",
+        "make_backend",
         lambda **kw: MockLLMBackend(responses=_scripted()),
     )
     assert eval_cli(["run", str(cart), "--json"]) == 1
@@ -817,7 +818,7 @@ def test_cli_run_fails_on_failing_verdict_label(tmp_path: Path, monkeypatch) -> 
 
     monkeypatch.setattr(
         _backends,
-        "OpenAIBackend",
+        "make_backend",
         lambda **kw: MockLLMBackend(responses=_scripted()),
     )
     assert eval_cli(["run", str(cart)]) == 1
@@ -836,7 +837,7 @@ def test_cli_run_fails_when_required_judge_is_skipped(tmp_path: Path, monkeypatc
 
     monkeypatch.setattr(
         _backends,
-        "OpenAIBackend",
+        "make_backend",
         lambda **kw: MockLLMBackend(responses=_scripted()),
     )
     out = tmp_path / "runs"
@@ -856,7 +857,7 @@ def test_cli_run_fails_on_collector_error(tmp_path: Path, monkeypatch, capsys) -
 
     monkeypatch.setattr(
         _backends,
-        "OpenAIBackend",
+        "make_backend",
         lambda **kw: MockLLMBackend(responses=_scripted()),
     )
     assert eval_cli(["run", str(cart), "--json"]) == 1
@@ -901,7 +902,82 @@ def test_cli_run_broken_eval_module_fails_preflight(tmp_path: Path) -> None:
 
 def test_cli_run_no_backend_configured(tmp_path: Path, monkeypatch) -> None:
     cart = _make_cartridge(tmp_path)
-    for k in ("OPENAI_BASE_URL", "OPENAI_API_KEY", "OPENAI_MODEL"):
-        monkeypatch.delenv(k, raising=False)
-    # cartridge is valid, but no model is configured → preflight error.
-    assert eval_cli(["run", str(cart)]) == 1
+    with patch.dict(os.environ, {}, clear=True):
+        assert eval_cli(["run", str(cart)]) == 1
+
+
+@pytest.mark.parametrize(
+    ("environment", "provider"),
+    [
+        ({"OPENAI_API_KEY": "fixture-key"}, "OpenAIBackend"),
+        ({"OPENAI_BASE_URL": "http://localhost:12345/v1"}, "OpenAIBackend"),
+        ({"ANTHROPIC_API_KEY": "fixture-key"}, "AnthropicBackend"),
+    ],
+)
+def test_cli_uses_shared_provider_defaults(tmp_path, monkeypatch, environment, provider) -> None:
+    from looplet import backends
+
+    cart = _make_cartridge(tmp_path)
+    selected = []
+
+    def resolve(**kwargs):
+        selected.append(kwargs)
+        return MockLLMBackend(_scripted())
+
+    monkeypatch.setattr(getattr(backends, provider), "from_env", resolve)
+    with patch.dict(os.environ, environment, clear=True):
+        assert eval_cli(["run", str(cart), "--json"]) == 0
+    assert selected == [{"model": None}]
+
+
+def test_cli_judge_model_uses_selected_provider(tmp_path, monkeypatch, capsys) -> None:
+    cart = _make_cartridge(tmp_path)
+    selected = []
+
+    def resolve(*, model):
+        selected.append(model)
+        return MockLLMBackend(["0.8"] if model == "judge-model" else _scripted())
+
+    monkeypatch.setattr("looplet.backends.make_backend", resolve)
+    assert (
+        eval_cli(
+            ["run", str(cart), "--model", "agent-model", "--judge-model", "judge-model", "--json"]
+        )
+        == 0
+    )
+    assert selected == ["agent-model", "judge-model"]
+    report = json.loads(capsys.readouterr().out)
+    by_name = {item["name"]: item for item in report["cases"][0]["results"]}
+    assert by_name["eval_judge_quality"]["score"] == 0.8
+
+
+def test_cli_explicit_endpoint_applies_to_agent_and_judge(tmp_path, monkeypatch) -> None:
+    cart = _make_cartridge(tmp_path)
+    selected = []
+
+    def construct(**kwargs):
+        selected.append(kwargs)
+        return MockLLMBackend(["0.8"] if kwargs["model"] == "judge-model" else _scripted())
+
+    monkeypatch.setattr("looplet.backends.OpenAIBackend", construct)
+    with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "fixture-key"}, clear=True):
+        assert (
+            eval_cli(
+                [
+                    "run",
+                    str(cart),
+                    "--base-url",
+                    "http://localhost:12345/v1",
+                    "--model",
+                    "agent-model",
+                    "--judge-model",
+                    "judge-model",
+                    "--json",
+                ]
+            )
+            == 0
+        )
+    assert selected == [
+        {"base_url": "http://localhost:12345/v1", "api_key": "x", "model": "agent-model"},
+        {"base_url": "http://localhost:12345/v1", "api_key": "x", "model": "judge-model"},
+    ]

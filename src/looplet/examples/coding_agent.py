@@ -683,31 +683,18 @@ def _get_llm(
     model: str | None = None,
     api_key: str | None = None,
 ) -> Any:
-    """Create an OpenAI-compatible backend.
+    """Use shared provider defaults, or explicit OpenAI-compatible overrides."""
+    from looplet.backends import OpenAIBackend, make_backend  # noqa: PLC0415
 
-    Reads from arguments, then env vars, then defaults:
-      - OPENAI_BASE_URL / base_url  (default: http://localhost:11434/v1)
-      - OPENAI_MODEL / model        (default: gpt-4.1)
-      - OPENAI_API_KEY / api_key    (default: "x")
-
-    Works with any OpenAI-compatible API: OpenAI, Azure, local
-    proxies, llama.cpp, vLLM, Ollama, LiteLLM, etc.
-    """
-    from looplet.backends import OpenAIBackend  # noqa: PLC0415
-
-    try:
-        from openai import OpenAI
-    except ImportError as e:
-        raise ImportError(
-            "This example requires the openai package. Install it with: pip install openai"
-        ) from e
-
-    _url = base_url or os.environ.get("OPENAI_BASE_URL", "http://localhost:11434/v1")
-    _model = model or os.environ.get("OPENAI_MODEL", "gpt-4.1")
-    _key = api_key or os.environ.get("OPENAI_API_KEY", "x")
-
-    client = OpenAI(base_url=_url, api_key=_key)
-    return OpenAIBackend(client, model=_model)
+    if base_url is None and api_key is None:
+        return make_backend(model=model)
+    url = base_url or os.environ.get("OPENAI_BASE_URL")
+    key = api_key or os.environ.get("OPENAI_API_KEY") or ("x" if url else None)
+    return OpenAIBackend(
+        base_url=url,
+        api_key=key,
+        model=model or os.environ.get("OPENAI_MODEL", "gpt-4o"),
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -718,10 +705,10 @@ def main(argv: list[str] | None = None) -> int:
         description="looplet coding agent example",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
-            "Requires an OpenAI-compatible API. Set env vars or use flags:\n"
-            "  OPENAI_BASE_URL  (default: http://localhost:11434/v1)\n"
-            "  OPENAI_MODEL     (default: gpt-4.1)\n"
-            "  OPENAI_API_KEY   (default: x)\n"
+            "Uses the same provider configuration as looplet run and doctor.\n"
+            "Set OPENAI_API_KEY, OPENAI_BASE_URL, or ANTHROPIC_API_KEY.\n"
+            "Use LOOPLET_PROVIDER when multiple providers are configured.\n"
+            "--base-url explicitly selects an OpenAI-compatible endpoint.\n"
         ),
     )
     parser.add_argument(
@@ -757,8 +744,12 @@ def main(argv: list[str] | None = None) -> int:
         llm = MockLLMBackend(responses=scripted_responses())
         print("[backend] scripted MockLLMBackend")
     else:
-        llm = _get_llm(base_url=args.base_url, model=args.model)
-        print(f"[backend] {llm._model} @ {llm._client.base_url}")
+        try:
+            llm = _get_llm(base_url=args.base_url, model=args.model)
+        except (ImportError, RuntimeError, ValueError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        print(f"[backend] {type(llm).__name__}: {getattr(llm, '_model', 'configured')}")
     print()
 
     run_coding_agent(

@@ -8,6 +8,11 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Unified `looplet run` dispatch for cartridges and skill bundles, an explicit
+  `run-bundle` alias, and safe `inspect` for declarations, metadata, and traces.
+- `looplet new --offline` creates a non-clobbering cartridge draft without a
+  provider; bundle runs now accept stdin tasks, `--project-root`, and `--json`.
+
 - Added optional host-layer records and lifecycle primitives: `AgentRuntime`,
   `RunHandle`, `RunStore`, `RunEvent`, `ArtifactRef`, `ContextPlan`, and
   `ExecutionSession`.
@@ -29,6 +34,13 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   states when the original raw loop remains the better choice.
 
 ### Changed
+
+- CLI creation, execution, doctor, evals, and general-purpose examples now share
+  provider resolution and model defaults with Python. Explicit compatible
+  endpoint/model overrides and legacy command names remain available.
+- Bundle and cartridge CLI completion use the same accepted `RunResult` view;
+  generic runs reject missing workspaces, report actual stops, and fail on fatal
+  model errors. Human custom bundle runners remain supported; JSON uses `build`.
 
 - Backend wrappers now share supported-option and capability forwarding, so
   recording, resilience, routing, and legacy cost tracking preserve provider

@@ -19,8 +19,8 @@ frameworks, shown as one agent that actually needs them:
 
 Run::
 
-    # Real LLM (default) - reads OPENAI_BASE_URL / OPENAI_API_KEY /
-    # OPENAI_MODEL. Works with OpenAI, Ollama, Together, Groq, vLLM, …
+    # Real LLM (default) - uses the shared OpenAI-compatible or Anthropic
+    # provider environment, like looplet run and looplet doctor.
     python -m looplet.examples.data_agent
     python -m looplet.examples.data_agent --resume   # resume latest ckpt
     python -m looplet.examples.data_agent --clean    # wipe checkpoints
@@ -38,7 +38,6 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-import os
 import shutil
 import sys
 import tempfile
@@ -269,25 +268,12 @@ def main(argv: list[str] | None = None) -> int:
         model_label = "scripted MockLLMBackend"
     else:
         try:
-            from looplet.backends import OpenAIBackend
-        except ImportError:  # pragma: no cover
-            raise SystemExit(
-                "openai not installed - run `pip install 'looplet[openai]'`, "
-                "or re-run with --scripted for a scripted demo."
-            ) from None
+            from looplet.backends import make_backend
 
-        base_url = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
-        api_key = os.environ.get("OPENAI_API_KEY")
-        if api_key is None:
-            raise SystemExit(
-                "OPENAI_API_KEY is not set. Set it (or use Ollama with "
-                "OPENAI_BASE_URL=http://127.0.0.1:11434/v1 OPENAI_API_KEY=ollama), "
-                "or re-run with --scripted for a scripted demo."
-            )
-        model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
-        print(f"# llm: {model} via {base_url}")
-        llm = OpenAIBackend(base_url=base_url, api_key=api_key, model=model)
-        model_label = model
+            llm = make_backend()
+        except (ImportError, RuntimeError, ValueError) as exc:
+            raise SystemExit(f"{exc} Re-run with --scripted for an offline demo.") from None
+        model_label = getattr(llm, "_model", type(llm).__name__)
     print(f"# model: {model_label}")
     print("# tool protocol: json-text" if use_scripted else "# tool protocol: native")
 

@@ -70,9 +70,9 @@ set without a key. Setting `OPENAI_API_KEY=x` explicitly is still useful when
 other clients inspect the same environment.
 
 Compatible endpoints do not all implement native tool calling the same way.
-Looplet enables native tool calling by default and automatically falls back to
-the regular text protocol when an endpoint does not support it. You can still
-inspect the endpoint with:
+Looplet enables native tool calling by default. Missing or rejected native
+support fails visibly; it does not silently switch protocols. Inspect the
+configured provider with:
 
 ```bash
 looplet doctor
@@ -127,10 +127,10 @@ class MyBackend:
         return my_client.complete(prompt)
 ```
 
-If it also exposes `generate_with_tools(...)`, Looplet uses native tool
-schemas by default. If the method is absent or the endpoint rejects the native
-request, Looplet transparently uses its text tool protocol. See the [Python API
-map](api.md) for the backend protocol surface.
+Set `LoopConfig(use_native_tools=False)` for a backend that implements only
+`generate(...)`. A backend that also exposes `generate_with_tools(...)` can
+use the default native protocol. Missing or rejected native support remains an
+explicit failure. See the [Python API map](api.md) for the backend protocol surface.
 
 ## Diagnose the environment
 
@@ -141,9 +141,16 @@ looplet doctor --json          # machine-readable output
 looplet doctor --strict        # warnings also produce a non-zero exit
 ```
 
-`doctor` currently probes OpenAI-compatible environment configuration. For an
-Anthropic-only setup, use the network-free check above and construct
-`AnthropicBackend.from_env()` in a small smoke test.
+The current source CLI uses `looplet.backends.make_backend()` for `doctor`,
+live creation, runs, and evals. It selects Anthropic when an Anthropic key is
+present, otherwise OpenAI when a cloud key or compatible base URL is present.
+Set `LOOPLET_PROVIDER=openai` or `LOOPLET_PROVIDER=anthropic` to choose explicitly
+when both are configured. Provider model variables remain optional. An explicit
+`--base-url` on examples or evals selects an OpenAI-compatible endpoint.
+
+These unified CLI setup changes are unreleased; PyPI `0.4.0` has the earlier
+OpenAI-only doctor. See the [CLI reference](cli.md) for source installation
+and compatibility command names.
 
 ## Next
 

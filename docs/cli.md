@@ -15,15 +15,21 @@ There are two runnable file formats:
   hooks, resources, and optional evals;
 - a **skill bundle** is an executable packaged skill with a Python entrypoint.
 
-Use `run-cartridge` for the first and `run` for the second. The formats serve
-different jobs and the commands are not aliases.
+Use one workflow: `new`, `run`, `inspect`, then `eval`. `run` detects either
+format; `inspect` reads cartridge declarations, bundle metadata, or a saved
+trace without importing authored agent code. The formats remain distinct.
+`run-cartridge` / `run-workspace`, `run-bundle`, `describe`, and `show` remain
+available when a script needs an explicit format.
+
+Unified `run`, `inspect`, `run-bundle`, and `new --offline` are unreleased
+source additions, not part of PyPI `0.4.0`. Install this checkout with
+`pip install -e ".[openai]"` (or the appropriate provider extra) to use them.
 
 ## Diagnose and inspect runs
 
 ### `looplet doctor`
 
-Check Python, package version, provider environment, and OpenAI-compatible
-native-tool support.
+Check Python, package version, the selected provider, and native-tool support.
 
 ```bash
 looplet doctor
@@ -33,9 +39,26 @@ looplet doctor --strict
 ```
 
 `--no-backend` performs no provider call. `--strict` makes warnings produce a
-non-zero exit, which is useful for CI configuration checks. The doctor command
-currently probes OpenAI-compatible configuration; see
-[install and configure](install.md) for Anthropic smoke testing.
+non-zero exit, which is useful for CI configuration checks. Live commands
+use the same provider resolver as Python: a cloud key, a local compatible URL,
+or an Anthropic key is enough. Models use provider defaults unless configured;
+set `LOOPLET_PROVIDER` when multiple providers are available. See
+[install and configure](install.md).
+
+### `looplet inspect <path>`
+
+Inspect a cartridge, skill bundle, or saved trace without running it:
+
+```bash
+looplet inspect ./agent.cartridge --json
+looplet inspect ./skills/code-review --json
+looplet inspect traces/incident-42 --json
+```
+
+Cartridge output is declaration-only (`runtime_validated: false`). Bundle
+output contains metadata and metadata errors, not a loaded blueprint. Trace
+output preserves the `show` JSON contract. Use `blueprint` or a run when
+runtime validation is required; those operations import authored Python code.
 
 ### `looplet show <trace-dir>`
 
@@ -56,7 +79,7 @@ directory. JSON output contains the parsed `trajectory.json` object and
 
 ### `looplet new <description> [target]`
 
-Use an OpenAI-compatible backend to scaffold a cartridge draft from a brief.
+Use the configured provider to scaffold a cartridge draft from a brief.
 Generated files are a starting point, not a release-ready agent.
 
 ```bash
@@ -67,16 +90,26 @@ looplet new \
   --tool run_tests
 ```
 
-Useful options include repeatable `--tool`, `--name`, `--max-steps`, `--quiet`,
-and `--pretty`. Review the generated prompt, schemas, implementations, and
-runtime policy, then add an outcome contract before release.
+For a draft with placeholder tools and no provider or API key:
 
-### `looplet run-cartridge <cartridge> <task>`
+```bash
+looplet new "Look up service owners" ./owner.cartridge --offline --tool lookup_owner
+looplet inspect ./owner.cartridge
+```
+
+Offline creation refuses a nonempty destination. Implement the placeholder
+tool code before running it. Useful options include repeatable `--tool`,
+`--name`, `--max-steps`, `--quiet`, and `--pretty`. `--max-steps` bounds the
+live factory's work, not the generated agent's budget; offline creation does
+not run the factory. Review the prompt, schemas, implementations, and runtime
+policy, then add an outcome contract before release.
+
+### `looplet run <path> <task>`
 
 Load a cartridge and run one task:
 
 ```bash
-looplet run-cartridge ./agent.cartridge \
+looplet run ./agent.cartridge \
   "Inspect the current change" \
   --project-root . \
   --max-steps 20
@@ -85,7 +118,7 @@ looplet run-cartridge ./agent.cartridge \
 Use `-` as the task to read it from standard input:
 
 ```bash
-git diff | looplet run-cartridge ./review.cartridge - --project-root .
+git diff | looplet run ./review.cartridge - --project-root .
 ```
 
 Link a follow-up run to an earlier trace without changing execution:
@@ -98,11 +131,12 @@ looplet run-cartridge ./repair.cartridge "Repair the finding" \
 Emit one completion object for a shell pipeline:
 
 ```bash
-looplet run-cartridge ./agent.cartridge "Inspect the change" --json \
+looplet run ./agent.cartridge "Inspect the change" --json \
   | jq -e '.completed'
 ```
 
-`--project-root` controls the directory available to project-aware tools. It
+`--project-root` (`--workspace`, `-w`) controls the directory available to
+project-aware tools. It
 defaults to `LOOPLET_PROJECT_ROOT`, the current Git repository, or the current
 directory, and must already exist. Each run also writes a provenance trace under
 `.looplet/traces/<cartridge>-<id>/` in that project root. Pass `--trace-dir`
@@ -113,13 +147,17 @@ contain full prompts, responses, and tool results; inspect them before sharing.
 `--json` suppresses human progress output and emits `completed`,
 `termination_reason`, `steps`, `duration_ms`, the terminal `result`, and
 `trace_dir` (`null` with `--no-trace`). `completed` is true only when the agent
-reaches `done`; budget and hook stops remain successful CLI executions but are
+reaches its configured terminal tool and the completion is accepted; budget
+and hook stops remain successful CLI executions but are
 reported as incomplete. Human output likewise prints `stopped (<reason>)`
 instead of `done` for incomplete runs. Fatal execution failures, including
 provider errors, return a non-zero exit code in both human and JSON modes.
 Errors remain on standard error; consumers should
-tolerate added fields. It cannot be combined with `--pretty`.
-`run-workspace` remains a compatibility alias.
+tolerate added fields. The explicit cartridge command retains `--quiet`,
+`--pretty`, and `--parent-trace`; `--json` cannot be combined with `--pretty`.
+`run-cartridge` and its `run-workspace` alias retain their existing behavior.
+`run-bundle` forces bundle routing. If a directory has both `cartridge.json`
+and `SKILL.md`, `run` refuses the ambiguity; choose the explicit command.
 
 ### Review commands
 
@@ -154,7 +192,8 @@ Notable options:
 | --- | --- |
 | `--case ID` | Run one case; repeat to select several. |
 | `--max-steps N` | Override the per-case tool-call budget. |
-| `--model NAME` / `--base-url URL` | Override OpenAI-compatible environment configuration. |
+| `--model NAME` | Override the selected provider's model. |
+| `--base-url URL` | Explicitly select an OpenAI-compatible endpoint for agent and judge. |
 | `--judge` | Enable graders whose signature requests an LLM. |
 | `--judge-model NAME` | Use a separate judge model and imply `--judge`. |
 | `--out DIR` | Persist each case under `DIR/<case-id>/`. |
@@ -195,20 +234,29 @@ protected expectations in the top-level `expected` object.
 
 ## Work with skill bundles
 
-### `looplet run <bundle> <task>`
+### Bundle-specific execution
 
 Run a packaged skill bundle. Provenance capture is enabled by default:
 
 ```bash
 looplet run ./skills/code-review \
   "Review this repository" \
-  --workspace . \
+  --project-root . \
   --trace-dir traces/code-review
 ```
 
 Use `--scripted` for bundle-provided deterministic responses, repeat
 `--scripted-response` to supply responses directly, or `--no-trace` when the
-host deliberately disables capture.
+host deliberately disables capture. Stdin tasks, `--json`, existing-directory
+validation, stop reasons, and completion fields match cartridge execution.
+`--no-tests` passes `require_tests=False` to bundles that support it and is
+rejected for cartridges. Generic bundle runs default to 20 steps; cartridge
+runs retain their configured budget unless `--max-steps` overrides it.
+
+A bundle's custom `run(...) -> int` and renderers still own human execution
+when provided. In `--json` mode, the CLI instead executes the required
+`build(runtime) -> AgentPreset` contract and emits the shared completion
+object. Custom runners remain responsible for their own status and effects.
 
 ### Bundle inspection and packaging
 

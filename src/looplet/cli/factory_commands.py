@@ -1,36 +1,16 @@
-"""``looplet new`` and ``looplet run-cartridge`` CLI implementation.
+"""Cartridge creation and execution adapters for the Looplet CLI.
 
-These two commands are the user-facing entry points to the agent
-factory. The factory scaffolds a reviewable cartridge draft from a
-brief; the developer remains responsible for reviewing its code and
-adding outcome-grounded behavioral contracts before release.
+``new`` runs the bundled factory to produce a reviewable harness draft;
+``new --offline`` writes placeholders without constructing a backend.
+Review tool code and add outcome contracts before releasing either draft.
 
-## ``looplet new <description>``
+Live creation and execution use ``looplet.backends.make_backend()``:
+an OpenAI cloud key, a compatible base URL, or an Anthropic key is enough.
+Optional model defaults match Python; ``LOOPLET_PROVIDER`` selects a
+provider explicitly when multiple providers are configured.
 
-Runs the bundled :mod:`agent_factory.cartridge` against a brief and
-writes the produced cartridge to a directory. After this completes,
-``./<name>.cartridge/`` contains a loadable Looplet harness draft.
-
-Required env vars (any OpenAI-compatible endpoint):
-
-* ``OPENAI_BASE_URL`` - e.g. ``http://127.0.0.1:19823/v1`` for a
-  local proxy or ``https://api.openai.com/v1`` for direct OpenAI.
-* ``OPENAI_API_KEY`` - your key (or any string for proxies that
-  don't validate it).
-* ``OPENAI_MODEL`` - model id, e.g. ``gpt-4o-mini`` or
-  ``claude-sonnet-4.6``.
-
-## ``looplet run-cartridge <path> <task>``
-
-Runs an existing cartridge on a task and prints the final result.
-Same env vars as above. ``run-workspace`` remains a compatibility
-alias.
-
-## Why split into two modules?
-
-``__main__.py`` already has ten subcommands. This module isolates the
-two factory-facing ones so they can evolve independently of the
-bundle / trace / eval CLI machinery.
+The unified ``run`` command delegates cartridge execution here.
+``run-cartridge`` and ``run-workspace`` remain compatible entry points.
 """
 
 from __future__ import annotations
@@ -38,6 +18,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import sys
 import time
 import uuid
@@ -45,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from looplet.bundled import bundled_cartridge_path
+from looplet.cli import completion_payload
 
 
 def _bold(s: str) -> str:
@@ -64,42 +46,21 @@ def _red(s: str) -> str:
 
 
 def _check_env() -> int:
-    """Verify required env vars are set. Returns 0 on success."""
-    missing: list[str] = []
-    for var in ("OPENAI_BASE_URL", "OPENAI_API_KEY", "OPENAI_MODEL"):
-        if not os.environ.get(var):
-            missing.append(var)
-    if missing:
-        print(
-            _red(f"error: missing required env vars: {', '.join(missing)}"),
-            file=sys.stderr,
-        )
-        print(file=sys.stderr)
-        print("Set them to point at any OpenAI-compatible endpoint:", file=sys.stderr)
-        print(
-            _dim('    export OPENAI_BASE_URL="http://127.0.0.1:19823/v1"'),
-            file=sys.stderr,
-        )
-        print(_dim('    export OPENAI_API_KEY="sk-..."'), file=sys.stderr)
-        print(_dim('    export OPENAI_MODEL="gpt-4o-mini"'), file=sys.stderr)
-        print(file=sys.stderr)
-        print(
-            _dim("Run ``looplet doctor`` to verify connectivity."),
-            file=sys.stderr,
-        )
+    """Validate the same provider configuration used by Python and CLI runs."""
+    try:
+        _build_backend()
+    except Exception as exc:
+        print(_red(f"error: {exc}"), file=sys.stderr)
+        print("Run `looplet doctor` to inspect provider configuration.", file=sys.stderr)
         return 1
     return 0
 
 
 def _build_backend():
-    """Construct an OpenAIBackend from env vars."""
-    from looplet.backends import OpenAIBackend  # noqa: PLC0415
+    """Construct the environment-selected backend through the shared resolver."""
+    from looplet.backends import make_backend  # noqa: PLC0415
 
-    return OpenAIBackend(
-        base_url=os.environ["OPENAI_BASE_URL"],
-        api_key=os.environ["OPENAI_API_KEY"],
-        model=os.environ["OPENAI_MODEL"],
-    )
+    return make_backend()
 
 
 def _factory_workspace_path() -> Path:
@@ -124,15 +85,41 @@ def _factory_workspace_path() -> Path:
 
 # ── ``looplet new`` ─────────────────────────────────────────────
 def cmd_new(args: argparse.Namespace) -> int:
-    if _check_env() != 0:
-        return 1
-
     description: str = args.description
     target_dir: Path = args.target.resolve()
     name: str = args.name or target_dir.name.replace(".cartridge", "").replace(
         ".workspace", ""
     ).replace("-", "_")
     tools: list[str] = args.tool or []
+
+    if getattr(args, "offline", False):
+        from looplet.cartridge.scaffold import scaffold_cartridge  # noqa: PLC0415
+
+        try:
+            root = scaffold_cartridge(target_dir, name=name, tools=tools)
+            prompt = root / "prompts" / "system.md"
+            prompt.write_text(
+                prompt.read_text(encoding="utf-8").replace(
+                    "<TODO: one-paragraph mission statement - what does this agent do?>",
+                    description,
+                ),
+                encoding="utf-8",
+            )
+        except (OSError, ValueError) as exc:
+            print(_red(f"error: {exc}"), file=sys.stderr)
+            return 1
+        print(f"scaffolded cartridge draft: {root}")
+        return 0
+
+    if args.max_steps is not None and args.max_steps < 1:
+        print(_red("error: --max-steps must be positive"), file=sys.stderr)
+        return 1
+    try:
+        backend = _build_backend()
+    except Exception as exc:
+        print(_red(f"error: {exc}"), file=sys.stderr)
+        return 1
+    model_label = str(getattr(backend, "_model", type(backend).__name__))
 
     print(f"{_bold('looplet new')} → {target_dir}")
     if not getattr(args, "pretty", False):
@@ -142,7 +129,7 @@ def cmd_new(args: argparse.Namespace) -> int:
         print(_dim(f"  name:   {name}"))
         if tools:
             print(_dim(f"  tools:  {', '.join(tools)} (pre-scaffolded)"))
-        print(_dim(f"  model:  {os.environ['OPENAI_MODEL']}"))
+        print(_dim(f"  model:  {model_label}"))
         print()
     try:
         from looplet import RunResult, cartridge_to_preset  # noqa: PLC0415
@@ -167,7 +154,6 @@ def cmd_new(args: argparse.Namespace) -> int:
         scaffold_cartridge(target_dir, name=name, tools=list(tools), overwrite=True)
 
     try:
-        backend = _build_backend()
         preset = cartridge_to_preset(str(factory), runtime=runtime)
     except Exception as exc:
         print(_red(f"error: factory load failed: {exc}"), file=sys.stderr)
@@ -197,7 +183,7 @@ def cmd_new(args: argparse.Namespace) -> int:
             [
                 f"  brief:  {description[:80]}{'…' if len(description) > 80 else ''}",
                 f"  target: {target_dir}",
-                f"  model:  {os.environ['OPENAI_MODEL']}",
+                f"  model:  {model_label}",
             ]
         )
 
@@ -281,18 +267,18 @@ def cmd_new(args: argparse.Namespace) -> int:
         print(f"  agent says: {last_done_summary[:120]}")
     print()
     print(_bold("next:"))
-    print(f'  looplet run-cartridge {target_dir} "<your task>"')
+    print(f'  looplet run {shlex.quote(str(target_dir))} "<your task>"')
     return 0
 
 
 # ── ``looplet run-cartridge`` (``run-workspace`` alias) ────────
 def cmd_run_workspace(args: argparse.Namespace) -> int:
-    if _check_env() != 0:
-        return 1
-
     json_output = getattr(args, "json", False)
     if json_output and getattr(args, "pretty", False):
         print(_red("error: --json cannot be used with --pretty"), file=sys.stderr)
+        return 1
+    if args.max_steps is not None and args.max_steps < 1:
+        print(_red("error: --max-steps must be positive"), file=sys.stderr)
         return 1
 
     workspace_path: Path = args.workspace.resolve()
@@ -331,13 +317,6 @@ def cmd_run_workspace(args: argparse.Namespace) -> int:
         )
         return 1
 
-    if not json_output:
-        print(f"{_bold('looplet run-cartridge')} {workspace_path}")
-        if not getattr(args, "pretty", False):
-            print(_dim(f"  task:  {task[:100]}{'…' if len(task) > 100 else ''}"))
-            print(_dim(f"  model: {os.environ['OPENAI_MODEL']}"))
-        print()
-
     trajectory_metadata: dict[str, str] = {}
     parent_trace = getattr(args, "parent_trace", None)
     if parent_trace is not None:
@@ -358,11 +337,27 @@ def cmd_run_workspace(args: argparse.Namespace) -> int:
         trajectory_metadata["parent_run_id"] = parent_run_id
 
     try:
-        backend = _build_backend()
+        scripted_responses = getattr(args, "scripted_response", None)
+        if scripted_responses:
+            from looplet.testing import MockLLMBackend  # noqa: PLC0415
+
+            if any(not response.strip() for response in scripted_responses):
+                raise ValueError("--scripted-response must not be empty")
+            backend = MockLLMBackend(responses=scripted_responses)
+        else:
+            backend = _build_backend()
         preset = cartridge_to_preset(str(workspace_path), runtime=runtime)
     except Exception as exc:
         print(_red(f"error: cartridge load failed: {exc}"), file=sys.stderr)
         return 1
+
+    model_label = str(getattr(backend, "_model", type(backend).__name__))
+    if not json_output:
+        print(f"{_bold('looplet run-cartridge')} {workspace_path}")
+        if not getattr(args, "pretty", False):
+            print(_dim(f"  task:  {task[:100]}{'…' if len(task) > 100 else ''}"))
+            print(_dim(f"  model: {model_label}"))
+        print()
 
     if args.max_steps is not None:
         preset.config.max_steps = args.max_steps
@@ -397,7 +392,7 @@ def cmd_run_workspace(args: argparse.Namespace) -> int:
         pretty.header(
             [
                 f"  task:  {task[:80]}{'…' if len(task) > 80 else ''}",
-                f"  model: {os.environ['OPENAI_MODEL']}",
+                f"  model: {model_label}",
             ]
         )
     t0 = time.time()
@@ -462,14 +457,12 @@ def cmd_run_workspace(args: argparse.Namespace) -> int:
     if json_output:
         print(
             json.dumps(
-                {
-                    "completed": result.completed,
-                    "termination_reason": termination_reason or "unknown",
-                    "steps": n_steps,
-                    "duration_ms": round(elapsed * 1000, 2),
-                    "result": final_data,
-                    "trace_dir": str(saved_trace_dir) if saved_trace_dir is not None else None,
-                },
+                completion_payload(
+                    result,
+                    steps=n_steps,
+                    duration_ms=elapsed * 1000,
+                    trace_dir=saved_trace_dir,
+                ),
                 indent=2,
                 default=str,
             )
@@ -543,8 +536,8 @@ def add_subparsers(sub: "argparse._SubParsersAction") -> None:
         description=(
             "Scaffold a reviewable Looplet cartridge draft from a one-paragraph "
             "English brief. Review and add behavioral contracts before release. "
-            "Requires OPENAI_BASE_URL / OPENAI_API_KEY / OPENAI_MODEL env vars "
-            "(any OpenAI-compatible endpoint)."
+            "Uses the provider configuration reported by looplet doctor, "
+            "or --offline for placeholders without a model or API key."
         ),
     )
     new_p.add_argument(
@@ -574,6 +567,9 @@ def add_subparsers(sub: "argparse._SubParsersAction") -> None:
     )
     new_p.add_argument("--quiet", action="store_true", help="Suppress per-step output")
     new_p.add_argument(
+        "--offline", action="store_true", help="Scaffold a draft without a model or API key"
+    )
+    new_p.add_argument(
         "--pretty",
         action="store_true",
         help="Render the build as a live human-friendly trace (boxed header, per-step reasoning + result summary, colored).",
@@ -586,7 +582,7 @@ def add_subparsers(sub: "argparse._SubParsersAction") -> None:
         help="Run a cartridge on a task and print the final result",
         description=(
             "Load an existing looplet cartridge and run it against a task. "
-            "Requires the same env vars as ``looplet new``. "
+            "Uses the provider configuration reported by looplet doctor. "
             "``run-workspace`` is a back-compat alias."
         ),
     )
@@ -628,6 +624,12 @@ def add_subparsers(sub: "argparse._SubParsersAction") -> None:
         help="Disable default provenance capture",
     )
     run_p.add_argument("--quiet", action="store_true", help="Suppress per-step output")
+    run_p.add_argument(
+        "--scripted-response",
+        action="append",
+        default=[],
+        help="Mock LLM response; repeat for a network-free run",
+    )
     run_p.add_argument(
         "--pretty",
         action="store_true",

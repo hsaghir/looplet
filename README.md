@@ -176,6 +176,24 @@ looplet diff ./agent-v1.cartridge ./agent-v2.cartridge --show
 looplet eval run ./agent.cartridge --out ./eval-runs --threshold 1.0
 ```
 
+The current source checkout adds one CLI path for cartridges and skill bundles:
+
+```bash
+looplet new "Look up service owners" ./owner.cartridge --offline --tool lookup_owner
+looplet inspect ./owner.cartridge --json
+```
+
+Implement the placeholder tool code before running the offline draft, then:
+
+```bash
+looplet run ./owner.cartridge "Find the owner of payments" --project-root . --json
+```
+
+These unified commands are unreleased, not part of PyPI `0.4.0`; install this
+checkout with `pip install -e ".[openai]"` to use them. Existing `run-cartridge`,
+`describe`, and `show` commands remain supported. Python and live CLI paths
+share provider defaults; see the [CLI guide](https://hsaghir.com/looplet/cli/).
+
 Cartridges are optional. They load into the same Python primitives used above.
 See the [cartridge guide](https://hsaghir.com/looplet/cartridge/) for schema,
 inheritance, trust boundaries, and protocol portability.

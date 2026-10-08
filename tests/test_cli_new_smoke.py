@@ -231,19 +231,26 @@ def _patch_new_runtime(
     tmp_path: Path,
 ) -> dict[str, object]:
     import looplet
+    from looplet import AgentPreset, DefaultState, LoopConfig, MockLLMBackend, tools_from
     from looplet.cli import factory_commands
 
-    config = SimpleNamespace(max_steps=3, system_prompt="Reviewable prompt")
-    factory_preset = SimpleNamespace(
+    closed: list[str] = []
+    resource = SimpleNamespace(close=lambda: closed.append("factory"))
+    config = LoopConfig(max_steps=3, system_prompt="Reviewable prompt")
+    factory_preset = AgentPreset(
         config=config,
-        tools=SimpleNamespace(_tools={"done": object()}),
+        tools=tools_from([], include_done=True),
         hooks=[],
+        state=DefaultState(max_steps=3),
+        resources={"client": resource},
+        owned_resources=[resource],
     )
     produced_preset = SimpleNamespace(
         config=config,
         tools=SimpleNamespace(_tools={"done": object(), "fetch_url": object()}),
+        close=lambda: closed.append("produced"),
     )
-    observed: dict[str, object] = {}
+    observed: dict[str, object] = {"closed": closed}
 
     def fake_load(_path: str, runtime=None):
         return factory_preset if runtime is not None else produced_preset
@@ -254,10 +261,10 @@ def _patch_new_runtime(
 
     monkeypatch.setenv("OPENAI_MODEL", "mock-model")
     monkeypatch.setattr(factory_commands, "_check_env", lambda: 0)
-    monkeypatch.setattr(factory_commands, "_build_backend", object)
+    monkeypatch.setattr(factory_commands, "_build_backend", lambda: MockLLMBackend([]))
     monkeypatch.setattr(factory_commands, "_factory_workspace_path", lambda: tmp_path)
     monkeypatch.setattr(looplet, "cartridge_to_preset", fake_load)
-    monkeypatch.setattr(looplet, "composable_loop", fake_loop)
+    monkeypatch.setattr("looplet.loop.composable_loop", fake_loop)
     return observed
 
 
@@ -281,6 +288,96 @@ def test_new_success_labels_generated_code_as_draft(
     task = observed["task"]
     assert isinstance(task, dict)
     assert "Scaffold a cartridge draft" in task["goal"]
+
+
+@pytest.mark.parametrize("max_steps", [1, 5])
+def test_new_max_steps_updates_config_and_state(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    max_steps: int,
+) -> None:
+    from looplet.cli import factory_commands
+
+    target = tmp_path / "url_summary.cartridge"
+    target.mkdir()
+    observed = _patch_new_runtime(monkeypatch, tmp_path)
+    args = _new_args(target)
+    args.max_steps = max_steps
+
+    assert factory_commands.cmd_new(args) == 0
+    assert observed["config"].max_steps == max_steps
+    assert observed["state"].max_steps == max_steps
+
+
+def test_new_closes_factory_and_produced_presets(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from looplet.cli import factory_commands
+
+    target = tmp_path / "url_summary.cartridge"
+    target.mkdir()
+    observed = _patch_new_runtime(monkeypatch, tmp_path)
+
+    assert factory_commands.cmd_new(_new_args(target)) == 0
+    assert observed["closed"] == ["factory", "produced"]
+
+
+def test_new_max_steps_limits_actual_factory_execution(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import looplet
+    from looplet import MockLLMBackend, tool
+    from looplet.cli import factory_commands
+    from looplet.loop import composable_loop
+
+    target = tmp_path / "url_summary.cartridge"
+    target.mkdir()
+    observed = _patch_new_runtime(monkeypatch, tmp_path)
+    monkeypatch.setattr("looplet.loop.composable_loop", composable_loop)
+    preset = looplet.cartridge_to_preset(str(tmp_path), runtime={})
+    calls: list[bool] = []
+
+    @tool
+    def work() -> dict:
+        calls.append(True)
+        return {"ok": True}
+
+    preset.tools.register(work)
+    monkeypatch.setattr(
+        factory_commands,
+        "_build_backend",
+        lambda: MockLLMBackend(['{"tool":"work","args":{}}'] * 3),
+    )
+    args = _new_args(target)
+    args.max_steps = 1
+
+    assert factory_commands.cmd_new(args) == 0
+    assert len(calls) == 1
+    assert preset.state.step_count == 1
+    assert observed["closed"] == ["factory", "produced"]
+
+
+@pytest.mark.parametrize("failure", [RuntimeError, KeyboardInterrupt])
+def test_new_closes_factory_after_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    failure: type[BaseException],
+) -> None:
+    from looplet.cli import factory_commands
+
+    observed = _patch_new_runtime(monkeypatch, tmp_path)
+
+    def fail_loop(**kwargs):
+        raise failure("factory interrupted")
+
+    monkeypatch.setattr("looplet.loop.composable_loop", fail_loop)
+
+    assert factory_commands.cmd_new(_new_args(tmp_path / "draft.cartridge")) == (
+        130 if failure is KeyboardInterrupt else 1
+    )
+    assert observed["closed"] == ["factory"]
 
 
 def test_new_missing_output_uses_cartridge_language(

@@ -153,6 +153,13 @@ def test_runner_closes_real_mcp_resources(
         preset = original_loader(*args, **kwargs)
         captured["preset"] = preset
         captured["adapter"] = preset.mcp_adapters[0]
+        original_set_backend = preset.model_gateway.set_backend
+
+        def capture_backend(backend):
+            captured["backend"] = backend
+            original_set_backend(backend)
+
+        monkeypatch.setattr(preset.model_gateway, "set_backend", capture_backend)
         return preset
 
     monkeypatch.setattr(looplet, "cartridge_to_preset", capture_loader)
@@ -170,6 +177,29 @@ def test_runner_closes_real_mcp_resources(
     json.loads(capsys.readouterr().out)
     preset = captured["preset"]
     adapter = captured["adapter"]
+    assert isinstance(captured["backend"], MockLLMBackend)
+    assert preset.run_claimed
     assert preset.mcp_adapters == []
     assert preset.model_gateway is None
     assert adapter._proc is None
+
+
+def test_runner_returns_nonzero_on_fatal_provider_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    cartridge = _custom_terminal_cartridge(tmp_path, name="done", return_expression="{}")
+    _patch_backend(monkeypatch, [])
+
+    class FailingBackend:
+        def generate(self, prompt: str, **kwargs):
+            raise RuntimeError("provider unavailable")
+
+    monkeypatch.setattr(factory_commands, "_build_backend", FailingBackend)
+
+    rc = factory_commands.cmd_run_workspace(_args(cartridge, project_root=tmp_path))
+
+    assert rc == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["completed"] is False
+    assert payload["termination_reason"] == "llm_error"
+    assert payload["result"] is None

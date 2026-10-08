@@ -115,7 +115,9 @@ contain full prompts, responses, and tool results; inspect them before sharing.
 `trace_dir` (`null` with `--no-trace`). `completed` is true only when the agent
 reaches `done`; budget and hook stops remain successful CLI executions but are
 reported as incomplete. Human output likewise prints `stopped (<reason>)`
-instead of `done` for incomplete runs. Errors remain on standard error; consumers should
+instead of `done` for incomplete runs. Fatal execution failures, including
+provider errors, return a non-zero exit code in both human and JSON modes.
+Errors remain on standard error; consumers should
 tolerate added fields. It cannot be combined with `--pretty`.
 `run-workspace` remains a compatibility alias.
 

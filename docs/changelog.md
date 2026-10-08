@@ -87,6 +87,15 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   text mode. Broken `check_done` quality gates fail closed in sync and async
   loops.
 
+### Fixed
+
+- Cartridge and factory CLI runs now use the preset lifecycle for validation,
+  model-gateway binding, and accepted terminal output. Factory and generated
+  validation presets close their owned resources on completion or failure.
+- `looplet new --max-steps` now overrides the authoritative factory config and
+  limits actual execution. Fatal cartridge/provider failures return non-zero;
+  intentional budget and hook stops retain their existing exit-zero contract.
+
 ### Deprecated
 
 - `EvalHook.save()` retains its standalone report but warns; use

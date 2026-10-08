@@ -145,8 +145,7 @@ def cmd_new(args: argparse.Namespace) -> int:
         print(_dim(f"  model:  {os.environ['OPENAI_MODEL']}"))
         print()
     try:
-        from looplet import cartridge_to_preset, composable_loop  # noqa: PLC0415
-        from looplet.types import DefaultState  # noqa: PLC0415
+        from looplet import RunResult, cartridge_to_preset  # noqa: PLC0415
 
         factory = _factory_workspace_path()
     except Exception as exc:
@@ -174,7 +173,10 @@ def cmd_new(args: argparse.Namespace) -> int:
         print(_red(f"error: factory load failed: {exc}"), file=sys.stderr)
         return 1
 
-    state = DefaultState(max_steps=args.max_steps or preset.config.max_steps)
+    if args.max_steps is not None:
+        preset.config.max_steps = args.max_steps
+        preset.state.max_steps = args.max_steps
+    state = preset.state
     brief_for_factory = description
     if not tools:
         brief_for_factory = (
@@ -204,12 +206,8 @@ def cmd_new(args: argparse.Namespace) -> int:
     n_denies = 0
     last_done_summary: str | None = None
     try:
-        for step in composable_loop(
-            llm=backend,
-            config=preset.config,
-            tools=preset.tools,
-            state=state,
-            hooks=preset.hooks,
+        for step in preset.run(
+            backend,
             task={"goal": brief_for_factory},
         ):
             n_steps += 1
@@ -219,8 +217,9 @@ def cmd_new(args: argparse.Namespace) -> int:
                 if pretty is not None:
                     pretty.step(step)
                 continue
+            data = tool_result.data if tool_result is not None else None
             err = (tool_result and tool_result.error) or (
-                tool_result.data.get("error") if tool_result and tool_result.data else None
+                data.get("error") if isinstance(data, dict) else None
             )
             if err:
                 n_denies += 1
@@ -233,15 +232,22 @@ def cmd_new(args: argparse.Namespace) -> int:
             if (
                 tool_call.tool == "done"
                 and tool_result
-                and tool_result.data
-                and "summary" in tool_result.data
+                and isinstance(data, dict)
+                and "summary" in data
             ):
-                last_done_summary = str(tool_result.data["summary"])
+                last_done_summary = str(data["summary"])
     except KeyboardInterrupt:
         print(_red("\ninterrupted"), file=sys.stderr)
         return 130
     except Exception as exc:
         print(_red(f"error during build: {type(exc).__name__}: {exc}"), file=sys.stderr)
+        return 1
+    finally:
+        preset.close()
+
+    result = RunResult.from_state(state)
+    if result.failed:
+        print(_red(f"error: factory stopped ({result.termination_reason})"), file=sys.stderr)
         return 1
 
     elapsed = time.time() - t0
@@ -254,9 +260,12 @@ def cmd_new(args: argparse.Namespace) -> int:
         return 1
     try:
         sub_preset = cartridge_to_preset(str(target_dir))
-        produced_tools = sorted(sub_preset.tools._tools.keys())
-        n_tools = len(produced_tools)
-        sys_prompt_chars = len(sub_preset.config.system_prompt or "")
+        try:
+            produced_tools = sorted(sub_preset.tools._tools.keys())
+            n_tools = len(produced_tools)
+            sys_prompt_chars = len(sub_preset.config.system_prompt or "")
+        finally:
+            sub_preset.close()
     except Exception as exc:
         print(
             _red(f"\nerror: produced cartridge failed to load: {exc}"),
@@ -302,11 +311,10 @@ def cmd_run_workspace(args: argparse.Namespace) -> int:
     try:
         from looplet import (  # noqa: PLC0415
             ProvenanceSink,
+            RunResult,
             cartridge_to_preset,
-            composable_loop,
         )
         from looplet.cartridge.runtime_helpers import resolve_project_root  # noqa: PLC0415
-        from looplet.types import DefaultState  # noqa: PLC0415
     except Exception as exc:
         print(_red(f"error: {exc}"), file=sys.stderr)
         return 1
@@ -356,10 +364,10 @@ def cmd_run_workspace(args: argparse.Namespace) -> int:
         print(_red(f"error: cartridge load failed: {exc}"), file=sys.stderr)
         return 1
 
-    if args.max_steps:
+    if args.max_steps is not None:
         preset.config.max_steps = args.max_steps
-    state = DefaultState(max_steps=args.max_steps or preset.config.max_steps)
-    terminal_tools = {preset.config.done_tool, *preset.config.done_tools}
+        preset.state.max_steps = args.max_steps
+    state = preset.state
     sink = None
     effective_trace_dir = None
     if not getattr(args, "no_trace", False):
@@ -375,7 +383,7 @@ def cmd_run_workspace(args: argparse.Namespace) -> int:
         sink = ProvenanceSink(dir=effective_trace_dir, metadata=trajectory_metadata)
         backend = sink.wrap_llm(backend)
 
-    hooks = list(preset.hooks)
+    hooks = []
     if sink is not None:
         hooks.append(sink.trajectory_hook())
     pretty = None
@@ -399,12 +407,9 @@ def cmd_run_workspace(args: argparse.Namespace) -> int:
     interrupted = False
     saved_trace_dir = None
     try:
-        for step in composable_loop(
-            llm=backend,
-            config=preset.config,
-            tools=preset.tools,
-            state=state,
-            hooks=hooks,
+        for step in preset.run(
+            backend,
+            extra_hooks=hooks,
             task={"goal": task},
         ):
             n_steps += 1
@@ -424,13 +429,12 @@ def cmd_run_workspace(args: argparse.Namespace) -> int:
                 tag = _red("✗") if err else _green("✓")
                 short = json.dumps(tool_call.args, default=str)[:80]
                 print(f"  {tag} step {n_steps:>2}: {tool_call.tool}({short})")
-            if tool_call.tool in terminal_tools and tool_result is not None:
-                final_data = tool_result.data
-                if isinstance(final_data, dict):
-                    final_summary = str(final_data.get("summary", ""))
     except KeyboardInterrupt:
         print(_red("\ninterrupted"), file=sys.stderr)
         interrupted = True
+    except Exception as exc:
+        print(_red(f"error during run: {type(exc).__name__}: {exc}"), file=sys.stderr)
+        return 1
     finally:
         try:
             if sink is not None:
@@ -444,14 +448,16 @@ def cmd_run_workspace(args: argparse.Namespace) -> int:
         return 130
 
     elapsed = time.time() - t0
-    termination_reason = getattr(state, "_stop_reason", None)
-    if termination_reason is None:
-        termination_reason = getattr(state, "stop_reason", None)
+    result = RunResult.from_state(state)
+    termination_reason = result.termination_reason
+    final_data = result.output
+    if isinstance(final_data, dict):
+        final_summary = str(final_data.get("summary", ""))
     if json_output:
         print(
             json.dumps(
                 {
-                    "completed": termination_reason == "done",
+                    "completed": result.completed,
                     "termination_reason": termination_reason or "unknown",
                     "steps": n_steps,
                     "duration_ms": round(elapsed * 1000, 2),
@@ -462,11 +468,13 @@ def cmd_run_workspace(args: argparse.Namespace) -> int:
                 default=str,
             )
         )
-        return 0
+        return 1 if result.failed else 0
 
     print()
-    if termination_reason == "done":
+    if result.completed:
         status = _green("✓ done")
+    elif result.failed:
+        status = _red(f"✗ failed ({termination_reason or 'unknown'})")
     else:
         status = _dim(f"· stopped ({termination_reason or 'unknown'})")
     print(f"{status} in {elapsed:.1f}s - {n_steps} steps")
@@ -479,7 +487,7 @@ def cmd_run_workspace(args: argparse.Namespace) -> int:
         print(json.dumps(final_data, indent=2, default=str)[:2000])
     if saved_trace_dir is not None:
         print(f"\n  Trace: {saved_trace_dir}")
-    return 0
+    return 1 if result.failed else 0
 
 
 def cmd_portability(args: argparse.Namespace) -> int:

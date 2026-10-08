@@ -23,11 +23,11 @@ import time
 import uuid
 from collections.abc import Callable, Iterable
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, TextIO, cast
 
 from looplet import __version__
 from looplet.artifact_compat import read_artifact_descriptor
-from looplet.cli import completion_payload
+from looplet.cli import completion_payload, execution_output
 
 
 def _fmt_ms(ms: float | int | None) -> str:
@@ -334,6 +334,37 @@ def _render_run(
     no_trace: bool,
     json_output: bool = False,
 ) -> int:
+    output = sys.stdout
+    with execution_output(json_output):
+        return _run_bundle(
+            bundle_path=bundle_path,
+            task=task,
+            workspace=workspace,
+            max_steps=max_steps,
+            scripted=scripted,
+            scripted_responses=scripted_responses,
+            require_tests=require_tests,
+            trace_dir=trace_dir,
+            no_trace=no_trace,
+            json_output=json_output,
+            output=output,
+        )
+
+
+def _run_bundle(
+    *,
+    bundle_path: Path,
+    task: str,
+    workspace: Path,
+    max_steps: int,
+    scripted: bool,
+    scripted_responses: list[str],
+    require_tests: bool,
+    trace_dir: Path | None,
+    no_trace: bool,
+    json_output: bool,
+    output: TextIO,
+) -> int:
     from looplet.backends import make_backend  # noqa: PLC0415
     from looplet.bundles import (  # noqa: PLC0415
         BundleValidation,
@@ -602,7 +633,8 @@ def _render_run(
                 ),
                 indent=2,
                 default=str,
-            )
+            ),
+            file=output,
         )
     else:
         reason = result.termination_reason or "unknown"

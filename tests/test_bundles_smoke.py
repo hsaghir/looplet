@@ -183,14 +183,71 @@ class TestSkillBundles:
         assert payload["steps"] == 1
         assert payload["result"]["summary"] == "inspected"
 
+    def test_cli_json_redirects_authored_output_to_stderr(self, tmp_path, capsys):
+        bundle = tmp_path / "noisy-bundle"
+        bundle.mkdir()
+        (bundle / "SKILL.md").write_text(
+            "---\nname: noisy\ndescription: Noisy bundle.\nentrypoint: looplet.py\n---\n"
+        )
+        (bundle / "looplet.py").write_text(
+            "from looplet import AgentPreset, DefaultState, LoopConfig, tool, tools_from\n"
+            "print('import diagnostic')\n"
+            "class VerboseHook:\n"
+            "    def check_done(self, state, session_log, context, step_num):\n"
+            "        print('hook diagnostic')\n"
+            "class Resource:\n"
+            "    def close(self):\n"
+            "        print('cleanup diagnostic')\n"
+            "@tool\n"
+            "def finish(*, summary: str) -> dict:\n"
+            "    print('tool diagnostic')\n"
+            "    return {'summary': summary}\n"
+            "def build(runtime):\n"
+            "    print('build diagnostic')\n"
+            "    resource = Resource()\n"
+            "    return AgentPreset(\n"
+            "        config=LoopConfig(max_steps=runtime.max_steps, done_tool='finish', "
+            "use_native_tools=False),\n"
+            "        hooks=[VerboseHook()], tools=tools_from([finish]),\n"
+            "        state=DefaultState(max_steps=runtime.max_steps),\n"
+            "        resources={'session': resource}, owned_resources=[resource],\n"
+            "    )\n"
+        )
+
+        assert (
+            cli_main(
+                [
+                    "run",
+                    str(bundle),
+                    "finish",
+                    "--project-root",
+                    str(tmp_path),
+                    "--max-steps",
+                    "1",
+                    "--json",
+                    "--no-trace",
+                    "--scripted-response",
+                    '{"tool":"finish","args":{"summary":"finished"}}',
+                ]
+            )
+            == 0
+        )
+
+        output = capsys.readouterr()
+        payload = json.loads(output.out)
+        assert payload["completed"] is True
+        assert payload["result"] == {"summary": "finished"}
+        for phase in ("import", "build", "hook", "tool", "cleanup"):
+            assert f"{phase} diagnostic" in output.err
+
     def test_cli_json_does_not_publish_rejected_completion(self, tmp_path, monkeypatch, capsys):
         from types import ModuleType
 
-        from looplet import DefaultState, LoopConfig, tools_from
+        from looplet import Block, DefaultState, LoopConfig, tools_from
 
         class RejectCompletion:
-            def check_done(self, state):
-                return False
+            def check_done(self, state, session_log, context, step_num):
+                return Block("Completion deliberately rejected")
 
         preset = AgentPreset(
             config=LoopConfig(max_steps=1, use_native_tools=False),

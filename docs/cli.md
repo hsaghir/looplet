@@ -152,6 +152,8 @@ and hook stops remain successful CLI executions but are
 reported as incomplete. Human output likewise prints `stopped (<reason>)`
 instead of `done` for incomplete runs. Fatal execution failures, including
 provider errors, return a non-zero exit code in both human and JSON modes.
+In JSON mode, ordinary Python output from loaded harness code goes to standard
+error instead of corrupting the completion object. That output is not redacted.
 Errors remain on standard error; consumers should
 tolerate added fields. The explicit cartridge command retains `--quiet`,
 `--pretty`, and `--parent-trace`; `--json` cannot be combined with `--pretty`.

@@ -241,6 +241,39 @@ def test_runner_reports_trace_failure_and_closes_preset(
             captured["preset"].close()
 
 
+@pytest.mark.parametrize("json_output", [False, True])
+def test_runner_routes_authored_output_without_changing_human_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys, json_output: bool
+) -> None:
+    cartridge = _custom_terminal_cartridge(tmp_path, name="done", return_expression="{}")
+    (cartridge / "tools" / "done" / "execute.py").write_text(
+        "print('loading diagnostic')\n"
+        "def execute(*, answer: str):\n"
+        "    print('execution diagnostic')\n"
+        "    return {'answer': answer}\n"
+    )
+    _patch_backend(monkeypatch, [json.dumps({"tool": "done", "args": {"answer": "ok"}})])
+
+    assert (
+        factory_commands.cmd_run_workspace(
+            _args(cartridge, project_root=tmp_path, json_output=json_output)
+        )
+        == 0
+    )
+
+    output = capsys.readouterr()
+    if json_output:
+        payload = json.loads(output.out)
+        assert payload["completed"] is True
+        assert payload["result"] == {"answer": "ok"}
+        assert "loading diagnostic" in output.err
+        assert "execution diagnostic" in output.err
+    else:
+        assert "loading diagnostic" in output.out
+        assert "execution diagnostic" in output.out
+        assert not output.err
+
+
 def test_run_dispatches_cartridge_and_preserves_scalar_result(tmp_path: Path, capsys) -> None:
     cartridge = _custom_terminal_cartridge(tmp_path, name="finish", return_expression="answer")
 

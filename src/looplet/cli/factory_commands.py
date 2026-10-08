@@ -23,10 +23,10 @@ import sys
 import time
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 from looplet.bundled import bundled_cartridge_path
-from looplet.cli import completion_payload
+from looplet.cli import completion_payload, execution_output
 
 
 def _bold(s: str) -> str:
@@ -273,6 +273,12 @@ def cmd_new(args: argparse.Namespace) -> int:
 
 # ── ``looplet run-cartridge`` (``run-workspace`` alias) ────────
 def cmd_run_workspace(args: argparse.Namespace) -> int:
+    output = sys.stdout
+    with execution_output(getattr(args, "json", False)):
+        return _run_cartridge(args, output=output)
+
+
+def _run_cartridge(args: argparse.Namespace, *, output: TextIO) -> int:
     json_output = getattr(args, "json", False)
     if json_output and getattr(args, "pretty", False):
         print(_red("error: --json cannot be used with --pretty"), file=sys.stderr)
@@ -465,7 +471,8 @@ def cmd_run_workspace(args: argparse.Namespace) -> int:
                 ),
                 indent=2,
                 default=str,
-            )
+            ),
+            file=output,
         )
         return 1 if result.failed else 0
 

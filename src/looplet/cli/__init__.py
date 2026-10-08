@@ -7,10 +7,17 @@ in :mod:`looplet.__main__`.
 
 from __future__ import annotations
 
+import sys
+from contextlib import AbstractContextManager, nullcontext, redirect_stdout
 from pathlib import Path
 from typing import Any
 
 from looplet.types import RunResult
+
+
+def execution_output(json_output: bool) -> AbstractContextManager[Any]:
+    """Keep authored diagnostics separate from machine-readable completion."""
+    return redirect_stdout(sys.stderr) if json_output else nullcontext()
 
 
 def completion_payload(

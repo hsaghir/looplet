@@ -406,6 +406,7 @@ def cmd_run_workspace(args: argparse.Namespace) -> int:
     final_data: Any = None
     interrupted = False
     saved_trace_dir = None
+    trace_failed = False
     try:
         for step in preset.run(
             backend,
@@ -439,9 +440,14 @@ def cmd_run_workspace(args: argparse.Namespace) -> int:
         try:
             if sink is not None:
                 saved_trace_dir = sink.flush()
+        except Exception as exc:
+            print(_red(f"error: could not save trace: {exc}"), file=sys.stderr)
+            trace_failed = True
         finally:
             preset.close()
 
+    if trace_failed:
+        return 1
     if interrupted:
         if saved_trace_dir is not None and not json_output:
             print(f"  Trace: {saved_trace_dir}")

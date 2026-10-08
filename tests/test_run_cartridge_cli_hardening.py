@@ -177,6 +177,8 @@ def test_runner_closes_real_mcp_resources(
     json.loads(capsys.readouterr().out)
     preset = captured["preset"]
     adapter = captured["adapter"]
+    assert isinstance(preset, looplet.AgentPreset)
+    assert isinstance(adapter, looplet.MCPToolAdapter)
     assert isinstance(captured["backend"], MockLLMBackend)
     assert preset.run_claimed
     assert preset.mcp_adapters == []
@@ -203,3 +205,36 @@ def test_runner_returns_nonzero_on_fatal_provider_error(
     assert payload["completed"] is False
     assert payload["termination_reason"] == "llm_error"
     assert payload["result"] is None
+
+
+def test_runner_reports_trace_failure_and_closes_preset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    import looplet
+
+    cartridge = _custom_terminal_cartridge(tmp_path, name="done", return_expression="{}")
+    _patch_backend(monkeypatch, [json.dumps({"tool": "done", "args": {"answer": "ok"}})])
+    trace_path = tmp_path / "not-a-directory"
+    trace_path.write_text("existing file")
+    captured = {}
+    original_loader = looplet.cartridge_to_preset
+
+    def capture_loader(*args, **kwargs):
+        preset = original_loader(*args, **kwargs)
+        captured["preset"] = preset
+        return preset
+
+    monkeypatch.setattr(looplet, "cartridge_to_preset", capture_loader)
+    arguments = _args(cartridge, project_root=tmp_path)
+    arguments.no_trace = False
+    arguments.trace_dir = trace_path
+
+    try:
+        assert factory_commands.cmd_run_workspace(arguments) == 1
+        assert captured["preset"]._closed
+        output = capsys.readouterr()
+        assert "could not save trace" in output.err
+        assert not output.out
+    finally:
+        if "preset" in captured:
+            captured["preset"].close()

@@ -6,3 +6,33 @@ in :mod:`looplet.__main__`.
 """
 
 from __future__ import annotations
+
+import sys
+from contextlib import AbstractContextManager, nullcontext, redirect_stdout
+from pathlib import Path
+from typing import Any
+
+from looplet.types import RunResult
+
+
+def execution_output(json_output: bool) -> AbstractContextManager[Any]:
+    """Keep authored diagnostics separate from machine-readable completion."""
+    return redirect_stdout(sys.stderr) if json_output else nullcontext()
+
+
+def completion_payload(
+    result: RunResult,
+    *,
+    steps: int,
+    duration_ms: float,
+    trace_dir: Path | None,
+) -> dict[str, Any]:
+    """The shared CLI completion view for cartridge and bundle runs."""
+    return {
+        "completed": result.completed,
+        "termination_reason": result.termination_reason or "unknown",
+        "steps": steps,
+        "duration_ms": round(duration_ms, 2),
+        "result": result.output,
+        "trace_dir": str(trace_dir) if trace_dir is not None else None,
+    }

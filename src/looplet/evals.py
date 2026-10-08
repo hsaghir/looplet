@@ -2735,7 +2735,7 @@ def _run_cartridge_cli(args: list[str]) -> int:
         default=None,
         help="Persist each run under <out>/<case_id>/ (agent model calls + trajectory + outcomes + scores; use --no-capture to omit model calls).",
     )
-    parser.add_argument("--model", default=None, help="Model name (else $OPENAI_MODEL).")
+    parser.add_argument("--model", default=None, help="Override the selected provider's model.")
     parser.add_argument(
         "--base-url", default=None, help="OpenAI-compatible base URL (else $OPENAI_BASE_URL)."
     )
@@ -2774,6 +2774,9 @@ def _run_cartridge_cli(args: list[str]) -> int:
     if not math.isfinite(parsed.threshold) or not 0.0 <= parsed.threshold <= 1.0:
         print("error: --threshold must be finite and between 0 and 1", file=sys.stderr)
         return 1
+    if parsed.max_steps is not None and parsed.max_steps < 1:
+        print("error: --max-steps must be positive", file=sys.stderr)
+        return 1
 
     cdir = Path(parsed.cartridge)
     if not cdir.is_dir():
@@ -2793,37 +2796,27 @@ def _run_cartridge_cli(args: list[str]) -> int:
         return 1
     grader_manifest = _eval_grader_manifest(overview.graders)
 
-    base_url = parsed.base_url or os.environ.get("OPENAI_BASE_URL")
-    model = parsed.model or os.environ.get("OPENAI_MODEL")
-    if not base_url and not os.environ.get("OPENAI_API_KEY"):
-        print(
-            "error: no LLM configured. Set OPENAI_BASE_URL (local proxy) or "
-            "OPENAI_API_KEY (cloud), or pass --base-url / --model.",
-            file=sys.stderr,
-        )
-        return 1
+    from looplet.backends import OpenAIBackend, make_backend  # noqa: PLC0415
 
-    from looplet.backends import OpenAIBackend  # noqa: PLC0415
-
-    llm = OpenAIBackend(
-        base_url=base_url,
-        api_key=os.environ.get("OPENAI_API_KEY", "x"),
-        model=model or "gpt-4o",
-    )
-
-    # LLM-as-judge: graders whose signature has an ``llm`` param are only
-    # run when a judge backend is supplied. --judge reuses the agent
-    # backend; --judge-model builds a separate one (and implies --judge).
-    judge_llm = None
-    if parsed.judge or parsed.judge_model:
-        if parsed.judge_model:
-            judge_llm = OpenAIBackend(
-                base_url=base_url,
-                api_key=os.environ.get("OPENAI_API_KEY", "x"),
-                model=parsed.judge_model,
+    def build_backend(model: str | None):
+        if parsed.base_url:
+            return OpenAIBackend(
+                base_url=parsed.base_url,
+                api_key=os.environ.get("OPENAI_API_KEY") or "x",
+                model=model or os.environ.get("OPENAI_MODEL", "gpt-4o"),
             )
-        else:
+        return make_backend(model=model)
+
+    try:
+        llm = build_backend(parsed.model)
+        judge_llm = None
+        if parsed.judge_model:
+            judge_llm = build_backend(parsed.judge_model)
+        elif parsed.judge:
             judge_llm = llm
+    except Exception as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
 
     if not parsed.json:
         print(

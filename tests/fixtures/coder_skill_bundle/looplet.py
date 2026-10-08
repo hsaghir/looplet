@@ -30,10 +30,11 @@ from looplet import (
     DefaultState,
     LoopConfig,
     MockLLMBackend,
-    OpenAIBackend,
+    RunResult,
     TrajectoryRecorder,
     composable_loop,
 )
+from looplet.backends import make_backend
 from looplet.compact import PruneToolResults, TruncateCompact, compact_chain
 from looplet.presets import AgentPreset
 from looplet.provenance import RecordingLLMBackend
@@ -154,20 +155,14 @@ def run(
 ) -> int:
     """Run the coder bundle with byte-for-byte-compatible terminal output."""
     workspace_str = os.path.abspath(os.fspath(workspace))
-    base_url = os.environ.get("OPENAI_BASE_URL", "http://localhost:11434/v1")
-    api_key = os.environ.get("OPENAI_API_KEY", "x")
-    model = os.environ.get("OPENAI_MODEL", "llama3.1")
 
     if scripted or scripted_responses:
         llm = MockLLMBackend(responses=scripted_responses or _scripted())
         model_label = "scripted MockLLMBackend"
     else:
-        llm = ResilientBackend(
-            OpenAIBackend(base_url=base_url, api_key=api_key, model=model),
-            retries=2,
-            timeout_s=120,
-        )
-        model_label = model
+        backend = make_backend()
+        llm = ResilientBackend(backend, retries=2, timeout_s=120)
+        model_label = getattr(backend, "_model", type(backend).__name__)
 
     recording = RecordingLLMBackend(llm)
     file_cache = FileCache(workspace_str)
@@ -238,8 +233,12 @@ def run(
         print("  Evals:")
         for r in eval_hook.results:
             print(f"    {r.pretty()}")
+    result = RunResult.from_state(state)
+    if not result.completed:
+        status = "failed" if result.failed else "stopped"
+        print(f"  {status} ({result.termination_reason or 'unknown'})")
     print()
-    return 0
+    return 1 if result.failed else 0
 
 
 def _run_loop(

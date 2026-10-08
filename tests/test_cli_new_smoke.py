@@ -11,6 +11,9 @@ without spinning up a real LLM.
 from __future__ import annotations
 
 import io
+import json
+import os
+import shlex
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -88,35 +91,84 @@ def test_new_defaults_to_cartridge_target(monkeypatch: pytest.MonkeyPatch) -> No
 def test_new_missing_env_vars(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """When required env vars are unset, ``new`` prints a clear error
     and exits 1."""
-    for var in ("OPENAI_BASE_URL", "OPENAI_API_KEY", "OPENAI_MODEL"):
-        monkeypatch.delenv(var, raising=False)
     captured = io.StringIO()
-    with patch.object(sys, "stderr", captured):
+    with patch.dict(os.environ, {}, clear=True), patch.object(sys, "stderr", captured):
         rc = main(["new", "a brief", str(tmp_path / "out.cartridge")])
     assert rc == 1
     err = captured.getvalue()
-    assert "missing required env vars" in err
-    # All three should be named.
-    for var in ("OPENAI_BASE_URL", "OPENAI_API_KEY", "OPENAI_MODEL"):
+    assert "could not resolve a provider" in err
+    for var in ("OPENAI_BASE_URL", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
         assert var in err
-    # The hint surface (the env-var template) must appear.
-    assert "OPENAI_MODEL=" in err
 
 
-def test_new_partial_env_vars(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Setting some but not all env vars still errors and names the missing ones."""
-    monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:1234/v1")
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.delenv("OPENAI_MODEL", raising=False)
-    captured = io.StringIO()
-    with patch.object(sys, "stderr", captured):
-        rc = main(["new", "a brief", str(tmp_path / "out.cartridge")])
-    assert rc == 1
-    err = captured.getvalue()
-    assert "OPENAI_API_KEY" in err
-    assert "OPENAI_MODEL" in err
-    # The one we DID set should NOT appear in the missing list.
-    assert "missing required env vars: OPENAI_BASE_URL" not in err
+@pytest.mark.parametrize(
+    "environment",
+    [
+        {"OPENAI_BASE_URL": "http://localhost:1234/v1"},
+        {"OPENAI_API_KEY": "test"},
+        {"ANTHROPIC_API_KEY": "test"},
+    ],
+)
+def test_cli_accepts_provider_defaults(environment: dict[str, str]) -> None:
+    from looplet.cli import factory_commands
+
+    with patch.dict(os.environ, environment, clear=True):
+        assert factory_commands._check_env() == 0
+
+
+def test_new_offline_scaffolds_without_backend(tmp_path, monkeypatch, capsys) -> None:
+    from looplet.cli import factory_commands
+
+    target = tmp_path / "offline.cartridge"
+    monkeypatch.setattr(
+        factory_commands,
+        "_build_backend",
+        lambda: pytest.fail("offline scaffolding must not construct a backend"),
+    )
+    assert (
+        main(["new", "Look up service owners", str(target), "--offline", "--tool", "lookup"]) == 0
+    )
+    assert json.loads((target / "cartridge.json").read_text())["schema_version"] == 2
+    assert "Look up service owners" in (target / "prompts" / "system.md").read_text()
+    assert (target / "tools" / "lookup" / "execute.py").is_file()
+    assert (target / "tools" / "done" / "execute.py").is_file()
+    assert "scaffolded cartridge draft" in capsys.readouterr().out
+
+
+def test_new_offline_preserves_existing_files(tmp_path, capsys) -> None:
+    target = tmp_path / "existing.cartridge"
+    target.mkdir()
+    original = target / "original.txt"
+    original.write_text("keep this")
+
+    assert main(["new", "draft", str(target), "--offline"]) == 1
+    assert original.read_text() == "keep this"
+    assert "error:" in capsys.readouterr().err
+
+
+def test_inspect_cartridge_does_not_execute_tool_code(tmp_path, capsys) -> None:
+    from looplet import scaffold_cartridge
+
+    target = scaffold_cartridge(tmp_path / "safe.cartridge", name="safe", tools=[])
+    (target / "tools" / "done" / "execute.py").write_text("raise AssertionError('must not import')")
+
+    assert main(["inspect", str(target), "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["tools"][0]["name"] == "done"
+
+
+def test_inspect_bundle_does_not_import_entrypoint(tmp_path, capsys) -> None:
+    target = tmp_path / "safe-bundle"
+    target.mkdir()
+    (target / "SKILL.md").write_text(
+        "---\nname: safe\ndescription: Safe metadata.\nentrypoint: looplet.py\n---\n"
+    )
+    (target / "looplet.py").write_text("raise AssertionError('must not import')")
+
+    assert main(["inspect", str(target), "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["name"] == "safe"
+    assert payload["ok"] is True
 
 
 def test_run_cartridge_missing_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -268,14 +320,16 @@ def _patch_new_runtime(
     return observed
 
 
+@pytest.mark.parametrize("target_name", ["url_summary.cartridge", "service owners.cartridge"])
 def test_new_success_labels_generated_code_as_draft(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
+    target_name: str,
 ) -> None:
     from looplet.cli import factory_commands
 
-    target = tmp_path / "url_summary.cartridge"
+    target = tmp_path / target_name
     target.mkdir()
     observed = _patch_new_runtime(monkeypatch, tmp_path)
 
@@ -284,7 +338,10 @@ def test_new_success_labels_generated_code_as_draft(
     out = capsys.readouterr().out
     assert "draft built" in out
     assert "produced cartridge draft:" in out
-    assert f'looplet run-cartridge {target} "<your task>"' in out
+    command = next(
+        line.strip() for line in out.splitlines() if line.strip().startswith("looplet run ")
+    )
+    assert shlex.split(command) == ["looplet", "run", str(target), "<your task>"]
     task = observed["task"]
     assert isinstance(task, dict)
     assert "Scaffold a cartridge draft" in task["goal"]

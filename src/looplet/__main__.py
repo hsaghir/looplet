@@ -17,16 +17,17 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import os
 import platform
 import sys
+import time
 import uuid
 from collections.abc import Callable, Iterable
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, TextIO, cast
 
 from looplet import __version__
 from looplet.artifact_compat import read_artifact_descriptor
+from looplet.cli import completion_payload, execution_output
 
 
 def _fmt_ms(ms: float | int | None) -> str:
@@ -242,54 +243,40 @@ def _doctor_checks(*, probe_backend: bool) -> list[dict[str, str]]:
     )
     checks.append({"name": "looplet", "status": "ok", "detail": f"version {__version__}"})
 
-    base_url = os.environ.get("OPENAI_BASE_URL", "")
-    model = os.environ.get("OPENAI_MODEL", "")
-    api_key = os.environ.get("OPENAI_API_KEY", "")
-    if not base_url:
+    from looplet.backends import make_backend  # noqa: PLC0415
+
+    llm = None
+    try:
+        llm = make_backend()
+        checks.append({"name": "provider", "status": "ok", "detail": type(llm).__name__})
         checks.append(
             {
-                "name": "OPENAI_BASE_URL",
-                "status": "warn",
-                "detail": "not set; set it to probe an OpenAI-compatible backend",
+                "name": "model",
+                "status": "ok",
+                "detail": str(getattr(llm, "_model", "backend default")),
             }
         )
-    else:
-        checks.append({"name": "OPENAI_BASE_URL", "status": "ok", "detail": base_url})
-    checks.append(
-        {
-            "name": "OPENAI_MODEL",
-            "status": "ok" if model else "warn",
-            "detail": model or "not set",
-        }
-    )
-    checks.append(
-        {
-            "name": "OPENAI_API_KEY",
-            "status": "ok" if api_key else "warn",
-            "detail": "set" if api_key else "not set (local endpoints often accept 'x')",
-        }
-    )
+    except Exception as exc:
+        checks.append({"name": "backend_config", "status": "warn", "detail": str(exc)})
 
     if not probe_backend:
         checks.append(
             {"name": "backend_probe", "status": "ok", "detail": "skipped by --no-backend"}
         )
         return checks
-    if not base_url or not model:
+    if llm is None:
         checks.append(
             {
                 "name": "backend_probe",
                 "status": "warn",
-                "detail": "skipped; OPENAI_BASE_URL and OPENAI_MODEL are required",
+                "detail": "skipped; configure a provider first",
             }
         )
         return checks
 
     try:
-        from looplet.backends import OpenAIBackend  # noqa: PLC0415
         from looplet.native_tools import probe_native_tool_support  # noqa: PLC0415
 
-        llm = OpenAIBackend(base_url=base_url, api_key=api_key or "x", model=model)
         probe = probe_native_tool_support(llm)
         checks.append(
             {
@@ -345,8 +332,40 @@ def _render_run(
     require_tests: bool,
     trace_dir: Path | None,
     no_trace: bool,
+    json_output: bool = False,
 ) -> int:
-    from looplet.backends import OpenAIBackend  # noqa: PLC0415
+    output = sys.stdout
+    with execution_output(json_output):
+        return _run_bundle(
+            bundle_path=bundle_path,
+            task=task,
+            workspace=workspace,
+            max_steps=max_steps,
+            scripted=scripted,
+            scripted_responses=scripted_responses,
+            require_tests=require_tests,
+            trace_dir=trace_dir,
+            no_trace=no_trace,
+            json_output=json_output,
+            output=output,
+        )
+
+
+def _run_bundle(
+    *,
+    bundle_path: Path,
+    task: str,
+    workspace: Path,
+    max_steps: int,
+    scripted: bool,
+    scripted_responses: list[str],
+    require_tests: bool,
+    trace_dir: Path | None,
+    no_trace: bool,
+    json_output: bool,
+    output: TextIO,
+) -> int:
+    from looplet.backends import make_backend  # noqa: PLC0415
     from looplet.bundles import (  # noqa: PLC0415
         BundleValidation,
         SkillRuntime,
@@ -356,6 +375,20 @@ def _render_run(
     )
     from looplet.resilient import ResilientBackend  # noqa: PLC0415
     from looplet.testing import MockLLMBackend  # noqa: PLC0415
+    from looplet.types import RunResult  # noqa: PLC0415
+
+    workspace = workspace.expanduser().resolve()
+    if not workspace.is_dir():
+        print(f"error: project root is not a directory: {workspace}", file=sys.stderr)
+        return 1
+    if task == "-":
+        task = sys.stdin.read()
+        if not task.strip():
+            print("error: task read from stdin is empty", file=sys.stderr)
+            return 1
+    if max_steps < 1:
+        print("error: --max-steps must be positive", file=sys.stderr)
+        return 1
 
     def _close_validation_preset(validation: BundleValidation | None) -> None:
         if validation is not None and validation.preset is not None:
@@ -391,6 +424,7 @@ def _render_run(
             print(f"  - {error}", file=sys.stderr)
 
     bundle_run = getattr(bundle.module, "run", None)
+    legacy_run = callable(bundle_run) and not json_output
     scripted_mode = scripted or bool(scripted_responses)
     for index, response in enumerate(scripted_responses, start=1):
         if not response.strip():
@@ -406,9 +440,7 @@ def _render_run(
             provider_validation = validate_skill_bundle(
                 bundle,
                 _validation_runtime(
-                    (None if no_trace else trace_dir)
-                    if callable(bundle_run)
-                    else effective_trace_dir,
+                    (None if no_trace else trace_dir) if legacy_run else effective_trace_dir,
                 ),
             )
             if not provider_validation.ok:
@@ -464,14 +496,14 @@ def _render_run(
                     )
                     _close_validation_preset(provider_validation)
                     return 1
-        elif not callable(bundle_run):
+        elif not legacy_run:
             print(
                 f"error: bundle {bundle.skill.name!r} does not provide scripted_responses()",
                 file=sys.stderr,
             )
             return 1
 
-    if callable(bundle_run):
+    if legacy_run:
         validation = provider_validation or validate_skill_bundle(
             bundle,
             _validation_runtime(None if no_trace else trace_dir),
@@ -498,56 +530,16 @@ def _render_run(
         except Exception as exc:  # noqa: BLE001
             print(f"error: bundle {bundle.skill.name!r} failed while running", file=sys.stderr)
             print(f"  - {type(exc).__name__}: {exc}", file=sys.stderr)
-            _close_validation_preset(validation)
             return 1
+        finally:
+            _close_validation_preset(validation)
         if isinstance(result, bool) or not isinstance(result, int):
             print(f"error: bundle {bundle.skill.name!r} returned invalid status", file=sys.stderr)
             print(f"  - expected int exit code, got {type(result).__name__}", file=sys.stderr)
-            _close_validation_preset(validation)
             return 1
-        _close_validation_preset(validation)
         return result
 
-    class _NativeToolFlag:
-        enabled: bool
-        used_as_bool: bool
-
-        def __init__(self, enabled: bool = True) -> None:
-            self.enabled = enabled
-            self.used_as_bool = False
-
-        def __bool__(self) -> bool:
-            self.used_as_bool = True
-            return self.enabled
-
-    class _TrackingRuntime(SkillRuntime):
-        accessed_options: set[str]
-        native_tool_flag: _NativeToolFlag
-
-        def __init__(
-            self,
-            *,
-            workspace: Path,
-            max_steps: int,
-            options: dict[str, Any],
-            output_dir: Path | None,
-        ) -> None:
-            super().__init__(
-                workspace=workspace,
-                max_steps=max_steps,
-                options=options,
-                output_dir=output_dir,
-            )
-            object.__setattr__(self, "accessed_options", set())
-            object.__setattr__(self, "native_tool_flag", _NativeToolFlag(True))
-
-        def option(self, name: str, default: Any = None) -> Any:
-            self.accessed_options.add(name)
-            if name == "use_native_tools":
-                return self.native_tool_flag
-            return super().option(name, default)
-
-    runtime = _TrackingRuntime(
+    runtime = SkillRuntime(
         workspace=workspace,
         max_steps=max_steps,
         options={"require_tests": require_tests, "use_native_tools": True},
@@ -559,19 +551,25 @@ def _render_run(
         _close_validation_preset(validation)
         return 1
 
+    preset = validation.preset
+    if preset is None:
+        print("error: bundle did not build an AgentPreset", file=sys.stderr)
+        return 1
+    preset.config.max_steps = max_steps
+    preset.state.max_steps = max_steps
+
     if scripted_mode:
         llm = MockLLMBackend(responses=scripted_responses)
         model_label = "scripted MockLLMBackend"
     else:
-        base_url = os.environ.get("OPENAI_BASE_URL", "http://localhost:11434/v1")
-        api_key = os.environ.get("OPENAI_API_KEY", "x")
-        model = os.environ.get("OPENAI_MODEL", "llama3.1")
-        llm = ResilientBackend(
-            OpenAIBackend(base_url=base_url, api_key=api_key, model=model),
-            retries=2,
-            timeout_s=120,
-        )
-        model_label = model
+        try:
+            backend = make_backend()
+        except Exception as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            _close_validation_preset(validation)
+            return 1
+        llm = ResilientBackend(backend, retries=2, timeout_s=120)
+        model_label = str(getattr(backend, "_model", type(backend).__name__))
 
     for warning in validation.warnings:
         print(f"warning: {warning}", file=sys.stderr)
@@ -580,18 +578,21 @@ def _render_run(
         validation.preset is not None and validation.preset.config.use_native_tools
     )
 
-    print(f"looplet run {bundle.skill.name}")
-    print(f"  Task: {task}")
-    print(f"  Cartridge: {workspace}")
-    print(f"  Model: {model_label} | Budget: {max_steps} steps")
-    print(
-        "  Tool protocol: native (use_native_tools=False for JSON-text)"
-        if uses_native_protocol
-        else "  Tool protocol: json-text"
-    )
-    print()
+    if not json_output:
+        print(f"looplet run {bundle.skill.name}")
+        print(f"  Task: {task}")
+        print(f"  Workspace: {workspace}")
+        print(f"  Model: {model_label} | Budget: {max_steps} steps")
+        print(
+            "  Tool protocol: native (use_native_tools=False for JSON-text)"
+            if uses_native_protocol
+            else "  Tool protocol: json-text"
+        )
+        print()
 
     render_step = getattr(bundle.module, "render_step", None)
+    started = time.perf_counter()
+    n_steps = 0
     try:
         try:
             for step in run_skill_bundle(
@@ -601,8 +602,11 @@ def _render_run(
                 runtime=runtime,
                 provenance=not no_trace,
                 trace_dir=effective_trace_dir,
-                preset=validation.preset,
+                preset=preset,
             ):
+                n_steps += 1
+                if json_output:
+                    continue
                 if callable(render_step):
                     with bundle.import_context():
                         rendered = render_step(step)
@@ -617,9 +621,57 @@ def _render_run(
             return 1
     finally:
         _close_validation_preset(validation)
-    if effective_trace_dir is not None:
-        print(f"\n  Trace: {effective_trace_dir}")
-    return 0
+    result = RunResult.from_state(preset.state)
+    if json_output:
+        print(
+            json.dumps(
+                completion_payload(
+                    result,
+                    steps=n_steps,
+                    duration_ms=(time.perf_counter() - started) * 1000,
+                    trace_dir=effective_trace_dir,
+                ),
+                indent=2,
+                default=str,
+            ),
+            file=output,
+        )
+    else:
+        reason = result.termination_reason or "unknown"
+        status = "done" if result.completed else f"stopped ({reason})"
+        if result.failed:
+            status = f"failed ({reason})"
+        print(f"\n  {status} - {n_steps} steps")
+        if effective_trace_dir is not None:
+            print(f"  Trace: {effective_trace_dir}")
+    return 1 if result.failed else 0
+
+
+def _render_inspect(path: Path, *, json_output: bool) -> int:
+    if (path / "cartridge.json").is_file():
+        from looplet.cli.spec_commands import cmd_describe  # noqa: PLC0415
+
+        return cmd_describe(argparse.Namespace(cartridge=path, json=json_output))
+    if (path / "SKILL.md").is_file() or path.name == "SKILL.md":
+        from looplet.bundles import discover_skill_bundles  # noqa: PLC0415
+
+        try:
+            cards = discover_skill_bundles(path, include_invalid=True)
+        except (OSError, ValueError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        if not cards:
+            print(f"error: no skill bundle found at {path}", file=sys.stderr)
+            return 1
+        card = cards[0]
+        if json_output:
+            print(json.dumps(card.to_dict(), indent=2))
+        else:
+            print(f"{card.name}\t{'ok' if card.ok else 'invalid'}\t{card.description}")
+            for error in card.errors:
+                print(f"  - {error}")
+        return 0 if card.ok else 1
+    return _render_show(path, json_output=json_output)
 
 
 def _render_blueprint(*, bundle_path: Path, workspace: Path, max_steps: int) -> int:
@@ -749,6 +801,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
+    inspect = sub.add_parser(
+        "inspect", help="Inspect a cartridge, bundle, or trace without executing harness code"
+    )
+    inspect.add_argument("path", type=Path, help="Path to a cartridge, bundle, or trace")
+    inspect.add_argument("--json", action="store_true", help="Emit machine-readable inspection")
+
     show = sub.add_parser(
         "show",
         help="Show a one-page summary of a captured trace directory",
@@ -774,12 +832,20 @@ def main(argv: list[str] | None = None) -> int:
 
     run = sub.add_parser(
         "run",
-        help="Run a runnable skill bundle",
+        aliases=["run-bundle"],
+        help="Run a cartridge or runnable skill bundle",
     )
-    run.add_argument("bundle", type=Path, help="Path to a runnable skill bundle")
-    run.add_argument("task", help="Task description to pass to the bundle")
-    run.add_argument("--workspace", "-w", type=Path, default=Path.cwd(), help="Cartridge path")
-    run.add_argument("--max-steps", type=int, default=20, help="Maximum tool calls")
+    run.add_argument("bundle", type=Path, help="Path to a cartridge or runnable skill bundle")
+    run.add_argument("task", help="Task description, or '-' to read it from stdin")
+    run.add_argument(
+        "--project-root",
+        "--workspace",
+        "-w",
+        dest="workspace",
+        type=Path,
+        help="Existing directory the agent operates on (defaults to the current project)",
+    )
+    run.add_argument("--max-steps", type=int, help="Maximum tool calls (bundle default: 20)")
     run.add_argument(
         "--scripted",
         action="store_true",
@@ -798,6 +864,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     run.add_argument("--trace-dir", type=Path, help="Write provenance trace output here")
     run.add_argument("--no-trace", action="store_true", help="Disable default provenance capture")
+    run.add_argument("--json", action="store_true", help="Emit one completion object")
 
     blueprint = sub.add_parser(
         "blueprint",
@@ -884,6 +951,8 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
 
+    if args.command == "inspect":
+        return _render_inspect(args.path, json_output=args.json)
     if args.command == "show":
         return _render_show(args.trace_dir, json_output=args.json)
     if args.command == "doctor":
@@ -892,17 +961,53 @@ def main(argv: list[str] | None = None) -> int:
             json_output=args.json,
             strict=args.strict,
         )
-    if args.command == "run":
+    if args.command in {"run", "run-bundle"}:
+        from looplet.cartridge.runtime_helpers import resolve_project_root  # noqa: PLC0415
+        from looplet.cli.factory_commands import cmd_run_workspace  # noqa: PLC0415
+
+        runtime = {"project_root": str(args.workspace)} if args.workspace is not None else None
+        project_root = Path(resolve_project_root(runtime))
+        is_cartridge = (args.bundle / "cartridge.json").is_file()
+        is_bundle = (args.bundle / "SKILL.md").is_file() or args.bundle.name == "SKILL.md"
+        if args.command == "run" and is_cartridge:
+            if is_bundle:
+                print(
+                    "error: both cartridge.json and SKILL.md are present; "
+                    "use run-cartridge or run-bundle explicitly",
+                    file=sys.stderr,
+                )
+                return 1
+            if args.scripted:
+                print("error: use --scripted-response for cartridges", file=sys.stderr)
+                return 1
+            if args.no_tests:
+                print("error: --no-tests is only for skill bundles", file=sys.stderr)
+                return 1
+            return cmd_run_workspace(
+                argparse.Namespace(
+                    workspace=args.bundle,
+                    task=args.task,
+                    project_root=project_root,
+                    max_steps=args.max_steps,
+                    trace_dir=args.trace_dir,
+                    no_trace=args.no_trace,
+                    json=args.json,
+                    quiet=False,
+                    pretty=False,
+                    scripted_response=args.scripted_response,
+                )
+            )
         return _render_run(
             bundle_path=args.bundle,
             task=args.task,
-            workspace=args.workspace,
-            max_steps=args.max_steps,
+            workspace=project_root,
+            max_steps=args.max_steps if args.max_steps is not None else 20,
             scripted=args.scripted,
             scripted_responses=args.scripted_response,
             require_tests=not args.no_tests,
             trace_dir=args.trace_dir,
             no_trace=args.no_trace,
+            json_output=args.json,
         )
     if args.command == "blueprint":
         return _render_blueprint(

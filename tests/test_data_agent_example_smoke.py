@@ -12,6 +12,26 @@ pytestmark = pytest.mark.smoke
 
 
 class TestDataAgentExample:
+    def test_live_run_uses_shared_provider_defaults(self, tmp_path, monkeypatch, capsys) -> None:
+        from looplet import backends
+
+        csv_path = tmp_path / "orders.csv"
+        csv_path.write_text("order_id,customer,amount,status\n1,alice,5,cancelled\n")
+        backend = data_agent.scripted_llm(str(csv_path))
+        selected = []
+
+        def resolve():
+            selected.append(backend)
+            return backend
+
+        monkeypatch.setattr(backends, "make_backend", resolve)
+        monkeypatch.setattr(data_agent, "_make_sample_csv", lambda: csv_path)
+        monkeypatch.setattr(data_agent, "CHECKPOINT_DIR", tmp_path / "checkpoints")
+        assert data_agent.main(["--auto-approve"]) == 0
+        assert selected == [backend]
+        assert backend.calls > 0
+        assert "# tool protocol: native" in capsys.readouterr().out
+
     def test_build_tools_uses_decorator_schema_and_helpers(self) -> None:
         registry = data_agent.build_tools()
         info = {tool["name"]: tool for tool in registry.introspect()["tools"]}

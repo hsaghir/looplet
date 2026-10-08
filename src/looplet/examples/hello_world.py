@@ -77,7 +77,7 @@ def eval_completed(ctx: EvalContext) -> bool:
 
 
 def main(argv: list[str] | None = None) -> int:
-    from looplet.backends import OpenAIBackend
+    from looplet.backends import OpenAIBackend, make_backend
 
     parser = argparse.ArgumentParser(description="Run the simplest looplet agent.")
     parser.add_argument("--max-steps", type=int, default=5)
@@ -94,11 +94,19 @@ def main(argv: list[str] | None = None) -> int:
         llm = MockLLMBackend(responses=scripted_responses())
         model_label = "scripted MockLLMBackend"
     else:
-        url = args.base_url or os.environ.get("OPENAI_BASE_URL", "http://localhost:11434/v1")
-        model = args.model or os.environ.get("OPENAI_MODEL", "gpt-4.1")
-        api_key = os.environ.get("OPENAI_API_KEY", "x")
-        llm = OpenAIBackend(base_url=url, api_key=api_key, model=model)
-        model_label = model
+        try:
+            if args.base_url:
+                llm = OpenAIBackend(
+                    base_url=args.base_url,
+                    api_key=os.environ.get("OPENAI_API_KEY") or "x",
+                    model=args.model or os.environ.get("OPENAI_MODEL", "gpt-4o"),
+                )
+            else:
+                llm = make_backend(model=args.model)
+        except (ImportError, RuntimeError, ValueError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        model_label = getattr(llm, "_model", type(llm).__name__)
 
     print("looplet hello world")
     print(f"Model: {model_label}")

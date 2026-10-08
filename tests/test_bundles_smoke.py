@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import shutil
@@ -30,6 +31,353 @@ CODER_BUNDLE = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "cod
 
 
 class TestSkillBundles:
+    @pytest.fixture(autouse=True)
+    def existing_cli_workspace(self, tmp_path):
+        (tmp_path / "workspace").mkdir()
+
+    def test_cli_rejects_missing_workspace_before_loading_bundle(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        missing = tmp_path / "missing-workspace"
+        monkeypatch.setattr(
+            "looplet.bundles.load_skill_bundle",
+            lambda *_args: pytest.fail("missing workspace must fail before bundle loading"),
+        )
+        assert cli_main(["run", str(CODER_BUNDLE), "finish", "--workspace", str(missing)]) == 1
+        assert not missing.exists()
+        assert "project root is not a directory" in capsys.readouterr().err
+
+    def test_cli_bundle_json_reports_completion_and_preserves_stdin(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        from types import ModuleType
+
+        from looplet import DefaultState, LoopConfig, tools_from
+
+        preset = AgentPreset(
+            config=LoopConfig(max_steps=1, use_native_tools=False),
+            hooks=[],
+            tools=tools_from([], include_done=True),
+            state=DefaultState(max_steps=1),
+        )
+        bundle = replace(
+            load_skill_bundle(CODER_BUNDLE),
+            build=lambda runtime: preset,
+            module=ModuleType("build_only_bundle"),
+        )
+        monkeypatch.setattr("looplet.bundles.load_skill_bundle", lambda *_args: bundle)
+        monkeypatch.setattr(sys, "stdin", io.StringIO("exact task\nsecond line\n"))
+        assert (
+            cli_main(
+                [
+                    "run",
+                    str(CODER_BUNDLE),
+                    "-",
+                    "--project-root",
+                    str(tmp_path),
+                    "--max-steps",
+                    "1",
+                    "--json",
+                    "--scripted-response",
+                    '{"tool":"done","args":{"summary":"finished"}}',
+                ]
+            )
+            == 0
+        )
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["completed"] is True
+        assert payload["result"] == preset.state.steps[-1].tool_result.data
+        assert payload["result"]["summary"] == "finished"
+        trajectory = json.loads((Path(payload["trace_dir"]) / "trajectory.json").read_text())
+        assert trajectory["task"] == {"description": "exact task\nsecond line\n"}
+
+    def test_cli_bundle_json_reports_budget_stop_without_trace(self, tmp_path, monkeypatch, capsys):
+        from types import ModuleType
+
+        from looplet import DefaultState, LoopConfig, tool, tools_from
+
+        @tool
+        def work() -> dict:
+            return {"ok": True}
+
+        preset = AgentPreset(
+            config=LoopConfig(max_steps=1, use_native_tools=False),
+            hooks=[],
+            tools=tools_from([work], include_done=True),
+            state=DefaultState(max_steps=1),
+        )
+        bundle = replace(
+            load_skill_bundle(CODER_BUNDLE),
+            build=lambda runtime: preset,
+            module=ModuleType("build_only_bundle"),
+        )
+        monkeypatch.setattr("looplet.bundles.load_skill_bundle", lambda *_args: bundle)
+        assert (
+            cli_main(
+                [
+                    "run-bundle",
+                    str(CODER_BUNDLE),
+                    "finish",
+                    "--workspace",
+                    str(tmp_path),
+                    "--max-steps",
+                    "1",
+                    "--json",
+                    "--no-trace",
+                    "--scripted-response",
+                    '{"tool":"work","args":{}}',
+                ]
+            )
+            == 0
+        )
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["completed"] is False
+        assert payload["termination_reason"] == "budget_exhausted"
+        assert payload["trace_dir"] is None
+        assert payload["result"] is None
+
+    @pytest.mark.parametrize(
+        "task, options, message",
+        [
+            ("-", [], "task read from stdin is empty"),
+            ("finish", ["--max-steps", "0"], "--max-steps must be positive"),
+            ("finish", ["--max-steps", "-1"], "--max-steps must be positive"),
+        ],
+    )
+    def test_cli_rejects_invalid_inputs_before_bundle_import(
+        self, tmp_path, monkeypatch, capsys, task, options, message
+    ):
+        monkeypatch.setattr(sys, "stdin", io.StringIO(" \n"))
+        monkeypatch.setattr(
+            "looplet.bundles.load_skill_bundle",
+            lambda *_args: pytest.fail("invalid inputs must fail before bundle import"),
+        )
+        assert (
+            cli_main(["run", str(CODER_BUNDLE), task, "--project-root", str(tmp_path), *options])
+            == 1
+        )
+        assert message in capsys.readouterr().err
+
+    def test_cli_json_uses_shipped_coder_build_instead_of_custom_runner(self, tmp_path, capsys):
+        assert (
+            cli_main(
+                [
+                    "run",
+                    str(CODER_BUNDLE),
+                    "Inspect only",
+                    "--project-root",
+                    str(tmp_path),
+                    "--max-steps",
+                    "1",
+                    "--no-tests",
+                    "--json",
+                    "--no-trace",
+                    "--scripted-response",
+                    '{"tool":"done","args":{"summary":"inspected"}}',
+                ]
+            )
+            == 0
+        )
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["completed"] is True
+        assert payload["steps"] == 1
+        assert payload["result"]["summary"] == "inspected"
+
+    def test_cli_json_redirects_authored_output_to_stderr(self, tmp_path, capsys):
+        bundle = tmp_path / "noisy-bundle"
+        bundle.mkdir()
+        (bundle / "SKILL.md").write_text(
+            "---\nname: noisy\ndescription: Noisy bundle.\nentrypoint: looplet.py\n---\n"
+        )
+        (bundle / "looplet.py").write_text(
+            "from looplet import AgentPreset, DefaultState, LoopConfig, tool, tools_from\n"
+            "print('import diagnostic')\n"
+            "class VerboseHook:\n"
+            "    def check_done(self, state, session_log, context, step_num):\n"
+            "        print('hook diagnostic')\n"
+            "class Resource:\n"
+            "    def close(self):\n"
+            "        print('cleanup diagnostic')\n"
+            "@tool\n"
+            "def finish(*, summary: str) -> dict:\n"
+            "    print('tool diagnostic')\n"
+            "    return {'summary': summary}\n"
+            "def build(runtime):\n"
+            "    print('build diagnostic')\n"
+            "    resource = Resource()\n"
+            "    return AgentPreset(\n"
+            "        config=LoopConfig(max_steps=runtime.max_steps, done_tool='finish', "
+            "use_native_tools=False),\n"
+            "        hooks=[VerboseHook()], tools=tools_from([finish]),\n"
+            "        state=DefaultState(max_steps=runtime.max_steps),\n"
+            "        resources={'session': resource}, owned_resources=[resource],\n"
+            "    )\n"
+        )
+
+        assert (
+            cli_main(
+                [
+                    "run",
+                    str(bundle),
+                    "finish",
+                    "--project-root",
+                    str(tmp_path),
+                    "--max-steps",
+                    "1",
+                    "--json",
+                    "--no-trace",
+                    "--scripted-response",
+                    '{"tool":"finish","args":{"summary":"finished"}}',
+                ]
+            )
+            == 0
+        )
+
+        output = capsys.readouterr()
+        payload = json.loads(output.out)
+        assert payload["completed"] is True
+        assert payload["result"] == {"summary": "finished"}
+        for phase in ("import", "build", "hook", "tool", "cleanup"):
+            assert f"{phase} diagnostic" in output.err
+
+    def test_cli_json_does_not_publish_rejected_completion(self, tmp_path, monkeypatch, capsys):
+        from types import ModuleType
+
+        from looplet import Block, DefaultState, LoopConfig, tools_from
+
+        class RejectCompletion:
+            def check_done(self, state, session_log, context, step_num):
+                return Block("Completion deliberately rejected")
+
+        preset = AgentPreset(
+            config=LoopConfig(max_steps=1, use_native_tools=False),
+            hooks=[RejectCompletion()],
+            tools=tools_from([], include_done=True),
+            state=DefaultState(max_steps=1),
+        )
+        bundle = replace(
+            load_skill_bundle(CODER_BUNDLE),
+            build=lambda runtime: preset,
+            module=ModuleType("rejected_completion_bundle"),
+        )
+        monkeypatch.setattr("looplet.bundles.load_skill_bundle", lambda *_args: bundle)
+        assert (
+            cli_main(
+                [
+                    "run",
+                    str(CODER_BUNDLE),
+                    "finish",
+                    "--workspace",
+                    str(tmp_path),
+                    "--max-steps",
+                    "1",
+                    "--json",
+                    "--no-trace",
+                    "--scripted-response",
+                    '{"tool":"done","args":{"summary":"not accepted"}}',
+                ]
+            )
+            == 0
+        )
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["completed"] is False
+        assert payload["result"] is None
+
+    @pytest.mark.parametrize("json_output", [False, True])
+    def test_generic_bundle_propagates_fatal_status(
+        self, tmp_path, monkeypatch, capsys, json_output
+    ):
+        from types import ModuleType
+
+        from looplet import DefaultState, LoopConfig, tools_from
+
+        class FailingBackend:
+            def generate(self, prompt, **kwargs):
+                raise RuntimeError("provider unavailable")
+
+        preset = AgentPreset(
+            config=LoopConfig(max_steps=1, use_native_tools=False),
+            hooks=[],
+            tools=tools_from([], include_done=True),
+            state=DefaultState(max_steps=1),
+        )
+        bundle = replace(
+            load_skill_bundle(CODER_BUNDLE),
+            build=lambda runtime: preset,
+            module=ModuleType("failed_bundle"),
+        )
+        monkeypatch.setattr("looplet.bundles.load_skill_bundle", lambda *_args: bundle)
+        monkeypatch.setattr("looplet.backends.make_backend", FailingBackend)
+        options = ["--json"] if json_output else []
+        assert (
+            cli_main(
+                [
+                    "run",
+                    str(CODER_BUNDLE),
+                    "finish",
+                    "--project-root",
+                    str(tmp_path),
+                    "--max-steps",
+                    "1",
+                    "--no-trace",
+                    *options,
+                ]
+            )
+            == 1
+        )
+        output = capsys.readouterr().out
+        if json_output:
+            payload = json.loads(output)
+            assert payload["completed"] is False
+            assert payload["termination_reason"] == "llm_error"
+            assert payload["result"] is None
+        else:
+            assert "failed (llm_error)" in output
+
+    def test_legacy_runner_interruption_closes_validation_preset(self, tmp_path, monkeypatch):
+        from types import ModuleType
+
+        from looplet import DefaultState, LoopConfig, tools_from
+
+        preset = AgentPreset(
+            config=LoopConfig(max_steps=1, use_native_tools=False),
+            hooks=[],
+            tools=tools_from([], include_done=True),
+            state=DefaultState(max_steps=1),
+        )
+        module = ModuleType("interrupted_bundle")
+
+        def interrupt(**kwargs):
+            raise KeyboardInterrupt
+
+        module.run = interrupt
+        bundle = replace(
+            load_skill_bundle(CODER_BUNDLE), build=lambda runtime: preset, module=module
+        )
+        closed = []
+        original_close = AgentPreset.close
+
+        def close(target):
+            closed.append(target)
+            original_close(target)
+
+        monkeypatch.setattr("looplet.bundles.load_skill_bundle", lambda *_args: bundle)
+        monkeypatch.setattr(AgentPreset, "close", close)
+        with pytest.raises(KeyboardInterrupt):
+            cli_main(
+                [
+                    "run",
+                    str(CODER_BUNDLE),
+                    "finish",
+                    "--workspace",
+                    str(tmp_path),
+                    "--max-steps",
+                    "1",
+                    "--no-trace",
+                ]
+            )
+        assert closed == [preset]
+
     def test_bundle_uses_preset_claim_gateway_extra_hooks_and_return_trace(self, tmp_path):
         from types import SimpleNamespace
 
@@ -1999,7 +2347,7 @@ class TestSkillBundles:
                     {"type": "tool_use", "id": "done-1", "name": "done", "input": {"summary": "ok"}}
                 ]
 
-        with patch("looplet.backends.OpenAIBackend", NativeBackend):
+        with patch("looplet.backends.make_backend", lambda: NativeBackend()):
             rc = cli_main(
                 [
                     "run",
@@ -2055,7 +2403,7 @@ class TestSkillBundles:
                     return [{"type": "tool_use", "id": "probe", "name": "test_probe", "input": {}}]
                 raise AssertionError("Native path should not be forced")
 
-        with patch("looplet.backends.OpenAIBackend", NativeBackend):
+        with patch("looplet.backends.make_backend", lambda: NativeBackend()):
             rc = cli_main(
                 [
                     "run",
@@ -2173,7 +2521,7 @@ class TestSkillBundles:
                 super().__init__(responses=coder.scripted_responses())
 
         bundle = load_skill_bundle(CODER_BUNDLE)
-        with patch.object(bundle.module, "OpenAIBackend", FakeOpenAIBackend):
+        with patch.object(bundle.module, "make_backend", FakeOpenAIBackend):
             rc = bundle.module.run(
                 task="Create a tiny add function with tests",
                 workspace=tmp_path,
@@ -2189,3 +2537,30 @@ class TestSkillBundles:
         out = capsys.readouterr().out
         assert "Steps: 5 | LLM calls: 5 (0 tool-internal)" in out
         assert not (tmp_path / ".looplet").exists()
+
+    def test_coder_bundle_propagates_fatal_provider_status(self, tmp_path, capsys):
+        class FailingBackend:
+            def generate(self, prompt, **kwargs):
+                raise RuntimeError("provider unavailable")
+
+            def generate_with_tools(self, prompt, **kwargs):
+                raise RuntimeError("provider unavailable")
+
+        bundle = load_skill_bundle(CODER_BUNDLE)
+        with (
+            patch.object(bundle.module, "make_backend", FailingBackend),
+            patch.object(bundle.module, "ResilientBackend", lambda backend, **kwargs: backend),
+        ):
+            rc = bundle.module.run(
+                task="Inspect this workspace",
+                workspace=tmp_path,
+                max_steps=1,
+                scripted=False,
+                scripted_responses=[],
+                require_tests=False,
+                trace_dir=None,
+                provenance=False,
+            )
+
+        assert rc == 1
+        assert "failed (llm_error)" in capsys.readouterr().out

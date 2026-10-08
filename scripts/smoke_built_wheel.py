@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import importlib.metadata
+import json
+import os
 import shutil
 import subprocess
 import sys
@@ -14,6 +16,126 @@ import looplet
 from looplet.bundles import load_skill_bundle
 from looplet.cartridge import analyse_cartridge
 from looplet.cli.factory_commands import _factory_workspace_path
+
+
+def _smoke_cli_workflow(coder_bundle_path: Path) -> None:
+    environment = dict(os.environ)
+    for name in (
+        "PYTHONPATH",
+        "LOOPLET_PROVIDER",
+        "LOOPLET_ALLOW_MOCK",
+        "OPENAI_API_KEY",
+        "OPENAI_BASE_URL",
+        "OPENAI_MODEL",
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_MODEL",
+        "COPILOT_PROXY_URL",
+        "COPILOT_PROXY_KEY",
+        "LOOPLET_TAX_LLM_BASE_URL",
+        "LOOPLET_TAX_LLM_API_KEY",
+    ):
+        environment.pop(name, None)
+
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+
+        def run_cli(*arguments: str, task_input: str | None = None, expected_exit: int = 0):
+            result = subprocess.run(
+                [sys.executable, "-m", "looplet", *arguments],
+                cwd=root,
+                env=environment,
+                input=task_input,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            assert result.returncode == expected_exit, result.stderr or result.stdout
+            return result
+
+        cartridge = root / "offline.cartridge"
+        run_cli("new", "Report completion", str(cartridge), "--offline")
+        terminal_code = cartridge / "tools" / "done" / "execute.py"
+        original_code = terminal_code.read_text(encoding="utf-8")
+        terminal_code.write_text(
+            "raise AssertionError('inspection imported tool code')\n", encoding="utf-8"
+        )
+        inspection = json.loads(run_cli("inspect", str(cartridge), "--json").stdout)
+        assert inspection["runtime_validated"] is False
+        terminal_code.write_text(original_code, encoding="utf-8")
+        run_cli("new", "Do not overwrite", str(cartridge), "--offline", expected_exit=1)
+        assert terminal_code.read_text(encoding="utf-8") == original_code
+
+        response = json.dumps({"tool": "done", "args": {"summary": "completed"}})
+        task = "exact task\nsecond line\n"
+        completion = json.loads(
+            run_cli(
+                "run",
+                str(cartridge),
+                "-",
+                "--project-root",
+                str(root),
+                "--json",
+                "--scripted-response",
+                response,
+                task_input=task,
+            ).stdout
+        )
+        assert completion["completed"] is True
+        assert completion["result"]["summary"] == "completed"
+        trace = str(completion["trace_dir"])
+        inspected_trace = json.loads(run_cli("inspect", trace, "--json").stdout)
+        assert inspected_trace == json.loads(run_cli("show", trace, "--json").stdout)
+        assert task in inspected_trace["trajectory"]["task"].values()
+
+        legacy = json.loads(
+            run_cli(
+                "run-workspace",
+                str(cartridge),
+                "finish",
+                "--project-root",
+                str(root),
+                "--json",
+                "--no-trace",
+                "--scripted-response",
+                response,
+            ).stdout
+        )
+        assert legacy["completed"] is True
+        assert legacy["trace_dir"] is None
+
+        bundle = json.loads(
+            run_cli(
+                "run-bundle",
+                str(coder_bundle_path),
+                "finish",
+                "--workspace",
+                str(root),
+                "--max-steps",
+                "1",
+                "--json",
+                "--no-trace",
+                "--no-tests",
+                "--scripted-response",
+                response,
+            ).stdout
+        )
+        assert bundle["completed"] is True
+        assert bundle["steps"] == 1
+        assert bundle["result"]["summary"] == "completed"
+
+        missing = root / "missing"
+        run_cli(
+            "run",
+            str(coder_bundle_path),
+            "finish",
+            "--workspace",
+            str(missing),
+            "--scripted-response",
+            response,
+            expected_exit=1,
+        )
+        assert not missing.exists()
 
 
 def main() -> int:
@@ -50,6 +172,7 @@ def main() -> int:
     coder_bundle = load_skill_bundle(coder_bundle_path)
     assert coder_bundle.skill.name == "coder"
     assert coder_bundle.card.name == "coder"
+    _smoke_cli_workflow(coder_bundle_path)
 
     preset = looplet.cartridge_to_preset(factory)
     try:

@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from looplet.__main__ import main
 from looplet.cli import factory_commands
 from looplet.testing import MockLLMBackend
 
@@ -238,3 +239,86 @@ def test_runner_reports_trace_failure_and_closes_preset(
     finally:
         if "preset" in captured:
             captured["preset"].close()
+
+
+@pytest.mark.parametrize("json_output", [False, True])
+def test_runner_routes_authored_output_without_changing_human_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys, json_output: bool
+) -> None:
+    cartridge = _custom_terminal_cartridge(tmp_path, name="done", return_expression="{}")
+    (cartridge / "tools" / "done" / "execute.py").write_text(
+        "print('loading diagnostic')\n"
+        "def execute(*, answer: str):\n"
+        "    print('execution diagnostic')\n"
+        "    return {'answer': answer}\n"
+    )
+    _patch_backend(monkeypatch, [json.dumps({"tool": "done", "args": {"answer": "ok"}})])
+
+    assert (
+        factory_commands.cmd_run_workspace(
+            _args(cartridge, project_root=tmp_path, json_output=json_output)
+        )
+        == 0
+    )
+
+    output = capsys.readouterr()
+    if json_output:
+        payload = json.loads(output.out)
+        assert payload["completed"] is True
+        assert payload["result"] == {"answer": "ok"}
+        assert "loading diagnostic" in output.err
+        assert "execution diagnostic" in output.err
+    else:
+        assert "loading diagnostic" in output.out
+        assert "execution diagnostic" in output.out
+        assert not output.err
+
+
+def test_run_dispatches_cartridge_and_preserves_scalar_result(tmp_path: Path, capsys) -> None:
+    cartridge = _custom_terminal_cartridge(tmp_path, name="finish", return_expression="answer")
+
+    assert (
+        main(
+            [
+                "run",
+                str(cartridge),
+                "finish",
+                "--workspace",
+                str(tmp_path),
+                "--json",
+                "--no-trace",
+                "--scripted-response",
+                '{"tool":"finish","args":{"answer":"ok"}}',
+            ]
+        )
+        == 0
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["completed"] is True
+    assert payload["result"] == "ok"
+
+
+def test_run_rejects_ambiguous_package_before_backend(tmp_path, monkeypatch, capsys) -> None:
+    cartridge = _custom_terminal_cartridge(tmp_path, name="finish", return_expression="answer")
+    (cartridge / "SKILL.md").write_text("---\nname: also-a-bundle\n---\n")
+    monkeypatch.setattr(
+        factory_commands, "_build_backend", lambda: pytest.fail("ambiguous format must fail early")
+    )
+    assert main(["run", str(cartridge), "finish", "--project-root", str(tmp_path)]) == 1
+    assert "use run-cartridge or run-bundle explicitly" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "flag, message",
+    [
+        ("--scripted", "use --scripted-response for cartridges"),
+        ("--no-tests", "--no-tests is only for skill bundles"),
+    ],
+)
+def test_run_rejects_bundle_only_flags_for_cartridges(tmp_path, monkeypatch, capsys, flag, message):
+    cartridge = _custom_terminal_cartridge(tmp_path, name="finish", return_expression="answer")
+    monkeypatch.setattr(
+        factory_commands, "_build_backend", lambda: pytest.fail("unsupported flags must fail early")
+    )
+    assert main(["run", str(cartridge), "finish", "--project-root", str(tmp_path), flag]) == 1
+    assert message in capsys.readouterr().err

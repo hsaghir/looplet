@@ -70,6 +70,13 @@ def _captured_dir(tmp_path: Path) -> Path:
 
 
 class TestReplayLoopSmoke:
+    def test_inspect_trace_uses_existing_show_contract(self, tmp_path, capsys):
+        trace_dir = _captured_dir(tmp_path)
+        assert cli_main(["inspect", str(trace_dir), "--json"]) == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["trajectory"]["termination_reason"] == "done"
+        assert len(payload["manifest"]) == 3
+
     def test_omitted_replay_state_uses_configured_limit_without_warning(self, tmp_path):
         trace_dir = _captured_dir(tmp_path)
         with warnings.catch_warnings(record=True) as recorded:
@@ -435,6 +442,23 @@ class TestShowCLISmoke:
 
 
 class TestDoctorCLISmoke:
+    @pytest.mark.parametrize(
+        "environment",
+        [
+            {"OPENAI_API_KEY": "test"},
+            {"OPENAI_BASE_URL": "http://localhost:1234/v1"},
+            {"ANTHROPIC_API_KEY": "test"},
+        ],
+    )
+    def test_doctor_strict_accepts_provider_defaults(self, capsys, environment):
+        import os
+        from unittest.mock import patch
+
+        with patch.dict(os.environ, environment, clear=True):
+            assert cli_main(["doctor", "--no-backend", "--strict", "--json"]) == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert all(check["status"] == "ok" for check in payload["checks"])
+
     def test_doctor_no_backend_renders_local_checks(self, capsys, monkeypatch):
         monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
         monkeypatch.delenv("OPENAI_MODEL", raising=False)

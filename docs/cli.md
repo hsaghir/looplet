@@ -74,6 +74,8 @@ The command returns non-zero for a missing, malformed, or empty trace
 directory. JSON output contains the parsed `trajectory.json` object and
 `manifest.jsonl` records; consumers should tolerate added fields. Read
 [saved artifacts](artifacts.md) for the complete layout.
+Missing or null timings do not contribute to human timing totals; JSON output
+and the stored evidence retain their original values.
 
 ## Build and run cartridges
 
@@ -209,6 +211,8 @@ contains the threshold verdict, case completion state, serialized grader
 results, integrity failures, and output directory. It deliberately omits
 artifacts and grader-only expected data; read those through the persisted run.
 Consumers should tolerate added fields.
+Ordinary Python diagnostics from loaded graders, collectors, and harness code
+go to stderr in JSON mode and are not redacted.
 
 ### Grade saved trajectories
 
@@ -269,6 +273,9 @@ object. Custom runners remain responsible for their own status and effects.
 | `looplet export-code <bundle> <file>` | Export exact Python wrapper code for a bundle. |
 | `looplet package <module:factory> <dir>` | Package an importable `AgentPreset` factory as a bundle. |
 | `looplet wrap-claude-skill <skill> <dir>` | Wrap a Claude or Agent Skills directory as a Looplet bundle. |
+
+Blueprint JSON remains on stdout; ordinary Python diagnostics from live import,
+build, and resource cleanup go to stderr and are not redacted.
 
 Packaging requires `--name` and `--description`; repeat `--tag` to attach
 searchable tags. Validate and run the output before distributing it.

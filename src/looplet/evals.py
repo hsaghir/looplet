@@ -73,7 +73,7 @@ import time
 import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, NamedTuple, cast
+from typing import TYPE_CHECKING, Any, Callable, NamedTuple, TextIO, cast
 
 from looplet.artifact_compat import (
     begin_artifact_write,
@@ -82,6 +82,8 @@ from looplet.artifact_compat import (
 )
 
 if TYPE_CHECKING:
+    from argparse import Namespace
+
     from looplet.session import SessionLog
     from looplet.types import AgentState, LLMBackend
 
@@ -2723,7 +2725,8 @@ def _run_cartridge_cli(args: list[str]) -> int:
     each run for offline inspection.
     """
     import argparse
-    import os
+
+    from looplet.cli import execution_output
 
     parser = argparse.ArgumentParser(
         prog="looplet eval run",
@@ -2777,6 +2780,14 @@ def _run_cartridge_cli(args: list[str]) -> int:
     if parsed.max_steps is not None and parsed.max_steps < 1:
         print("error: --max-steps must be positive", file=sys.stderr)
         return 1
+
+    output = sys.stdout
+    with execution_output(parsed.json):
+        return _run_cartridge_evaluation(parsed, output=output)
+
+
+def _run_cartridge_evaluation(parsed: Namespace, *, output: TextIO) -> int:
+    import os
 
     cdir = Path(parsed.cartridge)
     if not cdir.is_dir():
@@ -2869,7 +2880,7 @@ def _run_cartridge_cli(args: list[str]) -> int:
 
     failed = not report["passed"]
     if parsed.json:
-        print(json.dumps(report, indent=2))
+        print(json.dumps(report, indent=2), file=output)
     elif parsed.out:
         print(f"\npersisted {len(records)} run(s) under {parsed.out}/")
     if report["integrity_failures"] and not parsed.json:

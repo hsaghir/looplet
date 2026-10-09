@@ -35,6 +35,35 @@ class TestSkillBundles:
     def existing_cli_workspace(self, tmp_path):
         (tmp_path / "workspace").mkdir()
 
+    def test_cli_blueprint_redirects_authored_output_and_closes_resources(self, tmp_path, capsys):
+        bundle = tmp_path / "noisy_bundle"
+        bundle.mkdir()
+        (bundle / "SKILL.md").write_text(
+            "---\nname: noisy-blueprint\ndescription: Blueprint output regression.\n---\n"
+        )
+        (bundle / "looplet.py").write_text(
+            "print('bundle import diagnostic')\n"
+            "from looplet import AgentPreset, DefaultState, LoopConfig, tools_from\n"
+            "class Resource:\n"
+            "    def close(self):\n"
+            "        print('resource cleanup diagnostic')\n"
+            "def build(runtime):\n"
+            "    print('bundle build diagnostic')\n"
+            "    resource = Resource()\n"
+            "    return AgentPreset(\n"
+            "        config=LoopConfig(), state=DefaultState(), hooks=[],\n"
+            "        tools=tools_from([], include_done=True),\n"
+            "        resources={'session': resource}, owned_resources=[resource],\n"
+            "    )\n"
+        )
+
+        assert cli_main(["blueprint", str(bundle), "--workspace", str(tmp_path)]) == 0
+
+        output = capsys.readouterr()
+        assert json.loads(output.out)["name"] == "noisy-blueprint"
+        for phase in ("bundle import", "bundle build", "resource cleanup"):
+            assert f"{phase} diagnostic" in output.err
+
     def test_cli_rejects_missing_workspace_before_loading_bundle(
         self, tmp_path, monkeypatch, capsys
     ):

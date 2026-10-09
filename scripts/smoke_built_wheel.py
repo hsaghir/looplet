@@ -88,6 +88,40 @@ def _smoke_cli_workflow(coder_bundle_path: Path) -> None:
         assert inspected_trace == json.loads(run_cli("show", trace, "--json").stdout)
         assert task in inspected_trace["trajectory"]["task"].values()
 
+        follow_up = json.loads(
+            run_cli(
+                "run",
+                str(cartridge),
+                "finish follow-up",
+                "--project-root",
+                str(root),
+                "--parent-trace",
+                trace,
+                "--quiet",
+                "--json",
+                "--scripted-response",
+                response,
+            ).stdout
+        )
+        assert follow_up["completed"] is True
+        follow_up_trace = json.loads(run_cli("inspect", follow_up["trace_dir"], "--json").stdout)
+        assert (
+            follow_up_trace["trajectory"]["metadata"]["parent_run_id"]
+            == inspected_trace["trajectory"]["run_id"]
+        )
+        pretty = run_cli(
+            "run",
+            str(cartridge),
+            "finish",
+            "--project-root",
+            str(root),
+            "--pretty",
+            "--no-trace",
+            "--scripted-response",
+            response,
+        )
+        assert "completed" in pretty.stdout
+
         legacy = json.loads(
             run_cli(
                 "run-workspace",
@@ -123,6 +157,30 @@ def _smoke_cli_workflow(coder_bundle_path: Path) -> None:
         assert bundle["completed"] is True
         assert bundle["steps"] == 1
         assert bundle["result"]["summary"] == "completed"
+
+        declaration_bundle = root / "declaration_bundle"
+        declaration_bundle.mkdir()
+        (declaration_bundle / "SKILL.md").write_text(
+            "---\nname: declaration-only\ndescription: Installed blueprint probe.\n---\n",
+            encoding="utf-8",
+        )
+        (declaration_bundle / "looplet.py").write_text(
+            "raise AssertionError('declaration inspection imported code')\n", encoding="utf-8"
+        )
+        declaration = json.loads(
+            run_cli("blueprint", str(declaration_bundle), "--declaration-only").stdout
+        )
+        assert declaration["metadata"]["runtime_validated"] is False
+        run_cli("blueprint", str(declaration_bundle), "--instantiate", expected_exit=1)
+        run_cli(
+            "run-bundle",
+            str(coder_bundle_path),
+            "finish",
+            "--workspace",
+            str(root),
+            "--pretty",
+            expected_exit=1,
+        )
 
         missing = root / "missing"
         run_cli(

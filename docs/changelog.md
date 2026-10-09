@@ -8,6 +8,11 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Unified `run` accepts cartridge `--quiet`, `--pretty`, and `--parent-trace`
+  through the same option definitions as legacy commands; bundles reject these
+  unsupported options before importing authored code.
+- Bundle `blueprint` exposes `--declaration-only` and explicit `--instantiate`
+  modes while preserving live inspection as the default.
 - Unified `looplet run` dispatch for cartridges and skill bundles, an explicit
   `run-bundle` alias, and safe `inspect` for declarations, metadata, and traces.
 - `looplet new --offline` creates a non-clobbering cartridge draft without a

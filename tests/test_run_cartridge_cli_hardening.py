@@ -298,6 +298,30 @@ def test_run_dispatches_cartridge_and_preserves_scalar_result(tmp_path: Path, ca
     assert payload["result"] == "ok"
 
 
+@pytest.mark.parametrize("command", ["run", "run-cartridge", "run-workspace"])
+@pytest.mark.parametrize("flag", ["--quiet", "--pretty", "--parent-trace"])
+def test_run_commands_share_cartridge_options(tmp_path, monkeypatch, command, flag):
+    cartridge = _custom_terminal_cartridge(tmp_path, name="finish", return_expression="answer")
+    captured = {}
+
+    def capture_run(arguments):
+        captured.update(vars(arguments))
+        return 0
+
+    monkeypatch.setattr(factory_commands, "cmd_run_workspace", capture_run)
+    arguments = [command, str(cartridge), "finish", "--project-root", str(tmp_path), flag]
+    if flag == "--parent-trace":
+        arguments.append(str(tmp_path / "parent"))
+
+    assert main(arguments) == 0
+    assert captured["workspace"] == cartridge
+    assert captured["project_root"] == tmp_path
+    if flag == "--parent-trace":
+        assert captured["parent_trace"] == tmp_path / "parent"
+    else:
+        assert captured[flag.removeprefix("--")] is True
+
+
 def test_run_rejects_ambiguous_package_before_backend(tmp_path, monkeypatch, capsys) -> None:
     cartridge = _custom_terminal_cartridge(tmp_path, name="finish", return_expression="answer")
     (cartridge / "SKILL.md").write_text("---\nname: also-a-bundle\n---\n")

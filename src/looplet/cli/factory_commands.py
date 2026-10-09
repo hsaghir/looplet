@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any, TextIO
 
 from looplet.bundled import bundled_cartridge_path
-from looplet.cli import completion_payload, execution_output
+from looplet.cli import add_run_options, completion_payload, execution_output
 
 
 def _bold(s: str) -> str:
@@ -615,38 +615,7 @@ def add_subparsers(sub: "argparse._SubParsersAction") -> None:
             "then the current working directory."
         ),
     )
-    run_p.add_argument(
-        "--trace-dir",
-        type=Path,
-        help="Write provenance trace output here",
-    )
-    run_p.add_argument(
-        "--parent-trace",
-        type=Path,
-        help="Link this run to a parent trace directory",
-    )
-    run_p.add_argument(
-        "--no-trace",
-        action="store_true",
-        help="Disable default provenance capture",
-    )
-    run_p.add_argument("--quiet", action="store_true", help="Suppress per-step output")
-    run_p.add_argument(
-        "--scripted-response",
-        action="append",
-        default=[],
-        help="Mock LLM response; repeat for a network-free run",
-    )
-    run_p.add_argument(
-        "--pretty",
-        action="store_true",
-        help="Render the run as a live human-friendly trace (boxed header, per-step reasoning + result summary, colored).",
-    )
-    run_p.add_argument(
-        "--json",
-        action="store_true",
-        help="Emit one machine-readable completion object",
-    )
+    add_run_options(run_p)
     run_p.set_defaults(_handler=cmd_run_workspace)
 
     portab_p = sub.add_parser(

@@ -32,7 +32,7 @@ agg demo/looplet_pretty.cast demo/looplet_pretty.gif --theme monokai \
 
 Output: a short, deterministic GIF that shows the same append-only
 pretty printer used by `looplet new --pretty` and
-`looplet run-cartridge --pretty`.
+`looplet run --pretty`. The explicit `run-cartridge` command remains supported.
 
 ## Docs Loop Demo
 

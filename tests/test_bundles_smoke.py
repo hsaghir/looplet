@@ -64,6 +64,41 @@ class TestSkillBundles:
         for phase in ("bundle import", "bundle build", "resource cleanup"):
             assert f"{phase} diagnostic" in output.err
 
+    def test_cli_blueprint_declaration_mode_never_imports_authored_code(self, tmp_path, capsys):
+        bundle = tmp_path / "declaration_bundle"
+        bundle.mkdir()
+        (bundle / "SKILL.md").write_text(
+            "---\nname: declaration-blueprint\ndescription: Declaration regression.\n---\n"
+        )
+        (bundle / "looplet.py").write_text("raise AssertionError('authored code imported')\n")
+
+        assert cli_main(["blueprint", str(bundle), "--declaration-only"]) == 0
+
+        output = capsys.readouterr()
+        payload = json.loads(output.out)
+        assert payload["name"] == "declaration-blueprint"
+        assert payload["metadata"]["inspection_mode"] == "declaration-only"
+        assert payload["metadata"]["runtime_validated"] is False
+        assert payload["metadata"]["runtime_required"] == [str(bundle / "looplet.py")]
+        assert not output.err
+        assert cli_main(["blueprint", str(bundle), "--instantiate"]) == 1
+        assert "authored code imported" in capsys.readouterr().err
+
+    @pytest.mark.parametrize("flag", ["--quiet", "--pretty", "--parent-trace"])
+    def test_cli_rejects_cartridge_options_before_loading_bundle(
+        self, tmp_path, monkeypatch, capsys, flag
+    ):
+        monkeypatch.setattr(
+            "looplet.bundles.load_skill_bundle",
+            lambda *_args: pytest.fail("unsupported options must fail before bundle loading"),
+        )
+        arguments = ["run-bundle", str(CODER_BUNDLE), "finish", "--workspace", str(tmp_path), flag]
+        if flag == "--parent-trace":
+            arguments.append(str(tmp_path / "parent"))
+
+        assert cli_main(arguments) == 1
+        assert f"{flag} is only for cartridges" in capsys.readouterr().err
+
     def test_cli_rejects_missing_workspace_before_loading_bundle(
         self, tmp_path, monkeypatch, capsys
     ):

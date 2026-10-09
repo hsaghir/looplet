@@ -27,7 +27,7 @@ from typing import Any, TextIO, cast
 
 from looplet import __version__
 from looplet.artifact_compat import read_artifact_descriptor
-from looplet.cli import completion_payload, execution_output
+from looplet.cli import add_run_options, completion_payload, execution_output
 
 
 def _fmt_ms(ms: float | int | None) -> str:
@@ -674,7 +674,9 @@ def _render_inspect(path: Path, *, json_output: bool) -> int:
     return _render_show(path, json_output=json_output)
 
 
-def _render_blueprint(*, bundle_path: Path, workspace: Path, max_steps: int) -> int:
+def _render_blueprint(
+    *, bundle_path: Path, workspace: Path, max_steps: int, instantiate: bool = True
+) -> int:
     from looplet.blueprints import blueprint_from_bundle  # noqa: PLC0415
     from looplet.bundles import SkillRuntime  # noqa: PLC0415
 
@@ -683,6 +685,7 @@ def _render_blueprint(*, bundle_path: Path, workspace: Path, max_steps: int) -> 
             blueprint = blueprint_from_bundle(
                 bundle_path,
                 SkillRuntime(workspace=workspace, max_steps=max_steps),
+                instantiate=instantiate,
             )
         except Exception as exc:  # noqa: BLE001
             print(f"error: could not inspect bundle {bundle_path}", file=sys.stderr)
@@ -853,19 +856,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Use bundle-provided deterministic scripted responses",
     )
     run.add_argument(
-        "--scripted-response",
-        action="append",
-        default=[],
-        help="Mock LLM response; pass multiple times for deterministic runs",
-    )
-    run.add_argument(
         "--no-tests",
         action="store_true",
         help="Pass require_tests=False to bundles that support it",
     )
-    run.add_argument("--trace-dir", type=Path, help="Write provenance trace output here")
-    run.add_argument("--no-trace", action="store_true", help="Disable default provenance capture")
-    run.add_argument("--json", action="store_true", help="Emit one completion object")
+    add_run_options(run)
 
     blueprint = sub.add_parser(
         "blueprint",
@@ -873,9 +868,24 @@ def main(argv: list[str] | None = None) -> int:
     )
     blueprint.add_argument("bundle", type=Path, help="Path to a runnable skill bundle")
     blueprint.add_argument(
-        "--workspace", "-w", type=Path, default=Path.cwd(), help="Cartridge path"
+        "--workspace",
+        "-w",
+        type=Path,
+        default=Path.cwd(),
+        help="Directory supplied to the live factory",
     )
     blueprint.add_argument("--max-steps", type=int, default=20, help="Maximum tool calls")
+    blueprint_mode = blueprint.add_mutually_exclusive_group()
+    blueprint_mode.add_argument(
+        "--instantiate", action="store_true", help="Build and close live resources (the default)"
+    )
+    blueprint_mode.add_argument(
+        "--declaration-only",
+        dest="instantiate",
+        action="store_false",
+        help="Inspect declarations without importing or building authored code",
+    )
+    blueprint.set_defaults(instantiate=True)
 
     export_code = sub.add_parser(
         "export-code",
@@ -993,11 +1003,20 @@ def main(argv: list[str] | None = None) -> int:
                     trace_dir=args.trace_dir,
                     no_trace=args.no_trace,
                     json=args.json,
-                    quiet=False,
-                    pretty=False,
+                    quiet=args.quiet,
+                    pretty=args.pretty,
+                    parent_trace=args.parent_trace,
                     scripted_response=args.scripted_response,
                 )
             )
+        for flag, enabled in (
+            ("--quiet", args.quiet),
+            ("--pretty", args.pretty),
+            ("--parent-trace", args.parent_trace is not None),
+        ):
+            if enabled:
+                print(f"error: {flag} is only for cartridges", file=sys.stderr)
+                return 1
         return _render_run(
             bundle_path=args.bundle,
             task=args.task,
@@ -1015,6 +1034,7 @@ def main(argv: list[str] | None = None) -> int:
             bundle_path=args.bundle,
             workspace=args.workspace,
             max_steps=args.max_steps,
+            instantiate=args.instantiate,
         )
     if args.command == "export-code":
         return _render_export_code(

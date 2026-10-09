@@ -126,7 +126,7 @@ git diff | looplet run ./review.cartridge - --project-root .
 Link a follow-up run to an earlier trace without changing execution:
 
 ```bash
-looplet run-cartridge ./repair.cartridge "Repair the finding" \
+looplet run ./repair.cartridge "Repair the finding" \
   --parent-trace .looplet/traces/review-a1b2c3
 ```
 
@@ -157,8 +157,10 @@ provider errors, return a non-zero exit code in both human and JSON modes.
 In JSON mode, ordinary Python output from loaded harness code goes to standard
 error instead of corrupting the completion object. That output is not redacted.
 Errors remain on standard error; consumers should
-tolerate added fields. The explicit cartridge command retains `--quiet`,
-`--pretty`, and `--parent-trace`; `--json` cannot be combined with `--pretty`.
+tolerate added fields. Cartridge execution through either `run` or
+`run-cartridge` accepts `--quiet`, `--pretty`, and `--parent-trace`; these
+options are rejected for bundles before loading authored code.
+`--json` cannot be combined with `--pretty`.
 `run-cartridge` and its `run-workspace` alias retain their existing behavior.
 `run-bundle` forces bundle routing. If a directory has both `cartridge.json`
 and `SKILL.md`, `run` refuses the ambiguity; choose the explicit command.
@@ -273,6 +275,21 @@ object. Custom runners remain responsible for their own status and effects.
 | `looplet export-code <bundle> <file>` | Export exact Python wrapper code for a bundle. |
 | `looplet package <module:factory> <dir>` | Package an importable `AgentPreset` factory as a bundle. |
 | `looplet wrap-claude-skill <skill> <dir>` | Wrap a Claude or Agent Skills directory as a Looplet bundle. |
+
+`blueprint` retains live inspection as its default: it imports authored code,
+builds a temporary preset, and closes its resources. `--instantiate` makes this
+mode explicit. Use `--declaration-only` to avoid authored imports and resource
+construction:
+
+```bash
+looplet blueprint ./skills/code-review --declaration-only
+looplet blueprint ./skills/code-review --instantiate --workspace .
+```
+
+The declaration view reports `runtime_validated: false` and lists unresolved
+runtime components; it is incomplete and does not establish behavioral
+equivalence. `--workspace` supplies the live factory's working directory, not
+the bundle or cartridge path.
 
 Blueprint JSON remains on stdout; ordinary Python diagnostics from live import,
 build, and resource cleanup go to stderr and are not redacted.

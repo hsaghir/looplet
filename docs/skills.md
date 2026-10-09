@@ -217,9 +217,22 @@ export_bundle_to_library_code("./skills/coder", "coder_agent.py", function_name=
 The same conversion is available from the CLI:
 
 ```bash
-python -m looplet blueprint ./skills/coder --workspace . --max-steps 20
+python -m looplet blueprint ./skills/coder --instantiate --workspace . --max-steps 20
 python -m looplet export-code ./skills/coder coder_agent.py --function-name build_agent
 ```
+
+Live blueprint inspection remains the default and closes the temporary preset
+after extracting its structure. For declaration-only inspection without imports
+or resource construction:
+
+```bash
+python -m looplet blueprint ./skills/coder --declaration-only
+```
+
+This incomplete view marks `runtime_validated: false` and unresolved runtime
+components. It cannot establish behavioral equivalence or replace live
+validation. Python callers select the same mode with
+`blueprint_from_bundle(path, instantiate=False)`.
 
 Use `package_agent_factory_as_bundle()` when an advanced user has an
 importable looplet factory and wants a runnable bundle entrypoint tied

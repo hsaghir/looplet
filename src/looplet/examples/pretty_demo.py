@@ -2,7 +2,7 @@
 
 This module is a recording utility, not a usage example. It exercises
 the same ``PrettyPrinter`` used by ``looplet new --pretty`` and
-``looplet run-cartridge --pretty``, but feeds it scripted ``Step``
+``looplet run --pretty``, but feeds it scripted ``Step``
 objects so the resulting asciinema/GIF artifact is stable, fast, and
 does not require API credentials.
 
@@ -180,11 +180,11 @@ def main(argv: list[str] | None = None) -> int:
 
     print()
     _command(
-        'looplet run-cartridge ./url_summarizer.cartridge "Summarize example.com" --pretty',
+        'looplet run ./url_summarizer.cartridge "Summarize example.com" --pretty',
         fast=fast,
     )
     run_printer = PrettyPrinter(
-        title="looplet run-cartridge \u00b7 url_summarizer.cartridge",
+        title="looplet run \u00b7 url_summarizer.cartridge",
         max_steps=len(_run_steps()),
     )
     run_printer.header(

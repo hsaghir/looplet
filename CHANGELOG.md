@@ -35,6 +35,10 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Cartridge eval reports and bundle blueprints keep ordinary authored Python
+  diagnostics on stderr, including import, build, execution, and cleanup output.
+- Human `show` and `inspect` summaries tolerate missing or null timings without
+  changing the original trace or JSON inspection output.
 - CLI creation, execution, doctor, evals, and general-purpose examples now share
   provider resolution and model defaults with Python. Explicit compatible
   endpoint/model overrides and legacy command names remain available.

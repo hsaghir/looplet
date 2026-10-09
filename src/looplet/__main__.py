@@ -167,9 +167,9 @@ def _render_show(trace_dir: Path, *, json_output: bool = False) -> int:
     step_count = traj.get("step_count", len(traj.get("steps", [])))
     llm_count = traj.get("llm_call_count", len(calls))
     # Total duration: sum step durations if available, else call durations.
-    total_ms = sum(s.get("duration_ms", 0) for s in traj.get("steps", []))
+    total_ms = sum(s.get("duration_ms") or 0 for s in traj.get("steps", []))
     if total_ms == 0 and calls:
-        total_ms = sum(c.get("duration_ms", 0) for c in calls)
+        total_ms = sum(c.get("duration_ms") or 0 for c in calls)
 
     print(
         f"{run_id}  {term_glyph} {term}  "
@@ -678,15 +678,16 @@ def _render_blueprint(*, bundle_path: Path, workspace: Path, max_steps: int) -> 
     from looplet.blueprints import blueprint_from_bundle  # noqa: PLC0415
     from looplet.bundles import SkillRuntime  # noqa: PLC0415
 
-    try:
-        blueprint = blueprint_from_bundle(
-            bundle_path,
-            SkillRuntime(workspace=workspace, max_steps=max_steps),
-        )
-    except Exception as exc:  # noqa: BLE001
-        print(f"error: could not inspect bundle {bundle_path}", file=sys.stderr)
-        print(f"  - {type(exc).__name__}: {exc}", file=sys.stderr)
-        return 1
+    with execution_output(True):
+        try:
+            blueprint = blueprint_from_bundle(
+                bundle_path,
+                SkillRuntime(workspace=workspace, max_steps=max_steps),
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"error: could not inspect bundle {bundle_path}", file=sys.stderr)
+            print(f"  - {type(exc).__name__}: {exc}", file=sys.stderr)
+            return 1
     print(json.dumps(blueprint.to_dict(), indent=2, sort_keys=True))
     return 0
 

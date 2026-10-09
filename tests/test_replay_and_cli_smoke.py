@@ -257,6 +257,37 @@ class TestReplayLoopSmoke:
 
 
 class TestShowCLISmoke:
+    @pytest.mark.parametrize("command", ["show", "inspect"])
+    @pytest.mark.parametrize(
+        "step_durations,call_durations,total_ms",
+        [([None, 4], [8, None], 4), ([None], [None, 8], 8), ([None], [None], 0)],
+    )
+    def test_nullable_timings_render_without_changing_trace(
+        self, tmp_path, capsys, command, step_durations, call_durations, total_ms
+    ):
+        trajectory = {
+            "run_id": "nullable-timing",
+            "steps": [
+                {"step_num": index, "duration_ms": duration}
+                for index, duration in enumerate(step_durations, start=1)
+            ],
+        }
+        calls = [
+            {"duration_ms": duration, "prompt_chars": None, "response_chars": None}
+            for duration in call_durations
+        ]
+        (tmp_path / "trajectory.json").write_text(json.dumps(trajectory))
+        (tmp_path / "manifest.jsonl").write_text("\n".join(json.dumps(call) for call in calls))
+
+        assert cli_main([command, str(tmp_path)]) == 0
+        assert f"{total_ms}ms" in capsys.readouterr().out.splitlines()[0]
+        assert cli_main([command, str(tmp_path), "--json"]) == 0
+        assert json.loads(capsys.readouterr().out) == {
+            "trajectory": trajectory,
+            "manifest": calls,
+        }
+        assert json.loads((tmp_path / "trajectory.json").read_text()) == trajectory
+
     def test_show_renders_summary(self, tmp_path: Path, capsys):
         trace_dir = _captured_dir(tmp_path)
         rc = cli_main(["show", str(trace_dir)])

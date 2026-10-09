@@ -744,6 +744,50 @@ def test_cli_run_json_emits_one_eval_report(tmp_path: Path, monkeypatch, capsys)
     }
 
 
+@pytest.mark.parametrize("json_output", [False, True])
+def test_cli_run_routes_authored_output_without_changing_human_mode(
+    tmp_path: Path, monkeypatch, capsys, json_output: bool
+) -> None:
+    cart = _make_cartridge(tmp_path)
+    (cart / "evals" / "eval_correctness.py").write_text(
+        "print('grader import diagnostic')\n" + _GRADERS + "\ndef eval_noisy(ctx):\n"
+        "    print('grader execution diagnostic')\n"
+        "    return True\n"
+    )
+    (cart / "tools" / "done" / "execute.py").write_text(
+        "print('tool import diagnostic')\n"
+        "def execute(*, summary: str) -> dict:\n"
+        "    print('tool execution diagnostic')\n"
+        "    return {'status': 'completed', 'summary': summary}\n"
+    )
+    (cart / "resources" / "project_dir.py").write_text(
+        "def build(runtime=None):\n"
+        "    print('resource build diagnostic')\n"
+        "    return (runtime or {}).get('project_root', '.')\n"
+    )
+    monkeypatch.setattr(
+        "looplet.backends.make_backend", lambda **kwargs: MockLLMBackend(responses=_scripted())
+    )
+    arguments = ["run", str(cart)]
+    if json_output:
+        arguments.append("--json")
+
+    assert eval_cli(arguments) == 0
+
+    output = capsys.readouterr()
+    if json_output:
+        assert json.loads(output.out)["passed"] is True
+    diagnostics = output.err if json_output else output.out
+    for phase in (
+        "grader import",
+        "grader execution",
+        "tool import",
+        "tool execution",
+        "resource build",
+    ):
+        assert f"{phase} diagnostic" in diagnostics
+
+
 def test_cli_run_json_preserves_threshold_failure_exit(tmp_path: Path, monkeypatch, capsys) -> None:
     cart = _make_cartridge(tmp_path)
     (cart / "evals" / "eval_zero.py").write_text("def eval_zero(ctx):\n    return 0.0\n")

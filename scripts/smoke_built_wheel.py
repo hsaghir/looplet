@@ -167,6 +167,18 @@ def _smoke_cli_workflow(coder_bundle_path: Path) -> None:
         (declaration_bundle / "looplet.py").write_text(
             "raise AssertionError('declaration inspection imported code')\n", encoding="utf-8"
         )
+        nested_bundle = declaration_bundle / "nested"
+        nested_bundle.mkdir()
+        (nested_bundle / "SKILL.md").write_text(
+            "---\nname: aaa-child\ndescription: Nested bundle.\n---\n", encoding="utf-8"
+        )
+        (nested_bundle / "looplet.py").write_text(
+            "raise AssertionError('inspection imported nested code')\n", encoding="utf-8"
+        )
+        inspected_bundle = json.loads(run_cli("inspect", str(declaration_bundle), "--json").stdout)
+        assert inspected_bundle["name"] == "declaration-only"
+        discovered = json.loads(run_cli("list-bundles", str(declaration_bundle), "--json").stdout)
+        assert {card["name"] for card in discovered} == {"aaa-child", "declaration-only"}
         declaration = json.loads(
             run_cli("blueprint", str(declaration_bundle), "--declaration-only").stdout
         )

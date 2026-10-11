@@ -137,7 +137,7 @@ class StagnationHook:
     def __init__(
         self,
         *,
-        fingerprint: Callable[[Any, Any, Any], Hashable | None] = tool_call_fingerprint,
+        fingerprint: Callable[[Any, Any, Any], Hashable | None] | str = tool_call_fingerprint,
         threshold: int = 3,
         nudge: str | Callable[[Any, int], str] = (
             "[stagnation detected] You have repeated the same action "
@@ -149,6 +149,14 @@ class StagnationHook:
     ) -> None:
         if threshold < 2:
             raise ValueError("threshold must be >= 2")
+        if isinstance(fingerprint, str):
+            fingerprints = {
+                "tool_call": tool_call_fingerprint,
+                "result_size": result_size_fingerprint,
+            }
+            if fingerprint not in fingerprints:
+                raise ValueError(f"Unknown stagnation fingerprint: {fingerprint!r}")
+            fingerprint = fingerprints[fingerprint]
         self._fingerprint_fn = fingerprint
         self._threshold = threshold
         self._nudge = nudge
@@ -177,20 +185,37 @@ class StagnationHook:
     def to_config(self) -> dict[str, Any]:
         """Round-trip kwargs for ``preset_to_cartridge``.
 
-        Only round-trips the JSON-able fields (``threshold``, string
-        ``nudge``, ``reset_after_nudge``, ``ignore_tools``). Callable
-        ``fingerprint`` / ``progress`` / callable ``nudge`` are not
-        portable across processes; reload uses the default fingerprint
-        and a recovered string nudge when the original was a callable.
+        Built-in fingerprints have stable names. Custom callables require
+        an explicit resource builder rather than a lossy exported config.
         """
-        return {
-            "threshold": self._threshold,
-            "nudge": self._nudge
-            if isinstance(self._nudge, str)
-            else (
-                "[stagnation detected] You have repeated the same action "
-                "without new progress. Try a different approach."
+        fingerprint_name = next(
+            (
+                name
+                for name, fingerprint in (
+                    ("tool_call", tool_call_fingerprint),
+                    ("result_size", result_size_fingerprint),
+                )
+                if self._fingerprint_fn is fingerprint
             ),
+            None,
+        )
+        unsupported = []
+        if fingerprint_name is None:
+            unsupported.append("fingerprint")
+        if self._progress_fn is not None:
+            unsupported.append("progress")
+        if not isinstance(self._nudge, str):
+            unsupported.append("nudge")
+        if unsupported:
+            raise ValueError(
+                "StagnationHook cannot serialize callable policies: "
+                + ", ".join(unsupported)
+                + "; declare an explicit resource builder to preserve them"
+            )
+        return {
+            "fingerprint": fingerprint_name,
+            "threshold": self._threshold,
+            "nudge": self._nudge,
             "reset_after_nudge": self._reset_after_nudge,
             "ignore_tools": sorted(self._ignore_tools),
         }

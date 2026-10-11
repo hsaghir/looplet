@@ -985,7 +985,12 @@ class BaseToolRegistry:
             if param not in sanitized:
                 continue
             value = sanitized[param]
-            if value is None or (isinstance(value, str) and not value.strip()):
+            parameter_schema = spec.to_json_schema().get("properties", {}).get(param, {})
+            parameter_type = parameter_schema.get("type")
+            nullable = parameter_type == "null" or (
+                isinstance(parameter_type, list) and "null" in parameter_type
+            )
+            if (value is None and not nullable) or (isinstance(value, str) and not value.strip()):
                 schema_hint = _format_param_hint(spec)
                 error = ToolError(
                     kind=ErrorKind.VALIDATION,

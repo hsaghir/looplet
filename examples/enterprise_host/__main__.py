@@ -62,10 +62,6 @@ def run_host(
         options={"eval_hook": False, "require_tests": False, "use_native_tools": False},
     )
     bundle = load_skill_bundle(cartridge)
-    validation = validate_skill_bundle(bundle, runtime)
-    if not validation.ok:
-        raise ValueError("invalid cartridge: " + "; ".join(validation.errors))
-    validation.close()
     envelope = RunEnvelope(
         run_id=run_id,
         request_id=f"request-{run_id}",
@@ -76,13 +72,15 @@ def run_host(
         policy_version="reference-v1",
         trace_id=f"trace-{run_id}",
     )
-    preset = bundle.build_preset(runtime)
-    preset.config.run_envelope = envelope
-    preset.config.checkpoint_dir = str(root / "checkpoints")
-    llm = MockLLMBackend(responses=_scripted_responses(bundle)) if scripted else None
-    if llm is None:
-        raise ValueError("the reference host currently requires --scripted")
-    try:
+    with validate_skill_bundle(bundle, runtime) as validation:
+        if not validation.ok or validation.preset is None:
+            raise ValueError("invalid cartridge: " + "; ".join(validation.errors))
+        preset = validation.preset
+        preset.config.run_envelope = envelope
+        preset.config.checkpoint_dir = str(root / "checkpoints")
+        llm = MockLLMBackend(responses=_scripted_responses(bundle)) if scripted else None
+        if llm is None:
+            raise ValueError("the reference host currently requires --scripted")
         steps = list(
             run_skill_bundle(
                 bundle,
@@ -110,8 +108,6 @@ def run_host(
             "configuration": preset.config.explain(),
             "terminal_outcomes": list(preset.config.resolve_terminal_outcomes()),
         }
-    finally:
-        preset.close()
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -40,6 +40,18 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Required tool arguments with explicit nullable schema types accept `None`
+  without treating it as an omitted value; legacy empty-input checks remain.
+- Stagnation hook exports preserve built-in fingerprint policies. Unsupported
+  callable policies fail strict export and produce explicit loose-export warnings.
+- LEP pipe exchanges and MGP response waits honor host run deadlines; timed-out
+  policy processes are reaped and gateway connections are closed.
+- RPC completion returns the actual accepted terminal output, including tools
+  configured through `done_tools`, without changing the wire schema.
+- Bundle `inspect` honors the exact requested path rather than a nested child.
+  `new` reports incomplete factory runs as failures and retains partial drafts.
+- Bundle and cartridge examples use context-managed preset ownership; live
+  validation examples reuse their validated preset instead of building twice.
 - Cartridge eval reports and bundle blueprints keep ordinary authored Python
   diagnostics on stderr, including import, build, execution, and cleanup output.
 - Human `show` and `inspect` summaries tolerate missing or null timings without

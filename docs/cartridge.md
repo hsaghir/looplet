@@ -29,13 +29,15 @@ preset_to_cartridge(my_preset, "agent.cartridge")
 # … edit prompts/system.md, tools/*/tool.yaml, hooks/*/config.yaml, … …
 
 # Edited directory → fresh AgentPreset ready to run
-preset = cartridge_to_preset("agent.cartridge")
-for step in composable_loop(
-    llm=llm, tools=preset.tools, state=preset.state,
-    config=preset.config, hooks=preset.hooks,
-):
+with cartridge_to_preset("agent.cartridge") as preset:
+  for step in preset.run(llm, task={"goal": "Complete the task"}):
     print(step.pretty())
 ```
+
+`preset.run()` binds the run envelope and host model gateway before delegating
+to the core loop. The context closes preset-owned resources, even on failure.
+A preset is single-use; load a fresh one for each run. Direct
+`composable_loop()` remains available for hosts that own their wiring themselves.
 
 ## Inspect before instantiating
 
@@ -327,7 +329,7 @@ canonical list lives at `looplet.builtin_tools.AVAILABLE`.
 | Name | Purpose |
 | --- | --- |
 | `skill_activation` | Pairs with `search_skills` / `activate_skill`: tracks active skills across steps and threads their instructions into the briefing. Requires the `skill_manager` resource. |
-| `stagnation` | Stops the loop with a structured reason when the same `(tool, args)` pair repeats N times in a row (`threshold:`, `ignore_tools:`). The principled alternative to baking "are we stuck?" detection into the loop. |
+| `stagnation` | Nudges the agent when an action repeats without progress (`threshold:`, `ignore_tools:`, `fingerprint:`). It does not stop the loop; compose a stop hook or hard budget when needed. |
 | `per_tool_limit` | Blocks further calls to a named tool once a per-tool budget is exhausted (`limits: { write: 50 }`); returns `Block(...)` with the limit in the reason so the model can self-correct. |
 | `threshold_compact` | Triggers compaction when prompt tokens cross a fraction of the context window. Pairs with `compact_service:` in `runtime.yaml`. |
 | `static_briefing` | Loads a fixed file (e.g. `prompts/briefing.md`) and prepends it to every step's prompt. The file is rejected when this explicit declaration is absent. |
@@ -338,7 +340,7 @@ Opt in with optional kwargs:
 ```yaml
 # config.yaml
 builtin_hooks:
-  - stagnation: { threshold: 6, ignore_tools: [think, done] }
+  - stagnation: { threshold: 6, ignore_tools: [think, done], fingerprint: result_size }
   - per_tool_limit: { limits: { write: 50, bash: 200 } }
   - threshold_compact: { fraction: 0.85 }
   - static_briefing: { path: prompts/briefing.md }
@@ -399,6 +401,12 @@ bucket: a placeholder `execute()` is written and a warning is recorded
 
 Hooks whose source cannot be retrieved by `inspect.getsource` (e.g.
 defined dynamically) get a placeholder class and a warning.
+
+`StagnationHook` preserves its built-in `tool_call` and `result_size`
+fingerprints during round trips. Custom fingerprint, progress, or nudge
+callables need an explicit hook/resource builder. Export rejects these under
+`strict=True` and records the unsupported policies in `serialization_warnings`
+under `strict=False`; it never claims that a default replacement is equivalent.
 
 ---
 

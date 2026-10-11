@@ -71,10 +71,16 @@ Generate a cartridge from a brief.
 | `--tool TOOL` | _(none)_ | Pre-scaffold a tool by name (repeatable). When omitted, the agent picks tools from the brief. |
 | `--max-steps N` | `80` | Override the factory's max steps |
 | `--quiet` | _(off)_ | Suppress per-step output |
+| `--offline` | _(off)_ | Scaffold placeholders without constructing a backend |
 
 When `--tool` is supplied, the host pre-scaffolds the skeleton (saving several
 LLM turns). Otherwise the factory agent reads your brief and picks the tool
 list itself.
+
+Live creation reports success only after an accepted factory completion and a
+successful load of the produced cartridge. A stopped or failed factory exits
+nonzero and retains any partial draft; inspect those files before continuing.
+Offline scaffolding creates placeholders, not an accepted live factory result.
 
 ### `looplet run-cartridge <path> <task>`
 

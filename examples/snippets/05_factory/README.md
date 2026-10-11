@@ -11,16 +11,18 @@ shipped with looplet. The factory's tools are
 reviewable cartridge draft and validates its structure.
 
 ```bash
-# Requires: OPENAI_BASE_URL, OPENAI_API_KEY, OPENAI_MODEL set.
+# Configure an OpenAI key, a compatible base URL, or an Anthropic key; model is optional.
 # This is the same command the looplet CLI runs under the hood.
 looplet new \
     "Build a URL summarizer that fetches a page and returns its title and a 2-sentence summary." \
     /tmp/url_summarizer.cartridge
 ```
 
-After the run, `/tmp/url_summarizer.cartridge/` will be a loadable
+After accepted factory completion, `/tmp/url_summarizer.cartridge/` is a loadable
 draft you can inspect with `looplet describe`, load with
-`cartridge_to_preset(...)`, or run with `looplet run-cartridge`.
+`cartridge_to_preset(...)`, or run with `looplet run`.
+An incomplete factory run exits nonzero and retains any partial draft for review;
+`looplet new --offline` instead scaffolds placeholders without a model call.
 Review the generated code and add outcome-grounded release contracts;
 structural validation is not proof of task quality.
 

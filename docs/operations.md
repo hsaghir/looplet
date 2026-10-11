@@ -186,8 +186,8 @@ engine.deny(
 hooks = [PermissionHook(engine)]
 ```
 
-An `ASK` rule without a handler falls back to the engine default. An invalid
-handler result collapses to deny. Matcher failures also fail closed: a failing
+An `ASK` rule without a handler denies, even when the engine default is allow.
+An invalid handler result also collapses to deny. Matcher failures fail closed: a failing
 deny matcher blocks, while a failing allow matcher does not grant access.
 
 `engine.denials` is an append-only in-memory audit list with internal

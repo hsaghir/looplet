@@ -1334,6 +1334,43 @@ class TestSkillBundles:
 
         assert not (tmp_path / ".looplet").exists()
 
+    def test_validated_bundle_run_builds_once_and_closes_once(self, tmp_path):
+        bundle = load_skill_bundle(CODER_BUNDLE)
+        original_build = bundle.build
+        built = []
+        closed = []
+        runtime = SkillRuntime(workspace=tmp_path, max_steps=1)
+
+        def build(runtime):
+            preset = original_build(runtime)
+            built.append(preset)
+            original_close = preset.close
+
+            def close():
+                closed.append(preset)
+                original_close()
+
+            preset.close = close
+            return preset
+
+        bundle = replace(bundle, build=build)
+        with validate_skill_bundle(bundle, runtime) as report:
+            assert report.ok, report.errors
+            list(
+                run_skill_bundle(
+                    bundle,
+                    llm=MockLLMBackend(responses=[]),
+                    task="Task",
+                    runtime=runtime,
+                    provenance=False,
+                    preset=report.preset,
+                )
+            )
+            assert built == [report.preset]
+            assert closed == []
+
+        assert closed == built
+
     def test_run_skill_bundle_closes_owned_preset(self, tmp_path):
         bundle = load_skill_bundle(CODER_BUNDLE)
         original_build = bundle.build

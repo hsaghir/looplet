@@ -171,6 +171,33 @@ def test_inspect_bundle_does_not_import_entrypoint(tmp_path, capsys) -> None:
     assert payload["ok"] is True
 
 
+@pytest.mark.parametrize("explicit_file", [False, True])
+def test_inspect_parent_bundle_does_not_substitute_nested_child(
+    tmp_path, capsys, explicit_file
+) -> None:
+    from looplet import discover_skill_bundles
+
+    parent = tmp_path / "parent"
+    child = parent / "child"
+    for root, name in [(parent, "zzz-parent"), (child, "aaa-child")]:
+        root.mkdir(parents=True)
+        (root / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: {name}.\nentrypoint: looplet.py\n---\n"
+        )
+        (root / "looplet.py").write_text("raise AssertionError('must not import')")
+
+    path = parent / "SKILL.md" if explicit_file else parent
+    assert main(["inspect", str(path), "--json"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["name"] == "zzz-parent"
+    assert payload["path"] == str(parent.resolve())
+    assert [card.name for card in discover_skill_bundles(parent)] == [
+        "aaa-child",
+        "zzz-parent",
+    ]
+
+
 def test_run_cartridge_missing_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     for var in ("OPENAI_BASE_URL", "OPENAI_API_KEY", "OPENAI_MODEL"):
         monkeypatch.delenv(var, raising=False)
@@ -285,6 +312,7 @@ def _patch_new_runtime(
     import looplet
     from looplet import AgentPreset, DefaultState, LoopConfig, MockLLMBackend, tools_from
     from looplet.cli import factory_commands
+    from looplet.loop import composable_loop
 
     closed: list[str] = []
     resource = SimpleNamespace(close=lambda: closed.append("factory"))
@@ -309,7 +337,9 @@ def _patch_new_runtime(
 
     def fake_loop(**kwargs):
         observed.update(kwargs)
-        return iter(())
+        return composable_loop(
+            **{**kwargs, "llm": MockLLMBackend(['{"tool":"done","args":{"summary":"draft"}}'])}
+        )
 
     monkeypatch.setenv("OPENAI_MODEL", "mock-model")
     monkeypatch.setattr(factory_commands, "_check_env", lambda: 0)
@@ -380,9 +410,12 @@ def test_new_closes_factory_and_produced_presets(
     assert observed["closed"] == ["factory", "produced"]
 
 
+@pytest.mark.parametrize("fresh_target", [False, True])
 def test_new_max_steps_limits_actual_factory_execution(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    fresh_target: bool,
 ) -> None:
     import looplet
     from looplet import MockLLMBackend, tool
@@ -390,7 +423,9 @@ def test_new_max_steps_limits_actual_factory_execution(
     from looplet.loop import composable_loop
 
     target = tmp_path / "url_summary.cartridge"
-    target.mkdir()
+    if not fresh_target:
+        target.mkdir()
+        (target / "keep.txt").write_text("existing draft")
     observed = _patch_new_runtime(monkeypatch, tmp_path)
     monkeypatch.setattr("looplet.loop.composable_loop", composable_loop)
     preset = looplet.cartridge_to_preset(str(tmp_path), runtime={})
@@ -409,11 +444,21 @@ def test_new_max_steps_limits_actual_factory_execution(
     )
     args = _new_args(target)
     args.max_steps = 1
+    if fresh_target:
+        args.tool = ["work"]
 
-    assert factory_commands.cmd_new(args) == 0
+    assert factory_commands.cmd_new(args) == 1
     assert len(calls) == 1
     assert preset.state.step_count == 1
-    assert observed["closed"] == ["factory", "produced"]
+    assert observed["closed"] == ["factory"]
+    captured = capsys.readouterr()
+    assert "factory stopped (budget_exhausted)" in captured.err
+    assert f"partial cartridge draft retained at {target}" in captured.err
+    assert "draft built" not in captured.out
+    if fresh_target:
+        assert (target / "tools" / "work" / "execute.py").is_file()
+    else:
+        assert (target / "keep.txt").read_text() == "existing draft"
 
 
 @pytest.mark.parametrize("failure", [RuntimeError, KeyboardInterrupt])
@@ -450,7 +495,7 @@ def test_new_missing_output_uses_cartridge_language(
     assert factory_commands.cmd_new(_new_args(target)) == 1
 
     captured = capsys.readouterr()
-    assert "draft built" in captured.out
+    assert "draft built" not in captured.out
     assert f"cartridge not created at {target}" in captured.err
 
 
@@ -477,7 +522,7 @@ def test_new_invalid_output_uses_cartridge_language(
     assert factory_commands.cmd_new(_new_args(target)) == 1
 
     captured = capsys.readouterr()
-    assert "draft built" in captured.out
+    assert "draft built" not in captured.out
     assert "produced cartridge failed to load: corrupted manifest" in captured.err
 
 

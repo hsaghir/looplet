@@ -34,8 +34,10 @@ import inspect
 import json
 import logging
 import os
+import signal
 import subprocess
 import sys
+import threading
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -117,11 +119,39 @@ class LEPHookAdapter:
             remaining = remaining_deadline(self._run_envelope)
             if remaining is not None and remaining <= 0:
                 raise LEPProtocolError("LEP call exceeded run deadline")
-            proc.stdin.write(json.dumps(req) + "\n")
-            proc.stdin.flush()
+
+            def exchange() -> str:
+                assert proc.stdin is not None and proc.stdout is not None
+                proc.stdin.write(json.dumps(req) + "\n")
+                proc.stdin.flush()
+                return proc.stdout.readline() if expect_response else ""
+
+            if remaining is None:
+                line = exchange()
+            else:
+                done = threading.Event()
+                lines: list[str] = []
+                errors: list[BaseException] = []
+
+                def communicate() -> None:
+                    try:
+                        lines.append(exchange())
+                    except BaseException as exc:
+                        errors.append(exc)
+                    finally:
+                        done.set()
+
+                worker = threading.Thread(target=communicate, daemon=True, name="looplet-lep-rpc")
+                worker.start()
+                if not done.wait(remaining):
+                    self._abort_process(proc)
+                    worker.join(timeout=1.0)
+                    raise LEPProtocolError("LEP call exceeded run deadline")
+                if errors:
+                    raise errors[0]
+                line = lines[0]
             if not expect_response:
                 return {}
-            line = proc.stdout.readline()
         except (BrokenPipeError, OSError, ValueError) as exc:
             # Dead/half-closed server: surface as a protocol error so
             # callers apply ``on_failure`` instead of crashing the host.
@@ -145,6 +175,23 @@ class LEPHookAdapter:
         if "result" not in parsed or not isinstance(parsed["result"], dict):
             raise LEPProtocolError("LEP server response result must be a JSON object")
         return parsed["result"]
+
+    def _abort_process(self, proc: subprocess.Popen[str]) -> None:
+        self._proc = None
+        try:
+            if os.name == "posix":
+                os.killpg(proc.pid, signal.SIGKILL)
+            else:
+                proc.kill()
+        except (AttributeError, OSError):
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        try:
+            proc.wait(timeout=1.0)
+        except Exception:
+            pass
 
     def set_run_envelope(self, envelope: RunEnvelope | None) -> None:
         """Bind host correlation context for subsequent policy requests."""
@@ -247,6 +294,7 @@ class LEPHookAdapter:
             stdout=subprocess.PIPE,
             text=True,
             env=self._server_env(),
+            start_new_session=os.name == "posix",
         )
         try:
             self.capabilities = self._rpc(

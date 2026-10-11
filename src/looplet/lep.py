@@ -146,6 +146,12 @@ class LEPHookAdapter:
                 if not done.wait(remaining):
                     self._abort_process(proc)
                     worker.join(timeout=1.0)
+                    if not worker.is_alive():
+                        for stream in (proc.stdin, proc.stdout):
+                            try:
+                                stream.close()
+                            except (OSError, ValueError):
+                                pass
                     raise LEPProtocolError("LEP call exceeded run deadline")
                 if errors:
                     raise errors[0]

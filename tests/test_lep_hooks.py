@@ -220,6 +220,8 @@ class TestFailurePolicy:
             assert time.monotonic() - started < 1.0
             assert process.poll() is not None
             assert adapter._proc is None
+            assert process.stdin.closed
+            assert process.stdout.closed
         finally:
             adapter.close()
             if process.poll() is None:

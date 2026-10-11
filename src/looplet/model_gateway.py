@@ -401,7 +401,9 @@ class ModelGatewayClient:
                 )
             except socket.timeout as exc:
                 timed_out = True
-                raise ModelGatewayError("model gateway call exceeded run deadline") from exc
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise ModelGatewayError("model gateway call exceeded run deadline") from exc
+                raise ModelGatewayError(f"gateway transport failed: {exc}") from exc
             except OSError as exc:
                 raise ModelGatewayError(f"gateway transport failed: {exc}") from exc
             finally:

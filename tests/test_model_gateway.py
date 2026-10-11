@@ -269,6 +269,34 @@ def test_client_restores_socket_timeout_after_successful_deadline_call():
         peer.close()
 
 
+@pytest.mark.parametrize("has_deadline", [False, True])
+def test_client_socket_timeout_is_not_reported_as_run_deadline(has_deadline):
+    import threading
+    import time
+
+    from looplet.model_gateway import _LineReader
+    from looplet.types import RunEnvelope
+
+    local, peer = socket.socketpair()
+    local.settimeout(0.02)
+    client = ModelGatewayClient.__new__(ModelGatewayClient)
+    client._lock = threading.Lock()
+    client._next_id = 0
+    client._run_envelope = (
+        RunEnvelope(run_id="deadline", deadline_at=time.time() + 10.0) if has_deadline else None
+    )
+    client._sock = local
+    client._reader = _LineReader(local)
+    try:
+        with pytest.raises(ModelGatewayError, match="gateway transport failed") as failure:
+            client._rpc("llm/generate", {})
+        assert "deadline" not in str(failure.value)
+        assert local.fileno() == -1
+    finally:
+        client.close()
+        peer.close()
+
+
 def test_client_deadline_bounds_trickled_response(monkeypatch):
     import threading
 
@@ -296,7 +324,7 @@ def test_client_deadline_bounds_trickled_response(monkeypatch):
         def close(self):
             self.closed = True
 
-    clock = iter([0.0, 0.0, 0.04, 0.06])
+    clock = iter([0.0, 0.0, 0.04, 0.06, 0.06])
     monkeypatch.setattr("looplet.model_gateway.time.monotonic", lambda: next(clock))
     monkeypatch.setattr("looplet.model_gateway.remaining_deadline", lambda _envelope: 0.05)
     transport = TrickleSocket()

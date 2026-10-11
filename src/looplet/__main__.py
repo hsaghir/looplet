@@ -656,7 +656,8 @@ def _render_inspect(path: Path, *, json_output: bool) -> int:
         from looplet.bundles import discover_skill_bundles  # noqa: PLC0415
 
         try:
-            cards = discover_skill_bundles(path, include_invalid=True)
+            skill_file = path if path.name == "SKILL.md" else path / "SKILL.md"
+            cards = discover_skill_bundles(skill_file, include_invalid=True)
         except (OSError, ValueError) as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1

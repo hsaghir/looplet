@@ -232,13 +232,13 @@ def cmd_new(args: argparse.Namespace) -> int:
         preset.close()
 
     result = RunResult.from_state(state)
-    if result.failed:
+    if not result.completed:
         print(_red(f"error: factory stopped ({result.termination_reason})"), file=sys.stderr)
+        if target_dir.is_dir():
+            print(f"partial cartridge draft retained at {target_dir}", file=sys.stderr)
         return 1
 
     elapsed = time.time() - t0
-    print()
-    print(f"{_green('✓')} draft built in {elapsed:.1f}s - {n_steps} steps, {n_denies} denies")
 
     # Verify the cartridge actually loads.
     if not target_dir.is_dir():
@@ -259,6 +259,8 @@ def cmd_new(args: argparse.Namespace) -> int:
         )
         return 1
 
+    print()
+    print(f"{_green('✓')} draft built in {elapsed:.1f}s - {n_steps} steps, {n_denies} denies")
     print()
     print(f"{_bold('produced cartridge draft:')} {target_dir}")
     print(f"  tools:  {', '.join(produced_tools)}  ({n_tools})")

@@ -19,7 +19,9 @@ from __future__ import annotations
 import io
 import os
 import subprocess
+import sys
 import textwrap
+import time
 from pathlib import Path
 
 import pytest
@@ -182,6 +184,53 @@ class TestFailurePolicy:
         assert process.killed
         assert process.reaped
         assert adapter._proc is None
+
+    @pytest.mark.timeout(5)
+    @pytest.mark.parametrize("reply", ["", '{"id":1,"result":'])
+    @pytest.mark.parametrize(
+        "failure_policy, allowed", [("fail_closed", False), ("fail_open", True)]
+    )
+    def test_deadline_bounds_silent_or_partial_reply(self, reply, failure_policy, allowed):
+        from looplet.types import RunEnvelope
+
+        source = (
+            "import sys\n"
+            "print('ready', flush=True)\n"
+            "sys.stdin.readline()\n"
+            f"sys.stdout.write({reply!r})\n"
+            "sys.stdout.flush()\n"
+            "sys.stdin.read()\n"
+        )
+        process = subprocess.Popen(
+            [sys.executable, "-u", "-c", source],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            text=True,
+            start_new_session=os.name == "posix",
+        )
+        adapter = LEPHookAdapter(["unused"], on_failure=failure_policy)
+        adapter._proc = process
+        try:
+            assert process.stdout.readline().strip() == "ready"
+            adapter.set_run_envelope(RunEnvelope(run_id="deadline", deadline_at=time.time() + 0.05))
+            started = time.monotonic()
+
+            assert adapter.check_permission(ToolCall(tool="work", args={}), None) is allowed
+
+            assert time.monotonic() - started < 1.0
+            assert process.poll() is not None
+            assert adapter._proc is None
+            assert process.stdin.closed
+            assert process.stdout.closed
+        finally:
+            adapter.close()
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+            if process.stdin is not None:
+                process.stdin.close()
+            if process.stdout is not None:
+                process.stdout.close()
 
     @pytest.mark.parametrize(
         "response",

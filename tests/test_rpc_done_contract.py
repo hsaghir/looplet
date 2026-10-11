@@ -233,6 +233,42 @@ def test_done_with_output_schema_surfaces_output(tmp_path: Path) -> None:
     assert done["output"] == {"summary": "all set", "done": True}
 
 
+def test_alternate_terminal_surfaces_the_same_accepted_output_as_python() -> None:
+    from looplet import AgentPreset, LoopConfig, RunResult, tools_from
+
+    def submit(answer: str) -> dict:
+        return {"answer": answer}
+
+    def build() -> AgentPreset:
+        return AgentPreset(
+            config=LoopConfig(max_steps=1, use_native_tools=False, done_tools=["submit"]),
+            state=DefaultState(max_steps=1),
+            tools=tools_from([submit]),
+            hooks=[],
+        )
+
+    response = '{"tool":"submit","args":{"answer":"accepted"}}'
+    with build() as direct:
+        list(direct.run(MockLLMBackend([response]), task={"goal": "finish"}))
+        expected = RunResult.from_state(direct.state)
+        assert expected.completed
+
+    with build() as preset:
+        output = io.StringIO()
+        server = RPCServer(
+            in_stream=io.StringIO(""),
+            out_stream=output,
+            preset=preset,
+            backend=MockLLMBackend([response]),
+        )
+        server.cmd_run({"task": {"goal": "finish"}, "max_steps": 1})
+
+        terminal = _done_frame(output)
+        assert terminal["stop_reason"] == "done"
+        assert terminal["output"] == expected.output == {"answer": "accepted"}
+        assert set(terminal) == {"event", "stop_reason", "steps", "output"}
+
+
 # ── StopReason enum + classifier unit tests ──────────────────────────
 
 

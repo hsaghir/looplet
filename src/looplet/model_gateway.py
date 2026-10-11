@@ -111,8 +111,14 @@ class _LineReader:
         self._sock = sock
         self._buf = b""
 
-    def readline(self) -> str | None:
+    def readline(self, *, deadline: float | None = None) -> str | None:
         while b"\n" not in self._buf:
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise socket.timeout("model gateway response deadline exceeded")
+                timeout = self._sock.gettimeout()
+                self._sock.settimeout(min(timeout, remaining) if timeout is not None else remaining)
             chunk = self._sock.recv(65536)
             if not chunk:
                 if self._buf:
@@ -379,11 +385,32 @@ class ModelGatewayClient:
                 raise ModelGatewayError("model gateway call exceeded run deadline")
             self._next_id += 1
             rid = self._next_id
+            deadline = time.monotonic() + remaining if remaining is not None else None
+            old_timeout = self._sock.gettimeout() if remaining is not None else None
+            if remaining is not None:
+                self._sock.settimeout(
+                    min(old_timeout, remaining) if old_timeout is not None else remaining
+                )
+            timed_out = False
             try:
                 _send_line(self._sock, {"id": rid, "method": method, "params": params})
-                line = self._reader.readline()
+                line = (
+                    self._reader.readline(deadline=deadline)
+                    if deadline is not None
+                    else self._reader.readline()
+                )
+            except socket.timeout as exc:
+                timed_out = True
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise ModelGatewayError("model gateway call exceeded run deadline") from exc
+                raise ModelGatewayError(f"gateway transport failed: {exc}") from exc
             except OSError as exc:
                 raise ModelGatewayError(f"gateway transport failed: {exc}") from exc
+            finally:
+                if timed_out:
+                    self.close()
+                elif remaining is not None:
+                    self._sock.settimeout(old_timeout)
             if line is None:
                 raise ModelGatewayError("model gateway closed the connection")
             try:

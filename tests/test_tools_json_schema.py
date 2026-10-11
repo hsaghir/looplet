@@ -359,6 +359,66 @@ class TestToolSpecJsonSchema:
         assert result.error is None
         assert result.data == {"results": ["hello"]}
 
+    def test_required_nullable_callable_accepts_explicit_null(self):
+        from looplet import tools_from
+        from looplet.types import ToolCall
+
+        received = []
+
+        def nullable(value: int | None) -> dict:
+            received.append(value)
+            return {"value": value}
+
+        registry = tools_from([nullable])
+        spec = registry.tool_specs["nullable"]
+        assert spec.to_json_schema()["properties"]["value"]["type"] == ["integer", "null"]
+        assert spec.contract_errors() == []
+
+        result = registry.dispatch(ToolCall(tool="nullable", args={"value": None}))
+
+        assert result.error is None
+        assert result.data == {"value": None}
+        assert received == [None]
+        missing = registry.dispatch(ToolCall(tool="nullable", args={}))
+        assert missing.error is not None
+        assert received == [None]
+
+    @pytest.mark.parametrize("parameter_type", ["null", ["integer", "null"]])
+    def test_explicit_nullable_schema_accepts_null(self, parameter_type):
+        from looplet import BaseToolRegistry, ToolSpec
+        from looplet.types import ToolCall
+
+        registry = BaseToolRegistry()
+        registry.register(
+            ToolSpec(
+                "nullable",
+                "Accept an explicit null.",
+                {"value": {"type": parameter_type}},
+                lambda *, value: {"value": value},
+            )
+        )
+
+        result = registry.dispatch(ToolCall(tool="nullable", args={"value": None}))
+
+        assert result.error is None
+        assert result.data == {"value": None}
+
+    @pytest.mark.parametrize("value", [None, "", "   "])
+    def test_non_nullable_required_input_still_rejects_empty_values(self, value):
+        from looplet import tools_from
+        from looplet.types import ToolCall
+
+        received = []
+
+        def echo(value: str) -> dict:
+            received.append(value)
+            return {"value": value}
+
+        result = tools_from([echo]).dispatch(ToolCall(tool="echo", args={"value": value}))
+
+        assert result.error is not None
+        assert received == []
+
 
 class TestRegistryIntrospect:
     """Test BaseToolRegistry.introspect() for machine-readable discovery."""

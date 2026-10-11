@@ -220,6 +220,129 @@ def test_client_rejects_mismatched_response_id():
         client._rpc("llm/initialize", {})
 
 
+def test_client_deadline_bounds_silent_response_and_closes_connection():
+    import threading
+    import time
+
+    from looplet.model_gateway import _LineReader
+    from looplet.types import RunEnvelope
+
+    local, peer = socket.socketpair()
+    client = ModelGatewayClient.__new__(ModelGatewayClient)
+    client._lock = threading.Lock()
+    client._next_id = 0
+    client._run_envelope = RunEnvelope(run_id="deadline", deadline_at=time.time() + 0.05)
+    client._sock = local
+    client._reader = _LineReader(local)
+    started = time.monotonic()
+    try:
+        with pytest.raises(ModelGatewayError, match="deadline"):
+            client._rpc("llm/generate", {})
+        assert time.monotonic() - started < 1.0
+        assert local.fileno() == -1
+    finally:
+        client.close()
+        peer.close()
+
+
+def test_client_restores_socket_timeout_after_successful_deadline_call():
+    import threading
+    import time
+
+    from looplet.model_gateway import _LineReader
+    from looplet.types import RunEnvelope
+
+    local, peer = socket.socketpair()
+    local.settimeout(2.0)
+    peer.sendall(b'{"id":1,"result":{"text":"ok"}}\n')
+    client = ModelGatewayClient.__new__(ModelGatewayClient)
+    client._lock = threading.Lock()
+    client._next_id = 0
+    client._run_envelope = RunEnvelope(run_id="deadline", deadline_at=time.time() + 1.0)
+    client._sock = local
+    client._reader = _LineReader(local)
+    try:
+        assert client._rpc("llm/generate", {}) == {"text": "ok"}
+        assert local.gettimeout() == 2.0
+    finally:
+        client.close()
+        peer.close()
+
+
+@pytest.mark.parametrize("has_deadline", [False, True])
+def test_client_socket_timeout_is_not_reported_as_run_deadline(has_deadline):
+    import threading
+    import time
+
+    from looplet.model_gateway import _LineReader
+    from looplet.types import RunEnvelope
+
+    local, peer = socket.socketpair()
+    local.settimeout(0.02)
+    client = ModelGatewayClient.__new__(ModelGatewayClient)
+    client._lock = threading.Lock()
+    client._next_id = 0
+    client._run_envelope = (
+        RunEnvelope(run_id="deadline", deadline_at=time.time() + 10.0) if has_deadline else None
+    )
+    client._sock = local
+    client._reader = _LineReader(local)
+    try:
+        with pytest.raises(ModelGatewayError, match="gateway transport failed") as failure:
+            client._rpc("llm/generate", {})
+        assert "deadline" not in str(failure.value)
+        assert local.fileno() == -1
+    finally:
+        client.close()
+        peer.close()
+
+
+def test_client_deadline_bounds_trickled_response(monkeypatch):
+    import threading
+
+    from looplet.model_gateway import _LineReader
+
+    class TrickleSocket:
+        def __init__(self):
+            self.timeout = None
+            self.reads = 0
+            self.closed = False
+
+        def gettimeout(self):
+            return self.timeout
+
+        def settimeout(self, timeout):
+            self.timeout = timeout
+
+        def sendall(self, payload):
+            pass
+
+        def recv(self, size):
+            self.reads += 1
+            return b"{"
+
+        def close(self):
+            self.closed = True
+
+    clock = iter([0.0, 0.0, 0.04, 0.06, 0.06])
+    monkeypatch.setattr("looplet.model_gateway.time.monotonic", lambda: next(clock))
+    monkeypatch.setattr("looplet.model_gateway.remaining_deadline", lambda _envelope: 0.05)
+    transport = TrickleSocket()
+    client = ModelGatewayClient.__new__(ModelGatewayClient)
+    client._lock = threading.Lock()
+    client._next_id = 0
+    client._run_envelope = None
+    client._sock = transport
+    client._reader = _LineReader(transport)
+
+    with pytest.raises(ModelGatewayError, match="deadline"):
+        client._rpc("llm/generate", {})
+
+    assert transport.reads == 2
+    assert transport.timeout == pytest.approx(0.01)
+    assert transport.closed
+
+
 def test_start_fails_when_server_never_binds(monkeypatch, tmp_path):
     socket_dir = tmp_path / "gateway"
     socket_dir.mkdir()

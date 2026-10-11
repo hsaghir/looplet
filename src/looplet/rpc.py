@@ -89,9 +89,8 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, TextIO
 
 from looplet.cartridge import cartridge_to_preset
-from looplet.done_steps import done_output
 from looplet.loop import composable_loop
-from looplet.types import RPC_PROTOCOL_VERSION, CancelToken, DefaultState
+from looplet.types import RPC_PROTOCOL_VERSION, CancelToken, DefaultState, RunResult
 
 __all__ = [
     "RPCServer",
@@ -674,7 +673,7 @@ class RPCServer:
         reason = map_stop_reason(raw_reason, errored=errored)
         # ``output`` is the structured payload of the accepted done() sentinel
         # (None when the loop stopped without an accepted done()).
-        output = done_output(state, tool_name=config.done_tool)
+        output = RunResult.from_state(state).output
         _emit(
             self.out_stream,
             {

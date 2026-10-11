@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from looplet.stagnation import (
@@ -211,6 +213,56 @@ class TestValidation:
     def test_threshold_must_be_at_least_2(self) -> None:
         with pytest.raises(ValueError):
             StagnationHook(threshold=1, nudge="X")
+
+    def test_unknown_fingerprint_name_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="Unknown stagnation fingerprint"):
+            StagnationHook(fingerprint="unknown")
+
+
+class TestSerialization:
+    @pytest.mark.parametrize("fingerprint", [result_size_fingerprint, "result_size"])
+    def test_strict_round_trip_preserves_result_aware_fingerprint(self, tmp_path, fingerprint):
+        from looplet.cartridge import cartridge_to_preset, preset_to_cartridge
+
+        original = StagnationHook(fingerprint=fingerprint, threshold=2)
+        fixture = Path(__file__).resolve().parents[1] / "examples" / "hello.cartridge"
+        with cartridge_to_preset(fixture, strict=True) as preset:
+            preset.hooks = [original]
+            exported = preset_to_cartridge(preset, tmp_path / "roundtrip", strict=True)
+            assert exported.serialization_warnings == []
+            with cartridge_to_preset(exported.path, strict=True) as loaded:
+                assert loaded._contract_errors() == []
+                for step_num, hits in enumerate(([1], [1, 2], [1, 2]), start=1):
+                    call = _call("greet", name="same")
+                    result = _result("greet", data={"hits": hits})
+                    expected = original.post_dispatch(None, None, call, result, step_num)
+                    actual = loaded.hooks[0].post_dispatch(None, None, call, result, step_num)
+                    assert actual == expected
+                assert isinstance(actual, str)
+
+    @pytest.mark.parametrize(
+        "kwargs, policy_name",
+        [
+            ({"fingerprint": lambda *_args: "same"}, "fingerprint"),
+            ({"progress": lambda _state: 0}, "progress"),
+            ({"nudge": lambda _state, _streak: "custom"}, "nudge"),
+        ],
+    )
+    def test_callable_policy_loss_is_rejected_or_reported(self, tmp_path, kwargs, policy_name):
+        from looplet.cartridge import (
+            CartridgeSerializationError,
+            cartridge_to_preset,
+            preset_to_cartridge,
+        )
+
+        hook = StagnationHook(threshold=2, **kwargs)
+        fixture = Path(__file__).resolve().parents[1] / "examples" / "hello.cartridge"
+        with cartridge_to_preset(fixture, strict=True) as preset:
+            preset.hooks = [hook]
+            with pytest.raises(CartridgeSerializationError, match=policy_name):
+                preset_to_cartridge(preset, tmp_path / "strict", strict=True)
+            exported = preset_to_cartridge(preset, tmp_path / "loose")
+            assert any(policy_name in warning for warning in exported.serialization_warnings)
 
 
 class TestReset:

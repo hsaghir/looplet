@@ -5,8 +5,12 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 
+import pytest
+
+from examples.enterprise_host import __main__ as host
 from examples.enterprise_host import run_host
 
 
@@ -44,7 +48,41 @@ def test_enterprise_host_runs_coder_cartridge(tmp_path: Path) -> None:
     assert list(Path(summary["checkpoint_dir"]).glob("*.json"))
 
 
-def test_enterprise_host_api_returns_audit_summary(tmp_path: Path) -> None:
+@pytest.mark.parametrize("scripted", [True, False])
+def test_enterprise_host_api_returns_audit_summary(tmp_path: Path, monkeypatch, scripted) -> None:
+    bundle = host.load_skill_bundle("tests/fixtures/coder_skill_bundle")
+    original_build = bundle.build
+    built = []
+    closed = []
+
+    def build(runtime):
+        preset = original_build(runtime)
+        built.append(preset)
+        original_close = preset.close
+
+        def close():
+            closed.append(preset)
+            original_close()
+
+        preset.close = close
+        return preset
+
+    monkeypatch.setattr(host, "load_skill_bundle", lambda _path: replace(bundle, build=build))
+    if not scripted:
+        with pytest.raises(ValueError, match="requires --scripted"):
+            run_host(
+                cartridge=Path("tests/fixtures/coder_skill_bundle"),
+                workspace=tmp_path / "workspace",
+                task="Finish.",
+                run_id="unsupported-run",
+                tenant_id="tenant-api",
+                actor_id="actor-api",
+                scripted=False,
+            )
+        assert len(built) == 1
+        assert closed == built
+        return
+
     summary = run_host(
         cartridge=Path("tests/fixtures/coder_skill_bundle"),
         workspace=tmp_path / "workspace",
@@ -61,3 +99,5 @@ def test_enterprise_host_api_returns_audit_summary(tmp_path: Path) -> None:
     assert summary["policy_decisions"]
     assert summary["diagnostics"]["run_id"] == "api-run"
     assert summary["diagnostics"]["completed"] is True
+    assert len(built) == 1
+    assert closed == built

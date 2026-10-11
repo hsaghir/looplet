@@ -115,15 +115,22 @@ Load, validate, and run the bundle:
 from looplet import SkillRuntime, load_skill_bundle, run_skill_bundle, validate_skill_bundle
 
 runtime = SkillRuntime(workspace=".", max_steps=20)
-assert validate_skill_bundle("./skills/coder", runtime).ok
-
 bundle = load_skill_bundle("./skills/coder")
-for step in run_skill_bundle(bundle, llm=my_llm, task="Fix the tests", runtime=runtime):
-  print(step.pretty())
+with validate_skill_bundle(bundle, runtime) as report:
+  assert report.ok, report.errors
+  for step in run_skill_bundle(
+      bundle, llm=my_llm, task="Fix the tests", runtime=runtime, preset=report.preset,
+  ):
+    print(step.pretty())
 ```
 
 The core loop still does not know about bundles. The bundle compiles into
 an `AgentPreset` containing tools, hooks, config, and state.
+
+Validation builds a live, single-use preset. The report owns it and closes its
+resources when the context exits; passing `report.preset` runs that same build.
+For a direct run without a separate validation report, `run_skill_bundle()`
+builds and closes its own preset. Create fresh presets for subsequent runs.
 
 `run_skill_bundle()` records provenance by default. Unless you provide an
 explicit trace directory, traces are written under

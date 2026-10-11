@@ -49,7 +49,7 @@ the event loop. See [runtime operations](operations.md#asynchronous-loops).
 | API | Use it for |
 | --- | --- |
 | `@tool(...)` | Build a `ToolSpec` from an ordinary typed callable. |
-| `tools_from([...])` | Create a registry from tool specs and optionally add the standard `done` tool. |
+| `tools_from([...])` | Create a registry from ordinary typed functions or tool specs and optionally add the standard `done` tool. |
 | `ToolSpec` | Inspect or construct a tool name, description, schema, and implementation explicitly. |
 | `BaseToolRegistry` | Register, validate, look up, and dispatch tools. |
 | `BaseToolRegistry.async_dispatch(...)` | Await coroutine tools directly and move blocking sync tools off the event loop. |
@@ -73,6 +73,10 @@ New MCP servers should use standard JSON Schema `required` lists; legacy
 The base registry checks argument names and required fields, not every JSON
 Schema keyword. Keep semantic and richer constraint validation in the tool,
 MCP server, or an explicit `ValidatingToolRegistry` contract.
+
+Required means the argument must be present. Explicit nullable schema types,
+including inferred `int | None`, accept `None`; omitted arguments still fail.
+Legacy blank-string and non-nullable empty-input checks remain unchanged.
 
 `ValidatingToolRegistry.register_with_schema(spec, schema)` adds optional typed
 argument validation to the same registry execution path. Its inherited

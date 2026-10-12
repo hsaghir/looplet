@@ -36,7 +36,173 @@ class TestPresetsImports:
 # ── AgentPreset container ────────────────────────────────────────
 
 
+class TestLoopControl:
+    @pytest.mark.parametrize("async_run", [False, True])
+    async def test_raw_loop_yields_caller_state_and_stops_at_caller_boundary(self, async_run):
+        from looplet import (
+            AsyncMockLLMBackend,
+            DefaultState,
+            LoopConfig,
+            MockLLMBackend,
+            RunResult,
+            async_composable_loop,
+            composable_loop,
+            tools_from,
+        )
+
+        greeted = []
+        ended = []
+
+        def greet(name: str) -> dict:
+            greeted.append(name)
+            return {"greeting": f"Hello, {name}!"}
+
+        class Observer:
+            def on_loop_end(self, *args):
+                ended.append("ended")
+
+        state = DefaultState(max_steps=3)
+        loop = async_composable_loop if async_run else composable_loop
+        backend = (AsyncMockLLMBackend if async_run else MockLLMBackend)(
+            [
+                '{"tool":"greet","args":{"name":"Ada"}}',
+                '{"tool":"greet","args":{"name":"Bob"}}',
+                '{"tool":"done","args":{"summary":"finished"}}',
+            ]
+        )
+        iterator = loop(
+            llm=backend,
+            tools=tools_from([greet], include_done=True),
+            state=state,
+            config=LoopConfig(max_steps=3, use_native_tools=False),
+            hooks=[Observer()],
+            task={"description": "Greet Ada and Bob"},
+        )
+        try:
+            step = await iterator.__anext__() if async_run else next(iterator)
+            assert state.steps == [step]
+            assert greeted == ["Ada"]
+            assert ended == []
+        finally:
+            if async_run:
+                await iterator.aclose()
+            else:
+                iterator.close()
+        assert greeted == ["Ada"]
+        assert ended == ["ended"]
+        result = RunResult.from_state(state)
+        assert result.status == "stopped"
+        assert result.termination_reason == "stream_closed"
+        assert not result.completed
+
+
 class TestAgentPreset:
+    @pytest.mark.parametrize("async_run", [False, True])
+    async def test_early_stream_close_finalizes_loop_immediately(self, async_run):
+        from looplet import AsyncMockLLMBackend, MockLLMBackend, minimal_preset
+
+        ended = []
+
+        class Observer:
+            def on_loop_end(self, *args, **kwargs):
+                ended.append("ended")
+
+        with minimal_preset(max_steps=2) as preset:
+            preset.config.use_native_tools = False
+            preset.hooks.append(Observer())
+            backend = (AsyncMockLLMBackend if async_run else MockLLMBackend)(
+                ['{"tool":"missing","args":{}}']
+            )
+            if async_run:
+                iterator = preset.run_async(backend)
+                await iterator.__anext__()
+                await iterator.aclose()
+            else:
+                iterator = preset.run(backend)
+                next(iterator)
+                iterator.close()
+            assert ended == ["ended"]
+            assert preset.state.run_status == "stopped"
+            assert preset.state.termination_reason == "stream_closed"
+
+    @pytest.mark.parametrize("async_run", [False, True])
+    async def test_failed_cleanup_preserves_primary_error_and_closes_other_hooks(self, async_run):
+        from looplet import AsyncMockLLMBackend, MockLLMBackend, minimal_preset
+
+        ended = []
+
+        class BrokenHook:
+            def pre_loop(self, *args):
+                raise ValueError("primary error")
+
+            def on_loop_end(self, *args):
+                ended.append("broken")
+                raise RuntimeError("cleanup error")
+
+        class OtherHook:
+            def on_loop_end(self, *args):
+                ended.append("other")
+
+        with minimal_preset(max_steps=1) as preset:
+            preset.hooks.extend([BrokenHook(), OtherHook()])
+            with pytest.raises(ValueError, match="primary error"):
+                if async_run:
+                    await preset.run_result_async(AsyncMockLLMBackend())
+                else:
+                    preset.run_result(MockLLMBackend())
+            assert ended == ["broken", "other"]
+
+    @pytest.mark.parametrize("async_run", [False, True])
+    @pytest.mark.parametrize("terminal", [False, True])
+    async def test_result_helpers_preserve_execution_and_caller_ownership(
+        self, async_run, terminal
+    ):
+        from looplet import (
+            AgentPreset,
+            DefaultState,
+            LoopConfig,
+            MockLLMBackend,
+            RunResult,
+            tools_from,
+        )
+        from looplet.testing import AsyncMockLLMBackend
+
+        closed = []
+
+        class Resource:
+            def close(self):
+                closed.append(self)
+
+        def submit(answer: str) -> dict:
+            return {"answer": answer}
+
+        resource = Resource()
+        preset = AgentPreset(
+            config=LoopConfig(max_steps=1, use_native_tools=False, done_tools=["submit"]),
+            tools=tools_from([submit], include_done=True),
+            state=DefaultState(max_steps=1),
+            hooks=[],
+            owned_resources=[resource],
+        )
+        if not terminal:
+            preset.config.done_tools = []
+        backend = (AsyncMockLLMBackend if async_run else MockLLMBackend)(
+            ['{"tool":"submit","args":{"answer":"accepted"}}']
+        )
+        with preset:
+            if async_run:
+                result = await preset.run_result_async(backend, task={"description": "Finish"})
+            else:
+                result = preset.run_result(backend, task={"description": "Finish"})
+            assert result == RunResult.from_state(preset.state)
+            assert result.completed is terminal
+            assert result.output == ({"answer": "accepted"} if terminal else None)
+            assert len(result.steps) == 1
+            assert closed == []
+            with pytest.raises(RuntimeError, match="single-use"):
+                preset.run_result(backend)
+        assert closed == [resource]
+
     @pytest.mark.parametrize("async_run", [False, True])
     @pytest.mark.parametrize(
         "component_slot",

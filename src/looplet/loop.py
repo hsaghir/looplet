@@ -2004,28 +2004,33 @@ def _reset_context_overrides(tokens: list[tuple[Any, Any]]) -> None:
 
 def _mark_failed_state(state: Any) -> None:
     """Keep caller-owned state truthful when an unhandled run error escapes."""
+    _mark_terminal_state(state, status="failed", reason="error")
+
+
+def _mark_terminal_state(state: Any, *, status: str, reason: str) -> None:
+    """Project exceptional or explicit-close termination onto public state."""
     if state is None:
         return
     for name, value in (
-        ("run_status", "failed"),
+        ("run_status", status),
         ("run_phase", "terminal"),
-        ("termination_reason", "error"),
+        ("termination_reason", reason),
     ):
         try:
             setattr(state, name, value)
         except AttributeError:
             pass
     try:
-        state._stop_reason = "error"
+        state._stop_reason = reason
     except AttributeError:
         pass
     metadata = getattr(state, "metadata", None)
     if isinstance(metadata, dict):
         metadata.update(
             {
-                "run_status": "failed",
+                "run_status": status,
                 "run_phase": "terminal",
-                "termination_reason": "error",
+                "termination_reason": reason,
             }
         )
 
@@ -2352,6 +2357,60 @@ def _run_post_dispatch_hooks(
 # ── Composable Agent Loop ───────────────────────────────────────
 
 
+class _LoopFinalizer:
+    """Invoke initialized loop-end hooks once on every exit path."""
+
+    def __init__(self) -> None:
+        self.state: Any = None
+        self._hooks: list[Any] = []
+        self._args: tuple[Any, ...] = ()
+
+    def bind(self, hooks: list[Any], state: Any, session_log: Any, context: Any, llm: Any) -> None:
+        self.state = state
+        self._hooks = list(hooks)
+        self._args = (state, session_log, context, llm)
+
+    def _take_hooks(self) -> list[Any]:
+        hooks, self._hooks = self._hooks, []
+        return [hook for hook in hooks if hasattr(hook, "on_loop_end")]
+
+    def finish(self, *, suppress_errors: bool = False) -> int:
+        calls = 0
+        failure: BaseException | None = None
+        for hook in self._take_hooks():
+            try:
+                extra = hook.on_loop_end(*self._args)
+                if isinstance(extra, int):
+                    calls += extra
+            except BaseException as exc:
+                failure = failure or exc
+                if suppress_errors:
+                    logger.warning("on_loop_end cleanup failed", exc_info=True)
+        if failure is not None and not suppress_errors:
+            raise failure
+        return calls
+
+    async def finish_async(self, *, suppress_errors: bool = False) -> int:
+        import inspect
+
+        calls = 0
+        failure: BaseException | None = None
+        for hook in self._take_hooks():
+            try:
+                extra = hook.on_loop_end(*self._args)
+                if inspect.isawaitable(extra):
+                    extra = await extra
+                if isinstance(extra, int):
+                    calls += extra
+            except BaseException as exc:
+                failure = failure or exc
+                if suppress_errors:
+                    logger.warning("on_loop_end cleanup failed", exc_info=True)
+        if failure is not None and not suppress_errors:
+            raise failure
+        return calls
+
+
 def composable_loop(
     llm: Any,
     task: Any = None,
@@ -2372,6 +2431,7 @@ def composable_loop(
         config, max_steps=max_steps, system_prompt=system_prompt
     )
     tokens = _set_context_overrides(effective_config)
+    finalizer = _LoopFinalizer()
     try:
         trace = yield from _composable_loop_impl(
             llm=llm,
@@ -2384,13 +2444,20 @@ def composable_loop(
             session_log=session_log,
             stream=stream,
             conversation=conversation,
+            _finalizer=finalizer,
         )
         return trace
+    except GeneratorExit:
+        _mark_terminal_state(finalizer.state, status="stopped", reason="stream_closed")
+        raise
     except BaseException:
-        _mark_failed_state(state)
+        _mark_failed_state(finalizer.state if finalizer.state is not None else state)
         raise
     finally:
-        _reset_context_overrides(tokens)
+        try:
+            finalizer.finish(suppress_errors=True)
+        finally:
+            _reset_context_overrides(tokens)
 
 
 def _composable_loop_impl(
@@ -2407,6 +2474,7 @@ def _composable_loop_impl(
     *,
     max_steps: int | None = None,
     system_prompt: str | None = None,
+    _finalizer: _LoopFinalizer | None = None,
 ) -> Generator[Step, None, Any]:
     """Domain-agnostic agent loop with composable hooks.
 
@@ -2508,6 +2576,8 @@ def _composable_loop_impl(
 
     if session_log is None:
         session_log = SessionLog()
+    finalizer = _finalizer or _LoopFinalizer()
+    finalizer.bind(hooks, state, session_log, context, llm)
 
     # ── Conversation thread - always active (single source of truth) ──
     from looplet.conversation import Conversation as _Conversation  # noqa: PLC0415
@@ -3869,12 +3939,8 @@ def _composable_loop_impl(
         termination_reason=stop_reason,
     )
 
-    for hook in hooks:
-        if hasattr(hook, "on_loop_end"):
-            extra = hook.on_loop_end(state, session_log, context, llm)
-            if isinstance(extra, int):
-                llm_calls += extra
-                _record_run_stats(state, llm_calls=llm_calls)
+    llm_calls += finalizer.finish()
+    _record_run_stats(state, llm_calls=llm_calls)
 
     # Emit LoopEndEvent - skip if StreamingHook already emits it
     if stream is not None and _LoopEndEvent is not None and not _has_streaming_hook:

@@ -10,7 +10,7 @@ Most applications should begin with imports from `looplet`:
 from looplet import composable_loop, tool, tools_from
 ```
 
-Provider-specific, streaming, and lower-level compatibility APIs may live in
+Provider-specific, token-streaming, and specialized APIs may live in
 their defining submodule. The package-level `looplet.__all__` is the canonical
 list of re-exported names for a given release.
 
@@ -43,6 +43,57 @@ for step in composable_loop(
 Use `async for` with `async_composable_loop()`. Do not run the synchronous
 generator in an async request handler when provider calls or tools may block
 the event loop. See [runtime operations](operations.md#asynchronous-loops).
+
+For early exit, use Python's `contextlib.closing` (or `aclosing` for async):
+
+```python
+from contextlib import closing
+
+
+with closing(composable_loop(llm=llm, tools=tools, state=state, hooks=hooks, task=task)) as steps:
+    for step in steps:
+        route(step)
+        if should_stop(step):
+            break
+```
+
+Started drivers finalize initialized hooks exactly once on completion, failure,
+or explicit close. Early closure is `stopped` with reason `stream_closed`.
+The caller owns tools, clients, and other resources it supplies. After execution,
+`RunResult.from_state(state)` projects accepted output, steps, and stop status;
+completion is never an evaluation verdict.
+
+## Optional preset conveniences
+
+`AgentPreset` is an inspectable container of `tools`, `state`, `config`, and
+`hooks`, not another execution engine. `preset.run(llm, task=task)` supplies
+those objects to `composable_loop()` and returns its iterator; `run_async()`
+does the same for the async loop. Backends and mapping tasks stay explicit.
+You can read or change the wiring before execution without using a new API.
+
+The source checkout adds two small helpers, unreleased in PyPI `0.4.0`:
+
+| API | Meaning |
+| --- | --- |
+| `preset.run_result(llm, **kwargs)` | Consume `preset.run(...)`, close the iterator, and return `RunResult.from_state(preset.state)`. |
+| `await preset.run_result_async(llm, **kwargs)` | The same operation over `preset.run_async(...)`. |
+
+```python
+from looplet import minimal_preset
+
+
+with minimal_preset(tools=[lookup_owner], max_steps=5) as preset:
+    result = preset.run_result(llm, task={"goal": "Find the payments owner"})
+print(result.output)
+```
+
+Both helpers forward the existing driver arguments and leave resource ownership
+with the caller. Setup and unhandled execution errors propagate; ordinary stops
+are results. `preset.close()` returns separate shutdown diagnostics. Presets
+remain single-use; call your ordinary Python factory again for another run.
+Load file-native harnesses explicitly with `cartridge_to_preset()` or
+`load_skill_bundle()`; packaging remains separate from driving the loop.
+The optional `AgentRuntime` retains its separate failed-result host boundary.
 
 ## Tools
 

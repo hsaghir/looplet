@@ -282,15 +282,41 @@ def cmd_describe(args: argparse.Namespace) -> int:
         return 0
 
     try:
-        preset = cartridge_to_preset(str(cartridge_path), strict=False)
+        from looplet.cli import execution_output
+
+        with execution_output(getattr(args, "json", False)):
+            preset = cartridge_to_preset(str(cartridge_path), strict=False)
     except Exception as e:  # noqa: BLE001
         print(_red(f"error loading cartridge: {type(e).__name__}: {e}"), file=sys.stderr)
         return 1
 
     try:
+        from looplet.bundles import validate_preset_contract
+
+        validation = validate_preset_contract(preset)
+        if getattr(args, "json", False):
+            report = inspect_cartridge(
+                cartridge_path, include_sensitive=getattr(args, "include_sensitive", False)
+            )
+            report.update(
+                mode="runtime",
+                runtime_validated=validation.ok,
+                errors=validation.errors,
+                warnings=validation.warnings,
+                tools=preset.tools.introspect()["tools"],
+                hooks=[{"name": type(hook).__name__} for hook in preset.hooks],
+            )
+            print(json.dumps(report, indent=2, default=str))
+            return 0 if validation.ok else 1
+        print(_dim("  runtime; authored code was executed to validate wiring"))
+        if not validation.ok:
+            for error in validation.errors:
+                print(_red(f"error: {error}"), file=sys.stderr)
+            return 1
         return _render_description(preset, cartridge_path)
     finally:
-        preset.close()
+        with execution_output(getattr(args, "json", False)):
+            preset.close()
 
 
 def _render_description(preset: Any, cartridge_path: Path) -> int:
@@ -745,6 +771,10 @@ def add_subparsers(sub: "argparse._SubParsersAction") -> None:
         "--instantiate", action="store_true", help="Explicitly build and close live resources"
     )
     inspection_mode.add_argument("--json", action="store_true", help="Emit declaration-only JSON")
+    describe_p.add_argument(
+        "--mode", choices=["declaration", "runtime"], help="Explicit inspection mode"
+    )
+    describe_p.set_defaults(instantiate=None)
     describe_p.add_argument(
         "--include-sensitive",
         action="store_true",

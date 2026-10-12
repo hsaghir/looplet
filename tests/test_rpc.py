@@ -82,6 +82,9 @@ def test_run_without_workspace_errors() -> None:
 
 def test_full_run_streams_steps_and_done(tmp_path: Path) -> None:
     ws = scaffold_cartridge(tmp_path / "w.workspace", name="w", tools=["greet"])
+    (ws / "tools" / "greet" / "tool.yaml").write_text(
+        "name: greet\ndescription: Greet someone.\nparameters:\n  name:\n    type: string\n"
+    )
     # Replace the NotImplementedError stub with a real implementation
     (ws / "tools" / "greet" / "execute.py").write_text(
         "def execute(ctx, *, name):\n    return {'greeting': f'Hello, {name}!'}\n"
@@ -164,13 +167,23 @@ def test_rpc_rejects_invalid_max_steps(value):
 
 
 def test_rpc_binds_selected_backend_to_model_gateway():
-    preset = _FakePreset()
-    gateway = SimpleNamespace(set_backend=lambda backend: setattr(gateway, "bound", backend))
+    from looplet import MockLLMBackend, minimal_preset
+
+    preset = minimal_preset(max_steps=1)
+    preset.config.use_native_tools = False
+    gateway = SimpleNamespace(
+        set_backend=lambda backend: setattr(gateway, "bound", backend), close=lambda: None
+    )
     preset.model_gateway = gateway
-    backend = object()
-    server = RPCServer(preset=preset, backend=backend)
-    server._execute_run = lambda **kwargs: None
+    backend = MockLLMBackend(['{"tool":"done","args":{"summary":"ok"}}'])
+    server = RPCServer(
+        preset=preset, backend=backend, in_stream=io.StringIO(), out_stream=io.StringIO()
+    )
 
-    server.cmd_run({"task": {}, "max_steps": 1})
+    try:
+        server.cmd_run({"task": {}, "max_steps": 1})
 
-    assert gateway.bound is backend
+        assert gateway.bound is backend
+        assert preset.run_claimed
+    finally:
+        preset.close()

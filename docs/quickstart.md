@@ -37,8 +37,8 @@ Verify the loop locally without an API key:
 python -m looplet.examples.hello_world --scripted
 ```
 
-The output is a sequence of explicit tool steps followed by two live
-eval results.
+The output includes tool steps, explicit eval results, and the execution status.
+Steps are printed as the loop yields them, not after a hidden runner finishes.
 
 ## 3. Write an owned loop
 
@@ -81,7 +81,20 @@ The important part is not the line count. It is the execution boundary:
 - `tools_from(...)` builds the registry that validates and dispatches calls;
 - `composable_loop(...)` owns prompt → model → tool → state;
 - each dispatch is yielded as a `Step` before control returns to the loop;
-- your caller can print, route, pause, approve, or stop on that object.
+- your caller can inspect, route, pause, or stop between dispatches; hooks
+    provide pre-dispatch permission and policy boundaries.
+
+For early exit, put the iterator in `contextlib.closing`; use
+`contextlib.aclosing` with `async_composable_loop()`. This finalizes loop-end
+hooks without starting another step. Resources you create remain yours to close.
+Explicit state can be summarized with `RunResult.from_state(state)`; accepted
+completion remains separate from evaluated correctness.
+
+Presets are optional wiring over this same loop. `preset.run(llm, task=task)`
+returns its step iterator. The source checkout also adds `preset.run_result()`
+and `run_result_async()` when you want to consume the iterator to a summary;
+these unreleased helpers preserve explicit backends and caller-owned resources.
+See the [API map](api.md#optional-preset-conveniences).
 
 ## 4. Add one exact interception point
 

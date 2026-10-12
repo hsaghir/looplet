@@ -6,6 +6,7 @@ console scripts on `PATH`.
 
 ```bash
 looplet --help
+looplet --help-all
 looplet <command> --help
 ```
 
@@ -16,8 +17,10 @@ There are two runnable file formats:
 - a **skill bundle** is an executable packaged skill with a Python entrypoint.
 
 Use one workflow: `new`, `run`, `inspect`, then `eval`. `run` detects either
-format; `inspect` reads cartridge declarations, bundle metadata, or a saved
+format; `inspect` defaults to cartridge declarations, bundle metadata, or a saved
 trace without importing authored agent code. The formats remain distinct.
+Default help shows the four-command workflow. `--help-all` reveals advanced
+commands and compatibility aliases; their individual help remains available.
 `run-cartridge` / `run-workspace`, `run-bundle`, `describe`, and `show` remain
 available when a script needs an explicit format.
 
@@ -53,12 +56,27 @@ Inspect a cartridge, skill bundle, or saved trace without running it:
 looplet inspect ./agent.cartridge --json
 looplet inspect ./skills/code-review --json
 looplet inspect traces/incident-42 --json
+looplet inspect ./agent.cartridge --mode runtime --json
+looplet inspect ./skills/code-review --mode runtime --workspace . --json
 ```
 
 Cartridge output is declaration-only (`runtime_validated: false`). Bundle
 output contains metadata and metadata errors, not a loaded blueprint. Trace
-output preserves the `show` JSON contract. Use `blueprint` or a run when
-runtime validation is required; those operations import authored Python code.
+output preserves the `show` JSON contract, and rejects runtime mode.
+`--mode declaration` is the safe default. `--mode runtime` explicitly imports
+authored code, builds one preset, validates its executable contract, and closes
+its resources. Reports label `mode` and `runtime_validated`; invalid wiring
+returns nonzero. This is structural validation, not a behavioral eval.
+Cartridge declaration content remains redacted unless `--include-sensitive`
+is passed. Runtime bundle blueprints may include authored instructions/config;
+review them before sharing. Harness diagnostics go to stderr in JSON mode.
+
+`describe` also accepts `--mode declaration|runtime`, including explicit runtime
+JSON; legacy `--instantiate --json` remains mutually exclusive. `blueprint`
+accepts the same `--mode` vocabulary but retains its legacy live-building
+default. Its explicit runtime mode validates wiring; the historical default
+only builds and describes it. Legacy flags remain supported and conflicting
+mode choices are rejected.
 
 ### `looplet show <trace-dir>`
 

@@ -13,12 +13,15 @@ import argparse
 import json
 import os
 import sys
+from contextlib import closing
 
 from looplet import (
+    DefaultState,
     EvalContext,
     EvalHook,
     LoopConfig,
     MockLLMBackend,
+    RunResult,
     composable_loop,
     tool,
     tools_from,
@@ -113,20 +116,22 @@ def main(argv: list[str] | None = None) -> int:
     print("Tool protocol: json-text" if args.scripted else "Tool protocol: native")
     print()
 
-    for step in composable_loop(
-        llm=llm,
-        tools=build_tools(),
-        config=LoopConfig(max_steps=args.max_steps, use_native_tools=not args.scripted),
-        task={"goal": "Greet Alice and Bob, then finish."},
-        hooks=[
-            EvalHook(
-                evaluators=[eval_greeted_everyone, eval_completed],
-                verbose=True,
-            )
-        ],
-    ):
-        print(step.pretty())
-    return 0
+    state = DefaultState(max_steps=args.max_steps)
+    with closing(
+        composable_loop(
+            llm=llm,
+            tools=build_tools(),
+            state=state,
+            config=LoopConfig(max_steps=args.max_steps, use_native_tools=not args.scripted),
+            hooks=[EvalHook(evaluators=[eval_greeted_everyone, eval_completed], verbose=True)],
+            task={"description": "Greet Alice and Bob, then finish."},
+        )
+    ) as steps:
+        for step in steps:
+            print(step.pretty())
+    result = RunResult.from_state(state)
+    print(f"Result: {result.status.value} ({result.termination_reason})")
+    return 0 if result.completed else 1
 
 
 if __name__ == "__main__":

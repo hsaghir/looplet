@@ -27,6 +27,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from looplet.cartridge.scaffold import scaffold_cartridge
 from looplet.done_steps import done_output, last_accepted_done
 from looplet.hook_decision import HookDecision
@@ -267,6 +269,153 @@ def test_alternate_terminal_surfaces_the_same_accepted_output_as_python() -> Non
         assert terminal["stop_reason"] == "done"
         assert terminal["output"] == expected.output == {"answer": "accepted"}
         assert set(terminal) == {"event", "stop_reason", "steps", "output"}
+
+
+def test_repeated_loaded_rpc_runs_use_fresh_state_and_preserve_wire(tmp_path):
+    server, output = _load(tmp_path, backend=make_done_backend())
+    original = server.preset
+    try:
+        server.cmd_run({"task": {"goal": "first"}})
+        server.cmd_run({"task": {"goal": "second"}})
+        assert server.preset is not original
+        assert server.preset.state is not original.state
+        assert original._closed
+        terminals = [frame for frame in _events(output) if frame["event"] == "done"]
+        assert len(terminals) == 2
+        assert all(frame["stop_reason"] == "done" for frame in terminals)
+        assert all(set(frame) == {"event", "stop_reason", "steps", "output"} for frame in terminals)
+    finally:
+        server._close_preset()
+
+
+@pytest.mark.parametrize("wrong_type", [False, True])
+def test_failed_preset_rebuild_emits_terminal_and_allows_retry(tmp_path, monkeypatch, wrong_type):
+    server, output = _load(tmp_path, backend=make_done_backend())
+
+    def rebuild(*args, **kwargs):
+        if wrong_type:
+            return object()
+        raise RuntimeError("preset rebuild failed")
+
+    try:
+        server.cmd_run({"task": {"goal": "first"}})
+        previous = server.preset
+        with monkeypatch.context() as patch:
+            patch.setattr("looplet.rpc.cartridge_to_preset", rebuild)
+            server.cmd_run({"task": {"goal": "second"}})
+        terminals = [frame for frame in _events(output) if frame["event"] == "done"]
+        assert terminals == [
+            {
+                "event": "done",
+                "stop_reason": "done",
+                "steps": 2,
+                "output": {"summary": "all set", "done": True},
+            },
+            {"event": "done", "stop_reason": "error", "steps": 0, "output": None},
+        ]
+        assert any(frame["event"] == "error" for frame in _events(output))
+        assert server.preset is previous
+        assert server._active_cancel_token is None
+        server.cmd_run({"task": {"goal": "retry"}})
+        terminals = [frame for frame in _events(output) if frame["event"] == "done"]
+        assert len(terminals) == 3
+        assert terminals[-1]["stop_reason"] == "done"
+        assert previous._closed
+    finally:
+        server._close_preset()
+
+
+def test_driver_close_error_still_stops_watchers_and_emits_terminal(monkeypatch):
+    import threading
+
+    from looplet import minimal_preset
+
+    threads = []
+    create_thread = threading.Thread
+
+    def tracked_thread(*args, **kwargs):
+        thread = create_thread(*args, **kwargs)
+        threads.append(thread)
+        return thread
+
+    class BrokenClose:
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            raise StopIteration
+
+        def close(self):
+            raise RuntimeError("driver close failed")
+
+    monkeypatch.setattr("looplet.rpc.threading.Thread", tracked_thread)
+    with minimal_preset() as preset:
+        original_config = preset.config
+        monkeypatch.setattr(preset, "run", lambda *args, **kwargs: BrokenClose())
+        output = io.StringIO()
+        server = RPCServer(
+            in_stream=io.StringIO(""),
+            out_stream=output,
+            preset=preset,
+            backend=MockLLMBackend(),
+        )
+        server.cmd_run({"task": {}, "max_steps": 2})
+        assert _done_frame(output)["stop_reason"] == "error"
+        assert any("driver close failed" in event.get("message", "") for event in _events(output))
+        assert preset.config is original_config
+        assert server._active_cancel_token is None
+        assert all(not thread.is_alive() for thread in threads)
+
+
+def test_repeated_rpc_factory_runs_have_fresh_state_resources_and_binding():
+    from looplet import RunEnvelope, minimal_preset
+
+    built = []
+    closed = []
+    bound = []
+
+    class Resource:
+        def close(self):
+            closed.append(self)
+
+    class Observer:
+        def set_run_envelope(self, envelope):
+            bound.append(envelope.run_id)
+
+        def pre_loop(self, *args):
+            pass
+
+    def factory():
+        preset = minimal_preset(max_steps=1)
+        preset.config.use_native_tools = False
+        preset.config.run_envelope = RunEnvelope(run_id=f"rpc-{len(built)}")
+        preset.hooks.append(Observer())
+        preset.owned_resources.append(Resource())
+        built.append(preset)
+        return preset
+
+    output = io.StringIO()
+    server = RPCServer(
+        in_stream=io.StringIO(""),
+        out_stream=output,
+        preset=factory(),
+        preset_factory=factory,
+        backend=MockLLMBackend(['{"tool":"done","args":{"summary":"ok"}}']),
+    )
+    try:
+        server.cmd_run({"task": {}})
+        server.cmd_run({"task": {}})
+        frames = [json.loads(line) for line in output.getvalue().splitlines()]
+        terminals = [frame for frame in frames if frame["event"] == "done"]
+        assert len(terminals) == 2
+        assert all(frame["stop_reason"] == "done" and frame["steps"] == 1 for frame in terminals)
+        assert len(built) == 2
+        assert built[0].state is not built[1].state
+        assert bound == ["rpc-0", "rpc-1"]
+        assert len(closed) == 1
+    finally:
+        server._close_preset()
+    assert len(closed) == 2
 
 
 # ── StopReason enum + classifier unit tests ──────────────────────────

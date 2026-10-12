@@ -89,7 +89,6 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, TextIO
 
 from looplet.cartridge import cartridge_to_preset
-from looplet.loop import composable_loop
 from looplet.types import RPC_PROTOCOL_VERSION, CancelToken, DefaultState, RunResult
 
 __all__ = [
@@ -364,6 +363,9 @@ class RPCServer:
     out_stream: TextIO = field(default_factory=lambda: sys.stdout)
     preset: Any = None
     backend: Any = None
+    preset_factory: Callable[[], Any] | None = None
+    _loaded_path: Path | None = field(default=None, init=False, repr=False)
+    _loaded_runtime: dict[str, Any] | None = field(default=None, init=False, repr=False)
 
     # ── stdin reader machinery (single source of truth for inbound lines) ──
     # A single daemon thread reads ``in_stream`` line-by-line into ``_inbox``.
@@ -404,6 +406,8 @@ class RPCServer:
             raise
         previous = self.preset
         self.preset = replacement
+        self._loaded_path = Path(path).resolve()
+        self._loaded_runtime = dict(runtime) if runtime is not None else None
         if previous is not None:
             previous.close()
         _emit(self.out_stream, ready)
@@ -422,7 +426,6 @@ class RPCServer:
             raise ValueError("call load_workspace before run")
         if self.backend is None:
             raise ValueError("call set_backend before run")
-        self._bind_backend_to_gateway()
         task = msg.get("task") or {}
         max_steps = self._parse_max_steps(msg)
         self._execute_run(
@@ -445,7 +448,6 @@ class RPCServer:
             raise ValueError("call load_workspace before resume")
         if self.backend is None:
             raise ValueError("call set_backend before resume")
-        self._bind_backend_to_gateway()
         ref = msg.get("checkpoint")
         if not ref:
             raise ValueError("resume requires 'checkpoint' (an id or a path)")
@@ -460,10 +462,24 @@ class RPCServer:
             initial_checkpoint=checkpoint,
         )
 
-    def _bind_backend_to_gateway(self) -> None:
-        gateway = getattr(self.preset, "model_gateway", None)
-        if gateway is not None:
-            gateway.set_backend(self.backend)
+    def _fresh_preset(self) -> None:
+        if not getattr(self.preset, "run_claimed", False):
+            return
+        if self._loaded_path is not None:
+            replacement = cartridge_to_preset(self._loaded_path, runtime=self._loaded_runtime)
+        elif self.preset_factory is not None:
+            replacement = self.preset_factory()
+        else:
+            raise ValueError(
+                "RPC preset is single-use; reload the cartridge or supply preset_factory"
+            )
+        from looplet.presets import AgentPreset
+
+        if not isinstance(replacement, AgentPreset):
+            raise TypeError("RPC preset_factory must return AgentPreset")
+        previous = self.preset
+        self.preset = replacement
+        previous.close()
 
     def _parse_max_steps(self, msg: dict[str, Any]) -> int:
         value = msg.get("max_steps")
@@ -520,14 +536,36 @@ class RPCServer:
     ) -> None:
         """Run one loop and stream its frames; shared by ``run`` and ``resume``.
 
-        Builds a fresh state each call so a loaded preset can back many runs.
+        Rebuilds a claimed cartridge preset so every run has fresh resources.
         When ``checkpoint_dir`` is set the loop persists a checkpoint after
         every step (``checkpoint.py`` verbatim); we observe that directory and
         surface each new file as a ``checkpoint`` frame. When
         ``initial_checkpoint`` is set the loop restores it and continues at the
         saved step + 1.
         """
-        config = self.preset.config
+        try:
+            self._fresh_preset()
+        except Exception as exc:
+            _emit(
+                self.out_stream,
+                {
+                    "event": "error",
+                    "message": f"{type(exc).__name__}: {exc}",
+                    "trace": traceback.format_exc(),
+                },
+            )
+            _emit(
+                self.out_stream,
+                {
+                    "event": "done",
+                    "stop_reason": StopReason.ERROR.value,
+                    "steps": 0,
+                    "output": None,
+                },
+            )
+            return
+        original_config = self.preset.config
+        config = original_config
         changes: dict[str, Any] = {}
         if config.max_steps != max_steps:
             changes["max_steps"] = max_steps
@@ -550,7 +588,9 @@ class RPCServer:
         if changes:
             config = replace(config, **changes)
 
-        state = DefaultState(max_steps=max_steps)
+        state = self.preset.state
+        if isinstance(state, DefaultState):
+            state.max_steps = max_steps
         # Start the stdin reader (idempotent) and a per-run watcher that trips
         # the token when a ``{"cmd":"cancel"}`` frame arrives mid-run.
         self._ensure_reader()
@@ -602,16 +642,15 @@ class RPCServer:
         errored = False
         # Subscribe to the lifecycle-event bus by appending a pure observer
         # hook (do NOT mutate preset.hooks - it is reused across runs).
-        run_hooks = [*self.preset.hooks, _RPCEventForwarder(self.out_stream)]
+        iterator: Any = None
         try:
-            for step in composable_loop(
-                llm=self.backend,
-                tools=self.preset.tools,
-                state=state,
-                config=config,
-                hooks=run_hooks,
+            self.preset.config = config
+            iterator = self.preset.run(
+                self.backend,
                 task=task,
-            ):
+                extra_hooks=[_RPCEventForwarder(self.out_stream)],
+            )
+            for step in iterator:
                 steps_emitted += 1
                 _emit(
                     self.out_stream,
@@ -632,13 +671,28 @@ class RPCServer:
             )
             errored = True
         finally:
-            # Wind the watcher down before emitting ``done`` so no late frame
-            # can follow the terminal one. The watcher only ever blocks on a
-            # short queue poll, so the join returns promptly (no hang/leak).
-            stop_watcher.set()
-            watcher.join(timeout=2.0)
-            self._requeue_deferred()
-            self._active_cancel_token = None
+            try:
+                if iterator is not None:
+                    iterator.close()
+            except Exception as exc:
+                _emit(
+                    self.out_stream,
+                    {
+                        "event": "error",
+                        "message": f"{type(exc).__name__}: {exc}",
+                        "trace": traceback.format_exc(),
+                    },
+                )
+                errored = True
+            finally:
+                self.preset.config = original_config
+                # Wind the watcher down even if driver close fails.
+                stop_watcher.set()
+                watcher.join(timeout=2.0)
+                try:
+                    self._requeue_deferred()
+                finally:
+                    self._active_cancel_token = None
 
         # The final checkpoint is written during loop teardown, after the last
         # step is yielded - drain once more so it is never missed.

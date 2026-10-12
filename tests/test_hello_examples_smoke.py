@@ -25,14 +25,15 @@ class TestHelloWorldExample:
 
         def execute(**kwargs):
             run.update(kwargs)
-            return iter(())
+            yield from ()
 
         monkeypatch.setattr(backends, "make_backend", resolve)
         monkeypatch.setattr(hello_world, "composable_loop", execute)
-        assert hello_world.main(["--model", "selected-model"]) == 0
+        assert hello_world.main(["--model", "selected-model"]) == 1
         assert selected == {"model": "selected-model"}
         assert run["llm"] is backend
         assert run["config"].use_native_tools is True
+        assert run["task"] == {"description": "Greet Alice and Bob, then finish."}
         assert "Model: selected-model" in capsys.readouterr().out
 
     def test_explicit_url_retains_openai_override(self, monkeypatch) -> None:
@@ -50,8 +51,12 @@ class TestHelloWorldExample:
         monkeypatch.setattr(
             backends, "make_backend", lambda **kwargs: pytest.fail("explicit URL must win")
         )
-        monkeypatch.setattr(hello_world, "composable_loop", lambda **kwargs: iter(()))
-        assert hello_world.main(["--base-url", "http://localhost:12345/v1"]) == 0
+
+        def execute(**kwargs):
+            yield from ()
+
+        monkeypatch.setattr(hello_world, "composable_loop", execute)
+        assert hello_world.main(["--base-url", "http://localhost:12345/v1"]) == 1
         assert selected == {
             "base_url": "http://localhost:12345/v1",
             "api_key": "x",
@@ -85,6 +90,12 @@ class TestHelloWorldExample:
         assert "greet(name=Alice)" in out
         assert "greet(name=Bob)" in out
         assert "done(answer=" in out
+        assert "Result: completed (done)" in out
+
+    def test_incomplete_scripted_run_is_not_reported_as_completed(self, capsys) -> None:
+        assert hello_world.main(["--scripted", "--max-steps", "1"]) == 1
+        output = capsys.readouterr().out
+        assert "Result: stopped (" in output
 
 
 def test_coding_example_uses_shared_provider_defaults(monkeypatch) -> None:

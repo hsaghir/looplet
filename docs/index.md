@@ -206,7 +206,7 @@ boundary only when deployment or portability requires it.
 
 | Evidence | Use it for | Do not claim |
 | --- | --- | --- |
-| Yielded `Step` stream | Live routing, approval, display, and instrumentation | Independent product correctness |
+| Yielded `Step` stream | Post-dispatch routing, display, instrumentation, and stopping between steps | Pre-dispatch approval or independent product correctness |
 | Provenance trace | What the model saw, returned, and dispatched | That recorded prompts are safe to publish |
 | Captured-response replay | Tool, hook, permission, state, and dispatch changes under fixed model responses | Better future model decisions |
 | Outcome collector and grader | Whether the resulting file, command, record, or service state is correct | Isolation when the candidate owns the runner |

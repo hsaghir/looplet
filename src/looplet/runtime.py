@@ -348,13 +348,11 @@ class AgentRuntime:
             try:
                 if self.session is not None:
                     self.session.attach(run_envelope.run_id)
-                for _ in self.preset.run(
+                execution.result = self.preset.run_result(
                     llm,
                     task=task,
                     extra_hooks=[*extra_hooks, *execution.hooks],
-                ):
-                    pass
-                execution.result = RunResult.from_state(self.preset.state)
+                )
             except Exception as exc:  # noqa: BLE001 - host boundary returns a failed result
                 execution.result = _failed_runtime_result(self.preset.state, run_envelope, exc)
             return execution.result
@@ -374,13 +372,11 @@ class AgentRuntime:
             try:
                 if self.session is not None:
                     self.session.attach(run_envelope.run_id)
-                async for _ in self.preset.run_async(
+                execution.result = await self.preset.run_result_async(
                     llm,
                     task=task,
                     extra_hooks=[*extra_hooks, *execution.hooks],
-                ):
-                    pass
-                execution.result = RunResult.from_state(self.preset.state)
+                )
             except Exception as exc:  # noqa: BLE001
                 execution.result = _failed_runtime_result(self.preset.state, run_envelope, exc)
             return execution.result

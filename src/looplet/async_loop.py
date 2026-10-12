@@ -468,25 +468,39 @@ async def async_composable_loop(
         config, max_steps=max_steps, system_prompt=system_prompt
     )
     tokens = _set_context_overrides(effective_config)
+    from looplet.loop import _LoopFinalizer, _mark_terminal_state
+
+    finalizer = _LoopFinalizer()
+    iterator = _async_composable_loop_impl(
+        llm=llm,
+        task=task,
+        tools=tools,
+        context=context,
+        hooks=hooks,
+        config=effective_config,
+        state=state,
+        session_log=session_log,
+        stream=stream,
+        conversation=conversation,
+        _finalizer=finalizer,
+    )
     try:
-        async for step in _async_composable_loop_impl(
-            llm=llm,
-            task=task,
-            tools=tools,
-            context=context,
-            hooks=hooks,
-            config=effective_config,
-            state=state,
-            session_log=session_log,
-            stream=stream,
-            conversation=conversation,
-        ):
+        async for step in iterator:
             yield step
+    except GeneratorExit:
+        _mark_terminal_state(finalizer.state, status="stopped", reason="stream_closed")
+        raise
     except BaseException:
-        _mark_failed_state(state)
+        _mark_failed_state(finalizer.state if finalizer.state is not None else state)
         raise
     finally:
-        _reset_context_overrides(tokens)
+        try:
+            try:
+                await iterator.aclose()
+            finally:
+                await finalizer.finish_async(suppress_errors=True)
+        finally:
+            _reset_context_overrides(tokens)
 
 
 async def _async_composable_loop_impl(
@@ -503,6 +517,7 @@ async def _async_composable_loop_impl(
     *,
     max_steps: int | None = None,
     system_prompt: str | None = None,
+    _finalizer: Any = None,
 ) -> AsyncGenerator[Step, None]:
     """Async version of :func:`looplet.loop.composable_loop`.
 
@@ -541,6 +556,10 @@ async def _async_composable_loop_impl(
         state = DefaultState(max_steps=config.max_steps)
     if session_log is None:
         session_log = SessionLog()
+    from looplet.loop import _LoopFinalizer
+
+    finalizer = _finalizer or _LoopFinalizer()
+    finalizer.bind(hooks, state, session_log, context, llm)
 
     # Import lazily to avoid circular deps
     from looplet.conversation import Conversation  # noqa: PLC0415
@@ -1698,14 +1717,8 @@ async def _async_composable_loop_impl(
     )
 
     # ── on_loop_end ─────────────────────────────────────────────
-    for hook in hooks:
-        if hasattr(hook, "on_loop_end"):
-            result = hook.on_loop_end(state, session_log, context, llm)
-            if inspect.isawaitable(result):
-                result = await result
-            if isinstance(result, int):
-                llm_calls += result
-                _record_run_stats(state, llm_calls=llm_calls)
+    llm_calls += await finalizer.finish_async()
+    _record_run_stats(state, llm_calls=llm_calls)
 
     _record_run_stats(
         state, llm_calls=llm_calls, duration_ms=(time.perf_counter() - _loop_t0) * 1000

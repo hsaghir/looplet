@@ -13,6 +13,18 @@ Looplet checks each tool call, runs the tool, and records the result.
 It yields a `Step` after each call.
 Your code can inspect the result and stop before the next call.
 
+Looplet also provides context management for longer runs and hooks to control each stage of the loop.
+Add these controls when your agent needs them:
+
+- **Context management:** Track context limits. Shorten old history with summaries or truncation. Remove large tool results from later prompts.
+- **Prompt and tool hooks:** Add context or build a custom prompt. Check or change calls before tools run. Inspect or change results afterward.
+- **Run controls:** Set step and tool-call limits. Detect repeated actions or cancel a run.
+- **Records and tests:** Save prompts, responses, and results. Check what the agent produced, not just what it claims.
+
+A short loop is enough if it already meets your needs.
+Use Looplet when you need these controls without separate code for each agent.
+The loop stays visible, and your code still controls iteration.
+
 Looplet requires Python 3.11 or newer.
 The core package has no third-party runtime dependencies.
 It does not require a workflow graph, a hosted service, or a cartridge.
@@ -89,7 +101,10 @@ You do not need a new execution engine to use them.
 
 | Need | Feature | Guide |
 | --- | --- | --- |
-| Approve or block a tool call | Hooks before the tool runs | [Hooks](docs/hooks.md) |
+| Keep a long run within context limits | Context budgets, summaries, and truncation | [Context management](docs/operations.md#context-pressure-and-compaction) |
+| Add context or change the prompt | Hooks before the model call | [Hooks](docs/hooks.md) |
+| Check or change calls and results | Hooks before and after tools run | [Hooks](docs/hooks.md) |
+| Limit calls or detect repeated actions | Step limits, tool-call limits, and repetition checks | [Run controls](docs/operations.md#stagnation-and-call-limits) |
 | Save prompts, responses, and steps | `ProvenanceSink` | [Capture and replay](docs/provenance.md) |
 | Check files or other results | Collectors and graders | [Tests and graders](docs/evals.md) |
 | Reuse tools, state, config, and hooks | `AgentPreset` | [Python API](docs/api.md#optional-preset-conveniences) |

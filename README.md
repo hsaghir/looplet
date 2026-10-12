@@ -14,12 +14,21 @@ It yields a `Step` after each call.
 Your code can inspect the result and stop before the next call.
 
 Looplet also provides context management for longer runs and hooks to control each stage of the loop.
-Add these controls when your agent needs them:
+Add only the features that your agent needs:
 
-- **Context management:** Track context limits. Shorten old history with summaries or truncation. Remove large tool results from later prompts.
-- **Prompt and tool hooks:** Add context or build a custom prompt. Check or change calls before tools run. Inspect or change results afterward.
-- **Run controls:** Set step and tool-call limits. Detect repeated actions or cancel a run.
-- **Records and tests:** Save prompts, responses, and results. Check what the agent produced, not just what it claims.
+- **[Model choice](docs/install.md) and [retries](docs/api.md#backends):** Use OpenAI, Anthropic, or connect another model. Add retries or fallback models to synchronous model calls.
+- **[Python tools](docs/api.md#tools):** Use normal Python functions as tools. Describe accepted inputs. Add argument checks before a tool runs.
+- **[Context management](docs/operations.md#context-pressure-and-compaction):** Track context limits. Shorten old history with summaries or truncation. Remove large tool results from later prompts.
+- **[Prompt and tool hooks](docs/hooks.md):** Add context or build a custom prompt. Check or change calls before tools run. Inspect or change results afterward.
+- **[Run controls](docs/operations.md#stagnation-and-call-limits):** Set step and tool-call limits. Detect repeated actions or cancel a run.
+- **[Async and streaming](docs/operations.md):** Run async model calls and tools. Read model text as it arrives with a streaming backend.
+- **[Saved runs and replay](docs/provenance.md):** Save prompts, responses, results, and stop reasons. Reuse saved model responses to test changed tools. Tool effects can still change.
+- **[Tests and comparisons](docs/evals.md):** Check files or records that the agent produced. Compare tool changes with saved responses. Compare model changes with new runs.
+- **[Checkpoints](docs/operations.md#checkpoints-and-cancellation):** Save loop state and continue a later run. Checkpoints do not undo tool effects.
+- **[Reusable agents](docs/cartridge.md):** Keep tools, prompts, and settings in Python or an agent directory. Share that setup across projects.
+- **[Skills](docs/skills.md) and [child agents](docs/cartridge.md#builtin-tools):** Load extra task instructions when needed. Delegate part of a task to another agent.
+- **[Command line](docs/cli.md):** Create, run, inspect, and test agents from your shell.
+- **[Other processes](docs/portability.md):** Connect tools and hooks running in other processes. Share state and model access across process boundaries.
 
 A short loop is enough if it already meets your needs.
 Use Looplet when you need these controls without separate code for each agent.

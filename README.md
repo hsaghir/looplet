@@ -72,8 +72,7 @@ inspectable.
 
 ## Start with one agent
 
-The result-returning and explicit-stream APIs below are unreleased source
-additions, not part of PyPI `0.4.0`. From this checkout:
+From this source checkout:
 
 ```bash
 pip install -e ".[openai]"
@@ -83,7 +82,7 @@ export OPENAI_MODEL=...
 ```
 
 ```python
-from looplet import OpenAIBackend, minimal_preset, run, tool
+from looplet import DefaultState, OpenAIBackend, RunResult, composable_loop, tool, tools_from
 
 
 @tool(description="Look up one service owner by name.")
@@ -92,40 +91,51 @@ def lookup_owner(service: str) -> dict:
     return {"service": service, "owner": owners.get(service)}
 
 
-def build_agent():
-    return minimal_preset(tools=[lookup_owner], max_steps=5)
+state = DefaultState(max_steps=5)
+for step in composable_loop(
+    llm=OpenAIBackend.from_env(),
+    tools=tools_from([lookup_owner], include_done=True),
+    state=state,
+    task={"goal": "Find the owner of payments, then finish."},
+    max_steps=5,
+):
+    print(step.pretty())
 
-
-result = run(build_agent, "Find the owner of payments, then finish.", llm=OpenAIBackend.from_env())
+result = RunResult.from_state(state)
 print(result.output)
 ```
 
-Each factory call creates fresh state and resources. `run()` consumes one
-execution and closes its owned preset. `result.completed` means accepted
-completion, not evaluated correctness; stops and failures remain explicit.
+The loop proposes and dispatches tool calls, records each step in your state,
+then yields control back to your caller. The backend, tools, task, and limits
+are explicit. Add ordinary hooks or a `LoopConfig` when you need more policy;
+there is no separate runner to configure. `result.completed` means accepted
+completion, not evaluated correctness.
 
-When the caller needs every tool boundary, use `stream()` instead:
+When you may stop early, use Python's `closing` so loop-end hooks run immediately:
 
 ```python
-from looplet import stream
+from contextlib import closing
 
 
-with stream(build_agent, "Find the owner of payments, then finish.", llm=OpenAIBackend.from_env()) as execution:
-    for step in execution:
-        print(step.pretty())
-print(execution.result.output)
+with closing(composable_loop(llm=llm, tools=tools, state=state, task=task)) as steps:
+    for step in steps:
+        handle(step)
+        if should_stop(step):
+            break
 ```
 
-The context manager also closes an early-exited stream. A supplied live preset
-is caller-owned and single-use. Raw `composable_loop()` and
-`async_composable_loop()` remain available for custom drivers, state, and hooks.
+Use `async_composable_loop()` and `contextlib.aclosing` for the same async
+control. An optional `AgentPreset` assembles the same tools, state, config,
+and hooks; `preset.run()` returns that loop's iterator. The source checkout
+also adds `preset.run_result()` and `run_result_async()` for callers who only
+need a summary. These helpers consume the same loop, do not select a backend,
+and do not change resource ownership. See the [API map](docs/api.md).
 
 For a zero-network hello world:
 
 ```bash
 pip install looplet
 python -m looplet.examples.hello_world --scripted
-python -m looplet.examples.hello_world --scripted --stream
 ```
 
 ## Adopt it incrementally

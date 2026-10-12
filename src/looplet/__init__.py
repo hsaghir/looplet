@@ -122,7 +122,6 @@ from looplet.evals import (
     seed_case_workspace,
 )
 from looplet.events import EventPayload, LifecycleEvent
-from looplet.execution import AsyncRunStream, RunStream, run, run_async, stream, stream_async
 from looplet.execution_session import ExecutionSession
 from looplet.harness_snapshot import serialize_harness
 from looplet.hook_decision import (
@@ -240,12 +239,6 @@ from looplet.types import (
 __all__ = [
     # ── ESSENTIALS (what you need for your first agent) ──────────
     "__version__",
-    "run",
-    "stream",
-    "RunStream",
-    "run_async",
-    "stream_async",
-    "AsyncRunStream",
     "composable_loop",
     "async_composable_loop",
     "async_llm_call",

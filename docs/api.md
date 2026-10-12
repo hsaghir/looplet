@@ -7,55 +7,12 @@ every exported helper.
 Most applications should begin with imports from `looplet`:
 
 ```python
-from looplet import run, stream, tool, tools_from
+from looplet import composable_loop, tool, tools_from
 ```
 
-Provider-specific, streaming, and lower-level compatibility APIs may live in
+Provider-specific, token-streaming, and specialized APIs may live in
 their defining submodule. The package-level `looplet.__all__` is the canonical
 list of re-exported names for a given release.
-
-## Result and stream front door
-
-These APIs are unreleased source additions, not included in PyPI `0.4.0`.
-
-| API | Use it for |
-| --- | --- |
-| `run(source, task=None, *, llm=None, workspace=None, runtime=None, **kwargs)` | One execution returning `RunResult`; the synchronous backend defaults to the shared environment resolver. |
-| `stream(source, task=None, *, llm=None, workspace=None, runtime=None, **kwargs)` | Explicit closeable/context-managed `Step` iterator with `.result` after exhaustion or closure. |
-| `await run_async(source, task=None, *, llm, ...)` | The same result contract with an explicit asynchronous backend. |
-| `stream_async(source, task=None, *, llm, ...)` | Async iteration/context management; use `await .aclose()` for explicit closure. |
-| `preset.run_result(llm, **kwargs)` / `await preset.run_result_async(llm, **kwargs)` | Consume a caller-owned preset without closing its resources. |
-
-`source` is a fresh preset factory, cartridge/bundle path, `SkillBundle`, or
-live `AgentPreset`. Factory/path/bundle sources build one owned preset per call.
-Do not copy live clients or hooks to make another run: invoke the factory again.
-A supplied preset remains caller-owned and single-use, including async calls.
-
-Text tasks become `{"description": text}`; mappings are copied with their
-original keys. Only paths/bundles accept `workspace` and `runtime`; a Python
-factory captures its own configuration. A bundle accepts `SkillRuntime` or an
-options mapping; cartridges accept a runtime mapping. An ambiguous directory
-containing both formats requires an explicit `cartridge.json` or `SKILL.md`.
-Remaining keywords go to the existing preset driver, preserving extra hooks,
-contexts, custom state, backends, cancellation, and host policy.
-
-```python
-from looplet import stream
-
-
-with stream(build_agent, "Inspect the change", llm=llm) as execution:
-    for step in execution:
-        route(step)
-print(execution.result.output)
-```
-
-Use a context manager for early exit. Started drivers finalize initialized
-hooks exactly once; early closure is `stopped` with reason `stream_closed`.
-Owned resources close on completion, setup/execution failure, and early exit.
-Resource shutdown diagnostics appear in result metadata `shutdown_errors`.
-Setup and unhandled execution errors propagate; ordinary stops remain results.
-`.completed` denotes accepted terminal execution, never evaluated correctness.
-The optional `AgentRuntime` retains its separate failed-result host boundary.
 
 ## Execution core
 
@@ -86,6 +43,57 @@ for step in composable_loop(
 Use `async for` with `async_composable_loop()`. Do not run the synchronous
 generator in an async request handler when provider calls or tools may block
 the event loop. See [runtime operations](operations.md#asynchronous-loops).
+
+For early exit, use Python's `contextlib.closing` (or `aclosing` for async):
+
+```python
+from contextlib import closing
+
+
+with closing(composable_loop(llm=llm, tools=tools, state=state, hooks=hooks, task=task)) as steps:
+    for step in steps:
+        route(step)
+        if should_stop(step):
+            break
+```
+
+Started drivers finalize initialized hooks exactly once on completion, failure,
+or explicit close. Early closure is `stopped` with reason `stream_closed`.
+The caller owns tools, clients, and other resources it supplies. After execution,
+`RunResult.from_state(state)` projects accepted output, steps, and stop status;
+completion is never an evaluation verdict.
+
+## Optional preset conveniences
+
+`AgentPreset` is an inspectable container of `tools`, `state`, `config`, and
+`hooks`, not another execution engine. `preset.run(llm, task=task)` supplies
+those objects to `composable_loop()` and returns its iterator; `run_async()`
+does the same for the async loop. Backends and mapping tasks stay explicit.
+You can read or change the wiring before execution without using a new API.
+
+The source checkout adds two small helpers, unreleased in PyPI `0.4.0`:
+
+| API | Meaning |
+| --- | --- |
+| `preset.run_result(llm, **kwargs)` | Consume `preset.run(...)`, close the iterator, and return `RunResult.from_state(preset.state)`. |
+| `await preset.run_result_async(llm, **kwargs)` | The same operation over `preset.run_async(...)`. |
+
+```python
+from looplet import minimal_preset
+
+
+with minimal_preset(tools=[lookup_owner], max_steps=5) as preset:
+    result = preset.run_result(llm, task={"goal": "Find the payments owner"})
+print(result.output)
+```
+
+Both helpers forward the existing driver arguments and leave resource ownership
+with the caller. Setup and unhandled execution errors propagate; ordinary stops
+are results. `preset.close()` returns separate shutdown diagnostics. Presets
+remain single-use; call your ordinary Python factory again for another run.
+Load file-native harnesses explicitly with `cartridge_to_preset()` or
+`load_skill_bundle()`; packaging remains separate from driving the loop.
+The optional `AgentRuntime` retains its separate failed-result host boundary.
 
 ## Tools
 

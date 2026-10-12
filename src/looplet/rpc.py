@@ -543,7 +543,27 @@ class RPCServer:
         ``initial_checkpoint`` is set the loop restores it and continues at the
         saved step + 1.
         """
-        self._fresh_preset()
+        try:
+            self._fresh_preset()
+        except Exception as exc:
+            _emit(
+                self.out_stream,
+                {
+                    "event": "error",
+                    "message": f"{type(exc).__name__}: {exc}",
+                    "trace": traceback.format_exc(),
+                },
+            )
+            _emit(
+                self.out_stream,
+                {
+                    "event": "done",
+                    "stop_reason": StopReason.ERROR.value,
+                    "steps": 0,
+                    "output": None,
+                },
+            )
+            return
         original_config = self.preset.config
         config = original_config
         changes: dict[str, Any] = {}

@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import ast
 import asyncio
 import importlib.metadata
 import inspect
@@ -13,7 +12,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import textwrap
+from contextlib import aclosing, closing
 from pathlib import Path
 
 import looplet
@@ -24,78 +23,117 @@ from looplet.cli.factory_commands import _factory_workspace_path
 
 def _raw_result_client(factory, llm):
     with factory() as preset:
-        iterator = preset.run(llm, task={"description": "Greet Ada and finish"})
-        try:
+        with closing(
+            looplet.composable_loop(
+                llm=llm,
+                tools=preset.tools,
+                state=preset.state,
+                config=preset.config,
+                hooks=preset.hooks,
+                task={"description": "Greet Ada and finish"},
+            )
+        ) as iterator:
             for _step in iterator:
                 pass
-        finally:
-            iterator.close()
         return looplet.RunResult.from_state(preset.state)
 
 
 def _result_client(factory, llm):
-    return looplet.run(factory, "Greet Ada and finish", llm=llm)
+    with factory() as preset:
+        return preset.run_result(llm, task={"description": "Greet Ada and finish"})
 
 
 def _raw_stream_client(factory, llm):
     with factory() as preset:
-        iterator = preset.run(llm, task={"description": "Greet Ada and finish"})
-        try:
+        with closing(
+            looplet.composable_loop(
+                llm=llm,
+                tools=preset.tools,
+                state=preset.state,
+                config=preset.config,
+                hooks=preset.hooks,
+                task={"description": "Greet Ada and finish"},
+            )
+        ) as iterator:
             for step in iterator:
                 assert step.tool_call.tool in {"greet", "done"}
-        finally:
-            iterator.close()
+                assert preset.state.steps[-1] is step
         return looplet.RunResult.from_state(preset.state)
 
 
 def _stream_client(factory, llm):
-    with looplet.stream(factory, "Greet Ada and finish", llm=llm) as execution:
-        for step in execution:
-            assert step.tool_call.tool in {"greet", "done"}
-    return execution.result
+    with factory() as preset:
+        with closing(preset.run(llm, task={"description": "Greet Ada and finish"})) as steps:
+            for step in steps:
+                assert step.tool_call.tool in {"greet", "done"}
+                assert preset.state.steps[-1] is step
+        return looplet.RunResult.from_state(preset.state)
 
 
 async def _raw_async_result_client(factory, llm):
     with factory() as preset:
-        iterator = preset.run_async(llm, task={"description": "Greet Ada and finish"})
-        try:
+        async with aclosing(
+            looplet.async_composable_loop(
+                llm=llm,
+                tools=preset.tools,
+                state=preset.state,
+                config=preset.config,
+                hooks=preset.hooks,
+                task={"description": "Greet Ada and finish"},
+            )
+        ) as iterator:
             async for _step in iterator:
                 pass
-        finally:
-            await iterator.aclose()
         return looplet.RunResult.from_state(preset.state)
 
 
 async def _async_result_client(factory, llm):
-    return await looplet.run_async(factory, "Greet Ada and finish", llm=llm)
+    with factory() as preset:
+        return await preset.run_result_async(llm, task={"description": "Greet Ada and finish"})
 
 
 async def _raw_async_stream_client(factory, llm):
     with factory() as preset:
-        iterator = preset.run_async(llm, task={"description": "Greet Ada and finish"})
-        try:
+        async with aclosing(
+            looplet.async_composable_loop(
+                llm=llm,
+                tools=preset.tools,
+                state=preset.state,
+                config=preset.config,
+                hooks=preset.hooks,
+                task={"description": "Greet Ada and finish"},
+            )
+        ) as iterator:
             async for step in iterator:
                 assert step.tool_call.tool in {"greet", "done"}
-        finally:
-            await iterator.aclose()
+                assert preset.state.steps[-1] is step
         return looplet.RunResult.from_state(preset.state)
 
 
 async def _async_stream_client(factory, llm):
-    async with looplet.stream_async(factory, "Greet Ada and finish", llm=llm) as execution:
-        async for step in execution:
-            assert step.tool_call.tool in {"greet", "done"}
-    return execution.result
+    with factory() as preset:
+        async with aclosing(
+            preset.run_async(llm, task={"description": "Greet Ada and finish"})
+        ) as steps:
+            async for step in steps:
+                assert step.tool_call.tool in {"greet", "done"}
+                assert preset.state.steps[-1] is step
+        return looplet.RunResult.from_state(preset.state)
 
 
 def _qualify_python_clients() -> None:
     built = []
     closed = []
     observed = []
+    ended = []
 
     class Resource:
         def close(self):
             closed.append(self)
+
+    class Observer:
+        def on_loop_end(self, state, *args):
+            ended.append(state)
 
     def factory():
         greetings = []
@@ -108,7 +146,7 @@ def _qualify_python_clients() -> None:
             tools=looplet.tools_from([greet], include_done=True),
             state=looplet.DefaultState(max_steps=2),
             config=looplet.LoopConfig(max_steps=2, use_native_tools=False),
-            hooks=[],
+            hooks=[Observer()],
             owned_resources=[Resource()],
         )
         built.append(preset)
@@ -121,7 +159,6 @@ def _qualify_python_clients() -> None:
         (_raw_async_result_client, _async_result_client),
         (_raw_async_stream_client, _async_stream_client),
     )
-    measured = []
     for raw_client, client in pairs:
         for completed in (True, False):
             responses = [json.dumps({"tool": "greet", "args": {"name": "Ada"}})]
@@ -137,28 +174,54 @@ def _qualify_python_clients() -> None:
                 assert not result.failed
                 assert observed[-1] == (["Ada"] if completed else ["Ada", "Ada"])
                 assert len(closed) == len(built)
+                assert len(ended) == len(built)
                 outcomes.append((result.status, result.termination_reason, result.output))
             assert outcomes[0] == outcomes[1]
 
-        def statement_count(program):
-            syntax = ast.parse(textwrap.dedent(inspect.getsource(program)))
-            return sum(
-                isinstance(node, ast.stmt)
-                and not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-                for node in ast.walk(syntax)
+    async def check_early_exit(async_run, direct):
+        with factory() as preset:
+            backend = (looplet.AsyncMockLLMBackend if async_run else looplet.MockLLMBackend)(
+                [json.dumps({"tool": "greet", "args": {"name": name}}) for name in ("Ada", "Bob")]
             )
+            if direct:
+                driver = looplet.async_composable_loop if async_run else looplet.composable_loop
+                steps = driver(
+                    llm=backend,
+                    tools=preset.tools,
+                    state=preset.state,
+                    config=preset.config,
+                    hooks=preset.hooks,
+                )
+            else:
+                steps = preset.run_async(backend) if async_run else preset.run(backend)
+            if async_run:
+                async with aclosing(steps):
+                    step = await steps.__anext__()
+                    assert preset.state.steps == [step]
+                    assert observed[-1] == ["Ada"]
+            else:
+                with closing(steps):
+                    step = next(steps)
+                    assert preset.state.steps == [step]
+                    assert observed[-1] == ["Ada"]
+            result = looplet.RunResult.from_state(preset.state)
+            assert result.status == "stopped"
+            assert result.termination_reason == "stream_closed"
+            assert observed[-1] == ["Ada"]
+        assert len(closed) == len(built)
+        assert len(ended) == len(built)
 
-        measured.append(
-            {
-                "client": client.__name__,
-                "raw_wrapper_statements": statement_count(raw_client),
-                "wrapper_statements": statement_count(client),
-            }
-        )
-    assert len(built) == 16
-    assert len({id(preset.state) for preset in built}) == 16
+    for async_run in (False, True):
+        for direct in (False, True):
+            asyncio.run(check_early_exit(async_run, direct))
+    assert len(built) == 20
+    assert len({id(preset.state) for preset in built}) == 20
+    assert len({id(state) for state in ended}) == 20
     assert all(preset._closed for preset in built)
-    print("Scripted client qualification: " + json.dumps({"executions": 16, "wrappers": measured}))
+    print(
+        "Scripted loop qualification: "
+        + json.dumps({"executions": 20, "parity_pairs": len(pairs), "early_exit_checks": 4})
+    )
 
 
 def _smoke_cli_workflow(coder_bundle_path: Path) -> None:

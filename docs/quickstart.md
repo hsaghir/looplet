@@ -38,42 +38,7 @@ python -m looplet.examples.hello_world --scripted
 ```
 
 The output includes tool steps, explicit eval results, and the execution status.
-The source checkout also supports `--stream` to print each step as it happens.
-
-## Result first, streams when needed
-
-These APIs are unreleased source additions, not in PyPI `0.4.0`. Install this
-checkout with `pip install -e ".[openai]"` to use them. Published raw-loop
-examples below remain supported.
-
-```python
-from looplet import OpenAIBackend, minimal_preset, run, tool
-
-
-@tool(description="Look up one service owner by name.")
-def lookup_owner(service: str) -> dict:
-    return {"owner": {"payments": "fintech-platform"}.get(service)}
-
-
-def build_agent():
-    return minimal_preset(tools=[lookup_owner], max_steps=5)
-
-
-result = run(build_agent, "Find the payments owner, then finish.", llm=OpenAIBackend.from_env())
-print(result.completed, result.termination_reason, result.output)
-```
-
-Pass a cartridge or bundle path instead of a factory when the harness is
-file-native: `run("./owner.cartridge", "Find the payments owner", workspace=".")`.
-Text tasks become `{"description": text}`; mapping tasks retain their keys.
-The default synchronous backend uses the shared environment resolver.
-
-`stream(build_agent, task, llm=llm)` is an explicit context-managed step iterator.
-Use `run_async(...)` or `stream_async(...)` with an explicit async backend.
-Factory/path/bundle executions own and close their built preset; a supplied
-live preset remains caller-owned and single-use. Completion is not an eval
-verdict. See the [API map](api.md#result-and-stream-front-door) for ownership and
-error semantics.
+Steps are printed as the loop yields them, not after a hidden runner finishes.
 
 ## 3. Write an owned loop
 
@@ -116,7 +81,20 @@ The important part is not the line count. It is the execution boundary:
 - `tools_from(...)` builds the registry that validates and dispatches calls;
 - `composable_loop(...)` owns prompt → model → tool → state;
 - each dispatch is yielded as a `Step` before control returns to the loop;
-- your caller can print, route, pause, approve, or stop on that object.
+- your caller can inspect, route, pause, or stop between dispatches; hooks
+    provide pre-dispatch permission and policy boundaries.
+
+For early exit, put the iterator in `contextlib.closing`; use
+`contextlib.aclosing` with `async_composable_loop()`. This finalizes loop-end
+hooks without starting another step. Resources you create remain yours to close.
+Explicit state can be summarized with `RunResult.from_state(state)`; accepted
+completion remains separate from evaluated correctness.
+
+Presets are optional wiring over this same loop. `preset.run(llm, task=task)`
+returns its step iterator. The source checkout also adds `preset.run_result()`
+and `run_result_async()` when you want to consume the iterator to a summary;
+these unreleased helpers preserve explicit backends and caller-owned resources.
+See the [API map](api.md#optional-preset-conveniences).
 
 ## 4. Add one exact interception point
 

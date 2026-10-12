@@ -13,17 +13,16 @@ import argparse
 import json
 import os
 import sys
-from functools import partial
+from contextlib import closing
 
 from looplet import (
-    AgentPreset,
     DefaultState,
     EvalContext,
     EvalHook,
     LoopConfig,
     MockLLMBackend,
-    run,
-    stream,
+    RunResult,
+    composable_loop,
     tool,
     tools_from,
 )
@@ -58,16 +57,6 @@ def scripted_responses() -> list[str]:
     ]
 
 
-def build_agent(*, max_steps: int = 5, scripted: bool = False) -> AgentPreset:
-    """Build fresh state, tools, and evaluation hooks for one execution."""
-    return AgentPreset(
-        tools=build_tools(),
-        state=DefaultState(max_steps=max_steps),
-        config=LoopConfig(max_steps=max_steps, use_native_tools=not scripted),
-        hooks=[EvalHook(evaluators=[eval_greeted_everyone, eval_completed], verbose=True)],
-    )
-
-
 # ── Eval: did the agent greet everyone? ──────────────────────────
 
 
@@ -97,7 +86,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-steps", type=int, default=5)
     parser.add_argument("--base-url", default=None, help="OpenAI-compatible base URL")
     parser.add_argument("--model", default=None, help="Model name")
-    parser.add_argument("--stream", action="store_true", help="Print each step as it happens")
     parser.add_argument(
         "--scripted",
         action="store_true",
@@ -128,17 +116,20 @@ def main(argv: list[str] | None = None) -> int:
     print("Tool protocol: json-text" if args.scripted else "Tool protocol: native")
     print()
 
-    factory = partial(build_agent, max_steps=args.max_steps, scripted=args.scripted)
-    task = "Greet Alice and Bob, then finish."
-    if args.stream:
-        with stream(factory, task, llm=llm) as execution:
-            for step in execution:
-                print(step.pretty())
-        result = execution.result
-    else:
-        result = run(factory, task, llm=llm)
-        for step in result.steps:
+    state = DefaultState(max_steps=args.max_steps)
+    with closing(
+        composable_loop(
+            llm=llm,
+            tools=build_tools(),
+            state=state,
+            config=LoopConfig(max_steps=args.max_steps, use_native_tools=not args.scripted),
+            hooks=[EvalHook(evaluators=[eval_greeted_everyone, eval_completed], verbose=True)],
+            task={"description": "Greet Alice and Bob, then finish."},
+        )
+    ) as steps:
+        for step in steps:
             print(step.pretty())
+    result = RunResult.from_state(state)
     print(f"Result: {result.status.value} ({result.termination_reason})")
     return 0 if result.completed else 1
 

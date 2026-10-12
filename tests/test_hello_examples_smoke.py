@@ -7,7 +7,6 @@ from types import SimpleNamespace
 import pytest
 
 from looplet.examples import hello_world, ollama_hello
-from looplet.types import RunStatus
 
 pytestmark = pytest.mark.smoke
 
@@ -24,19 +23,17 @@ class TestHelloWorldExample:
             selected.update(kwargs)
             return backend
 
-        def execute(factory, task, *, llm):
-            with factory() as preset:
-                run.update(llm=llm, config=preset.config, task=task)
-            return SimpleNamespace(
-                completed=True, status=RunStatus.COMPLETED, termination_reason="done", steps=()
-            )
+        def execute(**kwargs):
+            run.update(kwargs)
+            yield from ()
 
         monkeypatch.setattr(backends, "make_backend", resolve)
-        monkeypatch.setattr(hello_world, "run", execute)
-        assert hello_world.main(["--model", "selected-model"]) == 0
+        monkeypatch.setattr(hello_world, "composable_loop", execute)
+        assert hello_world.main(["--model", "selected-model"]) == 1
         assert selected == {"model": "selected-model"}
         assert run["llm"] is backend
         assert run["config"].use_native_tools is True
+        assert run["task"] == {"description": "Greet Alice and Bob, then finish."}
         assert "Model: selected-model" in capsys.readouterr().out
 
     def test_explicit_url_retains_openai_override(self, monkeypatch) -> None:
@@ -54,14 +51,12 @@ class TestHelloWorldExample:
         monkeypatch.setattr(
             backends, "make_backend", lambda **kwargs: pytest.fail("explicit URL must win")
         )
-        monkeypatch.setattr(
-            hello_world,
-            "run",
-            lambda *args, **kwargs: SimpleNamespace(
-                completed=True, status=RunStatus.COMPLETED, termination_reason="done", steps=()
-            ),
-        )
-        assert hello_world.main(["--base-url", "http://localhost:12345/v1"]) == 0
+
+        def execute(**kwargs):
+            yield from ()
+
+        monkeypatch.setattr(hello_world, "composable_loop", execute)
+        assert hello_world.main(["--base-url", "http://localhost:12345/v1"]) == 1
         assert selected == {
             "base_url": "http://localhost:12345/v1",
             "api_key": "x",
@@ -84,11 +79,10 @@ class TestHelloWorldExample:
         assert info["greet"]["parameters"]["required"] == ["name"]
         assert "answer" in info["done"]["parameters"]["properties"]
 
-    @pytest.mark.parametrize("streaming", [False, True])
     def test_scripted_run_exercises_first_run_path(
-        self, capsys: pytest.CaptureFixture[str], streaming: bool
+        self, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        rc = hello_world.main(["--scripted", *(["--stream"] if streaming else [])])
+        rc = hello_world.main(["--scripted"])
 
         assert rc == 0
         out = capsys.readouterr().out

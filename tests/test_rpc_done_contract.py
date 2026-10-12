@@ -27,6 +27,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from looplet.cartridge.scaffold import scaffold_cartridge
 from looplet.done_steps import done_output, last_accepted_done
 from looplet.hook_decision import HookDecision
@@ -282,6 +284,43 @@ def test_repeated_loaded_rpc_runs_use_fresh_state_and_preserve_wire(tmp_path):
         assert len(terminals) == 2
         assert all(frame["stop_reason"] == "done" for frame in terminals)
         assert all(set(frame) == {"event", "stop_reason", "steps", "output"} for frame in terminals)
+    finally:
+        server._close_preset()
+
+
+@pytest.mark.parametrize("wrong_type", [False, True])
+def test_failed_preset_rebuild_emits_terminal_and_allows_retry(tmp_path, monkeypatch, wrong_type):
+    server, output = _load(tmp_path, backend=make_done_backend())
+
+    def rebuild(*args, **kwargs):
+        if wrong_type:
+            return object()
+        raise RuntimeError("preset rebuild failed")
+
+    try:
+        server.cmd_run({"task": {"goal": "first"}})
+        previous = server.preset
+        with monkeypatch.context() as patch:
+            patch.setattr("looplet.rpc.cartridge_to_preset", rebuild)
+            server.cmd_run({"task": {"goal": "second"}})
+        terminals = [frame for frame in _events(output) if frame["event"] == "done"]
+        assert terminals == [
+            {
+                "event": "done",
+                "stop_reason": "done",
+                "steps": 2,
+                "output": {"summary": "all set", "done": True},
+            },
+            {"event": "done", "stop_reason": "error", "steps": 0, "output": None},
+        ]
+        assert any(frame["event"] == "error" for frame in _events(output))
+        assert server.preset is previous
+        assert server._active_cancel_token is None
+        server.cmd_run({"task": {"goal": "retry"}})
+        terminals = [frame for frame in _events(output) if frame["event"] == "done"]
+        assert len(terminals) == 3
+        assert terminals[-1]["stop_reason"] == "done"
+        assert previous._closed
     finally:
         server._close_preset()
 

@@ -1,6 +1,6 @@
 ---
 title: A Python loop for agents that call tools
-description: Run one loop, inspect each tool result, and stop from your code. Add hooks, saved runs, and tests when you need them.
+description: A Python tool loop with context management, prompt and tool hooks, run controls, and tests. Add the controls you need without hiding the loop.
 hide:
   - navigation
   - toc
@@ -18,9 +18,11 @@ hide:
 
 <p class="hero-sub" markdown>
 Choose your model, tools, task, and limits.
-Looplet runs the tools and yields each result to your code.
-Inspect the result or stop before the next call.
-Add hooks, saved runs, and tests when you need them.
+Looplet runs tools and yields each step to your code.
+It also provides context management for long runs.
+Hooks let you build prompts, check calls before tools run, and inspect results afterward.
+Add these controls when you need them.
+Your code still controls the loop.
 </p>
 
 <div class="hero-cta">
@@ -58,6 +60,23 @@ Add only the optional features that you need.
 </div>
 
 </div>
+
+## Why use Looplet instead of a short loop?
+
+A short loop is enough if it already meets your needs.
+Use Looplet when your agent also needs these controls:
+
+- **Context management:** Track context limits. Shorten old history with summaries or truncation. Remove large tool results from later prompts.
+- **Prompt and tool hooks:** Add context or build a custom prompt. Check or change calls before tools run. Inspect or change results afterward.
+- **Run controls:** Set step and tool-call limits. Detect repeated actions or cancel a run.
+- **Records and tests:** Save prompts, responses, and results. Check what the agent produced, not just what it claims.
+
+These features use the same loop.
+You can reuse them across agents instead of writing separate control code for each one.
+The loop still yields steps, so your code can inspect each result and stop before the next call.
+
+[Context management](operations.md#context-pressure-and-compaction) | [Hooks](hooks.md) |
+[Run controls](operations.md#stagnation-and-call-limits) | [Tests and graders](evals.md)
 
 ## Start with one loop
 
@@ -114,7 +133,7 @@ See [Install](install.md) to configure a real model.
 
 **Hooks**
 
-Approve calls or change loop decisions at specific points.
+Build prompts, check calls before tools run, and inspect results afterward.
 </div>
 
 <div class="workflow-step" markdown>

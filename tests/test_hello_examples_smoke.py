@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from looplet.examples import hello_world, ollama_hello
+from looplet.types import RunStatus
 
 pytestmark = pytest.mark.smoke
 
@@ -23,12 +24,15 @@ class TestHelloWorldExample:
             selected.update(kwargs)
             return backend
 
-        def execute(**kwargs):
-            run.update(kwargs)
-            return iter(())
+        def execute(factory, task, *, llm):
+            with factory() as preset:
+                run.update(llm=llm, config=preset.config, task=task)
+            return SimpleNamespace(
+                completed=True, status=RunStatus.COMPLETED, termination_reason="done", steps=()
+            )
 
         monkeypatch.setattr(backends, "make_backend", resolve)
-        monkeypatch.setattr(hello_world, "composable_loop", execute)
+        monkeypatch.setattr(hello_world, "run", execute)
         assert hello_world.main(["--model", "selected-model"]) == 0
         assert selected == {"model": "selected-model"}
         assert run["llm"] is backend
@@ -50,7 +54,13 @@ class TestHelloWorldExample:
         monkeypatch.setattr(
             backends, "make_backend", lambda **kwargs: pytest.fail("explicit URL must win")
         )
-        monkeypatch.setattr(hello_world, "composable_loop", lambda **kwargs: iter(()))
+        monkeypatch.setattr(
+            hello_world,
+            "run",
+            lambda *args, **kwargs: SimpleNamespace(
+                completed=True, status=RunStatus.COMPLETED, termination_reason="done", steps=()
+            ),
+        )
         assert hello_world.main(["--base-url", "http://localhost:12345/v1"]) == 0
         assert selected == {
             "base_url": "http://localhost:12345/v1",
@@ -74,10 +84,11 @@ class TestHelloWorldExample:
         assert info["greet"]["parameters"]["required"] == ["name"]
         assert "answer" in info["done"]["parameters"]["properties"]
 
+    @pytest.mark.parametrize("streaming", [False, True])
     def test_scripted_run_exercises_first_run_path(
-        self, capsys: pytest.CaptureFixture[str]
+        self, capsys: pytest.CaptureFixture[str], streaming: bool
     ) -> None:
-        rc = hello_world.main(["--scripted"])
+        rc = hello_world.main(["--scripted", *(["--stream"] if streaming else [])])
 
         assert rc == 0
         out = capsys.readouterr().out
@@ -85,6 +96,12 @@ class TestHelloWorldExample:
         assert "greet(name=Alice)" in out
         assert "greet(name=Bob)" in out
         assert "done(answer=" in out
+        assert "Result: completed (done)" in out
+
+    def test_incomplete_scripted_run_is_not_reported_as_completed(self, capsys) -> None:
+        assert hello_world.main(["--scripted", "--max-steps", "1"]) == 1
+        output = capsys.readouterr().out
+        assert "Result: stopped (" in output
 
 
 def test_coding_example_uses_shared_provider_defaults(monkeypatch) -> None:

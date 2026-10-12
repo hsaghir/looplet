@@ -37,8 +37,43 @@ Verify the loop locally without an API key:
 python -m looplet.examples.hello_world --scripted
 ```
 
-The output is a sequence of explicit tool steps followed by two live
-eval results.
+The output includes tool steps, explicit eval results, and the execution status.
+The source checkout also supports `--stream` to print each step as it happens.
+
+## Result first, streams when needed
+
+These APIs are unreleased source additions, not in PyPI `0.4.0`. Install this
+checkout with `pip install -e ".[openai]"` to use them. Published raw-loop
+examples below remain supported.
+
+```python
+from looplet import OpenAIBackend, minimal_preset, run, tool
+
+
+@tool(description="Look up one service owner by name.")
+def lookup_owner(service: str) -> dict:
+    return {"owner": {"payments": "fintech-platform"}.get(service)}
+
+
+def build_agent():
+    return minimal_preset(tools=[lookup_owner], max_steps=5)
+
+
+result = run(build_agent, "Find the payments owner, then finish.", llm=OpenAIBackend.from_env())
+print(result.completed, result.termination_reason, result.output)
+```
+
+Pass a cartridge or bundle path instead of a factory when the harness is
+file-native: `run("./owner.cartridge", "Find the payments owner", workspace=".")`.
+Text tasks become `{"description": text}`; mapping tasks retain their keys.
+The default synchronous backend uses the shared environment resolver.
+
+`stream(build_agent, task, llm=llm)` is an explicit context-managed step iterator.
+Use `run_async(...)` or `stream_async(...)` with an explicit async backend.
+Factory/path/bundle executions own and close their built preset; a supplied
+live preset remains caller-owned and single-use. Completion is not an eval
+verdict. See the [API map](api.md#result-and-stream-front-door) for ownership and
+error semantics.
 
 ## 3. Write an owned loop
 

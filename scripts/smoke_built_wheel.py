@@ -3,19 +3,162 @@
 
 from __future__ import annotations
 
+import ast
+import asyncio
 import importlib.metadata
+import inspect
 import json
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
+import textwrap
 from pathlib import Path
 
 import looplet
 from looplet.bundles import load_skill_bundle
 from looplet.cartridge import analyse_cartridge
 from looplet.cli.factory_commands import _factory_workspace_path
+
+
+def _raw_result_client(factory, llm):
+    with factory() as preset:
+        iterator = preset.run(llm, task={"description": "Greet Ada and finish"})
+        try:
+            for _step in iterator:
+                pass
+        finally:
+            iterator.close()
+        return looplet.RunResult.from_state(preset.state)
+
+
+def _result_client(factory, llm):
+    return looplet.run(factory, "Greet Ada and finish", llm=llm)
+
+
+def _raw_stream_client(factory, llm):
+    with factory() as preset:
+        iterator = preset.run(llm, task={"description": "Greet Ada and finish"})
+        try:
+            for step in iterator:
+                assert step.tool_call.tool in {"greet", "done"}
+        finally:
+            iterator.close()
+        return looplet.RunResult.from_state(preset.state)
+
+
+def _stream_client(factory, llm):
+    with looplet.stream(factory, "Greet Ada and finish", llm=llm) as execution:
+        for step in execution:
+            assert step.tool_call.tool in {"greet", "done"}
+    return execution.result
+
+
+async def _raw_async_result_client(factory, llm):
+    with factory() as preset:
+        iterator = preset.run_async(llm, task={"description": "Greet Ada and finish"})
+        try:
+            async for _step in iterator:
+                pass
+        finally:
+            await iterator.aclose()
+        return looplet.RunResult.from_state(preset.state)
+
+
+async def _async_result_client(factory, llm):
+    return await looplet.run_async(factory, "Greet Ada and finish", llm=llm)
+
+
+async def _raw_async_stream_client(factory, llm):
+    with factory() as preset:
+        iterator = preset.run_async(llm, task={"description": "Greet Ada and finish"})
+        try:
+            async for step in iterator:
+                assert step.tool_call.tool in {"greet", "done"}
+        finally:
+            await iterator.aclose()
+        return looplet.RunResult.from_state(preset.state)
+
+
+async def _async_stream_client(factory, llm):
+    async with looplet.stream_async(factory, "Greet Ada and finish", llm=llm) as execution:
+        async for step in execution:
+            assert step.tool_call.tool in {"greet", "done"}
+    return execution.result
+
+
+def _qualify_python_clients() -> None:
+    built = []
+    closed = []
+    observed = []
+
+    class Resource:
+        def close(self):
+            closed.append(self)
+
+    def factory():
+        greetings = []
+
+        def greet(name: str) -> dict:
+            greetings.append(name)
+            return {"greeting": f"Hello, {name}!"}
+
+        preset = looplet.AgentPreset(
+            tools=looplet.tools_from([greet], include_done=True),
+            state=looplet.DefaultState(max_steps=2),
+            config=looplet.LoopConfig(max_steps=2, use_native_tools=False),
+            hooks=[],
+            owned_resources=[Resource()],
+        )
+        built.append(preset)
+        observed.append(greetings)
+        return preset
+
+    pairs = (
+        (_raw_result_client, _result_client),
+        (_raw_stream_client, _stream_client),
+        (_raw_async_result_client, _async_result_client),
+        (_raw_async_stream_client, _async_stream_client),
+    )
+    measured = []
+    for raw_client, client in pairs:
+        for completed in (True, False):
+            responses = [json.dumps({"tool": "greet", "args": {"name": "Ada"}})]
+            if completed:
+                responses.append(json.dumps({"tool": "done", "args": {"summary": "qualified"}}))
+            outcomes = []
+            for program in (raw_client, client):
+                async_run = inspect.iscoroutinefunction(program)
+                backend_type = looplet.AsyncMockLLMBackend if async_run else looplet.MockLLMBackend
+                execution = program(factory, backend_type(responses))
+                result = asyncio.run(execution) if async_run else execution
+                assert result.completed is completed
+                assert not result.failed
+                assert observed[-1] == (["Ada"] if completed else ["Ada", "Ada"])
+                assert len(closed) == len(built)
+                outcomes.append((result.status, result.termination_reason, result.output))
+            assert outcomes[0] == outcomes[1]
+
+        def statement_count(program):
+            syntax = ast.parse(textwrap.dedent(inspect.getsource(program)))
+            return sum(
+                isinstance(node, ast.stmt)
+                and not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                for node in ast.walk(syntax)
+            )
+
+        measured.append(
+            {
+                "client": client.__name__,
+                "raw_wrapper_statements": statement_count(raw_client),
+                "wrapper_statements": statement_count(client),
+            }
+        )
+    assert len(built) == 16
+    assert len({id(preset.state) for preset in built}) == 16
+    assert all(preset._closed for preset in built)
+    print("Scripted client qualification: " + json.dumps({"executions": 16, "wrappers": measured}))
 
 
 def _smoke_cli_workflow(coder_bundle_path: Path) -> None:
@@ -63,6 +206,11 @@ def _smoke_cli_workflow(coder_bundle_path: Path) -> None:
         inspection = json.loads(run_cli("inspect", str(cartridge), "--json").stdout)
         assert inspection["runtime_validated"] is False
         terminal_code.write_text(original_code, encoding="utf-8")
+        runtime_inspection = json.loads(
+            run_cli("inspect", str(cartridge), "--mode", "runtime", "--json").stdout
+        )
+        assert runtime_inspection["mode"] == "runtime"
+        assert runtime_inspection["runtime_validated"] is True
         run_cli("new", "Do not overwrite", str(cartridge), "--offline", expected_exit=1)
         assert terminal_code.read_text(encoding="utf-8") == original_code
 
@@ -177,6 +325,8 @@ def _smoke_cli_workflow(coder_bundle_path: Path) -> None:
         )
         inspected_bundle = json.loads(run_cli("inspect", str(declaration_bundle), "--json").stdout)
         assert inspected_bundle["name"] == "declaration-only"
+        assert inspected_bundle["runtime_validated"] is False
+        run_cli("inspect", str(declaration_bundle), "--mode", "runtime", expected_exit=1)
         discovered = json.loads(run_cli("list-bundles", str(declaration_bundle), "--json").stdout)
         assert {card["name"] for card in discovered} == {"aaa-child", "declaration-only"}
         declaration = json.loads(
@@ -211,6 +361,7 @@ def _smoke_cli_workflow(coder_bundle_path: Path) -> None:
 def main() -> int:
     package_root = Path(looplet.__file__).resolve().parent
     factory = _factory_workspace_path().resolve()
+    _qualify_python_clients()
 
     assert package_root in factory.parents
     assert factory == package_root / "_bundled" / "agent_factory.cartridge"

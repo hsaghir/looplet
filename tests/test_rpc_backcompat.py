@@ -40,7 +40,7 @@ def make_mock_backend() -> MockLLMBackend:
     return MockLLMBackend(
         responses=[
             '{"tool": "greet", "args": {"name": "world"}, "reasoning": "greet"}',
-            '{"tool": "done", "args": {"answer": "hi"}, "reasoning": "finish"}',
+            '{"tool": "done", "args": {"summary": "hi"}, "reasoning": "finish"}',
         ]
     )
 
@@ -57,6 +57,9 @@ def test_legacy_step_done_only_client_unaffected(tmp_path: Path) -> None:
     """A pre-foundation client reading ONLY the legacy event kinds still
     completes a run correctly, despite the new additive frames."""
     ws = scaffold_cartridge(tmp_path / "w.workspace", name="w", tools=["greet"])
+    (ws / "tools" / "greet" / "tool.yaml").write_text(
+        "name: greet\ndescription: Greet someone.\nparameters:\n  name:\n    type: string\n"
+    )
     (ws / "tools" / "greet" / "execute.py").write_text(
         "def execute(ctx, *, name):\n    return {'greeting': f'Hello, {name}!'}\n"
     )
@@ -74,6 +77,7 @@ def test_legacy_step_done_only_client_unaffected(tmp_path: Path) -> None:
     assert steps, "legacy client must still receive step events"
     assert any(s["step"]["tool_call"]["tool"] == "done" for s in steps)
     assert len(done) == 1 and done[0]["steps"] >= 2
+    assert done[0]["stop_reason"] == "done"
     assert not any(e["event"] == "error" for e in legacy)
 
 

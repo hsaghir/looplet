@@ -7,12 +7,55 @@ every exported helper.
 Most applications should begin with imports from `looplet`:
 
 ```python
-from looplet import composable_loop, tool, tools_from
+from looplet import run, stream, tool, tools_from
 ```
 
 Provider-specific, streaming, and lower-level compatibility APIs may live in
 their defining submodule. The package-level `looplet.__all__` is the canonical
 list of re-exported names for a given release.
+
+## Result and stream front door
+
+These APIs are unreleased source additions, not included in PyPI `0.4.0`.
+
+| API | Use it for |
+| --- | --- |
+| `run(source, task=None, *, llm=None, workspace=None, runtime=None, **kwargs)` | One execution returning `RunResult`; the synchronous backend defaults to the shared environment resolver. |
+| `stream(source, task=None, *, llm=None, workspace=None, runtime=None, **kwargs)` | Explicit closeable/context-managed `Step` iterator with `.result` after exhaustion or closure. |
+| `await run_async(source, task=None, *, llm, ...)` | The same result contract with an explicit asynchronous backend. |
+| `stream_async(source, task=None, *, llm, ...)` | Async iteration/context management; use `await .aclose()` for explicit closure. |
+| `preset.run_result(llm, **kwargs)` / `await preset.run_result_async(llm, **kwargs)` | Consume a caller-owned preset without closing its resources. |
+
+`source` is a fresh preset factory, cartridge/bundle path, `SkillBundle`, or
+live `AgentPreset`. Factory/path/bundle sources build one owned preset per call.
+Do not copy live clients or hooks to make another run: invoke the factory again.
+A supplied preset remains caller-owned and single-use, including async calls.
+
+Text tasks become `{"description": text}`; mappings are copied with their
+original keys. Only paths/bundles accept `workspace` and `runtime`; a Python
+factory captures its own configuration. A bundle accepts `SkillRuntime` or an
+options mapping; cartridges accept a runtime mapping. An ambiguous directory
+containing both formats requires an explicit `cartridge.json` or `SKILL.md`.
+Remaining keywords go to the existing preset driver, preserving extra hooks,
+contexts, custom state, backends, cancellation, and host policy.
+
+```python
+from looplet import stream
+
+
+with stream(build_agent, "Inspect the change", llm=llm) as execution:
+    for step in execution:
+        route(step)
+print(execution.result.output)
+```
+
+Use a context manager for early exit. Started drivers finalize initialized
+hooks exactly once; early closure is `stopped` with reason `stream_closed`.
+Owned resources close on completion, setup/execution failure, and early exit.
+Resource shutdown diagnostics appear in result metadata `shutdown_errors`.
+Setup and unhandled execution errors propagate; ordinary stops remain results.
+`.completed` denotes accepted terminal execution, never evaluated correctness.
+The optional `AgentRuntime` retains its separate failed-result host boundary.
 
 ## Execution core
 

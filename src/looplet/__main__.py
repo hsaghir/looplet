@@ -647,12 +647,37 @@ def _run_bundle(
     return 1 if result.failed else 0
 
 
-def _render_inspect(path: Path, *, json_output: bool) -> int:
+def _render_inspect(
+    path: Path,
+    *,
+    json_output: bool,
+    mode: str = "declaration",
+    workspace: Path | None = None,
+    max_steps: int = 20,
+    include_sensitive: bool = False,
+) -> int:
+    if path.name in {"cartridge.json", "workspace.json"}:
+        path = path.parent
     if (path / "cartridge.json").is_file():
         from looplet.cli.spec_commands import cmd_describe  # noqa: PLC0415
 
-        return cmd_describe(argparse.Namespace(cartridge=path, json=json_output))
+        return cmd_describe(
+            argparse.Namespace(
+                cartridge=path,
+                json=json_output,
+                instantiate=mode == "runtime",
+                include_sensitive=include_sensitive,
+            )
+        )
     if (path / "SKILL.md").is_file() or path.name == "SKILL.md":
+        if mode == "runtime":
+            return _render_blueprint(
+                bundle_path=path,
+                workspace=workspace or Path.cwd(),
+                max_steps=max_steps,
+                instantiate=True,
+                report_mode=mode,
+            )
         from looplet.bundles import discover_skill_bundles  # noqa: PLC0415
 
         try:
@@ -666,17 +691,31 @@ def _render_inspect(path: Path, *, json_output: bool) -> int:
             return 1
         card = cards[0]
         if json_output:
-            print(json.dumps(card.to_dict(), indent=2))
+            print(
+                json.dumps(
+                    {**card.to_dict(), "mode": "declaration-only", "runtime_validated": False},
+                    indent=2,
+                )
+            )
         else:
             print(f"{card.name}\t{'ok' if card.ok else 'invalid'}\t{card.description}")
+            print("  declaration-only; executable wiring has not been validated")
             for error in card.errors:
                 print(f"  - {error}")
         return 0 if card.ok else 1
+    if mode == "runtime":
+        print("error: runtime inspection requires a cartridge or bundle", file=sys.stderr)
+        return 1
     return _render_show(path, json_output=json_output)
 
 
 def _render_blueprint(
-    *, bundle_path: Path, workspace: Path, max_steps: int, instantiate: bool = True
+    *,
+    bundle_path: Path,
+    workspace: Path,
+    max_steps: int,
+    instantiate: bool = True,
+    report_mode: str | None = None,
 ) -> int:
     from looplet.blueprints import blueprint_from_bundle  # noqa: PLC0415
     from looplet.bundles import SkillRuntime  # noqa: PLC0415
@@ -687,13 +726,20 @@ def _render_blueprint(
                 bundle_path,
                 SkillRuntime(workspace=workspace, max_steps=max_steps),
                 instantiate=instantiate,
+                validate=instantiate and report_mode is not None,
             )
         except Exception as exc:  # noqa: BLE001
             print(f"error: could not inspect bundle {bundle_path}", file=sys.stderr)
             print(f"  - {type(exc).__name__}: {exc}", file=sys.stderr)
             return 1
-    print(json.dumps(blueprint.to_dict(), indent=2, sort_keys=True))
-    return 0
+    report = blueprint.to_dict()
+    validated = bool(blueprint.metadata.get("runtime_validated", False))
+    if report_mode is not None:
+        report.update(
+            mode="runtime" if instantiate else "declaration-only", runtime_validated=validated
+        )
+    print(json.dumps(report, indent=2, sort_keys=True))
+    return 1 if report_mode is not None and instantiate and not validated else 0
 
 
 def _render_export_code(*, bundle_path: Path, out_file: Path, function_name: str) -> int:
@@ -802,15 +848,41 @@ def main(argv: list[str] | None = None) -> int:
 
     parser = argparse.ArgumentParser(
         prog="python -m looplet",
-        description="looplet - own, inspect, and regression-test Python agent harnesses",
+        description="Looplet - build, run, inspect, and test Python agents.",
     )
-    sub = parser.add_subparsers(dest="command", required=True)
+    parser.add_argument(
+        "--help-all", action="help", help="Show advanced commands and compatibility aliases"
+    )
+    sub = parser.add_subparsers(dest="command", required=True, metavar="COMMAND")
+    if raw in (["--help"], ["-h"]):
+        print(parser.format_usage().rstrip())
+        print(f"\n{parser.description}\n\nWorkflow:")
+        for command, description in (
+            ("new", "Create an agent cartridge"),
+            ("run", "Run a cartridge or skill bundle"),
+            ("inspect", "Inspect declarations, live wiring, or captured traces"),
+            ("eval", "Test agent behavior against cases"),
+        ):
+            print(f"  {command:10s} {description}")
+        print("\nUse COMMAND --help for options; --help-all lists every command and alias.")
+        parser.exit()
 
     inspect = sub.add_parser(
-        "inspect", help="Inspect a cartridge, bundle, or trace without executing harness code"
+        "inspect", help="Inspect declarations or trace evidence; explicitly opt in to live wiring"
     )
     inspect.add_argument("path", type=Path, help="Path to a cartridge, bundle, or trace")
     inspect.add_argument("--json", action="store_true", help="Emit machine-readable inspection")
+    inspect.add_argument(
+        "--mode",
+        choices=["declaration", "runtime"],
+        default="declaration",
+        help="Declaration mode never imports authored code; runtime mode builds and closes it",
+    )
+    inspect.add_argument("--workspace", type=Path, help="Workspace for live bundle inspection")
+    inspect.add_argument("--max-steps", type=int, default=20, help="Live bundle step budget")
+    inspect.add_argument(
+        "--include-sensitive", action="store_true", help="Include authored content"
+    )
 
     show = sub.add_parser(
         "show",
@@ -886,7 +958,10 @@ def main(argv: list[str] | None = None) -> int:
         action="store_false",
         help="Inspect declarations without importing or building authored code",
     )
-    blueprint.set_defaults(instantiate=True)
+    blueprint.set_defaults(instantiate=None)
+    blueprint.add_argument(
+        "--mode", choices=["declaration", "runtime"], help="Explicit inspection mode"
+    )
 
     export_code = sub.add_parser(
         "export-code",
@@ -963,8 +1038,28 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
 
+    if args.command in {"describe", "blueprint"}:
+        args.report_mode = args.mode
+        default_mode = "runtime" if args.command == "blueprint" else "declaration"
+        legacy_mode = (
+            ("runtime" if args.instantiate else "declaration")
+            if args.instantiate is not None
+            else None
+        )
+        if args.mode is not None and legacy_mode is not None and args.mode != legacy_mode:
+            parser.error("--mode conflicts with the legacy inspection flag")
+        args.mode = args.mode or legacy_mode or default_mode
+        args.instantiate = args.mode == "runtime"
+
     if args.command == "inspect":
-        return _render_inspect(args.path, json_output=args.json)
+        return _render_inspect(
+            args.path,
+            json_output=args.json,
+            mode=args.mode,
+            workspace=args.workspace,
+            max_steps=args.max_steps,
+            include_sensitive=args.include_sensitive,
+        )
     if args.command == "show":
         return _render_show(args.trace_dir, json_output=args.json)
     if args.command == "doctor":
@@ -1036,6 +1131,7 @@ def main(argv: list[str] | None = None) -> int:
             workspace=args.workspace,
             max_steps=args.max_steps,
             instantiate=args.instantiate,
+            report_mode=args.report_mode,
         )
     if args.command == "export-code":
         return _render_export_code(

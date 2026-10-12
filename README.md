@@ -70,17 +70,20 @@ inspectable.
 
 [Read the walkthrough and its limits](https://hsaghir.com/looplet/regression-demo/).
 
-## Start with one owned loop
+## Start with one agent
+
+The result-returning and explicit-stream APIs below are unreleased source
+additions, not part of PyPI `0.4.0`. From this checkout:
 
 ```bash
-pip install "looplet[openai]"
+pip install -e ".[openai]"
 
 export OPENAI_API_KEY=...
 export OPENAI_MODEL=...
 ```
 
 ```python
-from looplet import OpenAIBackend, composable_loop, tool, tools_from
+from looplet import OpenAIBackend, minimal_preset, run, tool
 
 
 @tool(description="Look up one service owner by name.")
@@ -89,25 +92,40 @@ def lookup_owner(service: str) -> dict:
     return {"service": service, "owner": owners.get(service)}
 
 
-for step in composable_loop(
-    llm=OpenAIBackend.from_env(),
-    tools=tools_from([lookup_owner], include_done=True),
-    task={"goal": "Find the owner of payments, then finish."},
-    max_steps=5,
-):
-    print(step.pretty())
+def build_agent():
+    return minimal_preset(tools=[lookup_owner], max_steps=5)
+
+
+result = run(build_agent, "Find the owner of payments, then finish.", llm=OpenAIBackend.from_env())
+print(result.output)
 ```
 
-`composable_loop()` is a generator. Each dispatch returns to the caller as a
-`Step`, so normal Python can log, route, pause, approve, or stop at the exact
-tool boundary. Hooks are ordinary duck-typed objects; implement only the
-lifecycle methods a policy needs.
+Each factory call creates fresh state and resources. `run()` consumes one
+execution and closes its owned preset. `result.completed` means accepted
+completion, not evaluated correctness; stops and failures remain explicit.
+
+When the caller needs every tool boundary, use `stream()` instead:
+
+```python
+from looplet import stream
+
+
+with stream(build_agent, "Find the owner of payments, then finish.", llm=OpenAIBackend.from_env()) as execution:
+    for step in execution:
+        print(step.pretty())
+print(execution.result.output)
+```
+
+The context manager also closes an early-exited stream. A supplied live preset
+is caller-owned and single-use. Raw `composable_loop()` and
+`async_composable_loop()` remain available for custom drivers, state, and hooks.
 
 For a zero-network hello world:
 
 ```bash
 pip install looplet
 python -m looplet.examples.hello_world --scripted
+python -m looplet.examples.hello_world --scripted --stream
 ```
 
 ## Adopt it incrementally

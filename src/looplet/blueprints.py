@@ -149,6 +149,7 @@ def blueprint_from_bundle(
     runtime: SkillRuntime | None = None,
     *,
     instantiate: bool = True,
+    validate: bool = False,
 ) -> AgentBlueprint:
     """Return a live structural blueprint, or explicitly inspect declarations.
 
@@ -188,7 +189,7 @@ def blueprint_from_bundle(
     bundle = bundle_root if isinstance(bundle_root, SkillBundle) else load_skill_bundle(bundle_root)
     preset = bundle.build_preset(runtime or SkillRuntime())
     try:
-        return blueprint_from_preset(
+        blueprint = blueprint_from_preset(
             preset,
             name=bundle.skill.name,
             description=bundle.skill.description,
@@ -201,6 +202,17 @@ def blueprint_from_bundle(
                 entrypoint=str(bundle.skill.metadata.get("entrypoint") or "looplet.py"),
             ),
         )
+        if validate:
+            from looplet.bundles import validate_preset_contract
+
+            report = validate_preset_contract(preset)
+            blueprint.metadata.update(
+                inspection_mode="runtime",
+                runtime_validated=report.ok,
+                errors=report.errors,
+                warnings=report.warnings,
+            )
+        return blueprint
     finally:
         preset.close()
 

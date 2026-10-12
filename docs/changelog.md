@@ -8,6 +8,18 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Plain-Python `run` / `run_async` return `RunResult`; `stream` / `stream_async`
+  expose explicit context-managed steps. Paths, bundles, and factories own fresh
+  single-use presets; supplied live presets remain caller-owned.
+- `inspect`, `describe`, and `blueprint` share explicit `--mode declaration|runtime`
+  vocabulary. Runtime reports validate one built preset and close resources;
+  declaration inspection stays import-free and legacy defaults remain supported.
+- Default help promotes `new`, `run`, `inspect`, and `eval`; `--help-all` lists
+  every advanced command and compatibility alias without removing capabilities.
+- Installed-wheel qualification executes paired raw/facade sync/async clients,
+  checks observed outcomes and resource ownership, and reports wrapper statement
+  counts without claiming human usability or live-model quality improvements.
+
 - Unified `run` accepts cartridge `--quiet`, `--pretty`, and `--parent-trace`
   through the same option definitions as legacy commands; bundles reject these
   unsupported options before importing authored code.
@@ -39,6 +51,15 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   states when the original raw loop remains the better choice.
 
 ### Changed
+
+- Sync/async teardown finalizes initialized hooks exactly once on completion,
+  failure, and early stream close, preserving primary errors and attempting all
+  cleanup hooks. Started early-closed streams are stopped, not failed.
+- Host runtime and RPC use preset execution; repeated loaded RPC runs rebuild
+  fresh state/resources. Python RPC hosts can supply `preset_factory` for repeated
+  runs instead of reusing live hooks, clients, or state. Wire v1 remains unchanged.
+- The shipped hello-world example uses the result front door and an explicit
+  `--stream` mode, with truthful incomplete exit status and unchanged provider policy.
 
 - Required tool arguments with explicit nullable schema types accept `None`
   without treating it as an omitted value; legacy empty-input checks remain.

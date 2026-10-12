@@ -31,6 +31,24 @@ def test_new_help() -> None:
     assert exc.value.code == 0
 
 
+def test_root_help_discloses_workflow_before_advanced_commands(capsys):
+    with pytest.raises(SystemExit) as stopped:
+        main(["--help"])
+    assert stopped.value.code == 0
+    simple = capsys.readouterr().out
+    for command in ("new", "run", "inspect", "eval"):
+        assert f"  {command:10s}" in simple
+    assert "run-workspace" not in simple
+    assert "--help-all" in simple
+    with pytest.raises(SystemExit) as stopped:
+        main(["--help-all"])
+    assert stopped.value.code == 0
+    detailed = capsys.readouterr().out
+    assert "run-workspace" in detailed
+    assert "describe" in detailed
+    assert "blueprint" in detailed
+
+
 def test_run_cartridge_help() -> None:
     with pytest.raises(SystemExit) as exc, patch("sys.stdout", new=io.StringIO()):
         main(["run-cartridge", "--help"])
@@ -49,6 +67,70 @@ def test_show_help_advertises_json() -> None:
         main(["show", "--help"])
     assert exc.value.code == 0
     assert "--json" in captured.getvalue()
+
+
+def test_explicit_cartridge_inspection_modes_share_runtime_report(tmp_path, capsys):
+    from looplet.cartridge.scaffold import scaffold_cartridge
+
+    root = scaffold_cartridge(tmp_path / "inspect.cartridge", name="inspect", tools=[])
+    reports = []
+    for command in ("inspect", "describe"):
+        assert main([command, str(root), "--mode", "runtime", "--json"]) == 0
+        report = json.loads(capsys.readouterr().out)
+        assert report["mode"] == "runtime"
+        assert report["runtime_validated"] is True
+        reports.append(report)
+    assert reports[0] == reports[1]
+    assert main(["inspect", str(root / "cartridge.json"), "--mode", "declaration", "--json"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["mode"] == "declaration-only"
+    assert report["runtime_validated"] is False
+
+
+def test_explicit_bundle_declaration_modes_never_import_entrypoint(tmp_path, capsys):
+    (tmp_path / "SKILL.md").write_text("---\nname: safe\ndescription: Safe fixture.\n---\n")
+    (tmp_path / "looplet.py").write_text("raise AssertionError('must not import')\n")
+    for command in ("inspect", "blueprint"):
+        arguments = [command, str(tmp_path), "--mode", "declaration"]
+        if command == "inspect":
+            arguments.append("--json")
+        assert main(arguments) == 0
+        report = json.loads(capsys.readouterr().out)
+        assert report["mode"] == "declaration-only"
+        assert report["runtime_validated"] is False
+
+
+def test_conflicting_inspection_modes_are_rejected(tmp_path):
+    for command in ("describe", "blueprint"):
+        with pytest.raises(SystemExit) as stopped:
+            main([command, str(tmp_path), "--mode", "declaration", "--instantiate"])
+        assert stopped.value.code == 2
+
+
+@pytest.mark.parametrize("valid", [False, True])
+def test_runtime_bundle_inspection_validates_once_and_closes(tmp_path, capsys, valid):
+    sentinel = tmp_path / "lifecycle.txt"
+    (tmp_path / "SKILL.md").write_text("---\nname: live\ndescription: Live fixture.\n---\n")
+    (tmp_path / "looplet.py").write_text(
+        "from pathlib import Path\n"
+        "from looplet import minimal_preset\n"
+        f"sentinel = Path({str(sentinel)!r})\n"
+        "class Resource:\n"
+        "    def close(self):\n"
+        "        with sentinel.open('a') as output: output.write('close\\n')\n"
+        "def build(runtime):\n"
+        "    with sentinel.open('a') as output: output.write('build\\n')\n"
+        "    preset = minimal_preset()\n"
+        "    preset.owned_resources.append(Resource())\n"
+        + ("" if valid else "    preset.config.done_tool = 'missing'\n")
+        + "    return preset\n"
+    )
+    assert main(["inspect", str(tmp_path), "--mode", "runtime", "--json"]) == (0 if valid else 1)
+    report = json.loads(capsys.readouterr().out)
+    assert report["mode"] == "runtime"
+    assert report["runtime_validated"] is valid
+    assert bool(report["metadata"]["errors"]) is not valid
+    assert sentinel.read_text() == "build\nclose\n"
 
 
 @pytest.mark.parametrize(
@@ -282,10 +364,10 @@ def test_factory_workspace_path_resolves_installed_bundle(
 
 
 def test_new_command_registered_on_top_level() -> None:
-    """Top-level help advertises the canonical command and compatibility alias."""
+    """Detailed help advertises the canonical command and compatibility alias."""
     captured = io.StringIO()
     with pytest.raises(SystemExit) as exc, patch.object(sys, "stdout", captured):
-        main(["--help"])
+        main(["--help-all"])
     assert exc.value.code == 0
     out = captured.getvalue()
     assert "new" in out

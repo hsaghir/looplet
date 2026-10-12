@@ -36,7 +36,350 @@ class TestPresetsImports:
 # ── AgentPreset container ────────────────────────────────────────
 
 
+class TestConvenienceExecution:
+    def test_ambiguous_directory_requires_explicit_manifest(self, tmp_path):
+        from looplet import MockLLMBackend, run
+        from looplet.cartridge.scaffold import scaffold_cartridge
+
+        root = scaffold_cartridge(tmp_path / "mixed", name="mixed", tools=[])
+        (root / "SKILL.md").write_text("---\nname: mixed\ndescription: Ambiguous fixture.\n---\n")
+        (root / "looplet.py").write_text("raise AssertionError('must not import')\n")
+        with pytest.raises(ValueError, match="ambiguous source"):
+            run(root, "Finish", llm=MockLLMBackend())
+        result = run(
+            root / "cartridge.json",
+            "Finish",
+            llm=MockLLMBackend(['{"tool":"done","args":{"summary":"explicit"}}']),
+        )
+        assert result.completed
+        with pytest.raises(AssertionError, match="must not import"):
+            run(root / "SKILL.md", llm=MockLLMBackend())
+
+    def test_bundle_import_context_covers_lazy_tool_execution(self, tmp_path):
+        import sys
+
+        from looplet import MockLLMBackend, run
+
+        before = list(sys.path)
+        (tmp_path / "SKILL.md").write_text("---\nname: lazy\ndescription: Lazy fixture.\n---\n")
+        (tmp_path / "dx_lazy_helper.py").write_text("value = 'local module'\n")
+        (tmp_path / "looplet.py").write_text(
+            "from looplet import AgentPreset, DefaultState, LoopConfig, tools_from\n"
+            "def done(summary: str):\n"
+            "    from dx_lazy_helper import value\n"
+            "    return {'summary': summary, 'value': value}\n"
+            "def build(runtime):\n"
+            "    return AgentPreset(config=LoopConfig(max_steps=1, use_native_tools=False),\n"
+            "        state=DefaultState(max_steps=1), tools=tools_from([done]), hooks=[])\n"
+        )
+        result = run(
+            tmp_path,
+            "Finish",
+            llm=MockLLMBackend(['{"tool":"done","args":{"summary":"lazy"}}']),
+        )
+        assert result.completed
+        assert result.output == {"summary": "lazy", "value": "local module"}
+        assert sys.path == before
+
+    async def test_async_supplied_preset_remains_caller_owned(self):
+        from looplet import AsyncMockLLMBackend, minimal_preset, run_async
+
+        with minimal_preset(max_steps=1) as preset:
+            preset.config.use_native_tools = False
+            result = await run_async(
+                preset,
+                "Finish",
+                llm=AsyncMockLLMBackend(['{"tool":"done","args":{"summary":"async"}}']),
+            )
+            assert result.completed
+            assert not preset._closed
+            with pytest.raises(RuntimeError, match="single-use"):
+                await run_async(preset, llm=AsyncMockLLMBackend())
+
+    def test_concurrent_factory_calls_use_distinct_owned_executions(self):
+        from concurrent.futures import ThreadPoolExecutor
+
+        from looplet import MockLLMBackend, minimal_preset, run
+
+        built = []
+
+        def factory():
+            preset = minimal_preset(max_steps=1)
+            preset.config.use_native_tools = False
+            built.append(preset)
+            return preset
+
+        def client(summary):
+            return run(
+                factory,
+                "Finish",
+                llm=MockLLMBackend([f'{{"tool":"done","args":{{"summary":"{summary}"}}}}']),
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(client, ("first", "second")))
+        assert [result.output["summary"] for result in results] == ["first", "second"]
+        assert built[0].state is not built[1].state
+        assert all(preset._closed for preset in built)
+
+    def test_owned_shutdown_errors_are_reported_separately_from_completion(self):
+        from looplet import MockLLMBackend, minimal_preset, run
+
+        class BrokenResource:
+            def close(self):
+                raise RuntimeError("shutdown failed")
+
+        def factory():
+            preset = minimal_preset(max_steps=1)
+            preset.config.use_native_tools = False
+            preset.owned_resources.append(BrokenResource())
+            return preset
+
+        result = run(factory, llm=MockLLMBackend(['{"tool":"done","args":{"summary":"finished"}}']))
+        assert result.completed
+        assert result.output == {"status": "completed", "summary": "finished"}
+        assert "shutdown failed" in str(result.metadata["shutdown_errors"])
+
+    async def test_async_factory_result_and_early_close_match_sync(self):
+        from looplet import AsyncMockLLMBackend, minimal_preset, run_async, stream_async
+
+        ended = []
+
+        class Observer:
+            async def on_loop_end(self, *args):
+                ended.append("ended")
+
+        def factory():
+            preset = minimal_preset(max_steps=2)
+            preset.config.use_native_tools = False
+            preset.hooks.append(Observer())
+            return preset
+
+        result = await run_async(
+            factory, llm=AsyncMockLLMBackend(['{"tool":"done","args":{"summary":"async"}}'])
+        )
+        assert result.completed
+        assert result.output == {"status": "completed", "summary": "async"}
+        async with stream_async(
+            factory, llm=AsyncMockLLMBackend(['{"tool":"missing","args":{}}'])
+        ) as execution:
+            await execution.__anext__()
+        assert execution.preset._closed
+        assert execution.result.status == "stopped"
+        assert execution.result.termination_reason == "stream_closed"
+        assert ended == ["ended", "ended"]
+
+    def test_factory_runs_are_fresh_and_owned(self):
+        from looplet import MockLLMBackend, minimal_preset, run
+
+        built = []
+        closed = []
+
+        def factory():
+            preset = minimal_preset(max_steps=1)
+            preset.config.use_native_tools = False
+            original_close = preset.close
+
+            def close():
+                closed.append(preset)
+                return original_close()
+
+            preset.close = close
+            built.append(preset)
+            return preset
+
+        for summary in ("first", "second"):
+            result = run(
+                factory,
+                task="Finish",
+                llm=MockLLMBackend([f'{{"tool":"done","args":{{"summary":"{summary}"}}}}']),
+            )
+            assert result.completed
+            assert result.output == {"status": "completed", "summary": summary}
+            assert len(result.steps) == 1
+        assert len(built) == 2
+        assert built[0].state is not built[1].state
+        assert closed == built
+
+    def test_supplied_preset_stays_caller_owned_and_single_use(self):
+        from looplet import MockLLMBackend, minimal_preset, run
+
+        with minimal_preset(max_steps=1) as preset:
+            preset.config.use_native_tools = False
+            result = run(preset, task="Finish", llm=MockLLMBackend(['{"tool":"done","args":{}}']))
+            assert result.completed
+            assert not preset._closed
+            with pytest.raises(RuntimeError, match="single-use"):
+                run(preset, llm=MockLLMBackend())
+
+    @pytest.mark.parametrize("started", [False, True])
+    def test_stream_closes_owned_preset_on_early_exit(self, started):
+        from looplet import MockLLMBackend, minimal_preset, stream
+
+        with stream(
+            lambda: minimal_preset(max_steps=2),
+            llm=MockLLMBackend(['{"tool":"missing","args":{}}']),
+        ) as execution:
+            execution.preset.config.use_native_tools = False
+            with pytest.raises(RuntimeError, match="still open"):
+                execution.result
+            if started:
+                next(execution)
+        assert execution.preset._closed
+        assert not execution.result.completed
+        assert len(execution.result.steps) == int(started)
+        execution.close()
+
+    def test_setup_and_execution_errors_release_owned_resources(self, monkeypatch):
+        from looplet import MockLLMBackend, minimal_preset, run
+
+        preset = minimal_preset(max_steps=1)
+
+        def missing_backend(**kwargs):
+            raise ValueError("no key")
+
+        monkeypatch.setattr("looplet.backends.make_backend", missing_backend)
+        with pytest.raises(ValueError, match="no key"):
+            run(lambda: preset)
+        assert preset._closed
+
+        class FailingHook:
+            def pre_loop(self, *args):
+                raise RuntimeError("hook failed")
+
+        failed = minimal_preset(max_steps=1)
+        failed.hooks.append(FailingHook())
+        with pytest.raises(RuntimeError, match="hook failed"):
+            run(lambda: failed, llm=MockLLMBackend())
+        assert failed._closed
+
+    def test_path_and_manifest_use_existing_cartridge_loader(self):
+        from pathlib import Path
+
+        from looplet import MockLLMBackend, run
+
+        root = Path(__file__).resolve().parents[1] / "examples" / "hello.cartridge"
+        for source in (root, root / "cartridge.json"):
+            result = run(
+                source,
+                llm=MockLLMBackend(
+                    [
+                        '{"tool":"greet","args":{"name":"Ada"}}',
+                        '{"tool":"done","args":{"summary":"hello"}}',
+                    ]
+                ),
+            )
+            assert result.completed
+            assert result.output == {"status": "completed", "summary": "hello"}
+
+
 class TestAgentPreset:
+    @pytest.mark.parametrize("async_run", [False, True])
+    async def test_early_stream_close_finalizes_loop_immediately(self, async_run):
+        from looplet import AsyncMockLLMBackend, MockLLMBackend, minimal_preset
+
+        ended = []
+
+        class Observer:
+            def on_loop_end(self, *args, **kwargs):
+                ended.append("ended")
+
+        with minimal_preset(max_steps=2) as preset:
+            preset.config.use_native_tools = False
+            preset.hooks.append(Observer())
+            backend = (AsyncMockLLMBackend if async_run else MockLLMBackend)(
+                ['{"tool":"missing","args":{}}']
+            )
+            if async_run:
+                iterator = preset.run_async(backend)
+                await iterator.__anext__()
+                await iterator.aclose()
+            else:
+                iterator = preset.run(backend)
+                next(iterator)
+                iterator.close()
+            assert ended == ["ended"]
+            assert preset.state.run_status == "stopped"
+            assert preset.state.termination_reason == "stream_closed"
+
+    @pytest.mark.parametrize("async_run", [False, True])
+    async def test_failed_cleanup_preserves_primary_error_and_closes_other_hooks(self, async_run):
+        from looplet import AsyncMockLLMBackend, MockLLMBackend, minimal_preset
+
+        ended = []
+
+        class BrokenHook:
+            def pre_loop(self, *args):
+                raise ValueError("primary error")
+
+            def on_loop_end(self, *args):
+                ended.append("broken")
+                raise RuntimeError("cleanup error")
+
+        class OtherHook:
+            def on_loop_end(self, *args):
+                ended.append("other")
+
+        with minimal_preset(max_steps=1) as preset:
+            preset.hooks.extend([BrokenHook(), OtherHook()])
+            with pytest.raises(ValueError, match="primary error"):
+                if async_run:
+                    await preset.run_result_async(AsyncMockLLMBackend())
+                else:
+                    preset.run_result(MockLLMBackend())
+            assert ended == ["broken", "other"]
+
+    @pytest.mark.parametrize("async_run", [False, True])
+    @pytest.mark.parametrize("terminal", [False, True])
+    async def test_result_helpers_preserve_execution_and_caller_ownership(
+        self, async_run, terminal
+    ):
+        from looplet import (
+            AgentPreset,
+            DefaultState,
+            LoopConfig,
+            MockLLMBackend,
+            RunResult,
+            tools_from,
+        )
+        from looplet.testing import AsyncMockLLMBackend
+
+        closed = []
+
+        class Resource:
+            def close(self):
+                closed.append(self)
+
+        def submit(answer: str) -> dict:
+            return {"answer": answer}
+
+        resource = Resource()
+        preset = AgentPreset(
+            config=LoopConfig(max_steps=1, use_native_tools=False, done_tools=["submit"]),
+            tools=tools_from([submit], include_done=True),
+            state=DefaultState(max_steps=1),
+            hooks=[],
+            owned_resources=[resource],
+        )
+        if not terminal:
+            preset.config.done_tools = []
+        backend = (AsyncMockLLMBackend if async_run else MockLLMBackend)(
+            ['{"tool":"submit","args":{"answer":"accepted"}}']
+        )
+        with preset:
+            if async_run:
+                result = await preset.run_result_async(backend, task={"description": "Finish"})
+            else:
+                result = preset.run_result(backend, task={"description": "Finish"})
+            assert result == RunResult.from_state(preset.state)
+            assert result.completed is terminal
+            assert result.output == ({"answer": "accepted"} if terminal else None)
+            assert len(result.steps) == 1
+            assert closed == []
+            with pytest.raises(RuntimeError, match="single-use"):
+                preset.run_result(backend)
+        assert closed == [resource]
+
     @pytest.mark.parametrize("async_run", [False, True])
     @pytest.mark.parametrize(
         "component_slot",

@@ -33,7 +33,7 @@ from looplet.compact import DefaultCompactService
 from looplet.loop import LoopConfig
 from looplet.memory import StaticMemorySource
 from looplet.tools import BaseToolRegistry, ToolSpec, register_done_tool, tool, tools_from
-from looplet.types import CloseableResource, DefaultState
+from looplet.types import CloseableResource, DefaultState, RunResult
 
 
 @dataclass(frozen=True)
@@ -496,9 +496,36 @@ class AgentPreset:
                 async for step in loop:
                     yield step
             finally:
-                self._mark_run_finished()
+                try:
+                    await loop.aclose()
+                finally:
+                    self._mark_run_finished()
 
         return _PresetAsyncIterator(_drive(), self._release_failed_claim)
+
+    def run_result(self, llm: Any, **kwargs: Any) -> RunResult:
+        """Consume :meth:`run` and return its accepted output and stop status.
+
+        Arguments are forwarded to :meth:`run`. The caller retains ownership
+        of this single-use preset and closes it, typically with ``with``.
+        """
+        iterator = self.run(llm, **kwargs)
+        try:
+            for _step in iterator:
+                pass
+        finally:
+            iterator.close()
+        return RunResult.from_state(self.state)
+
+    async def run_result_async(self, llm: Any, **kwargs: Any) -> RunResult:
+        """Consume :meth:`run_async` without changing preset ownership."""
+        iterator = self.run_async(llm, **kwargs)
+        try:
+            async for _step in iterator:
+                pass
+        finally:
+            await iterator.aclose()
+        return RunResult.from_state(self.state)
 
     @property
     def run_claimed(self) -> bool:

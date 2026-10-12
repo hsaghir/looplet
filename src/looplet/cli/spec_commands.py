@@ -315,7 +315,8 @@ def cmd_describe(args: argparse.Namespace) -> int:
             return 1
         return _render_description(preset, cartridge_path)
     finally:
-        preset.close()
+        with execution_output(getattr(args, "json", False)):
+            preset.close()
 
 
 def _render_description(preset: Any, cartridge_path: Path) -> int:

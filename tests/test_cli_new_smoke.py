@@ -100,6 +100,30 @@ def test_explicit_bundle_declaration_modes_never_import_entrypoint(tmp_path, cap
         assert report["runtime_validated"] is False
 
 
+def test_runtime_cartridge_json_redirects_authored_shutdown_output(tmp_path, capsys, monkeypatch):
+    from looplet import minimal_preset
+    from looplet.cartridge.scaffold import scaffold_cartridge
+
+    root = scaffold_cartridge(tmp_path / "runtime.cartridge", name="runtime", tools=[])
+
+    class Resource:
+        def close(self):
+            print("authored shutdown output")
+
+    def load(*args, **kwargs):
+        print("authored import output")
+        preset = minimal_preset()
+        preset.owned_resources.append(Resource())
+        return preset
+
+    monkeypatch.setattr("looplet.cartridge.cartridge_to_preset", load)
+    assert main(["inspect", str(root), "--mode", "runtime", "--json"]) == 0
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["runtime_validated"] is True
+    assert "authored import output" in captured.err
+    assert "authored shutdown output" in captured.err
+
+
 def test_conflicting_inspection_modes_are_rejected(tmp_path):
     for command in ("describe", "blueprint"):
         with pytest.raises(SystemExit) as stopped:

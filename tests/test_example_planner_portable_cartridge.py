@@ -50,6 +50,51 @@ def test_planner_presets_validate_and_run_parent_child(name, tmp_path):
         assert preset.state._stop_reason == "done"
 
 
+@pytest.mark.parametrize("name", ["planner", "planner_portable"])
+@pytest.mark.parametrize("async_mode", [False, True])
+@pytest.mark.timeout(60)
+async def test_planner_child_shares_recorded_model_allowance(name, async_mode, tmp_path):
+    import json
+
+    from looplet.provenance import AsyncRecordingLLMBackend, RecordingLLMBackend
+    from looplet.subagent import ChildRunPolicy, SharedModelBudget
+    from looplet.testing import AsyncMockLLMBackend, MockLLMBackend
+
+    cartridge = _EXAMPLES / f"{name}.cartridge"
+    child = cartridge / "planner_child.cartridge"
+    backend_type = AsyncMockLLMBackend if async_mode else MockLLMBackend
+    scripted = backend_type(
+        [
+            json.dumps(
+                {"tool": "subagent", "args": {"workspace": str(child), "task": "Make a plan"}}
+            ),
+            '{"tool":"done","args":{"summary":"1. inspect; 2. build; 3. test"}}',
+            '{"tool":"done","args":{"summary":"Plan accepted"}}',
+        ],
+        cycle=False,
+    )
+    recording_type = AsyncRecordingLLMBackend if async_mode else RecordingLLMBackend
+    recorded = recording_type(scripted)
+    budget = SharedModelBudget(3)
+    with cartridge_to_preset(cartridge, runtime={"project_root": str(tmp_path)}) as preset:
+        preset.config.tool_metadata = {
+            "child_run_policy": ChildRunPolicy(parent_id="planner-root", model_budget=budget)
+        }
+        backend = budget.wrap(recorded)
+        if async_mode:
+            steps = [step async for step in preset.run_async(backend, task={"goal": "Make a plan"})]
+        else:
+            steps = list(preset.run(backend, task={"goal": "Make a plan"}))
+    assert [step.tool_call.tool for step in steps] == ["subagent", "done"]
+    child_result = steps[0].tool_result.data
+    assert child_result["completed"]
+    assert child_result["summary"] == "1. inspect; 2. build; 3. test"
+    assert scripted.calls == 3
+    assert budget.remaining == 0
+    assert len(recorded.calls) == 3
+    assert recorded.calls[1].scope == "tool:subagent"
+
+
 def test_planner_portable_static_profile_is_portable() -> None:
     for root in (_CARTRIDGE, _CHILD):
         report = analyse_cartridge(root)

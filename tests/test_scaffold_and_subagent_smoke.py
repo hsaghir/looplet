@@ -119,6 +119,101 @@ def _make_parent_with_subagent(tmp_path: Path) -> Path:
     return parent
 
 
+@pytest.mark.parametrize("async_mode", [False, True])
+async def test_builtin_child_recovery_uses_host_key(tmp_path: Path, async_mode: bool) -> None:
+    from looplet import ToolCall
+    from looplet.subagent import ChildRunPolicy, SharedModelBudget
+    from looplet.testing import AsyncMockLLMBackend
+
+    parent = _make_parent_with_subagent(tmp_path)
+    child = scaffold_cartridge(tmp_path / "recover-child", name="child", tools=[])
+    backend_type = AsyncMockLLMBackend if async_mode else MockLLMBackend
+    budget = SharedModelBudget(1)
+    policy = ChildRunPolicy(
+        parent_id="parent",
+        model_budget=budget,
+        recovery_dir=str(tmp_path / "records"),
+        recovery_version="cartridge-v1",
+    )
+    with cartridge_to_preset(parent) as preset:
+        options = {
+            "ctx": ToolContext(
+                llm=backend_type(
+                    responses=['{"tool":"done","args":{"summary":"saved"}}'], cycle=False
+                ),
+                metadata={"child_run_policy": policy, "child_run_key": "request-17"},
+            ),
+        }
+        call = ToolCall(tool="subagent", args={"workspace": str(child), "task": "finish"})
+        first = (
+            await preset.tools.async_dispatch(call, **options)
+            if async_mode
+            else preset.tools.dispatch(call, **options)
+        )
+        assert first.error is None and first.data["completed"]
+        assert budget.remaining == 0
+        second_backend = backend_type(responses=[])
+        options["ctx"].llm = second_backend
+        second = (
+            await preset.tools.async_dispatch(call, **options)
+            if async_mode
+            else preset.tools.dispatch(call, **options)
+        )
+        assert second.error is None and second.data["recovered"]
+        assert second.data["output"] == first.data["output"]
+        assert second.data["subagent_id"] == first.data["subagent_id"]
+        assert second_backend.calls == 0
+
+
+@pytest.mark.parametrize("allowed", [False, True])
+@pytest.mark.parametrize("async_mode", [False, True])
+async def test_nested_child_cannot_widen_parent_tools(
+    tmp_path: Path, allowed: bool, async_mode: bool
+) -> None:
+    from looplet import ToolCall
+    from looplet.subagent import ChildRunPolicy, _ChildBudgetStopHook
+    from looplet.testing import AsyncMockLLMBackend
+
+    parent = _make_parent_with_subagent(tmp_path)
+    middle = _make_parent_with_subagent(tmp_path / "middle")
+    leaf = scaffold_cartridge(tmp_path / "leaf", name="leaf", tools=["write"])
+    artifact = tmp_path / "effect.txt"
+    (leaf / "tools/write/execute.py").write_text(
+        f"from pathlib import Path\ndef execute(**kwargs):\n    Path({str(artifact)!r}).write_text('allowed')\n    return {{'written': True}}\n"
+    )
+    names = frozenset({"subagent", "done", "write"} if allowed else {"subagent", "done"})
+    backend_type = AsyncMockLLMBackend if async_mode else MockLLMBackend
+    backend = backend_type(
+        responses=[
+            json.dumps({"tool": "subagent", "args": {"workspace": str(leaf), "task": "write"}}),
+            '{"tool":"write","args":{}}',
+            '{"tool":"done","args":{"summary":"leaf done"}}',
+            '{"tool":"done","args":{"summary":"middle done"}}',
+        ],
+        cycle=False,
+    )
+    with cartridge_to_preset(parent) as preset:
+        ctx = ToolContext(
+            llm=backend,
+            parent_hooks=(
+                _ChildBudgetStopHook(ChildRunPolicy(parent_id="root", allowed_tools=names)),
+            ),
+        )
+        call = ToolCall(tool="subagent", args={"workspace": str(middle), "task": "delegate"})
+        result = (
+            await preset.tools.async_dispatch(call, ctx=ctx)
+            if async_mode
+            else preset.tools.dispatch(call, ctx=ctx)
+        )
+    assert result.error is None and result.data["completed"]
+    assert artifact.exists() is allowed, result.data
+    if allowed:
+        assert artifact.read_text() == "allowed"
+    else:
+        nested = result.data["steps"][0]["tool_result"]["data"]
+        assert nested["steps"][0]["tool_result"]["error"]
+
+
 def test_builtin_tools_registers_subagent(tmp_path: Path) -> None:
     parent = _make_parent_with_subagent(tmp_path)
     p = cartridge_to_preset(parent)
@@ -151,6 +246,36 @@ def test_subagent_runs_child_loop_to_done(tmp_path: Path) -> None:
     assert result["final_tool"] == "done"
     assert result["depth"] == 1
     assert result["steps_used"] >= 1
+
+
+async def test_subagent_async_dispatch_returns_common_result(tmp_path: Path) -> None:
+    from looplet import RunEnvelope, ToolCall
+    from looplet.testing import AsyncMockLLMBackend
+
+    parent = _make_parent_with_subagent(tmp_path)
+    child = scaffold_cartridge(tmp_path / "async-child", name="child", tools=[])
+    with cartridge_to_preset(parent) as preset:
+        result = await preset.tools.async_dispatch(
+            ToolCall(tool="subagent", args={"workspace": str(child), "task": "finish"}),
+            ctx=ToolContext(
+                llm=AsyncMockLLMBackend(
+                    responses=['{"tool":"done","args":{"summary":"child ok"}}']
+                ),
+                run_envelope=RunEnvelope(
+                    run_id="parent-async", tenant_id="tenant-a", policy_version="policy-v2"
+                ),
+            ),
+        )
+    assert result.error is None
+    assert result.data["summary"] == "child ok"
+    assert result.data["completed"]
+    assert result.data["output"] == {"done": True, "summary": "child ok"}
+    assert result.data["output"] == result.data["result"]
+    assert result.data["steps_used"] == len(result.data["steps"])
+    assert result.data["llm_calls"] == 1
+    assert result.data["run_envelope"]["parent_run_id"] == "parent-async"
+    assert result.data["run_envelope"]["tenant_id"] == "tenant-a"
+    assert result.data["run_envelope"]["policy_version"] == "policy-v2"
 
 
 def test_subagent_caps_parent_steps_and_closes_child_preset(tmp_path: Path, monkeypatch) -> None:

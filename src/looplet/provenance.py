@@ -45,9 +45,11 @@ import json
 import logging
 import re
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, Iterator
 from uuid import uuid4
 
 from looplet._backend_contract import MUTABLE_CAPABILITIES, backend_attribute, invoke_backend
@@ -169,6 +171,7 @@ class _RecordingBase:
         # trace.  Set to False to record-only.
         self._redact_upstream = redact_upstream
         self.calls: list[LLMCall] = []
+        self._call_scope: ContextVar[str | None] = ContextVar("looplet_call_scope", default=None)
         # Set by a TrajectoryRecorder hook so captured calls link back to
         # the step they happened in; optional.
         self.current_step_num: int | None = None
@@ -181,6 +184,14 @@ class _RecordingBase:
             setattr(self._backend, name, value)
         else:
             object.__setattr__(self, name, value)
+
+    @contextmanager
+    def _scope_calls(self, scope: str) -> Iterator[None]:
+        token = self._call_scope.set(self._call_scope.get() or scope)
+        try:
+            yield
+        finally:
+            self._call_scope.reset(token)
 
     def _upstream(self, s: str) -> str:
         """Scrub a prompt before it is sent to the wrapped backend."""
@@ -225,6 +236,7 @@ class _RecordingBase:
             tools=tools,
             step_num=self.current_step_num,
             error=error,
+            scope=self._call_scope.get(),
         )
         self.calls.append(call)
         return call

@@ -235,7 +235,8 @@ class TestRunSubLoopExecution:
         tools=None,
         state_mutating_tools=None,
     ):
-        """Helper: run run_sub_loop with all looplet deps mocked."""
+        """Run the wrapper with mocked execution and session data."""
+        from looplet.loop import LoopConfig
         from looplet.subagent import run_sub_loop
 
         mock_log = _make_mock_session_log(
@@ -249,12 +250,9 @@ class TestRunSubLoopExecution:
         def mock_composable_loop(**kwargs):
             return _make_loop_generator(mock_steps, {"llm_calls": 3, "total_time_ms": 50})
 
-        mock_lc = MagicMock()
-        mock_lc_instance = MagicMock()
         mock_loop_mod = MagicMock()
         mock_loop_mod.composable_loop = mock_composable_loop
-        mock_loop_mod.LoopConfig = mock_lc
-        mock_lc.return_value = mock_lc_instance
+        mock_loop_mod.LoopConfig = LoopConfig
 
         mock_session_mod = MagicMock()
         mock_session_mod.SessionLog.return_value = mock_log
@@ -384,7 +382,9 @@ class TestToolRegistryCloning:
 
         mock_loop_mod = MagicMock()
         mock_loop_mod.composable_loop = mock_composable_loop
-        mock_loop_mod.LoopConfig = MagicMock(return_value=MagicMock())
+        from looplet.loop import LoopConfig
+
+        mock_loop_mod.LoopConfig = LoopConfig
 
         mock_session_mod = MagicMock()
         mock_session_mod.SessionLog.return_value = mock_log
@@ -485,6 +485,7 @@ class TestToolRegistryCloning:
 class TestParentStateIsolation:
     def test_parent_state_unaffected(self):
         """Parent state budget/steps unchanged after sub_loop."""
+        from looplet.loop import LoopConfig
         from looplet.subagent import run_sub_loop
 
         parent_state = SimpleNamespace()
@@ -498,7 +499,7 @@ class TestParentStateIsolation:
 
         mock_loop_mod = MagicMock()
         mock_loop_mod.composable_loop = mock_composable_loop
-        mock_loop_mod.LoopConfig = MagicMock(return_value=MagicMock())
+        mock_loop_mod.LoopConfig = LoopConfig
 
         mock_session_mod = MagicMock()
         mock_session_mod.SessionLog.return_value = mock_log
@@ -530,6 +531,7 @@ class TestParentStateIsolation:
 
     def test_sub_loop_uses_minimal_state_not_parent(self):
         """When no state provided, _MinimalState is used (not parent state)."""
+        from looplet.loop import LoopConfig
         from looplet.subagent import _MinimalState, run_sub_loop
 
         captured_states = []
@@ -540,7 +542,7 @@ class TestParentStateIsolation:
 
         mock_loop_mod = MagicMock()
         mock_loop_mod.composable_loop = mock_composable_loop
-        mock_loop_mod.LoopConfig = MagicMock(return_value=MagicMock())
+        mock_loop_mod.LoopConfig = LoopConfig
 
         mock_log = _make_mock_session_log()
         mock_session_mod = MagicMock()

@@ -578,8 +578,12 @@ class ToolContext:
     """
     execution_policy: Any = field(default=None, kw_only=True)
     """Host-owned :class:`looplet.capabilities.ExecutionPolicy`, if supplied."""
+    async_llm: Any = field(default=None, kw_only=True)
+    """Async backend for child loops and async tools. None in synchronous runs."""
     parent_budget_remaining: int | None = field(default=None, kw_only=True)
     """Steps left in the invoking loop, available for bounded child runs."""
+    parent_hooks: tuple[Any, ...] = field(default=(), kw_only=True)
+    """Host hooks available for inherited child permissions and observation."""
     request_approval: Callable[[str, list[str] | None], str | None] | None = None
     """Optional handler that lets a tool request approval from the
     caller (user, upstream agent, webhook) mid-execution. Signature is

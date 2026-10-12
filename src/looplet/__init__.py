@@ -201,7 +201,7 @@ from looplet.state_service import (
     StateServiceHandle,
 )
 from looplet.streaming import StreamingHook
-from looplet.subagent import run_sub_loop
+from looplet.subagent import run_sub_loop, run_sub_loop_async, run_sub_loops_async
 from looplet.telemetry import MetricsCollector, MetricsHook, Tracer, TracingHook
 from looplet.testing import AsyncMockLLMBackend, LLMResponsesExhausted, MockLLMBackend
 from looplet.tools import (

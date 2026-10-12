@@ -1,38 +1,66 @@
 # Install and configure
 
-Looplet requires Python 3.11 or newer. The core package has no third-party
-runtime dependencies. Provider SDKs are optional extras, so install only the
-adapter you plan to use.
+Looplet requires Python 3.11 or newer.
+The core package has no third-party runtime dependencies.
+Model provider adapters are optional extras.
 
-## Choose an installation
+## Install the source version
+
+The [Quickstart](quickstart.md) uses the source version.
+It includes changes that are not in the published package yet.
+Run these commands in a directory where you want the repository:
+
+```bash
+git clone https://github.com/hsaghir/looplet.git
+cd looplet
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -e .
+```
+
+On Windows, activate the environment with `.venv\Scripts\Activate.ps1` in PowerShell.
+
+Install a provider extra from that checkout when you need a real model:
+
+```bash
+python -m pip install -e ".[openai]"
+```
+
+Use `.[anthropic]` for Anthropic or `.[all]` for both adapters.
+
+## Install the published package
+
+Use a published package when you need a released version.
+Run its install command inside a virtual environment.
 
 | Goal | Command |
 | --- | --- |
-| Scripted runs, custom backend, or core APIs only | `pip install looplet` |
-| OpenAI or an OpenAI-compatible endpoint | `pip install "looplet[openai]"` |
-| Anthropic | `pip install "looplet[anthropic]"` |
-| Both bundled provider adapters | `pip install "looplet[all]"` |
+| Core APIs or fixed model responses | `python -m pip install looplet` |
+| OpenAI or a compatible endpoint | `python -m pip install "looplet[openai]"` |
+| Anthropic | `python -m pip install "looplet[anthropic]"` |
+| Both provider adapters | `python -m pip install "looplet[all]"` |
 
-Use a virtual environment and pin the current minor line in applications:
+Pin the minor version in your application:
 
 ```toml title="pyproject.toml"
 dependencies = ["looplet>=0.4,<0.5"]
 ```
 
-Before `1.0`, a minor release may include breaking changes. Read the
-[changelog](changelog.md) before moving to a new minor line.
+Before version `1.0`, a minor release can change an API incompatibly.
+Read the [changelog](changelog.md) before you change the minor version.
+Source-only features have a note in their API or command guide.
 
 ## Verify without a provider
 
-This command runs a scripted loop and its live evals. It does not need an API
-key or network connection:
+This command runs a loop with fixed model responses and checks its results.
+It does not need a model key or network connection:
 
 ```bash
 python -m looplet.examples.hello_world --scripted
 ```
 
-For the complete capture, change, replay, and gate workflow, run the
-network-free [regression proof](regression-demo.md) from the installed package:
+Use the [Quickstart](quickstart.md) to write a loop that you control.
+Then run the [regression example](regression-demo.md) to check a tool change:
 
 ```bash
 looplet-proof
@@ -51,13 +79,14 @@ from looplet import OpenAIBackend
 llm = OpenAIBackend.from_env()
 ```
 
-`OPENAI_MODEL` is optional and defaults to `gpt-4o`. `OPENAI_BASE_URL` is
-optional for the OpenAI cloud endpoint.
+`OPENAI_MODEL` is optional.
+Its default is `gpt-4o`.
+You do not need `OPENAI_BASE_URL` for the OpenAI cloud endpoint.
 
 ## Configure an OpenAI-compatible endpoint
 
-Looplet uses the same adapter for Ollama, vLLM, llama.cpp servers, and hosted
-OpenAI-compatible APIs:
+Looplet uses the OpenAI adapter for compatible endpoints.
+These include Ollama, vLLM, and llama.cpp servers:
 
 ```bash
 export OPENAI_BASE_URL=http://localhost:11434/v1
@@ -65,21 +94,20 @@ export OPENAI_MODEL=llama3.1:8b
 export OPENAI_API_KEY=x
 ```
 
-`OpenAIBackend.from_env()` supplies a non-empty sentinel key when a base URL is
-set without a key. Setting `OPENAI_API_KEY=x` explicitly is still useful when
-other clients inspect the same environment.
+If a base URL has no key, `OpenAIBackend.from_env()` supplies a placeholder key.
+You can set `OPENAI_API_KEY=x` explicitly if other clients read the same environment.
 
-Compatible endpoints do not all implement native tool calling the same way.
-Looplet enables native tool calling by default. Missing or rejected native
-support fails visibly; it does not silently switch protocols. Inspect the
-configured provider with:
+Some compatible endpoints do not support native tool calls.
+Looplet uses native tool calls by default.
+It reports an error if the backend does not support them.
+It does not switch protocols without your choice.
+Check the configured provider with:
 
 ```bash
 looplet doctor
 ```
 
-Keep the single mode setting explicit in applications that want to document
-the default:
+Use this configuration to state the default explicitly:
 
 ```python
 from looplet import LoopConfig
@@ -87,11 +115,9 @@ from looplet import LoopConfig
 config = LoopConfig(use_native_tools=True)
 ```
 
-Set it to `False` only when deliberately forcing the text protocol for a
-compatibility test.
+Set `use_native_tools=False` if your backend needs the JSON-text protocol.
 
-See [provider recipes](recipes.md) for Ollama, Groq, Together, and explicit
-client construction.
+See [provider recipes](recipes.md) for Ollama, Groq, Together, and explicit clients.
 
 ## Configure Anthropic
 
@@ -106,13 +132,13 @@ from looplet import AnthropicBackend
 llm = AnthropicBackend.from_env()
 ```
 
-`ANTHROPIC_MODEL` is optional. Pin an explicit model in release environments
-rather than relying on the library default.
+`ANTHROPIC_MODEL` is optional.
+Set an explicit model in release environments instead of the library default.
 
 ## Bring your own backend
 
-Any object with the small synchronous backend method can drive
-`composable_loop()`:
+`composable_loop()` accepts a backend object with this synchronous method.
+Replace `my_client` with the client that your application uses:
 
 ```python
 class MyBackend:
@@ -127,35 +153,35 @@ class MyBackend:
         return my_client.complete(prompt)
 ```
 
-Set `LoopConfig(use_native_tools=False)` for a backend that implements only
-`generate(...)`. A backend that also exposes `generate_with_tools(...)` can
-use the default native protocol. Missing or rejected native support remains an
-explicit failure. See the [Python API map](api.md) for the backend protocol surface.
+Set `LoopConfig(use_native_tools=False)` if the backend implements only `generate(...)`.
+A backend with `generate_with_tools(...)` can use native tool calls.
+The loop reports an error if the backend rejects native calls.
+See the [Python API](api.md#backends) for the full backend interface.
 
 ## Diagnose the environment
 
 ```bash
-looplet doctor                 # local checks and backend probe
-looplet doctor --no-backend    # no network, suitable for CI
-looplet doctor --json          # machine-readable output
-looplet doctor --strict        # warnings also produce a non-zero exit
+looplet doctor
 ```
 
-The current source CLI uses `looplet.backends.make_backend()` for `doctor`,
-live creation, runs, and evals. It selects Anthropic when an Anthropic key is
-present, otherwise OpenAI when a cloud key or compatible base URL is present.
-Set `LOOPLET_PROVIDER=openai` or `LOOPLET_PROVIDER=anthropic` to choose explicitly
-when both are configured. Provider model variables remain optional. An explicit
-`--base-url` on examples or evals selects an OpenAI-compatible endpoint.
+| Option | Effect |
+| --- | --- |
+| `--no-backend` | Check local settings without network access |
+| `--json` | Print a JSON report |
+| `--strict` | Return a non-zero exit code for warnings too |
 
-These unified CLI setup changes are unreleased; PyPI `0.4.0` has the earlier
-OpenAI-only doctor. See the [CLI reference](cli.md) for source installation
-and compatibility command names.
+The source command-line interface shares backend selection across `doctor`, `new`, `run`, and `eval`.
+It selects Anthropic if an Anthropic key is present.
+Otherwise, it selects OpenAI if an OpenAI key or compatible base URL is present.
+Set `LOOPLET_PROVIDER=openai` or `LOOPLET_PROVIDER=anthropic` to choose explicitly.
+An explicit `--base-url` on examples or evals selects an OpenAI-compatible endpoint.
+
+These selection changes are not in PyPI `0.4.0`.
+That release has an OpenAI-only `doctor` command.
+See the [command-line guide](cli.md) for source-only features and older command names.
 
 ## Next
 
-- [Quickstart](quickstart.md): build, capture, and test one loop.
-- [Migrate an existing loop](migrate.md): adopt Looplet without rewriting the
-  whole harness.
-- [Troubleshooting](troubleshooting.md): diagnose provider, tool, hook, replay,
-  and eval failures.
+- [Quickstart](quickstart.md): run, inspect, and stop one loop.
+- [Migration](migrate.md): replace a loop without new tool implementations.
+- [Troubleshooting](troubleshooting.md): find causes of provider, tool, hook, replay, and eval errors.

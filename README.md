@@ -6,289 +6,196 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](https://github.com/hsaghir/looplet/blob/master/LICENSE)
 
-**Test-driven harness engineering for Python agents.**
+**A Python loop for agents that call tools.**
 
-## Own the loop. Test every change.
+You provide the model, tools, task, and limits.
+Looplet checks each tool call, runs the tool, and records the result.
+It yields a `Step` after each call.
+Your code can inspect the result and stop before the next call.
 
-Looplet is for Python teams maintaining a tool-calling agent that is
-fundamentally one model in one loop. After the first working version, each
-prompt, tool, hook, or model change raises a harder question: what did it fix,
-and what did it break?
+Looplet requires Python 3.11 or newer.
+The core package has no third-party runtime dependencies.
+It does not require a workflow graph, a hosted service, or a cartridge.
 
-- keep execution visible as an iterator of typed steps;
-- capture prompts, responses, tool calls, and stop reasons as readable files;
-- replay recorded model responses through changed harness code when that is a
-  valid experiment;
-- collect actual world state and gate required outcomes in pytest or CI.
+[Documentation](https://hsaghir.com/looplet/) | [Quickstart](docs/quickstart.md) | [Python API](docs/api.md)
 
-Think of the host application using Looplet as a game console: it can run
-different agents by loading different cartridges without rewriting the loop.
-An optional cartridge is a versioned directory of an agent's editable
-instructions, tools, hooks, configuration, and self-tests. A person or external
-builder can change a copy; the host supplies model and service access and can
-compare outcomes using replay or fresh runs. Looplet supplies the loop and
-evidence, not an optimizer or protected release service. Keep acceptance
-checks and isolation for untrusted candidate code outside the candidate.
+## Run one loop
 
-No graph DSL, hosted control plane, or required third-party runtime
-dependencies.
-
-[Documentation](https://hsaghir.com/looplet/) | [Why Looplet](https://hsaghir.com/looplet/why-looplet/) | [Quickstart](https://hsaghir.com/looplet/quickstart/) | [Evals](https://hsaghir.com/looplet/evals/)
-
-## Run the mechanism proof
-
-Run the complete network-free proof directly from PyPI:
+Install the source version for this example.
+Some features in this repository are not in the published package yet.
 
 ```bash
-uvx --from looplet==0.4.0 looplet-proof
+git clone https://github.com/hsaghir/looplet.git
+cd looplet
+python -m pip install -e .
 ```
 
-```text
-1. CAPTURE v1 with fixed model responses
-   model decisions: publish_report -> done
-   collected profit: 200
-   required eval: FAIL (0.00)
-
-2. CHANGE one reviewable harness line
-   - "profit": revenue + cost,
-   + "profit": revenue - cost,
-
-3. REPLAY captured responses with fresh v2 tool execution
-   same decisions: true
-   collected profit: 40
-   required eval: PASS (1.00)
-```
-
-The example is a mechanism proof, not a claim that arithmetic needs an agent
-eval. It persists the harness versions, model-call cassette, trajectories,
-fresh workspaces, host-observed artifacts, and grader results so every layer is
-inspectable.
-
-> **Replay is controlled re-execution, not deterministic simulation.**
-> Captured model responses stay fixed. Tools, clocks, networks, randomness,
-> and other side effects are fresh unless the host isolates or mocks them.
-
-[Read the walkthrough and its limits](https://hsaghir.com/looplet/regression-demo/).
-
-## Start with one agent
-
-From this source checkout:
-
-```bash
-pip install -e ".[openai]"
-
-export OPENAI_API_KEY=...
-export OPENAI_MODEL=...
-```
+The example uses fixed model responses.
+It runs without a model service or an API key.
 
 ```python
-from looplet import DefaultState, OpenAIBackend, RunResult, composable_loop, tool, tools_from
+from contextlib import closing
+
+from looplet import DefaultState, LoopConfig, MockLLMBackend, composable_loop, tool, tools_from
 
 
-@tool(description="Look up one service owner by name.")
+@tool(description="Find the team that owns a service.")
 def lookup_owner(service: str) -> dict:
     owners = {"payments": "fintech-platform", "search": "discovery"}
     return {"service": service, "owner": owners.get(service)}
 
 
-state = DefaultState(max_steps=5)
-for step in composable_loop(
-    llm=OpenAIBackend.from_env(),
-    tools=tools_from([lookup_owner], include_done=True),
+llm = MockLLMBackend([
+    '{"tool":"lookup_owner","args":{"service":"payments"}}',
+    '{"tool":"done","args":{"summary":"The payments owner is fintech-platform."}}',
+])
+tools = tools_from([lookup_owner], include_done=True)
+state = DefaultState(max_steps=2)
+
+with closing(composable_loop(
+    llm=llm,
+    tools=tools,
     state=state,
-    task={"goal": "Find the owner of payments, then finish."},
-    max_steps=5,
-):
-    print(step.pretty())
-
-result = RunResult.from_state(state)
-print(result.output)
-```
-
-The loop proposes and dispatches tool calls, records each step in your state,
-then yields control back to your caller. The backend, tools, task, and limits
-are explicit. Add ordinary hooks or a `LoopConfig` when you need more policy;
-there is no separate runner to configure. `result.completed` means accepted
-completion, not evaluated correctness.
-
-When you may stop early, use Python's `closing` so loop-end hooks run immediately:
-
-```python
-from contextlib import closing
-
-
-with closing(composable_loop(llm=llm, tools=tools, state=state, task=task)) as steps:
+    config=LoopConfig(max_steps=2, use_native_tools=False),
+    task={"goal": "Find the payments owner, then finish."},
+)) as steps:
     for step in steps:
-        handle(step)
-        if should_stop(step):
-            break
+        print(step.tool_call.tool, step.tool_result.data)
+
+print(state.termination_reason)
 ```
 
-Use `async_composable_loop()` and `contextlib.aclosing` for the same async
-control. An optional `AgentPreset` assembles the same tools, state, config,
-and hooks; `preset.run()` returns that loop's iterator. The source checkout
-also adds `preset.run_result()` and `run_result_async()` for callers who only
-need a summary. These helpers consume the same loop, do not select a backend,
-and do not change resource ownership. See the [API map](docs/api.md).
+The loop calls `lookup_owner`, then `done`.
+The lookup returns `fintech-platform` as the payments owner.
+The last line prints `done`, the stop reason.
 
-For a zero-network hello world:
+Each yielded step follows a tool call.
+The tool has already run when your code receives that step.
+Use `break` to stop before the next call.
+`closing` closes the loop and runs its end hooks.
+Your code must close resources that it creates.
+
+This example selects the JSON-text protocol for its fixed responses.
+Real models use native tool calls by default.
+See [Install](docs/install.md) for provider adapters and configuration.
+
+The [Quickstart](docs/quickstart.md) shows how to inspect each field and stop early.
+For async code, use `async_composable_loop()` with `contextlib.aclosing`.
+
+## Add only what you need
+
+The same loop supports these optional features.
+You do not need a new execution engine to use them.
+
+| Need | Feature | Guide |
+| --- | --- | --- |
+| Approve or block a tool call | Hooks before the tool runs | [Hooks](docs/hooks.md) |
+| Save prompts, responses, and steps | `ProvenanceSink` | [Capture and replay](docs/provenance.md) |
+| Check files or other results | Collectors and graders | [Tests and graders](docs/evals.md) |
+| Reuse tools, state, config, and hooks | `AgentPreset` | [Python API](docs/api.md#optional-preset-conveniences) |
+| Store an agent in files | A cartridge directory | [Cartridges](docs/cartridge.md) |
+| Use an agent from a shell | `new`, `run`, `inspect`, and `eval` | [Command-line guide](docs/cli.md) |
+| Connect tools or other hosts | Protocol adapters | [Portability](docs/portability.md) |
+
+The unified shell commands and preset result helpers are not in PyPI `0.4.0`.
+Use the source install above for these features.
+Older commands, such as `run-cartridge`, `describe`, and `show`, remain supported.
+
+## Check results
+
+A `done` step means that the loop accepted completion.
+It does not prove that the answer is correct.
+
+Use a collector to read the files or records that the agent produced.
+Use a grader to compare that evidence with the expected result.
+Required graders can fail a test or a continuous integration check.
+
+Run the regression example after the source install:
 
 ```bash
-pip install looplet
-python -m looplet.examples.hello_world --scripted
+looplet-proof
 ```
 
-## Adopt it incrementally
+The example records fixed model responses and an incorrect report.
+It changes one tool line and replays the responses with the corrected tool.
+A collector reads the new report.
+The required grader changes from fail to pass.
+See the [walkthrough](docs/regression-demo.md) for the files and limits.
 
-A working agent does not need to become a cartridge on day one:
+Replay fixes model responses, not tool effects.
+Tools, networks, clocks, and random values can change unless your host controls them.
+A prompt or model change needs new model runs.
 
-1. keep the current provider and tool implementations;
-2. adapt one low-risk tool and replace only the control loop;
-3. establish parity before adding capture, hooks, or eval gates;
-4. preserve one real failure as a case, collector, and required grader;
-5. use a file-native cartridge only when it improves review or distribution.
+An agent's own tests are not protected acceptance checks.
+Keep release checks outside the code that a candidate can change.
+Run untrusted code in an isolated process or operating system environment.
 
-See [Migrate an existing loop](https://hsaghir.com/looplet/migrate/) for the
-smallest-change sequence.
+## Use it in an agent that you have
 
-## Grade outcomes, not yesterday's trajectory
+Keep your provider and tool functions.
+Replace the control loop first.
+Check that the new loop preserves the behavior you need.
+Then add capture, hooks, or result checks as needed.
 
-A smarter model may use different tools and still produce a better result.
-Use trajectory checks for harness mechanics, such as whether a guard fired.
-Use collectors for product outcomes, such as tests passing or a record being
-written correctly.
-
-```python
-import subprocess
-
-from looplet import eval_mark
-
-
-def collect_tests(state):
-    result = subprocess.run(["pytest", "-q"], check=False)
-    return {"tests_passing": result.returncode == 0}
-
-
-@eval_mark("required")
-def eval_tests_pass(ctx):
-    return ctx.artifacts["tests_passing"]
-```
-
-Expected values remain grader-only during a run. Colocated cartridge evals are
-versioned self-tests, not protected holdouts. A promotion oracle must remain in
-a host-owned runner outside candidate authority; arbitrary candidate code also
-requires an OS or process isolation boundary.
-
-[Read behavioral evals](https://hsaghir.com/looplet/evals/).
-
-## Optional reviewable cartridges
-
-A cartridge stores the runnable harness as ordinary files:
-
-```text
-agent.cartridge/
-├── cartridge.json
-├── config.yaml
-├── runtime.yaml
-├── prompts/system.md
-├── tools/<name>/{tool.yaml, execute.py}
-├── hooks/<order>_<name>/{config.yaml, hook.py}
-├── resources/<name>.py
-├── memory/*.md
-└── evals/{cases/, collect_*.py, eval_*.py}
-```
-
-```bash
-looplet describe ./agent.cartridge
-looplet diff ./agent-v1.cartridge ./agent-v2.cartridge --show
-looplet eval run ./agent.cartridge --out ./eval-runs --threshold 1.0
-```
-
-The current source checkout adds one CLI path for cartridges and skill bundles:
-
-```bash
-looplet new "Look up service owners" ./owner.cartridge --offline --tool lookup_owner
-looplet inspect ./owner.cartridge --json
-```
-
-Implement the placeholder tool code before running the offline draft, then:
-
-```bash
-looplet run ./owner.cartridge "Find the owner of payments" --project-root . --json
-```
-
-These unified commands are unreleased, not part of PyPI `0.4.0`; install this
-checkout with `pip install -e ".[openai]"` to use them. Existing `run-cartridge`,
-`describe`, and `show` commands remain supported. Python and live CLI paths
-share provider defaults; see the [CLI guide](https://hsaghir.com/looplet/cli/).
-
-Cartridges are optional. They load into the same Python primitives used above.
-See the [cartridge guide](https://hsaghir.com/looplet/cartridge/) for schema,
-inheritance, trust boundaries, and protocol portability.
+See the [Migration guide](docs/migrate.md) for the full procedure.
 
 ## When Looplet fits
 
 Use Looplet when:
 
-- one model calls tools until it is done;
-- the team already works in Python, Git, pytest, and CI;
-- harness changes need regression evidence;
-- exact interception points and local artifacts matter;
-- the team wants to own execution and behavioral contracts.
+- One model calls tools until the task ends.
+- Your team uses Python, Git, and pytest.
+- Your code must control when tools run.
+- You need saved runs and tests for agent changes.
 
 Use something else when:
 
-- the application is naturally a branching, durable workflow graph;
-- a managed dashboard or annotation system should be the source of truth;
-- the requirement is a turnkey assistant rather than a toolkit;
-- a small disposable loop is still enough.
+- Your main task needs a durable workflow graph.
+- You need a complete assistant, not a Python library.
+- You need a managed dashboard as your main interface.
+- A small loop that you wrote already meets your needs.
 
-Looplet can run inside a workflow engine and export evidence to observability
-systems. It does not try to replace either one.
+Looplet can run inside a workflow engine.
+It can export evidence to other systems.
+It does not replace those systems.
 
 ## Documentation
 
-| Start here | Purpose |
+| Guide | Purpose |
 | --- | --- |
-| [Install](https://hsaghir.com/looplet/install/) | Provider extras, environment setup, and network-free checks |
-| [Quickstart](https://hsaghir.com/looplet/quickstart/) | Build, capture, and test a first loop |
-| [Migration](https://hsaghir.com/looplet/migrate/) | Adopt the loop boundary without rewriting domain tools |
-| [Failure to regression](https://hsaghir.com/looplet/regression-demo/) | Inspect the executable proof and experiment limits |
-| [Provenance](https://hsaghir.com/looplet/provenance/) | Capture and controlled re-execution |
-| [Evals](https://hsaghir.com/looplet/evals/) | Outcome collectors, required graders, pytest, and CI |
-| [Operations](https://hsaghir.com/looplet/operations/) | Async loops, retries, cancellation, permissions, and checkpoints |
-| [CLI](https://hsaghir.com/looplet/cli/) | Commands and machine-readable output |
-| [Python API](https://hsaghir.com/looplet/api/) | Curated public surface |
+| [Quickstart](docs/quickstart.md) | Run, inspect, and stop one loop |
+| [Install](docs/install.md) | Choose a version and configure a model |
+| [Python API](docs/api.md) | Find the classes and functions you need |
+| [Migration](docs/migrate.md) | Replace a loop without new tool implementations |
+| [Report-agent tutorial](docs/tutorial.md) | Add a case, collector, and grader to a file-based agent |
+| [Operations](docs/operations.md) | Use async code, retries, cancellation, and checkpoints |
+| [Examples](examples/) | Run complete examples |
 
-Advanced packaging, skills, and MCP/LEP/SSP/MGP boundaries remain documented
-under [cartridges](https://hsaghir.com/looplet/cartridge/),
-[skills](https://hsaghir.com/looplet/skills/), and
-[portability](https://hsaghir.com/looplet/portability/), rather than the first
-adoption path.
+See the [documentation site](https://hsaghir.com/looplet/) for the full guide list.
 
 ## Stability
 
-Looplet follows SemVer. Before `1.0`, minor versions may make breaking
-changes; pin the current minor line:
+Looplet follows semantic versioning.
+Before version `1.0`, a minor release can change an API incompatibly.
+Pin the minor version for a published install:
 
 ```toml
 looplet>=0.4,<0.5
 ```
 
-The current release is `0.4.0`. See the
-[changelog](https://github.com/hsaghir/looplet/blob/master/CHANGELOG.md) and
-[path to 1.0](https://github.com/hsaghir/looplet/blob/master/ROADMAP.md#path-to-10).
+The current release is `0.4.0`.
+The repository also contains changes for the next release.
+See the [changelog](CHANGELOG.md) and [release plan](ROADMAP.md#path-to-10).
 
 ## Contributing
 
-Bug reports, focused examples, backend adapters, and integrity fixes are
-welcome. New core features must remain domain-neutral and include evidence for
-the behavior they change.
+Report bugs or propose examples and backend adapters.
+A core feature must work across task domains.
+Include checks for the behavior that your change affects.
 
-See [CONTRIBUTING.md](https://github.com/hsaghir/looplet/blob/master/CONTRIBUTING.md).
-Security issues go through
-[SECURITY.md](https://github.com/hsaghir/looplet/blob/master/SECURITY.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md).
+Report security issues as described in [SECURITY.md](SECURITY.md).
 
 ## License
 
-Apache License 2.0. See [LICENSE](https://github.com/hsaghir/looplet/blob/master/LICENSE).
+Apache License 2.0. See [LICENSE](LICENSE).

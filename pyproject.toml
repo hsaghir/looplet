@@ -1,7 +1,7 @@
 [project]
 name = "looplet"
 version = "0.4.0"
-description = "Test-driven harness engineering for Python agents: own the loop, capture failures, and gate changes in CI."
+description = "A Python loop for agents that call tools. Run, inspect, and stop from your code."
 readme = "README.md"
 license = { text = "Apache-2.0" }
 requires-python = ">=3.11"
@@ -94,6 +94,9 @@ include = [
     "CHANGELOG.md",
     "SPEC.md",
     "cartridge.schema.json",
+    "docs/index.md",
+    "docs/quickstart.md",
+    "docs/tutorial.md",
     "docs/hooks.md",
     "docs/skills.md",
     "examples/agent_factory.cartridge",

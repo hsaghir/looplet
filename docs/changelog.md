@@ -8,6 +8,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Documentation tests execute the README, Quickstart, site example, and report tutorial without a model service.
 - Optional `AgentPreset.run_result` / `run_result_async` consume the existing
   step iterator and project `RunResult` without changing caller-owned resources.
   Explicit `composable_loop` / `async_composable_loop` remain the primary API.
@@ -52,6 +53,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- The README and first-use guides start with one explicit loop. Capture, result checks, and cartridges are separate next steps.
+- Source distributions include the guides required by documentation tests.
 - Sync/async teardown finalizes initialized hooks exactly once on completion,
   failure, and early stream close, preserving primary errors and attempting all
   cleanup hooks. Started early-closed streams are stopped, not failed.

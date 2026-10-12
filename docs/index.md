@@ -1,6 +1,6 @@
 ---
-title: Test-driven harness engineering for Python agents
-description: Own, inspect, and regression-test Python agent harnesses with reviewable files, captured evidence, and outcome-based release gates.
+title: A Python loop for agents that call tools
+description: Run one loop, inspect each tool result, and stop from your code. Add hooks, saved runs, and tests when you need them.
 hide:
   - navigation
   - toc
@@ -10,21 +10,21 @@ hide:
 
 <section class="hero" markdown>
 
-<p class="hero-eyebrow">Test-driven harness engineering for Python agents</p>
+<p class="hero-eyebrow">Python 3.11 or newer</p>
 
 # Looplet
 
-<p class="hero-kicker">Own the loop. Test every change.</p>
+<p class="hero-kicker">A Python loop for agents that call tools.</p>
 
 <p class="hero-sub" markdown>
-Like a game console, the host runs the loop while each optional cartridge
-holds one agent's editable instructions, tools, hooks, and configuration.
-Swap cartridges to change agents; turn failures into evals and keep release
-checks with the host.
+Choose your model, tools, task, and limits.
+Looplet runs the tools and yields each result to your code.
+Inspect the result or stop before the next call.
+Add hooks, saved runs, and tests when you need them.
 </p>
 
 <div class="hero-cta">
-  <a href="regression-demo/" class="md-button md-button--primary">Run the network-free proof</a>
+  <a href="quickstart/" class="md-button md-button--primary">Run your first loop</a>
   <a href="install/" class="md-button">Install and configure</a>
   <a href="https://github.com/hsaghir/looplet" class="md-button">GitHub</a>
 </div>
@@ -34,41 +34,132 @@ checks with the host.
 <div class="proof-strip" markdown>
 
 <div class="proof-item" markdown>
-**Reviewable**
+**Run**
 
-Harness changes are ordinary Python, YAML, Markdown, and JSON.
+Use normal Python functions as tools.
 </div>
 
 <div class="proof-item" markdown>
-**Observable**
+**Inspect**
 
-Model calls and tool dispatches can become durable evidence.
+Read the call, result, and error in each step.
 </div>
 
 <div class="proof-item" markdown>
-**Re-executable**
+**Stop**
 
-Recorded responses can exercise fresh tool and hook code.
+Stop your iteration before the next tool call.
 </div>
 
 <div class="proof-item" markdown>
-**Gateable**
+**Extend**
 
-Host-observed outcomes become required release checks.
+Add only the optional features that you need.
 </div>
 
 </div>
+
+## Start with one loop
+
+Install the source version as described in the [Quickstart](quickstart.md).
+This example uses fixed responses and does not contact a model service.
+
+```python title="first_loop.py"
+from contextlib import closing
+
+from looplet import DefaultState, LoopConfig, MockLLMBackend, composable_loop, tool, tools_from
+
+
+@tool(description="Find the team that owns a service.")
+def lookup_owner(service: str) -> dict:
+  owners = {"payments": "fintech-platform", "search": "discovery"}
+  return {"service": service, "owner": owners.get(service)}
+
+
+llm = MockLLMBackend([
+  '{"tool":"lookup_owner","args":{"service":"payments"}}',
+  '{"tool":"done","args":{"summary":"The payments owner is fintech-platform."}}',
+])
+tools = tools_from([lookup_owner], include_done=True)
+state = DefaultState(max_steps=2)
+
+with closing(composable_loop(
+  llm=llm,
+  tools=tools,
+  state=state,
+  config=LoopConfig(max_steps=2, use_native_tools=False),
+  task={"goal": "Find the payments owner, then finish."},
+)) as steps:
+  for step in steps:
+    print(step.tool_call.tool, step.tool_result.data)
+
+print(state.termination_reason)
+```
+
+Each `Step` contains a tool call and its result.
+The tool has already run when you receive the step.
+Use `break` to stop before the next call.
+`closing` closes the loop and runs its end hooks.
+
+The example selects the JSON-text protocol for its fixed responses.
+Real models use native tool calls by default.
+The [Quickstart](quickstart.md) explains each field and shows early exit.
+See [Install](install.md) to configure a real model.
+
+## Add only what you need
+
+<div class="workflow" markdown>
+
+<div class="workflow-step" markdown>
+
+**Hooks**
+
+Approve calls or change loop decisions at specific points.
+</div>
+
+<div class="workflow-step" markdown>
+
+**Saved runs**
+
+Save prompts, responses, steps, and stop reasons as files.
+</div>
+
+<div class="workflow-step" markdown>
+
+**Tests**
+
+Read the result that the agent produced and check it independently.
+</div>
+
+<div class="workflow-step" markdown>
+
+**Cartridges**
+
+Put tools, prompts, and configuration in a directory for review or distribution.
+</div>
+
+</div>
+
+These features use the same loop.
+They are not required for the first example.
+
+[Hooks](hooks.md) | [Capture and replay](provenance.md) |
+[Tests and graders](evals.md) | [Cartridges](cartridge.md)
+
+## Check a tool change
+
+Run `looplet-proof` after the source install to check the complete regression example.
 
 <div class="proof-terminal" markdown>
 
-<div class="proof-terminal__title">$ uvx --from looplet==0.4.0 looplet-proof</div>
+<div class="proof-terminal__title">$ looplet-proof</div>
 
 ```text
 1. CAPTURE v1 with fixed model responses
    collected profit: 200
    required eval: FAIL (0.00)
 
-2. CHANGE one reviewable harness line
+2. CHANGE one tool line
    - "profit": revenue + cost,
    + "profit": revenue - cost,
 
@@ -81,21 +172,22 @@ Host-observed outcomes become required release checks.
 </div>
 
 <p class="proof-caption" markdown>
-No API key and no network. The response sequence stays fixed while changed
-tool code executes again and an independent collector checks the output.
-[Read the proof and its limits.](regression-demo.md)
+The example needs no model key or network.
+It reuses fixed model responses with changed tool code.
+A collector reads the report and a grader checks it.
+[Read the example and its limits.](regression-demo.md)
 </p>
 
-## Start with the job in front of you
+## Choose a guide
 
 <div class="home-paths" markdown>
 
 <div class="home-path" markdown>
 
-### I have a private tool loop
+### Replace a loop
 
-Adapt one tool, replace only the control loop, and establish parity before
-adding hooks or cartridges.
+Keep your provider and tools.
+Replace only the loop and check its behavior before you add other features.
 
 [Migrate an existing loop](migrate.md) | [Build the first loop](quickstart.md)
 
@@ -103,10 +195,10 @@ adding hooks or cartridges.
 
 <div class="home-path" markdown>
 
-### I have a failure worth preserving
+### Check a failure
 
-Capture the run, collect the real outcome, and decide whether replay, a mock,
-or fresh model samples answer the question.
+Save the run and read the result that the agent produced.
+Choose fixed responses or new model runs for the change that you need to check.
 
 [Failure to regression](regression-demo.md) | [Choose an experiment](experiments.md)
 
@@ -114,10 +206,9 @@ or fresh model samples answer the question.
 
 <div class="home-path" markdown>
 
-### I need the exact interface
+### Find an interface
 
-Find commands, Python entry points, artifact files, and operational controls
-without reading the package source.
+Find commands, Python functions, saved files, and runtime controls.
 
 [CLI](cli.md) | [Python API](api.md) | [Saved artifacts](artifacts.md)
 
@@ -125,102 +216,33 @@ without reading the package source.
 
 </div>
 
-## One workflow from prototype to release
+## Use other processes or hosts
 
-<div class="workflow" markdown>
-
-<div class="workflow-step" markdown>
-<span class="workflow-step__num">01</span>
-
-**Build**
-
-Own the model, tools, state, and dispatch loop in Python or a cartridge.
-</div>
-
-<div class="workflow-step" markdown>
-<span class="workflow-step__num">02</span>
-
-**Capture**
-
-Persist prompts, responses, steps, stop reasons, and metadata as readable files.
-</div>
-
-<div class="workflow-step" markdown>
-<span class="workflow-step__num">03</span>
-
-**Test**
-
-Collect resulting world state and compare it with grader-only expectations.
-</div>
-
-<div class="workflow-step" markdown>
-<span class="workflow-step__num">04</span>
-
-**Ship**
-
-Make required graders and thresholds fail closed in pytest or CI.
-</div>
-
-</div>
-
-## The execution boundary stays visible
-
-```python title="owner_lookup.py"
-from looplet import OpenAIBackend, composable_loop, tool, tools_from
-
-
-@tool(description="Look up one service owner by name.")
-def lookup_owner(service: str) -> dict:
-    owners = {"payments": "fintech-platform", "search": "discovery"}
-    return {"service": service, "owner": owners.get(service)}
-
-
-for step in composable_loop(
-    llm=OpenAIBackend.from_env(),
-    tools=tools_from([lookup_owner], include_done=True),
-    task={"goal": "Find the owner of payments, then finish."},
-    max_steps=5,
-):
-    print(step.pretty())
-```
-
-Every dispatch returns to the caller as a typed `Step`. Hooks can observe or
-steer prompt construction, permissions, dispatch, completion, compaction, and
-lifecycle events without requiring a graph runtime. Cartridges are optional;
-they package the same harness as reviewable files when that helps distribution
-or code review.
-
-[Follow the quickstart](quickstart.md) | [Read the hook protocol](hooks.md) |
-[Inspect cartridge boundaries](cartridge.md)
-
-## Advanced boundaries stay optional
-
-Teams that need process or runtime boundaries can move tools, hooks, shared
-state, and model access behind explicit protocols. That architecture is not
-part of the first adoption path; start with the Python loop and introduce a
-boundary only when deployment or portability requires it.
+Protocol adapters can connect tools, hooks, shared state, and model access across processes.
+Start with the Python loop.
+Add a process boundary when your deployment needs one.
 
 [Study portability](portability.md) | [Inspect the cartridge format](cartridge.md)
 
-## Evidence has different jobs
+## Know what each check proves
 
 | Evidence | Use it for | Do not claim |
 | --- | --- | --- |
-| Yielded `Step` stream | Post-dispatch routing, display, instrumentation, and stopping between steps | Pre-dispatch approval or independent product correctness |
-| Provenance trace | What the model saw, returned, and dispatched | That recorded prompts are safe to publish |
-| Captured-response replay | Tool, hook, permission, state, and dispatch changes under fixed model responses | Better future model decisions |
-| Outcome collector and grader | Whether the resulting file, command, record, or service state is correct | Isolation when the candidate owns the runner |
-| Fresh sampled cases | Prompt, model, schema, and context changes that affect decisions | Universal performance from one sample |
+| `Step` objects | Inspect results and stop between calls | Approval before a tool runs or proof that an answer is correct |
+| Saved run | Read what the model saw, returned, and called | That saved prompts are safe to publish |
+| Replay | Check changed tools or hooks with fixed responses | Better decisions from a prompt or model change |
+| Collector and grader | Check a file, record, or service result | Protection from code that can change the grader |
+| New model runs | Check prompt, model, schema, or context changes | General performance from one sample |
 
-Looplet calls replay **captured-response replay** because tools, clocks,
-networks, randomness, and side effects execute again. Protected promotion
-oracles belong in a host-owned runner; arbitrary untrusted code also requires
-OS or process isolation.
+Completion does not prove that an answer is correct.
+Replay fixes model responses, not tool effects.
+Keep protected acceptance checks outside the code that a candidate can change.
+Run untrusted code in an isolated process or operating system environment.
 
 [Capture and replay](provenance.md) | [Behavioral evals](evals.md) |
 [Saved artifact reference](artifacts.md)
 
-## Designed for a specific team and stage
+## When Looplet fits
 
 <div class="fit-grid" markdown>
 
@@ -228,39 +250,38 @@ OS or process isolation.
 
 ### Looplet is a good fit when
 
-- one model calls tools until it is done;
-- your team already reviews Python, files, pytest, and CI;
-- prompt, tool, model, or hook changes need regression evidence;
-- exact interception points and local artifacts matter;
-- you want to own execution rather than adopt a hosted control plane.
+- One model calls tools until the task ends.
+- Your team uses Python, Git, and pytest.
+- Your code must control when tools run.
+- You need saved runs and tests for agent changes.
 
 </div>
 
 <div class="fit-panel fit-panel--no" markdown>
 
-### Choose another layer when
+### Choose another tool when
 
-- the workflow is naturally a durable branching graph;
-- a managed control plane should be the source of truth;
-- you need a finished assistant, sandbox, or annotation product;
-- your main need is fleet analytics or a hosted experiment dashboard;
-- a small disposable loop is still enough.
-
-</div>
+- Your main task needs a durable workflow graph.
+- You need a complete assistant, not a Python library.
+- You need a managed dashboard as your main interface.
+- A small loop that you wrote already meets your needs.
 
 </div>
 
-Looplet can run inside a workflow engine and export to observability systems.
-It does not try to replace either one. Core uses only the Python standard
-library; provider SDKs are optional extras.
+</div>
+
+Looplet can run inside a workflow engine and export evidence to other systems.
+It does not replace those systems.
+The core package has no third-party runtime dependencies.
+Provider adapters are optional extras.
 
 [Read the selection guide](why-looplet.md) | [Check the FAQ](faq.md) |
 [Operate a production loop](operations.md)
 
 <p class="home-footer" markdown>
-[Run the proof](regression-demo.md){ .md-button .md-button--primary }
+[Run your first loop](quickstart.md){ .md-button .md-button--primary }
 [Install Looplet](install.md){ .md-button }
-[Browse the tutorial](tutorial.md){ .md-button }
+[Add tests](tutorial.md){ .md-button }
 </p>
 
 <!-- markdownlint-enable MD025 MD033 MD036 -->

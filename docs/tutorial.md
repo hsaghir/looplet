@@ -1,18 +1,32 @@
-# Tutorial: build a testable harness
+# Tutorial: check a report agent
 
-This tutorial builds the smallest useful Looplet artifact: a report
-agent whose tool writes `report.json`, plus a behavioral contract that
-checks the file independently.
+This guide adds a test to an agent that writes `report.json`.
+A collector reads the file after the loop.
+A grader checks the report against an expected value.
+These checks do not depend on the model's claim that it succeeded.
 
-The complete source ships under
+Complete the [Quickstart](quickstart.md) first.
+This guide uses a cartridge to keep the agent and its tests in one directory.
+A cartridge is optional for normal loop use.
+
+The complete example is in
 [`examples/regression_demo/`](https://github.com/hsaghir/looplet/tree/master/examples/regression_demo).
-Run it at any point with:
+Run it after the source install:
 
 ```bash
-uv run python examples/regression_demo/run_demo.py
+looplet-proof
 ```
 
-## 1. Start with a cartridge
+## 1. Use the example cartridge
+
+Run this command from the repository root:
+
+```bash
+cp -R examples/regression_demo/report_agent.cartridge report_agent.cartridge
+```
+
+The example includes the `done` tool and the full file structure.
+The sections below show the files that define the report and its test.
 
 ```text
 report_agent.cartridge/
@@ -30,7 +44,7 @@ report_agent.cartridge/
     └── eval_correctness.py
 ```
 
-The manifest identifies the artifact and schema:
+The manifest names the agent and selects the schema version:
 
 ```json title="cartridge.json"
 {
@@ -40,24 +54,22 @@ The manifest identifies the artifact and schema:
 }
 ```
 
-Contract-level loop configuration stays small:
+The loop configuration sets its step limit and completion tool:
 
 ```yaml title="config.yaml"
 max_steps: 3
 done_tool: done
 ```
 
-Host/runtime policy lives separately:
+Change the copied `runtime.yaml` to select the protocol for this example's fixed responses:
 
 ```yaml title="runtime.yaml"
-use_native_tools: true
+use_native_tools: false
 ```
 
-Native tool calling is the default. If the backend does not support it, select
-`use_native_tools: false` to use the JSON-text protocol explicitly.
-
-That split lets two hosts choose different provider or context behavior
-without pretending they are different agent contracts.
+The test below uses the JSON-text protocol.
+The library uses native tool calls by default.
+The separate runtime file lets a host select its protocol without a change to the agent's task.
 
 ## 2. Write the prompt and tool
 
@@ -65,10 +77,10 @@ without pretending they are different agent contracts.
 # Report agent
 
 You publish a small financial report. Call `publish_report` with the
-revenue and cost from the task, then call `done`.
+revenue and cost from the task. Then call `done`.
 ```
 
-The schema is data:
+The tool schema describes its arguments and resource:
 
 ```yaml title="tools/publish_report/tool.yaml"
 name: publish_report
@@ -102,20 +114,20 @@ def execute(ctx: ToolContext, *, revenue: int, cost: int) -> dict:
     return {"written": "report.json", "profit": report["profit"]}
 ```
 
-`resources/project_dir.py` binds the runner's fresh sandbox:
+The resource function returns the workspace that the host provides:
 
-```python
+```python title="resources/project_dir.py"
 def build(runtime=None):
     return (runtime or {}).get("project_root", ".")
 ```
 
-Inspect the loaded harness without calling a model:
+Inspect the cartridge without a model call:
 
 ```bash
 looplet describe ./report_agent.cartridge
 ```
 
-## 3. Express the scenario as data
+## 3. Define the test case
 
 ```json title="evals/cases/profit_math.json"
 {
@@ -130,19 +142,18 @@ looplet describe ./report_agent.cartridge
 }
 ```
 
-The top-level `expected` mapping is for graders. The cartridge runner
-does not include it in the task sent to the agent. Persisted runs store
-it in `expected.json`, separate from the agent-visible
-`trajectory.json`.
+The `expected` mapping is for graders.
+The host does not send it in the model's task.
+Saved runs put it in `expected.json`, separate from the agent's `trajectory.json`.
 
-If a case needs starting files, put a `{path: contents}` mapping under
-`task.files`; the runner seeds those files in a fresh per-case
-workspace and removes the mapping before building the model prompt.
+Put initial files in `task.files` as a `{path: contents}` mapping.
+The host writes them in a fresh workspace for each case.
+It removes the mapping before it builds the model prompt.
 
-## 4. Observe the world independently
+## 4. Read the result independently
 
-The tool claims it wrote a correct report. Do not grade that claim.
-Read the file:
+Do not use the tool's success claim as the expected result.
+Read the actual file:
 
 ```python title="evals/collect_outcome.py"
 import json
@@ -161,15 +172,14 @@ def collect_report(state, runtime) -> dict:
     }
 ```
 
-Collector functions are discovered from `evals/collect_*.py`. A
-collector receives final state and may request the runtime mapping. Its
-dictionary is merged into `EvalContext.artifacts`.
+The host loads collectors from `evals/collect_*.py`.
+Each collector receives final state and can request the runtime mapping.
+Its dictionary becomes part of `EvalContext.artifacts`.
 
-Collectors are observers, so an exception does not crash the live
-agent. It does become an explicit error result, which prevents the CLI
-from reporting a false green.
+A collector error does not crash the agent.
+It becomes an error result, so the command cannot report success.
 
-## 5. Define the behavioral contract
+## 5. Define the required checks
 
 ```python title="evals/eval_correctness.py"
 from looplet import EvalContext, eval_mark
@@ -186,20 +196,19 @@ def eval_completed(ctx: EvalContext):
     return ctx.completed
 ```
 
-Grader functions are discovered from `evals/eval_*.py`. `required`
-uses the normal mark mechanism but adds fail-closed CLI semantics: the
-grader must execute and pass. A skipped or errored required grader is a
-failure, not missing data to ignore.
+The host loads graders from `evals/eval_*.py`.
+A `required` grader must run and pass.
+A skipped required grader or a grader error makes the command fail.
 
-This contract permits any model trajectory that creates the correct
-artifact and completes. It does not require a specific reasoning string
-or tool order.
+These checks permit any tool sequence that creates the correct report and completes the task.
+They do not require specific model text or a fixed tool order.
 
 ## 6. Run it without a network
 
-Use `MockLLMBackend` in a normal test. The runner loads the cartridge,
-seeds each case, runs the live loop, invokes collectors and graders,
-and persists one self-contained record per case.
+The test uses `MockLLMBackend` with fixed responses.
+The host loads the cartridge and prepares a workspace for each case.
+It runs the loop, collectors, and graders.
+It saves one record per case.
 
 ```python title="tests/test_report_agent.py"
 import json
@@ -233,66 +242,71 @@ def test_report_contract(tmp_path):
     assert records[0].context.artifacts["observed_profit"] == 40
 ```
 
-This is a harness regression test, not a model-quality benchmark. The
-scripted responses make tool wiring and outcome grading deterministic.
-Evaluate a real prompt or model change with fresh sampled model runs.
-
-## 7. Run the contract with a model
-
-Configure an OpenAI-compatible endpoint and execute the shipped cases:
+Run the test from the repository root:
 
 ```bash
-export OPENAI_BASE_URL=https://api.openai.com/v1
-export OPENAI_API_KEY=...
-export OPENAI_MODEL=...
+python -m pip install pytest
+python -m pytest tests/test_report_agent.py
+```
 
+This test checks the tools and graders under fixed model responses.
+It does not measure model quality.
+A prompt or model change needs new model runs.
+
+## 7. Check results with a real model
+
+Install and configure a provider as described in [Install](install.md).
+Set `use_native_tools: true` in `runtime.yaml` if the provider supports native calls.
+Then run the case:
+
+```bash
 looplet eval run ./report_agent.cartridge \
   --out ./eval-runs \
   --threshold 1.0
 ```
 
-Useful flags:
+| Option | Effect |
+| --- | --- |
+| `--case profit_math` | Run one case |
+| `--max-steps N` | Override the step limit |
+| `--judge` | Enable graders that request an `llm` |
+| `--judge-model NAME` | Use a separate model for those graders |
+| `--threshold VALUE` | Fail if a scored grader falls below the value |
 
-- `--case profit_math` runs one case;
-- `--max-steps N` overrides the case budget;
-- `--judge` enables graders whose signature requests an `llm`;
-- `--judge-model NAME` uses a separate judge model;
-- `--threshold VALUE` fails when any scored grader falls below the value.
-
-Required graders, explicit failures, collector errors, malformed
-records, unknown cases, and empty required suites produce a non-zero
-exit.
+The command returns a non-zero exit code if a required check fails.
+Collector errors, invalid records, unknown cases, and empty required suites also make it fail.
 
 ## 8. Capture, change, replay
 
-For an interesting live failure, attach `ProvenanceSink` while running
-the preset. The shipped
+Attach `ProvenanceSink` to save a run that you need to investigate.
+The example
 [`run_demo.py`](https://github.com/hsaghir/looplet/blob/master/examples/regression_demo/run_demo.py)
-shows the complete wiring:
+shows these steps:
 
-1. wrap the model backend;
-2. attach the trajectory recorder and `EvalHook`;
-3. persist the v1 run with `save_eval_run()`;
-4. load fresh v2 tools and collectors;
-5. call `replay_loop()` on the v1 trace;
-6. persist and compare the v2 outcome.
+1. Wrap the model backend.
+2. Attach the step recorder and `EvalHook`.
+3. Save the first run with `save_eval_run()`.
+4. Load new tools and collectors.
+5. Call `replay_loop()` with the saved responses.
+6. Save the new result.
+7. Compare the two results.
 
-Review the harness change structurally:
+Compare the agent directories:
 
 ```bash
 looplet diff ./report-v1.cartridge ./report-v2.cartridge --show
 ```
 
-Captured-response replay is useful here because the changed component
-is tool code. It keeps the model calls fixed while that code executes
-again. It would not establish that a prompt edit causes better model
-decisions; that requires new runs.
+Replay is useful here because the change affects tool code.
+It keeps model responses fixed while the changed code runs again.
+It does not prove that a prompt change produces better decisions.
+That needs new model runs.
+Tool effects also occur again unless the host isolates or mocks them.
 
 ## 9. Put it in CI
 
-For deterministic harness mechanics, run the pytest test above. For
-sampled agent behavior, run the CLI against the model and cases your
-release process permits:
+Use continuous integration (CI) to run the test above on code changes.
+For model behavior, run the command with the model and cases that your release process permits:
 
 ```yaml title=".github/workflows/agent-evals.yml"
 - name: Harness regression tests
@@ -308,17 +322,16 @@ release process permits:
     --out ./eval-runs --threshold 1.0
 ```
 
-For serious promotion decisions, keep holdout collectors, graders, expected
-data, and capabilities in a host-owned runner. Do not pass them through the
-candidate task or runtime. If candidate code is untrusted, enforce the boundary
-with OS or process isolation rather than directory layout alone.
+An agent's own tests are not protected release checks.
+Keep protected collectors, graders, and expected data outside the code that a candidate can change.
+Do not give them to the candidate through its task or runtime.
+Run untrusted code in an isolated process or operating system environment.
+A separate directory does not provide that protection.
 
 ## What to build next
 
-- Add a [quality-gate hook](hooks.md) that blocks premature `done()`.
-- Add [redacted provenance](provenance.md) for failures worth keeping.
-- Grow cases from real incidents, not speculative taxonomies.
-- Keep outcome graders separate from efficiency metrics such as steps,
-  tokens, or latency.
-- Read the [pitfalls](pitfalls.md) before adding concurrency,
-  permissions, or long-context compaction.
+- Add a [hook](hooks.md) that blocks `done()` before the task is complete.
+- [Save a run](provenance.md) and remove sensitive data from its records.
+- Add cases from actual failures.
+- Keep correctness checks separate from step, token, and time measurements.
+- Read the [pitfalls](pitfalls.md) before you add concurrency or permissions.

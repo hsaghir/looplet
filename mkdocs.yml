@@ -1,5 +1,5 @@
 site_name: Looplet
-site_description: Test-driven harness engineering for Python agents. Own the loop. Test every change.
+site_description: A Python loop for agents that call tools. Run, inspect, and stop from your code.
 site_url: https://hsaghir.com/looplet/
 repo_url: https://github.com/hsaghir/looplet
 repo_name: hsaghir/looplet
@@ -106,9 +106,8 @@ markdown_extensions:
 nav:
   - Home: index.md
   - Start:
-    - Install and configure: install.md
     - Quickstart: quickstart.md
-    - Tutorial: tutorial.md
+    - Install and configure: install.md
     - Migrate an existing loop: migrate.md
     - Troubleshooting: troubleshooting.md
   - Guides:
@@ -118,6 +117,7 @@ nav:
       - Skills and bundles: skills.md
       - Agent factory: agent-factory.md
     - Test:
+      - Report-agent tutorial: tutorial.md
       - Failure to regression: regression-demo.md
       - Choose the right experiment: experiments.md
       - Capture and replay: provenance.md

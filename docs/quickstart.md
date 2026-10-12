@@ -1,262 +1,146 @@
 # Quickstart
 
-Build one loop you can inspect, capture it, and see how the same harness
-becomes a behavioral contract.
+Run one loop, inspect its steps, and stop it from your code.
+You need Python 3.11 or newer.
+You do not need a model key for these examples.
 
-## 1. Run the whole claim first
+## 1. Install the source version
 
-Start with the network-free proof in an isolated package environment:
-
-```bash
-uvx --from looplet==0.4.0 looplet-proof
-```
-
-It holds two model responses constant, changes one tool line, executes
-the fixed tool in a fresh workspace, and turns an independently
-collected outcome from red to green. Read the
-[walkthrough](regression-demo.md) when you want every artifact.
-
-## 2. Install
+These examples use the code in the repository.
+Some features are not in the published package yet.
 
 ```bash
-pip install looplet
+git clone https://github.com/hsaghir/looplet.git
+cd looplet
+python -m pip install -e .
 ```
 
-Core Looplet uses only the Python standard library. Install a provider
-extra when you want the bundled adapter:
+The core package has no third-party runtime dependencies.
+See [Install](install.md) for virtual environments and model providers.
 
-```bash
-pip install "looplet[openai]"
-# or
-pip install "looplet[anthropic]"
-```
+## 2. Run one loop
 
-Verify the loop locally without an API key:
+This example uses fixed model responses.
+It does not contact a model service.
+The tool returns the team that owns a service.
 
-```bash
-python -m looplet.examples.hello_world --scripted
-```
+```python title="first_loop.py"
+from contextlib import closing
 
-The output includes tool steps, explicit eval results, and the execution status.
-Steps are printed as the loop yields them, not after a hidden runner finishes.
-
-## 3. Write an owned loop
-
-Configure any OpenAI-compatible endpoint:
-
-```bash
-export OPENAI_BASE_URL=https://api.openai.com/v1
-export OPENAI_API_KEY=...
-export OPENAI_MODEL=...
-```
-
-For OpenAI cloud, only `OPENAI_API_KEY` is required; the URL and model have
-defaults. A local compatible URL can omit the key. See
-[provider configuration](install.md) for Anthropic and provider selection.
-
-```python title="my_agent.py"
-from looplet import OpenAIBackend, composable_loop, tool, tools_from
+from looplet import DefaultState, LoopConfig, MockLLMBackend, composable_loop, tool, tools_from
 
 
-@tool(description="Look up one service owner by name.")
+@tool(description="Find the team that owns a service.")
 def lookup_owner(service: str) -> dict:
     owners = {"payments": "fintech-platform", "search": "discovery"}
     return {"service": service, "owner": owners.get(service)}
 
 
-llm = OpenAIBackend.from_env()
+llm = MockLLMBackend([
+    '{"tool":"lookup_owner","args":{"service":"payments"}}',
+    '{"tool":"done","args":{"summary":"The payments owner is fintech-platform."}}',
+])
 tools = tools_from([lookup_owner], include_done=True)
+state = DefaultState(max_steps=2)
 
-for step in composable_loop(
+with closing(composable_loop(
     llm=llm,
     tools=tools,
-    task={"goal": "Find the owner of payments, then finish."},
-    max_steps=5,
-):
-    print(step.pretty())
+    state=state,
+    config=LoopConfig(max_steps=2, use_native_tools=False),
+    task={"goal": "Find the payments owner, then finish."},
+)) as steps:
+    for step in steps:
+        print(step.tool_call.tool, step.tool_result.data)
+
+print(state.termination_reason)
 ```
 
-The important part is not the line count. It is the execution boundary:
+Run the example file:
 
-- `tools_from(...)` builds the registry that validates and dispatches calls;
-- `composable_loop(...)` owns prompt → model → tool → state;
-- each dispatch is yielded as a `Step` before control returns to the loop;
-- your caller can inspect, route, pause, or stop between dispatches; hooks
-    provide pre-dispatch permission and policy boundaries.
-
-For early exit, put the iterator in `contextlib.closing`; use
-`contextlib.aclosing` with `async_composable_loop()`. This finalizes loop-end
-hooks without starting another step. Resources you create remain yours to close.
-Explicit state can be summarized with `RunResult.from_state(state)`; accepted
-completion remains separate from evaluated correctness.
-
-Presets are optional wiring over this same loop. `preset.run(llm, task=task)`
-returns its step iterator. The source checkout also adds `preset.run_result()`
-and `run_result_async()` when you want to consume the iterator to a summary;
-these unreleased helpers preserve explicit backends and caller-owned resources.
-See the [API map](api.md#optional-preset-conveniences).
-
-## 4. Add one exact interception point
-
-Hooks are ordinary objects. Implement only the lifecycle methods you
-need:
-
-```python
-from looplet import Block
-
-
-class RequireKnownOwner:
-    def check_done(self, state, session_log, context, step_num):
-        looked_up = [
-            step.tool_result.data
-            for step in state.steps
-            if step.tool_call.tool == "lookup_owner" and not step.tool_result.error
-        ]
-        if not any(item.get("owner") for item in looked_up):
-            return Block("Look up a known owner before finishing.")
-        return None
+```bash
+python first_loop.py
 ```
 
-Attach it without subclassing or changing the loop:
+The loop calls `lookup_owner`, then `done`.
+The last line prints `done`, the stop reason.
+The example selects the JSON-text protocol for its fixed responses.
+A real model uses native tool calls by default.
+
+## 3. Inspect each step
+
+Your `for` loop receives a `Step` after each tool call.
+The tool has already run when you receive this object.
+
+| Field | Meaning |
+| --- | --- |
+| `step.tool_call.tool` | The tool name |
+| `step.tool_call.args` | The arguments that the model supplied |
+| `step.tool_result.data` | The data that the tool returned |
+| `step.tool_result.error` | The error, if the tool call failed |
+
+`state.steps` contains the steps that have occurred.
+Use these fields to display results or choose what your code does next.
+Use a [hook](hooks.md) if you need to approve a call before the tool runs.
+
+## 4. Stop the loop
+
+Keep the imports and `lookup_owner` function from the first example.
+Replace the rest of that example with this block.
 
 ```python
-for step in composable_loop(..., hooks=[RequireKnownOwner()]):
-    print(step.pretty())
-```
+llm = MockLLMBackend([
+    '{"tool":"lookup_owner","args":{"service":"payments"}}',
+    '{"tool":"lookup_owner","args":{"service":"search"}}',
+])
+tools = tools_from([lookup_owner], include_done=True)
+state = DefaultState(max_steps=2)
 
-This assertion is a **runtime guard**: it steers the live loop. Product
-quality should usually be checked after the run by an independent
-collector, as shown below.
-
-## 5. Capture what the model saw
-
-```python
-from looplet import ProvenanceSink
-
-
-sink = ProvenanceSink(dir="traces/owner_lookup")
-recorded_llm = sink.wrap_llm(llm)
-
-for step in composable_loop(
-    llm=recorded_llm,
+with closing(composable_loop(
+    llm=llm,
     tools=tools,
-    hooks=[sink.trajectory_hook(), RequireKnownOwner()],
-    task={"goal": "Find the owner of payments, then finish."},
-    max_steps=5,
-):
-    print(step.pretty())
+    state=state,
+    config=LoopConfig(max_steps=2, use_native_tools=False),
+    task={"goal": "Find the payments and search owners."},
+)) as steps:
+    for step in steps:
+        print(step.tool_call.tool, step.tool_result.data)
+        break
 
-sink.flush()
+print(state.termination_reason)
 ```
 
-Inspect the result from the shell:
+Only the payments lookup occurs.
+The `break` statement stops your iteration.
+`closing` closes the loop and runs its end hooks.
+The last line prints `stream_closed`.
+The search lookup does not occur.
 
-```bash
-python -m looplet show traces/owner_lookup
-```
+Close resources that your code creates, such as database clients.
+For async code, use `async_composable_loop()` with `contextlib.aclosing`.
+See the [Python API](api.md#execution-core) for that form.
 
-The current source checkout also accepts `looplet inspect traces/owner_lookup`;
-`inspect` is the same entry point for cartridge declarations and bundle metadata.
-It is an unreleased addition; `show` remains available in PyPI `0.4.0`.
+## What you now control
 
-The directory contains exact prompt/response bodies, a model-call
-manifest, the trajectory, per-step JSON, stop reason, and metadata.
-Apply `redact=` when prompts or results may contain sensitive data.
+The model selects a tool.
+Looplet checks the call, runs the tool, and records the result.
+The loop then yields a step to your code.
+Your code decides whether to request the next step.
 
-Captured responses can later drive `replay_loop(...)` with fresh tools
-or hooks. This avoids another model call; it does **not** freeze tool
-side effects. See [capture and replay](provenance.md).
+`done` means that the loop accepted completion.
+It does not prove that the answer is correct.
 
-## 6. Make the outcome a contract
+## Choose the next guide
 
-An evaluator should prefer world state over the model's route or claim:
+You do not need all of these features to use the loop.
 
-```python
-import json
-from pathlib import Path
-
-from looplet import EvalHook, eval_mark
-
-
-def collect_assignment(state):
-    path = Path("assignment.json")
-    return {
-        "assignment": json.loads(path.read_text()) if path.exists() else None,
-    }
-
-
-@eval_mark("required")
-def eval_owner_is_correct(ctx):
-    return ctx.artifacts["assignment"] == {
-        "service": "payments",
-        "owner": "fintech-platform",
-    }
-
-
-eval_hook = EvalHook(
-    evaluators=[eval_owner_is_correct],
-    collectors=[collect_assignment],
-    verbose=True,
-)
-```
-
-That collector assumes the real harness has a tool that writes
-`assignment.json`; the host reads the artifact after the loop. It does
-not require the model to call a particular tool sequence.
-
-Evaluation is opt-in: attach this hook to the loop once, then use
-`save_eval_run(directory, eval_hook=eval_hook)` to persist the outcome and
-grades. `load_eval_run(directory)` is the matching reader. Cartridge authors
-can use `looplet eval run` instead; that runner owns collection and grading.
-
-For a complete executable version of this pattern, including protected
-expected data and persisted eval runs, use the
-[failure-to-regression demo](regression-demo.md).
-
-## 7. Put the harness under review
-
-When a directory is a useful review and release unit, use a cartridge:
-
-```text
-owner_agent.cartridge/
-├── cartridge.json
-├── config.yaml
-├── runtime.yaml
-├── prompts/system.md
-├── tools/lookup_owner/{tool.yaml, execute.py}
-├── tools/done/{tool.yaml, execute.py}
-└── evals/
-    ├── cases/payments_owner.json
-    ├── collect_assignment.py
-    └── eval_correctness.py
-```
-
-```bash
-looplet describe ./owner_agent.cartridge
-looplet run-cartridge ./owner_agent.cartridge "Find the payments owner"
-looplet eval run ./owner_agent.cartridge --out ./eval-runs --threshold 1.0
-```
-
-`looplet new` can scaffold a first cartridge from a brief, but generated
-output is a starting point: review the files and add cases, collectors,
-and required graders before shipping.
-
-## Mental model
-
-1. The model proposes a tool call.
-2. The registry validates and dispatches it.
-3. Hooks can observe or steer exact lifecycle phases.
-4. State records the result.
-5. The loop yields a `Step` to your code.
-6. End-of-loop collectors inspect the resulting world.
-7. Evals grade that evidence and CI enforces the contract.
-
-## Next
-
-- [Migrate an existing loop](migrate.md#run-the-whole-recipe): keep your tool
-  callables, replace only the loop, and land one required outcome grader.
-- [Tutorial](tutorial.md): build a colocated case, collector, and required grader.
-- [Cartridges](cartridge.md): file layout, refs, inheritance, and boundaries.
-- [Provenance](provenance.md): capture and controlled re-execution.
-- [Evals](evals.md): outcome philosophy, pytest helpers, and CLI gates.
-- [Hooks](hooks.md): every interception point and return type.
+| Goal | Guide |
+| --- | --- |
+| Use a real model | [Install and configure](install.md#configure-openai) |
+| Change the loop's decisions | [Hooks](hooks.md) |
+| Save and replay a run | [Capture and replay](provenance.md) |
+| Check the result | [Tests and graders](evals.md) |
+| Run the full regression example | [Regression example](regression-demo.md) |
+| Put an agent in a directory | [Cartridges](cartridge.md) |
+| Add a file-based test case | [Report-agent tutorial](tutorial.md) |
+| Replace a loop that you have | [Migration guide](migrate.md) |

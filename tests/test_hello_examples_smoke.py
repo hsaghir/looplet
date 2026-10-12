@@ -2,13 +2,94 @@
 
 from __future__ import annotations
 
+import ast
+import re
+import shutil
+from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
+from looplet import RunResult, composable_loop
 from looplet.examples import hello_world, ollama_hello
 
 pytestmark = pytest.mark.smoke
+
+
+@pytest.mark.parametrize("document", ["README.md", "docs/quickstart.md", "docs/index.md"])
+def test_documented_first_loop(document: str, monkeypatch) -> None:
+    root = Path(__file__).resolve().parents[1]
+    path = root / document
+    blocks = re.findall(r"^```python[^\n]*\n(.*?)^```[ \t]*$", path.read_text(), re.M | re.S)
+    assert blocks, f"No Python example in {document}"
+    observations = []
+
+    def observed_loop(**kwargs):
+        backend = kwargs["llm"]
+        registry = kwargs["tools"]
+        generate = Mock(wraps=backend.generate)
+        dispatch = Mock(wraps=registry.dispatch)
+        monkeypatch.setattr(backend, "generate", generate)
+        monkeypatch.setattr(registry, "dispatch", dispatch)
+        observations.append((generate, dispatch))
+        return composable_loop(**kwargs)
+
+    monkeypatch.setattr("looplet.composable_loop", observed_loop)
+    namespace = {"__name__": "__main__"}
+    exec(compile(blocks[0], str(path), "exec"), namespace)
+    state = namespace["state"]
+    assert [step.tool_call.tool for step in state.steps] == ["lookup_owner", "done"]
+    assert state.steps[0].tool_result.data == {
+        "service": "payments",
+        "owner": "fintech-platform",
+    }
+    assert state.termination_reason == "done"
+    assert RunResult.from_state(state).completed
+    assert observations[0][0].call_count == 2
+    assert observations[0][1].call_count == 2
+
+    if document != "docs/quickstart.md":
+        quickstart = root / "docs/quickstart.md"
+        first_loop = re.findall(
+            r"^```python[^\n]*\n(.*?)^```[ \t]*$", quickstart.read_text(), re.M | re.S
+        )[0]
+        assert ast.dump(ast.parse(blocks[0])) == ast.dump(ast.parse(first_loop))
+        return
+
+    assert len(blocks) == 2
+    exec(compile(blocks[1], str(path), "exec"), namespace)
+    stopped_state = namespace["state"]
+    assert stopped_state is not state
+    assert [step.tool_call.tool for step in stopped_state.steps] == ["lookup_owner"]
+    assert stopped_state.steps[0].tool_result.data == {
+        "service": "payments",
+        "owner": "fintech-platform",
+    }
+    assert stopped_state.termination_reason == "stream_closed"
+    assert not RunResult.from_state(stopped_state).completed
+    assert observations[1][0].call_count == 1
+    assert observations[1][1].call_count == 1
+
+
+def test_documented_report_contract(tmp_path: Path, monkeypatch) -> None:
+    root = Path(__file__).resolve().parents[1]
+    path = root / "docs/tutorial.md"
+    blocks = re.findall(r'^```\w+ title="([^"]+)"\n(.*?)^```[ \t]*$', path.read_text(), re.M | re.S)
+    cartridge = tmp_path / "report_agent.cartridge"
+    shutil.copytree(root / "examples/regression_demo/report_agent.cartridge", cartridge)
+    for name, code in blocks:
+        if name.startswith("tests/") or name.startswith(".github/"):
+            continue
+        target = cartridge / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(code)
+
+    monkeypatch.chdir(tmp_path)
+    namespace = {"__name__": "__main__"}
+    test_code = dict(blocks)["tests/test_report_agent.py"]
+    exec(compile(test_code, str(path), "exec"), namespace)
+    namespace["test_report_contract"](tmp_path)
 
 
 class TestHelloWorldExample:

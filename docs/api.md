@@ -1,33 +1,33 @@
 # Python API map
 
-Looplet exposes a small execution core and several optional layers around it.
-This page is a curated map for choosing the right surface. It is not a dump of
-every exported helper.
+Start with the loop, tools, and a backend.
+The other APIs are optional.
+This page helps you choose an API; it does not list every helper.
+Use the [Quickstart](quickstart.md) for a complete example.
 
-Most applications should begin with imports from `looplet`:
+Import the main APIs from `looplet`:
 
 ```python
 from looplet import composable_loop, tool, tools_from
 ```
 
-Provider-specific, token-streaming, and specialized APIs may live in
-their defining submodule. The package-level `looplet.__all__` is the canonical
-list of re-exported names for a given release.
+Some provider and advanced APIs need a submodule import.
+`looplet.__all__` lists the names that the installed version exports from `looplet`.
 
 ## Execution core
 
 | API | Use it for |
 | --- | --- |
-| `composable_loop(...)` | Synchronous iterator-first tool loop that yields one `Step` per dispatch. |
-| `async_composable_loop(...)` | Async generator with the same loop contract. |
-| `LoopConfig` | Runtime limits, prompt settings, native tools, compaction, checkpointing, cancellation, and related policy. |
-| `LoopContext` | Host context made available to loop and tool execution. |
-| `DefaultState` | Default mutable loop state. Supply a compatible custom state when the domain needs more fields. |
-| `Step` | One parsed tool call and its result, timing, classification, and related metadata. |
-| `ToolCall` / `ToolResult` | Typed call and result records used by registries, hooks, and tests. |
+| `composable_loop(...)` | Yield a `Step` after each tool call. |
+| `async_composable_loop(...)` | Use the same loop with async iteration. |
+| `LoopConfig` | Set limits, prompts, tool protocols, context reduction, checkpoints, and cancellation. |
+| `LoopContext` | Provide host context to the loop and tools. |
+| `DefaultState` | Record steps and stop state. Use a compatible custom state if you need more fields. |
+| `Step` | Read one tool call, its result, times, and metadata. |
+| `ToolCall` / `ToolResult` | Represent a call and its result as typed records. |
 
-The loop accepts explicit dependencies and returns control after each
-dispatch:
+The loop receives explicit dependencies and yields after each tool call.
+These snippets assume that you have a backend, registry, state, and hooks:
 
 ```python
 for step in composable_loop(
@@ -40,11 +40,12 @@ for step in composable_loop(
     route(step)
 ```
 
-Use `async for` with `async_composable_loop()`. Do not run the synchronous
-generator in an async request handler when provider calls or tools may block
-the event loop. See [runtime operations](operations.md#asynchronous-loops).
+Use `async for` with `async_composable_loop()`.
+Do not use the synchronous loop in an async handler if provider calls or tools can block its event loop.
+See [runtime operations](operations.md#asynchronous-loops).
 
-For early exit, use Python's `contextlib.closing` (or `aclosing` for async):
+Use Python's `contextlib.closing` for early exit.
+Use `aclosing` for the async loop:
 
 ```python
 from contextlib import closing
@@ -57,21 +58,22 @@ with closing(composable_loop(llm=llm, tools=tools, state=state, hooks=hooks, tas
             break
 ```
 
-Started drivers finalize initialized hooks exactly once on completion, failure,
-or explicit close. Early closure is `stopped` with reason `stream_closed`.
-The caller owns tools, clients, and other resources it supplies. After execution,
-`RunResult.from_state(state)` projects accepted output, steps, and stop status;
-completion is never an evaluation verdict.
+Once the loop starts, it runs each initialized end hook once on completion, failure, or explicit close.
+Early closure has status `stopped` and reason `stream_closed`.
+The caller owns the tools, clients, and resources that it supplies.
+`RunResult.from_state(state)` returns accepted output, steps, and stop status.
+Completion does not prove that an answer is correct.
 
 ## Optional preset conveniences
 
-`AgentPreset` is an inspectable container of `tools`, `state`, `config`, and
-`hooks`, not another execution engine. `preset.run(llm, task=task)` supplies
-those objects to `composable_loop()` and returns its iterator; `run_async()`
-does the same for the async loop. Backends and mapping tasks stay explicit.
-You can read or change the wiring before execution without using a new API.
+`AgentPreset` holds `tools`, `state`, `config`, and `hooks`.
+It is not another execution engine.
+`preset.run(llm, task=task)` passes those objects to `composable_loop()` and returns its iterator.
+`run_async()` does the same for the async loop.
+You still supply the backend and task mapping explicitly.
+You can inspect or change the objects before the run.
 
-The source checkout adds two small helpers, unreleased in PyPI `0.4.0`:
+The source version has two result helpers that are not in PyPI `0.4.0`:
 
 | API | Meaning |
 | --- | --- |
@@ -87,13 +89,17 @@ with minimal_preset(tools=[lookup_owner], max_steps=5) as preset:
 print(result.output)
 ```
 
-Both helpers forward the existing driver arguments and leave resource ownership
-with the caller. Setup and unhandled execution errors propagate; ordinary stops
-are results. `preset.close()` returns separate shutdown diagnostics. Presets
-remain single-use; call your ordinary Python factory again for another run.
-Load file-native harnesses explicitly with `cartridge_to_preset()` or
-`load_skill_bundle()`; packaging remains separate from driving the loop.
-The optional `AgentRuntime` retains its separate failed-result host boundary.
+Both helpers pass arguments to the same loop.
+The caller still owns resources.
+The helpers raise setup errors and unhandled execution errors.
+Normal stops return results.
+`preset.close()` returns separate shutdown diagnostics.
+Use each preset for one run.
+Call your Python factory again for another run.
+
+Load a cartridge with `cartridge_to_preset()` or a bundle with `load_skill_bundle()`.
+File format and loop execution remain separate.
+The optional `AgentRuntime` can report host errors as failed results.
 
 ## Tools
 
@@ -108,40 +114,34 @@ The optional `AgentRuntime` retains its separate failed-result host boundary.
 | `ToolContext` | Access host resources, workspace details, cancellation, progress, and the selected backend inside a tool. |
 | `ToolError` / `ToolValidationError` | Return or test structured failures without parsing exception text. |
 
-Prefer explicit schemas for public or high-risk tools. Decorator inference is
-convenient, but a release contract should still test required fields, invalid
-arguments, and side effects.
+Prefer explicit schemas for public tools or tools with high-risk effects.
+Check required fields, invalid arguments, and effects even if a decorator creates the schema.
 
-`ToolSpec.to_json_schema()` is the shared parameter view for dispatch names
-and requiredness, native-tool presentation, and registry introspection.
-Python shorthand and cartridge descriptors remain supported; known type
-aliases and optional markers are normalized without discarding defaults,
-enums, nested schemas, or other declared constraints. MCP discovery preserves
-the server's full `inputSchema`, rather than flattening it to descriptions.
-New MCP servers should use standard JSON Schema `required` lists; legacy
-`(optional)` type markers and JSON-string array/object repair remain supported.
+`ToolSpec.to_json_schema()` provides the shared argument schema for the registry and native tool calls.
+It supports Python shorthand and cartridge descriptors.
+It retains defaults, enum values, nested schemas, and declared constraints.
+Model Context Protocol (MCP) discovery retains the server's full `inputSchema`.
+New MCP servers should use JSON Schema `required` lists.
+Older `(optional)` markers and JSON-string array or object repair remain supported.
 
-The base registry checks argument names and required fields, not every JSON
-Schema keyword. Keep semantic and richer constraint validation in the tool,
-MCP server, or an explicit `ValidatingToolRegistry` contract.
+The base registry checks argument names and required fields, not every JSON Schema keyword.
+Put other constraints in the tool, MCP server, or `ValidatingToolRegistry`.
 
-Required means the argument must be present. Explicit nullable schema types,
-including inferred `int | None`, accept `None`; omitted arguments still fail.
-Legacy blank-string and non-nullable empty-input checks remain unchanged.
+A required argument must be present.
+A nullable schema, including an inferred `int | None`, accepts `None`.
+An omitted required argument still fails.
+Older blank-string and non-nullable empty-input checks do not change.
 
-`ValidatingToolRegistry.register_with_schema(spec, schema)` adds optional typed
-argument validation to the same registry execution path. Its inherited
-`dispatch`, `dispatch_batch`, `async_dispatch`, and `async_dispatch_batch` keep
-the base cancellation, resource, timeout, result, and call-ID contracts. Tools
-registered without a schema still use ordinary registry argument checks; model
-visibility is not execution authority.
+`ValidatingToolRegistry.register_with_schema(spec, schema)` adds typed argument checks to the same registry.
+Its dispatch methods preserve cancellation, resources, timeouts, results, and call IDs.
+Tools without a schema still use the base argument checks.
+A model can see a tool without permission to run it.
 
-Bundle execution is an adapter over the preset's execution contract, not a
-second runtime. `run_skill_bundle()` binds extra hooks and the gateway through
-`AgentPreset.run()`, preserves the iterator's returned trace, and closes
-helper-built presets even when an unstarted iterator is explicitly closed.
-Caller-supplied presets remain caller-owned and follow the same single-use
-rule as direct preset runs; use a fresh preset for another execution.
+`run_skill_bundle()` passes extra hooks and the gateway through `AgentPreset.run()`.
+It preserves the iterator's returned trace.
+It closes presets that it built, even if you close an iterator before its first step.
+The caller still owns presets that it supplies.
+Use a fresh preset for another run.
 
 ## Backends
 
@@ -156,33 +156,35 @@ rule as direct preset runs; use a fresh preset for another execution.
 
 Install provider extras separately. See [install and configure](install.md).
 
-`ResilientBackend` is synchronous. Its timeout abandons a daemon worker from
-the caller's perspective; it cannot guarantee that a provider SDK cancels the
-underlying socket operation. Configure provider-level timeouts too.
+`ResilientBackend` is synchronous.
+After a timeout, the caller stops its wait for the worker.
+The worker's socket call can continue.
+Set provider timeouts too.
 
-Recording, resilience, routing, and legacy cost wrappers share supported-option
-forwarding and declared usage/state capabilities. Native generation is surfaced
-only when the underlying backend supports it; unsupported arbitrary attributes
-are not forwarded. Provider checkpoint methods apply to the active underlying
-backend, not an invented cross-model recovery format.
+Backend wrappers forward supported options and declared usage or state capabilities.
+They expose native tool calls only if the backend supports them.
+They do not forward arbitrary unsupported attributes.
+Provider checkpoint methods apply to the active backend.
+They do not create a common recovery format across models.
 
-When a resilience wrapper owns retries, the sync/async call helper does not retry
-its exhausted call again. Nested resilience wrappers use the outer wrapper's
-attempt policy, including in timeout workers. Each fallback backend may retain
-its own resilience budget. Provider SDK retries and socket timeouts remain
-separate; configure them explicitly when an exact HTTP attempt bound is needed.
+If a resilience wrapper owns retries, the loop does not retry its exhausted call again.
+Nested wrappers use the outer wrapper's attempt policy, including timeout workers.
+Each fallback backend can have its own attempt limit.
+Provider retries and socket timeouts remain separate.
+Set them explicitly if you need an exact HTTP attempt limit.
 
 ## Hook decisions
 
-Post-step stopping applies to normal, rejected-completion, and synthetic
-parse-error turns in both drivers. A stop requested by a model lifecycle event
-still permits the current step to be recorded and yielded, but does not start a
-new parse-repair/model call. `post_step` observers see each recorded error step
-too; async observers are awaited. Fatal model failure remains `llm_error`, not
-accepted completion, and a legitimately accepted terminal call remains `done`.
+Both loops permit a stop after normal steps, rejected completion, and parse errors.
+A model event can request a stop.
+The loop still records and yields the current step, but it does not make another model call.
+`post_step` observers see recorded error steps too.
+The async loop awaits async observers.
+A fatal model error remains `llm_error`; an accepted completion remains `done`.
 
-Hooks are duck-typed objects. Implement only the lifecycle methods the policy
-needs. Return values are normalized through these decisions:
+Hooks are ordinary objects.
+Implement only the methods that you need.
+Use these return values:
 
 | Decision | Meaning |
 | --- | --- |
@@ -193,12 +195,13 @@ needs. Return values are normalized through these decisions:
 | `InjectContext(text)` | Add host context to a subsequent prompt. |
 | `RewriteThread(...)` | Apply a declarative thread or metadata rewrite. |
 
-`HookDecision` is the underlying normalized form. The convenience constructors
-make intent easier to review. The [hook guide](hooks.md) documents lifecycle
-order, method signatures, composition, and error handling. In
-`async_composable_loop`, hook methods may be sync or async and are awaited in
-registration order. Stream emitters passed through `stream=` remain ordinary
-synchronous callbacks and should stay non-blocking.
+`HookDecision` is the common decision type.
+The constructors above express specific decisions.
+The [hook guide](hooks.md) gives method signatures, call order, and error behavior.
+`async_composable_loop()` accepts sync and async hook methods.
+It awaits async methods in registration order.
+Callbacks passed through `stream=` remain synchronous.
+They should not block.
 
 ## Cartridges and presets
 
@@ -215,27 +218,30 @@ synchronous callbacks and should stay non-blocking.
 | `scaffold_cartridge(...)` | Create the initial cartridge structure programmatically. |
 | `resource_ref_for(...)` | Resolve a host resource reference during round-trip serialization. |
 
-Use a cartridge when prompts, tools, hooks, resources, and self-tests benefit
-from one review and distribution unit. It is optional. Read
-[cartridges](cartridge.md) for schema, inheritance, references, and trust
-boundaries.
+Use a cartridge when you want to review or distribute an agent as one directory.
+It is optional.
+See [Cartridges](cartridge.md) for the schema, inheritance, references, and trust boundaries.
 
 ## Prompt preparation
 
-Both loop drivers share a prompt-preparation pipeline: render ordinary memory
-for the current state, select model-visible tools, select scoped sources,
-gather prompt inputs, run an optional advisory planner, choose the first
-non-`None` hook builder or configured/default builder, render through a
-detached `ContextProjection`, and check the final prompt budget.
+Both loops prepare prompts in this order:
 
-Overflow recovery uses the same pipeline, selected native schemas, and budget
-check. It rebuilds state-dependent inputs without repeating `pre_prompt`
-side effects. Hook builder failures fall back in both drivers; async planners
-and builders are awaited by the async driver. Scoped-source budgets and run
-retention remain separate from the full rendered-prompt limit. An advisory
-`ContextPlan` does not become an enforced policy, and tool visibility does not
-grant execution authority. Existing custom builders and legacy keyword
-renderers remain supported.
+1. Render memory for the current state.
+2. Select tools and sources that the model can see.
+3. Gather prompt inputs.
+4. Run an optional advisory planner.
+5. Select the first hook builder that returns a value, or the configured or default builder.
+6. Render through a detached `ContextProjection`.
+7. Check the final prompt limit.
+
+Prompt overflow recovery uses the same process, native schemas, and limit check.
+It rebuilds inputs without repeated `pre_prompt` effects.
+Both loops use a fallback if a hook builder fails.
+The async loop awaits async planners and builders.
+Source limits and record retention remain separate from the full prompt limit.
+An advisory `ContextPlan` is not an enforced policy.
+Visible tools do not imply permission to run them.
+Custom builders and older keyword renderers remain supported.
 
 ## Evidence and replay
 
@@ -246,17 +252,18 @@ renderers remain supported.
 | `replay_loop(...)` | Feed captured model responses through fresh harness execution. |
 | `serialize_harness(...)` | Preserve a reviewable snapshot of the active harness. |
 
-Replay fixes recorded model responses only. It does not freeze tools, clocks,
-networks, state, permissions, or randomness. Start with
-[capture and replay](provenance.md), then use the
-[experiment guide](experiments.md) to choose the right control.
+Replay fixes recorded model responses only.
+Tools, clocks, networks, state, permissions, and random values can change.
+See [Capture and replay](provenance.md) for the basic use.
+Use the [experiment guide](experiments.md) to choose a suitable comparison.
 
 ## Behavioral evals
 
-Choose one evaluation owner: Python hosts attach `EvalHook` explicitly;
-cartridge authors use `run_cartridge_evals()` or `looplet eval run`. Both write
-the same durable record through `save_eval_run()` and read it through
-`load_eval_run()`. Neither adds a second execution kernel.
+Choose one owner for result checks.
+Python hosts attach `EvalHook` explicitly.
+Cartridge authors use `run_cartridge_evals()` or `looplet eval run`.
+Both save the same record with `save_eval_run()` and read it with `load_eval_run()`.
+They use the same loop.
 
 | API | Use it for |
 | --- | --- |
@@ -268,16 +275,16 @@ the same durable record through `save_eval_run()` and read it through
 | `run_cartridge_evals(...)` | Own collection and grading for a cartridge's self-tests, replacing embedded eval observers. |
 | `save_eval_run(...)` / `load_eval_run(...)` | Persist and restore one self-contained eval record. |
 
-For custom runners or pytest, compose `eval_discover()`, `eval_run()`,
-`eval_run_batch()`, `parametrize_cases()`, and `assert_evals_pass()` as needed.
-They reuse the same graders and verdict rules. No-output records expose
-`cleanup()` and support `with`; persisted records retain their evidence.
-`EvalHook.save()` and implicit dictionary score inference are deprecated
-compatibility paths, not recommended alternatives.
+Custom hosts can use `eval_discover()`, `eval_run()`, and `eval_run_batch()`.
+For pytest, use `parametrize_cases()` and `assert_evals_pass()` as needed.
+These helpers use the same graders and result rules.
+Records without a saved directory support `cleanup()` and `with`.
+Saved records retain their evidence.
+`EvalHook.save()` and implicit dictionary scores are deprecated.
 
-Required graders fail closed when skipped, errored, or below the pass boundary.
-Collector errors are explicit results rather than silent missing evidence. See
-[behavioral evals](evals.md).
+A required grader fails if it is skipped, has an error, or misses the pass threshold.
+Collector errors become explicit results.
+See [Tests and graders](evals.md).
 
 ## Runtime controls
 
@@ -297,16 +304,17 @@ Collector errors are explicit results rather than silent missing evidence. See
 | Spans and aggregate metrics | `Tracer`, `TracingHook`, `MetricsCollector`, `MetricsHook` |
 | Typed live events | `StreamingHook` and emitters from `looplet.streaming` |
 
-These controls are opt-in. Add one because an observed failure or operational
-requirement justifies it, then test that boundary. See
-[runtime operations](operations.md).
+These controls are optional.
+Add a control for a failure or runtime requirement that you have observed.
+Check the behavior that it changes.
+See [runtime operations](operations.md).
 
 ## Testing helpers
 
-`MockLLMBackend` and `AsyncMockLLMBackend` return scripted responses without a
-network. `LLMResponsesExhausted` makes missing scripted responses explicit.
-Use them for deterministic harness mechanics, not as evidence that a real
-model will choose the same actions.
+`MockLLMBackend` and `AsyncMockLLMBackend` return fixed responses without a network.
+`LLMResponsesExhausted` reports that no fixed responses remain.
+Use these backends to check tools, hooks, and loop behavior.
+They do not prove that a real model will select the same actions.
 
 ```python
 from looplet.testing import MockLLMBackend
@@ -316,8 +324,9 @@ llm = MockLLMBackend(responses=[first_tool_call, done_call])
 
 ## Optional host integration
 
-These are not prerequisites for running or evaluating an agent. Add them when
-the host needs lifecycle ownership; see [Host integration](host-integration.md).
+You do not need these APIs to run or check an agent.
+Add them when a host must manage sessions, events, or saved results.
+See [Host integration](host-integration.md).
 
 | API | Use it for |
 | --- | --- |
@@ -332,16 +341,14 @@ the host needs lifecycle ownership; see [Host integration](host-integration.md).
 
 ## Specialized surfaces
 
-Looplet also exports bundle and blueprint analysis, MCP tools, native-tool
-probing, state and model gateway clients, memory sources, skills, and preset
-helpers. These support cartridge portability, factory output, and advanced
-host integrations. Start from their task guide rather than selecting them by
-name:
+Other APIs support bundle and blueprint inspection, MCP tools, protocol checks, gateways, memory, and skills.
+Choose them from the guide for your task:
 
 - [Skills and bundles](skills.md)
 - [Agent factory](agent-factory.md)
 - [Portability](portability.md)
 - [Recipes](recipes.md)
 
-Before `1.0`, minor releases may revise public APIs. Pin the minor line and
-review the [changelog](changelog.md) when upgrading.
+Before version `1.0`, minor releases can change public APIs.
+Pin the minor version.
+Read the [changelog](changelog.md) before an upgrade.

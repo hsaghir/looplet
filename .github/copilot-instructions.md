@@ -31,3 +31,16 @@ Everything else should compile into that story.
 - **Captured-response replay:** recorded model responses are held constant; fresh tools
 	and side effects still execute. Never call this deterministic replay.
 - **Zero-runtime-dependency bias:** keep the core package dependency-free unless there is a compelling, user-visible reason to change that.
+
+## Public Text
+
+Use simple technical English in documentation, comments, messages, commits, and pull requests.
+
+- Use short sentences and active voice.
+- Limit instructions to 20 words and descriptions to 25 words per sentence.
+- Put one instruction in each sentence.
+- Use the same term for the same concept.
+- Explain a technical term when the reader first needs it.
+- Keep API names and protocol names unchanged.
+- Avoid idioms, metaphors, and long groups of nouns.
+- Do not claim formal language certification without a full vocabulary check.

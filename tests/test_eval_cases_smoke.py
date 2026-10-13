@@ -276,6 +276,20 @@ class TestAssertEvalsPass:
     def test_passes_when_all_evals_pass(self) -> None:
         assert_evals_pass(self._ctx(), [_eval_passing])
 
+    def test_rejects_empty_suite_and_empty_filter(self) -> None:
+        with pytest.raises(AssertionError, match="No graders selected"):
+            assert_evals_pass(self._ctx(), [])
+        with pytest.raises(AssertionError, match="No graders selected"):
+            assert_evals_pass(self._ctx(), [_eval_passing], include=["unknown"])
+        assert_evals_pass(self._ctx(), [], version=1)
+
+    def test_metrics_alone_do_not_satisfy_a_gate(self) -> None:
+        def eval_metrics(ctx):
+            return EvalResult(metrics={"latency_ms": 12.0})
+
+        with pytest.raises(AssertionError, match="no verdict-producing grader"):
+            assert_evals_pass(self._ctx(), [eval_metrics])
+
     def test_raises_with_failure_messages(self) -> None:
         with pytest.raises(AssertionError) as exc:
             assert_evals_pass(self._ctx(), [_eval_passing, _eval_failing])

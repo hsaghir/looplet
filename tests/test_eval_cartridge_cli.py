@@ -19,8 +19,10 @@ from unittest.mock import patch
 import pytest
 
 from looplet import (
+    EvalReport,
     EvalRunRecord,
     assert_evals_pass,
+    eval_assess,
     eval_cli,
     eval_discover,
     eval_run,
@@ -442,6 +444,7 @@ def test_host_can_still_explicitly_load_an_embedded_eval_hook(tmp_path: Path) ->
     assert (workspace / "embedded-collector-count.txt").read_text() == "1"
 
 
+@pytest.mark.parametrize("version", [1, 2])
 @pytest.mark.parametrize(
     ("body", "required", "judge", "collector_body", "passed"),
     [
@@ -453,13 +456,18 @@ def test_host_can_still_explicitly_load_an_embedded_eval_hook(tmp_path: Path) ->
         pytest.param("return 'correct'", False, False, None, True, id="legacy-pass-label"),
         pytest.param("return 'partial'", False, False, None, False, id="unknown-label"),
         pytest.param("return {'score': 0.0}", True, False, None, False, id="explicit-zero"),
-        pytest.param("return {'steps': 20}", False, False, None, True, id="metric-only"),
+        pytest.param("return {'steps': 20}", False, False, None, (True, False), id="metric-only"),
         pytest.param("return {'steps': 20}", True, False, None, False, id="required-metric"),
         pytest.param(
-            "return EvalResult(metrics={'f1': 0.1})", False, False, None, True, id="passive-f1"
+            "return EvalResult(metrics={'f1': 0.1})",
+            False,
+            False,
+            None,
+            (True, False),
+            id="passive-f1",
         ),
         pytest.param("return {'f1': 0.1}", False, False, None, False, id="legacy-f1-gate"),
-        pytest.param("return True", False, True, None, True, id="optional-judge-skipped"),
+        pytest.param("return True", False, True, None, (True, False), id="optional-judge-skipped"),
         pytest.param("return True", True, True, None, False, id="required-judge-skipped"),
         pytest.param(
             "return EvalResult(score=1.0, label='wrong')",
@@ -516,7 +524,8 @@ def test_verdict_agrees_live_saved_pytest_and_cli(
     required: bool,
     judge: bool,
     collector_body: str | None,
-    passed: bool,
+    passed: bool | tuple[bool, bool],
+    version: int,
 ) -> None:
     cart = _make_cartridge(tmp_path)
     (cart / "evals" / "eval_correctness.py").write_text(
@@ -543,24 +552,47 @@ def test_verdict_agrees_live_saved_pytest_and_cli(
     ]
     assert signature(offline) == signature(record.results)
     assert record.context.artifacts["expected_leaked"] is False
+    if isinstance(passed, tuple):
+        passed = passed[version - 1]
+    captured = EvalReport.from_records([reloaded], version=version)
+    assert captured.passed is passed
+    rescored = eval_assess(graders, reloaded.context, case=reloaded.case, version=version)
+    assert rescored.passed is passed
+    assert captured.grader_manifest == rescored.grader_manifest
     if passed:
-        assert_evals_pass(reloaded.context, graders)
+        assert_evals_pass(reloaded.context, graders, version=version)
     else:
         with pytest.raises(AssertionError):
-            assert_evals_pass(reloaded.context, graders)
+            assert_evals_pass(reloaded.context, graders, version=version)
 
     expected_exit = 0 if passed else 1
-    assert eval_cli([str(tmp_path / "live"), "--evals", str(cart / "evals")]) == expected_exit
+    policy_args = ["--summary-version", str(version)]
+    assert (
+        eval_cli([str(tmp_path / "live"), "--evals", str(cart / "evals"), *policy_args])
+        == expected_exit
+    )
     capsys.readouterr()
+    assert (
+        eval_cli([str(tmp_path / "live"), "--evals", str(cart / "evals"), "--json", *policy_args])
+        == expected_exit
+    )
+    saved_report = json.loads(capsys.readouterr().out)
     monkeypatch.setenv("OPENAI_BASE_URL", "http://looplet.invalid/v1")
     monkeypatch.setattr(
         "looplet.backends.make_backend",
         lambda **kwargs: MockLLMBackend(responses=_scripted()),
     )
-    assert eval_cli(["run", str(cart), "--out", str(tmp_path / "cli")]) == expected_exit
+    assert (
+        eval_cli(["run", str(cart), "--out", str(tmp_path / "cli"), *policy_args]) == expected_exit
+    )
     capsys.readouterr()
-    assert eval_cli(["run", str(cart), "--json"]) == expected_exit
+    assert eval_cli(["run", str(cart), "--json", *policy_args]) == expected_exit
     report = json.loads(capsys.readouterr().out)
+    for assessment in (report, saved_report):
+        for case in assessment["cases"]:
+            for result in case["results"]:
+                result.pop("duration_ms", None)
+    assert report == saved_report
     assert report["passed"] is passed
     assert report["state"] == ("pass" if passed else "fail")
 
@@ -608,6 +640,15 @@ def test_run_cartridge_evals_rejects_unknown_case_filter(tmp_path: Path) -> None
             llm=MockLLMBackend(responses=_scripted()),
             cases=["typo"],
         )
+
+
+def test_run_cartridge_evals_rejects_empty_cases_and_graders(tmp_path):
+    cart = _make_cartridge(tmp_path)
+    with pytest.raises(ValueError, match="No eval cases selected"):
+        run_cartridge_evals(cart, llm=MockLLMBackend(_scripted()), cases=[])
+    (cart / "evals" / "eval_correctness.py").unlink()
+    with pytest.raises(ValueError, match="No graders selected"):
+        run_cartridge_evals(cart, llm=MockLLMBackend(_scripted()))
 
 
 def test_run_cartridge_evals_rejects_expected_inside_agent_task(tmp_path: Path) -> None:

@@ -714,6 +714,40 @@ class TestEvalCliIntegrity:
         eval_file.write_text("def eval_cost(ctx):\n    return {'steps': 20}\n")
         assert eval_cli([str(traces), "--evals", str(eval_file)]) == 0
 
+    def test_saved_json_uses_shared_report_and_routes_authored_output(self, tmp_path, capsys):
+        traces = self._trace(tmp_path)
+        eval_file = tmp_path / "eval_noisy.py"
+        eval_file.write_text(
+            "print('import diagnostic')\n"
+            "def eval_noisy(ctx):\n    print('grading diagnostic')\n    return True\n"
+        )
+        assert (
+            eval_cli([str(traces), "--evals", str(eval_file), "--json", "--summary-version", "2"])
+            == 0
+        )
+        captured = capsys.readouterr()
+        report = json.loads(captured.out)
+        assert report["version"] == 2
+        assert report["valid"] and report["passed"]
+        assert report["cases"][0]["id"] == "one"
+        assert "import diagnostic" in captured.err
+        assert "grading diagnostic" in captured.err
+
+    def test_saved_json_preserves_load_failures(self, tmp_path, capsys):
+        traces = self._trace(tmp_path)
+        bad = traces / "corrupt"
+        bad.mkdir()
+        (bad / "trajectory.json").write_text("not json")
+        eval_file = tmp_path / "eval_ok.py"
+        eval_file.write_text("def eval_ok(ctx):\n    return True\n")
+        assert (
+            eval_cli([str(traces), "--evals", str(eval_file), "--json", "--summary-version", "2"])
+            == 1
+        )
+        report = json.loads(capsys.readouterr().out)
+        assert not report["valid"] and not report["passed"]
+        assert "trajectory load failed: corrupt" in report["integrity_failures"][0]
+
     @pytest.mark.parametrize("threshold", ["nan", "inf", "-0.1", "1.1"])
     def test_invalid_threshold_returns_nonzero(self, tmp_path: Path, threshold: str):
         traces = self._trace(tmp_path)

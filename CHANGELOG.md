@@ -8,6 +8,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `EvalReport` and `eval_assess` provide one assessment policy across Python, hooks, saved records, and CLI evaluation.
+- Both eval CLI routes support JSON assessments and explicit `--summary-version 2` while retaining version 1 defaults.
+- Version 2 separates failed behavior from invalid evaluation and refuses empty or measurement-only release gates.
 - Async child loops and bounded parallel children use the existing loop drivers.
 - Child results expose completion, accepted output, identity, trace, and pending approval fields.
 - Optional host-owned child recovery reuses saved output and refuses changed requests or uncertain effects.
@@ -57,6 +60,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- `assert_evals_pass` uses shared assessment failures and rejects empty suites by default; `version=1` retains the previous policy.
+- Eval hooks preserve grader inventories in existing run records; assessments and offline rescoring do not repeat collection.
 - Built-in children inherit parent permission decisions, execution grants, and nested call limits.
 - Async tool contexts expose the async backend without removing the synchronous compatibility bridge.
 - Shared child call budgets preserve provenance without charging a delegated call twice.

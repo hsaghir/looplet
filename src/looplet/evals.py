@@ -71,6 +71,7 @@ import sys
 import tempfile
 import time
 import warnings
+from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, NamedTuple, TextIO, cast
@@ -91,9 +92,11 @@ __all__ = [
     "EvalCase",
     "EvalContext",
     "EvalResult",
+    "EvalReport",
     "EvalHook",
     "assert_evals_pass",
     "eval_discover",
+    "eval_assess",
     "eval_run",
     "eval_run_batch",
     "eval_mark",
@@ -233,6 +236,87 @@ class EvalRunRecord(NamedTuple):
 
     def __exit__(self, *exc_info: Any) -> None:
         self.cleanup()
+
+
+@dataclass(frozen=True)
+class EvalReport:
+    """A versioned assessment, without agent inputs or collected artifacts."""
+
+    _data: dict[str, Any] = field(repr=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "_data", deepcopy(self._data))
+
+    @property
+    def passed(self) -> bool:
+        return self._data["passed"]
+
+    @property
+    def valid(self) -> bool:
+        return not self._data["integrity_failures"]
+
+    @property
+    def version(self) -> int:
+        return self._data["version"]
+
+    @property
+    def grader_manifest(self) -> list[dict[str, Any]]:
+        return deepcopy(self._data["grader_manifest"])
+
+    @property
+    def cases(self) -> list[dict[str, Any]]:
+        return deepcopy(self._data["cases"])
+
+    @property
+    def integrity_failures(self) -> list[str]:
+        return list(self._data["integrity_failures"])
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return an independent JSON-safe assessment snapshot."""
+        return deepcopy(self._data)
+
+    def assert_passed(self) -> None:
+        """Raise with failed checks or invalid assessment inputs."""
+        messages = list(self.integrity_failures)
+        for case in self._data["cases"]:
+            for result in case["results"]:
+                if _eval_state_fails(result["state"], required=result["required"]):
+                    if result["state"] == "missing":
+                        kind = "required grader" if result["required"] else "grader"
+                        detail = f"{kind} missing from run result"
+                    else:
+                        detail = result.get("explanation") or result.get("label") or result["state"]
+                    messages.append(f"{case['id']}/{result['name']}: {detail}")
+        assert self.passed, "\n".join(dict.fromkeys(messages)) or "Evaluation did not pass"
+
+    @classmethod
+    def from_records(
+        cls,
+        records: list[EvalRunRecord],
+        *,
+        grader_manifest: list[dict[str, Any]] | None = None,
+        threshold: float = 0.5,
+        output_dir: str | None = None,
+        version: int = 2,
+        integrity_failures: list[str] | None = None,
+    ) -> "EvalReport":
+        """Assess existing observations without executing agents or collectors."""
+        if grader_manifest is None:
+            manifests = [record.context.metadata.get("eval_grader_manifest") for record in records]
+            grader_manifest = manifests[0] if manifests and isinstance(manifests[0], list) else []
+            integrity_failures = list(integrity_failures or [])
+            if not grader_manifest or any(item != grader_manifest for item in manifests):
+                integrity_failures.append("Missing or inconsistent recorded grader inventory")
+        return cls(
+            _assess_eval_records(
+                records=records,
+                grader_manifest=grader_manifest,
+                threshold=threshold,
+                output_dir=output_dir,
+                version=version,
+                integrity_failures=integrity_failures,
+            )
+        )
 
 
 # ── Core data types ──────────────────────────────────────────────
@@ -1255,7 +1339,9 @@ def promote_to_offline(
     case: "EvalCase | None" = None,
     results: list["EvalResult"] | None = None,
 ) -> Path:
-    """Promote a live (ONLINE) eval run into a durable OFFLINE fixture.
+    """Save a live eval as an offline fixture through the canonical writer.
+
+    This compatibility alias does not promote an agent candidate.
 
     The headline workflow: you run an agent with an online
     :class:`EvalHook`, spot an interesting case (a regression, a slow
@@ -1469,6 +1555,10 @@ def run_cartridge_evals(
                 f"available: {', '.join(sorted(available)) or '(none)'}"
             )
     selected = [c for c in overview.cases if wanted is None or c.id in wanted]
+    if not selected:
+        raise ValueError("No eval cases selected")
+    if not overview.graders:
+        raise ValueError("No graders selected")
 
     records: list[EvalRunRecord] = []
     for case in selected:
@@ -1681,6 +1771,8 @@ def assert_evals_pass(
     judge_llm: "LLMBackend | None" = None,
     include: list[str] | None = None,
     exclude: list[str] | None = None,
+    threshold: float = 0.5,
+    version: int = 2,
 ) -> None:
     """Run ``evals`` against ``ctx`` and assert nothing failed.
 
@@ -1691,40 +1783,22 @@ def assert_evals_pass(
     calling this in a parametrized test does not re-import on every
     case).
 
-    Raises :class:`AssertionError` listing each failed eval's
-    :meth:`EvalResult.pretty` block on its own line.
+    Raises :class:`AssertionError` with the shared assessment's failures.
+    Version 2 rejects empty suites and gates without verdict-producing checks.
     """
     if isinstance(evals, (str, Path)):
         evaluators: list[Callable] = list(_discover_cached(str(Path(evals))))
     else:
         evaluators = list(evals)
-    required_names = {
-        evaluator.__name__
-        for evaluator in evaluators
-        if _REQUIRED_EVAL_MARK in _get_marks(evaluator)
-    }
-    expected_names = required_names | {
-        evaluator.__name__ for evaluator in _filter_evals(evaluators, include, exclude)
-    }
-    results = eval_run(evaluators, ctx, judge_llm=judge_llm, include=include, exclude=exclude)
-    failed = [
-        result
-        for result in results
-        if _eval_state_fails(
-            _eval_result_state(
-                result,
-                required=result.name in required_names,
-                threshold=0.5,
-            ),
-            required=result.name in required_names,
-        )
-    ]
-    messages = [result.pretty() for result in failed]
-    messages.extend(
-        f"{name}: {'required grader' if name in required_names else 'grader'} missing from run result"
-        for name in sorted(expected_names - {result.name for result in results})
-    )
-    assert not messages, "\n".join(messages)
+    eval_assess(
+        evaluators,
+        ctx,
+        judge_llm=judge_llm,
+        include=include,
+        exclude=exclude,
+        threshold=threshold,
+        version=version,
+    ).assert_passed()
 
 
 def eval_discover(
@@ -1899,6 +1973,56 @@ def eval_run(
     return results
 
 
+def eval_assess(
+    evaluators: list[Callable],
+    ctx: EvalContext,
+    *,
+    judge_llm: LLMBackend | None = None,
+    include: list[str] | None = None,
+    exclude: list[str] | None = None,
+    threshold: float = 0.5,
+    version: int = 2,
+    case: EvalCase | None = None,
+) -> EvalReport:
+    """Grade an observed outcome and assess it without running an agent or collector."""
+    _validate_eval_policy(threshold=threshold, version=version)
+    records, manifest = _rescore_eval_records(
+        [EvalRunRecord(case, ctx, [], Path("run"))],
+        evaluators,
+        judge_llm=judge_llm,
+        include=include,
+        exclude=exclude,
+    )
+    return EvalReport.from_records(
+        records, grader_manifest=manifest, threshold=threshold, version=version
+    )
+
+
+def _rescore_eval_records(
+    records: list[EvalRunRecord],
+    evaluators: list[Callable],
+    *,
+    judge_llm: LLMBackend | None = None,
+    include: list[str] | None = None,
+    exclude: list[str] | None = None,
+) -> tuple[list[EvalRunRecord], list[dict[str, Any]]]:
+    selected = _filter_evals(evaluators, include, exclude)
+    selected_names = {fn.__name__ for fn in selected}
+    manifest = _eval_grader_manifest(
+        [
+            fn
+            for fn in evaluators
+            if fn.__name__ in selected_names or _REQUIRED_EVAL_MARK in _get_marks(fn)
+        ]
+    )
+    graded = []
+    for record in records:
+        results = eval_run(selected, record.context, judge_llm=judge_llm)
+        record.context.metadata["eval_grader_manifest"] = deepcopy(manifest)
+        graded.append(record._replace(results=results))
+    return graded, manifest
+
+
 def _format_summary(results: list[EvalResult]) -> str:
     """One-line summary of eval results."""
     scored = [r for r in results if r.score is not None]
@@ -1968,6 +2092,7 @@ class EvalHook:
         self._task: dict[str, Any] = {}
         self._artifacts: dict[str, Any] = {}
         self._context: EvalContext | None = None
+        self._grader_manifest: list[dict[str, Any]] = []
 
     def to_config(self) -> dict:
         """Cartridge round-trip: emit ``evaluators`` (and ``collectors``
@@ -2020,6 +2145,20 @@ class EvalHook:
         """One-line summary of eval results."""
         return _format_summary(self._results)
 
+    def assessment(self, *, threshold: float = 0.5, version: int = 2) -> EvalReport:
+        """Assess the last run without repeating collection or grading."""
+        records = (
+            [EvalRunRecord(None, self._context, list(self._results), Path("run"))]
+            if self._context is not None
+            else []
+        )
+        return EvalReport.from_records(
+            records,
+            grader_manifest=self._grader_manifest,
+            threshold=threshold,
+            version=version,
+        )
+
     def report(self) -> str:
         """Multi-line formatted report."""
         if not self._results:
@@ -2065,6 +2204,7 @@ class EvalHook:
         llm: LLMBackend,
     ) -> int:
         """Run all evaluators after the loop finishes."""
+        self._grader_manifest = _eval_grader_manifest(self.evaluators)
         steps = getattr(state, "steps", [])
 
         # Refresh every run: EvalHook instances are reusable and must not
@@ -2178,6 +2318,7 @@ class EvalHook:
         self._context = ctx
 
         self._results = eval_run(self.evaluators, ctx, judge_llm=self.judge_llm)
+        ctx.metadata["eval_grader_manifest"] = deepcopy(self._grader_manifest)
 
         if self.verbose:
             print(f"\n{'─' * 50}")
@@ -2347,24 +2488,65 @@ def _eval_grader_manifest(graders: list[Callable]) -> list[dict[str, Any]]:
     ]
 
 
-def _build_eval_summary(
+def _validate_eval_policy(*, threshold: float, version: int) -> None:
+    if version not in (1, 2):
+        raise ValueError("Eval report version must be 1 or 2")
+    if not math.isfinite(threshold) or not 0.0 <= threshold <= 1.0:
+        raise ValueError("Eval threshold must be finite and between 0 and 1")
+
+
+def _assess_eval_records(
     *,
     records: list[EvalRunRecord],
     grader_manifest: list[dict[str, Any]],
     threshold: float,
     output_dir: str | None,
+    version: int,
+    integrity_failures: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Build the stable v1 CI report from one trusted pre-run grader manifest."""
-    manifest = [dict(item) for item in grader_manifest]
+    """Apply one verdict policy to trusted results and a frozen grader inventory."""
+    _validate_eval_policy(threshold=threshold, version=version)
+    manifest = deepcopy(grader_manifest)
+    if version == 2 and any(
+        not isinstance(item, dict)
+        or not isinstance(item.get("name"), str)
+        or not item["name"]
+        or item["name"].startswith("collector:")
+        or not isinstance(item.get("marks"), list)
+        or not all(isinstance(mark, str) for mark in item["marks"])
+        or not isinstance(item.get("required"), bool)
+        or item["required"] != (_REQUIRED_EVAL_MARK in item["marks"])
+        for item in manifest
+    ):
+        raise ValueError(
+            "Invalid grader manifest: expected named graders with consistent required marks"
+        )
     manifest_names = {item["name"] for item in manifest}
-    integrity_failures: list[str] = []
+    integrity_failures = list(integrity_failures or [])
     case_reports: list[dict[str, Any]] = []
-    failed = False
+    failed = bool(integrity_failures)
+    if version == 2:
+        if not records:
+            integrity_failures.append("No evaluation cases")
+        if not manifest:
+            integrity_failures.append("No graders selected")
+        if len(manifest_names) != len(manifest):
+            integrity_failures.append("Duplicate grader names")
+        failed = bool(integrity_failures)
 
+    inventory_invalid = version == 2 and (not manifest or len(manifest_names) != len(manifest))
     for record in records:
-        case_id = record.case.id if record.case is not None else "?"
+        before_case = len(integrity_failures)
+        case_id = record.case.id if record.case is not None else record.directory.name or "run"
         case_marks = sorted(record.case.marks) if record.case is not None else []
-        by_name = {result.name: result for result in record.results}
+        observed_results = list(record.results)
+        for error in _recorded_collector_errors(record.context):
+            if not any(result.to_dict() == error.to_dict() for result in observed_results):
+                observed_results.append(error)
+        by_name = {result.name: result for result in observed_results}
+        if version == 2 and len(by_name) != len(observed_results):
+            integrity_failures.append(f"{case_id}: duplicate grader results")
+            failed = True
         results: list[dict[str, Any]] = []
         for expected in manifest:
             result = by_name.get(expected["name"])
@@ -2381,14 +2563,16 @@ def _build_eval_summary(
                 integrity_failures.append(
                     f"{case_id}/{item['name']}: grader missing from run result"
                 )
-            elif item["required_status"] == "failed":
+            elif item["required_status"] == "failed" and (
+                version == 1 or item["state"] in {"skipped", "metric_only", "grader_error"}
+            ):
                 integrity_failures.append(
                     f"{case_id}/{item['name']}: required grader {item['state']}"
                 )
             elif item["state"] == "grader_error":
                 integrity_failures.append(f"{case_id}/{item['name']}: grader error")
 
-        for result in record.results:
+        for result in observed_results:
             if result.name in manifest_names:
                 continue
             collector = result.name.startswith("collector:")
@@ -2406,24 +2590,36 @@ def _build_eval_summary(
                 integrity_failures.append(f"{case_id}/{item['name']}: collector error")
             elif item["state"] == "grader_error":
                 integrity_failures.append(f"{case_id}/{item['name']}: unexpected grader error")
+            elif version == 2 and not collector:
+                integrity_failures.append(f"{case_id}/{item['name']}: unexpected grader result")
+                failed = True
 
-        case_reports.append(
-            {
-                "id": case_id,
-                "marks": case_marks,
-                "completed": record.context.completed,
-                "state": "fail"
-                if any(
-                    _eval_state_fails(item["state"], required=item["required"]) for item in results
-                )
-                else "pass",
-                "results": results,
-            }
-        )
+        if version == 2 and not any(
+            item["state"] in {"pass", "explicit_fail", "threshold_fail"}
+            for item in results
+            if item["name"] in manifest_names
+        ):
+            integrity_failures.append(f"{case_id}: no verdict-producing grader ran")
+            failed = True
+
+        case_valid = not inventory_invalid and len(integrity_failures) == before_case
+        case_failed = any(
+            _eval_state_fails(item["state"], required=item["required"]) for item in results
+        ) or (version == 2 and not case_valid)
+        case_report = {
+            "id": case_id,
+            "marks": case_marks,
+            "completed": record.context.completed,
+            "state": "fail" if case_failed else "pass",
+            "results": results,
+        }
+        if version == 2:
+            case_report["valid"] = case_valid
+        case_reports.append(case_report)
 
     report = {
         "schema": _EVAL_SUMMARY_SCHEMA,
-        "version": _EVAL_SUMMARY_VERSION,
+        "version": version,
         "state": "fail" if failed else "pass",
         "passed": not failed,
         "threshold": threshold,
@@ -2432,10 +2628,29 @@ def _build_eval_summary(
         "integrity_failures": integrity_failures,
         "output_dir": output_dir,
     }
+    if version == 2:
+        report["valid"] = not integrity_failures
     assert {item["state"] for case in case_reports for item in case["results"]} <= (
         _EVAL_RESULT_STATES
     )
     return report
+
+
+def _build_eval_summary(
+    *,
+    records: list[EvalRunRecord],
+    grader_manifest: list[dict[str, Any]],
+    threshold: float,
+    output_dir: str | None,
+) -> dict[str, Any]:
+    """Retain the eval-summary v1 wire contract through the shared assessment."""
+    return EvalReport.from_records(
+        records,
+        grader_manifest=grader_manifest,
+        threshold=threshold,
+        output_dir=output_dir,
+        version=_EVAL_SUMMARY_VERSION,
+    ).to_dict()
 
 
 # ── Batch runner ─────────────────────────────────────────────────
@@ -2469,15 +2684,21 @@ def eval_run_batch(
         List of dicts, one per evaluator, with keys:
         name, scores, avg_score, min_score, max_score, per_run.
     """
-    filtered = _filter_evals(evaluators, include, exclude)
-    all_results: list[list[EvalResult]] = []
-    grader_names = [evaluator.__name__ for evaluator in filtered]
+    grader_names = [fn.__name__ for fn in _filter_evals(evaluators, include, exclude)]
+    records, _manifest = _rescore_eval_records(
+        [EvalRunRecord(None, ctx, [], Path(f"run_{index}")) for index, ctx in enumerate(contexts)],
+        evaluators,
+        judge_llm=judge_llm,
+        include=include,
+        exclude=exclude,
+    )
+    return _eval_batch_table(records, grader_names)
 
-    for ctx in contexts:
-        results = eval_run(filtered, ctx, judge_llm=judge_llm)
-        all_results.append(results)
 
-    # Pivot: per-evaluator aggregation
+def _eval_batch_table(
+    records: list[EvalRunRecord], grader_names: list[str]
+) -> list[dict[str, Any]]:
+    all_results = [record.results for record in records]
     summary: list[dict[str, Any]] = []
     names = grader_names + sorted(
         {result.name for results in all_results for result in results} - set(grader_names)
@@ -2498,7 +2719,7 @@ def eval_run_batch(
         entry: dict[str, Any] = {
             "name": name,
             "scores": scores,
-            "runs": len(contexts),
+            "runs": len(records),
         }
         if scores:
             entry["avg_score"] = round(sum(scores) / len(scores), 3)
@@ -2590,12 +2811,29 @@ def eval_cli(args: list[str] | None = None) -> int:
     )
     parser.add_argument("--exclude", nargs="*", default=None, help="Skip evals with these marks")
     parser.add_argument("-v", "--verbose", action="store_true", help="Show per-run details")
+    parser.add_argument("--json", action="store_true", help="Emit one machine-readable assessment")
+    parser.add_argument(
+        "--summary-version",
+        type=int,
+        choices=(1, 2),
+        default=1,
+        help="Assessment policy and schema version (default: 1 for compatibility)",
+    )
 
     parsed = parser.parse_args(args)
     if not math.isfinite(parsed.threshold) or not 0.0 <= parsed.threshold <= 1.0:
         print("error: --threshold must be finite and between 0 and 1")
         return 1
 
+    from looplet.cli import execution_output  # noqa: PLC0415
+
+    output = sys.stdout
+    with execution_output(parsed.json):
+        return _run_saved_evaluation(parsed, output=output)
+
+
+def _run_saved_evaluation(parsed: Namespace, *, output: TextIO) -> int:
+    """Rescore saved observations through the shared assessment policy."""
     # Discover evals
     eval_path = parsed.evals or "."
     try:
@@ -2609,11 +2847,11 @@ def eval_cli(args: list[str] | None = None) -> int:
 
     # Discover trajectories
     traces_root = Path(parsed.traces)
-    if not traces_root.exists():
+    if not traces_root.is_dir():
         print(f"Traces directory not found: {traces_root}")
         return 1
 
-    contexts: list[EvalContext] = []
+    records: list[EvalRunRecord] = []
     names: list[str] = []
     load_failures: list[str] = []
     for d in sorted(traces_root.iterdir()):
@@ -2625,8 +2863,10 @@ def eval_cli(args: list[str] | None = None) -> int:
                     if descriptor is not None
                     else (d / "evals.json").is_file()
                 )
-                contexts.append(
-                    load_eval_run(d).context if is_eval_run else EvalContext.from_trajectory_dir(d)
+                records.append(
+                    load_eval_run(d)
+                    if is_eval_run
+                    else EvalRunRecord(None, EvalContext.from_trajectory_dir(d), [], d)
                 )
                 names.append(d.name)
             except Exception as e:  # noqa: BLE001
@@ -2634,41 +2874,55 @@ def eval_cli(args: list[str] | None = None) -> int:
                 load_failures.append(failure)
                 print(f"  ERROR {failure}")
 
-    if not contexts:
+    if not records:
         print(f"No trajectories found in {traces_root}")
         return 1
 
-    print(f"Found {len(evaluators)} evals, {len(contexts)} trajectories\n")
+    if not parsed.json:
+        print(f"Found {len(evaluators)} evals, {len(records)} trajectories\n")
 
-    # Run batch
-    required_names = {fn.__name__ for fn in evaluators if _REQUIRED_EVAL_MARK in _get_marks(fn)}
-    table = eval_run_batch(
+    selected_names = [
+        fn.__name__ for fn in _filter_evals(evaluators, parsed.include, parsed.exclude)
+    ]
+    records, manifest = _rescore_eval_records(
+        records,
         evaluators,
-        contexts,
         include=parsed.include,
         exclude=parsed.exclude,
     )
-    if not table:
+    if not selected_names and not manifest:
         print("No evals selected after applying include/exclude filters")
-        return 1
+        if not parsed.json:
+            return 1
 
-    # Print results
-    below_threshold = False
-    integrity_failures: list[str] = []
-    selected_names = {row["name"] for row in table}
-    for omitted in sorted(required_names - selected_names):
-        integrity_failures.append(f"{omitted}: required evaluator was filtered out")
+    assessment = EvalReport.from_records(
+        records,
+        grader_manifest=manifest,
+        threshold=parsed.threshold,
+        version=parsed.summary_version,
+        integrity_failures=[f"trajectory load failed: {failure}" for failure in load_failures]
+        + ([] if manifest else ["No graders selected"]),
+    )
+    report = assessment.to_dict()
+    if parsed.json:
+        print(json.dumps(report, indent=2), file=output)
+        return 0 if assessment.passed else 1
+
+    table = _eval_batch_table(records, selected_names)
+    by_name: dict[str, list[dict[str, Any]]] = {}
+    for case in report["cases"]:
+        for result in case["results"]:
+            by_name.setdefault(result["name"], []).append(result)
     for row in table:
-        required = row["name"] in required_names
-        states = [
-            _eval_result_state(run, required=required, threshold=parsed.threshold)
-            for run in row.get("per_run", [])
-        ]
-        below_threshold |= "threshold_fail" in states
+        results = by_name[row["name"]]
         avg = row.get("avg_score")
         if avg is not None:
             marker = (
-                "✗" if any(_eval_state_fails(state, required=required) for state in states) else "✓"
+                "✗"
+                if any(
+                    _eval_state_fails(item["state"], required=item["required"]) for item in results
+                )
+                else "✓"
             )
             print(
                 f"  {marker} {row['name']:40s} avg={avg:.2f}  "
@@ -2688,25 +2942,25 @@ def eval_cli(args: list[str] | None = None) -> int:
                 for d in details[:3]:
                     print(f"        {d}")
 
-        for j, run in enumerate(row.get("per_run", [])):
-            if states[j] != "threshold_fail" and _eval_state_fails(states[j], required=required):
-                run_name = names[j] if j < len(names) else f"run_{j}"
-                integrity_failures.append(
-                    f"{run_name}/{row['name']}: {run.get('label') or states[j]}"
-                )
-
-    # Summary
     scored = [r for r in table if r.get("avg_score") is not None]
     if scored:
         overall = sum(r["avg_score"] for r in scored) / len(scored)
         print(f"\n  overall: {overall:.2f}")
-        if parsed.threshold > 0:
-            status = "FAIL" if below_threshold or integrity_failures else "PASS"
-            print(f"  threshold: {parsed.threshold:.2f}  → {status}")
+    print(f"  threshold: {parsed.threshold:.2f}  → {'PASS' if assessment.passed else 'FAIL'}")
 
-    if integrity_failures:
+    if assessment.integrity_failures:
         print("\n  integrity failures:")
-        for failure in integrity_failures:
+        for failure in assessment.integrity_failures:
+            print(f"    - {failure}")
+    failed_checks = [
+        f"{case['id']}/{item['name']}: {item.get('label') or item['state']}"
+        for case in report["cases"]
+        for item in case["results"]
+        if _eval_state_fails(item["state"], required=item["required"])
+    ]
+    if failed_checks:
+        print("\n  failed checks:")
+        for failure in failed_checks:
             print(f"    - {failure}")
 
     if load_failures:
@@ -2714,7 +2968,7 @@ def eval_cli(args: list[str] | None = None) -> int:
         for failure in load_failures:
             print(f"    - {failure}")
 
-    return 1 if below_threshold or integrity_failures or load_failures else 0
+    return 0 if assessment.passed else 1
 
 
 def _run_cartridge_cli(args: list[str]) -> int:
@@ -2772,6 +3026,13 @@ def _run_cartridge_cli(args: list[str]) -> int:
         "--json",
         action="store_true",
         help="Emit one machine-readable eval report",
+    )
+    parser.add_argument(
+        "--summary-version",
+        type=int,
+        choices=(1, 2),
+        default=1,
+        help="Assessment policy and schema version (default: 1 for compatibility)",
     )
     parsed = parser.parse_args(args)
     if not math.isfinite(parsed.threshold) or not 0.0 <= parsed.threshold <= 1.0:
@@ -2849,12 +3110,13 @@ def _run_cartridge_evaluation(parsed: Namespace, *, output: TextIO) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
-    report = _build_eval_summary(
-        records=records,
+    report = EvalReport.from_records(
+        records,
         grader_manifest=grader_manifest,
         threshold=parsed.threshold,
         output_dir=str(parsed.out) if parsed.out else None,
-    )
+        version=parsed.summary_version,
+    ).to_dict()
     grader_names = [item["name"] for item in report["grader_manifest"]]
     header = f"{'case':22}" + "".join(f"{n:22}" for n in grader_names)
     if not parsed.json:

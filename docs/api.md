@@ -265,6 +265,8 @@ Use the [experiment guide](experiments.md) to choose a suitable comparison.
 
 ## Behavioral evals
 
+An eval checks a host-owned behavioral contract against an observed outcome.
+It does not hide execution inside another runner.
 Choose one owner for result checks.
 Python hosts attach `EvalHook` explicitly.
 Cartridge authors use `run_cartridge_evals()` or `looplet eval run`.
@@ -276,7 +278,11 @@ They use the same loop.
 | `EvalCase` / `load_cases(...)` / `save_case(...)` | Task input, grader-only expected data, marks, and notes as reviewable JSON. |
 | `EvalContext` | Final output, observed artifacts, steps, stop reason, and grader task view. |
 | `EvalResult` | Explicit gate score, passive metrics, details, or error information. Boolean graders also work. |
+| `EvalReport` | Versioned assessment with `passed`, `valid`, results, and integrity failures. |
+| `eval_assess(graders, ctx, ...)` | Grade an existing observation and assess it without executing an agent or collector. |
 | `EvalHook` | Host-attached collection and scoring at the end of a live loop. |
+| `hook.assessment(...)` | Assess the latest grades without repeating collection or grading. |
+| `EvalReport.from_records(records, ...)` | Assess saved grades using a recorded or explicit trusted grader inventory. |
 | `eval_mark(...)` | Attach selection marks such as `required`, `smoke`, or `slow`. |
 | `run_cartridge_evals(...)` | Own collection and grading for a cartridge's self-tests, replacing embedded eval observers. |
 | `save_eval_run(...)` / `load_eval_run(...)` | Persist and restore one self-contained eval record. |
@@ -284,9 +290,16 @@ They use the same loop.
 Custom hosts can use `eval_discover()`, `eval_run()`, and `eval_run_batch()`.
 For pytest, use `parametrize_cases()` and `assert_evals_pass()` as needed.
 These helpers use the same graders and result rules.
+Version 2 assessment APIs reject empty or measurement-only gates.
+`valid` distinguishes evaluation integrity from failed agent behavior; `passed` decides the release gate.
+Completion remains a separate fact.
+Use `version=1` for the previous assessment policy.
+Both CLI paths support `--json` and `--summary-version 2`; their default remains version 1 for compatibility.
+Raw result lists, batch tables, hook strings, and durable run records retain their existing shapes.
 Records without a saved directory support `cleanup()` and `with`.
 Saved records retain their evidence.
 `EvalHook.save()` and implicit dictionary scores are deprecated.
+`promote_to_offline()` remains a fixture-saving compatibility alias, not candidate promotion.
 
 A required grader fails if it is skipped, has an error, or misses the pass threshold.
 Collector errors become explicit results.

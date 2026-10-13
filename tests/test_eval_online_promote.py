@@ -25,8 +25,10 @@ from looplet import (
     EvalCase,
     EvalContext,
     EvalHook,
+    EvalReport,
     LoopConfig,
     composable_loop,
+    eval_assess,
     eval_run,
     load_eval_run,
     promote_to_offline,
@@ -97,6 +99,58 @@ def test_evalhook_context_exposes_trajectory_online() -> None:
 def test_evalhook_context_none_before_run() -> None:
     hook = EvalHook(evaluators=[_grader_completed])
     assert hook.context is None
+    assert not hook.assessment().valid
+
+
+@pytest.mark.parametrize("broken", [False, True])
+def test_hook_assessment_reload_and_rescore_never_repeat_collectors(tmp_path, broken):
+    calls = []
+
+    def collect(state):
+        calls.append(state)
+        if broken:
+            raise OSError("observation unavailable")
+        return {"independent_observation": True}
+
+    hook = _run_online(collectors=[collect])
+    online = hook.assessment()
+    hook.assessment(threshold=0.9)
+    assert len(calls) == 1
+    assert online.passed is (not broken)
+    assert online.valid is (not broken)
+    run = load_eval_run(promote_to_offline(tmp_path / "run", eval_hook=hook))
+    offline = EvalReport.from_records([run])
+    rescored = eval_assess(hook.evaluators, run.context)
+    assert offline.passed == rescored.passed == online.passed
+    assert offline.valid == rescored.valid == online.valid
+    assert offline.grader_manifest == rescored.grader_manifest == online.grader_manifest
+    assert len(calls) == 1
+
+
+def test_hook_freezes_required_marks_before_grading():
+    from looplet import eval_mark
+
+    @eval_mark("required")
+    def eval_gate(ctx):
+        getattr(eval_gate, "_eval_marks").clear()
+        return False
+
+    hook = EvalHook([eval_gate])
+    list(
+        composable_loop(
+            llm=MockLLMBackend(_scripted()),
+            tools=_build_tools(),
+            state=DefaultState(max_steps=5),
+            config=LoopConfig(max_steps=5, use_native_tools=False),
+            task={"goal": "echo"},
+            hooks=[hook],
+        )
+    )
+    report = hook.assessment()
+    assert report.valid and not report.passed
+    assert report.grader_manifest == [
+        {"name": "eval_gate", "marks": ["required"], "required": True}
+    ]
 
 
 def test_evalhook_extracts_secondary_terminal_output() -> None:

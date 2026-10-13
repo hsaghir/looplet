@@ -299,6 +299,28 @@ def _smoke_cli_workflow(coder_bundle_path: Path) -> None:
         assert inspected_trace == json.loads(run_cli("show", trace, "--json").stdout)
         assert task in inspected_trace["trajectory"]["task"].values()
 
+        graders = root / "eval_completed.py"
+        graders.write_text(
+            "from looplet import eval_mark\n"
+            "@eval_mark('required')\n"
+            "def eval_completed(ctx):\n    return ctx.completed\n",
+            encoding="utf-8",
+        )
+        assessment = json.loads(
+            run_cli(
+                "eval",
+                str(Path(trace).parent),
+                "--evals",
+                str(graders),
+                "--json",
+                "--summary-version",
+                "2",
+            ).stdout
+        )
+        assert assessment["schema"] == "looplet.eval-summary"
+        assert assessment["version"] == 2
+        assert assessment["valid"] and assessment["passed"]
+
         follow_up = json.loads(
             run_cli(
                 "run",
@@ -425,6 +447,14 @@ def main() -> int:
     package_root = Path(looplet.__file__).resolve().parent
     factory = _factory_workspace_path().resolve()
     _qualify_python_clients()
+    report = looplet.eval_assess(
+        [lambda context: context.artifacts["observed"]],
+        looplet.EvalContext(steps=[], artifacts={"observed": True}, stop_reason="hook_stop"),
+    )
+    assert isinstance(report, looplet.EvalReport)
+    report.assert_passed()
+    assert report.valid and not report.cases[0]["completed"]
+    assert not looplet.eval_assess([], looplet.EvalContext(steps=[])).passed
 
     assert package_root in factory.parents
     assert factory == package_root / "_bundled" / "agent_factory.cartridge"

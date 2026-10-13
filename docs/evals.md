@@ -1,14 +1,23 @@
-# Behavioral evals: turn failures into release contracts
+# Behavioral evals
 
-Looplet evals make harness behavior testable in the same workflow as normal
-Python code:
+An eval is a host-owned behavioral contract checked against an observed run outcome.
+The contract does not execute or control the agent.
 
-1. **Case:** preserve the task that exposed a failure.
-2. **Collector:** inspect the resulting world state independently of the
-    agent's claim.
-3. **Grader:** score the observed outcome against grader-only expectations.
-4. **Run record:** save the case, observed outcome, and grades together.
-5. **Required mark:** turn the behavior into a fail-closed CI gate.
+| Concept | Meaning |
+| --- | --- |
+| Case | Agent-visible task plus separate grader-only expectations. |
+| Observation | Final output, independently collected artifacts, and execution facts in `EvalContext`. |
+| Check | An ordinary Python grader, optionally using a judge model. |
+| Assessment | Check results, metrics, integrity failures, and an explicit gate decision in `EvalReport`. |
+
+Use one workflow:
+
+1. Preserve the case that exposed a failure.
+2. Own execution through your existing loop or preset.
+3. Collect the outcome independently of the agent's claim.
+4. Check the behavioral contract with ordinary graders.
+5. Save the run evidence and the release assessment.
+6. Gate the release on `report.passed`, not an average score.
 
 Write functions named `eval_*` and Looplet discovers and runs them. Unlike
 ordinary assertions, evals may return scores from 0–1 because some quality
@@ -21,7 +30,7 @@ pass/fail exit codes.
 run the self-tests:
 
 ```bash
-looplet eval run ./agent.cartridge --out eval-runs/run-001 --json
+looplet eval run ./agent.cartridge --out eval-runs/run-001 --json --summary-version 2
 ```
 
 The Python equivalent is `run_cartridge_evals()`. This runner owns evaluation
@@ -108,6 +117,49 @@ preserves the legacy score. A dictionary's explicit `score` remains supported.
 If a grader takes an `llm` parameter, the framework passes the judge backend
 when supplied. Optional judges may be skipped; required judges may not.
 
+## One assessment across interfaces
+
+Use `eval_assess()` when you have an observed context that needs grading:
+
+```python
+from looplet import eval_assess, eval_discover, load_eval_run
+
+graders = eval_discover("evals/", strict=True)
+record = load_eval_run("eval-runs/run-001/case-1")
+report = eval_assess(graders, record.context, case=record.case, threshold=0.7)
+print(report.to_dict())
+report.assert_passed()
+```
+
+This runs graders only. It does not execute the agent or repeat collection.
+Use `hook.assessment()` after live grading to avoid running those graders twice.
+Use `EvalReport.from_records(records, threshold=0.7)` to assess saved grades without rescoring.
+These interfaces share the same result classification and gate policy.
+
+Version 2 is the default for these Python assessment APIs and `assert_evals_pass()`.
+It rejects empty observations, empty grader selections, duplicate results, and gates without any verdict-producing check.
+Passive metrics and optional skipped judges remain visible but cannot establish a passing gate alone.
+Required missing, skipped, or measurement-only checks fail closed.
+Collector and grader errors also fail closed.
+
+`report.valid` distinguishes usable grading from evaluation integrity failures.
+A valid assessment can fail because the agent produced a wrong answer.
+`report.passed` is the release decision.
+Completion remains a separate case fact; it does not imply correctness or become an implicit requirement.
+Require completion explicitly in a grader when your contract needs it.
+
+Version 1 retains the previous gate semantics and JSON fields.
+Pass `version=1` to Python assessment APIs for compatibility.
+Both CLI routes default to version 1; select version 2 with `--summary-version 2`.
+An empty assertion suite now fails by default instead of silently succeeding.
+Raw `eval_run()` lists, `eval_run_batch()` tables, and hook text reports keep their existing shapes.
+
+Hooks preserve the pre-grading inventory in the existing run metadata.
+`EvalReport.from_records()` uses that inventory when no explicit `grader_manifest` is supplied.
+Older records need an explicit trusted manifest or fresh grading with `eval_assess()`.
+Supply the release threshold and version explicitly when comparing assessments.
+Snapshots returned by `to_dict()`, `cases`, and `grader_manifest` are independent copies.
+
 ## Trajectory-blind evals: grade outcomes, not process
 
 The single biggest pitfall when writing evals is grading the *trajectory*
@@ -183,7 +235,7 @@ online and after reload. Treat eval-run directories as sensitive prompt
 evidence and apply the provenance recorder's `redact=` option where
 needed:
 
-```
+```text
 eval-runs/run_1/
 ├── artifact.json
 ├── trajectory.json
@@ -234,6 +286,10 @@ evaluator that decides promotion. Separate paths alone do not constrain
 arbitrary same-user code; use OS or process isolation when the candidate is
 untrusted.
 
+Discovery freezes only the inventory it finds; it cannot detect a grader deleted before discovery.
+Keep an expected grader inventory outside candidate control when deletion detection matters.
+Recorded inventories are audit data, not authenticated authority against editable evidence.
+
 ## Attach to your loop
 
 For a Python host, evaluation is explicit and attached once:
@@ -249,12 +305,14 @@ hook = EvalHook(
 for step in composable_loop(..., hooks=[hook]):
     ...
 print(hook.summary())          # "1 scored (avg 1.00), 1 labeled"
+report = hook.assessment()
 save_eval_run("eval-runs/run_1", eval_hook=hook)
+report.assert_passed()
 ```
 
 `EvalHook.save()` remains a deprecated, one-way standalone report for old
 callers. It is not another durable format to choose from. `promote_to_offline()`
-is a compatibility convenience over `save_eval_run()`, not a second lifecycle.
+is a compatibility alias for saving a fixture. It does not promote an agent candidate.
 
 ## Discover and batch-run across saved trajectories
 
@@ -409,15 +467,16 @@ def test_coder(case, my_agent):           # `my_agent` = your own fixture
 `parametrize_cases` carries each case's `marks` through, so `-k <id>`,
 `-m <mark>`, `--lf`, IDE integration, and JUnit XML all work without a
 custom plugin. `assert_evals_pass` runs the evaluators, collects any
-failures, and raises `AssertionError` with each failed result's
-`pretty()` block on its own line. Discovery is cached, so calling it
-once per parametrized case is free.
+failures, and raises `AssertionError` with the shared assessment's failures.
+Path-based discovery is strict and cached.
+Import failures or duplicate grader names cannot produce a partial passing suite.
 
 The fixture's `run(case)` should return an observed, ungraded context when
 `assert_evals_pass()` owns grading. Do not attach an eval hook and then invoke
 the same graders again just to assert their results. Metric-only results and
 optional skipped judges are neutral; required, errored, missing, or failing
-graders fail the assertion. Numeric scores use the default $0.5$ boundary.
+graders fail the assertion. They cannot satisfy a version 2 gate without a verdict-producing check.
+Numeric scores use the default $0.5$ boundary; `threshold=` selects a stricter gate.
 
 If you want more control over selected evaluators, judge models, or individual
 results, drop down to the primitives:
@@ -466,7 +525,7 @@ Like `pytest` with exit codes:
 looplet eval traces/ --evals eval_agent.py --threshold 0.7 -v
 ```
 
-```
+```text
   ✓ eval_verdict_correct           avg=1.00  min=1.00  max=1.00  (5 runs)
   ✗ eval_ioc_quality               avg=0.42  min=0.20  max=0.80  (5 runs)
   ✓ eval_no_tool_errors            avg=1.00  min=1.00  max=1.00  (5 runs)
@@ -480,14 +539,19 @@ below the threshold fails its run; an average cannot hide it. Aggregate scores
 are descriptive only. An explicit `--threshold 0` retains the old numeric
 default, but required graders still enforce their $0.5$ floor.
 
-For a cartridge's colocated cases, `--json` emits the stable transient CI
-schema `looplet.eval-summary` version 1:
+Both CLI routes emit the same transient `looplet.eval-summary` report with `--json`:
 
 ```bash
-looplet eval run ./agent.cartridge --threshold 0.7 --json > eval-summary.json
-jq -e '.schema == "looplet.eval-summary" and .version == 1 and .passed' \
+looplet eval run ./agent.cartridge --threshold 0.7 --json --summary-version 2 > eval-summary.json
+looplet eval eval-runs/run-001/ --evals evals/ --threshold 0.7 --json --summary-version 2
+jq -e '.schema == "looplet.eval-summary" and .version == 2 and .valid and .passed' \
     eval-summary.json
 ```
+
+The first command executes fresh agent runs and collects outcomes.
+The second rescores existing observations; it does not repeat execution or collection.
+Ordinary grader diagnostic output goes to stderr in JSON mode.
+Partial trajectory load failures remain visible in the assessment and produce a failing exit code.
 
 The command itself exits non-zero exactly when `passed` is false. The report
 includes the trusted pre-run `grader_manifest`, case IDs and marks, and one
@@ -510,7 +574,13 @@ can satisfy the ordinary $0.5$ required boundary while still receiving
 `threshold_fail` under a stricter CLI threshold. Collector and grader errors
 include an `error` string and can never serialize as passing.
 
+Version 2 retains these result states and adds top-level and per-case `valid`.
+Unlike version 1, a required behavioral failure is not itself an integrity failure.
+Missing checks, skipped required checks, collector failures, and grader errors still invalidate evaluation.
+Measurement-only assessments are not release gates in version 2.
+
 This summary is a decision report, not a persisted run format. Use
 `save_eval_run()` / `--out` for durable evidence and preserve its sibling
 `artifact.json` descriptor. The JSON report intentionally omits task data,
 expected data, prompts, responses, and artifact values.
+Grader-authored explanations and details remain report content; graders must not disclose protected data there.

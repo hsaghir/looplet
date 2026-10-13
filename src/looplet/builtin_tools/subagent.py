@@ -206,12 +206,17 @@ def _execute(
         "subagent_id": subagent_id,
         "build_summary": summarize,
     }
+    if policy is not None and policy.model_budget is not None:
+        options["llm"] = policy.model_budget.wrap(
+            options["llm"], deadline=policy.deadline, cancel_token=sub_preset.config.cancel_token
+        )
 
     if _is_async_backend(options["llm"]):
 
         async def execute_async() -> dict[str, Any]:
             token = _DEPTH_VAR.set(depth + 1)
             try:
+                options["hooks"] = sub_preset._prepare_run(options["llm"], ())
                 return await run_sub_loop_async(**options)
             finally:
                 _DEPTH_VAR.reset(token)
@@ -221,6 +226,7 @@ def _execute(
 
     token = _DEPTH_VAR.set(depth + 1)
     try:
+        options["hooks"] = sub_preset._prepare_run(options["llm"], ())
         return run_sub_loop(**options)
     finally:
         _DEPTH_VAR.reset(token)
@@ -272,6 +278,5 @@ SPEC = ToolSpec(
         },
         "required": ["workspace", "task"],
     },
-    requires=["workspace_config"],
     execute=_execute,
 )

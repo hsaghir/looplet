@@ -20,6 +20,7 @@ portability gap.
 
 from __future__ import annotations
 
+from contextlib import ExitStack
 from pathlib import Path
 
 import pytest
@@ -34,6 +35,30 @@ def test_hello_portable_static_profile_is_portable() -> None:
     report = analyse_cartridge(_CARTRIDGE)
     assert report.profile == "portable"
     assert report.blockers == ()
+
+
+@pytest.mark.timeout(60)
+def test_delayed_portable_hooks_keep_each_presets_state() -> None:
+    with ExitStack() as owned:
+        presets = [owned.enter_context(cartridge_to_preset(_CARTRIDGE)) for _ in range(3)]
+        for preset, name in zip(presets, ("Aster", "Birch", "Cedar")):
+            for hook in preset.hooks:
+                if hasattr(hook, "pre_loop"):
+                    hook.pre_loop(None, None, None)
+            guard = next(
+                hook for hook in preset.hooks if "Politeness" in getattr(hook, "_cartridge_id", "")
+            )
+            assert guard.check_done(None, None, None, 0)
+            result = preset.tools.dispatch(ToolCall(tool="greet", args={"name": name}))
+            assert result.error is None
+            assert preset.resources["greeting_log"].names() == [name]
+            assert guard.check_done(None, None, None, 1) is None
+        assert [preset.resources["greeting_log"].names() for preset in presets] == [
+            ["Aster"],
+            ["Birch"],
+            ["Cedar"],
+        ]
+    assert all(not preset.mcp_adapters and not preset.state_service_handles for preset in presets)
 
 
 @pytest.mark.timeout(60)

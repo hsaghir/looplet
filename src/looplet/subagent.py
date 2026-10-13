@@ -163,6 +163,23 @@ class _BudgetedBackend:
         return guarded
 
 
+class _BudgetedRouter:
+    def __init__(self, router: Any, budget: SharedModelBudget, policy: ChildRunPolicy) -> None:
+        self._router = router
+        self._budget = budget
+        self._policy = policy
+
+    def select(self, purpose: str, **kwargs: Any) -> Any:
+        return self._budget.wrap(
+            self._router.select(purpose=purpose, **kwargs),
+            deadline=self._policy.deadline,
+            cancel_token=self._policy.cancel_token,
+        )
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._router, name)
+
+
 @dataclass
 class _ChildRun:
     inputs: dict[str, Any]
@@ -175,6 +192,35 @@ class _ChildRun:
     recovery_store: Any = None
     recovery_binding: str | None = None
     error_reason: str | None = None
+
+
+class _ChildRecoveryEvidence:
+    def __init__(self, checkpoint_state: Any, restore_checkpoint_state: Any) -> None:
+        self._checkpoint_state = checkpoint_state
+        self._restore_checkpoint_state = restore_checkpoint_state
+        self._recovered_steps: list[dict[str, Any]] = []
+
+    def checkpoint_state(self, context: Any) -> dict[str, Any]:
+        domain = dict(self._checkpoint_state(context)) if self._checkpoint_state else {}
+        steps = [*self._recovered_steps, *(step.to_dict() for step in context.state.steps)]
+        by_number = {step["step"]: step for step in steps}
+        domain["_looplet_child_receipts"] = [by_number[number] for number in sorted(by_number)]
+        return domain
+
+    def restore_checkpoint_state(self, context: Any, domain: dict[str, Any]) -> None:
+        domain = dict(domain)
+        self._recovered_steps = list(domain.pop("_looplet_child_receipts", []))
+        if self._restore_checkpoint_state is not None:
+            self._restore_checkpoint_state(context, domain)
+
+    def pre_prompt(self, state: Any, session_log: Any, context: Any, step_num: int) -> str | None:
+        if not self._recovered_steps:
+            return None
+        return (
+            "Committed child tool receipts from before restart. "
+            "These calls already ran; do not repeat their effects.\n"
+            + json.dumps(self._recovered_steps, sort_keys=True)
+        )
 
 
 def _prepare_child_recovery(run: _ChildRun) -> None:
@@ -252,6 +298,22 @@ def _prepare_child_recovery(run: _ChildRun) -> None:
                 raise ChildRecoveryError(
                     "child stopped without a saved result; reconcile before retrying"
                 )
+            receipts = latest.domain_state.get("_looplet_child_receipts")
+            if latest.step_number > 0 and (
+                not isinstance(receipts, list)
+                or not receipts
+                or any(
+                    not isinstance(step, dict)
+                    or isinstance(step.get("step"), bool)
+                    or not isinstance(step.get("step"), int)
+                    or not isinstance(step.get("tool_call"), dict)
+                    or not isinstance(step.get("tool_result"), dict)
+                    for step in receipts
+                )
+            ):
+                raise ChildRecoveryError(
+                    "child checkpoint has no valid committed receipts; reconcile before retrying"
+                )
             config.initial_checkpoint = latest
     else:
         if store.load_latest(run_id=run.subagent_id) is not None:
@@ -270,6 +332,13 @@ def _prepare_child_recovery(run: _ChildRun) -> None:
             ),
             "delegation",
         )
+    evidence = _ChildRecoveryEvidence(
+        config.resolve_callable("checkpoint_state"),
+        config.resolve_callable("restore_checkpoint_state"),
+    )
+    config.checkpoint_state = evidence.checkpoint_state
+    config.restore_checkpoint_state = evidence.restore_checkpoint_state
+    run.inputs["hooks"].append(evidence)
     run.recovery_store = store
     run.recovery_binding = digest
 
@@ -495,6 +564,7 @@ def _prepare_sub_loop(
     Parent flow-control methods do not run on child state.
     Caller-supplied state, tools, hooks, and resources remain caller-owned.
     """
+    from looplet import DefaultState
     from looplet.loop import LoopConfig
     from looplet.session import SessionLog
 
@@ -567,8 +637,6 @@ def _prepare_sub_loop(
     if policy is not None:
         if policy.max_steps is not None:
             sub_config.max_steps = min(sub_config.max_steps, policy.max_steps)
-        if isinstance(state, _MinimalState):
-            state.max_steps = min(state.max_steps, sub_config.max_steps)
         if policy.cancel_token is not None:
             sub_config.cancel_token = policy.cancel_token
         if policy.recovery_dir is not None:
@@ -580,7 +648,12 @@ def _prepare_sub_loop(
             llm = policy.model_budget.wrap(
                 llm, deadline=policy.deadline, cancel_token=sub_config.cancel_token
             )
+            if sub_config.router is not None:
+                sub_config.router = _BudgetedRouter(sub_config.router, policy.model_budget, policy)
         sub_hooks.append(_ChildBudgetStopHook(policy))
+
+    if isinstance(state, (DefaultState, _MinimalState)):
+        state.max_steps = sub_config.max_steps
 
     parent_envelope = sub_config.run_envelope
     parent_id = (

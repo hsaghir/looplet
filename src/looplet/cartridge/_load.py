@@ -75,6 +75,7 @@ def _build_lep_hook(
     Relative path tokens that resolve to a file under ``hook_dir`` are
     rewritten to absolute paths so the server launches regardless of cwd.
     """
+    import os  # noqa: PLC0415
     import sys  # noqa: PLC0415
 
     from looplet.hook_view import ViewSpec  # noqa: PLC0415
@@ -117,6 +118,7 @@ def _build_lep_hook(
             run_id=str(hook_cfg.get("run_id", f"lep-{hook_dir.name}")),
             on_failure=on_failure,
             cartridge_id=hook_dir.name,
+            env=dict(os.environ),
         )
     except ValueError as exc:
         msg = f"lep hook {hook_dir.name!r} could not be built: {exc}"

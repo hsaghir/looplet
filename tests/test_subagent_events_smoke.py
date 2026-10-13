@@ -45,6 +45,34 @@ async def test_async_child_uses_async_loop_and_shared_budget():
     assert budget.remaining == 0
 
 
+@pytest.mark.parametrize("async_mode", [False, True])
+async def test_routed_child_spends_shared_model_allowance(async_mode):
+    from looplet import run_sub_loop_async
+    from looplet.router import ModelProfile, SimpleRouter
+    from looplet.subagent import ChildRunPolicy, SharedModelBudget
+    from looplet.testing import AsyncMockLLMBackend
+
+    backend_type = AsyncMockLLMBackend if async_mode else MockLLMBackend
+    selected = backend_type(responses=['{"tool":"add","args":{"a":1,"b":2}}'])
+    unused = backend_type(responses=[])
+    profile = ModelProfile("selected", selected)
+    router = SimpleRouter({"reasoning": profile}, default_profile=profile)
+    config = LoopConfig(max_steps=3, use_native_tools=False, router=router)
+    budget = SharedModelBudget(1)
+    options = {
+        "llm": unused,
+        "sub_tools": _tools(),
+        "config": config,
+        "policy": ChildRunPolicy(parent_id="parent", model_budget=budget),
+    }
+    result = await run_sub_loop_async(**options) if async_mode else run_sub_loop(**options)
+    assert selected.calls == 1 and unused.calls == 0
+    assert budget.remaining == 0
+    assert result["steps"][0]["tool_result"]["data"] == {"sum": 3}
+    assert not result["completed"] and result["stop_reason"] == "model_budget_exhausted"
+    assert config.router is router
+
+
 async def test_async_child_awaits_parent_events():
     from looplet import run_sub_loop_async
     from looplet.testing import AsyncMockLLMBackend
@@ -431,6 +459,7 @@ async def test_child_recovery_resumes_committed_step(tmp_path, async_mode):
     import sys
 
     from looplet import DefaultState, run_sub_loop_async
+    from looplet.provenance import AsyncRecordingLLMBackend, RecordingLLMBackend
     from looplet.subagent import ChildRunPolicy
     from looplet.testing import AsyncMockLLMBackend
 
@@ -485,8 +514,9 @@ run_sub_loop(llm=InterruptedBackend(), sub_tools=tools, state=DefaultState(max_s
     tools.register(ToolSpec(name="write", description="Write", parameters={}, execute=write))
     backend_type = AsyncMockLLMBackend if async_mode else MockLLMBackend
     backend = backend_type(responses=['{"tool":"done","args":{"summary":"resumed"}}'], cycle=False)
+    recording = (AsyncRecordingLLMBackend if async_mode else RecordingLLMBackend)(backend)
     options = {
-        "llm": backend,
+        "llm": recording,
         "sub_tools": tools,
         "state": DefaultState(max_steps=3),
         "task": {"goal": "write once"},
@@ -502,6 +532,28 @@ run_sub_loop(llm=InterruptedBackend(), sub_tools=tools, state=DefaultState(max_s
     assert artifact.read_text() == "committed\n"
     assert options["state"].steps[0].number == 2
     assert len(result["steps"]) == 1
+    assert len(recording.calls) == 1
+    assert f'"path": "{artifact}"' in recording.calls[0].prompt
+    assert "do not repeat their effects" in recording.calls[0].prompt
+
+
+def test_child_recovery_receipts_preserve_domain_callbacks():
+    from types import SimpleNamespace
+
+    from looplet.subagent import _ChildRecoveryEvidence
+
+    restored = []
+    evidence = _ChildRecoveryEvidence(
+        lambda context: {"domain_value": 7},
+        lambda context, domain: restored.append(dict(domain)),
+    )
+    receipt = {"step": 1, "tool_call": {"tool": "write"}, "tool_result": {"data": "saved"}}
+    domain = {"domain_value": 7, "_looplet_child_receipts": [receipt]}
+    context = SimpleNamespace(state=SimpleNamespace(steps=[]))
+    evidence.restore_checkpoint_state(context, domain)
+    assert restored == [{"domain_value": 7}]
+    assert evidence.checkpoint_state(context) == domain
+    assert evidence.pre_prompt(None, None, None, 2)
 
 
 @pytest.mark.parametrize("async_mode", [False, True])
@@ -620,6 +672,31 @@ async def test_child_config_overrides_default_state_limit(async_mode):
     assert len(result["steps"]) == backend.calls == 7
     assert result["stop_reason"] == "budget_exhausted"
     assert not result["completed"]
+
+
+@pytest.mark.parametrize("async_mode", [False, True])
+@pytest.mark.parametrize("with_policy", [False, True])
+async def test_child_config_bounds_supplied_default_state(async_mode, with_policy):
+    from looplet import DefaultState, run_sub_loop_async
+    from looplet.subagent import ChildRunPolicy
+    from looplet.testing import AsyncMockLLMBackend
+
+    backend_type = AsyncMockLLMBackend if async_mode else MockLLMBackend
+    backend = backend_type(responses=['{"tool":"add","args":{"a":2,"b":3}}'])
+    state = DefaultState(max_steps=9)
+    config = LoopConfig(max_steps=4, use_native_tools=False)
+    options = {
+        "llm": backend,
+        "sub_tools": _tools(),
+        "state": state,
+        "config": config,
+        "policy": ChildRunPolicy(parent_id="parent") if with_policy else None,
+    }
+    result = await run_sub_loop_async(**options) if async_mode else run_sub_loop(**options)
+    assert len(result["steps"]) == backend.calls == 4
+    assert result["stop_reason"] == "budget_exhausted"
+    assert not result["completed"]
+    assert config.max_steps == state.max_steps == 4
 
 
 def test_child_does_not_load_parent_checkpoint_without_policy(tmp_path):

@@ -98,6 +98,22 @@ def _to_openai_tools(schemas: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+def _openai_message_text(message: Any) -> str:
+    """Extract visible text from string or multipart compatible responses."""
+    content = getattr(message, "content", None)
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            part["text"]
+            for part in content
+            if isinstance(part, dict)
+            and part.get("type") == "text"
+            and isinstance(part.get("text"), str)
+        )
+    return ""
+
+
 def _openai_message_to_blocks(message: Any) -> list[dict[str, Any]]:
     """Normalise an OpenAI chat.completion message to Anthropic-style blocks.
 
@@ -107,7 +123,7 @@ def _openai_message_to_blocks(message: Any) -> list[dict[str, Any]]:
     keeps the raw string under ``_raw_arguments`` for debugging.
     """
     blocks: list[dict[str, Any]] = []
-    text = getattr(message, "content", None)
+    text = _openai_message_text(message)
     if text:
         blocks.append({"type": "text", "text": text})
 
@@ -378,7 +394,7 @@ class OpenAIBackend:
 
         response = self._client.chat.completions.create(**kwargs)
         self._record_usage(response)
-        return response.choices[0].message.content or ""
+        return _openai_message_text(response.choices[0].message)
 
     def generate_with_tools(
         self,
@@ -766,7 +782,7 @@ class AsyncOpenAIBackend:
 
         response = await self._client.chat.completions.create(**kwargs)
         self._record_usage(response)
-        return response.choices[0].message.content or ""
+        return _openai_message_text(response.choices[0].message)
 
     async def generate_with_tools(
         self,

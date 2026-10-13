@@ -283,6 +283,7 @@ Observer returns do not grant tool authority.
 Supply `SharedModelBudget` and wrap the parent backend with `budget.wrap(llm)`.
 Pass the same budget in `ChildRunPolicy.model_budget`.
 Parent and child calls then spend one shared allowance.
+Child router selections spend that same allowance.
 Failed model attempts also spend calls.
 This allowance is not a token or money limit.
 
@@ -321,6 +322,9 @@ result = await run_sub_loop_async(
 
 Completed children reuse saved output without calling the model or tools again.
 Incomplete children resume only their own checkpoint records.
+Their resumed prompts include committed tool receipts from before restart.
+Incomplete records without valid committed receipts require host reconciliation.
+Caller checkpoint-state callbacks retain their own payloads.
 Changed tasks, versions, tool declarations, or recorded permission rules refuse reuse.
 Change `recovery_version` when tool code, hooks, approval callbacks, or opaque permission predicates change.
 Keep recovery files outside candidate-writable directories.

@@ -103,6 +103,11 @@ The optional `AgentRuntime` can report host errors as failed results.
 
 ## Tools
 
+Use `run_sub_loop` for a child loop.
+Use `run_sub_loop_async` or `run_sub_loops_async` for async or bounded parallel children.
+They accept explicit backends, tools, state, hooks, and configuration.
+See [bounded delegation](host-integration.md#bounded-delegation) for parent controls, result fields, and recovery.
+
 | API | Use it for |
 | --- | --- |
 | `@tool(...)` | Build a `ToolSpec` from an ordinary typed callable. |
@@ -112,6 +117,7 @@ The optional `AgentRuntime` can report host errors as failed results.
 | `BaseToolRegistry.async_dispatch(...)` | Await coroutine tools directly and move blocking sync tools off the event loop. |
 | `register_done_tool(...)` | Add the completion tool to a custom registry. |
 | `ToolContext` | Access host resources, workspace details, cancellation, progress, and the selected backend inside a tool. |
+| `ToolContext.async_llm` | Access the async backend inside async tools or child loops without the synchronous bridge. |
 | `ToolError` / `ToolValidationError` | Return or test structured failures without parsing exception text. |
 
 Prefer explicit schemas for public tools or tools with high-risk effects.

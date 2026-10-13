@@ -109,6 +109,49 @@ class _MockAnthropicClient:
 # ── Tests ────────────────────────────────────────────────────────
 
 
+@pytest.mark.parametrize("async_mode", [False, True])
+@pytest.mark.parametrize("native_tools", [False, True])
+async def test_openai_multipart_content_keeps_visible_text(async_mode, native_tools):
+    from types import SimpleNamespace
+
+    message = SimpleNamespace(
+        content=[
+            {"type": "text", "text": "Hello"},
+            {"type": "input_file", "input_file": {"file_data": "opaque metadata"}},
+            {"type": "text", "text": " world"},
+        ],
+        tool_calls=[
+            SimpleNamespace(
+                id="finish", function=SimpleNamespace(name="done", arguments='{"summary":"ok"}')
+            )
+        ],
+    )
+    response = SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+    def create(**kwargs):
+        return response
+
+    async def create_async(**kwargs):
+        return response
+
+    client = SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(create=create_async if async_mode else create)
+        )
+    )
+    backend = (AsyncOpenAIBackend if async_mode else OpenAIBackend)(client, model="test")
+    operation = backend.generate_with_tools if native_tools else backend.generate
+    options = {"tools": []} if native_tools else {}
+    result = await operation("hello", **options) if async_mode else operation("hello", **options)
+    if native_tools:
+        assert result == [
+            {"type": "text", "text": "Hello world"},
+            {"type": "tool_use", "id": "finish", "name": "done", "input": {"summary": "ok"}},
+        ]
+    else:
+        assert result == "Hello world"
+
+
 class TestOpenAIBackend:
     def test_generate(self):
         client = _MockOpenAIClient()

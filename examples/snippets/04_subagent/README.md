@@ -1,19 +1,29 @@
-# 04 - Sub-agent as tool
+# 04 - Child Agent As Tool
 
-A cartridge can be invoked as a single tool call from another
-cartridge. From the calling agent's perspective, this is just another
-tool; the tool body happens to load a cartridge and run its loop.
+A child agent is a tool whose implementation runs another loop.
+The parent receives the child's result and continues its own loop.
+Each child has separate state and conversation history.
+Its tools can still use shared files and services.
 
-This snippet shows a `wrap_workspace_as_tool` helper plus a 30-line
-demo that runs the [hello.cartridge](../../hello.cartridge) as a
-sub-agent of a parent script. No new abstraction - just a Python
-function whose body calls `run_sub_loop`.
+`demo.py` calls the greeting cartridge from a synchronous parent.
+Set `OPENAI_BASE_URL`, `OPENAI_API_KEY`, and `OPENAI_MODEL` before running it:
 
 ```bash
-# Requires: OPENAI_BASE_URL, OPENAI_API_KEY, OPENAI_MODEL set.
-uv run python examples/snippets/04_subagent/demo.py "echo hello"
+uv run python examples/snippets/04_subagent/demo.py "Greet Alice"
 ```
 
-The interesting property: the parent does not know whether it called
-a Python function, an MCP server, or another whole agent. All three
-are tool calls. Recursion bottoms out when the calling agent decides.
+`async_demo.py` runs three greeting children with a concurrency limit of two.
+It uses fixed model responses and real greeting tools.
+It needs no model service:
+
+```bash
+uv run python examples/snippets/04_subagent/async_demo.py
+```
+
+The async example uses the source version of Looplet, not PyPI `0.4.0`.
+Both examples explicitly load and close their child presets.
+The loops remain ordinary Looplet loops.
+Use `run_sub_loop_async` for one async child.
+Use `run_sub_loops_async` for bounded parallel children.
+
+See [host integration](../../../docs/host-integration.md#bounded-delegation) for permissions, shared call limits, and recovery.

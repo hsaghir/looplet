@@ -1158,6 +1158,7 @@ def _build_tool_ctx(
     state: Any = None,
     session_log: Any = None,
     llm: Any = None,
+    async_llm: Any = None,
 ) -> ToolContext:
     """Build a ToolContext for tool dispatch.
 
@@ -1222,7 +1223,9 @@ def _build_tool_ctx(
         request_approval=config.approval_handler,
         on_progress=_progress_fn,
         llm=_tool_llm,
+        async_llm=_scope_llm_for_tool(async_llm, tool_call) if async_llm is not None else None,
         parent_budget_remaining=getattr(state, "budget_remaining", None),
+        parent_hooks=tuple(_hooks),
         run_envelope=config.run_envelope,
         execution_policy=config.execution_policy,
         metadata=_metadata,
@@ -1259,10 +1262,8 @@ class _ScopedLLMProxy:
     """Thin proxy that tags recorded LLM calls with a scope string.
 
     Delegates ``generate`` (and ``generate_with_tools`` when present)
-    to the wrapped backend. After each call, stamps
-    ``scope=<scope_str>`` on the most-recently-recorded
-    :class:`LLMCall` so provenance consumers can distinguish
-    loop-level calls from tool-internal calls.
+    to the wrapped backend. Task-local recording scope separates
+    concurrent tool calls from loop-level calls.
 
     Zero overhead when the backend isn't recording - the proxy is only
     created by :func:`_scope_llm_for_tool` when a recording layer is
@@ -1273,8 +1274,24 @@ class _ScopedLLMProxy:
         self._backend = backend
         self._recording = recording
         self._scope = scope
+        if inspect.iscoroutinefunction(backend.generate):
+            self.generate = self._async_method(backend.generate)
         if hasattr(backend, "generate_with_tools"):
-            self.generate_with_tools = self._generate_with_tools_impl
+            self.generate_with_tools = (
+                self._async_method(backend.generate_with_tools)
+                if inspect.iscoroutinefunction(backend.generate_with_tools)
+                else self._generate_with_tools_impl
+            )
+
+    def _async_method(self, method: Any) -> Any:
+        from functools import wraps
+
+        @wraps(method)
+        async def invoke(*args: Any, **kwargs: Any) -> Any:
+            with self._recording._scope_calls(self._scope):
+                return await method(*args, **kwargs)
+
+        return invoke
 
     def generate(
         self,
@@ -1284,15 +1301,13 @@ class _ScopedLLMProxy:
         system_prompt: str = "",
         temperature: float = 0.2,
     ) -> str:
-        n_before = len(self._recording.calls)
-        result = self._backend.generate(
-            prompt,
-            max_tokens=max_tokens,
-            system_prompt=system_prompt,
-            temperature=temperature,
-        )
-        self._tag_new_calls(n_before)
-        return result
+        with self._recording._scope_calls(self._scope):
+            return self._backend.generate(
+                prompt,
+                max_tokens=max_tokens,
+                system_prompt=system_prompt,
+                temperature=temperature,
+            )
 
     def _generate_with_tools_impl(
         self,
@@ -1303,20 +1318,14 @@ class _ScopedLLMProxy:
         system_prompt: str = "",
         temperature: float = 0.2,
     ) -> Any:
-        n_before = len(self._recording.calls)
-        result = self._backend.generate_with_tools(
-            prompt,
-            tools=tools,
-            max_tokens=max_tokens,
-            system_prompt=system_prompt,
-            temperature=temperature,
-        )
-        self._tag_new_calls(n_before)
-        return result
-
-    def _tag_new_calls(self, n_before: int) -> None:
-        for call in self._recording.calls[n_before:]:
-            call.scope = self._scope
+        with self._recording._scope_calls(self._scope):
+            return self._backend.generate_with_tools(
+                prompt,
+                tools=tools,
+                max_tokens=max_tokens,
+                system_prompt=system_prompt,
+                temperature=temperature,
+            )
 
 
 def _event_hook_callbacks(hooks: list[Any], event: Any) -> Generator[tuple[Any, Any], None, None]:

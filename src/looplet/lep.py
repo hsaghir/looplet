@@ -75,6 +75,7 @@ class LEPHookAdapter:
         run_id: Correlation id sent in ``loop/initialize``.
         on_failure: Default failure policy for authority slots when the
             server errors. One of ``fail_closed``/``fail_open``/``continue``.
+        env: Optional host-owned environment captured for the policy process.
     """
 
     def __init__(
@@ -86,6 +87,7 @@ class LEPHookAdapter:
         on_failure: str = "fail_closed",
         cartridge_id: str = "lep",
         run_envelope: RunEnvelope | None = None,
+        env: dict[str, str] | None = None,
     ) -> None:
         if on_failure not in _FAILURE_POLICIES:
             raise ValueError(f"on_failure must be one of {_FAILURE_POLICIES}, got {on_failure!r}")
@@ -95,6 +97,7 @@ class LEPHookAdapter:
         self._on_failure = on_failure
         self._cartridge_id = cartridge_id
         self._run_envelope = run_envelope
+        self._env = dict(env) if env is not None else None
         self._proc: subprocess.Popen[str] | None = None
         self._next_id = 0
         self.capabilities: dict[str, Any] = {}
@@ -274,7 +277,7 @@ class LEPHookAdapter:
 
     # ── lifecycle: session open ──────────────────────────────────
     @staticmethod
-    def _server_env() -> dict[str, str]:
+    def _server_env(base_env: dict[str, str] | None = None) -> dict[str, str]:
         """Child env that guarantees a Python LEP server can ``import looplet``.
 
         A Python policy server typically does
@@ -286,7 +289,7 @@ class LEPHookAdapter:
         the import resolves regardless of how the host obtained looplet.
         Non-Python servers simply ignore the variable.
         """
-        env = dict(os.environ)
+        env = dict(os.environ if base_env is None else base_env)
         pkg_parent = str(Path(__file__).resolve().parent.parent)
         existing = env.get("PYTHONPATH", "")
         parts = [pkg_parent] + ([existing] if existing else [])
@@ -299,7 +302,7 @@ class LEPHookAdapter:
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             text=True,
-            env=self._server_env(),
+            env=self._server_env(self._env),
             start_new_session=os.name == "posix",
         )
         try:

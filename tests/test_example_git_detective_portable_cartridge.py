@@ -58,6 +58,59 @@ def _make_repo(root: Path) -> None:
     run("commit", "-q", "-m", "fix: tweak both files together")
 
 
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("async_mode", [False, True])
+async def test_builtin_git_child_binds_its_model_gateway(tmp_path: Path, monkeypatch, async_mode):
+    from looplet import ToolContext
+    from looplet.builtin_tools.subagent import _execute
+    from looplet.provenance import AsyncRecordingLLMBackend, RecordingLLMBackend
+    from looplet.subagent import ChildRunPolicy, SharedModelBudget
+    from looplet.testing import AsyncMockLLMBackend, MockLLMBackend
+
+    _make_repo(tmp_path)
+    monkeypatch.setenv("LOOPLET_PROJECT_ROOT", str(tmp_path))
+    assessment = "SCORE: 8/10. Two useful conventional commits."
+    backend_type = AsyncMockLLMBackend if async_mode else MockLLMBackend
+    backend = backend_type(
+        responses=[
+            '{"tool":"repo_overview","args":{}}',
+            '{"tool":"contributor_stats","args":{}}',
+            '{"tool":"recent_activity","args":{}}',
+            '{"tool":"commit_patterns","args":{}}',
+            assessment,
+            '{"tool":"done","args":{"summary":"checked"}}',
+        ],
+        cycle=False,
+    )
+    recording = (AsyncRecordingLLMBackend if async_mode else RecordingLLMBackend)(backend)
+    budget = SharedModelBudget(6)
+    result = _execute(
+        ToolContext(
+            llm=recording,
+            metadata={
+                "runtime": {"project_root": str(tmp_path)},
+                "child_run_policy": ChildRunPolicy(parent_id="parent", model_budget=budget),
+            },
+        ),
+        workspace=str(_CARTRIDGE),
+        task="Inspect commit patterns, then finish.",
+    )
+    if async_mode:
+        result = await result
+    stats = next(
+        step["tool_result"]["data"]
+        for step in result["steps"]
+        if step["tool_call"]["tool"] == "commit_patterns"
+    )
+    assert stats["total_analyzed"] == 2
+    assert stats["commit_quality_assessment"] == assessment
+    assert result["completed"]
+    assert backend.calls == len(recording.calls) == 6
+    assert budget.remaining == 0
+    final_prompt = recording.calls[-1].prompt
+    assert all(field in final_prompt for field in ("repo_name", "contributor_count", "SCORE:"))
+
+
 @pytest.mark.timeout(90)
 def test_git_detective_portable_cross_process_composition(tmp_path: Path) -> None:
     repo = tmp_path / "repo"

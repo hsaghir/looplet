@@ -13,40 +13,29 @@ The agent can then dispatch a sub-task to another cartridge::
         max_steps=10,                # OPTIONAL, defaults to remaining parent budget
     )
 
-The sub-loop runs synchronously, sharing the parent's ``llm`` and
-constructing a fresh ``runtime`` that defaults to the parent's
-``workspace_config.path`` (so resource builders like
-``resources/file_cache.py`` bind to the same project root). Other
-runtime values can be overridden via ``ctx.metadata["runtime"]``.
-The result returned to the parent is the sub-loop's final tool
-result (typically the ``done`` summary).
+The child shares the parent's backend and project root.
+Async parents use the async child driver.
+The tool closes its loaded preset on completion, failure, or cancellation.
+Results include accepted output, execution status, steps, and child identity.
+Parent permission decisions and host limits follow nested delegation.
 
-## Recursion safety
-
-A small ``contextvars.ContextVar`` counter increments on each sub-loop
-entry and decrements on exit. If it exceeds ``max_depth`` (default 5)
-the call is refused with a structured error pointing the agent at the
-depth budget. Threadsafe and per-async-task - two parallel parent
-loops in the same process don't share the counter.
-
-## Why no parallel fan-out
-
-We deliberately ship the sequential case only. ``subagent(...)`` calls
-can be chained in the parent's reasoning ("dispatch to A, then dispatch
-to B"). Parallel execution requires a real use case that motivates the
-extra surface area; for now, ``async_composable_loop`` is the right
-place to express concurrency.
+The recursion counter is local to each task and restores on exit.
+The default maximum depth is five.
+Python hosts can use ``run_sub_loops_async`` for bounded parallel children.
+Use separate child state and mutable hooks for concurrent runs.
+State separation does not provide process or filesystem isolation.
 """
 
 from __future__ import annotations
 
 import contextvars
+import hashlib
 import time
 from pathlib import Path
 from typing import Any
 
 from looplet.tools import ToolSpec
-from looplet.types import DefaultState, ToolContext
+from looplet.types import ToolContext
 
 # Per-task recursion depth - threadsafe and per-async-task, unlike a
 # process-global env var. ``ContextVar.set`` returns a token used by
@@ -64,7 +53,7 @@ def _execute(
     task: str,
     max_steps: int | None = None,
     max_depth: int = DEFAULT_MAX_DEPTH,
-) -> dict:
+) -> Any:
     # Recursion guard.
     depth = _DEPTH_VAR.get()
     if depth >= max_depth:
@@ -81,11 +70,17 @@ def _execute(
 
     from looplet.subagent import (  # noqa: PLC0415
         ChildRunPolicy,
-        _ChildBudgetStopHook,
-        _restrict_tools,
+        _is_async_backend,
+        _policy_from_tool_context,
+        run_sub_loop,
+        run_sub_loop_async,
     )
 
     policy = (ctx.metadata or {}).get("child_run_policy")
+    try:
+        policy = _policy_from_tool_context(ctx, policy)
+    except (ValueError, AttributeError) as exc:
+        return {"error": str(exc)}
     if policy is not None:
         if not isinstance(policy, ChildRunPolicy) or not policy.parent_id:
             return {"error": "child_run_policy must have a parent_id"}
@@ -96,8 +91,21 @@ def _execute(
                 return {"error": "child_run_policy must share the parent's cancellation token"}
         if policy.deadline is not None and time.monotonic() >= policy.deadline:
             return {"error": "child run deadline exceeded"}
-        if policy.model_budget is not None and policy.model_budget.remaining <= 0:
+        if (
+            policy.recovery_dir is None
+            and policy.model_budget is not None
+            and policy.model_budget.remaining <= 0
+        ):
             return {"error": "model call budget exhausted"}
+    recovery_key = (ctx.metadata or {}).get("child_run_key")
+    subagent_id = None
+    if policy is not None and policy.recovery_dir is not None:
+        if not isinstance(recovery_key, str) or not recovery_key or not policy.recovery_version:
+            return {"error": "child recovery requires host child_run_key and recovery_version"}
+        subagent_id = (
+            "child-"
+            + hashlib.sha256(f"{policy.parent_id}\0{recovery_key}".encode()).hexdigest()[:24]
+        )
 
     # Resolve the host workspace path once. Both the path-resolution
     # below (for relative ``workspace=`` args) and the runtime
@@ -123,7 +131,7 @@ def _execute(
         }
 
     # Defer the heavy imports so this module remains cheap to import.
-    from looplet import cartridge_to_preset, composable_loop  # noqa: PLC0415
+    from looplet import cartridge_to_preset  # noqa: PLC0415
 
     # Build a runtime dict for the sub-loop. The parent's
     # ``workspace_config.path`` is the canonical "where am I" value;
@@ -155,77 +163,74 @@ def _execute(
         if ctx.parent_budget_remaining is not None:
             steps = min(steps, ctx.parent_budget_remaining)
             sub_preset.config.max_steps = steps
-        child_llm = ctx.llm
-        child_hooks = sub_preset.hooks
         sub_preset.config.cancel_token = ctx.cancel_token
+        if ctx.run_envelope is not None:
+            sub_preset.config.run_envelope = ctx.run_envelope
         if policy is not None:
             if policy.max_steps is not None:
                 steps = min(steps, policy.max_steps)
                 sub_preset.config.max_steps = steps
-            if policy.allowed_tools is not None:
-                sub_preset.tools = _restrict_tools(sub_preset.tools, policy.allowed_tools)
-            sub_preset.config.cancel_token = ctx.cancel_token or policy.cancel_token
-            if policy.model_budget is not None:
-                child_llm = policy.model_budget.wrap(
-                    child_llm,
-                    deadline=policy.deadline,
-                    cancel_token=sub_preset.config.cancel_token,
-                )
-            child_hooks = [*child_hooks, _ChildBudgetStopHook(policy)]
-        state = DefaultState(max_steps=steps)
-        token = _DEPTH_VAR.set(depth + 1)
+        if hasattr(sub_preset.state, "max_steps"):
+            sub_preset.state.max_steps = steps
     except BaseException:
         sub_preset.close()
         raise
 
-    last_step: Any = None
-    sub_steps = 0
+    def summarize(state: Any, session_log: Any, child_steps: list[dict]) -> dict[str, Any]:
+        final = child_steps[-1] if child_steps else {}
+        final_data = (final.get("tool_result") or {}).get("data") or {}
+        result = {
+            "workspace": str(ws_path),
+            "steps_used": len(child_steps),
+            "max_steps": steps,
+            "final_tool": (final.get("tool_call") or {}).get("tool"),
+            "summary": final_data.get("summary") if isinstance(final_data, dict) else None,
+            "result": final_data,
+            "depth": depth + 1,
+        }
+        if fallback_used:
+            result["warning"] = (
+                "No parent project root was supplied. The project root will be resolved from host paths."
+            )
+        return result
+
+    options = {
+        "llm": ctx.async_llm if ctx.async_llm is not None else ctx.llm,
+        "task": {"goal": task},
+        "sub_tools": sub_preset.tools,
+        "state": sub_preset.state,
+        "config": sub_preset.config,
+        "hooks": sub_preset.hooks,
+        "parent_hooks": list(ctx.parent_hooks),
+        "policy": policy,
+        "subagent_id": subagent_id,
+        "build_summary": summarize,
+    }
+    if policy is not None and policy.model_budget is not None:
+        options["llm"] = policy.model_budget.wrap(
+            options["llm"], deadline=policy.deadline, cancel_token=sub_preset.config.cancel_token
+        )
+
+    if _is_async_backend(options["llm"]):
+
+        async def execute_async() -> dict[str, Any]:
+            token = _DEPTH_VAR.set(depth + 1)
+            try:
+                options["hooks"] = sub_preset._prepare_run(options["llm"], ())
+                return await run_sub_loop_async(**options)
+            finally:
+                _DEPTH_VAR.reset(token)
+                sub_preset.close()
+
+        return execute_async()
+
+    token = _DEPTH_VAR.set(depth + 1)
     try:
-        for step in composable_loop(
-            llm=child_llm,
-            config=sub_preset.config,
-            tools=sub_preset.tools,
-            state=state,
-            hooks=child_hooks,
-            task={"goal": task},
-        ):
-            sub_steps += 1
-            last_step = step
+        options["hooks"] = sub_preset._prepare_run(options["llm"], ())
+        return run_sub_loop(**options)
     finally:
         _DEPTH_VAR.reset(token)
         sub_preset.close()
-
-    # Surface the final tool result. By convention sub-agents end with
-    # ``done(summary=...)``, so we expose the summary at the top level
-    # for easy chaining.
-    final_data: dict = {}
-    final_tool: str | None = None
-    if last_step is not None and last_step.tool_call is not None:
-        final_tool = last_step.tool_call.tool
-        if last_step.tool_result is not None and last_step.tool_result.data:
-            final_data = dict(last_step.tool_result.data)
-
-    result: dict[str, Any] = {
-        "workspace": str(ws_path),
-        "steps_used": sub_steps,
-        "max_steps": steps,
-        "final_tool": final_tool,
-        "summary": final_data.get("summary"),
-        "result": final_data,
-        "depth": depth + 1,
-        "stop_reason": getattr(state, "_stop_reason", None),
-    }
-    if policy is not None:
-        result["parent_id"] = policy.parent_id
-    if fallback_used:
-        result["warning"] = (
-            "no workspace_config resource on the parent and no "
-            "ctx.metadata['runtime'] - sub-loop's project root will be "
-            "resolved from $LOOPLET_PROJECT_ROOT, git toplevel, or cwd. "
-            "Pass runtime={'project_root': '...'} to cartridge_to_preset "
-            "for the parent, or set ctx.metadata['runtime'] before calling."
-        )
-    return result
 
 
 SPEC = ToolSpec(
@@ -273,6 +278,5 @@ SPEC = ToolSpec(
         },
         "required": ["workspace", "task"],
     },
-    requires=["workspace_config"],
     execute=_execute,
 )

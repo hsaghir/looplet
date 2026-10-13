@@ -226,18 +226,117 @@ dispatch; a hook that changes the approved call or policy causes a denial.
 
 ## Bounded delegation
 
-Pass a host-owned `ChildRunPolicy` to `run_sub_loop(..., policy=policy)` when a
-child must inherit a restricted tool set, a step cap, a monotonic deadline, or
-the parent's cancellation token. Supply a `SharedModelBudget` and wrap the
-parent backend with `budget.wrap(llm)` to count parent and child model calls
-against the same allowance. Child results and stop events carry `parent_id`.
-Without a policy, direct sub-loops retain their existing independent behavior.
+A child agent is a tool whose implementation runs another loop.
+It does not need a team or workflow object.
+The following APIs use the existing loop drivers:
 
-The bundled `subagent` tool accepts the same policy in the host-supplied
-`ToolContext.metadata["child_run_policy"]`. It cannot exceed the invoking
-loop's remaining step budget, even when a child requests more steps. Tool
-allowlists restrict the child's executable registry; they are not merely
-model-visible tool descriptions. The built-in recursion guard remains in place.
+| API | Use |
+| --- | --- |
+| `run_sub_loop(...)` | Run one synchronous child. |
+| `await run_sub_loop_async(...)` | Run one async child. |
+| `await run_sub_loops_async(requests, max_concurrency=4)` | Run bounded parallel children. |
+
+The async APIs and recovery fields require the source version, not PyPI `0.4.0`.
+Each request contains keyword arguments for `run_sub_loop_async`.
+Parallel results keep request order.
+A failed or cancelled child cancels its siblings.
+Python's `ExceptionGroup` contains `ChildRunFailed`, whose `result` retains the child failure.
+Budget stops and approval requests return incomplete results instead.
+Cancellation closes active child loops.
+The caller still owns supplied presets and resources.
+Create separate state and mutable hooks for each child.
+Use concurrency-safe shared backends and tools.
+
+Both child helpers and the built-in `subagent` tool return these fields:
+
+| Field | Meaning |
+| --- | --- |
+| `status`, `completed`, `stop_reason` | Execution status and termination reason. |
+| `output` | Accepted terminal output. Completion does not prove correctness. |
+| `summary`, `result` | Child summary and result data. |
+| `steps`, `llm_calls` | This attempt's trace and model-call count. |
+| `subagent_id`, `parent_id` | Child identity and optional parent linkage. |
+| `approval` | A pending approval request, or `None`. |
+| `recovered`, `new_llm_calls` | Whether saved output was reused and how many new calls ran. |
+
+Existing built-in fields, including `workspace`, `steps_used`, and `final_tool`, remain available.
+Reused output retains its original trace and call count.
+Its `new_llm_calls` value is zero.
+Child start and stop events use the same `subagent_id`.
+
+### Parent Controls
+
+Pass a host-owned `ChildRunPolicy` for tool limits, step limits, deadlines, cancellation, or execution grants.
+Use `parent_hooks` to inherit parent permission decisions and observe child events.
+The built-in tool receives parent controls automatically through `ToolContext`.
+Tool allow-lists restrict execution, not only model-visible descriptions.
+Nested children cannot widen inherited tool, deadline, or execution limits.
+They cannot replace an inherited shared budget or cancellation token.
+
+Children get fresh `PermissionHook` and `ApprovalHook` instances.
+Permission engines remain shared so host rules and denial records stay visible.
+Other parent permission hooks provide only `check_permission` to the child.
+Their parent owns startup, shutdown, and any required concurrency protection.
+Parent flow-control methods do not run on child state.
+Observer returns do not grant tool authority.
+
+Supply `SharedModelBudget` and wrap the parent backend with `budget.wrap(llm)`.
+Pass the same budget in `ChildRunPolicy.model_budget`.
+Parent and child calls then spend one shared allowance.
+Child router selections spend that same allowance.
+Failed model attempts also spend calls.
+This allowance is not a token or money limit.
+
+The built-in tool accepts host policy through `ToolContext.metadata["child_run_policy"]`.
+Python hosts can provide it through `LoopConfig.tool_metadata`.
+Child steps cannot exceed the invoking loop's remaining step budget.
+The recursion guard remains active.
+Execution grants and path checks do not provide an operating-system sandbox.
+Undeclared tool requirements retain their existing behavior.
+
+### Child Recovery
+
+Set `ChildRunPolicy.recovery_dir` and `recovery_version` to enable host-owned recovery.
+Supply a stable `subagent_id` for a direct child helper.
+Use a separate identity for each logical delegation.
+For the built-in tool, supply a stable host `child_run_key` in tool metadata.
+That key is not a model argument.
+
+```python
+from looplet.subagent import ChildRunPolicy, run_sub_loop_async
+
+policy = ChildRunPolicy(
+    parent_id="request-42",
+    recovery_dir="./host-checkpoints/children",
+    recovery_version="agent-v3/policy-v2",
+)
+result = await run_sub_loop_async(
+    llm=llm,
+    sub_tools=tools,
+    task={"goal": "Inspect the invoice"},
+    config=config,
+    policy=policy,
+    subagent_id="invoice-review",
+)
+```
+
+Completed children reuse saved output without calling the model or tools again.
+Incomplete children resume only their own checkpoint records.
+Their resumed prompts include committed tool receipts from before restart.
+Incomplete records without valid committed receipts require host reconciliation.
+Caller checkpoint-state callbacks retain their own payloads.
+Changed tasks, versions, tool declarations, or recorded permission rules refuse reuse.
+Change `recovery_version` when tool code, hooks, approval callbacks, or opaque permission predicates change.
+Keep recovery files outside candidate-writable directories.
+Serialize calls that use the same child identity.
+Looplet does not provide a worker lease or distributed lock.
+The host must also persist its shared allowance across restarts.
+
+An interrupted dispatch still raises `UncertainToolEffect`.
+A terminal child without saved output requires host reconciliation.
+Child recovery does not clear a parent's uncertain dispatch record.
+The host must reconcile that parent record before resuming its loop.
+This recovery contract does not guarantee exactly-once external effects.
 
 ## Per-turn tool visibility
 

@@ -8,6 +8,10 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Async child loops and bounded parallel children use the existing loop drivers.
+- Child results expose completion, accepted output, identity, trace, and pending approval fields.
+- Optional host-owned child recovery reuses saved output and refuses changed requests or uncertain effects.
+- Offline parallel delegation example and real-tool dogfood cover Python and portable cartridges.
 - Documentation tests execute the README, Quickstart, site example, and report tutorial without a model service.
 - Optional `AgentPreset.run_result` / `run_result_async` consume the existing
   step iterator and project `RunResult` without changing caller-owned resources.
@@ -53,6 +57,16 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Built-in children inherit parent permission decisions, execution grants, and nested call limits.
+- Async tool contexts expose the async backend without removing the synchronous compatibility bridge.
+- Shared child call budgets preserve provenance without charging a delegated call twice.
+- Delayed cartridge LEP hooks retain their preset-owned process environments.
+- Standard child state follows the effective step limit in both drivers.
+- Router-selected child backends spend the same shared model-call allowance.
+- Built-in children prepare their model gateways, which await async backend deliveries.
+- OpenAI-compatible multipart responses preserve visible text and native tool calls without exposing metadata as text.
+- Resumed child prompts include committed tool receipts and preserve caller checkpoint-state callbacks.
+- Git report examples retain their bounded analysis history across the full workflow.
 - The README and first-use guides start with one explicit loop. Capture, result checks, and cartridges are separate next steps.
 - Source distributions include the guides required by documentation tests.
 - Sync/async teardown finalizes initialized hooks exactly once on completion,

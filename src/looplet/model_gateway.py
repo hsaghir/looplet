@@ -65,6 +65,8 @@ concern and is intentionally out of scope.
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import json
 import logging
 import os
@@ -150,6 +152,8 @@ class ModelGatewayServer:
 
     def __init__(self, backend: Any = None) -> None:
         self._backend = backend
+        self._backend_loop: asyncio.AbstractEventLoop | None = None
+        self.set_backend(backend)
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._srv: socket.socket | None = None
@@ -163,11 +167,15 @@ class ModelGatewayServer:
 
     @backend.setter
     def backend(self, value: Any) -> None:
-        self._backend = value
+        self.set_backend(value)
 
     def set_backend(self, backend: Any) -> None:
         """Bind (or replace) the live LLM backend the gateway exposes."""
         self._backend = backend
+        try:
+            self._backend_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self._backend_loop = None
 
     def set_run_envelope(self, envelope: RunEnvelope | None) -> None:
         """Bind host deadline/correlation context for gateway requests."""
@@ -308,6 +316,20 @@ class ModelGatewayServer:
             if backend is None:
                 raise ModelGatewayError("no LLM backend is bound")
             out = backend.generate(prompt, **kwargs)
+            if inspect.isawaitable(out):
+
+                async def resolve(value: Any) -> Any:
+                    return await value
+
+                if self._backend_loop is not None and self._backend_loop.is_running():
+                    future = asyncio.run_coroutine_threadsafe(resolve(out), self._backend_loop)
+                    try:
+                        out = future.result(timeout=remaining)
+                    except TimeoutError as exc:
+                        future.cancel()
+                        raise ModelGatewayError("model gateway call exceeded run deadline") from exc
+                else:
+                    out = asyncio.run(resolve(out))
         return out if isinstance(out, str) else str(out)
 
 

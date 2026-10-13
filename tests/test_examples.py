@@ -68,6 +68,107 @@ def test_scripted_demo_changes_real_rows_only_after_approval(approval):
         assert rows == original
 
 
+@pytest.mark.parametrize("mode", ["sync", "async", "parallel"])
+@pytest.mark.parametrize(
+    "name",
+    [
+        "hello",
+        "hello_portable",
+        "skillful_analyst",
+        "skillful_analyst_portable",
+        "dep_doctor",
+        "dep_doctor_portable",
+        "git_detective",
+        "git_detective_portable",
+    ],
+)
+@pytest.mark.timeout(60)
+async def test_shipped_agents_as_children_use_actual_tools(name, mode, tmp_path, monkeypatch):
+    from contextlib import ExitStack
+
+    from looplet import cartridge_to_preset, run_sub_loop, run_sub_loop_async, run_sub_loops_async
+    from looplet.testing import AsyncMockLLMBackend, MockLLMBackend
+
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setenv("LOOPLET_PROJECT_ROOT", str(project))
+    family = name.removesuffix("_portable")
+    if family == "dep_doctor":
+        (project / "requirements.txt").write_text("requests==2.32.3\n")
+    elif family == "git_detective":
+        from runpy import run_path
+
+        run_path(str(Path(__file__).with_name("test_example_git_detective_portable_cartridge.py")))[
+            "_make_repo"
+        ](project)
+
+    count = 2 if mode == "parallel" else 1
+    requests = []
+    presets = []
+    with ExitStack() as owned:
+        for child_index in range(count):
+            target = project / f"report-{child_index}.txt"
+            if family == "hello":
+                calls = [{"tool": "greet", "args": {"name": f"Person {child_index}"}}]
+            elif family == "skillful_analyst":
+                calls = [
+                    {
+                        "tool": "write_text",
+                        "args": {"path": str(target), "content": f"report {child_index}\nverified"},
+                    },
+                    {"tool": "read_text", "args": {"path": str(target)}},
+                ]
+            elif family == "dep_doctor":
+                calls = [
+                    {"tool": "parse_deps", "args": {"file_path": str(project / "requirements.txt")}}
+                ]
+            else:
+                calls = [{"tool": "repo_overview", "args": {}}]
+            calls.append({"tool": "done", "args": {"summary": f"checked {child_index}"}})
+            backend_type = MockLLMBackend if mode == "sync" else AsyncMockLLMBackend
+            preset = owned.enter_context(
+                cartridge_to_preset(
+                    EXAMPLES / f"{name}.cartridge",
+                    runtime={"project_root": str(project)},
+                )
+            )
+            presets.append(preset)
+            requests.append(
+                {
+                    "llm": backend_type([json.dumps(call) for call in calls], cycle=False),
+                    "sub_tools": preset.tools,
+                    "hooks": preset.hooks,
+                    "state": preset.state,
+                    "config": preset.config,
+                    "task": {"goal": f"Check {family} tools"},
+                }
+            )
+        if mode == "parallel":
+            results = await run_sub_loops_async(requests, max_concurrency=2)
+        elif mode == "async":
+            results = [await run_sub_loop_async(**requests[0])]
+        else:
+            results = [run_sub_loop(**requests[0])]
+        for child_index, result in enumerate(results):
+            assert result["completed"], result
+            assert result["output"]["summary"] == f"checked {child_index}"
+            assert all(not step["tool_result"].get("error") for step in result["steps"]), result
+            observed = result["steps"][0]["tool_result"]["data"]
+            if family == "hello":
+                assert observed["greeting"] == f"Hello, Person {child_index}!"
+            elif family == "skillful_analyst":
+                expected = f"report {child_index}\nverified"
+                assert (project / f"report-{child_index}.txt").read_text() == expected
+                assert result["steps"][1]["tool_result"]["data"]["content"] == expected
+            elif family == "dep_doctor":
+                assert observed["count"] == 1
+                assert observed["dependencies"][0]["name"] == "requests"
+            else:
+                assert observed["total_commits"] == 2
+            assert requests[child_index]["llm"].calls == len(result["steps"])
+    assert all(not preset.mcp_adapters and not preset.state_service_handles for preset in presets)
+
+
 def test_scripted_demo_executes_four_steps_without_waiting(monkeypatch, capsys):
     from looplet.examples import scripted_demo
 
@@ -107,6 +208,22 @@ def test_delegation_snippet_keeps_child_resources_and_hooks(monkeypatch):
     monkeypatch.setattr(snippet, "_backend", lambda: backend)
     assert snippet.main(["Delegate greeting Alice"]) == 0
     assert backend.calls == 4
+
+
+async def test_async_delegation_snippet_runs_real_greetings(capsys):
+    snippet = _snippet("04_subagent/async_demo.py")
+    results = await snippet.main(["Alice", "Bob", "Charlie"])
+    assert [result["steps"][0]["tool_result"]["data"]["greeting"] for result in results] == [
+        "Hello, Alice!",
+        "Hello, Bob!",
+        "Hello, Charlie!",
+    ]
+    assert all(result["completed"] and result["llm_calls"] == 2 for result in results)
+    assert capsys.readouterr().out.splitlines() == [
+        "Greeted Alice",
+        "Greeted Bob",
+        "Greeted Charlie",
+    ]
 
 
 def test_lifecycle_snippet_runs_cartridge_wiring(monkeypatch, capsys):

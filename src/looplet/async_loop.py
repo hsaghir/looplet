@@ -1315,6 +1315,7 @@ async def _async_composable_loop_impl(
                         state=state,
                         session_log=session_log,
                         llm=_sync_llm,
+                        async_llm=_get_llm(),
                     )
 
                 if config.concurrent_dispatch:
@@ -1588,6 +1589,7 @@ async def _async_composable_loop_impl(
                     state=state,
                     session_log=session_log,
                     llm=_sync_llm,
+                    async_llm=_get_llm(),
                 )
                 if _ckpt_store is not None:
                     _save_pending_dispatch(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 
 import pytest
@@ -17,6 +18,774 @@ from looplet.testing import MockLLMBackend
 from looplet.tools import ToolSpec
 
 pytestmark = pytest.mark.smoke
+
+
+async def test_async_child_uses_async_loop_and_shared_budget():
+    from looplet import run_sub_loop_async
+    from looplet.subagent import ChildRunPolicy, SharedModelBudget
+    from looplet.testing import AsyncMockLLMBackend
+
+    budget = SharedModelBudget(remaining=2)
+    backend = AsyncMockLLMBackend(
+        responses=[
+            '{"tool":"add","args":{"a":1,"b":2}}',
+            '{"tool":"done","args":{"summary":"sum is 3"}}',
+        ]
+    )
+    result = await run_sub_loop_async(
+        llm=budget.wrap(backend),
+        tools=_tools(),
+        config=LoopConfig(max_steps=3, use_native_tools=False),
+        policy=ChildRunPolicy(parent_id="parent-async", model_budget=budget),
+    )
+    assert result["steps"][0]["tool_result"]["data"] == {"sum": 3}
+    assert result["stop_reason"] == "done"
+    assert result["llm_calls"] == 2
+    assert result["parent_id"] == "parent-async"
+    assert budget.remaining == 0
+
+
+@pytest.mark.parametrize("async_mode", [False, True])
+async def test_routed_child_spends_shared_model_allowance(async_mode):
+    from looplet import run_sub_loop_async
+    from looplet.router import ModelProfile, SimpleRouter
+    from looplet.subagent import ChildRunPolicy, SharedModelBudget
+    from looplet.testing import AsyncMockLLMBackend
+
+    backend_type = AsyncMockLLMBackend if async_mode else MockLLMBackend
+    selected = backend_type(responses=['{"tool":"add","args":{"a":1,"b":2}}'])
+    unused = backend_type(responses=[])
+    profile = ModelProfile("selected", selected)
+    router = SimpleRouter({"reasoning": profile}, default_profile=profile)
+    config = LoopConfig(max_steps=3, use_native_tools=False, router=router)
+    budget = SharedModelBudget(1)
+    options = {
+        "llm": unused,
+        "sub_tools": _tools(),
+        "config": config,
+        "policy": ChildRunPolicy(parent_id="parent", model_budget=budget),
+    }
+    result = await run_sub_loop_async(**options) if async_mode else run_sub_loop(**options)
+    assert selected.calls == 1 and unused.calls == 0
+    assert budget.remaining == 0
+    assert result["steps"][0]["tool_result"]["data"] == {"sum": 3}
+    assert not result["completed"] and result["stop_reason"] == "model_budget_exhausted"
+    assert config.router is router
+
+
+async def test_async_child_awaits_parent_events():
+    from looplet import run_sub_loop_async
+    from looplet.testing import AsyncMockLLMBackend
+
+    received = []
+
+    class Observer:
+        async def on_event(self, payload):
+            received.append(payload.event)
+
+    await run_sub_loop_async(
+        llm=AsyncMockLLMBackend(
+            responses=[
+                '{"tool":"add","args":{"a":1,"b":2}}',
+                '{"tool":"done","args":{"summary":"ok"}}',
+            ]
+        ),
+        tools=_tools(),
+        config=LoopConfig(max_steps=3, use_native_tools=False),
+        parent_hooks=[Observer()],
+    )
+    assert LifecycleEvent.PRE_TOOL_USE in received
+    assert received.count(LifecycleEvent.SUBAGENT_START) == 1
+    assert received.count(LifecycleEvent.SUBAGENT_STOP) == 1
+
+
+async def test_parallel_children_are_bounded_and_ordered():
+    from looplet import run_sub_loops_async
+    from looplet.testing import AsyncMockLLMBackend
+
+    active = 0
+    peak = 0
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    class Backend(AsyncMockLLMBackend):
+        async def generate(self, prompt, **kwargs):
+            nonlocal active, peak
+            active += 1
+            peak = max(peak, active)
+            if active == 2:
+                entered.set()
+            try:
+                await release.wait()
+                return await super().generate(prompt, **kwargs)
+            finally:
+                active -= 1
+
+    requests = [
+        {
+            "llm": Backend(responses=['{"tool":"done","args":{"summary":"ok"}}']),
+            "tools": _tools(),
+            "config": LoopConfig(max_steps=1, use_native_tools=False),
+            "subagent_id": f"child-{index}",
+        }
+        for index in range(4)
+    ]
+    task = asyncio.create_task(run_sub_loops_async(requests, max_concurrency=2))
+    await asyncio.wait_for(entered.wait(), timeout=2)
+    assert peak == 2
+    release.set()
+    results = await task
+    assert peak == 2
+    assert [result["subagent_id"] for result in results] == [
+        "child-0",
+        "child-1",
+        "child-2",
+        "child-3",
+    ]
+
+
+@pytest.mark.parametrize("native", [False, True])
+async def test_parallel_recording_keeps_child_and_parent_scopes(native):
+    import json
+
+    from looplet import run_sub_loops_async, tools_from
+    from looplet.loop import _scope_llm_for_tool
+    from looplet.provenance import AsyncRecordingLLMBackend
+    from looplet.subagent import ChildRunPolicy, SharedModelBudget
+    from looplet.types import ToolCall
+
+    fast_finished = asyncio.Event()
+    release_slow = asyncio.Event()
+
+    class Backend:
+        async def generate(self, prompt, **kwargs):
+            label = next(
+                name
+                for name in ("slow-request", "fast-request", "parent-request")
+                if name in prompt
+            )
+            if label == "slow-request":
+                await release_slow.wait()
+            elif label == "fast-request":
+                fast_finished.set()
+            return json.dumps({"tool": "done", "args": {"summary": label}})
+
+        async def generate_with_tools(self, prompt, **kwargs):
+            response = json.loads(await self.generate(prompt, **kwargs))
+            return [
+                {
+                    "type": "tool_use",
+                    "id": "finish",
+                    "name": response["tool"],
+                    "input": response["args"],
+                }
+            ]
+
+    recording = AsyncRecordingLLMBackend(Backend())
+    budget = SharedModelBudget(remaining=3)
+    parent_backend = budget.wrap(recording)
+    requests = [
+        {
+            "llm": _scope_llm_for_tool(parent_backend, ToolCall(tool=f"{name}-delegate")),
+            "task": {"description": f"{name}-request"},
+            "sub_tools": tools_from([], include_done=True),
+            "config": LoopConfig(max_steps=1, use_native_tools=native),
+            "policy": ChildRunPolicy(parent_id="scope-parent", model_budget=budget),
+            "subagent_id": name,
+        }
+        for name in ("slow", "fast")
+    ]
+    children = asyncio.create_task(run_sub_loops_async(requests, max_concurrency=2))
+    try:
+        await asyncio.wait_for(fast_finished.wait(), timeout=2)
+        await parent_backend.generate("parent-request")
+    finally:
+        release_slow.set()
+        results = await children
+    assert [result["output"]["summary"] for result in results] == ["slow-request", "fast-request"]
+    assert [call.scope for call in recording.calls] == [
+        "tool:fast-delegate",
+        None,
+        "tool:slow-delegate",
+    ]
+    assert budget.remaining == 0
+
+
+async def test_parallel_failure_cancels_and_closes_sibling():
+    from looplet import run_sub_loops_async
+
+    started = asyncio.Event()
+    closed = asyncio.Event()
+    never = asyncio.Event()
+
+    class WaitingBackend:
+        async def generate(self, prompt, **kwargs):
+            started.set()
+            try:
+                await never.wait()
+            finally:
+                closed.set()
+
+    class FailingBackend:
+        async def generate(self, prompt, **kwargs):
+            await started.wait()
+            raise ValueError("child failed")
+
+    requests = [
+        {"llm": backend, "tools": _tools(), "config": LoopConfig(use_native_tools=False)}
+        for backend in [WaitingBackend(), FailingBackend()]
+    ]
+    with pytest.raises(ExceptionGroup) as failure:
+        await run_sub_loops_async(requests, max_concurrency=2)
+    assert closed.is_set()
+    assert failure.value.exceptions[0].result["stop_reason"] == "llm_error"
+
+
+@pytest.mark.parametrize("limit", [0, -1, True, 1.5])
+async def test_parallel_children_reject_invalid_limit(limit):
+    from looplet import run_sub_loops_async
+
+    with pytest.raises(ValueError, match="positive integer"):
+        await run_sub_loops_async([], max_concurrency=limit)
+
+
+@pytest.mark.parametrize("async_mode", [False, True])
+@pytest.mark.parametrize("custom_parent", [False, True])
+async def test_child_cannot_override_parent_permission(async_mode, custom_parent):
+    from looplet import PermissionEngine, PermissionHook, run_sub_loop_async
+    from looplet.testing import AsyncMockLLMBackend
+
+    effects = []
+    tools = _tools()
+    tools.register(
+        ToolSpec(
+            name="write",
+            description="Write",
+            parameters={},
+            execute=lambda: effects.append("write"),
+        )
+    )
+
+    class CustomPermissionHook(PermissionHook):
+        def check_permission(self, tool_call, state):
+            return tool_call.tool != "write"
+
+        def pre_loop(self, *args, **kwargs):
+            raise AssertionError("Parent flow control must not run on child state")
+
+    parent = (
+        CustomPermissionHook(PermissionEngine().allow("write"))
+        if custom_parent
+        else PermissionHook(PermissionEngine().deny("write"))
+    )
+    child = PermissionHook(PermissionEngine().allow("write"))
+    responses = [
+        '{"tool":"write","args":{}}',
+        '{"tool":"add","args":{"a":1,"b":2}}',
+        '{"tool":"done","args":{"summary":"ok"}}',
+    ]
+    options = {
+        "llm": AsyncMockLLMBackend(responses=responses)
+        if async_mode
+        else MockLLMBackend(responses=responses),
+        "tools": tools,
+        "hooks": [child],
+        "parent_hooks": [parent],
+        "config": LoopConfig(max_steps=4, use_native_tools=False),
+    }
+    result = await run_sub_loop_async(**options) if async_mode else run_sub_loop(**options)
+    assert effects == []
+    assert result["steps"][0]["tool_result"]["error"]
+    assert result["steps"][1]["tool_result"]["data"] == {"sum": 3}
+    assert result["completed"]
+
+
+@pytest.mark.parametrize("async_mode", [False, True])
+async def test_child_cannot_widen_execution_capabilities(async_mode):
+    from looplet import ExecutionPolicy, run_sub_loop_async
+    from looplet.subagent import ChildRunPolicy
+    from looplet.testing import AsyncMockLLMBackend
+
+    effects = []
+    tools = _tools()
+    tools.register(
+        ToolSpec(
+            name="shell",
+            description="Shell",
+            parameters={},
+            execute=lambda: effects.append("shell"),
+            capabilities=["shell"],
+        )
+    )
+    responses = ['{"tool":"shell","args":{}}', '{"tool":"done","args":{"summary":"ok"}}']
+    config = LoopConfig(
+        max_steps=3,
+        use_native_tools=False,
+        execution_policy=ExecutionPolicy(capabilities=frozenset({"shell", "network"})),
+    )
+    options = {
+        "llm": AsyncMockLLMBackend(responses=responses)
+        if async_mode
+        else MockLLMBackend(responses=responses),
+        "tools": tools,
+        "config": config,
+        "policy": ChildRunPolicy(
+            parent_id="parent",
+            execution_policy=ExecutionPolicy(capabilities=frozenset({"network"})),
+        ),
+    }
+    result = await run_sub_loop_async(**options) if async_mode else run_sub_loop(**options)
+    assert effects == []
+    assert result["steps"][0]["tool_result"]["error"]
+    assert config.execution_policy.capabilities == frozenset({"shell", "network"})
+
+
+@pytest.mark.parametrize("async_mode", [False, True])
+async def test_child_recovery_reuses_completed_output(tmp_path, async_mode):
+    from looplet import run_sub_loop_async
+    from looplet.subagent import ChildRunPolicy, SharedModelBudget
+    from looplet.testing import AsyncMockLLMBackend
+
+    artifact = tmp_path / "writes.txt"
+
+    def write():
+        with artifact.open("a") as handle:
+            handle.write("one effect\n")
+        return {"path": str(artifact)}
+
+    tools = _tools()
+    tools.register(ToolSpec(name="write", description="Write", parameters={}, execute=write))
+    backend_type = AsyncMockLLMBackend if async_mode else MockLLMBackend
+    first = backend_type(
+        responses=['{"tool":"write","args":{}}', '{"tool":"done","args":{"answer":"saved"}}']
+    )
+    budget = SharedModelBudget(2)
+    options = {
+        "llm": first,
+        "sub_tools": tools,
+        "task": {"goal": "write once"},
+        "subagent_id": "write-child",
+        "config": LoopConfig(max_steps=3, use_native_tools=False),
+        "policy": ChildRunPolicy(
+            parent_id="parent",
+            model_budget=budget,
+            recovery_dir=str(tmp_path / "children"),
+            recovery_version="agent-v1/policy-v1",
+        ),
+    }
+    run = run_sub_loop_async if async_mode else run_sub_loop
+    result = await run(**options) if async_mode else run(**options)
+    assert result["completed"]
+    assert result["output"] == {"answer": "saved"}
+    assert budget.remaining == 0
+    second = backend_type(responses=[])
+    options["llm"] = second
+    recovered = await run(**options) if async_mode else run(**options)
+    assert recovered["completed"] and recovered["recovered"]
+    assert recovered["output"] == result["output"]
+    assert recovered["subagent_id"] == result["subagent_id"]
+    assert recovered["new_llm_calls"] == 0
+    assert second.calls == 0
+    assert artifact.read_text().splitlines() == ["one effect"]
+
+
+@pytest.mark.parametrize("change", ["task", "version", "permission"])
+def test_child_recovery_refuses_changed_request(tmp_path, change):
+    from dataclasses import replace
+
+    from looplet import PermissionEngine
+    from looplet.subagent import ChildRecoveryError, ChildRunPolicy
+
+    options = {
+        "llm": MockLLMBackend(responses=['{"tool":"done","args":{"summary":"saved"}}']),
+        "sub_tools": _tools(),
+        "task": {"goal": "original"},
+        "subagent_id": "stable-child",
+        "config": LoopConfig(max_steps=3, use_native_tools=False),
+        "policy": ChildRunPolicy(
+            parent_id="parent", recovery_dir=str(tmp_path), recovery_version="v1"
+        ),
+    }
+    assert run_sub_loop(**options)["completed"]
+    if change == "task":
+        options["task"] = {"goal": "different"}
+    elif change == "version":
+        options["policy"] = replace(options["policy"], recovery_version="v2")
+    else:
+        options["policy"] = replace(
+            options["policy"], permission_engines=(PermissionEngine().deny("add"),)
+        )
+    with pytest.raises(ChildRecoveryError, match="does not match"):
+        run_sub_loop(**options)
+
+
+def test_child_recovery_refuses_uncertain_effect(tmp_path):
+    from looplet.checkpoint import UncertainToolEffect
+    from looplet.subagent import ChildRunPolicy
+
+    class ProcessInterrupted(BaseException):
+        pass
+
+    effects = []
+
+    def write():
+        effects.append("written")
+        raise ProcessInterrupted()
+
+    tools = _tools()
+    tools.register(ToolSpec(name="write", description="Write", parameters={}, execute=write))
+    options = {
+        "llm": MockLLMBackend(responses=['{"tool":"write","args":{}}']),
+        "sub_tools": tools,
+        "subagent_id": "interrupted-child",
+        "config": LoopConfig(max_steps=3, use_native_tools=False),
+        "policy": ChildRunPolicy(
+            parent_id="parent", recovery_dir=str(tmp_path), recovery_version="v1"
+        ),
+    }
+    with pytest.raises(ProcessInterrupted):
+        run_sub_loop(**options)
+    options["llm"] = MockLLMBackend(responses=['{"tool":"write","args":{}}'])
+    with pytest.raises(UncertainToolEffect):
+        run_sub_loop(**options)
+    assert effects == ["written"]
+    assert options["llm"].calls == 0
+
+
+@pytest.mark.parametrize("async_mode", [False, True])
+async def test_child_recovery_resumes_committed_step(tmp_path, async_mode):
+    import os
+    import subprocess
+    import sys
+
+    from looplet import DefaultState, run_sub_loop_async
+    from looplet.provenance import AsyncRecordingLLMBackend, RecordingLLMBackend
+    from looplet.subagent import ChildRunPolicy
+    from looplet.testing import AsyncMockLLMBackend
+
+    artifact = tmp_path / "committed.txt"
+    records = tmp_path / "records"
+    program = """
+import os
+from pathlib import Path
+from runpy import run_path
+from looplet import BaseToolRegistry, DefaultState, LoopConfig, ToolSpec, run_sub_loop
+from looplet.subagent import ChildRunPolicy
+artifact = Path(os.environ["CHILD_ARTIFACT"])
+tools = run_path(os.environ["CHILD_TEST_MODULE"])["_tools"]()
+tools._tools.pop("add")
+def write():
+    with artifact.open("a") as handle:
+        handle.write("committed\\n")
+    return {"path": str(artifact)}
+tools.register(ToolSpec(name="write", description="Write", parameters={}, execute=write))
+class InterruptedBackend:
+    calls = 0
+    def generate(self, *args, **kwargs):
+        self.calls += 1
+        if self.calls == 2:
+            os._exit(0)
+        return '{"tool":"write","args":{}}'
+run_sub_loop(llm=InterruptedBackend(), sub_tools=tools, state=DefaultState(max_steps=3),
+             task={"goal": "write once"}, subagent_id="committed-child",
+             config=LoopConfig(max_steps=3, use_native_tools=False),
+             policy=ChildRunPolicy(parent_id="parent", recovery_dir=os.environ["CHILD_RECORDS"], recovery_version="v1"))
+"""
+    subprocess.run(
+        [sys.executable, "-c", program],
+        check=True,
+        timeout=15,
+        env={
+            **os.environ,
+            "CHILD_ARTIFACT": str(artifact),
+            "CHILD_RECORDS": str(records),
+            "CHILD_TEST_MODULE": __file__,
+        },
+    )
+    assert artifact.read_text() == "committed\n"
+
+    def write():
+        with artifact.open("a") as handle:
+            handle.write("duplicate\n")
+        return {"path": str(artifact)}
+
+    tools = _tools()
+    tools._tools.pop("add")
+    tools.register(ToolSpec(name="write", description="Write", parameters={}, execute=write))
+    backend_type = AsyncMockLLMBackend if async_mode else MockLLMBackend
+    backend = backend_type(responses=['{"tool":"done","args":{"summary":"resumed"}}'], cycle=False)
+    recording = (AsyncRecordingLLMBackend if async_mode else RecordingLLMBackend)(backend)
+    options = {
+        "llm": recording,
+        "sub_tools": tools,
+        "state": DefaultState(max_steps=3),
+        "task": {"goal": "write once"},
+        "subagent_id": "committed-child",
+        "config": LoopConfig(max_steps=3, use_native_tools=False),
+        "policy": ChildRunPolicy(
+            parent_id="parent", recovery_dir=str(records), recovery_version="v1"
+        ),
+    }
+    result = await run_sub_loop_async(**options) if async_mode else run_sub_loop(**options)
+    assert result["completed"]
+    assert backend.calls == 1
+    assert artifact.read_text() == "committed\n"
+    assert options["state"].steps[0].number == 2
+    assert len(result["steps"]) == 1
+    assert len(recording.calls) == 1
+    assert f'"path": "{artifact}"' in recording.calls[0].prompt
+    assert "do not repeat their effects" in recording.calls[0].prompt
+
+
+def test_child_recovery_receipts_preserve_domain_callbacks():
+    from types import SimpleNamespace
+
+    from looplet.subagent import _ChildRecoveryEvidence
+
+    restored = []
+    evidence = _ChildRecoveryEvidence(
+        lambda context: {"domain_value": 7},
+        lambda context, domain: restored.append(dict(domain)),
+    )
+    receipt = {"step": 1, "tool_call": {"tool": "write"}, "tool_result": {"data": "saved"}}
+    domain = {"domain_value": 7, "_looplet_child_receipts": [receipt]}
+    context = SimpleNamespace(state=SimpleNamespace(steps=[]))
+    evidence.restore_checkpoint_state(context, domain)
+    assert restored == [{"domain_value": 7}]
+    assert evidence.checkpoint_state(context) == domain
+    assert evidence.pre_prompt(None, None, None, 2)
+
+
+@pytest.mark.parametrize("async_mode", [False, True])
+async def test_child_inherits_custom_permission_without_parent_flow(async_mode):
+    from looplet import run_sub_loop_async
+    from looplet.testing import AsyncMockLLMBackend
+
+    class ParentGuard:
+        def check_permission(self, tool_call, state):
+            return tool_call.tool != "write"
+
+        def should_stop(self, *args):
+            raise AssertionError("parent flow must not run on child state")
+
+    effects = []
+    tools = _tools()
+    tools.register(
+        ToolSpec(
+            name="write",
+            description="Write",
+            parameters={},
+            execute=lambda: effects.append("write"),
+        )
+    )
+    backend_type = AsyncMockLLMBackend if async_mode else MockLLMBackend
+    options = {
+        "llm": backend_type(
+            responses=[
+                '{"tool":"write","args":{}}',
+                '{"tool":"add","args":{"a":2,"b":3}}',
+                '{"tool":"done","args":{"answer":"ok"}}',
+            ],
+            cycle=False,
+        ),
+        "sub_tools": tools,
+        "parent_hooks": [ParentGuard()],
+        "config": LoopConfig(max_steps=4, use_native_tools=False),
+    }
+    result = await run_sub_loop_async(**options) if async_mode else run_sub_loop(**options)
+    assert result["completed"]
+    assert effects == []
+    assert result["steps"][0]["tool_result"]["error"]
+    assert result["steps"][1]["tool_result"]["data"] == {"sum": 5}
+
+
+async def test_parallel_children_keep_approval_requests_separate():
+    import json
+
+    from looplet import ApprovalHook, run_sub_loops_async
+    from looplet.testing import AsyncMockLLMBackend
+
+    parent = ApprovalHook()
+    tools = _tools()
+    tools.register(
+        ToolSpec(
+            name="request",
+            description="Request",
+            parameters={"label": "str"},
+            execute=lambda label: {"needs_approval": True, "approval_description": label},
+        )
+    )
+    requests = [
+        {
+            "llm": AsyncMockLLMBackend(
+                responses=[json.dumps({"tool": "request", "args": {"label": label}})], cycle=False
+            ),
+            "sub_tools": tools,
+            "parent_hooks": [parent],
+            "config": LoopConfig(max_steps=3, use_native_tools=False),
+        }
+        for label in ("first action", "second action")
+    ]
+    results = await run_sub_loops_async(requests, max_concurrency=2)
+    assert [result["approval"]["description"] for result in results] == [
+        "first action",
+        "second action",
+    ]
+    assert all(result["stop_reason"] == "waiting_for_approval" for result in results)
+    assert all(not result["completed"] for result in results)
+    assert parent.pending is None
+
+
+def test_child_summary_uses_accepted_terminal_output():
+    tools = _tools()
+    tools._tools["done"] = ToolSpec(
+        name="done",
+        description="Done",
+        parameters={"summary": "str"},
+        execute=lambda summary: {"summary": summary},
+    )
+    result = run_sub_loop(
+        llm=MockLLMBackend(
+            responses=['{"tool":"done","args":{"summary":"Greeted Alice"}}'], cycle=False
+        ),
+        sub_tools=tools,
+        config=LoopConfig(max_steps=2, use_native_tools=False),
+    )
+    assert result["completed"]
+    assert result["summary"] == "Greeted Alice"
+    assert result["output"] == {"summary": "Greeted Alice"}
+
+
+@pytest.mark.parametrize("async_mode", [False, True])
+async def test_child_config_overrides_default_state_limit(async_mode):
+    from looplet import run_sub_loop_async
+    from looplet.testing import AsyncMockLLMBackend
+
+    backend_type = AsyncMockLLMBackend if async_mode else MockLLMBackend
+    backend = backend_type(responses=['{"tool":"add","args":{"a":2,"b":3}}'])
+    options = {
+        "llm": backend,
+        "sub_tools": _tools(),
+        "config": LoopConfig(max_steps=7, use_native_tools=False),
+    }
+    result = await run_sub_loop_async(**options) if async_mode else run_sub_loop(**options)
+    assert len(result["steps"]) == backend.calls == 7
+    assert result["stop_reason"] == "budget_exhausted"
+    assert not result["completed"]
+
+
+@pytest.mark.parametrize("async_mode", [False, True])
+@pytest.mark.parametrize("with_policy", [False, True])
+async def test_child_config_bounds_supplied_default_state(async_mode, with_policy):
+    from looplet import DefaultState, run_sub_loop_async
+    from looplet.subagent import ChildRunPolicy
+    from looplet.testing import AsyncMockLLMBackend
+
+    backend_type = AsyncMockLLMBackend if async_mode else MockLLMBackend
+    backend = backend_type(responses=['{"tool":"add","args":{"a":2,"b":3}}'])
+    state = DefaultState(max_steps=9)
+    config = LoopConfig(max_steps=4, use_native_tools=False)
+    options = {
+        "llm": backend,
+        "sub_tools": _tools(),
+        "state": state,
+        "config": config,
+        "policy": ChildRunPolicy(parent_id="parent") if with_policy else None,
+    }
+    result = await run_sub_loop_async(**options) if async_mode else run_sub_loop(**options)
+    assert len(result["steps"]) == backend.calls == 4
+    assert result["stop_reason"] == "budget_exhausted"
+    assert not result["completed"]
+    assert config.max_steps == state.max_steps == 4
+
+
+def test_child_does_not_load_parent_checkpoint_without_policy(tmp_path):
+    from looplet import RunEnvelope
+    from looplet.checkpoint import Checkpoint, FileCheckpointStore
+
+    parent = Checkpoint(
+        step_number=8,
+        session_log_data={},
+        conversation_data=None,
+        config_snapshot={},
+        tool_results_store={},
+        metadata={"pending_calls": [{"call_id": "parent-effect"}]},
+        run_envelope={"run_id": "parent"},
+    )
+    FileCheckpointStore(tmp_path).save(parent, "step_8_pending")
+    config = LoopConfig(
+        max_steps=2,
+        use_native_tools=False,
+        checkpoint_dir=str(tmp_path),
+        initial_checkpoint=parent,
+        run_envelope=RunEnvelope(run_id="parent"),
+    )
+    backend = MockLLMBackend(['{"tool":"done","args":{"answer":"child output"}}'], cycle=False)
+    result = run_sub_loop(llm=backend, sub_tools=_tools(), config=config, subagent_id="child")
+    assert result["completed"] and result["output"] == {"answer": "child output"}
+    assert result["run_envelope"]["run_id"] == "child"
+    assert result["parent_id"] == "parent"
+    assert config.initial_checkpoint is parent
+    assert config.checkpoint_dir == str(tmp_path)
+
+
+def test_child_recovery_refuses_corrupt_checkpoint(tmp_path):
+    from looplet.subagent import ChildRecoveryError, ChildRunPolicy
+
+    options = {
+        "llm": MockLLMBackend(['{"tool":"done","args":{"answer":"saved"}}'], cycle=False),
+        "sub_tools": _tools(),
+        "subagent_id": "child",
+        "config": LoopConfig(max_steps=2, use_native_tools=False),
+        "policy": ChildRunPolicy(
+            parent_id="parent", recovery_dir=str(tmp_path), recovery_version="v1"
+        ),
+    }
+    assert run_sub_loop(**options)["completed"]
+    checkpoint = next(tmp_path.rglob("*__delegation.json"))
+    checkpoint.write_text("{corrupt")
+    backend = MockLLMBackend(['{"tool":"done","args":{"answer":"repeat"}}'], cycle=False)
+    options["llm"] = backend
+    with pytest.raises(ChildRecoveryError, match="corrupt"):
+        run_sub_loop(**options)
+    assert backend.calls == 0
+
+
+async def test_async_child_start_cancellation_emits_one_stop():
+    from looplet import run_sub_loop_async
+    from looplet.testing import AsyncMockLLMBackend
+
+    entered = asyncio.Event()
+    never = asyncio.Event()
+    events = []
+    stops = []
+
+    class Observer:
+        async def on_event(self, payload):
+            events.append(payload.event)
+            if payload.event == LifecycleEvent.SUBAGENT_STOP:
+                stops.append(payload.termination_reason)
+            if payload.event == LifecycleEvent.SUBAGENT_START:
+                entered.set()
+                await never.wait()
+
+    backend = AsyncMockLLMBackend(['{"tool":"done","args":{"answer":"ok"}}'], cycle=False)
+    child = asyncio.create_task(
+        run_sub_loop_async(
+            llm=backend,
+            sub_tools=_tools(),
+            parent_hooks=[Observer()],
+            config=LoopConfig(use_native_tools=False),
+        )
+    )
+    await asyncio.wait_for(entered.wait(), timeout=2)
+    child.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await child
+    assert events.count(LifecycleEvent.SUBAGENT_START) == 1
+    assert events.count(LifecycleEvent.SUBAGENT_STOP) == 1
+    assert stops == ["cancelled"]
+    assert backend.calls == 0
 
 
 def _tools() -> BaseToolRegistry:

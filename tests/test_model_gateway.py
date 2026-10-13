@@ -106,6 +106,53 @@ def test_late_binding_backend():
         handle.close()
 
 
+async def test_async_backend_delivery_uses_its_bound_host_loop():
+    import asyncio
+
+    owner = asyncio.get_running_loop()
+
+    class Backend:
+        async def generate(self, prompt, **kwargs):
+            assert asyncio.get_running_loop() is owner
+            assert prompt == "async request" and kwargs == {"max_tokens": 20}
+            return "async response"
+
+    handle = ModelGatewayHandle.start()
+    try:
+        handle.set_backend(Backend())
+        client = ModelGatewayClient(handle.socket_path)
+        try:
+            assert await asyncio.to_thread(client.generate, "async request", max_tokens=20) == (
+                "async response"
+            )
+        finally:
+            client.close()
+    finally:
+        handle.close()
+
+
+async def test_async_gateway_deadline_cancels_backend_delivery(monkeypatch):
+    import asyncio
+
+    from looplet.model_gateway import ModelGatewayServer
+
+    closed = asyncio.Event()
+    never = asyncio.Event()
+
+    class Backend:
+        async def generate(self, prompt, **kwargs):
+            try:
+                await never.wait()
+            finally:
+                closed.set()
+
+    server = ModelGatewayServer(Backend())
+    monkeypatch.setattr("looplet.model_gateway.remaining_deadline", lambda envelope: 0.05)
+    with pytest.raises(ModelGatewayError, match="deadline"):
+        await asyncio.to_thread(server._generate, "request", {})
+    await asyncio.wait_for(closed.wait(), timeout=2)
+
+
 def test_from_env_returns_none_when_unset(monkeypatch):
     monkeypatch.delenv(LLM_SOCKET_ENV_VAR, raising=False)
     assert ModelGatewayClient.from_env() is None

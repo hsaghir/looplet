@@ -16,11 +16,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from looplet import (
     CartridgeEvals,
+    EvalBundle,
     EvalCase,
     discover_collectors,
     load_cartridge_evals,
+    load_evals,
     save_cartridge_cases,
 )
 
@@ -153,3 +157,39 @@ def test_collectors_without_runtime_default_to_empty(tmp_path: Path) -> None:
         merged.update(c(state=object()))
     assert merged["workspace"] is None  # runtime.get("workspace_dir") on {}
     assert merged["saw_state"] is True
+
+
+def test_generic_bundle_loader_matches_cartridge_definitions(tmp_path: Path) -> None:
+    _seed_eval_bundle(tmp_path)
+    runtime = {"workspace_dir": "/sandbox/42"}
+    bundle = load_evals(tmp_path / "evals", runtime=runtime)
+    compatible = load_cartridge_evals(tmp_path, runtime=runtime, strict=True)
+    assert EvalBundle is CartridgeEvals
+    assert bundle.cases == compatible.cases
+    assert [grader.__name__ for grader in bundle.graders] == [
+        grader.__name__ for grader in compatible.graders
+    ]
+    assert len(bundle.collectors) == len(compatible.collectors) == 2
+    assert bundle.collectors[1](object())["workspace"] == "/sandbox/42"
+
+
+def test_generic_bundle_loader_rejects_missing_directory_by_default(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="Eval directory not found"):
+        load_evals(tmp_path / "missing")
+    assert load_evals(tmp_path / "missing", strict=False) == EvalBundle([], [], [])
+    assert load_cartridge_evals(tmp_path, strict=True) == EvalBundle([], [], [])
+
+
+@pytest.mark.parametrize("filename", ["eval_broken.py", "collect_broken.py"])
+def test_generic_bundle_loader_rejects_broken_definition_imports(tmp_path: Path, filename: str):
+    (tmp_path / filename).write_text("raise RuntimeError('broken definition')\n")
+    with pytest.raises(RuntimeError, match="broken definition"):
+        load_evals(tmp_path)
+
+
+def test_generic_bundle_loader_preserves_partial_definition_bundles(tmp_path: Path):
+    (tmp_path / "eval_answer.py").write_text("def eval_answer(ctx):\n    return True\n")
+    bundle = load_evals(tmp_path)
+    assert bundle.cases == []
+    assert bundle.collectors == []
+    assert [grader.__name__ for grader in bundle.graders] == ["eval_answer"]

@@ -27,11 +27,15 @@ from looplet import (
     EvalHook,
     EvalReport,
     LoopConfig,
+    assert_evals_pass,
     composable_loop,
     eval_assess,
+    eval_cli,
     eval_run,
     load_eval_run,
+    load_evals,
     promote_to_offline,
+    save_eval_run,
     seed_case_workspace,
     tool,
     tools_from,
@@ -79,6 +83,46 @@ def _run_online(collectors=None, metadata=None) -> EvalHook:
     ):
         pass
     return hook
+
+
+def test_generated_definitions_compose_with_raw_loop_pytest_and_saved_runs(tmp_path):
+    definitions = tmp_path / "evals"
+    project = tmp_path / "project"
+    project.mkdir()
+    assert eval_cli(["init", str(definitions)]) == 0
+    bundle = load_evals(definitions, runtime={"project_root": str(project)})
+    case = bundle.cases[0]
+
+    @tool(description="Write the result in the project directory.")
+    def write_result(content: str) -> dict:
+        (project / "result.txt").write_text(content)
+        return {"written": True}
+
+    hook = EvalHook(bundle.graders, collectors=bundle.collectors, expected=case.expected)
+    state = DefaultState(max_steps=3)
+    steps = list(
+        composable_loop(
+            llm=MockLLMBackend(
+                [
+                    json.dumps({"tool": "write_result", "args": {"content": "hello"}}),
+                    json.dumps({"tool": "done", "args": {"summary": "written"}}),
+                ]
+            ),
+            tools=tools_from([write_result], include_done=True),
+            state=state,
+            config=LoopConfig(max_steps=3, use_native_tools=False),
+            task=case.task,
+            hooks=[hook],
+        )
+    )
+    assert [step.tool_call.tool for step in steps] == ["write_result", "done"]
+    assert "expected" not in state.task
+    hook.assessment().assert_passed()
+    record = load_eval_run(save_eval_run(tmp_path / "run", eval_hook=hook, case=case))
+    assert record.context.expected == case.expected
+    assert record.context.artifacts == {"content": "hello"}
+    EvalReport.from_records([record]).assert_passed()
+    assert_evals_pass(record.context, bundle.graders)
 
 
 # ── online inspection ────────────────────────────────────────────

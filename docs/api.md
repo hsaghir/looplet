@@ -275,8 +275,7 @@ They use the same loop.
 
 | API | Use it for |
 | --- | --- |
-| `load_evals(path, ...)` | Load one directory's cases, plain graders, and collectors, with strict imports by default. |
-| `EvalBundle` | The existing named tuple of cases, graders, and collectors; `CartridgeEvals` remains compatible. |
+| `load_evals(path, ...)` | Load ordinary grader and collector functions from one file or directory, plus optional JSON cases. |
 | `EvalCase` / `load_cases(...)` / `save_case(...)` | Task input, grader-only expected data, marks, and notes as reviewable JSON. |
 | `EvalContext` | Final output, observed artifacts, steps, stop reason, and grader task view. |
 | `ctx.expected` | Read grader-only expectations without changing the existing task view. |

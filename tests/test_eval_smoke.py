@@ -69,6 +69,7 @@ def test_eval_starter_checks_real_output_without_running_an_agent(tmp_path, caps
     project = tmp_path / "project"
     project.mkdir()
     assert eval_cli(["init", str(root)]) == 0
+    assert list(root.glob("*.py")) == [root / "eval_outcome.py"]
     assert eval_cli(["check", str(root), "--json"]) == 0
     captured = capsys.readouterr()
     report = json.loads(captured.out[captured.out.index("{") :])
@@ -95,17 +96,18 @@ def test_eval_starter_refuses_existing_definitions_without_partial_writes(tmp_pa
 
 def test_eval_check_never_calls_graders_collectors_or_models(tmp_path, capsys):
     assert eval_cli(["init", str(tmp_path)]) == 0
-    for filename in ("eval_outcome.py", "collect_outcome.py"):
-        source = (tmp_path / filename).read_text()
-        (tmp_path / filename).write_text(
-            source.replace(
-                '    return ctx.artifacts["content"] == ctx.expected["content"]',
-                '    raise AssertionError("grader must not run")',
-            ).replace(
-                '    target = Path(resolve_project_root(runtime)) / "result.txt"',
-                '    raise AssertionError("collector must not run")',
-            )
+    source = tmp_path / "eval_outcome.py"
+    source.write_text(
+        source.read_text()
+        .replace(
+            '    return ctx.artifacts["content"] == ctx.expected["content"]',
+            '    raise AssertionError("grader must not run")',
         )
+        .replace(
+            '    target = Path(resolve_project_root(runtime)) / "result.txt"',
+            '    raise AssertionError("collector must not run")',
+        )
+    )
     capsys.readouterr()
     assert eval_cli(["check", str(tmp_path), "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["valid"]
@@ -158,7 +160,16 @@ def test_eval_check_rejects_duplicate_cases_and_graders(tmp_path, capsys):
 def test_eval_check_rejects_empty_definitions(tmp_path, capsys):
     assert eval_cli(["check", str(tmp_path), "--json"]) == 1
     report = json.loads(capsys.readouterr().out)
-    assert report["errors"] == ["No evaluation cases", "No graders selected"]
+    assert report["errors"] == ["No graders selected"]
+
+
+def test_eval_check_accepts_one_grader_file_without_saved_cases(tmp_path, capsys):
+    source = tmp_path / "eval_answer.py"
+    source.write_text("def eval_answer(ctx):\n    return ctx.final_output['answer'] == 42\n")
+    assert eval_cli(["check", str(source), "--json"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["valid"] and report["cases"] == []
+    assert report["graders"][0]["name"] == "eval_answer"
 
 
 @pytest.mark.parametrize("files", ["not a mapping", {"../escape": "bad"}, {"/absolute": "bad"}])

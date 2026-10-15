@@ -1,63 +1,94 @@
 # Behavioral evals
 
 An eval is a host-owned behavioral contract checked against an observed run outcome.
-The contract does not execute or control the agent.
+Define it as an ordinary Python function.
+Your host owns execution and supplies the observed result.
 
-| Concept | Meaning |
-| --- | --- |
-| Case | Agent-visible task plus separate grader-only expectations. |
-| Observation | Final output, independently collected artifacts, and execution facts in `EvalContext`. |
-| Check | An ordinary Python grader, optionally using a judge model. |
-| Assessment | Check results, metrics, integrity failures, and an explicit gate decision in `EvalReport`. |
+## Start with one function
 
-Use one workflow:
+```python
+from looplet import eval_assess
 
-1. Preserve the case that exposed a failure.
-2. Own execution through your existing loop or preset.
-3. Collect the outcome independently of the agent's claim.
-4. Check the behavioral contract with ordinary graders.
-5. Save the run evidence and the release assessment.
-6. Gate the release on `report.passed`, not an average score.
+def eval_answer(ctx):
+    return ctx.final_output["answer"] == ctx.expected["answer"]
 
-Write functions named `eval_*` and Looplet discovers and runs them. Unlike
-ordinary assertions, evals may return scores from 0–1 because some quality
-dimensions are continuous. Required release contracts still produce ordinary
-pass/fail exit codes.
+report = eval_assess([eval_answer], observed_context)
+report.assert_passed()
+```
 
-## Define once with ordinary files
+`observed_context` is your host's `EvalContext`, containing the output and grader-only expectations.
+This grades an existing observation; it does not execute the agent.
+A boolean is enough for a pass/fail contract.
+Use `EvalResult` when you need scores, metrics, or explanations.
+No files, saved cases, collectors, or cartridge are required.
 
-Create a starter without a model or API key:
+The same functions serve Python, pytest, saved-run grading, and cartridge evaluation.
+There is no second definition language or mandatory eval class.
+
+## Keep a contract in one file
+
+Put `eval_*` functions in a Python file when the contract needs version control or reuse.
+Load that file without changing its functions:
+
+```python
+from looplet import eval_assess, load_evals
+
+definitions = load_evals("eval_answer.py")
+eval_assess(definitions.graders, observed_context).assert_passed()
+```
+
+Add ordinary `collect_*` functions to the same file when you need independent world-state evidence.
+They run only when your host attaches them through an `EvalHook`.
+Graders and collectors share one module import and its helper functions.
+Collection remains separate from grading, so offline rescoring cannot repeat side effects.
+
+For a growing corpus, keep JSON cases under `evals/cases/` and Python definitions under `evals/`.
+`load_evals("evals/")` loads that directory through the same discovery code.
+Existing separate grader and collector files remain supported.
+Each case separates agent-visible `task` data from grader-only `expected` data.
+
+Create a file-output example when you need a starter:
 
 ```bash
 looplet eval init evals/
 looplet eval check evals/ --json
 ```
 
-The starter contains one case, one required grader, and one outcome collector.
-It checks the content of `result.txt`, not the agent's claim about that file.
-Missing output fails the contract.
-Existing starter files are never overwritten.
-
 ```text
 evals/
     cases/hello.json
     eval_outcome.py
-    collect_outcome.py
 ```
 
-Cases remain JSON data.
-Graders remain ordinary `eval_*` functions; collectors remain ordinary `collect_*` functions.
-There is no registry, inheritance requirement, or new execution engine.
-Edit these files directly as the contract grows.
+The Python file contains a required grader and its outcome collector.
+It checks the content of `result.txt`, not the agent's claim about that file.
+Missing output fails the contract.
+Existing starter files are never overwritten.
+Edit the functions and case data directly as the contract grows.
 
-`eval check` imports trusted Python definitions.
+`eval check` accepts one file or a directory; saved cases are optional.
+It imports trusted Python definitions.
 Imports can execute authored code; use it only with definitions you trust.
 The check does not call graders, collectors, models, or the agent.
 It checks case shapes, seed paths, duplicate identities, imports, and supported signatures.
 Its `looplet.eval-definitions` report describes definition validity, not whether an agent satisfies the contract.
 It cannot prove that a grader is correct or that required checks were not deleted before discovery.
 
-Load the same directory in a Python host:
+## Own execution explicitly
+
+Use one owner for each operation:
+
+| Situation | Recommended path |
+| --- | --- |
+| An observation needs grading | `eval_assess(graders, context)` |
+| A live loop needs collection and grading | Attach `EvalHook`, then call `hook.assessment()` |
+| Saved grades need a gate decision | `EvalReport.from_records(records)` |
+
+The definition stays the same.
+These paths differ because grading, collection, and reassessment are different operations.
+Do not attach a grading hook and then run its graders again just to assert success.
+
+For a case-driven loop with independent collection:
 
 ```python
 from looplet import EvalHook, composable_loop, load_evals, save_eval_run, seed_case_workspace
@@ -92,7 +123,7 @@ For saved grades, use `EvalReport.from_records()`.
 The existing primitives remain available for custom discovery and execution.
 
 `load_evals()` uses strict imports by default and does not require a cartridge.
-It returns the existing named tuple of `cases`, `graders`, and `collectors`, also exported as `EvalBundle`.
+It returns the existing named tuple of `cases`, `graders`, and `collectors`.
 Partial bundles remain useful for hosts that load only graders or collectors.
 `load_cartridge_evals()` remains compatible and loads the same definitions from a cartridge's `evals/` directory.
 Place this directory inside a cartridge to use the existing fresh-run CLI below.

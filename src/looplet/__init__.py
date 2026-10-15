@@ -95,7 +95,6 @@ from looplet.evals import (
     CARTRIDGE_CASES_SUBPATH,
     CARTRIDGE_EVALS_SUBPATH,
     CartridgeEvals,
-    EvalBundle,
     EvalCase,
     EvalContext,
     EvalHook,
@@ -373,7 +372,6 @@ __all__ = [
     "MetricsHook",
     # ── EVALS ────────────────────────────────────────────────────
     "EvalHook",
-    "EvalBundle",
     "EvalContext",
     "EvalReport",
     "EvalResult",

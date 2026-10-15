@@ -90,7 +90,6 @@ if TYPE_CHECKING:
 
 __all__ = [
     "EvalCase",
-    "EvalBundle",
     "EvalContext",
     "EvalResult",
     "EvalReport",
@@ -200,9 +199,6 @@ class CartridgeEvals(NamedTuple):
     cases: list["EvalCase"]
     graders: list[Callable]
     collectors: list[Callable]
-
-
-EvalBundle = CartridgeEvals
 
 
 class EvalRunRecord(NamedTuple):
@@ -1006,8 +1002,12 @@ def discover_collectors(
         prefix="collect_",
         strict=strict,
     )
+    return _bind_collectors(raw, runtime)
+
+
+def _bind_collectors(collectors: list[Callable], runtime: dict[str, Any] | None) -> list[Callable]:
     bound: list[Callable] = []
-    for fn in raw:
+    for fn in collectors:
         try:
             needs_runtime = "runtime" in inspect.signature(fn).parameters
         except (TypeError, ValueError):
@@ -1024,24 +1024,29 @@ def load_evals(
     *,
     runtime: dict[str, Any] | None = None,
     strict: bool = True,
-) -> "EvalBundle":
-    """Load cases, graders, and collectors from one eval directory.
+) -> "CartridgeEvals":
+    """Load ordinary eval functions from a Python file or directory.
 
-    Cases live under ``cases/``. Plain ``eval_*`` and ``collect_*`` functions
-    use the existing discovery conventions. This does not execute a run.
-    Strict loading rejects missing directories and broken definition imports.
-    Empty bundles remain available for callers that only need part of a suite.
+    ``eval_*`` graders and optional ``collect_*`` collectors can share one file.
+    Directories also load JSON cases under ``cases/`` and preserve separate files.
+    Each module loads once. This does not execute a run or call its functions.
+    Strict loading rejects missing paths and broken definition imports.
     """
     root = Path(path)
-    if not root.is_dir():
+    if not root.is_dir() and not root.is_file():
         if strict:
-            raise ValueError(f"Eval directory not found: {root}")
-        return EvalBundle(cases=[], graders=[], collectors=[])
+            raise ValueError(f"Eval definitions not found: {root}")
+        return CartridgeEvals(cases=[], graders=[], collectors=[])
     cases_dir = root / "cases"
     cases = load_cases(cases_dir) if cases_dir.is_dir() else []
-    graders = eval_discover(root, strict=strict)
-    collectors = discover_collectors(root, runtime=runtime, strict=strict)
-    return EvalBundle(cases=cases, graders=graders, collectors=collectors)
+    definitions = _discover_functions(
+        root, patterns=("eval_*.py", "collect_*.py"), prefixes=("eval_", "collect_"), strict=strict
+    )
+    return CartridgeEvals(
+        cases=cases,
+        graders=definitions["eval_"],
+        collectors=_bind_collectors(definitions["collect_"], runtime),
+    )
 
 
 def load_cartridge_evals(
@@ -1856,11 +1861,21 @@ def eval_discover(
     Returns:
         List of callable evaluator functions.
     """
-    root = Path(path)
-    files = [root] if root.is_file() else sorted(root.rglob(pattern))
+    return _discover_functions(path, patterns=(pattern,), prefixes=(prefix,), strict=strict)[prefix]
 
-    evaluators: list[Callable] = []
-    seen_names: dict[str, Path] = {}
+
+def _discover_functions(
+    path: str | Path, *, patterns: tuple[str, ...], prefixes: tuple[str, ...], strict: bool
+) -> dict[str, list[Callable]]:
+    root = Path(path)
+    files = (
+        [root]
+        if root.is_file()
+        else sorted({file for pattern in patterns for file in root.rglob(pattern)})
+    )
+
+    evaluators: dict[str, list[Callable]] = {prefix: [] for prefix in prefixes}
+    seen_names: dict[tuple[str, str], Path] = {}
     for fpath in files:
         module_name = "_eval_" + hashlib.sha256(str(fpath.resolve()).encode()).hexdigest()[:16]
         try:
@@ -1876,7 +1891,8 @@ def eval_discover(
             sys.modules[mod.__name__] = mod
             spec.loader.exec_module(mod)
             for name, obj in inspect.getmembers(mod, inspect.isfunction):
-                if not name.startswith(prefix):
+                prefix = next((value for value in prefixes if name.startswith(value)), None)
+                if prefix is None:
                     continue
                 # Only pick up functions defined in THIS module, not
                 # re-exports (e.g. `from looplet import eval_mark`
@@ -1886,13 +1902,14 @@ def eval_discover(
                 if getattr(target, "__module__", None) != mod.__name__:
                     continue
                 result_name = obj.__name__
-                if strict and result_name in seen_names:
+                identity = (prefix, result_name)
+                if strict and identity in seen_names:
                     raise RuntimeError(
                         f"duplicate evaluator name {result_name!r} in "
-                        f"{seen_names[result_name]} and {fpath}"
+                        f"{seen_names[identity]} and {fpath}"
                     )
-                seen_names[result_name] = fpath
-                evaluators.append(obj)
+                seen_names[identity] = fpath
+                evaluators[prefix].append(obj)
         except Exception as exc:  # noqa: BLE001
             sys.modules.pop(module_name, None)
             if strict:
@@ -2800,15 +2817,13 @@ def _init_eval_definitions(path: Path) -> list[Path]:
         + "\n",
         "eval_outcome.py": (
             '"""Check independently collected output against the case contract."""\n\n'
-            "from looplet import eval_mark\n\n\n"
+            "from pathlib import Path\n\n"
+            "from looplet import eval_mark\n"
+            "from looplet.cartridge.runtime_helpers import resolve_project_root\n\n\n"
             '@eval_mark("required")\n'
             "def eval_content(ctx):\n"
             '    return ctx.artifacts["content"] == ctx.expected["content"]\n'
-        ),
-        "collect_outcome.py": (
-            '"""Read the result independently of the agent\'s completion claim."""\n\n'
-            "from pathlib import Path\n\n"
-            "from looplet.cartridge.runtime_helpers import resolve_project_root\n\n\n"
+            "\n\n"
             "def collect_content(state, runtime):\n"
             '    target = Path(resolve_project_root(runtime)) / "result.txt"\n'
             "    try:\n"
@@ -2839,12 +2854,10 @@ def _init_eval_definitions(path: Path) -> list[Path]:
 
 def _check_eval_definitions(path: Path) -> dict[str, Any]:
     errors: list[str] = []
-    bundle = EvalBundle([], [], [])
+    bundle = CartridgeEvals([], [], [])
     manifest: list[dict[str, Any]] = []
     try:
         bundle = load_evals(path)
-        if not bundle.cases:
-            errors.append("No evaluation cases")
         if not bundle.graders:
             errors.append("No graders selected")
         manifest = _eval_grader_manifest(bundle.graders)
@@ -2904,7 +2917,15 @@ def _eval_definitions_cli(args: list[str]) -> int:
         ),
     )
     parser.add_argument(
-        "path", nargs="?", type=Path, default=Path("evals"), help="Eval directory (default: evals)"
+        "path",
+        nargs="?",
+        type=Path,
+        default=Path("evals"),
+        help=(
+            "Eval directory (default: evals)"
+            if action == "init"
+            else "Python file or eval directory (default: evals)"
+        ),
     )
     if action == "check":
         parser.add_argument("--json", action="store_true", help="Emit one definition check report")

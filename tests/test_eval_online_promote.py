@@ -85,13 +85,16 @@ def _run_online(collectors=None, metadata=None) -> EvalHook:
     return hook
 
 
-def test_generated_definitions_compose_with_raw_loop_pytest_and_saved_runs(tmp_path):
+@pytest.mark.parametrize("from_file", [False, True])
+def test_generated_definitions_compose_with_raw_loop_pytest_and_saved_runs(tmp_path, from_file):
     definitions = tmp_path / "evals"
     project = tmp_path / "project"
     project.mkdir()
     assert eval_cli(["init", str(definitions)]) == 0
     bundle = load_evals(definitions, runtime={"project_root": str(project)})
     case = bundle.cases[0]
+    if from_file:
+        bundle = load_evals(definitions / "eval_outcome.py", runtime={"project_root": str(project)})
 
     @tool(description="Write the result in the project directory.")
     def write_result(content: str) -> dict:

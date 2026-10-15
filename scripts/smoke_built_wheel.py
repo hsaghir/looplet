@@ -266,10 +266,14 @@ def _smoke_cli_workflow(coder_bundle_path: Path) -> None:
         assert checked["valid"] and checked["cases"] == ["hello"]
         run_cli("eval", "init", str(definitions), expected_exit=1)
         bundle = looplet.load_evals(definitions, runtime={"project_root": str(root)})
-        assert isinstance(bundle, looplet.EvalBundle)
-        assert looplet.EvalBundle is looplet.CartridgeEvals
+        assert isinstance(bundle, looplet.CartridgeEvals)
         case = bundle.cases[0]
         assert "expected" not in case.task
+        contract = definitions / "eval_outcome.py"
+        checked = json.loads(run_cli("eval", "check", str(contract), "--json").stdout)
+        assert checked["valid"] and checked["cases"] == []
+        assert "Python file" in run_cli("eval", "check", "--help").stdout
+        bundle = looplet.load_evals(contract, runtime={"project_root": str(root)})
         observed = looplet.EvalContext(steps=[], task={**case.task, "expected": case.expected})
         observed.artifacts.update(bundle.collectors[0](object()))
         missing = looplet.eval_assess(bundle.graders, observed, case=case)

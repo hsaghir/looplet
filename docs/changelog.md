@@ -8,7 +8,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- `load_evals` loads reusable definitions without requiring a cartridge; `EvalBundle` aliases the existing bundle tuple.
+- `load_evals` loads ordinary grader and collector functions from one file or directory without requiring a cartridge.
 - `looplet eval init` creates a non-clobbering outcome contract; `eval check` validates trusted definitions without running an agent.
 - `EvalContext.expected` exposes grader-only expectations while retaining the existing task view.
 - `EvalReport` and `eval_assess` provide one assessment policy across Python, hooks, saved records, and CLI evaluation.

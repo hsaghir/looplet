@@ -8,6 +8,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `load_evals` loads ordinary grader and collector functions from one file or directory without requiring a cartridge.
+- `looplet eval init` creates a non-clobbering outcome contract; `eval check` validates trusted definitions without running an agent.
+- `EvalContext.expected` exposes grader-only expectations while retaining the existing task view.
 - `EvalReport` and `eval_assess` provide one assessment policy across Python, hooks, saved records, and CLI evaluation.
 - Both eval CLI routes support JSON assessments and explicit `--summary-version 2` while retaining version 1 defaults.
 - Version 2 separates failed behavior from invalid evaluation and refuses empty or measurement-only release gates.

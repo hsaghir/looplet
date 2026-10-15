@@ -16,11 +16,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from looplet import (
     CartridgeEvals,
     EvalCase,
     discover_collectors,
     load_cartridge_evals,
+    load_evals,
     save_cartridge_cases,
 )
 
@@ -153,3 +156,71 @@ def test_collectors_without_runtime_default_to_empty(tmp_path: Path) -> None:
         merged.update(c(state=object()))
     assert merged["workspace"] is None  # runtime.get("workspace_dir") on {}
     assert merged["saw_state"] is True
+
+
+def test_generic_bundle_loader_matches_cartridge_definitions(tmp_path: Path) -> None:
+    _seed_eval_bundle(tmp_path)
+    runtime = {"workspace_dir": "/sandbox/42"}
+    bundle = load_evals(tmp_path / "evals", runtime=runtime)
+    compatible = load_cartridge_evals(tmp_path, runtime=runtime, strict=True)
+    assert isinstance(bundle, CartridgeEvals)
+    assert bundle.cases == compatible.cases
+    assert [grader.__name__ for grader in bundle.graders] == [
+        grader.__name__ for grader in compatible.graders
+    ]
+    assert len(bundle.collectors) == len(compatible.collectors) == 2
+    assert bundle.collectors[1](object())["workspace"] == "/sandbox/42"
+
+
+def test_generic_bundle_loader_rejects_missing_directory_by_default(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="Eval definitions not found"):
+        load_evals(tmp_path / "missing")
+    assert load_evals(tmp_path / "missing", strict=False) == CartridgeEvals([], [], [])
+    assert load_cartridge_evals(tmp_path, strict=True) == CartridgeEvals([], [], [])
+
+
+@pytest.mark.parametrize("filename", ["eval_broken.py", "collect_broken.py"])
+def test_generic_bundle_loader_rejects_broken_definition_imports(tmp_path: Path, filename: str):
+    (tmp_path / filename).write_text("raise RuntimeError('broken definition')\n")
+    with pytest.raises(RuntimeError, match="broken definition"):
+        load_evals(tmp_path)
+
+
+def test_generic_bundle_loader_preserves_partial_definition_bundles(tmp_path: Path):
+    (tmp_path / "eval_answer.py").write_text("def eval_answer(ctx):\n    return True\n")
+    bundle = load_evals(tmp_path)
+    assert bundle.cases == []
+    assert bundle.collectors == []
+    assert [grader.__name__ for grader in bundle.graders] == ["eval_answer"]
+
+
+@pytest.mark.parametrize("as_directory", [False, True])
+def test_one_python_contract_keeps_graders_and_collectors_together(tmp_path, as_directory):
+    source = tmp_path / "eval_contract.py"
+    source.write_text(
+        "observed = []\n\n"
+        "def collect_value(state, runtime):\n"
+        "    observed.append(runtime['value'])\n"
+        "    return {'value': runtime['value']}\n\n"
+        "def eval_value(ctx):\n"
+        "    return observed == [42]\n"
+    )
+    bundle = load_evals(tmp_path if as_directory else source, runtime={"value": 42})
+    assert bundle.cases == []
+    assert [grader.__name__ for grader in bundle.graders] == ["eval_value"]
+    assert len(bundle.collectors) == 1
+    assert bundle.collectors[0](object()) == {"value": 42}
+    assert bundle.graders[0](object()) is True
+
+
+def test_definition_roles_preserve_exported_names_when_callables_are_renamed(tmp_path):
+    source = tmp_path / "eval_contract.py"
+    source.write_text(
+        "def eval_answer(ctx):\n    return True\n\n"
+        "eval_answer.__name__ = 'grade'\n\n"
+        "def collect_answer(state):\n    return {'answer': 42}\n\n"
+        "collect_answer.__name__ = 'observe'\n"
+    )
+    definitions = load_evals(source)
+    assert [grader.__name__ for grader in definitions.graders] == ["grade"]
+    assert [collector.__name__ for collector in definitions.collectors] == ["observe"]

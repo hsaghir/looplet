@@ -1,30 +1,135 @@
 # Behavioral evals
 
 An eval is a host-owned behavioral contract checked against an observed run outcome.
-The contract does not execute or control the agent.
+Define it as an ordinary Python function.
+Your host owns execution and supplies the observed result.
 
-| Concept | Meaning |
+## Start with one function
+
+```python
+from looplet import eval_assess
+
+def eval_answer(ctx):
+    return ctx.final_output["answer"] == ctx.expected["answer"]
+
+report = eval_assess([eval_answer], observed_context)
+report.assert_passed()
+```
+
+`observed_context` is your host's `EvalContext`, containing the output and grader-only expectations.
+This grades an existing observation; it does not execute the agent.
+A boolean is enough for a pass/fail contract.
+Use `EvalResult` when you need scores, metrics, or explanations.
+No files, saved cases, collectors, or cartridge are required.
+
+The same functions serve Python, pytest, saved-run grading, and cartridge evaluation.
+There is no second definition language or mandatory eval class.
+
+## Keep a contract in one file
+
+Put `eval_*` functions in a Python file when the contract needs version control or reuse.
+Load that file without changing its functions:
+
+```python
+from looplet import eval_assess, load_evals
+
+definitions = load_evals("eval_answer.py")
+eval_assess(definitions.graders, observed_context).assert_passed()
+```
+
+Add ordinary `collect_*` functions to the same file when you need independent world-state evidence.
+They run only when your host attaches them through an `EvalHook`.
+Graders and collectors share one module import and its helper functions.
+Collection remains separate from grading, so offline rescoring cannot repeat side effects.
+
+For a growing corpus, keep JSON cases under `evals/cases/` and Python definitions under `evals/`.
+`load_evals("evals/")` loads that directory through the same discovery code.
+Existing separate grader and collector files remain supported.
+Each case separates agent-visible `task` data from grader-only `expected` data.
+
+Create a file-output example when you need a starter:
+
+```bash
+looplet eval init evals/
+looplet eval check evals/ --json
+```
+
+```text
+evals/
+    cases/hello.json
+    eval_outcome.py
+```
+
+The Python file contains a required grader and its outcome collector.
+It checks the content of `result.txt`, not the agent's claim about that file.
+Missing output fails the contract.
+Existing starter files are never overwritten.
+Edit the functions and case data directly as the contract grows.
+
+`eval check` accepts one file or a directory; saved cases are optional.
+It imports trusted Python definitions.
+Imports can execute authored code; use it only with definitions you trust.
+The check does not call graders, collectors, models, or the agent.
+It checks case shapes, seed paths, duplicate identities, imports, and supported signatures.
+Its `looplet.eval-definitions` report describes definition validity, not whether an agent satisfies the contract.
+It cannot prove that a grader is correct or that required checks were not deleted before discovery.
+
+## Own execution explicitly
+
+Use one owner for each operation:
+
+| Situation | Recommended path |
 | --- | --- |
-| Case | Agent-visible task plus separate grader-only expectations. |
-| Observation | Final output, independently collected artifacts, and execution facts in `EvalContext`. |
-| Check | An ordinary Python grader, optionally using a judge model. |
-| Assessment | Check results, metrics, integrity failures, and an explicit gate decision in `EvalReport`. |
+| An observation needs grading | `eval_assess(graders, context)` |
+| A live loop needs collection and grading | Attach `EvalHook`, then call `hook.assessment()` |
+| Saved grades need a gate decision | `EvalReport.from_records(records)` |
 
-Use one workflow:
+The definition stays the same.
+These paths differ because grading, collection, and reassessment are different operations.
+Do not attach a grading hook and then run its graders again just to assert success.
 
-1. Preserve the case that exposed a failure.
-2. Own execution through your existing loop or preset.
-3. Collect the outcome independently of the agent's claim.
-4. Check the behavioral contract with ordinary graders.
-5. Save the run evidence and the release assessment.
-6. Gate the release on `report.passed`, not an average score.
+For a case-driven loop with independent collection:
 
-Write functions named `eval_*` and Looplet discovers and runs them. Unlike
-ordinary assertions, evals may return scores from 0–1 because some quality
-dimensions are continuous. Required release contracts still produce ordinary
-pass/fail exit codes.
+```python
+from looplet import EvalHook, composable_loop, load_evals, save_eval_run, seed_case_workspace
 
-## Choose one entry path
+bundle = load_evals("evals/", runtime={"project_root": str(project_root)})
+case = bundle.cases[0]
+seed_case_workspace(case, project_root)
+hook = EvalHook(
+    evaluators=bundle.graders,
+    collectors=bundle.collectors,
+    expected=case.expected,
+)
+for step in composable_loop(
+    llm=llm,
+    tools=tools,
+    state=state,
+    config=config,
+    task={key: value for key, value in case.task.items() if key != "files"},
+    hooks=[*hooks, hook],
+):
+    observe(step)
+save_eval_run("eval-runs/hello", eval_hook=hook, case=case)
+hook.assessment().assert_passed()
+```
+
+This example assumes your host already owns the backend, tools, state, configuration, hooks, and project directory.
+Bind tools and collectors to the same project directory.
+Use fresh state for each case.
+The hook owns grading once; reassessment does not repeat collection or grading.
+For an already observed, ungraded context, use `eval_assess(bundle.graders, ctx)` or `assert_evals_pass(ctx, bundle.graders)`.
+For saved grades, use `EvalReport.from_records()`.
+The existing primitives remain available for custom discovery and execution.
+
+`load_evals()` uses strict imports by default and does not require a cartridge.
+It returns the existing named tuple of `cases`, `graders`, and `collectors`.
+Partial bundles remain useful for hosts that load only graders or collectors.
+`load_cartridge_evals()` remains compatible and loads the same definitions from a cartridge's `evals/` directory.
+Place this directory inside a cartridge to use the existing fresh-run CLI below.
+The scaffold remains a self-test contract, not a protected promotion holdout.
+
+## Choose one execution path
 
 **Cartridge authors:** put cases, collectors, and graders under `evals/`, then
 run the self-tests:
@@ -178,7 +283,7 @@ process, not outcome. Two patterns to use instead.
 
 ```python
 def eval_answer_correct(ctx):
-    return ctx.final_output.get("answer") == ctx.task.get("expected", {}).get("answer")
+    return ctx.final_output.get("answer") == ctx.expected.get("answer")
 ```
 
 The agent's `done()` arguments are the agent's own claim about the
@@ -414,7 +519,7 @@ for row in table:
 ## Cases as data: write them by hand, run them with pytest
 
 An **eval case** is just `task` + `expected` + tags. The cartridge runner
-places the separate `expected` object at `ctx.task["expected"]` for every
+exposes the separate `expected` object as `ctx.expected` for every
 grader **after the agent loop ends**; it is never included in the task
 prompt sent to the agent. Persisted eval runs keep the agent-visible task
 in `trajectory.json` and grader-only data in a sibling `expected.json`,
@@ -422,6 +527,9 @@ then restore the documented `ctx.task["expected"]` view when loaded. The
 provenance record therefore remains honest about what the agent saw. Cases
 live as JSON so you can hand-write the first few, grow the corpus from real
 runs, and review them without a Python file.
+
+`ctx.expected` keeps the existing `ctx.task["expected"]` view compatible.
+It does not add protected data to the agent's task.
 
 `task["expected"]` is reserved in cartridge cases: put oracle data in the
 top-level `expected` field. The runner rejects the ambiguous nested shape

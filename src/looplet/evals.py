@@ -112,6 +112,7 @@ __all__ = [
     "CARTRIDGE_EVALS_SUBPATH",
     "CartridgeEvals",
     "discover_collectors",
+    "load_evals",
     "load_cartridge_evals",
     "EvalRunRecord",
     "save_eval_run",
@@ -365,6 +366,14 @@ class EvalContext:
         def eval_completed(ctx):
             return ctx.stop_reason == \"done\"
     """
+
+    @property
+    def expected(self) -> dict[str, Any]:
+        """Grader-only expectations, with the existing task view kept compatible."""
+        expected = self.task.get("expected", {})
+        if not isinstance(expected, dict):
+            raise ValueError("Expected grader data must be an object")
+        return expected
 
     @property
     def completed(self) -> bool:
@@ -993,8 +1002,12 @@ def discover_collectors(
         prefix="collect_",
         strict=strict,
     )
+    return _bind_collectors(raw, runtime)
+
+
+def _bind_collectors(collectors: list[Callable], runtime: dict[str, Any] | None) -> list[Callable]:
     bound: list[Callable] = []
-    for fn in raw:
+    for fn in collectors:
         try:
             needs_runtime = "runtime" in inspect.signature(fn).parameters
         except (TypeError, ValueError):
@@ -1004,6 +1017,36 @@ def discover_collectors(
         else:
             bound.append(fn)
     return bound
+
+
+def load_evals(
+    path: str | Path,
+    *,
+    runtime: dict[str, Any] | None = None,
+    strict: bool = True,
+) -> "CartridgeEvals":
+    """Load ordinary eval functions from a Python file or directory.
+
+    ``eval_*`` graders and optional ``collect_*`` collectors can share one file.
+    Directories also load JSON cases under ``cases/`` and preserve separate files.
+    Each module loads once. This does not execute a run or call its functions.
+    Strict loading rejects missing paths and broken definition imports.
+    """
+    root = Path(path)
+    if not root.is_dir() and not root.is_file():
+        if strict:
+            raise ValueError(f"Eval definitions not found: {root}")
+        return CartridgeEvals(cases=[], graders=[], collectors=[])
+    cases_dir = root / "cases"
+    cases = load_cases(cases_dir) if cases_dir.is_dir() else []
+    definitions = _discover_functions(
+        root, patterns=("eval_*.py", "collect_*.py"), prefixes=("eval_", "collect_"), strict=strict
+    )
+    return CartridgeEvals(
+        cases=cases,
+        graders=definitions["eval_"],
+        collectors=_bind_collectors(definitions["collect_"], runtime),
+    )
 
 
 def load_cartridge_evals(
@@ -1042,15 +1085,7 @@ def load_cartridge_evals(
     evals_root = Path(cartridge_dir) / CARTRIDGE_EVALS_SUBPATH
     if not evals_root.is_dir():
         return CartridgeEvals(cases=[], graders=[], collectors=[])
-    cases = load_cartridge_cases(cartridge_dir)
-    graders = eval_discover(
-        evals_root,
-        pattern="eval_*.py",
-        prefix="eval_",
-        strict=strict,
-    )
-    collectors = discover_collectors(evals_root, runtime=runtime, strict=strict)
-    return CartridgeEvals(cases=cases, graders=graders, collectors=collectors)
+    return load_evals(evals_root, runtime=runtime, strict=strict)
 
 
 def _eval_context_to_trajectory(
@@ -1370,6 +1405,21 @@ def promote_to_offline(
     return save_eval_run(directory, eval_hook=eval_hook, case=case, results=results)
 
 
+def _case_seed_targets(
+    case: "EvalCase", root: Path, *, files_key: str = "files"
+) -> list[tuple[Path, Any]]:
+    files = (getattr(case, "task", {}) or {}).get(files_key) or {}
+    if not isinstance(files, dict):
+        raise ValueError(
+            f"case {getattr(case, 'id', '?')!r}: task[{files_key!r}] must be a "
+            f"{{path: contents}} dict, got {type(files).__name__}"
+        )
+    return [
+        (_contained_child(root, relative, label=f"case {case.id!r} seed path").resolve(), contents)
+        for relative, contents in files.items()
+    ]
+
+
 def seed_case_workspace(
     case: "EvalCase",
     directory: str | Path,
@@ -1390,20 +1440,7 @@ def seed_case_workspace(
     """
     root = Path(directory)
     root.mkdir(parents=True, exist_ok=True)
-    files = (getattr(case, "task", {}) or {}).get(files_key) or {}
-    if not isinstance(files, dict):
-        raise ValueError(
-            f"case {getattr(case, 'id', '?')!r}: task[{files_key!r}] must be a "
-            f"{{path: contents}} dict, got {type(files).__name__}"
-        )
-    for relpath, contents in files.items():
-        # Resolve once after containment validation and write through that
-        # exact path, so validation and the filesystem operation agree.
-        target = _contained_child(
-            root,
-            relpath,
-            label=f"case {case.id!r} seed path",
-        ).resolve()
+    for target, contents in _case_seed_targets(case, root, files_key=files_key):
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(contents if isinstance(contents, str) else str(contents))
     return root
@@ -1824,11 +1861,21 @@ def eval_discover(
     Returns:
         List of callable evaluator functions.
     """
-    root = Path(path)
-    files = [root] if root.is_file() else sorted(root.rglob(pattern))
+    return _discover_functions(path, patterns=(pattern,), prefixes=(prefix,), strict=strict)[prefix]
 
-    evaluators: list[Callable] = []
-    seen_names: dict[str, Path] = {}
+
+def _discover_functions(
+    path: str | Path, *, patterns: tuple[str, ...], prefixes: tuple[str, ...], strict: bool
+) -> dict[str, list[Callable]]:
+    root = Path(path)
+    files = (
+        [root]
+        if root.is_file()
+        else sorted({file for pattern in patterns for file in root.rglob(pattern)})
+    )
+
+    evaluators: dict[str, list[Callable]] = {prefix: [] for prefix in prefixes}
+    seen_names: dict[tuple[str, str], Path] = {}
     for fpath in files:
         module_name = "_eval_" + hashlib.sha256(str(fpath.resolve()).encode()).hexdigest()[:16]
         try:
@@ -1844,7 +1891,8 @@ def eval_discover(
             sys.modules[mod.__name__] = mod
             spec.loader.exec_module(mod)
             for name, obj in inspect.getmembers(mod, inspect.isfunction):
-                if not name.startswith(prefix):
+                prefix = next((value for value in prefixes if name.startswith(value)), None)
+                if prefix is None:
                     continue
                 # Only pick up functions defined in THIS module, not
                 # re-exports (e.g. `from looplet import eval_mark`
@@ -1854,13 +1902,14 @@ def eval_discover(
                 if getattr(target, "__module__", None) != mod.__name__:
                     continue
                 result_name = obj.__name__
-                if strict and result_name in seen_names:
+                identity = (prefix, result_name)
+                if strict and identity in seen_names:
                     raise RuntimeError(
                         f"duplicate evaluator name {result_name!r} in "
-                        f"{seen_names[result_name]} and {fpath}"
+                        f"{seen_names[identity]} and {fpath}"
                     )
-                seen_names[result_name] = fpath
-                evaluators.append(obj)
+                seen_names[identity] = fpath
+                evaluators[prefix].append(obj)
         except Exception as exc:  # noqa: BLE001
             sys.modules.pop(module_name, None)
             if strict:
@@ -2753,6 +2802,161 @@ def _filter_evals(
 # ── CLI runner ───────────────────────────────────────────────────
 
 
+def _init_eval_definitions(path: Path) -> list[Path]:
+    if path.exists() and not path.is_dir():
+        raise ValueError(f"Eval directory is not a directory: {path}")
+    sources = {
+        "cases/hello.json": json.dumps(
+            EvalCase(
+                id="hello",
+                task={"goal": "Write hello to result.txt in the project directory."},
+                expected={"content": "hello"},
+            ).to_dict(),
+            indent=2,
+        )
+        + "\n",
+        "eval_outcome.py": (
+            '"""Check independently collected output against the case contract."""\n\n'
+            "from pathlib import Path\n\n"
+            "from looplet import eval_mark\n"
+            "from looplet.cartridge.runtime_helpers import resolve_project_root\n\n\n"
+            '@eval_mark("required")\n'
+            "def eval_content(ctx):\n"
+            '    return ctx.artifacts["content"] == ctx.expected["content"]\n'
+            "\n\n"
+            "def collect_content(state, runtime):\n"
+            '    target = Path(resolve_project_root(runtime)) / "result.txt"\n'
+            "    try:\n"
+            '        content = target.read_text(encoding="utf-8").strip()\n'
+            "    except FileNotFoundError:\n"
+            "        content = None\n"
+            '    return {"content": content}\n'
+        ),
+    }
+    targets = {
+        _contained_child(path, relative, label="eval starter file"): content
+        for relative, content in sources.items()
+    }
+    for target in targets:
+        if target.exists() or target.is_symlink():
+            raise ValueError(f"Refusing to overwrite eval definition: {target}")
+        parent = target.parent
+        while parent != path:
+            if parent.exists() and not parent.is_dir():
+                raise ValueError(f"Eval definition parent is not a directory: {parent}")
+            parent = parent.parent
+    for target, content in targets.items():
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("x", encoding="utf-8") as stream:
+            stream.write(content)
+    return list(targets)
+
+
+def _check_eval_definitions(path: Path) -> dict[str, Any]:
+    errors: list[str] = []
+    bundle = CartridgeEvals([], [], [])
+    manifest: list[dict[str, Any]] = []
+    try:
+        bundle = load_evals(path)
+        if not bundle.graders:
+            errors.append("No graders selected")
+        manifest = _eval_grader_manifest(bundle.graders)
+        if not all(isinstance(mark, str) for item in manifest for mark in item["marks"]):
+            errors.append("Grader marks must be strings")
+        if any(item["name"].startswith("collector:") for item in manifest):
+            errors.append("Grader names cannot use the collector: namespace")
+        for case in bundle.cases:
+            if "expected" in case.task:
+                errors.append(f"{case.id}: put grader data in the top-level expected field")
+        with tempfile.TemporaryDirectory(prefix="eval-definition-check-") as workspace:
+            for case in bundle.cases:
+                _case_seed_targets(case, Path(workspace))
+        for role, functions in (("grader", bundle.graders), ("collector", bundle.collectors)):
+            for function in functions:
+                target = getattr(function, "func", function)
+                name = target.__name__
+                if inspect.iscoroutinefunction(function):
+                    errors.append(f"{name}: async {role}s are not supported")
+                signature = inspect.signature(function)
+                arguments = (
+                    (object(), object())
+                    if role == "grader" and "llm" in signature.parameters
+                    else (object(),)
+                )
+                try:
+                    signature.bind(*arguments)
+                except TypeError as exc:
+                    errors.append(f"{name}: unsupported {role} signature: {exc}")
+    except Exception as exc:  # noqa: BLE001
+        errors.append(str(exc))
+    return {
+        "schema": "looplet.eval-definitions",
+        "version": 1,
+        "valid": not errors,
+        "path": str(path),
+        "cases": [case.id for case in bundle.cases],
+        "graders": manifest,
+        "collectors": [
+            getattr(function, "__name__", getattr(function, "func", function).__name__)
+            for function in bundle.collectors
+        ],
+        "errors": errors,
+    }
+
+
+def _eval_definitions_cli(args: list[str]) -> int:
+    import argparse
+
+    action = args[0]
+    parser = argparse.ArgumentParser(
+        prog=f"looplet eval {action}",
+        description=(
+            "Create plain Python eval definitions without replacing existing files."
+            if action == "init"
+            else "Import trusted definitions and check their shape without running an agent."
+        ),
+    )
+    parser.add_argument(
+        "path",
+        nargs="?",
+        type=Path,
+        default=Path("evals"),
+        help=(
+            "Eval directory (default: evals)"
+            if action == "init"
+            else "Python file or eval directory (default: evals)"
+        ),
+    )
+    if action == "check":
+        parser.add_argument("--json", action="store_true", help="Emit one definition check report")
+    parsed = parser.parse_args(args[1:])
+    if action == "init":
+        try:
+            files = _init_eval_definitions(parsed.path)
+        except (OSError, ValueError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        for path in files:
+            print(f"created {path}")
+        return 0
+
+    from looplet.cli import execution_output  # noqa: PLC0415
+
+    output = sys.stdout
+    with execution_output(parsed.json):
+        report = _check_eval_definitions(parsed.path)
+    if parsed.json:
+        print(json.dumps(report, indent=2), file=output)
+    else:
+        print(f"{'VALID' if report['valid'] else 'INVALID'} eval definitions: {parsed.path}")
+        print(
+            f"  {len(report['cases'])} cases, {len(report['graders'])} graders, {len(report['collectors'])} collectors"
+        )
+        for error in report["errors"]:
+            print(f"  - {error}")
+    return 0 if report["valid"] else 1
+
+
 def eval_cli(args: list[str] | None = None) -> int:
     """CLI entry point for running evals.
 
@@ -2778,6 +2982,8 @@ def eval_cli(args: list[str] | None = None) -> int:
     # Lightweight subcommand dispatch - keep the existing flat surface
     # working when the first arg isn't a recognized subcommand.
     raw = list(args) if args is not None else sys.argv[1:]
+    if raw and raw[0] in {"init", "check"}:
+        return _eval_definitions_cli(raw)
     if raw and raw[0] == "cases":
         return _cases_cli(raw[1:])
     if raw and raw[0] == "run":
@@ -2788,6 +2994,8 @@ def eval_cli(args: list[str] | None = None) -> int:
         description="Run evals against saved agent trajectories.",
         epilog=(
             "subcommands:\n"
+            "  init [path]              create a plain Python eval starter\n"
+            "  check [path]             validate trusted eval definitions\n"
             "  run <cartridge>          run a cartridge against its shipped eval cases\n"
             "  cases ls <path>          list eval cases (one line per case)\n"
             "  cases show <path>        show a single case in full\n"

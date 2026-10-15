@@ -275,8 +275,10 @@ They use the same loop.
 
 | API | Use it for |
 | --- | --- |
+| `load_evals(path, ...)` | Load ordinary grader and collector functions from one file or directory, plus optional JSON cases. |
 | `EvalCase` / `load_cases(...)` / `save_case(...)` | Task input, grader-only expected data, marks, and notes as reviewable JSON. |
 | `EvalContext` | Final output, observed artifacts, steps, stop reason, and grader task view. |
+| `ctx.expected` | Read grader-only expectations without changing the existing task view. |
 | `EvalResult` | Explicit gate score, passive metrics, details, or error information. Boolean graders also work. |
 | `EvalReport` | Versioned assessment with `passed`, `valid`, results, and integrity failures. |
 | `eval_assess(graders, ctx, ...)` | Grade an existing observation and assess it without executing an agent or collector. |
@@ -287,6 +289,8 @@ They use the same loop.
 | `run_cartridge_evals(...)` | Own collection and grading for a cartridge's self-tests, replacing embedded eval observers. |
 | `save_eval_run(...)` / `load_eval_run(...)` | Persist and restore one self-contained eval record. |
 
+Use `looplet eval init` for a plain-file starter and `looplet eval check` for trusted definition validation.
+Definition validation does not execute the agent or prove its correctness.
 Custom hosts can use `eval_discover()`, `eval_run()`, and `eval_run_batch()`.
 For pytest, use `parametrize_cases()` and `assert_evals_pass()` as needed.
 These helpers use the same graders and result rules.

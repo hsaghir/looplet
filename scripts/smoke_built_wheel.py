@@ -259,6 +259,29 @@ def _smoke_cli_workflow(coder_bundle_path: Path) -> None:
             assert result.returncode == expected_exit, result.stderr or result.stdout
             return result
 
+        definitions = root / "evals"
+        run_cli("eval", "init", str(definitions))
+        checked = json.loads(run_cli("eval", "check", str(definitions), "--json").stdout)
+        assert checked["schema"] == "looplet.eval-definitions"
+        assert checked["valid"] and checked["cases"] == ["hello"]
+        run_cli("eval", "init", str(definitions), expected_exit=1)
+        bundle = looplet.load_evals(definitions, runtime={"project_root": str(root)})
+        assert isinstance(bundle, looplet.CartridgeEvals)
+        case = bundle.cases[0]
+        assert "expected" not in case.task
+        contract = definitions / "eval_outcome.py"
+        checked = json.loads(run_cli("eval", "check", str(contract), "--json").stdout)
+        assert checked["valid"] and checked["cases"] == []
+        assert "Python file" in run_cli("eval", "check", "--help").stdout
+        bundle = looplet.load_evals(contract, runtime={"project_root": str(root)})
+        observed = looplet.EvalContext(steps=[], task={**case.task, "expected": case.expected})
+        observed.artifacts.update(bundle.collectors[0](object()))
+        missing = looplet.eval_assess(bundle.graders, observed, case=case)
+        assert missing.valid and not missing.passed
+        (root / "result.txt").write_text("hello\n", encoding="utf-8")
+        observed.artifacts.update(bundle.collectors[0](object()))
+        assert looplet.eval_assess(bundle.graders, observed, case=case).passed
+
         cartridge = root / "offline.cartridge"
         run_cli("new", "Report completion", str(cartridge), "--offline")
         terminal_code = cartridge / "tools" / "done" / "execute.py"

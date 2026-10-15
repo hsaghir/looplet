@@ -27,6 +27,7 @@ from looplet import (
     eval_discover,
     eval_run,
     load_eval_run,
+    load_evals,
     run_cartridge_evals,
 )
 from looplet.testing import MockLLMBackend
@@ -126,7 +127,7 @@ _CASE = {
 }
 
 
-def _make_cartridge(root: Path) -> Path:
+def _make_cartridge(root: Path, *, with_evals: bool = True) -> Path:
     cart = root / "greeter.cartridge"
     (cart).mkdir(parents=True, exist_ok=True)
     (cart / "cartridge.json").write_text(
@@ -148,12 +149,40 @@ def _make_cartridge(root: Path) -> Path:
     # resources
     (cart / "resources").mkdir(exist_ok=True)
     (cart / "resources" / "project_dir.py").write_text(_PROJECT_DIR_RES)
+    if not with_evals:
+        return cart
     # evals slot
     (cart / "evals" / "cases").mkdir(parents=True, exist_ok=True)
     (cart / "evals" / "cases" / "make_greeting.json").write_text(json.dumps(_CASE))
     (cart / "evals" / "eval_correctness.py").write_text(_GRADERS)
     (cart / "evals" / "collect_outcome.py").write_text(_COLLECTOR)
     return cart
+
+
+def test_generated_definitions_work_with_existing_cartridge_runner(tmp_path):
+    cartridge = _make_cartridge(tmp_path, with_evals=False)
+    assert eval_cli(["init", str(cartridge / "evals")]) == 0
+    assert eval_cli(["check", str(cartridge / "evals")]) == 0
+    definitions = load_evals(cartridge / "evals")
+    records = run_cartridge_evals(
+        cartridge,
+        llm=MockLLMBackend(
+            [
+                json.dumps(
+                    {"tool": "write_file", "args": {"path": "result.txt", "content": "hello"}}
+                ),
+                json.dumps({"tool": "done", "args": {"summary": "written"}}),
+            ]
+        ),
+        output_dir=tmp_path / "runs",
+        capture=False,
+    )
+    assert records[0].case == definitions.cases[0]
+    assert records[0].context.expected == definitions.cases[0].expected
+    assert (
+        "expected" not in json.loads((records[0].directory / "trajectory.json").read_text())["task"]
+    )
+    EvalReport.from_records(records).assert_passed()
 
 
 def _scripted() -> list[str]:

@@ -18,11 +18,13 @@ from looplet.evals import (
     EvalContext,
     EvalHook,
     EvalResult,
+    eval_assess,
     eval_cli,
     eval_discover,
     eval_mark,
     eval_run,
     eval_run_batch,
+    load_evals,
 )
 from looplet.testing import MockLLMBackend
 from looplet.tools import ToolSpec
@@ -46,6 +48,178 @@ def _ctx(**kw) -> EvalContext:
     return EvalContext(
         steps=kw.get("steps", []), task=kw.get("task", {}), final_output=kw.get("final_output", {})
     )
+
+
+def test_expected_accessor_preserves_existing_grader_view():
+    expected = {"answer": 42}
+    ctx = EvalContext(steps=[], task={"expected": expected})
+    assert ctx.expected is expected
+    assert ctx.expected == ctx.task["expected"]
+    assert EvalContext(steps=[]).expected == {}
+
+
+@pytest.mark.parametrize("expected", [None, [], "answer"])
+def test_expected_accessor_rejects_malformed_grader_data(expected):
+    with pytest.raises(ValueError, match="Expected grader data must be an object"):
+        EvalContext(steps=[], task={"expected": expected}).expected
+
+
+def test_eval_starter_checks_real_output_without_running_an_agent(tmp_path, capsys):
+    root = tmp_path / "evals"
+    project = tmp_path / "project"
+    project.mkdir()
+    assert eval_cli(["init", str(root)]) == 0
+    assert list(root.glob("*.py")) == [root / "eval_outcome.py"]
+    assert eval_cli(["check", str(root), "--json"]) == 0
+    captured = capsys.readouterr()
+    report = json.loads(captured.out[captured.out.index("{") :])
+    assert report["valid"] and report["cases"] == ["hello"]
+    bundle = load_evals(root, runtime={"project_root": str(project)})
+    case = bundle.cases[0]
+    assert "expected" not in case.task
+    ctx = EvalContext(steps=[], task={**case.task, "expected": case.expected})
+    ctx.artifacts.update(bundle.collectors[0](object()))
+    missing = eval_assess(bundle.graders, ctx, case=case)
+    assert missing.valid and not missing.passed
+    (project / "result.txt").write_text("hello\n")
+    ctx.artifacts.update(bundle.collectors[0](object()))
+    assert eval_assess(bundle.graders, ctx, case=case).passed
+
+
+def test_eval_starter_refuses_existing_definitions_without_partial_writes(tmp_path):
+    (tmp_path / "eval_outcome.py").write_text("original\n")
+    assert eval_cli(["init", str(tmp_path)]) == 1
+    assert (tmp_path / "eval_outcome.py").read_text() == "original\n"
+    assert not (tmp_path / "cases").exists()
+    assert not (tmp_path / "collect_outcome.py").exists()
+
+
+def test_eval_check_never_calls_graders_collectors_or_models(tmp_path, capsys):
+    assert eval_cli(["init", str(tmp_path)]) == 0
+    source = tmp_path / "eval_outcome.py"
+    source.write_text(
+        source.read_text()
+        .replace(
+            '    return ctx.artifacts["content"] == ctx.expected["content"]',
+            '    raise AssertionError("grader must not run")',
+        )
+        .replace(
+            '    target = Path(resolve_project_root(runtime)) / "result.txt"',
+            '    raise AssertionError("collector must not run")',
+        )
+    )
+    capsys.readouterr()
+    assert eval_cli(["check", str(tmp_path), "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["valid"]
+
+
+@pytest.mark.parametrize("filename", ["eval_outcome.py", "collect_outcome.py"])
+def test_eval_check_reports_import_errors_as_invalid_json(tmp_path, capsys, filename):
+    assert eval_cli(["init", str(tmp_path)]) == 0
+    (tmp_path / filename).write_text(
+        'print("definition diagnostic")\nraise RuntimeError("broken definition")\n'
+    )
+    capsys.readouterr()
+    assert eval_cli(["check", str(tmp_path), "--json"]) == 1
+    captured = capsys.readouterr()
+    assert "definition diagnostic" in captured.err
+    report = json.loads(captured.out)
+    assert not report["valid"]
+    assert "broken definition" in report["errors"][0]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "def eval_bad(ctx, extra):\n    return True\n",
+        "async def eval_bad(ctx):\n    return True\n",
+    ],
+)
+def test_eval_check_rejects_unsupported_grader_signatures(tmp_path, capsys, source):
+    assert eval_cli(["init", str(tmp_path)]) == 0
+    (tmp_path / "eval_outcome.py").write_text(source)
+    capsys.readouterr()
+    assert eval_cli(["check", str(tmp_path), "--json"]) == 1
+    assert not json.loads(capsys.readouterr().out)["valid"]
+
+
+def test_eval_check_rejects_duplicate_cases_and_graders(tmp_path, capsys):
+    assert eval_cli(["init", str(tmp_path)]) == 0
+    original = tmp_path / "cases" / "hello.json"
+    duplicate = tmp_path / "cases" / "duplicate.json"
+    duplicate.write_text(original.read_text())
+    capsys.readouterr()
+    assert eval_cli(["check", str(tmp_path), "--json"]) == 1
+    assert "Duplicate case id" in json.loads(capsys.readouterr().out)["errors"][0]
+    duplicate.unlink()
+    (tmp_path / "eval_duplicate.py").write_text((tmp_path / "eval_outcome.py").read_text())
+    assert eval_cli(["check", str(tmp_path), "--json"]) == 1
+    assert "duplicate evaluator name" in json.loads(capsys.readouterr().out)["errors"][0]
+
+
+def test_eval_check_rejects_empty_definitions(tmp_path, capsys):
+    assert eval_cli(["check", str(tmp_path), "--json"]) == 1
+    report = json.loads(capsys.readouterr().out)
+    assert report["errors"] == ["No graders selected"]
+
+
+def test_eval_check_accepts_one_grader_file_without_saved_cases(tmp_path, capsys):
+    source = tmp_path / "eval_answer.py"
+    source.write_text("def eval_answer(ctx):\n    return ctx.final_output['answer'] == 42\n")
+    assert eval_cli(["check", str(source), "--json"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["valid"] and report["cases"] == []
+    assert report["graders"][0]["name"] == "eval_answer"
+
+
+@pytest.mark.parametrize("files", ["not a mapping", {"../escape": "bad"}, {"/absolute": "bad"}])
+def test_eval_check_reuses_runtime_seed_validation(tmp_path, capsys, files):
+    assert eval_cli(["init", str(tmp_path)]) == 0
+    case_path = tmp_path / "cases" / "hello.json"
+    case = json.loads(case_path.read_text())
+    case["task"]["files"] = files
+    case_path.write_text(json.dumps(case))
+    capsys.readouterr()
+    assert eval_cli(["check", str(tmp_path), "--json"]) == 1
+    assert not json.loads(capsys.readouterr().out)["valid"]
+
+
+def test_eval_check_rejects_grader_data_in_agent_input(tmp_path, capsys):
+    assert eval_cli(["init", str(tmp_path)]) == 0
+    case_path = tmp_path / "cases" / "hello.json"
+    case = json.loads(case_path.read_text())
+    case["task"]["expected"] = case["expected"]
+    case_path.write_text(json.dumps(case))
+    capsys.readouterr()
+    assert eval_cli(["check", str(tmp_path), "--json"]) == 1
+    assert "top-level expected" in json.loads(capsys.readouterr().out)["errors"][0]
+
+
+def test_eval_starter_refuses_escaping_symlink_without_writing(tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    root = tmp_path / "evals"
+    root.mkdir()
+    (root / "cases").symlink_to(outside, target_is_directory=True)
+    assert eval_cli(["init", str(root)]) == 1
+    assert list(outside.iterdir()) == []
+    assert not (root / "eval_outcome.py").exists()
+
+
+def test_eval_check_validates_fresh_seed_paths_not_definition_directory_links(tmp_path, capsys):
+    root = tmp_path / "evals"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    assert eval_cli(["init", str(root)]) == 0
+    (root / "src").symlink_to(outside, target_is_directory=True)
+    case_path = root / "cases" / "hello.json"
+    case = json.loads(case_path.read_text())
+    case["task"]["files"] = {"src/input.txt": "seed"}
+    case_path.write_text(json.dumps(case))
+    capsys.readouterr()
+    assert eval_cli(["check", str(root), "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["valid"]
+    assert list(outside.iterdir()) == []
 
 
 # ── EvalResult.from_return ───────────────────────────────────────

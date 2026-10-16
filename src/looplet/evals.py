@@ -2991,7 +2991,11 @@ def eval_cli(args: list[str] | None = None) -> int:
 
     parser = argparse.ArgumentParser(
         prog="looplet eval",
-        description="Run evals against saved agent trajectories.",
+        description=(
+            "Define, check, and run evals.\n\n"
+            "Start with `looplet eval init evals/`, then `looplet eval check evals/`.\n"
+            "Pass a traces directory below to grade saved agent trajectories."
+        ),
         epilog=(
             "subcommands:\n"
             "  init [path]              create a plain Python eval starter\n"
@@ -3021,11 +3025,13 @@ def eval_cli(args: list[str] | None = None) -> int:
     parser.add_argument("-v", "--verbose", action="store_true", help="Show per-run details")
     parser.add_argument("--json", action="store_true", help="Emit one machine-readable assessment")
     parser.add_argument(
+        "--assessment-version",
         "--summary-version",
+        dest="summary_version",
         type=int,
         choices=(1, 2),
-        default=1,
-        help="Assessment policy and schema version (default: 1 for compatibility)",
+        default=2,
+        help="Gate policy and JSON schema version (default: 2; use 1 for legacy behavior)",
     )
 
     parsed = parser.parse_args(args)
@@ -3236,11 +3242,13 @@ def _run_cartridge_cli(args: list[str]) -> int:
         help="Emit one machine-readable eval report",
     )
     parser.add_argument(
+        "--assessment-version",
         "--summary-version",
+        dest="summary_version",
         type=int,
         choices=(1, 2),
-        default=1,
-        help="Assessment policy and schema version (default: 1 for compatibility)",
+        default=2,
+        help="Gate policy and JSON schema version (default: 2; use 1 for legacy behavior)",
     )
     parsed = parser.parse_args(args)
     if not math.isfinite(parsed.threshold) or not 0.0 <= parsed.threshold <= 1.0:

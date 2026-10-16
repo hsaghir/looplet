@@ -236,7 +236,7 @@ The following APIs use the existing loop drivers:
 | `await run_sub_loop_async(...)` | Run one async child. |
 | `await run_sub_loops_async(requests, max_concurrency=4)` | Run bounded parallel children. |
 
-The async APIs and recovery fields require the source version, not PyPI `0.4.0`.
+The async APIs and recovery fields require the source version, not PyPI `0.3.0`.
 Each request contains keyword arguments for `run_sub_loop_async`.
 Parallel results keep request order.
 A failed or cancelled child cancels its siblings.

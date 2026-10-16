@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import inspect
 import logging
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field, fields, replace
 from typing import Any
 from weakref import WeakKeyDictionary
 
@@ -82,8 +82,8 @@ _HOOK_SLOT_EFFECTS = {
 def hook_effect_fields(slot: str) -> frozenset[str]:
     """Return applicable effect fields; audit metadata is separate.
 
-    At tool/permission gates, ``block`` supplies the reason only when
-    ``permission='deny'``. ``pre_compact.stop`` aborts compaction rather
+    At tool/permission gates, ``block`` denies the call and supplies its
+    reason. ``pre_compact.stop`` aborts compaction rather
     than terminating the run. Unknown host-owned slots define their own
     applicability outside this loop contract.
     """
@@ -102,8 +102,8 @@ class HookDecision:
 
     Attributes:
         block: Rejects completion in ``check_done``. At tool and permission
-            gates, supplies the reason for ``permission='deny'``; use
-            ``Deny`` rather than a block-only decision there.
+            gates, denies the call with this reason, even if the same
+            decision also contains ``permission='allow'``.
         stop: Stops after the current step from ``post_dispatch``,
             ``should_stop``, or model lifecycle events. It is unsupported
             in ``check_done``; ``pre_compact`` uses it to abort compaction.
@@ -173,12 +173,6 @@ class HookDecision:
             if descriptor.name not in applicable | {"metadata", "policy_decision"}
             and getattr(self, descriptor.name) is not None
         }
-        if (
-            self.block is not None
-            and slot in {"pre_dispatch", "pre_tool_use", "check_permission"}
-            and self.permission != "deny"
-        ):
-            ignored.add("block")
         if self.permission is not None and self.permission not in {"allow", "deny"}:
             ignored.add("permission")
         return tuple(sorted(ignored))
@@ -365,7 +359,7 @@ def Deny(
 
 
 def Block(reason: str) -> HookDecision:
-    """Reject completion in ``check_done``. Use ``Deny`` for tool gates."""
+    """Reject completion in ``check_done`` or deny a call at a tool gate."""
     return HookDecision(block=reason)
 
 
@@ -482,7 +476,8 @@ def normalize_hook_return(
     loop body can uniformly inspect a :class:`HookDecision`:
 
         * ``None`` → ``None``
-        * :class:`HookDecision` → pass through
+                * :class:`HookDecision` → pass through, normalizing tool-gate
+                    blocks into denials
         * ``str`` → ``InjectContext(s)`` for briefing slots, or
           ``Block(s)`` for ``check_done``
         * ``bool`` → ``Allow()`` / ``Deny("permission denied")`` for
@@ -518,6 +513,12 @@ def normalize_hook_return(
             f"{value!r}; expected HookDecision | str | bool | ToolResult | None"
         )
     if decision is not None:
+        if (
+            slot in {"pre_dispatch", "pre_tool_use", "check_permission"}
+            and decision.block is not None
+            and decision.permission != "deny"
+        ):
+            decision = replace(decision, permission="deny")
         ignored = decision.ignored_effects(slot)
         if ignored:
             logger.warning("hook slot %r ignores effect fields: %s", slot, ", ".join(ignored))

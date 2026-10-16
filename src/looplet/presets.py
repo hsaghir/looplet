@@ -995,6 +995,8 @@ def minimal_preset(
 
     Use as a starting point for custom agents. Provides only the loop
     config and state; bring your own tools or pass them in.
+    Returns a single-use run instance, not reusable configuration.
+    Call this factory for each task and close the instance afterward.
 
     Args:
         max_steps: Maximum tool calls.

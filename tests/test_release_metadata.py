@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import tomllib
 from datetime import date
 from pathlib import Path
@@ -15,13 +16,25 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_package_version_is_consistent_and_changelog_has_release() -> None:
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
     version = project["version"]
-    major, minor, _patch = (int(part) for part in version.split("."))
     readme = (ROOT / "README.md").read_text()
 
     assert version == looplet.__version__
     assert f"## [{version}]" in (ROOT / "CHANGELOG.md").read_text()
-    assert f"release is `{version}`" in readme
-    assert f"looplet>={major}.{minor},<{major}.{minor + 1}" in readme
+    assert f"checkout identifies as `{version}`" in readme
+
+
+def test_published_install_guidance_is_separate_from_source_version() -> None:
+    readme = (ROOT / "README.md").read_text()
+    install = (ROOT / "docs" / "install.md").read_text()
+    published = re.search(r"latest PyPI release is `(\d+\.\d+\.\d+)`", readme)
+    assert published is not None
+    version = published.group(1)
+    major, minor, _patch = (int(part) for part in version.split("."))
+    pin = f"looplet>={major}.{minor},<{major}.{minor + 1}"
+    assert pin in readme
+    assert pin in install
+    assert f"latest PyPI release is `{version}`" in install
+    assert f"## [{version}]" in (ROOT / "CHANGELOG.md").read_text()
 
 
 def test_lockfile_and_latest_release_match_project_version() -> None:

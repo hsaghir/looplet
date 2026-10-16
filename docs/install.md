@@ -31,6 +31,8 @@ Use `.[anthropic]` for Anthropic or `.[all]` for both adapters.
 ## Install the published package
 
 Use a published package when you need a released version.
+The latest PyPI release is `0.3.0`.
+Use a source install for the current Quickstart and new APIs.
 Run its install command inside a virtual environment.
 
 | Goal | Command |
@@ -43,7 +45,7 @@ Run its install command inside a virtual environment.
 Pin the minor version in your application:
 
 ```toml title="pyproject.toml"
-dependencies = ["looplet>=0.4,<0.5"]
+dependencies = ["looplet>=0.3,<0.4"]
 ```
 
 Before version `1.0`, a minor release can change an API incompatibly.
@@ -176,7 +178,7 @@ Otherwise, it selects OpenAI if an OpenAI key or compatible base URL is present.
 Set `LOOPLET_PROVIDER=openai` or `LOOPLET_PROVIDER=anthropic` to choose explicitly.
 An explicit `--base-url` on examples or evals selects an OpenAI-compatible endpoint.
 
-These selection changes are not in PyPI `0.4.0`.
+These selection changes are not in PyPI `0.3.0`.
 That release has an OpenAI-only `doctor` command.
 See the [command-line guide](cli.md) for source-only features and older command names.
 

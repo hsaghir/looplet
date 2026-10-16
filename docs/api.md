@@ -67,13 +67,15 @@ Completion does not prove that an answer is correct.
 ## Optional preset conveniences
 
 `AgentPreset` holds `tools`, `state`, `config`, and `hooks`.
+It represents one live run, not reusable configuration.
+Call a Python factory for each task instead of caching a preset instance.
 It is not another execution engine.
 `preset.run(llm, task=task)` passes those objects to `composable_loop()` and returns its iterator.
 `run_async()` does the same for the async loop.
 You still supply the backend and task mapping explicitly.
 You can inspect or change the objects before the run.
 
-The source version has two result helpers that are not in PyPI `0.4.0`:
+The source version has two result helpers that are not in PyPI `0.3.0`:
 
 | API | Meaning |
 | --- | --- |
@@ -84,8 +86,12 @@ The source version has two result helpers that are not in PyPI `0.4.0`:
 from looplet import minimal_preset
 
 
-with minimal_preset(tools=[lookup_owner], max_steps=5) as preset:
-    result = preset.run_result(llm, task={"goal": "Find the payments owner"})
+def run_agent(llm, task):
+    with minimal_preset(tools=[lookup_owner], max_steps=5) as run:
+        return run.run_result(llm, task=task)
+
+
+result = run_agent(llm, {"goal": "Find the payments owner"})
 print(result.output)
 ```
 
@@ -95,7 +101,8 @@ The helpers raise setup errors and unhandled execution errors.
 Normal stops return results.
 `preset.close()` returns separate shutdown diagnostics.
 Use each preset for one run.
-Call your Python factory again for another run.
+Call `run_agent()` again for another run with fresh state and resources.
+See the [Quickstart](quickstart.md) for a complete executable example and repeated-run test.
 
 Load a cartridge with `cartridge_to_preset()` or a bundle with `load_skill_bundle()`.
 File format and loop execution remain separate.
@@ -298,7 +305,8 @@ Version 2 assessment APIs reject empty or measurement-only gates.
 `valid` distinguishes evaluation integrity from failed agent behavior; `passed` decides the release gate.
 Completion remains a separate fact.
 Use `version=1` for the previous assessment policy.
-Both CLI paths support `--json` and `--summary-version 2`; their default remains version 1 for compatibility.
+Both CLI paths default to version 2 and support `--json`.
+Use `--assessment-version 1` for legacy gates; `--summary-version` remains an alias.
 Raw result lists, batch tables, hook strings, and durable run records retain their existing shapes.
 Records without a saved directory support `cleanup()` and `with`.
 Saved records retain their evidence.

@@ -882,11 +882,28 @@ class TestEvalCliIntegrity:
         eval_file.write_text("def eval_score(ctx):\n    return ctx.task['score']\n")
         assert eval_cli([str(traces), "--evals", str(eval_file), "--threshold", "0.7"]) == 1
 
-    def test_metric_only_result_is_neutral(self, tmp_path: Path):
+    @pytest.mark.parametrize(
+        ("policy_args", "version", "exit_code"),
+        [
+            ([], 2, 1),
+            (["--assessment-version", "1"], 1, 0),
+            (["--summary-version", "1"], 1, 0),
+            (["--assessment-version", "2"], 2, 1),
+            (["--summary-version", "2"], 2, 1),
+        ],
+    )
+    def test_metric_only_result_needs_a_verdict_by_default(
+        self, tmp_path: Path, capsys, policy_args, version, exit_code
+    ):
         traces = self._trace(tmp_path)
         eval_file = tmp_path / "eval_cost.py"
         eval_file.write_text("def eval_cost(ctx):\n    return {'steps': 20}\n")
-        assert eval_cli([str(traces), "--evals", str(eval_file)]) == 0
+        assert (
+            eval_cli([str(traces), "--evals", str(eval_file), "--json", *policy_args]) == exit_code
+        )
+        report = json.loads(capsys.readouterr().out)
+        assert report["version"] == version
+        assert report["passed"] is (exit_code == 0)
 
     def test_saved_json_uses_shared_report_and_routes_authored_output(self, tmp_path, capsys):
         traces = self._trace(tmp_path)

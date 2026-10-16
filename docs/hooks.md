@@ -90,14 +90,14 @@ Return one `HookDecision` from decision slots; the slot determines which
 fields apply. Builders, compaction votes, and cleanup keep their dedicated
 return shapes. `hook_effect_fields(slot)` in `looplet.hook_decision` exposes
 the contract, and `decision.ignored_effects(slot)` reports unsupported fields.
-Normalization logs ignored field names, without their values, but leaves the
-decision unchanged for compatibility.
+Normalization logs ignored field names without their values.
+At tool gates, it converts `Block` into a denial without changing the original decision object.
 
 | Slot | Applied Effects |
 | --- | --- |
 | `pre_prompt` | `additional_context` |
 | `pre_dispatch` / `pre_tool_use` | `updated_args`, `updated_result`, denial, and context |
-| `check_permission` | `permission="deny"`, with `block` as its reason |
+| `check_permission` | `Deny` or `Block` denies the call |
 | `post_dispatch` / `post_tool_use` / `post_tool_failure` | `updated_result`, context, and `stop` |
 | `check_done` | `Block` or denial rejects completion; `Stop` is ignored |
 | `should_stop` | `stop`, including its original reason |
@@ -106,14 +106,15 @@ decision unchanged for compatibility.
 
 Other lifecycle events, including terminal `stop`, are observation-only.
 Metadata and `policy_decision` are audit data, not execution authority.
-Use `Deny` at tool gates; a block-only Python decision does not deny dispatch.
-Use `Block` to reject completion and `Stop` in a stopping slot. Accepted
-completion remains distinct from passing an outcome evaluation.
+Use `Deny` or `Block` to prevent tool execution at a tool gate.
+`Block` also rejects completion in `check_done`.
+A block takes precedence over `permission="allow"` in the same decision.
+Use `Stop` in a stopping slot to end the run after the current step.
+Accepted completion remains distinct from passing an outcome evaluation.
 
 LEP hooks use this same host contract without discarding supported effects.
-The adapter's directly called methods retain their existing boolean/string
-returns. Legacy LEP block-only `check_permission` decisions remain denials;
-use `Deny` when the same policy must work identically in Python and LEP.
+The adapter's directly called methods retain their existing boolean/string returns.
+`Block` and `Deny` prevent tool execution through both Python and LEP hooks.
 
 ## Hook Composition
 

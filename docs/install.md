@@ -6,21 +6,24 @@ Model provider adapters are optional extras.
 
 ## Install the source version
 
-The [Quickstart](quickstart.md) uses this immutable source snapshot.
+Use this immutable source snapshot for the [Quickstart](quickstart.md) and the CLI guide.
 Install it in your own project without cloning the repository:
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-python -m pip install "looplet @ git+https://github.com/hsaghir/looplet.git@dbe536b3235ec8dce1dad201efcef13d1053eafc"
+python -m pip install "looplet @ git+https://github.com/hsaghir/looplet.git@1e92f55b031aedd7d04e3cd84b7e27dd6a982262"
 ```
 
 Add `[openai]`, `[anthropic]`, or `[all]` after `looplet` for provider adapters in the same snapshot.
 This needs Git and network access during installation.
 The fixed-response tutorial itself needs neither a model key nor a model service.
-PyPI `0.3.0` remains supported, but does not contain the tutorial's result helpers.
+This one install includes result helpers, typed-validation options, capture safeguards, and the unified CLI commands.
+PyPI `0.3.0` remains supported, but does not contain these additions.
 
-For development or later unreleased CLI additions, install the current checkout instead.
+## Develop Looplet
+
+Clone the repository only when you want to change Looplet itself.
 Run these commands in a directory where you want the repository:
 
 ```bash

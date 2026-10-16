@@ -86,14 +86,17 @@ The loop still yields steps, so your code can inspect each result and stop befor
 
 ## Start with one loop
 
-Install the pinned source snapshot inside a virtual environment:
+Use this source install for the Python examples and CLI commands in these guides.
+Run it inside a virtual environment:
 
 ```bash
-python -m pip install "looplet @ git+https://github.com/hsaghir/looplet.git@dbe536b3235ec8dce1dad201efcef13d1053eafc"
+python -m pip install "looplet @ git+https://github.com/hsaghir/looplet.git@1e92f55b031aedd7d04e3cd84b7e27dd6a982262"
 ```
 
 See the [Quickstart](quickstart.md) for environment setup and the same agent's tests.
 This example uses fixed responses and does not contact a model service.
+`validate=True` checks top-level argument types, nullability, and enum choices before tools run.
+Nested data and other constraints remain tool-owned.
 
 ```python title="first_loop.py"
 from contextlib import closing
@@ -111,7 +114,7 @@ llm = MockLLMBackend([
   '{"tool":"lookup_owner","args":{"service":"payments"}}',
   '{"tool":"done","args":{"summary":"The payments owner is fintech-platform."}}',
 ])
-tools = tools_from([lookup_owner], include_done=True)
+tools = tools_from([lookup_owner], include_done=True, validate=True)
 state = DefaultState(max_steps=2)
 
 with closing(composable_loop(

@@ -951,6 +951,10 @@ class AsyncAnthropicBackend:
 # ── Turnkey factory for the RPC `set_backend` wire ───────────────────
 
 
+class ProviderSelectionWarning(UserWarning):
+    """Multiple configured providers need an explicit selection."""
+
+
 def make_backend(*, provider: str | None = None, model: str | None = None) -> Any:
     """Build an :class:`LLMBackend` from the environment.
 
@@ -970,6 +974,20 @@ def make_backend(*, provider: str | None = None, model: str | None = None) -> An
     opaque import failure.
     """
     import os
+
+    if (
+        not (provider or os.environ.get("LOOPLET_PROVIDER"))
+        and os.environ.get("ANTHROPIC_API_KEY")
+        and (os.environ.get("OPENAI_API_KEY") or os.environ.get("OPENAI_BASE_URL"))
+    ):
+        import warnings
+
+        warnings.warn(
+            "Multiple providers are configured. Selecting Anthropic by default. "
+            "Set LOOPLET_PROVIDER=openai or LOOPLET_PROVIDER=anthropic to choose explicitly.",
+            ProviderSelectionWarning,
+            stacklevel=2,
+        )
 
     prov = (
         provider

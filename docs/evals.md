@@ -148,19 +148,25 @@ The scaffold remains a self-test contract, not a protected promotion holdout.
 run the self-tests:
 
 ```bash
-looplet eval run ./agent.cartridge --out eval-runs/run-001 --json --assessment-version 2
+looplet eval run ./agent.cartridge --json --assessment-version 2
 ```
 
 The Python equivalent is `run_cartridge_evals()`. This runner owns evaluation
 and replaces embedded `EvalHook` observers with the self-test bundle's hook.
 Policy hooks still run. The reference coder ships no implicit eval hook.
 
-Use a fresh output directory for each run, such as `eval-runs/run-002` next.
+The CLI saves each invocation under a unique `.looplet/evals/<cartridge>-<id>/` directory in the current directory.
+Human output prints the path; JSON reports it as `output_dir`.
+Use `--out eval-runs/run-001` for an explicit path, or `--no-save` to disable evidence persistence.
+These options are mutually exclusive.
+The Python API still requires `output_dir=` to persist runs.
+
+Use a fresh explicit output directory for each run, such as `eval-runs/run-002` next.
 The runner refuses existing selected case paths before any case executes.
 This also applies with `capture=False` or `--no-capture`.
 It preserves previous evidence and workspaces instead of deleting them.
 
-With `--out`, the same run now records agent model prompts/responses beside
+Saved runs record agent model prompts/responses beside
 trajectory, collected outcomes, grades, and grader-only expectations. Reload
 grades with `load_eval_run()` and replay captured responses with `replay_loop()`
 against a fresh tool registry/workspace. Replay executes fresh tool effects;
@@ -713,8 +719,9 @@ Unlike version 1, a required behavioral failure is not itself an integrity failu
 Missing checks, skipped required checks, collector failures, and grader errors still invalidate evaluation.
 Measurement-only assessments are not release gates in version 2.
 
-This summary is a decision report, not a persisted run format. Use
-`save_eval_run()` / `--out` for durable evidence and preserve its sibling
-`artifact.json` descriptor. The JSON report intentionally omits task data,
+This summary is a decision report, not a persisted run format.
+Fresh CLI evals save durable evidence by default; find it through `output_dir`.
+Python hosts use `save_eval_run()` or `run_cartridge_evals(..., output_dir=...)`.
+Preserve the saved run's `artifact.json` descriptor. The JSON report intentionally omits task data,
 expected data, prompts, responses, and artifact values.
 Grader-authored explanations and details remain report content; graders must not disclose protected data there.

@@ -52,6 +52,10 @@ or an Anthropic key is enough. Models use provider defaults unless configured;
 set `LOOPLET_PROVIDER` when multiple providers are available. See
 [install and configure](install.md).
 
+Automatic selection warns when Anthropic and OpenAI settings are both present.
+The existing Anthropic-first precedence remains unchanged.
+`doctor` reports a `provider_selection` warning; `--strict` fails until you choose a provider explicitly.
+
 ### `looplet inspect <path>`
 
 Inspect a cartridge, skill bundle, or saved trace without running it:
@@ -245,10 +249,15 @@ Use `load_evals("evals")` in your Python test to load those definitions.
 
 ```bash
 looplet eval run ./agent.cartridge \
-  --out ./eval-runs/run-001 \
   --threshold 1.0 \
   --json | jq -e '.passed'
 ```
+
+Each invocation saves cases under a unique `.looplet/evals/<cartridge>-<id>/` directory in the current directory.
+Human output prints that directory; JSON includes it as `output_dir`.
+Failed grades retain the same evidence as passing grades.
+Use `--out` to choose another directory, or `--no-save` to disable persistence explicitly.
+`--out` and `--no-save` cannot be combined.
 
 Notable options:
 
@@ -260,7 +269,9 @@ Notable options:
 | `--base-url URL` | Explicitly select an OpenAI-compatible endpoint for agent and judge. |
 | `--judge` | Enable graders whose signature requests an LLM. |
 | `--judge-model NAME` | Use a separate judge model and imply `--judge`. |
-| `--out DIR` | Persist each case under `DIR/<case-id>/`. |
+| `--out DIR` | Choose the parent directory for saved case evidence. |
+| `--no-save` | Run without saving eval evidence or captured model calls. |
+| `--no-capture` | Save grades and outcomes without agent model prompts or responses. |
 | `--threshold VALUE` | Fail when any scored grader falls below the value. |
 | `--json` | Emit one report with the overall verdict and per-case grader results. |
 
@@ -271,9 +282,10 @@ contains the threshold verdict, case completion state, serialized grader
 results, integrity failures, and output directory. It deliberately omits
 artifacts and grader-only expected data; read those through the persisted run.
 Consumers should tolerate added fields.
-Choose a new `--out` directory for each invocation, such as `eval-runs/run-002` for the next run.
+For an explicit `--out`, choose a fresh directory for each invocation, such as `eval-runs/run-002` next.
 Existing selected case paths are refused before any case executes, including with `--no-capture`.
 Previous evidence and workspaces are not deleted.
+Human tables size columns for grader names and values and separate them with visible delimiters.
 Ordinary Python diagnostics from loaded graders, collectors, and harness code
 go to stderr in JSON mode and are not redacted.
 

@@ -232,6 +232,8 @@ def _status_line(status: str, name: str, detail: str) -> str:
 
 
 def _doctor_checks(*, probe_backend: bool) -> list[dict[str, str]]:
+    import warnings
+
     checks: list[dict[str, str]] = []
 
     py_ok = sys.version_info >= (3, 11)
@@ -244,21 +246,32 @@ def _doctor_checks(*, probe_backend: bool) -> list[dict[str, str]]:
     )
     checks.append({"name": "looplet", "status": "ok", "detail": f"version {__version__}"})
 
-    from looplet.backends import make_backend  # noqa: PLC0415
+    from looplet.backends import ProviderSelectionWarning, make_backend  # noqa: PLC0415
 
     llm = None
-    try:
-        llm = make_backend()
-        checks.append({"name": "provider", "status": "ok", "detail": type(llm).__name__})
-        checks.append(
-            {
-                "name": "model",
-                "status": "ok",
-                "detail": str(getattr(llm, "_model", "backend default")),
-            }
-        )
-    except Exception as exc:
-        checks.append({"name": "backend_config", "status": "warn", "detail": str(exc)})
+    with warnings.catch_warnings(record=True) as backend_warnings:
+        warnings.simplefilter("always", ProviderSelectionWarning)
+        try:
+            llm = make_backend()
+            checks.append({"name": "provider", "status": "ok", "detail": type(llm).__name__})
+            checks.append(
+                {
+                    "name": "model",
+                    "status": "ok",
+                    "detail": str(getattr(llm, "_model", "backend default")),
+                }
+            )
+        except Exception as exc:
+            checks.append({"name": "backend_config", "status": "warn", "detail": str(exc)})
+    for warning in backend_warnings:
+        if issubclass(warning.category, ProviderSelectionWarning):
+            checks.append(
+                {"name": "provider_selection", "status": "warn", "detail": str(warning.message)}
+            )
+        else:
+            warnings.warn_explicit(
+                warning.message, warning.category, warning.filename, warning.lineno
+            )
 
     if not probe_backend:
         checks.append(

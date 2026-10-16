@@ -92,6 +92,7 @@ looplet-proof
 ## Configure OpenAI
 
 ```bash
+export LOOPLET_PROVIDER=openai
 export OPENAI_API_KEY=...
 export OPENAI_MODEL=gpt-4o
 ```
@@ -112,6 +113,7 @@ Looplet uses the OpenAI adapter for compatible endpoints.
 These include Ollama, vLLM, and llama.cpp servers:
 
 ```bash
+export LOOPLET_PROVIDER=openai
 export OPENAI_BASE_URL=http://localhost:11434/v1
 export OPENAI_MODEL=llama3.1:8b
 export OPENAI_API_KEY=x
@@ -145,6 +147,7 @@ See [provider recipes](recipes.md) for Ollama, Groq, Together, and explicit clie
 ## Configure Anthropic
 
 ```bash
+export LOOPLET_PROVIDER=anthropic
 export ANTHROPIC_API_KEY=...
 export ANTHROPIC_MODEL=claude-sonnet-4-20250514
 ```
@@ -198,10 +201,28 @@ It selects Anthropic if an Anthropic key is present.
 Otherwise, it selects OpenAI if an OpenAI key or compatible base URL is present.
 Set `LOOPLET_PROVIDER=openai` or `LOOPLET_PROVIDER=anthropic` to choose explicitly.
 An explicit `--base-url` on examples or evals selects an OpenAI-compatible endpoint.
+Automatic selection warns when Anthropic and OpenAI settings are both configured.
+`doctor --strict` treats this ambiguity as a failed configuration check.
+An explicit provider choice removes the warning without changing stored credentials.
 
 These selection changes are not in PyPI `0.3.0`.
 That release has an OpenAI-only `doctor` command.
 See the [command-line guide](cli.md) for source-only features and older command names.
+
+## Prepare a package release
+
+The source version is `0.4.0`; it is not yet the published PyPI version.
+Maintainers can qualify its distribution without publishing:
+
+```bash
+gh workflow run publish.yml --repo hsaghir/looplet --ref master -f version=0.4.0
+```
+
+A non-tag dispatch runs tests, builds distributions, and checks an installed wheel.
+It uploads build artifacts but does not publish to PyPI or create a GitHub release.
+Publication requires a matching release tag and the configured PyPI environment.
+Before tagging, update the versioned changelog and obtain release approval.
+Keep the source install above until the compatible package is available on PyPI.
 
 ## Next
 

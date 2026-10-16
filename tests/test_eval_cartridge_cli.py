@@ -32,6 +32,12 @@ from looplet import (
 )
 from looplet.testing import MockLLMBackend
 
+
+@pytest.fixture(autouse=True)
+def _isolated_working_directory(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+
 # ── A minimal but real cartridge built on the fly ────────────────
 
 _SYSTEM = "Implement greeting.py so test_greeting.py passes, then call done."
@@ -683,7 +689,7 @@ def test_verdict_agrees_live_saved_pytest_and_cli(
         eval_cli(["run", str(cart), "--out", str(tmp_path / "cli"), *policy_args]) == expected_exit
     )
     capsys.readouterr()
-    assert eval_cli(["run", str(cart), "--json", *policy_args]) == expected_exit
+    assert eval_cli(["run", str(cart), "--no-save", "--json", *policy_args]) == expected_exit
     report = json.loads(capsys.readouterr().out)
     for assessment in (report, saved_report):
         for case in assessment["cases"]:
@@ -951,6 +957,130 @@ def test_cli_run_json_preserves_threshold_failure_exit(tmp_path: Path, monkeypat
     )
     assert zero["score"] == 0.0
     assert zero["state"] == "threshold_fail"
+
+
+@pytest.mark.parametrize("json_output", [False, True])
+@pytest.mark.parametrize("capture", [False, True])
+@pytest.mark.parametrize("passed", [False, True])
+def test_cli_default_output_preserves_each_run(
+    tmp_path, monkeypatch, capsys, json_output, capture, passed
+):
+    cart = _make_cartridge(tmp_path)
+    responses = (
+        _scripted() if passed else [json.dumps({"tool": "done", "args": {"summary": "done"}})]
+    )
+    monkeypatch.setattr("looplet.backends.make_backend", lambda **kwargs: MockLLMBackend(responses))
+    arguments = ["run", str(cart)]
+    if json_output:
+        arguments.append("--json")
+    if not capture:
+        arguments.append("--no-capture")
+    saved = []
+    for _ in range(2):
+        assert eval_cli(arguments) == (0 if passed else 1)
+        output = capsys.readouterr()
+        if json_output:
+            directory = Path(json.loads(output.out)["output_dir"])
+        else:
+            directory = next(
+                directory
+                for directory in (tmp_path / ".looplet" / "evals").iterdir()
+                if directory not in saved
+            )
+            assert str(directory) in output.out
+        assert directory.parent == tmp_path / ".looplet" / "evals"
+        assert directory not in saved
+        record = load_eval_run(directory / "make_greeting")
+        assert record.context.completed
+        assert (record.directory / "manifest.jsonl").exists() is capture
+        saved.append(directory)
+    assert len(list((tmp_path / ".looplet" / "evals").iterdir())) == 2
+    assert all((directory / "make_greeting" / "trajectory.json").is_file() for directory in saved)
+
+
+@pytest.mark.parametrize("json_output", [False, True])
+def test_cli_no_save_explicitly_disables_evidence(tmp_path, monkeypatch, capsys, json_output):
+    cart = _make_cartridge(tmp_path)
+    monkeypatch.setattr(
+        "looplet.backends.make_backend", lambda **kwargs: MockLLMBackend(_scripted())
+    )
+    arguments = ["run", str(cart), "--no-save"]
+    if json_output:
+        arguments.append("--json")
+    assert eval_cli(arguments) == 0
+    output = capsys.readouterr()
+    if json_output:
+        assert json.loads(output.out)["output_dir"] is None
+    else:
+        assert "evidence not saved (--no-save)" in output.out
+    assert not (tmp_path / ".looplet").exists()
+
+
+def test_cli_no_save_rejects_explicit_output_before_backend(tmp_path, monkeypatch):
+    cart = _make_cartridge(tmp_path)
+
+    def unexpected_backend(**kwargs):
+        pytest.fail("must reject conflicting output options before backend setup")
+
+    monkeypatch.setattr("looplet.backends.make_backend", unexpected_backend)
+    with pytest.raises(SystemExit) as stopped:
+        eval_cli(["run", str(cart), "--no-save", "--out", str(tmp_path / "runs")])
+    assert stopped.value.code == 2
+    assert not (tmp_path / "runs").exists()
+
+
+@pytest.mark.parametrize("json_output", [False, True])
+def test_cli_unwritable_default_output_fails_before_model_call(
+    tmp_path, monkeypatch, capsys, json_output
+):
+    cart = _make_cartridge(tmp_path)
+    backend = MockLLMBackend(_scripted())
+    original_mkdir = Path.mkdir
+
+    def fail_evidence_directory(directory, *args, **kwargs):
+        if directory.is_relative_to(tmp_path / ".looplet"):
+            raise PermissionError("read-only evidence directory")
+        return original_mkdir(directory, *args, **kwargs)
+
+    monkeypatch.setattr("looplet.backends.make_backend", lambda **kwargs: backend)
+    monkeypatch.setattr(Path, "mkdir", fail_evidence_directory)
+    arguments = ["run", str(cart)] + (["--json"] if json_output else [])
+    assert eval_cli(arguments) == 1
+    output = capsys.readouterr()
+    if json_output:
+        assert not output.out
+    assert "read-only evidence directory" in output.err
+    assert "writable --out" in output.err and "--no-save" in output.err
+    assert "Traceback" not in output.err
+    assert backend.calls == 0
+
+
+def test_cli_human_table_aligns_long_names_and_metrics(tmp_path, monkeypatch, capsys):
+    cart = _make_cartridge(tmp_path)
+    (cart / "evals" / "eval_metrics.py").write_text(
+        "def eval_extremely_long_metric_grader_name(ctx):\n"
+        "    return {'observed_artifact_count_exceeding_column_width': 1234567890.0}\n"
+    )
+    monkeypatch.setattr(
+        "looplet.backends.make_backend", lambda **kwargs: MockLLMBackend(_scripted())
+    )
+    assert eval_cli(["run", str(cart), "--no-save"]) == 0
+    output = capsys.readouterr().out.splitlines()
+    header = next(line for line in output if line.startswith("case "))
+    row = next(line for line in output if line.startswith("make_greeting "))
+    assert [cell.strip() for cell in header.split("|")] == [
+        "case",
+        "eval_completed",
+        "eval_expected_available",
+        "eval_extremely_long_metric_grader_name",
+        "eval_judge_quality",
+        "eval_wrote_file",
+    ]
+    assert "observed_artifact_count_exceeding_column_width=1.23457e+09" in row
+    assert [index for index, character in enumerate(header) if character == "|"] == [
+        index for index, character in enumerate(row) if character == "|"
+    ]
+    assert len(header) == len(row)
 
 
 def test_cli_run_unknown_case_returns_failure(tmp_path: Path, monkeypatch) -> None:

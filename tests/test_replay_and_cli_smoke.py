@@ -473,6 +473,35 @@ class TestShowCLISmoke:
 
 
 class TestDoctorCLISmoke:
+    @pytest.mark.parametrize("json_output", [False, True])
+    @pytest.mark.parametrize("provider", [None, "openai", "anthropic"])
+    def test_doctor_reports_ambiguous_provider_selection(self, capsys, provider, json_output):
+        import os
+        from unittest.mock import patch
+
+        environment = {
+            "OPENAI_BASE_URL": "http://localhost:1234/v1",
+            "ANTHROPIC_API_KEY": "review-placeholder",
+        }
+        if provider is not None:
+            environment["LOOPLET_PROVIDER"] = provider
+        arguments = ["doctor", "--no-backend", "--strict"]
+        if json_output:
+            arguments.append("--json")
+        with patch.dict(os.environ, environment, clear=True):
+            assert cli_main(arguments) == (1 if provider is None else 0)
+        output = capsys.readouterr()
+        assert not output.err
+        if json_output:
+            checks = json.loads(output.out)["checks"]
+            warnings = [check for check in checks if check["name"] == "provider_selection"]
+            assert len(warnings) == (1 if provider is None else 0)
+            if warnings:
+                assert warnings[0]["status"] == "warn"
+                assert "LOOPLET_PROVIDER=openai" in warnings[0]["detail"]
+        else:
+            assert ("WARN provider_selection:" in output.out) is (provider is None)
+
     @pytest.mark.parametrize(
         "environment",
         [

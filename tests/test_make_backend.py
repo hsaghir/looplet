@@ -6,6 +6,8 @@ needed - we only assert provider resolution/routing and the error path.
 
 from __future__ import annotations
 
+import warnings
+
 import pytest
 
 from looplet import backends
@@ -51,3 +53,31 @@ def test_make_backend_no_provider_raises(monkeypatch: pytest.MonkeyPatch) -> Non
         monkeypatch.delenv(var, raising=False)
     with pytest.raises(ValueError, match="could not resolve a provider"):
         make_backend()
+
+
+@pytest.mark.parametrize("openai_setting", ["OPENAI_API_KEY", "OPENAI_BASE_URL"])
+@pytest.mark.parametrize("selection", ["automatic", "environment", "argument"])
+def test_make_backend_warns_only_for_ambiguous_automatic_selection(
+    monkeypatch: pytest.MonkeyPatch, openai_setting: str, selection: str
+) -> None:
+    monkeypatch.setattr(
+        backends.AnthropicBackend, "from_env", classmethod(lambda cls, *, model=None: "anthropic")
+    )
+    monkeypatch.setattr(
+        backends.OpenAIBackend, "from_env", classmethod(lambda cls, *, model=None: "openai")
+    )
+    for variable in ("LOOPLET_PROVIDER", "OPENAI_API_KEY", "OPENAI_BASE_URL"):
+        monkeypatch.delenv(variable, raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "review-placeholder")
+    monkeypatch.setenv(openai_setting, "review-placeholder")
+
+    if selection == "automatic":
+        with pytest.warns(backends.ProviderSelectionWarning, match="LOOPLET_PROVIDER"):
+            assert make_backend() == "anthropic"
+    else:
+        if selection == "environment":
+            monkeypatch.setenv("LOOPLET_PROVIDER", "openai")
+        with warnings.catch_warnings(record=True) as captured:
+            warnings.simplefilter("always")
+            assert make_backend(provider="openai" if selection == "argument" else None) == "openai"
+        assert not captured

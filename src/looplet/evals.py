@@ -70,6 +70,7 @@ import shutil
 import sys
 import tempfile
 import time
+import uuid
 import warnings
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -3215,10 +3216,16 @@ def _run_cartridge_cli(args: list[str]) -> int:
         description="Run a cartridge against its shipped eval cases.",
     )
     parser.add_argument("cartridge", help="Cartridge directory (must contain evals/).")
-    parser.add_argument(
+    persistence = parser.add_mutually_exclusive_group()
+    persistence.add_argument(
         "--out",
         default=None,
-        help="Persist each run under <out>/<case_id>/ (agent model calls + trajectory + outcomes + scores; use --no-capture to omit model calls).",
+        help="Save cases under <out>/<case_id>/ (default: a unique .looplet/evals/<cartridge>-<id>/ directory).",
+    )
+    persistence.add_argument(
+        "--no-save",
+        action="store_true",
+        help="Run without saving eval evidence or captured model calls.",
     )
     parser.add_argument("--model", default=None, help="Override the selected provider's model.")
     parser.add_argument(
@@ -3330,6 +3337,17 @@ def _run_cartridge_evaluation(parsed: Namespace, *, output: TextIO) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
+    output_dir = None
+    if not parsed.no_save:
+        output_dir = (
+            Path(parsed.out)
+            if parsed.out is not None
+            else Path.cwd()
+            / ".looplet"
+            / "evals"
+            / f"{cdir.name.removesuffix('.cartridge')}-{uuid.uuid4().hex[:12]}"
+        )
+
     if not parsed.json:
         print(
             f"running {cdir.name}: {len(overview.cases)} case(s), "
@@ -3340,7 +3358,7 @@ def _run_cartridge_evaluation(parsed: Namespace, *, output: TextIO) -> int:
         records = run_cartridge_evals(
             cdir,
             llm=llm,
-            output_dir=parsed.out,
+            output_dir=output_dir,
             max_steps=parsed.max_steps,
             cases=parsed.case,
             judge_llm=judge_llm,
@@ -3349,42 +3367,56 @@ def _run_cartridge_evaluation(parsed: Namespace, *, output: TextIO) -> int:
     except (ValueError, FileExistsError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    except OSError as exc:
+        print(
+            f"error: eval workspace or evidence output failed: {exc}\n"
+            "Choose a writable --out directory or use --no-save to disable evidence persistence.",
+            file=sys.stderr,
+        )
+        return 1
 
     report = EvalReport.from_records(
         records,
         grader_manifest=grader_manifest,
         threshold=parsed.threshold,
-        output_dir=str(parsed.out) if parsed.out else None,
+        output_dir=str(output_dir) if output_dir is not None else None,
         version=parsed.summary_version,
     ).to_dict()
     grader_names = [item["name"] for item in report["grader_manifest"]]
-    header = f"{'case':22}" + "".join(f"{n:22}" for n in grader_names)
     if not parsed.json:
-        print(header)
-        print("-" * len(header))
-    for rec in records:
-        scores = {r.name: r for r in rec.results}
-        cells = ""
-        for n in grader_names:
-            r = scores.get(n)
-            if r is None:
-                cells += f"{'-':22}"
-            elif r.score is not None:
-                cells += f"{r.score:<22.2f}"
-            elif r.metrics:
-                # Metric grader (no pass/fail score) - show the numbers.
-                cells += f"{('; '.join(f'{k}={v:g}' for k, v in r.metrics.items())):22}"
-            else:
-                cells += f"{(r.label or '-'):22}"
-        case_id = rec.case.id if rec.case is not None else "?"
-        if not parsed.json:
-            print(f"{case_id:22}{cells}")
+        rows = [["case", *grader_names]]
+        for record in records:
+            scores = {result.name: result for result in record.results}
+            cells = [record.case.id if record.case is not None else "?"]
+            for grader_name in grader_names:
+                result = scores.get(grader_name)
+                if result is None:
+                    cells.append("-")
+                elif result.score is not None:
+                    cells.append(f"{result.score:.2f}")
+                elif result.metrics:
+                    cells.append(
+                        "; ".join(
+                            f"{metric_name}={metric_value:g}"
+                            for metric_name, metric_value in result.metrics.items()
+                        )
+                    )
+                else:
+                    cells.append(result.label or "-")
+            rows.append(cells)
+        widths = [max(len(row[column]) for row in rows) for column in range(len(rows[0]))]
+        for row_number, row in enumerate(rows):
+            print(" | ".join(cell.ljust(width) for cell, width in zip(row, widths, strict=True)))
+            if row_number == 0:
+                print("-+-".join("-" * width for width in widths))
 
     failed = not report["passed"]
     if parsed.json:
         print(json.dumps(report, indent=2), file=output)
-    elif parsed.out:
-        print(f"\npersisted {len(records)} run(s) under {parsed.out}/")
+    elif output_dir is not None:
+        print(f"\npersisted {len(records)} run(s) under {output_dir}/")
+    else:
+        print("\nevidence not saved (--no-save); model calls cannot be replayed")
     if report["integrity_failures"] and not parsed.json:
         print("\nintegrity failures:")
         for failure in report["integrity_failures"]:

@@ -67,6 +67,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Automatic provider selection warns about conflicting Anthropic and OpenAI settings; `doctor --strict` requires an explicit choice.
+- CLI cartridge evals save evidence in unique directories by default; `--no-save` explicitly disables persistence without changing Python API defaults.
+- Human eval tables size and separate columns for long grader names and metric values.
 - Cartridge evals refuse existing case output paths before execution instead of deleting previous evidence and workspaces.
 - Cartridge trace collisions return actionable CLI errors before loading providers or authored code.
 - The Quickstart grades structured completion facts instead of exact prose and exposes a configurable call budget for live runs.

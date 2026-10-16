@@ -50,7 +50,7 @@ def _make_tools() -> BaseToolRegistry:
     return tools
 
 
-def _captured_dir(tmp_path: Path) -> Path:
+def _captured_dir(tmp_path: Path, *, task: dict | None = None) -> Path:
     """Capture a small scripted run and return the trace directory."""
     responses = [
         '{"tool":"add","args":{"a":1,"b":2},"reasoning":"s1"}',
@@ -65,6 +65,7 @@ def _captured_dir(tmp_path: Path) -> Path:
         state=DefaultState(max_steps=5),
         hooks=[sink.trajectory_hook()],
         config=LoopConfig(max_steps=5, use_native_tools=False),
+        task=task,
     ):
         pass
     return sink.flush()
@@ -100,6 +101,105 @@ class TestReplayLoopSmoke:
         assert [s.tool_call.tool for s in out_steps] == ["add", "add", "done"]
         # Same totals as the captured run.
         assert out_steps[-1].tool_call.tool == "done"
+
+    @pytest.mark.parametrize("capture_trajectory", [False, True])
+    @pytest.mark.parametrize("single_call", [False, True])
+    def test_native_replay_budget_counts_tool_steps(
+        self, tmp_path, capture_trajectory, single_call
+    ):
+        calls = [
+            {"type": "tool_use", "id": "add-1", "name": "add", "input": {"a": 1, "b": 2}},
+            {"type": "tool_use", "id": "add-2", "name": "add", "input": {"a": 3, "b": 4}},
+            {"type": "tool_use", "id": "done-1", "name": "done", "input": {"answer": "7"}},
+        ]
+
+        class Backend:
+            def __init__(self):
+                self.responses = [calls] if single_call else [calls[:2], calls[2:]]
+
+            def generate(self, prompt, **kwargs):
+                raise AssertionError("Expected native calls")
+
+            def generate_with_tools(self, prompt, **kwargs):
+                return self.responses.pop(0)
+
+        sink = ProvenanceSink(dir=tmp_path / "native")
+        original = list(
+            composable_loop(
+                llm=sink.wrap_llm(Backend()),
+                tools=_make_tools(),
+                config=LoopConfig(max_steps=3, use_native_tools=True),
+                hooks=[sink.trajectory_hook()] if capture_trajectory else [],
+            )
+        )
+        trace_dir = sink.flush()
+        if not capture_trajectory:
+            (trace_dir / "trajectory.json").write_text(
+                json.dumps({"step_count": 1, "task": {"goal": "undeclared sidecar"}})
+            )
+        before = {path: path.read_bytes() for path in trace_dir.rglob("*") if path.is_file()}
+        state = DefaultState(max_steps=3)
+
+        replayed = list(replay_loop(trace_dir, tools=_make_tools(), state=state))
+
+        assert [step.tool_call.tool for step in original] == ["add", "add", "done"]
+        assert [step.tool_call.tool for step in replayed] == ["add", "add", "done"]
+        assert state.task == {}
+        assert state._stop_reason == "done"
+        assert {
+            path: path.read_bytes() for path in trace_dir.rglob("*") if path.is_file()
+        } == before
+
+    @pytest.mark.parametrize("override", [None, {}, {"goal": "replacement"}])
+    def test_replay_inherits_saved_task_unless_overridden(self, tmp_path, override):
+        task = {"goal": "Compute both sums.", "context": {"labels": ["original"]}}
+        trace_dir = _captured_dir(tmp_path, task=task)
+        before = {path: path.read_bytes() for path in trace_dir.rglob("*") if path.is_file()}
+        state = DefaultState(max_steps=3)
+
+        steps = list(replay_loop(trace_dir, tools=_make_tools(), state=state, task=override))
+
+        assert [step.tool_call.tool for step in steps] == ["add", "add", "done"]
+        assert state.task == (task if override is None else override)
+        assert {
+            path: path.read_bytes() for path in trace_dir.rglob("*") if path.is_file()
+        } == before
+
+    def test_explicit_replay_config_overrides_saved_budget(self, tmp_path):
+        trace_dir = _captured_dir(tmp_path)
+
+        steps = list(
+            replay_loop(
+                trace_dir,
+                tools=_make_tools(),
+                config=LoopConfig(max_steps=1, use_native_tools=False),
+            )
+        )
+
+        assert [step.tool_call.tool for step in steps] == ["add"]
+
+    @pytest.mark.parametrize(
+        "payload, expected",
+        [
+            ("not-json", "Expecting value"),
+            ("[]", "must contain an object"),
+            ('{"step_count": true}', "step_count must be a non-negative integer"),
+            ('{"step_count": -1}', "step_count must be a non-negative integer"),
+            ('{"task": "wrong type"}', "task must be an object"),
+        ],
+    )
+    def test_replay_rejects_invalid_defaults_before_running(
+        self, tmp_path, monkeypatch, payload, expected
+    ):
+        trace_dir = _captured_dir(tmp_path)
+        (trace_dir / "trajectory.json").write_text(payload)
+
+        def unexpected_loop(**kwargs):
+            raise AssertionError("Invalid defaults must fail before execution")
+
+        monkeypatch.setattr("looplet.loop.composable_loop", unexpected_loop)
+        with pytest.raises(ValueError, match=expected):
+            list(replay_loop(trace_dir, tools=_make_tools()))
 
     def test_missing_dir_raises(self, tmp_path: Path):
         with pytest.raises(FileNotFoundError):

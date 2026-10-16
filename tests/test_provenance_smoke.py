@@ -12,6 +12,7 @@ import pytest
 
 from looplet import RunEnvelope
 from looplet.provenance import (
+    AsyncRecordingLLMBackend,
     LLMCall,
     ProvenanceSink,
     RecordingLLMBackend,
@@ -159,6 +160,82 @@ class TestRecordingLLMBackendSmoke:
         assert "SECRET" not in rec.calls[0].prompt
         assert "SECRET" not in rec.calls[0].response
         assert "***" in rec.calls[0].prompt
+
+    @pytest.mark.parametrize("asynchronous", [False, True])
+    @pytest.mark.parametrize("redact_upstream", [False, True])
+    def test_native_responses_are_redacted_without_mutating_live_blocks(
+        self, tmp_path, asynchronous, redact_upstream
+    ):
+        secret = "customer.private@example.invalid"
+        replacement = '[redacted "address"]\n'
+        blocks = [
+            {"type": "text", "text": f"Customer: {secret}"},
+            {
+                "type": "tool_use",
+                "id": "tool-1",
+                "name": "done",
+                "input": {
+                    "recipients": [secret, {secret: secret}],
+                    "count": 2,
+                    "enabled": True,
+                    "absent": None,
+                },
+            },
+        ]
+        original = json.dumps(blocks)
+
+        class Backend:
+            prompt = ""
+
+            def generate(self, prompt, **kwargs):
+                return ""
+
+            def generate_with_tools(self, prompt, **kwargs):
+                self.prompt = prompt
+                return blocks
+
+        class AsyncBackend(Backend):
+            async def generate(self, prompt, **kwargs):
+                return super().generate(prompt, **kwargs)
+
+            async def generate_with_tools(self, prompt, **kwargs):
+                return super().generate_with_tools(prompt, **kwargs)
+
+        backend = AsyncBackend() if asynchronous else Backend()
+        recorder_type = AsyncRecordingLLMBackend if asynchronous else RecordingLLMBackend
+        recorder = recorder_type(
+            backend,
+            redact=lambda text: text.replace(secret, replacement),
+            redact_upstream=redact_upstream,
+        )
+        result = recorder.generate_with_tools(secret, tools=[])
+        if asynchronous:
+            result = asyncio.run(result)
+
+        assert result is blocks
+        assert json.dumps(result) == original
+        assert backend.prompt == (replacement if redact_upstream else secret)
+        captured = recorder.calls[0].response
+        assert secret not in json.dumps(captured)
+        assert captured[0] == {"type": "text", "text": f"Customer: {replacement}"}
+        assert captured[1] == {
+            "type": "tool_use",
+            "id": "tool-1",
+            "name": "done",
+            "input": {
+                "recipients": [replacement, {replacement: replacement}],
+                "count": 2,
+                "enabled": True,
+                "absent": None,
+            },
+        }
+        saved = recorder.save(tmp_path)
+        response_text = (saved / "call_00_response.txt").read_text()
+        assert secret not in response_text
+        payload = response_text.split("## RESPONSE (content blocks)\n", 1)[1]
+        assert json.loads(payload) == captured
+        blocks[1]["input"]["recipients"][0] = "changed after capture"
+        assert captured[1]["input"]["recipients"][0] == replacement
 
     def test_save_writes_files(self, tmp_path: Path):
         rec = RecordingLLMBackend(MockLLMBackend(responses=["r1", "r2"]))

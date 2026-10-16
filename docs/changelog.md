@@ -18,6 +18,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - Eval cases reject unknown fields and suggest close spellings.
 - Saved eval inspection shows recorded grades and collected artifacts without rerunning them. Eval JSON output adds `evals` and `artifacts`.
 - Cartridge eval runs and case listings accept repeatable `--case-mark` filters. Invalid selections fail before backend construction.
+- Native response captures apply configured redaction to nested strings without changing live tool arguments.
+- Python replay uses recorded tool-step budgets and counts native batches in call-only captures.
+- Python replay restores saved task data by default. Explicit tasks, including `{}`, and config budgets remain authoritative.
 
 ## [0.4.0] - 2026-10-16
 

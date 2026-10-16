@@ -203,6 +203,18 @@ class _RecordingBase:
         out = self._redact(s) if self._redact is not None else s
         return _truncate(out, self._max_chars)
 
+    def _redact_native_response(self, value: Any) -> Any:
+        if isinstance(value, str):
+            return self._redact(value) if self._redact is not None else value
+        if isinstance(value, list):
+            return [self._redact_native_response(item) for item in value]
+        if isinstance(value, dict):
+            return {
+                self._redact_native_response(key): self._redact_native_response(item)
+                for key, item in value.items()
+            }
+        return value
+
     def _record(
         self,
         *,
@@ -220,7 +232,7 @@ class _RecordingBase:
         if isinstance(response, str):
             stored_response: Any = self._scrub(response)
         elif isinstance(response, list):
-            stored_response = [dict(b) if isinstance(b, dict) else b for b in response]
+            stored_response = self._redact_native_response(response)
         else:
             stored_response = response
         call = LLMCall(
@@ -1285,18 +1297,20 @@ def replay_loop(
             ``call_NN_response.txt`` files.
         tools: Tool registry for the replay loop.
         state: Optional :class:`AgentState`. Defaults to a fresh
-            :class:`DefaultState` sized to the recorded call count.
+            :class:`DefaultState` sized to the replay budget.
         hooks: Optional hooks to install on the replay loop.
         config: Optional :class:`LoopConfig` - if omitted, a default is
-            constructed with ``max_steps`` matching the recorded call
-            count and the protocol of the first recorded call.
-        task: Optional task dict (defaults to ``{}``).
+            constructed from the recorded tool-step count and protocol.
+            Call-only captures count native tool calls or text responses.
+        task: Optional task dict. Defaults to the saved trajectory task,
+            or ``{}`` when none was saved. An explicit ``{}`` stays empty.
 
     Yields:
         :class:`Step` objects from the replay.
 
     Raises:
         FileNotFoundError: ``trace_dir`` has no manifest or response files.
+        ValueError: Saved replay defaults have an invalid shape.
         RuntimeError: The replay loop requests more calls than were
             recorded, or the method (``generate`` vs
             ``generate_with_tools``) diverges from what was recorded.
@@ -1315,18 +1329,49 @@ def replay_loop(
     if not trace_path.exists():
         raise FileNotFoundError(f"trace directory does not exist: {trace_path}")
     calls = _load_trace_calls(trace_path)
+    trajectory: dict[str, Any] = {}
+    if config is None or task is None:
+        descriptor = read_artifact_descriptor(trace_path, expected_kinds=("eval_run", "provenance"))
+        trajectory_path = trace_path / "trajectory.json"
+        if trajectory_path.is_file() and (
+            descriptor is None or "trajectory" in descriptor["components"]
+        ):
+            trajectory = json.loads(trajectory_path.read_text(encoding="utf-8"))
+            if not isinstance(trajectory, dict):
+                raise ValueError("trajectory.json must contain an object")
     backend = _ReplayLLMBackend(calls)
     if config is None:
+        recorded_steps = trajectory.get("step_count")
+        if recorded_steps is not None and (
+            isinstance(recorded_steps, bool)
+            or not isinstance(recorded_steps, int)
+            or recorded_steps < 0
+        ):
+            raise ValueError("trajectory.step_count must be a non-negative integer")
+        fallback_steps = sum(
+            max(
+                sum(block.get("type") == "tool_use" for block in call["response"])
+                if call["method"] == "generate_with_tools"
+                else 1,
+                1,
+            )
+            for call in calls
+        )
         config = LoopConfig(
-            max_steps=max(len(calls), 1),
+            max_steps=recorded_steps or fallback_steps,
             use_native_tools=calls[0]["method"] == "generate_with_tools",
         )
+    if task is None:
+        recorded_task = trajectory.get("task")
+        if recorded_task is not None and not isinstance(recorded_task, dict):
+            raise ValueError("trajectory.task must be an object")
+        task = recorded_task if recorded_task is not None else {}
     if state is None:
         state = DefaultState(max_steps=config.max_steps)
     yield from composable_loop(
         llm=backend,
         tools=tools,
-        task=task or {},
+        task=task,
         state=state,
         hooks=hooks or [],
         config=config,

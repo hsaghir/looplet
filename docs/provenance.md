@@ -233,10 +233,12 @@ llm = RecordingLLMBackend(
 )
 ```
 
-**By default, `redact` scrubs the prompt BEFORE it is forwarded to the
-wrapped backend AND before it is written to disk.** PII and secrets
-never leave the process. This is the right default for compliance,
-approval gates, and staging deployments.
+**By default, `redact` scrubs prompt and `system_prompt` strings before
+they reach the wrapped backend.** The same callable scrubs recorded text responses.
+For native responses, it scrubs string values and object keys in a separate recorded copy.
+Live responses and tool arguments remain unchanged.
+Replay uses the saved, redacted values; it does not recover the original values.
+Review captured evidence before sharing or replaying it.
 
 `ProvenanceSink(redact=...)` accepts the same callable and inherits the
 same semantics:
@@ -377,6 +379,14 @@ The LLM is **not** called again. Your tools, hooks, permission
 engine, and state are fresh. This is useful when a tool, hook, permission,
 or loop-runtime change is the variable under review. It is not an A/B test of
 prompt or model changes because the recorded decisions stay fixed.
+
+Without `config`, replay uses the saved tool-step count and the first captured call's protocol.
+Call-only captures count native tool calls or text responses instead.
+An explicit `LoopConfig` controls the budget and protocol.
+
+Without `task`, replay reuses the saved trajectory task, or `{}` when no task was saved.
+Pass `task={}` to request an empty task, or another dictionary to replace the saved task.
+Replay does not restore checkpoints or copy starting files.
 
 **Common uses:**
 

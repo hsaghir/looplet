@@ -746,6 +746,99 @@ def test_run_cartridge_evals_rejects_unknown_case_filter(tmp_path: Path) -> None
         )
 
 
+@pytest.mark.parametrize(
+    "marks, case_ids, expected",
+    [
+        (["regression"], None, ["make_greeting"]),
+        (["smoke"], None, ["smoke_case"]),
+        (["smoke", "regression"], None, ["make_greeting", "smoke_case"]),
+        (["smoke", "smoke"], None, ["smoke_case"]),
+        (["smoke"], ["make_greeting", "smoke_case"], ["smoke_case"]),
+    ],
+)
+def test_run_cartridge_evals_case_marks(tmp_path, marks, case_ids, expected):
+    cart = _make_cartridge(tmp_path)
+    (cart / "evals" / "cases" / "smoke.json").write_text(
+        json.dumps(dict(_CASE, id="smoke_case", marks=["smoke"]))
+    )
+
+    records = run_cartridge_evals(
+        cart,
+        llm=MockLLMBackend(_scripted() * 2),
+        output_dir=tmp_path / "runs",
+        cases=case_ids,
+        case_marks=marks,
+    )
+
+    assert [record.case.id for record in records] == expected
+    assert sorted(path.name for path in (tmp_path / "runs").iterdir()) == expected
+
+
+@pytest.mark.parametrize(
+    "marks, case_ids, message",
+    [
+        (["typo"], None, "Unknown eval case mark"),
+        ([], None, "No eval cases selected"),
+        (["smoke"], ["make_greeting"], "No eval cases selected"),
+    ],
+)
+def test_run_cartridge_evals_rejects_case_marks_before_execution(
+    tmp_path, marks, case_ids, message
+):
+    cart = _make_cartridge(tmp_path)
+    (cart / "evals" / "cases" / "smoke.json").write_text(
+        json.dumps(dict(_CASE, id="smoke_case", marks=["smoke"]))
+    )
+    output = tmp_path / "runs"
+
+    with pytest.raises(ValueError, match=message):
+        run_cartridge_evals(
+            cart, llm=MockLLMBackend([]), output_dir=output, cases=case_ids, case_marks=marks
+        )
+    assert not output.exists()
+
+
+@pytest.mark.parametrize(
+    "selection, expected",
+    [
+        (["--case-mark", "regression"], ["make_greeting"]),
+        (["--case-mark", "regression", "--case-mark", "smoke"], ["make_greeting", "smoke_case"]),
+        (
+            ["--case-mark", "smoke", "--case", "make_greeting", "--case", "smoke_case"],
+            ["smoke_case"],
+        ),
+    ],
+)
+def test_cli_run_case_marks_select_cases_not_graders(tmp_path, capsys, selection, expected):
+    cart = _make_cartridge(tmp_path)
+    (cart / "evals" / "cases" / "smoke.json").write_text(
+        json.dumps(dict(_CASE, id="smoke_case", marks=["smoke"]))
+    )
+    with patch("looplet.cli.build_cli_backend", return_value=MockLLMBackend(_scripted() * 2)):
+        code = eval_cli(["run", str(cart), *selection, "--out", str(tmp_path / "runs"), "--json"])
+
+    assert code == 0
+    report = json.loads(capsys.readouterr().out)
+    assert [case["id"] for case in report["cases"]] == expected
+    assert len(report["grader_manifest"]) == 4
+    assert sorted(path.name for path in (tmp_path / "runs").iterdir()) == expected
+
+
+@pytest.mark.parametrize("json_output", [False, True])
+def test_cli_run_unknown_case_mark_precedes_backend(tmp_path, capsys, json_output):
+    cart = _make_cartridge(tmp_path)
+    arguments = ["run", str(cart), "--case-mark", "typo", "--judge"]
+    if json_output:
+        arguments.append("--json")
+    with patch("looplet.cli.build_cli_backend") as backend_factory:
+        assert eval_cli(arguments) == 1
+    backend_factory.assert_not_called()
+    captured = capsys.readouterr()
+    assert "Unknown eval case mark" in captured.err
+    assert "regression" in captured.err
+    assert not (tmp_path / ".looplet").exists()
+
+
 def test_run_cartridge_evals_rejects_empty_cases_and_graders(tmp_path):
     cart = _make_cartridge(tmp_path)
     with pytest.raises(ValueError, match="No eval cases selected"):

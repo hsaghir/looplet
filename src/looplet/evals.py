@@ -75,6 +75,7 @@ import uuid
 import warnings
 from copy import deepcopy
 from dataclasses import dataclass, field
+from difflib import get_close_matches
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, NamedTuple, TextIO, cast
 
@@ -824,8 +825,14 @@ class EvalCase:
             raise ValueError(f"EvalCase must be an object, got {type(data).__name__}")
         if "id" not in data:
             raise ValueError("EvalCase requires 'id'")
-        known = {k: v for k, v in data.items() if k in cls.__dataclass_fields__}
-        return cls(**known)
+        for name in data:
+            if name not in cls.__dataclass_fields__:
+                message = f"Unknown EvalCase field {name!r}"
+                matches = get_close_matches(name, cls.__dataclass_fields__, n=1)
+                if matches:
+                    message += f"; did you mean {matches[0]!r}?"
+                raise ValueError(message)
+        return cls(**data)
 
 
 def load_cases(path: str | Path) -> list["EvalCase"]:
@@ -1472,6 +1479,7 @@ def load_eval_run(directory: str | Path) -> "EvalRunRecord":
 
     Pair with :func:`save_eval_run`. A directory missing
     ``trajectory.json`` raises :class:`FileNotFoundError` (loud).
+    Unknown saved case fields remain ignored for format compatibility.
     """
     root = Path(directory)
     read_artifact_descriptor(root, expected_kinds=("eval_run",))
@@ -1518,7 +1526,9 @@ def load_eval_run(directory: str | Path) -> "EvalRunRecord":
             raise ValueError(
                 f"Invalid case.json in {root}: expected object, got {type(cd).__name__}"
             )
-        case = EvalCase.from_dict(cd)
+        case = EvalCase.from_dict(
+            {key: value for key, value in cd.items() if key in EvalCase.__dataclass_fields__}
+        )
         context_expected = context.task.get("expected")
         if case.expected and context_expected is not None and context_expected != case.expected:
             raise ValueError(f"Conflicting grader expectations in {root}")
@@ -1531,7 +1541,10 @@ def load_eval_run(directory: str | Path) -> "EvalRunRecord":
 
 
 def _select_eval_cases(
-    available_cases: list[EvalCase], case_ids: list[str] | None
+    available_cases: list[EvalCase],
+    case_ids: list[str] | None,
+    *,
+    case_marks: list[str] | None = None,
 ) -> list[EvalCase]:
     wanted = set(case_ids) if case_ids is not None else None
     if wanted is not None:
@@ -1542,7 +1555,21 @@ def _select_eval_cases(
                 f"Unknown eval case id(s): {', '.join(unknown)}; "
                 f"available: {', '.join(sorted(available)) or '(none)'}"
             )
-    selected = [case for case in available_cases if wanted is None or case.id in wanted]
+    wanted_marks = set(case_marks) if case_marks is not None else None
+    if wanted_marks is not None:
+        available_marks = {mark for case in available_cases for mark in case.marks}
+        unknown_marks = sorted(wanted_marks - available_marks)
+        if unknown_marks:
+            raise ValueError(
+                f"Unknown eval case mark(s): {', '.join(unknown_marks)}; "
+                f"available: {', '.join(sorted(available_marks)) or '(none)'}"
+            )
+    selected = [
+        case
+        for case in available_cases
+        if (wanted is None or case.id in wanted)
+        and (wanted_marks is None or wanted_marks.intersection(case.marks))
+    ]
     if not selected:
         raise ValueError("No eval cases selected")
     return selected
@@ -1558,6 +1585,7 @@ def run_cartridge_evals(
     judge_llm: "LLMBackend | None" = None,
     workspace_key: str = "project_root",
     cases: list[str] | None = None,
+    case_marks: list[str] | None = None,
     capture: bool = True,
     redact: Callable[[str], str] | None = None,
     redact_upstream: bool = True,
@@ -1593,6 +1621,7 @@ def run_cartridge_evals(
         workspace_key: runtime key the cartridge reads for its working
             directory (``project_root`` by convention).
         cases: optional list of case ids to run (default: all).
+        case_marks: optional case marks; match any mark, then intersect with cases.
         capture: capture agent model calls when output_dir is set (default: True).
             False retains a grading-only record with no captured-response replay.
         redact: optional provenance redactor for captured/persisted evidence.
@@ -1613,7 +1642,7 @@ def run_cartridge_evals(
     cdir = Path(cartridge_dir)
     base_runtime = dict(runtime or {})
     overview = load_cartridge_evals(cdir, runtime=base_runtime, strict=True)
-    selected = _select_eval_cases(overview.cases, cases)
+    selected = _select_eval_cases(overview.cases, cases, case_marks=case_marks)
     if not overview.graders:
         raise ValueError("No graders selected")
 
@@ -3319,6 +3348,12 @@ def _run_cartridge_cli(args: list[str]) -> int:
         "--case", action="append", default=None, help="Run only this case id (repeatable)."
     )
     parser.add_argument(
+        "--case-mark",
+        action="append",
+        default=None,
+        help="Run cases matching any selected mark (repeatable; intersects with --case).",
+    )
+    parser.add_argument(
         "--judge",
         action="store_true",
         help="Enable LLM-as-judge graders (those with an ``llm`` parameter). "
@@ -3392,7 +3427,9 @@ def _run_cartridge_evaluation(parsed: Namespace, *, output: TextIO) -> int:
         print(f"error: no graders (evals/eval_*.py) under {cdir / 'evals'}", file=sys.stderr)
         return 1
     try:
-        selected_cases = _select_eval_cases(overview.cases, parsed.case)
+        selected_cases = _select_eval_cases(
+            overview.cases, parsed.case, case_marks=parsed.case_mark
+        )
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -3433,6 +3470,7 @@ def _run_cartridge_evaluation(parsed: Namespace, *, output: TextIO) -> int:
             output_dir=output_dir,
             max_steps=parsed.max_steps,
             cases=parsed.case,
+            case_marks=parsed.case_mark,
             judge_llm=judge_llm,
             capture=not parsed.no_capture,
         )
@@ -3533,6 +3571,12 @@ def _cases_cli(args: list[str]) -> int:
     sub = parser.add_subparsers(dest="action", required=True)
     p_ls = sub.add_parser("ls", help="List cases (one line per case).")
     p_ls.add_argument("path", help="Eval root, case directory, or case file.")
+    p_ls.add_argument(
+        "--case-mark",
+        action="append",
+        default=None,
+        help="List cases matching any selected mark (repeatable).",
+    )
     p_show = sub.add_parser("show", help="Show a case in full.")
     p_show.add_argument("path", help="Eval root, case directory, or case file.")
     p_show.add_argument(
@@ -3546,6 +3590,8 @@ def _cases_cli(args: list[str]) -> int:
 
     try:
         cases = load_cases(parsed.path)
+        if parsed.action == "ls" and parsed.case_mark is not None:
+            cases = _select_eval_cases(cases, None, case_marks=parsed.case_mark)
     except FileNotFoundError as e:
         print(str(e))
         return 1

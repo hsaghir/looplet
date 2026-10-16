@@ -14,7 +14,10 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - The report-agent tutorial uses installed demo files without requiring a repository checkout.
 - Generated Python eval tests preserve case marks for pytest selection.
 - Invalid case entries report their file and JSON entry number or JSONL line.
-- Human trace inspection prints complete final results for completed runs. JSON output and saved artifacts remain unchanged.
+- Human trace inspection prints complete final results for completed runs. Plain-trace JSON and saved artifacts remain unchanged.
+- Eval cases reject unknown fields and suggest close spellings.
+- Saved eval inspection shows recorded grades and collected artifacts without rerunning them. Eval JSON output adds `evals` and `artifacts`.
+- Cartridge eval runs and case listings accept repeatable `--case-mark` filters. Invalid selections fail before backend construction.
 
 ## [0.4.0] - 2026-10-16
 

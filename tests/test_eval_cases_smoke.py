@@ -45,6 +45,20 @@ class TestEvalCase:
         with pytest.raises(ValueError, match="id"):
             EvalCase.from_dict({"task": {}})
 
+    @pytest.mark.parametrize(
+        "misspelled, correct",
+        [("expectd", "expected"), ("taks", "task"), ("mark", "marks"), ("note", "notes")],
+    )
+    def test_unknown_field_suggests_correction(self, misspelled, correct) -> None:
+        with pytest.raises(ValueError) as failure:
+            EvalCase.from_dict({"id": "example", misspelled: {}})
+        assert f"Unknown EvalCase field {misspelled!r}" in str(failure.value)
+        assert f"did you mean {correct!r}?" in str(failure.value)
+
+    def test_unknown_field_without_suggestion_raises(self) -> None:
+        with pytest.raises(ValueError, match="Unknown EvalCase field 'extra'"):
+            EvalCase.from_dict({"id": "example", "extra": True})
+
     @pytest.mark.parametrize("data", [None, 17, "id", [], True])
     def test_non_object_raises_value_error(self, data) -> None:
         with pytest.raises(ValueError, match="EvalCase must be an object"):
@@ -128,6 +142,7 @@ class TestLoadCases:
             ("id", "EvalCase must be an object, got str"),
             ({}, "EvalCase requires 'id'"),
             ({"id": "broken", "task": []}, "EvalCase task must be an object"),
+            ({"id": "broken", "expectd": {}}, "Unknown EvalCase field 'expectd'"),
         ],
     )
     def test_invalid_entry_reports_source(self, tmp_path: Path, suffix, data, message) -> None:
@@ -253,6 +268,26 @@ class TestCasesCli:
         assert "first" in out
         assert "smoke" in out
 
+    @pytest.mark.parametrize(
+        "marks, expected", [(["smoke"], ["alpha"]), (["smoke", "regression"], ["alpha", "beta"])]
+    )
+    def test_ls_filters_case_marks(self, tmp_path, capsys, marks, expected):
+        directory = self._setup(tmp_path)
+        arguments = ["cases", "ls", str(directory)]
+        for mark in marks:
+            arguments.extend(["--case-mark", mark])
+
+        assert eval_cli(arguments) == 0
+        rendered = capsys.readouterr().out
+        for case_id in ("alpha", "beta"):
+            assert (case_id in rendered) == (case_id in expected)
+        assert f"{len(expected)} case(s)" in rendered
+
+    def test_ls_rejects_unknown_case_mark(self, tmp_path, capsys):
+        directory = self._setup(tmp_path)
+        assert eval_cli(["cases", "ls", str(directory), "--case-mark", "typo"]) == 1
+        assert "Unknown eval case mark" in capsys.readouterr().out
+
     def test_show_by_id(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         d = self._setup(tmp_path)
         rc = eval_cli(["cases", "show", str(d), "beta"])
@@ -281,17 +316,31 @@ class TestCasesCli:
 
     @pytest.mark.parametrize("action", ["ls", "show", "check"])
     @pytest.mark.parametrize("suffix, location", [("json", "entry 2"), ("jsonl", ":4:")])
+    @pytest.mark.parametrize(
+        "data, message",
+        [
+            (None, "EvalCase must be an object, got NoneType"),
+            ({"id": "broken", "expectd": {}}, "Unknown EvalCase field 'expectd'"),
+        ],
+    )
     def test_invalid_entry_reports_actionable_error(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], action, suffix, location
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        action,
+        suffix,
+        location,
+        data,
+        message,
     ) -> None:
         definitions = tmp_path / "evals"
         assert eval_cli(["init", str(definitions)]) == 0
         capsys.readouterr()
         path = definitions / "cases" / f"bad.{suffix}"
         if suffix == "jsonl":
-            path.write_text('{"id": "valid"}\n# comment\n\nnull\n')
+            path.write_text('{"id": "valid"}\n# comment\n\n' + json.dumps(data) + "\n")
         else:
-            path.write_text(json.dumps([{"id": "valid"}, None]))
+            path.write_text(json.dumps([{"id": "valid"}, data]))
         arguments = (
             ["check", str(definitions), "--json"]
             if action == "check"
@@ -303,7 +352,7 @@ class TestCasesCli:
         error = json.loads(output.out)["errors"][0] if action == "check" else output.out
         assert str(path) in error
         assert location in error
-        assert "EvalCase must be an object, got NoneType" in error
+        assert message in error
 
 
 class TestParametrizeCases:

@@ -73,6 +73,12 @@ Missing output fails the contract.
 Existing starter files are never overwritten.
 Edit the functions and case data directly as the contract grows.
 
+For a Python agent, the next step is a pytest test that runs the agent and assesses its result.
+The [Quickstart](quickstart.md#3-check-the-answer) provides complete executable files.
+You can also check graders kept in an agent module with `looplet eval check first_loop.py`.
+`looplet eval run` expects a cartridge directory, not the standalone `evals/` directory created above.
+Creating and checking definitions does not create a Python execution adapter.
+
 `eval check` accepts one file or a directory; saved cases are optional.
 It imports trusted Python definitions.
 Imports can execute authored code; use it only with definitions you trust.

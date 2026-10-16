@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any, TextIO
 
 from looplet.bundled import bundled_cartridge_path
-from looplet.cli import add_run_options, completion_payload, execution_output
+from looplet.cli import add_run_options, completion_exit_code, completion_payload, execution_output
 
 
 def _bold(s: str) -> str:
@@ -93,6 +93,13 @@ def cmd_new(args: argparse.Namespace) -> int:
     tools: list[str] = args.tool or []
 
     if getattr(args, "offline", False):
+        if args.max_steps is not None:
+            print(
+                "error: --max-steps limits the live factory and cannot be used with --offline. "
+                "Set max_steps in the generated config.yaml to limit the agent.",
+                file=sys.stderr,
+            )
+            return 1
         from looplet.cartridge.scaffold import scaffold_cartridge  # noqa: PLC0415
 
         try:
@@ -476,7 +483,9 @@ def _run_cartridge(args: argparse.Namespace, *, output: TextIO) -> int:
             ),
             file=output,
         )
-        return 1 if result.failed else 0
+        return completion_exit_code(
+            result, require_completed=getattr(args, "require_completed", False)
+        )
 
     print()
     if result.completed:
@@ -495,7 +504,7 @@ def _run_cartridge(args: argparse.Namespace, *, output: TextIO) -> int:
         print(json.dumps(final_data, indent=2, default=str)[:2000])
     if saved_trace_dir is not None:
         print(f"\n  Trace: {saved_trace_dir}")
-    return 1 if result.failed else 0
+    return completion_exit_code(result, require_completed=getattr(args, "require_completed", False))
 
 
 def cmd_portability(args: argparse.Namespace) -> int:
@@ -572,7 +581,7 @@ def add_subparsers(sub: "argparse._SubParsersAction") -> None:
     new_p.add_argument(
         "--max-steps",
         type=int,
-        help="Override the factory's default max_steps (default: 80)",
+        help="Live factory step limit (default: 80; cannot be used with --offline)",
     )
     new_p.add_argument("--quiet", action="store_true", help="Suppress per-step output")
     new_p.add_argument(

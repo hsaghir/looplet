@@ -18,6 +18,7 @@ import argparse
 import json
 import math
 import platform
+import shlex
 import sys
 import time
 import uuid
@@ -27,7 +28,7 @@ from typing import Any, TextIO, cast
 
 from looplet import __version__
 from looplet.artifact_compat import read_artifact_descriptor
-from looplet.cli import add_run_options, completion_payload, execution_output
+from looplet.cli import add_run_options, completion_exit_code, completion_payload, execution_output
 
 
 def _fmt_ms(ms: float | int | None) -> str:
@@ -333,6 +334,7 @@ def _render_run(
     trace_dir: Path | None,
     no_trace: bool,
     json_output: bool = False,
+    require_completed: bool = False,
 ) -> int:
     output = sys.stdout
     with execution_output(json_output):
@@ -348,6 +350,7 @@ def _render_run(
             no_trace=no_trace,
             json_output=json_output,
             output=output,
+            require_completed=require_completed,
         )
 
 
@@ -364,6 +367,7 @@ def _run_bundle(
     no_trace: bool,
     json_output: bool,
     output: TextIO,
+    require_completed: bool = False,
 ) -> int:
     from looplet.backends import make_backend  # noqa: PLC0415
     from looplet.bundles import (  # noqa: PLC0415
@@ -424,7 +428,7 @@ def _run_bundle(
             print(f"  - {error}", file=sys.stderr)
 
     bundle_run = getattr(bundle.module, "run", None)
-    legacy_run = callable(bundle_run) and not json_output
+    legacy_run = callable(bundle_run) and not json_output and not require_completed
     scripted_mode = scripted or bool(scripted_responses)
     for index, response in enumerate(scripted_responses, start=1):
         if not response.strip():
@@ -644,7 +648,7 @@ def _run_bundle(
         print(f"\n  {status} - {n_steps} steps")
         if effective_trace_dir is not None:
             print(f"  Trace: {effective_trace_dir}")
-    return 1 if result.failed else 0
+    return completion_exit_code(result, require_completed=require_completed)
 
 
 def _render_inspect(
@@ -857,6 +861,7 @@ def main(argv: list[str] | None = None) -> int:
     if raw in (["--help"], ["-h"]):
         print(parser.format_usage().rstrip())
         print(f"\n{parser.description}\n\nWorkflow:")
+        print("  Python: run your agent with `python your_agent.py`; packaging is optional.\n")
         for command, description in (
             ("new", "Create an agent cartridge"),
             ("run", "Run a cartridge or skill bundle"),
@@ -923,12 +928,13 @@ def main(argv: list[str] | None = None) -> int:
         help="Existing directory the agent operates on (defaults to the current project)",
     )
     run.add_argument("--max-steps", type=int, help="Maximum tool calls (bundle default: 20)")
-    run.add_argument(
+    bundle_options = run.add_argument_group("Skill-bundle-only options")
+    bundle_options.add_argument(
         "--scripted",
         action="store_true",
         help="Use bundle-provided deterministic scripted responses",
     )
-    run.add_argument(
+    bundle_options.add_argument(
         "--no-tests",
         action="store_true",
         help="Pass require_tests=False to bundles that support it",
@@ -1069,6 +1075,13 @@ def main(argv: list[str] | None = None) -> int:
             strict=args.strict,
         )
     if args.command in {"run", "run-bundle"}:
+        if args.command == "run" and args.bundle.suffix == ".py" and not args.bundle.is_dir():
+            print(
+                f"error: run Python agents with `python {shlex.quote(str(args.bundle))}`. "
+                "`looplet run` accepts cartridge or skill-bundle directories.",
+                file=sys.stderr,
+            )
+            return 1
         from looplet.cartridge.runtime_helpers import resolve_project_root  # noqa: PLC0415
         from looplet.cli.factory_commands import cmd_run_workspace  # noqa: PLC0415
 
@@ -1099,6 +1112,7 @@ def main(argv: list[str] | None = None) -> int:
                     trace_dir=args.trace_dir,
                     no_trace=args.no_trace,
                     json=args.json,
+                    require_completed=args.require_completed,
                     quiet=args.quiet,
                     pretty=args.pretty,
                     parent_trace=args.parent_trace,
@@ -1124,6 +1138,7 @@ def main(argv: list[str] | None = None) -> int:
             trace_dir=args.trace_dir,
             no_trace=args.no_trace,
             json_output=args.json,
+            require_completed=args.require_completed,
         )
     if args.command == "blueprint":
         return _render_blueprint(

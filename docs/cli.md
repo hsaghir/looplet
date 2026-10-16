@@ -10,6 +10,10 @@ looplet --help-all
 looplet <command> --help
 ```
 
+Python agents do not need packaging: use `python first_loop.py` and `python -m pytest test_first_loop.py`.
+See the [Quickstart](quickstart.md) for both files.
+The `run` command below loads packaged agents, not arbitrary Python scripts.
+
 There are two runnable file formats:
 
 - a **cartridge** is a reviewable agent harness containing prompts, tools,
@@ -121,7 +125,9 @@ Offline creation refuses a nonempty destination. Implement the placeholder
 tool code before running it. Useful options include repeatable `--tool`,
 `--name`, `--max-steps`, `--quiet`, and `--pretty`. `--max-steps` bounds the
 live factory's work, not the generated agent's budget; offline creation does
-not run the factory. Review the prompt, schemas, implementations, and runtime
+not run the factory. Combining `--offline` with `--max-steps` fails before creating files.
+Set `max_steps` in the generated `config.yaml` to limit the agent itself.
+Review the prompt, schemas, implementations, and runtime
 policy, then add an outcome contract before release.
 
 ### `looplet run <path> <task>`
@@ -155,6 +161,17 @@ looplet run ./agent.cartridge "Inspect the change" --json \
   | jq -e '.completed'
 ```
 
+Require accepted completion directly in the command's exit status:
+
+```bash
+looplet run ./agent.cartridge "Inspect the change" --require-completed --json > completion.json
+```
+
+`--require-completed` returns nonzero for budget exhaustion, hook stops, or other incomplete results.
+It works in human and JSON modes, including the explicit cartridge and bundle commands.
+It checks completion, not correctness; use an outcome grader for that.
+The flag is a current-checkout addition, not part of the older pinned Quickstart snapshot.
+
 `--project-root` (`--workspace`, `-w`) controls the directory available to
 project-aware tools. It
 defaults to `LOOPLET_PROJECT_ROOT`, the current Git repository, or the current
@@ -169,7 +186,8 @@ contain full prompts, responses, and tool results; inspect them before sharing.
 `trace_dir` (`null` with `--no-trace`). `completed` is true only when the agent
 reaches its configured terminal tool and the completion is accepted; budget
 and hook stops remain successful CLI executions but are
-reported as incomplete. Human output likewise prints `stopped (<reason>)`
+reported as incomplete unless `--require-completed` is set.
+Human output likewise prints `stopped (<reason>)`
 instead of `done` for incomplete runs. Fatal execution failures, including
 provider errors, return a non-zero exit code in both human and JSON modes.
 In JSON mode, ordinary Python output from loaded harness code goes to standard
@@ -200,6 +218,20 @@ requirement. That gate exits with code 2 when the profile is not portable.
 Always run `migrate --dry-run` first and review the resulting files.
 
 ## Run behavioral evals
+
+### Check Python definitions and run Python tests
+
+Use the agent and tests from the [Quickstart](quickstart.md#3-check-the-answer):
+
+```bash
+looplet eval check first_loop.py --json
+python -m pytest test_first_loop.py
+```
+
+`eval check` imports trusted definitions and validates their shape; it does not run an agent.
+`eval init evals/` optionally creates plain grader, collector, and case files.
+Use `load_evals("evals")` in your Python test to load those definitions.
+`eval run evals/` is not the next command: the runner below requires a cartridge.
 
 ### Run shipped cartridge cases
 
@@ -278,11 +310,15 @@ validation, stop reasons, and completion fields match cartridge execution.
 `--no-tests` passes `require_tests=False` to bundles that support it and is
 rejected for cartridges. Generic bundle runs default to 20 steps; cartridge
 runs retain their configured budget unless `--max-steps` overrides it.
+Run help groups bundle-only `--scripted` and `--no-tests` separately from cartridge-only options.
+For cartridges, use repeatable `--scripted-response` with explicit responses instead of `--scripted`.
 
 A bundle's custom `run(...) -> int` and renderers still own human execution
-when provided. In `--json` mode, the CLI instead executes the required
+when provided. With `--json` or `--require-completed`, the CLI instead executes the required
 `build(runtime) -> AgentPreset` contract and emits the shared completion
-object. Custom runners remain responsible for their own status and effects.
+result in the selected output format.
+This lets the CLI observe completion instead of trusting a custom callback's exit code.
+Without those flags, custom runners remain responsible for their own status and effects.
 
 ### Bundle inspection and packaging
 
@@ -318,7 +354,8 @@ searchable tags. Validate and run the output before distributing it.
 ## Automation conventions
 
 - Exit code 0 means command success, not agent completion or a correct answer.
-- For `run --json`, also require `completed=true`. Use a passing eval to check correctness.
+- Use `run --require-completed` to require accepted completion, or check `completed=true` in JSON output.
+- Use a passing eval to check correctness.
 - Use `--json` only on commands that advertise it; do not parse human output.
 - Pin the Looplet minor version when a script depends on output fields.
 - Capture stdout, stderr, command arguments, package version, and artifact hash

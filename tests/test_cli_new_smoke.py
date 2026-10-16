@@ -40,6 +40,7 @@ def test_root_help_discloses_workflow_before_advanced_commands(capsys):
         assert f"  {command:10s}" in simple
     assert "run-workspace" not in simple
     assert "--help-all" in simple
+    assert "python your_agent.py" in simple
     with pytest.raises(SystemExit) as stopped:
         main(["--help-all"])
     assert stopped.value.code == 0
@@ -47,6 +48,16 @@ def test_root_help_discloses_workflow_before_advanced_commands(capsys):
     assert "run-workspace" in detailed
     assert "describe" in detailed
     assert "blueprint" in detailed
+
+
+def test_run_help_groups_format_specific_options(capsys):
+    with pytest.raises(SystemExit) as stopped:
+        main(["run", "--help"])
+    assert stopped.value.code == 0
+    output = capsys.readouterr().out
+    assert "Cartridge-only options:" in output
+    assert "Skill-bundle-only options:" in output
+    assert "--require-completed" in output
 
 
 def test_run_cartridge_help() -> None:
@@ -250,6 +261,16 @@ def test_new_offline_preserves_existing_files(tmp_path, capsys) -> None:
     assert main(["new", "draft", str(target), "--offline"]) == 1
     assert original.read_text() == "keep this"
     assert "error:" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("budget", ["0", "1", "-1"])
+def test_new_offline_rejects_ignored_factory_budget(tmp_path, capsys, budget):
+    target = tmp_path / "agent.cartridge"
+    assert main(["new", "draft", str(target), "--offline", "--max-steps", budget]) == 1
+    assert not target.exists()
+    message = capsys.readouterr().err
+    assert "--max-steps limits the live factory" in message
+    assert "config.yaml" in message
 
 
 def test_inspect_cartridge_does_not_execute_tool_code(tmp_path, capsys) -> None:

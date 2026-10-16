@@ -8,6 +8,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `run` and its explicit aliases accept `--require-completed` to fail incomplete runs without changing default exit codes.
 - `load_evals` loads ordinary grader and collector functions from one file or directory without requiring a cartridge.
 - `looplet eval init` creates a non-clobbering outcome contract; `eval check` validates trusted definitions without running an agent.
 - `EvalContext.expected` exposes grader-only expectations while retaining the existing task view.
@@ -63,6 +64,10 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Tutorial installs use one immutable source revision until a published package contains the required APIs.
+- The Quickstart shows native-provider selection and an executable Python-to-pytest eval handoff around the same agent.
+- Python scripts and standalone eval definitions receive actionable CLI guidance instead of packaging errors.
+- Run help separates cartridge-only and bundle-only options. Offline creation rejects the live-factory `--max-steps` option before writing files.
 - Both eval CLI routes now default to assessment policy version 2, matching Python. Use `--assessment-version 1` for legacy gates.
 - `Block` denies execution at tool gates in Python and LEP. It also rejects completion in `check_done`.
 - Published-install guidance names PyPI `0.3.0` separately from the source checkout version. Native-tool failures require explicit protocol selection.

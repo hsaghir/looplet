@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import ast
+import json
 import re
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -62,6 +64,8 @@ def test_quickstart_runs_grades_captures_and_replays(tmp_path: Path, monkeypatch
     guide = Path(__file__).resolve().parents[1] / "docs" / "quickstart.md"
     blocks = _python_blocks(guide)
     assert blocks
+    from_env = Mock()
+    monkeypatch.setattr("looplet.OpenAIBackend.from_env", from_env)
     module = ModuleType("first_loop")
     monkeypatch.setitem(sys.modules, "first_loop", module)
     monkeypatch.chdir(tmp_path)
@@ -70,8 +74,15 @@ def test_quickstart_runs_grades_captures_and_replays(tmp_path: Path, monkeypatch
 
     assert not hasattr(module, "result")
     assert not (tmp_path / "traces").exists()
+    from_env.assert_not_called()
     module.test_owner()
     module.test_repeated_runs_are_independent()
+    native_responses = module.scripted_backend()
+    native_backend = SimpleNamespace(
+        generate=Mock(side_effect=AssertionError("live example must use native tools")),
+        generate_with_tools=Mock(wraps=native_responses.generate_with_tools),
+    )
+    from_env.return_value = native_backend
     namespace = {"__name__": "__main__"}
     for block in blocks:
         exec(compile(block, str(guide), "exec"), namespace)
@@ -79,6 +90,9 @@ def test_quickstart_runs_grades_captures_and_replays(tmp_path: Path, monkeypatch
     assert namespace["captured_result"].output == namespace["replayed_result"].output
     assert namespace["captured_backend"].calls == 2
     assert namespace["state"].termination_reason == "stream_closed"
+    from_env.assert_called_once_with()
+    native_backend.generate.assert_not_called()
+    assert native_backend.generate_with_tools.call_count == 2
     assert [step.tool_call.tool for step in namespace["result"].steps] == ["lookup_owner", "done"]
     assert [step.tool_call.tool for step in namespace["state"].steps] == ["lookup_owner"]
     assert not RunResult.from_state(namespace["state"]).completed
@@ -86,6 +100,33 @@ def test_quickstart_runs_grades_captures_and_replays(tmp_path: Path, monkeypatch
     assert (tmp_path / "traces" / "owner" / "manifest.jsonl").is_file()
     namespace["result"].output["summary"] = "wrong owner"
     assert not module.assess_result(namespace["result"]).passed
+
+
+def test_quickstart_python_test_and_definition_commands(tmp_path: Path) -> None:
+    guide = Path(__file__).resolve().parents[1] / "docs" / "quickstart.md"
+    blocks = _python_blocks(guide)
+    (tmp_path / "first_loop.py").write_text("\n\n".join(blocks[:2]))
+    (tmp_path / "test_first_loop.py").write_text(blocks[2])
+    tested = subprocess.run(
+        [sys.executable, "-m", "pytest", "test_first_loop.py", "-q"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert tested.returncode == 0, tested.stdout + tested.stderr
+    assert "2 passed" in tested.stdout
+    checked = subprocess.run(
+        [sys.executable, "-m", "looplet", "eval", "check", "first_loop.py", "--json"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+    report = json.loads(checked.stdout)
+    assert report["valid"]
+    assert [grader["name"] for grader in report["graders"]] == ["eval_owner"]
 
 
 def test_eval_introduction_is_self_contained() -> None:

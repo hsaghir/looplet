@@ -2,23 +2,25 @@
 
 Run one Python agent, get its answer, test it, and replay its saved model responses.
 You need Python 3.11 or newer.
-You do not need a model key for these examples.
+You do not need a model key until the optional real-model section.
 Start with Python functions.
 Cartridges and bundles are optional packaging formats, not prerequisites.
 
 ## 1. Install the source version
 
-These examples use the code in the repository.
-The published PyPI package is `0.3.0`.
-The result helpers below require this source install.
+Install this immutable tutorial snapshot in your own project.
+It contains the APIs used below and does not require a local repository checkout.
+PyPI `0.3.0` does not include these result helpers.
 
 ```bash
-git clone https://github.com/hsaghir/looplet.git
-cd looplet
-python -m pip install -e .
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install "looplet @ git+https://github.com/hsaghir/looplet.git@dbe536b3235ec8dce1dad201efcef13d1053eafc"
 ```
 
 The core package has no third-party runtime dependencies.
+The install needs Git and network access; the fixed-response runs do not.
+On Windows, activate `.venv\Scripts\Activate.ps1` in PowerShell.
 See [Install](install.md) for virtual environments and model providers.
 
 ## 2. Run the agent and get its answer
@@ -44,9 +46,9 @@ def scripted_backend():
     ])
 
 
-def run_agent(llm, *, hooks=()):
+def run_agent(llm, *, hooks=(), use_native_tools=False):
     with minimal_preset(tools=[lookup_owner], max_steps=2) as run:
-        run.config.use_native_tools = False
+        run.config.use_native_tools = use_native_tools
         run.hooks.extend(hooks)
         return run.run_result(llm, task={"goal": "Find the payments owner, then finish."})
 
@@ -66,9 +68,9 @@ python first_loop.py
 The loop calls `lookup_owner`, then `done`.
 `result.output["summary"]` contains the answer.
 The last line prints `True done`.
-The example selects the JSON-text protocol for its fixed responses.
-A real model uses native tool calls by default.
-See [Install](install.md) before changing the backend.
+This helper defaults to JSON-text for its fixed responses.
+Pass `use_native_tools=True` when changing to a native-tool backend.
+The [real-model section](#use-the-same-agent-with-a-real-model) shows the complete change.
 
 `AgentPreset` holds one run's mutable state and resources.
 It is single-use, not a reusable configuration object.
@@ -134,6 +136,16 @@ Run the tests:
 python -m pip install pytest
 python -m pytest test_first_loop.py
 ```
+
+Validate the same grader definitions without running the agent:
+
+```bash
+looplet eval check first_loop.py --json
+```
+
+Run Python agents with `python first_loop.py`; run their tests with pytest.
+`looplet run` loads cartridges or bundles; `looplet eval run` executes cartridge eval cases.
+`eval init evals/` creates optional definitions; it does not create a Python runner.
 
 ## 4. Capture the same agent
 
@@ -242,6 +254,40 @@ Use a [hook](hooks.md) to approve or reject a call before the tool runs.
 Close resources that your code creates, such as database clients.
 For async code, use `async_composable_loop()` with `contextlib.aclosing`.
 See the [Python API](api.md#execution-core) for that form.
+
+## Use the same agent with a real model
+
+Keep `first_loop.py` unchanged and install the adapter for the same tutorial snapshot:
+
+```bash
+python -m pip install "looplet[openai] @ git+https://github.com/hsaghir/looplet.git@dbe536b3235ec8dce1dad201efcef13d1053eafc"
+export OPENAI_API_KEY=...
+export OPENAI_MODEL=gpt-4o
+```
+
+Put this in a separate `first_loop_live.py` file:
+
+```python title="first_loop_live.py"
+from looplet import OpenAIBackend
+
+from first_loop import run_agent
+
+
+if __name__ == "__main__":
+    result = run_agent(OpenAIBackend.from_env(), use_native_tools=True)
+    print(result.output)
+    print(result.completed, result.termination_reason)
+```
+
+```bash
+python first_loop_live.py
+```
+
+This makes real provider calls and may incur charges.
+It uses the same tools and fresh-run factory, with native tool calls enabled explicitly.
+For Anthropic, install the `anthropic` extra and replace `OpenAIBackend` with `AnthropicBackend`.
+Configure its key as described in [Install](install.md#configure-anthropic).
+Use `use_native_tools=False` only when you intentionally select JSON-text responses.
 
 ## Choose the next guide
 

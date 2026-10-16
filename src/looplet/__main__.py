@@ -1075,7 +1075,7 @@ def main(argv: list[str] | None = None) -> int:
             strict=args.strict,
         )
     if args.command in {"run", "run-bundle"}:
-        if args.command == "run" and args.bundle.suffix == ".py":
+        if args.command == "run" and args.bundle.suffix == ".py" and not args.bundle.is_dir():
             print(
                 f"error: run Python agents with `python {shlex.quote(str(args.bundle))}`. "
                 "`looplet run` accepts cartridge or skill-bundle directories.",

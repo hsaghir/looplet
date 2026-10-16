@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -95,6 +96,44 @@ def test_python_script_has_an_actionable_command(tmp_path, monkeypatch, capsys):
     message = capsys.readouterr().err
     assert "python " in message and "my agent.py'" in message
     assert "SKILL.md" not in message
+
+
+@pytest.mark.parametrize("package_kind", ["cartridge", "bundle"])
+def test_python_suffix_directory_keeps_packaged_agent_routing(tmp_path, capsys, package_kind):
+    target = tmp_path / "agent.py"
+    if package_kind == "cartridge":
+        cartridge = _custom_terminal_cartridge(tmp_path, name="done", return_expression="{}")
+        cartridge.rename(target)
+        terminal_args = {"answer": "ok"}
+        options = []
+    else:
+        shutil.copytree(Path(__file__).parent / "fixtures" / "coder_skill_bundle", target)
+        terminal_args = {"summary": "finished"}
+        options = ["--no-tests"]
+
+    assert (
+        main(
+            [
+                "run",
+                str(target),
+                "finish",
+                "--project-root",
+                str(tmp_path),
+                "--max-steps",
+                "1",
+                "--require-completed",
+                "--no-trace",
+                "--json",
+                "--scripted-response",
+                json.dumps({"tool": "done", "args": terminal_args}),
+                *options,
+            ]
+        )
+        == 0
+    )
+    output = capsys.readouterr()
+    assert json.loads(output.out)["completed"] is True
+    assert not output.err
 
 
 @pytest.mark.parametrize("require_completed", [False, True])

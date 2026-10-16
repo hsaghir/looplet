@@ -296,23 +296,30 @@ def cmd_describe(args: argparse.Namespace) -> int:
         from looplet.bundles import validate_preset_contract
 
         validation = validate_preset_contract(preset)
-        report = inspect_cartridge(
-            cartridge_path, include_sensitive=getattr(args, "include_sensitive", False)
-        )
-        warnings = [*report["warnings"], *validation.warnings]
         if getattr(args, "json", False):
+            report = inspect_cartridge(
+                cartridge_path, include_sensitive=getattr(args, "include_sensitive", False)
+            )
             report.update(
                 mode="runtime",
                 runtime_validated=validation.ok,
                 errors=validation.errors,
-                warnings=warnings,
+                warnings=[*report["warnings"], *validation.warnings],
                 tools=preset.tools.introspect()["tools"],
                 hooks=[{"name": type(hook).__name__} for hook in preset.hooks],
             )
             print(json.dumps(report, indent=2, default=str))
             return 0 if validation.ok else 1
+        from looplet.cartridge._inspection import _is_scaffold_stub
+
         print(_dim("  runtime; authored code was executed to validate wiring"))
-        for warning in warnings:
+        for implementation in sorted(cartridge_path.glob("tools/*/execute.py")):
+            if _is_scaffold_stub(implementation):
+                print(
+                    _yellow(f"warning: Unimplemented scaffold tool: {implementation}"),
+                    file=sys.stderr,
+                )
+        for warning in validation.warnings:
             print(_yellow(f"warning: {warning}"), file=sys.stderr)
         if not validation.ok:
             for error in validation.errors:

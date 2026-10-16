@@ -124,6 +124,9 @@ def test_inspection_distinguishes_unfinished_tools_from_valid_wiring(tmp_path, c
     assert report["unfinished_tools"] == [str(implementation)]
     assert any("Unimplemented scaffold tool" in warning for warning in report["warnings"])
 
+    assert main(["inspect", str(root), "--mode", mode]) == 0
+    assert str(implementation) in capsys.readouterr().err
+
     implementation.write_text(
         '"""Historical scaffold: implement lookup marker, not an unfinished body."""\n'
         'def execute(ctx, **kwargs):\n    return {"owner": "platform"}\n'

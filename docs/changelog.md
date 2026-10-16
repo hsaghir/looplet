@@ -67,6 +67,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Cartridge evals refuse existing case output paths before execution instead of deleting previous evidence and workspaces.
+- Cartridge trace collisions return actionable CLI errors before loading providers or authored code.
+- The Quickstart grades structured completion facts instead of exact prose and exposes a configurable call budget for live runs.
 - Saved-run evaluation accepts either a single trace or a parent directory without changing assessment rules.
 - The Quickstart saves grader-owned expectations and outcomes, reloads them, and regrades without rerunning the agent.
 - One pinned source install supports the current Python and CLI guides without requiring a contributor checkout.

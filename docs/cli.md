@@ -182,7 +182,10 @@ project-aware tools. It
 defaults to `LOOPLET_PROJECT_ROOT`, the current Git repository, or the current
 directory, and must already exist. Each run also writes a provenance trace under
 `.looplet/traces/<cartridge>-<id>/` in that project root. Pass `--trace-dir`
-to choose an explicit location or `--no-trace` to disable capture. Traces may
+to choose an explicit location or `--no-trace` to disable capture.
+An existing trace returns an error without replacing evidence or loading the cartridge.
+Choose a new `--trace-dir`, or omit it for an automatic unique path.
+Traces may
 contain full prompts, responses, and tool results; inspect them before sharing.
 `--parent-trace` reads the parent's `run_id` and records it as
 `metadata.parent_run_id`; it does not resume, replay, or orchestrate that run.
@@ -242,7 +245,7 @@ Use `load_evals("evals")` in your Python test to load those definitions.
 
 ```bash
 looplet eval run ./agent.cartridge \
-  --out ./eval-runs \
+  --out ./eval-runs/run-001 \
   --threshold 1.0 \
   --json | jq -e '.passed'
 ```
@@ -268,6 +271,9 @@ contains the threshold verdict, case completion state, serialized grader
 results, integrity failures, and output directory. It deliberately omits
 artifacts and grader-only expected data; read those through the persisted run.
 Consumers should tolerate added fields.
+Choose a new `--out` directory for each invocation, such as `eval-runs/run-002` for the next run.
+Existing selected case paths are refused before any case executes, including with `--no-capture`.
+Previous evidence and workspaces are not deleted.
 Ordinary Python diagnostics from loaded graders, collectors, and harness code
 go to stderr in JSON mode and are not redacted.
 

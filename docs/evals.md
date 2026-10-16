@@ -155,6 +155,11 @@ The Python equivalent is `run_cartridge_evals()`. This runner owns evaluation
 and replaces embedded `EvalHook` observers with the self-test bundle's hook.
 Policy hooks still run. The reference coder ships no implicit eval hook.
 
+Use a fresh output directory for each run, such as `eval-runs/run-002` next.
+The runner refuses existing selected case paths before any case executes.
+This also applies with `capture=False` or `--no-capture`.
+It preserves previous evidence and workspaces instead of deleting them.
+
 With `--out`, the same run now records agent model prompts/responses beside
 trajectory, collected outcomes, grades, and grader-only expectations. Reload
 grades with `load_eval_run()` and replay captured responses with `replay_loop()`

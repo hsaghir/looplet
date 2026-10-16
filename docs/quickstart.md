@@ -39,15 +39,20 @@ def lookup_owner(service: str) -> dict:
     return {"service": service, "owner": owners.get(service)}
 
 
+@tool(description="Finish with the service, its owner, and an optional explanation.")
+def done(service: str, owner: str, summary: str = "") -> dict:
+    return {"service": service, "owner": owner, "summary": summary}
+
+
 def scripted_backend():
     return MockLLMBackend([
         '{"tool":"lookup_owner","args":{"service":"payments"}}',
-        '{"tool":"done","args":{"summary":"The payments owner is fintech-platform."}}',
+        '{"tool":"done","args":{"service":"payments","owner":"fintech-platform","summary":"The payments owner is fintech-platform."}}',
     ])
 
 
-def run_agent(llm, *, hooks=(), use_native_tools=False):
-    with minimal_preset(tools=[lookup_owner], max_steps=2, validate=True) as run:
+def run_agent(llm, *, hooks=(), use_native_tools=False, max_steps=2):
+    with minimal_preset(tools=[lookup_owner, done], max_steps=max_steps, validate=True) as run:
         run.config.use_native_tools = use_native_tools
         run.hooks.extend(hooks)
         return run.run_result(llm, task={"goal": "Find the payments owner, then finish."})
@@ -66,11 +71,12 @@ python first_loop.py
 ```
 
 The loop calls `lookup_owner`, then `done`.
-`result.output["summary"]` contains the answer.
+`result.output["owner"]` contains the owner; `summary` is an optional explanation.
 The last line prints `True done`.
 This helper defaults to JSON-text for its fixed responses.
 Pass `use_native_tools=True` when changing to a native-tool backend.
 The [real-model section](#use-the-same-agent-with-a-real-model) shows the complete change.
+The scripted run needs two calls; `max_steps` lets other runs use a different limit.
 
 `AgentPreset` holds one run's mutable state and resources.
 It is single-use, not a reusable configuration object.
@@ -90,11 +96,16 @@ Append this block to `first_loop.py` to compare the observed answer with a host-
 from looplet import EvalContext, eval_assess
 
 
-EXPECTED_OWNER = {"summary": "The payments owner is fintech-platform."}
+EXPECTED_OWNER = {"service": "payments", "owner": "fintech-platform"}
 
 
 def eval_owner(ctx):
-    return ctx.completed and ctx.final_output["summary"] == ctx.expected["summary"]
+    return (
+        ctx.completed
+        and isinstance(ctx.final_output, dict)
+        and ctx.final_output.get("service") == ctx.expected["service"]
+        and ctx.final_output.get("owner") == ctx.expected["owner"]
+    )
 
 
 def assess_result(result):
@@ -114,6 +125,7 @@ if __name__ == "__main__":
 ```
 
 This prints `True` after checking completion and the answer.
+The grader checks service and owner fields, not the explanation's exact wording.
 The expected answer belongs to the grader; it is not part of the agent task.
 For files or database changes, collect those effects independently before grading.
 See [Behavioral evals](evals.md) for collectors and saved cases.
@@ -217,7 +229,7 @@ if __name__ == "__main__":
     replay_state = DefaultState(max_steps=2)
     with closing(replay_loop(
         trace_dir,
-        tools=tools_from([lookup_owner], include_done=True, validate=True),
+        tools=tools_from([lookup_owner, done], validate=True),
         state=replay_state,
         task={"goal": "Find the payments owner, then finish."},
     )) as steps:
@@ -246,7 +258,7 @@ if __name__ == "__main__":
     state = DefaultState(max_steps=2)
     with closing(composable_loop(
         llm=scripted_backend(),
-        tools=tools_from([lookup_owner], include_done=True, validate=True),
+        tools=tools_from([lookup_owner, done], validate=True),
         state=state,
         config=LoopConfig(max_steps=2, use_native_tools=False),
         task={"goal": "Find the payments owner, then finish."},
@@ -299,9 +311,11 @@ from first_loop import run_agent
 
 
 if __name__ == "__main__":
-    result = run_agent(OpenAIBackend.from_env(), use_native_tools=True)
+    result = run_agent(OpenAIBackend.from_env(), use_native_tools=True, max_steps=8)
     print(result.output)
     print(result.completed, result.termination_reason)
+    if not result.completed:
+        raise SystemExit(f"Agent stopped before completion: {result.termination_reason}")
 ```
 
 ```bash
@@ -310,6 +324,8 @@ python first_loop_live.py
 
 This makes real provider calls and may incur charges.
 It uses the same tools and fresh-run factory, with native tool calls enabled explicitly.
+The live example allows up to eight tool calls, including completion.
+Adjust `max_steps` for your task; budget exhaustion means the run did not finish.
 For Anthropic, install the `anthropic` extra and replace `OpenAIBackend` with `AnthropicBackend`.
 Configure its key as described in [Install](install.md#configure-anthropic).
 Use `use_native_tools=False` only when you intentionally select JSON-text responses.

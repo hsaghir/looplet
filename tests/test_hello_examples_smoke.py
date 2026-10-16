@@ -14,7 +14,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from looplet import RunResult, composable_loop
+from looplet import MockLLMBackend, RunResult, composable_loop
 from looplet.examples import hello_world, ollama_hello
 
 pytestmark = pytest.mark.smoke
@@ -114,8 +114,65 @@ def test_quickstart_runs_grades_captures_and_replays(tmp_path: Path, monkeypatch
     exec(compile(capture_block, str(guide), "exec"), namespace)
     assert namespace["trace_dir"] != trace_dir
     assert (trace_dir / "trajectory.json").read_bytes() == original
-    namespace["result"].output["summary"] = "wrong owner"
+    namespace["result"].output["owner"] = "wrong-owner"
     assert not module.assess_result(namespace["result"]).passed
+
+
+@pytest.mark.parametrize(
+    ("owner", "summary", "passed"),
+    [
+        ("fintech-platform", "The payments owner is fintech-platform.", True),
+        ("fintech-platform", "fintech-platform owns payments.", True),
+        ("fintech-platform", "", True),
+        ("wrong-owner", "The payments owner is fintech-platform.", False),
+    ],
+)
+def test_quickstart_grades_structured_facts_not_prose(owner, summary, passed):
+    guide = Path(__file__).resolve().parents[1] / "docs" / "quickstart.md"
+    namespace = {"__name__": "first_loop"}
+    for block in _python_blocks(guide)[:2]:
+        exec(compile(block, str(guide), "exec"), namespace)
+    backend = MockLLMBackend(
+        [
+            json.dumps({"tool": "lookup_owner", "args": {"service": "payments"}}),
+            json.dumps(
+                {
+                    "tool": "done",
+                    "args": {"service": "payments", "owner": owner, "summary": summary},
+                }
+            ),
+        ]
+    )
+
+    result = namespace["run_agent"](backend)
+
+    assert result.completed
+    assert namespace["assess_result"](result).passed is passed
+
+
+@pytest.mark.parametrize(("max_steps", "completed"), [(None, False), (3, True)])
+def test_quickstart_run_budget_is_configurable(max_steps, completed):
+    guide = Path(__file__).resolve().parents[1] / "docs" / "quickstart.md"
+    namespace = {"__name__": "first_loop"}
+    for block in _python_blocks(guide)[:2]:
+        exec(compile(block, str(guide), "exec"), namespace)
+    lookup = json.dumps({"tool": "lookup_owner", "args": {"service": "payments"}})
+    backend = MockLLMBackend(
+        [
+            lookup,
+            lookup,
+            json.dumps(
+                {"tool": "done", "args": {"service": "payments", "owner": "fintech-platform"}}
+            ),
+        ]
+    )
+    options = {} if max_steps is None else {"max_steps": max_steps}
+
+    result = namespace["run_agent"](backend, **options)
+
+    assert result.completed is completed
+    assert namespace["assess_result"](result).passed is completed
+    assert result.termination_reason == ("done" if completed else "budget_exhausted")
 
 
 def test_quickstart_python_test_and_definition_commands(tmp_path: Path) -> None:

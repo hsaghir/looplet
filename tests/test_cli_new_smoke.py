@@ -138,6 +138,49 @@ def test_inspection_distinguishes_unfinished_tools_from_valid_wiring(tmp_path, c
     assert report["warnings"] == []
 
 
+@pytest.mark.parametrize("command", ["run", "run-cartridge", "run-workspace"])
+@pytest.mark.parametrize("json_output", [False, True])
+def test_existing_trace_fails_cleanly_before_loading_agent(
+    tmp_path, monkeypatch, capsys, command, json_output
+):
+    from looplet.cartridge.scaffold import scaffold_cartridge
+
+    cartridge = scaffold_cartridge(tmp_path / "agent.cartridge", name="agent", tools=[])
+    trace = tmp_path / "trace"
+    trace.mkdir()
+    original = b'{"run_id":"previous-run"}\n'
+    (trace / "trajectory.json").write_bytes(original)
+
+    def unexpected_load(*args, **kwargs):
+        raise AssertionError("must reject existing trace before loading an agent or provider")
+
+    monkeypatch.setattr("looplet.cartridge.cartridge_to_preset", unexpected_load)
+    monkeypatch.setattr("looplet.cli.factory_commands._build_backend", unexpected_load)
+    options = ["--json"] if json_output else []
+    assert (
+        main(
+            [
+                command,
+                str(cartridge),
+                "Finish",
+                "--project-root",
+                str(tmp_path),
+                "--trace-dir",
+                str(trace),
+                *options,
+            ]
+        )
+        == 1
+    )
+
+    captured = capsys.readouterr()
+    assert not captured.out
+    assert "Choose a new --trace-dir or omit it" in captured.err
+    assert "Traceback" not in captured.err
+    assert "overwrite=True" not in captured.err
+    assert (trace / "trajectory.json").read_bytes() == original
+
+
 def test_runtime_cartridge_json_redirects_authored_shutdown_output(tmp_path, capsys, monkeypatch):
     from looplet import minimal_preset
     from looplet.cartridge.scaffold import scaffold_cartridge

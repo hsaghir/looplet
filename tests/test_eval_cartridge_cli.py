@@ -284,6 +284,45 @@ def test_run_cartridge_evals_end_to_end(tmp_path: Path) -> None:
     assert reloaded.context.task["expected"] == {"file_written": True}
 
 
+@pytest.mark.parametrize("capture", [False, True])
+def test_repeated_eval_preserves_evidence_before_model_calls(tmp_path, capture):
+    cart = _make_cartridge(tmp_path)
+    output = tmp_path / "runs"
+    run_cartridge_evals(cart, llm=MockLLMBackend(_scripted()), output_dir=output, capture=capture)
+    original = {
+        path.relative_to(output): path.read_bytes() for path in output.rglob("*") if path.is_file()
+    }
+    (cart / "evals" / "cases" / "a_fresh_case.json").write_text(
+        json.dumps({**_CASE, "id": "a_fresh_case"})
+    )
+    backend = MockLLMBackend(_scripted())
+
+    with pytest.raises(FileExistsError, match="Choose a new output_dir"):
+        run_cartridge_evals(cart, llm=backend, output_dir=output, capture=capture)
+
+    assert backend.calls == 0
+    assert not (output / "a_fresh_case").exists()
+    assert {
+        path.relative_to(output): path.read_bytes() for path in output.rglob("*") if path.is_file()
+    } == original
+
+
+def test_repeated_eval_cli_reports_existing_output_without_a_traceback(tmp_path, capsys):
+    cart = _make_cartridge(tmp_path)
+    output = tmp_path / "runs"
+    run_cartridge_evals(cart, llm=MockLLMBackend(_scripted()), output_dir=output)
+    backend = MockLLMBackend(_scripted())
+
+    with patch("looplet.backends.make_backend", return_value=backend):
+        assert eval_cli(["run", str(cart), "--out", str(output), "--json"]) == 1
+
+    captured = capsys.readouterr()
+    assert not captured.out
+    assert "Choose a new output_dir (CLI: --out)" in captured.err
+    assert "Traceback" not in captured.err
+    assert backend.calls == 0
+
+
 def test_run_cartridge_evals_no_output_uses_tempdir(tmp_path: Path) -> None:
     cart = _make_cartridge(tmp_path)
     records = run_cartridge_evals(cart, llm=MockLLMBackend(responses=_scripted()))
@@ -720,19 +759,20 @@ def test_run_cartridge_evals_rejects_expected_inside_agent_task(tmp_path: Path) 
         run_cartridge_evals(cart, llm=MockLLMBackend(responses=_scripted()))
 
 
-def test_run_cartridge_evals_resets_persisted_workspace(tmp_path: Path) -> None:
+def test_new_eval_output_has_fresh_workspace_and_preserves_previous_run(tmp_path: Path) -> None:
     cart = _make_cartridge(tmp_path)
     out = tmp_path / "runs"
     stale = out / "make_greeting" / "workspace" / "stale.py"
     stale.parent.mkdir(parents=True)
-    stale.write_text("must disappear\n")
+    stale.write_text("previous run\n")
 
-    run_cartridge_evals(
+    records = run_cartridge_evals(
         cart,
         llm=MockLLMBackend(responses=_scripted()),
-        output_dir=out,
+        output_dir=tmp_path / "next-runs",
     )
-    assert not stale.exists()
+    assert not (records[0].directory / "workspace" / "stale.py").exists()
+    assert stale.read_text() == "previous run\n"
 
 
 def test_case_sandbox_overrides_base_runtime_project_root(tmp_path: Path) -> None:

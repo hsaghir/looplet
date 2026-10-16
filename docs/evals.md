@@ -615,6 +615,22 @@ Browsing does not import graders. Listings preview the task description, goal, o
 
 Unreleased builds identify invalid case data by file and JSON entry number or JSONL line.
 Each case must be an object with an `id`.
+Unreleased builds also reject unknown fields instead of discarding them.
+Errors suggest close field names, such as `expected` for `expectd`.
+Case fields are `id`, `task`, `expected`, `marks`, and `notes`.
+Saved run records retain forward compatibility and ignore unknown saved case fields.
+
+Unreleased builds can select live cartridge cases by mark:
+
+```bash
+looplet eval cases ls evals/ --case-mark smoke
+looplet eval run ./agent.cartridge --case-mark smoke --case-mark regression
+```
+
+Repeated marks match any listed value; `--case` narrows that selection to matching IDs.
+Unknown marks and empty selections fail before backend construction.
+Python hosts use `run_cartridge_evals(..., case_marks=["smoke"])` with the same rules.
+These filters select cases, not graders; grader filtering remains separate.
 
 Run them with stock pytest. The shortest path uses two helpers, with no
 `pytest` import needed in your test file:

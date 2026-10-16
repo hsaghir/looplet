@@ -111,8 +111,17 @@ and the stored evidence retain their original values.
 Unreleased builds also print the complete recorded result under `result:` for completed runs.
 Rejected completions and incomplete runs have no final-result section.
 Both `show` and trace `inspect` use this view.
-JSON output and saved files are unchanged.
+Plain-trace JSON output and saved files are unchanged.
 Inspect traces before sharing them; complete results may contain sensitive data.
+
+Unreleased builds also show recorded grades under `saved evals:` and collected evidence under `artifacts:` for saved eval runs.
+Their JSON output adds `evals` and `artifacts`; ordinary traces retain the existing JSON shape.
+Inspection does not rerun graders, collectors, tools, or models.
+The `done` header means loop completion, not correctness.
+Inspection preserves recorded scores and does not apply a release threshold.
+A readable failed eval still exits zero from inspection.
+Use `looplet eval <trace-dir> --evals ./evals/ --threshold 0.7` to rescore with your gate policy.
+Saved grades and artifacts may include sensitive data; review both before sharing.
 
 ### Replay captured responses
 
@@ -396,6 +405,7 @@ Notable options:
 | Option | Effect |
 | --- | --- |
 | `--case ID` | Run one case; repeat to select several. |
+| `--case-mark MARK` | Run cases with any selected mark; repeat to select several marks. Unreleased. |
 | `--max-steps N` | Override the per-case tool-call budget. |
 | `--model NAME` | Override the selected provider's model. |
 | `--base-url URL` | Explicitly select an OpenAI-compatible endpoint for agent and judge. |
@@ -406,6 +416,19 @@ Notable options:
 | `--no-capture` | Save grades and outcomes without agent model prompts or responses. |
 | `--threshold VALUE` | Fail when any scored grader falls below the value. |
 | `--json` | Emit one report with the overall verdict and per-case grader results. |
+
+Unreleased builds accept the same mark filter when listing cases:
+
+```bash
+looplet eval cases ls ./agent.cartridge/evals --case-mark smoke
+looplet eval run ./agent.cartridge --case-mark smoke --case-mark regression
+```
+
+Repeated marks match any listed value.
+Combine `--case` with marks to run their intersection.
+Unknown marks and empty selections fail before backend construction.
+Case marks select cases, not graders.
+Saved-run grading uses `--include` and `--exclude` for grader marks instead.
 
 Required graders, explicit failures, collector errors, malformed records,
 unknown cases, and empty required suites also fail the command. Persisted case

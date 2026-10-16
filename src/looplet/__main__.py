@@ -158,8 +158,32 @@ def _render_show(trace_dir: Path, *, json_output: bool = False) -> int:
         print(f"error: invalid trace shape: {shape_error}", file=sys.stderr)
         return 1
 
+    eval_record = None
+    saved_evals = None
+    if (descriptor is not None and descriptor["kind"] == "eval_run") or (
+        descriptor is None
+        and any((trace_dir / name).exists() for name in ("evals.json", "artifacts.json"))
+    ):
+        from looplet.evals import load_eval_run
+
+        try:
+            eval_record = load_eval_run(trace_dir)
+            evals_path = trace_dir / "evals.json"
+            saved_evals = (
+                json.loads(evals_path.read_text(encoding="utf-8")) if evals_path.exists() else []
+            )
+        except Exception as exc:
+            print(
+                f"error: could not read saved eval evidence in {trace_dir}: {exc}", file=sys.stderr
+            )
+            return 1
+
     if json_output:
-        print(json.dumps({"trajectory": traj or None, "manifest": calls}, indent=2))
+        payload = {"trajectory": traj or None, "manifest": calls}
+        if eval_record is not None:
+            payload["evals"] = saved_evals
+            payload["artifacts"] = eval_record.context.artifacts
+        print(json.dumps(payload, indent=2))
         return 0
 
     # ── Header ──────────────────────────────────────────────────
@@ -241,6 +265,18 @@ def _render_show(trace_dir: Path, *, json_output: bool = False) -> int:
                 if isinstance(final_output, str)
                 else json.dumps(final_output, indent=2)
             )
+
+    if eval_record is not None:
+        print("\nsaved evals:")
+        for result in eval_record.results:
+            print(f"  {result.pretty()}")
+        if not eval_record.results:
+            print("  (none)")
+        print("\nartifacts:")
+        print(json.dumps(eval_record.context.artifacts, indent=2))
+        print(
+            "\nCompletion is separate from correctness. Apply your gate threshold to these saved scores."
+        )
 
     return 0
 

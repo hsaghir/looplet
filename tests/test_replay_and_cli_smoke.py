@@ -18,6 +18,7 @@ from looplet import (
 )
 from looplet.__main__ import main as cli_main
 from looplet.artifact_compat import ARTIFACT_DESCRIPTOR
+from looplet.evals import EvalHook, EvalResult, eval_mark, save_eval_run
 from looplet.provenance import (
     ProvenanceSink,
     _load_trace_calls,
@@ -297,6 +298,111 @@ class TestShowCLISmoke:
         assert "3 steps" in out
         assert "LLM:" in out
         assert "add" in out
+
+    @pytest.mark.parametrize("command", ["show", "inspect"])
+    @pytest.mark.parametrize("json_output", [False, True])
+    @pytest.mark.parametrize("legacy", [False, True])
+    def test_saved_eval_evidence_is_visible_without_execution(
+        self, tmp_path, capsys, command, json_output, legacy
+    ):
+        calls = {"grader": 0, "collector": 0}
+
+        @eval_mark("required")
+        def eval_content(ctx):
+            calls["grader"] += 1
+            return EvalResult(
+                name="eval_content",
+                score=0.0,
+                label="fail",
+                explanation="The output file is missing.",
+                details=["Expected hello in result.txt."],
+            )
+
+        def collect_content(state):
+            calls["collector"] += 1
+            return {"content": None}
+
+        hook = EvalHook(evaluators=[eval_content], collectors=[collect_content])
+        sink = ProvenanceSink(dir=tmp_path / "trace")
+        list(
+            composable_loop(
+                llm=sink.wrap_llm(
+                    MockLLMBackend(['{"tool":"done","args":{"answer":"Task complete."}}'])
+                ),
+                tools=_make_tools(),
+                hooks=[sink.trajectory_hook(), hook],
+                config=LoopConfig(use_native_tools=False),
+            )
+        )
+        trace_dir = sink.flush()
+        save_eval_run(trace_dir, eval_hook=hook)
+        if legacy:
+            (trace_dir / ARTIFACT_DESCRIPTOR).unlink()
+        original = {path.name: path.read_bytes() for path in trace_dir.iterdir() if path.is_file()}
+        arguments = [command, str(trace_dir), *(["--json"] if json_output else [])]
+
+        assert cli_main(arguments) == 0
+        rendered = capsys.readouterr().out
+        if json_output:
+            payload = json.loads(rendered)
+            assert payload["evals"] == json.loads((trace_dir / "evals.json").read_text())
+            assert payload["artifacts"] == {"content": None}
+        else:
+            assert "done" in rendered
+            assert "saved evals:" in rendered
+            assert "eval_content" in rendered
+            assert "fail" in rendered
+            assert "The output file is missing." in rendered
+            assert "Expected hello in result.txt." in rendered
+            assert '"content": null' in rendered
+        assert calls == {"grader": 1, "collector": 1}
+        assert {
+            path.name: path.read_bytes() for path in trace_dir.iterdir() if path.is_file()
+        } == original
+
+    @pytest.mark.parametrize("json_output", [False, True])
+    def test_saved_eval_evidence_accepts_forward_compatible_records(self, capsys, json_output):
+        trace_dir = Path(__file__).parent / "fixtures" / "artifact_compat" / "v1_eval_run"
+        arguments = ["inspect", str(trace_dir), *(["--json"] if json_output else [])]
+
+        assert cli_main(arguments) == 0
+        rendered = capsys.readouterr().out
+        if json_output:
+            assert json.loads(rendered)["evals"] == json.loads(
+                (trace_dir / "evals.json").read_text()
+            )
+        else:
+            assert "saved evals:" in rendered
+            assert "eval_tests_pass" in rendered
+
+    @pytest.mark.parametrize("json_output", [False, True])
+    def test_saved_eval_evidence_rejects_corrupt_files(self, tmp_path, capsys, json_output):
+        trace_dir = _captured_dir(tmp_path)
+        (trace_dir / ARTIFACT_DESCRIPTOR).unlink()
+        (trace_dir / "evals.json").write_text("not JSON")
+        arguments = ["inspect", str(trace_dir), *(["--json"] if json_output else [])]
+
+        assert cli_main(arguments) == 1
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "could not read saved eval evidence" in captured.err
+        assert "evals.json" in captured.err
+        assert "Traceback" not in captured.err
+
+    @pytest.mark.parametrize("json_output", [False, True])
+    def test_provenance_ignores_undeclared_eval_files(self, tmp_path, capsys, json_output):
+        trace_dir = _captured_dir(tmp_path)
+        (trace_dir / "evals.json").write_text("not JSON")
+        (trace_dir / "artifacts.json").write_text("not JSON")
+        arguments = ["inspect", str(trace_dir), *(["--json"] if json_output else [])]
+
+        assert cli_main(arguments) == 0
+        rendered = capsys.readouterr().out
+        if json_output:
+            assert set(json.loads(rendered)) == {"trajectory", "manifest"}
+        else:
+            assert "saved evals:" not in rendered
+            assert "artifacts:" not in rendered
 
     @pytest.mark.parametrize("command", ["show", "inspect"])
     @pytest.mark.parametrize("terminal_tool", ["done", "finish"])

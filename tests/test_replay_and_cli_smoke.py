@@ -298,6 +298,85 @@ class TestShowCLISmoke:
         assert "LLM:" in out
         assert "add" in out
 
+    @pytest.mark.parametrize("command", ["show", "inspect"])
+    @pytest.mark.parametrize("terminal_tool", ["done", "finish"])
+    def test_renders_complete_final_result(self, tmp_path, capsys, command, terminal_tool):
+        output = {"answer": "The payment service is owned by fintech-platform."}
+        tools = BaseToolRegistry()
+        tools.register(
+            ToolSpec(
+                name=terminal_tool,
+                description="Finish the task.",
+                parameters={"answer": "str"},
+                execute=lambda *, answer: {"answer": answer},
+            )
+        )
+        sink = ProvenanceSink(dir=tmp_path / "trace")
+        backend = sink.wrap_llm(
+            MockLLMBackend([json.dumps({"tool": terminal_tool, "args": output})])
+        )
+        list(
+            composable_loop(
+                llm=backend,
+                tools=tools,
+                config=LoopConfig(done_tool=terminal_tool, use_native_tools=False),
+                hooks=[sink.trajectory_hook()],
+            )
+        )
+        trace_dir = sink.flush()
+        original = (trace_dir / "trajectory.json").read_bytes()
+
+        assert cli_main([command, str(trace_dir)]) == 0
+        rendered = capsys.readouterr().out
+        assert "result:" in rendered
+        assert json.dumps(output, indent=2) in rendered
+        assert cli_main([command, str(trace_dir), "--json"]) == 0
+        assert json.loads(capsys.readouterr().out)["trajectory"] == json.loads(original)
+        assert (trace_dir / "trajectory.json").read_bytes() == original
+
+    @pytest.mark.parametrize("command", ["show", "inspect"])
+    @pytest.mark.parametrize(
+        "output", ["A complete answer with more than thirty characters.", [], 0, False]
+    )
+    def test_renders_scalar_and_list_final_results(self, tmp_path, capsys, command, output):
+        trajectory = {
+            "termination_reason": "done",
+            "steps": [{"tool_result": {"data": output}}],
+        }
+        (tmp_path / "trajectory.json").write_text(json.dumps(trajectory))
+
+        assert cli_main([command, str(tmp_path)]) == 0
+        rendered = capsys.readouterr().out
+        expected = output if isinstance(output, str) else json.dumps(output, indent=2)
+        assert f"result:\n{expected}\n" in rendered
+
+    @pytest.mark.parametrize("command", ["show", "inspect"])
+    @pytest.mark.parametrize(
+        "reason, output, result_error, step_error",
+        [
+            ("budget", {"answer": "partial"}, None, None),
+            ("cancelled", {"answer": "partial"}, None, None),
+            ("error", {"answer": "partial"}, None, None),
+            ("done", {"rejected": True, "reason": "Check failed."}, None, None),
+            ("done", {"answer": "partial"}, "Tool failed.", None),
+            ("done", {"answer": "partial"}, None, "Step failed."),
+            ("done", None, None, None),
+        ],
+    )
+    def test_does_not_label_nonfinal_output_as_result(
+        self, tmp_path, capsys, command, reason, output, result_error, step_error
+    ):
+        trajectory = {
+            "termination_reason": reason,
+            "steps": [
+                {"tool_result": {"data": output, "error": result_error}, "error": step_error}
+            ],
+        }
+        (tmp_path / "trajectory.json").write_text(json.dumps(trajectory))
+
+        assert cli_main([command, str(tmp_path)]) == 0
+        assert "result:" not in capsys.readouterr().out
+
     def test_show_json_preserves_trace_artifacts(self, tmp_path: Path, capsys):
         trace_dir = _captured_dir(tmp_path)
 

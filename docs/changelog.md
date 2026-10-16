@@ -12,6 +12,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - `eval init --python` adds a test to existing case and grader definitions without importing or replacing them.
 - Cartridge eval commands validate selected case IDs before constructing agent or judge backends.
 - The report-agent tutorial uses installed demo files without requiring a repository checkout.
+- Generated Python eval tests preserve case marks for pytest selection.
+- Invalid case entries report their file and JSON entry number or JSONL line.
+- Human trace inspection prints complete final results for completed runs. JSON output and saved artifacts remain unchanged.
 
 ## [0.4.0] - 2026-10-16
 

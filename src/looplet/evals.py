@@ -820,6 +820,8 @@ class EvalCase:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "EvalCase":
+        if not isinstance(data, dict):
+            raise ValueError(f"EvalCase must be an object, got {type(data).__name__}")
         if "id" not in data:
             raise ValueError("EvalCase requires 'id'")
         known = {k: v for k, v in data.items() if k in cls.__dataclass_fields__}
@@ -859,8 +861,11 @@ def load_cases(path: str | Path) -> list["EvalCase"]:
     cases: list[EvalCase] = []
     seen: dict[str, Path] = {}
     for fpath in files:
-        for raw in _iter_case_dicts(fpath):
-            case = EvalCase.from_dict(raw)
+        for location, raw in _iter_case_dicts(fpath):
+            try:
+                case = EvalCase.from_dict(raw)
+            except ValueError as exc:
+                raise ValueError(f"{location}: {exc}") from exc
             if case.id in seen:
                 raise ValueError(f"Duplicate case id {case.id!r} (in {fpath})")
             seen[case.id] = fpath
@@ -871,12 +876,12 @@ def load_cases(path: str | Path) -> list["EvalCase"]:
 def _iter_case_dicts(fpath: Path):
     text = fpath.read_text()
     if fpath.suffix == ".jsonl":
-        for ln, line in enumerate(text.splitlines(), 1):
+        for ln, line in enumerate(text.split("\n"), 1):
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
             try:
-                yield json.loads(line)
+                yield f"{fpath}:{ln}", json.loads(line)
             except json.JSONDecodeError as e:
                 raise ValueError(f"{fpath}:{ln}: invalid JSON ({e})") from e
         return
@@ -885,9 +890,10 @@ def _iter_case_dicts(fpath: Path):
     except json.JSONDecodeError as e:
         raise ValueError(f"{fpath}: invalid JSON ({e})") from e
     if isinstance(loaded, list):
-        yield from loaded
+        for index, raw in enumerate(loaded, 1):
+            yield f"{fpath}: entry {index}", raw
     elif isinstance(loaded, dict):
-        yield loaded
+        yield str(fpath), loaded
     else:
         raise ValueError(f"{fpath}: expected dict or list, got {type(loaded).__name__}")
 
@@ -2870,11 +2876,12 @@ def _init_eval_definitions(path: Path, *, python_test: bool = False) -> list[Pat
             "    MockLLMBackend,\n"
             "    load_evals,\n"
             "    minimal_preset,\n"
+            "    pytest_param_cases,\n"
             "    seed_case_workspace,\n"
             "    tool,\n"
             ")\n\n\n"
             "@pytest.mark.parametrize(\n"
-            '    "case", load_evals(Path(__file__).parent).cases, ids=lambda case: case.id\n'
+            '    "case", pytest_param_cases(load_evals(Path(__file__).parent).cases)\n'
             ")\n"
             "def test_agent(case, tmp_path):\n"
             "    definitions = load_evals(\n"

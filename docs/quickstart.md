@@ -164,7 +164,7 @@ looplet eval check first_loop.py --json
 Run Python agents with `python first_loop.py`; run their tests with pytest.
 `looplet run` loads cartridges or bundles; `looplet eval run` executes cartridge eval cases.
 `eval init --python evals/` creates definitions and a runnable pytest example.
-Run it with `python -m pytest evals/test_agent.py`.
+Run it with `python -m pytest evals/`.
 Omit `--python` to create definitions only.
 
 ## 4. Capture the same agent

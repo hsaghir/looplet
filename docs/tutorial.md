@@ -11,20 +11,21 @@ A cartridge is optional for normal loop use.
 
 The complete example is in
 [`examples/regression_demo/`](https://github.com/hsaghir/looplet/tree/master/examples/regression_demo).
-Run it after package installation:
-
-```bash
-looplet-proof
-```
+The installed package includes its files.
+You do not need a repository checkout or a model key.
 
 ## 1. Use the example cartridge
 
-Run this command from the repository root:
+Run these commands in your project directory.
+Use new paths for the generated demo and the copied cartridge:
 
 ```bash
-cp -R examples/regression_demo/report_agent.cartridge report_agent.cartridge
+looplet-proof --out ./report-demo
+cp -R ./report-demo/harness-v2.cartridge ./report_agent.cartridge
 ```
 
+The first command runs the offline regression example using bundled files.
+The second copies its corrected cartridge into your project.
 The example includes the `done` tool and the full file structure.
 The sections below show the files that define the report and its test.
 
@@ -242,7 +243,7 @@ def test_report_contract(tmp_path):
     assert records[0].context.artifacts["observed_profit"] == 40
 ```
 
-Run the test from the repository root:
+Run the test from your project directory:
 
 ```bash
 python -m pip install pytest

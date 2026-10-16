@@ -1296,13 +1296,14 @@ def test_cli_eval_init_prints_runnable_next_steps(tmp_path, capsys, python_test)
     assert main(arguments) == 0
     output = capsys.readouterr()
     assert "Check: looplet eval check" in output.out
-    starter = definitions / "test_agent.py"
-    assert starter.exists() is python_test
+    starters = list(definitions.glob("test_agent*.py"))
+    assert len(starters) == int(python_test)
     assert main(["eval", "check", str(definitions), "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["valid"] is True
     if not python_test:
         return
     assert "Test: python -m pytest" in output.out
+    starter = starters[0]
     command = [sys.executable, "-m", "pytest", str(starter), "-q"]
     passing = subprocess.run(
         command, cwd=definitions.parent, capture_output=True, text=True, timeout=20
@@ -1319,7 +1320,9 @@ def test_cli_eval_init_prints_runnable_next_steps(tmp_path, capsys, python_test)
     assert "1 failed" in failing.stdout
 
 
-@pytest.mark.parametrize("relative", ["cases/hello.json", "eval_outcome.py", "test_agent.py"])
+@pytest.mark.parametrize(
+    "relative", ["cases/hello.json", "eval_outcome.py", "test_agent.py", "test_agent_custom.py"]
+)
 def test_cli_eval_init_python_preserves_existing_files(tmp_path, capsys, relative):
     from looplet.__main__ import main
 
@@ -1331,6 +1334,65 @@ def test_cli_eval_init_python_preserves_existing_files(tmp_path, capsys, relativ
     assert "Refusing to overwrite" in capsys.readouterr().err
     assert existing.read_text() == "user-owned content\n"
     assert [path for path in definitions.rglob("*") if path.is_file()] == [existing]
+
+
+@pytest.mark.parametrize("custom_names", [False, True])
+def test_cli_eval_init_adds_python_test_to_existing_definitions(tmp_path, capsys, custom_names):
+    import subprocess
+    import sys
+
+    from looplet.__main__ import main
+
+    definitions = tmp_path / "project with spaces" / "evals"
+    assert main(["eval", "init", str(definitions)]) == 0
+    capsys.readouterr()
+    if custom_names:
+        (definitions / "eval_outcome.py").rename(definitions / "eval_custom.py")
+        (definitions / "cases" / "hello.json").rename(definitions / "cases" / "custom.json")
+    preserved = {path: path.read_bytes() for path in definitions.rglob("*") if path.is_file()}
+
+    with patch(
+        "looplet.evals.load_evals", side_effect=AssertionError("Imported authored definitions")
+    ):
+        assert main(["eval", "init", str(definitions), "--python"]) == 0
+    assert "Test: python -m pytest" in capsys.readouterr().out
+    assert all(path.read_bytes() == content for path, content in preserved.items())
+    assert len(list(definitions.glob("test_agent*.py"))) == 1
+    assert {path.name for path in definitions.glob("eval_*.py")} == {
+        "eval_custom.py" if custom_names else "eval_outcome.py"
+    }
+    generated = {path: path.read_bytes() for path in definitions.rglob("*") if path.is_file()}
+    assert main(["eval", "init", str(definitions), "--python"]) == 1
+    assert "Refusing to overwrite" in capsys.readouterr().err
+    assert all(path.read_bytes() == content for path, content in generated.items())
+    completed = subprocess.run(
+        [sys.executable, "-m", "pytest", str(definitions), "-q"],
+        cwd=definitions.parent,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
+def test_cli_eval_init_python_collects_multiple_suites(tmp_path, capsys):
+    import subprocess
+    import sys
+
+    from looplet.__main__ import main
+
+    suites = [tmp_path / name / "evals" for name in ("agent_a", "agent_b")]
+    for definitions in suites:
+        assert main(["eval", "init", str(definitions), "--python"]) == 0
+    capsys.readouterr()
+    completed = subprocess.run(
+        [sys.executable, "-m", "pytest", *(str(path) for path in suites), "-q"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
 
 
 @pytest.mark.parametrize("json_output", [False, True])
@@ -1883,17 +1945,25 @@ def test_cli_human_table_aligns_long_names_and_metrics(tmp_path, monkeypatch, ca
     assert len(header) == len(row)
 
 
-def test_cli_run_unknown_case_returns_failure(tmp_path: Path, monkeypatch) -> None:
+@pytest.mark.parametrize("json_output", [False, True])
+@pytest.mark.parametrize("case_ids", [("typo",), ("make_greeting", "typo")])
+def test_cli_run_unknown_case_returns_failure(
+    tmp_path: Path, capsys, json_output, case_ids
+) -> None:
     cart = _make_cartridge(tmp_path)
-    monkeypatch.setenv("OPENAI_BASE_URL", "http://x")
-    import looplet.backends as _backends
-
-    monkeypatch.setattr(
-        _backends,
-        "make_backend",
-        lambda **kw: MockLLMBackend(responses=[]),
-    )
-    assert eval_cli(["run", str(cart), "--case", "typo"]) == 1
+    arguments = ["run", str(cart), "--judge-model", "unused-judge"]
+    for case_id in case_ids:
+        arguments.extend(["--case", case_id])
+    if json_output:
+        arguments.append("--json")
+    with patch("looplet.cli.build_cli_backend") as backend:
+        backend.side_effect = AssertionError("Constructed a provider for invalid case ids")
+        assert eval_cli(arguments) == 1
+    captured = capsys.readouterr()
+    assert "Unknown eval case id(s): typo; available: make_greeting" in captured.err
+    assert not captured.out
+    backend.assert_not_called()
+    assert not (tmp_path / ".looplet").exists()
 
 
 def test_cli_run_rejects_invalid_threshold_before_backend_setup(tmp_path: Path) -> None:

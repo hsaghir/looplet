@@ -315,7 +315,15 @@ def test_documented_report_contract(tmp_path: Path, monkeypatch) -> None:
     path = root / "docs/tutorial.md"
     blocks = re.findall(r'^```\w+ title="([^"]+)"\n(.*?)^```[ \t]*$', path.read_text(), re.M | re.S)
     cartridge = tmp_path / "report_agent.cartridge"
-    shutil.copytree(root / "examples/regression_demo/report_agent.cartridge", cartridge)
+    section = path.read_text().split("## 1. Use the example cartridge\n", 1)[1]
+    commands = re.search(r"```bash\n(.*?)```", section, re.S).group(1).strip().splitlines()
+    for command in commands:
+        arguments = shlex.split(command)
+        if arguments[0] == "looplet-proof":
+            arguments = [sys.executable, "-m", "looplet.examples.regression_demo", *arguments[1:]]
+        result = subprocess.run(arguments, cwd=tmp_path, capture_output=True, text=True, timeout=20)
+        assert result.returncode == 0, result.stdout + result.stderr
+    assert (cartridge / "cartridge.json").is_file()
     for name, code in blocks:
         if name.startswith("tests/") or name.startswith(".github/"):
             continue

@@ -60,25 +60,31 @@ Create a file-output example when you need a starter:
 python -m pip install pytest
 looplet eval init --python evals/
 looplet eval check evals/ --json
-python -m pytest evals/test_agent.py
+python -m pytest evals/
 ```
 
 ```text
 evals/
     cases/hello.json
     eval_outcome.py
-    test_agent.py
+    test_agent*.py
 ```
 
 `eval_outcome.py` contains a required grader and its outcome collector.
 It checks the content of `result.txt`, not the agent's claim about that file.
 Missing output fails the contract.
-`test_agent.py` runs a Python agent with fixed model responses, then checks the collected file.
+The test starter runs a Python agent with fixed model responses, then checks the collected file.
 It needs no model key or service.
 Replace its agent factory and backend with your own when you add your agent.
 Keep tools and collectors bound to the same workspace.
 Existing starter files are never overwritten.
 Edit the functions and case data directly as the contract grows.
+
+Current `master` uses a unique test filename so separate generated suites can be collected together.
+It also lets `eval init --python evals/` add a test to existing case and grader definitions without importing them.
+Existing test starters are refused.
+These changes are unreleased; published `0.4.0` uses `test_agent.py` and requires fresh starter paths.
+The directory-based pytest command above works with either filename layout.
 
 Omit `--python` to create definitions without a test.
 The [Quickstart](quickstart.md#3-check-the-answer) provides complete executable files.

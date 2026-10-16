@@ -12,7 +12,7 @@ Install it in your own project without cloning the repository:
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-python -m pip install "looplet @ git+https://github.com/hsaghir/looplet.git@8fe1196fe27160f737896029621b86c14c9b8a5d"
+python -m pip install "looplet @ git+https://github.com/hsaghir/looplet.git@8edba411c42721f09616448419203cd5d053cba1"
 ```
 
 Add `[openai]`, `[anthropic]`, or `[all]` after `looplet` for provider adapters in the same snapshot.

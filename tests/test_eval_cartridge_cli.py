@@ -1074,6 +1074,15 @@ def test_cli_replay_uses_fresh_workspace_without_provider(
         assert "captured responses" in output.out
         replay_trace = next((workspace / ".looplet" / "traces").iterdir())
     assert replay_trace.is_relative_to(workspace)
+    source_id = json.loads((original / "trajectory.json").read_text())["run_id"]
+    replayed = json.loads((replay_trace / "trajectory.json").read_text())
+    assert replayed["metadata"]["parent_run_id"] == source_id
+    assert replayed["metadata"]["source_case_id"] == "make_greeting"
+    saved = load_eval_run(replay_trace)
+    assert saved.case.id == "make_greeting"
+    assert saved.context.expected == case_data["expected"]
+    assert saved.context.artifacts == {"file_written": True, "expected_leaked": False}
+    assert saved.results == []
     assert "ORACLE_ONLY_FOR_GRADING" not in (replay_trace / "call_00_prompt.txt").read_text()
     assert (replay_trace / ".gitignore").read_text() == "*\n"
     assert snapshot == {
@@ -1081,6 +1090,113 @@ def test_cli_replay_uses_fresh_workspace_without_provider(
         for path in original.rglob("*")
         if path.is_file()
     }
+
+
+@pytest.mark.parametrize("outcome", ["unchanged", "changed_tool", "collector_error"])
+def test_cli_replay_collects_fresh_results_for_rescoring(tmp_path, monkeypatch, capsys, outcome):
+    import shlex
+
+    from looplet.__main__ import main
+
+    cart = _make_cartridge(tmp_path)
+    content = json.loads(_scripted()[0])["args"]["content"]
+    (cart / "evals" / "collect_outcome.py").write_text(
+        "def collect_output(state, runtime):\n"
+        "    from pathlib import Path\n"
+        '    root = Path(runtime["project_root"])\n'
+        '    return {"file_contents": (root / "greeting.py").read_text()}\n'
+    )
+    (cart / "evals" / "eval_correctness.py").write_text(
+        f'def eval_output(ctx):\n    return ctx.artifacts["file_contents"] == {content!r}\n'
+    )
+    original = run_cartridge_evals(
+        cart, llm=MockLLMBackend(_scripted()), output_dir=tmp_path / "original"
+    )[0]
+    EvalReport.from_records([original]).assert_passed()
+    if outcome == "changed_tool":
+        implementation = cart / "tools" / "write_file" / "execute.py"
+        implementation.write_text(
+            _WRITE_EXEC.replace("target.write_text(content)", 'target.write_text("changed result")')
+        )
+    elif outcome == "collector_error":
+        (cart / "evals" / "collect_outcome.py").write_text(
+            'def collect_output(state, runtime):\n    raise RuntimeError("fresh collection failed")\n'
+        )
+    monkeypatch.setattr(
+        "looplet.backends.make_backend", lambda **kwargs: pytest.fail("no provider")
+    )
+    capsys.readouterr()
+    workspace = tmp_path / "replay workspace"
+    assert (
+        main(
+            [
+                "replay",
+                str(original.directory),
+                "--cartridge",
+                str(cart),
+                "--workspace",
+                str(workspace),
+                "--require-completed",
+            ]
+        )
+        == 0
+    )
+    output = capsys.readouterr()
+    command = next(
+        line.strip().removeprefix("Grade: ")
+        for line in output.out.splitlines()
+        if line.strip().startswith("Grade: ")
+    )
+    replayed = load_eval_run(next((workspace / ".looplet" / "traces").iterdir()))
+    assert replayed.context.expected == original.context.expected
+    if outcome == "collector_error":
+        assert "file_contents" not in replayed.context.artifacts
+        assert any(
+            result.name == "collector:collect_output" and result.label == "error"
+            for result in replayed.results
+        )
+    else:
+        assert replayed.context.artifacts["file_contents"] == (
+            "changed result" if outcome == "changed_tool" else content
+        )
+        assert replayed.results == []
+    assert main(shlex.split(command)[1:]) == (0 if outcome == "unchanged" else 1)
+    report = json.loads(capsys.readouterr().out)
+    assert report["passed"] is (outcome == "unchanged")
+    assert report["valid"] is (outcome != "collector_error")
+    assert report["cases"][0]["id"] == "make_greeting"
+
+
+@pytest.mark.parametrize("skill_file", [False, True])
+def test_cli_replay_explains_skill_bundle_format(tmp_path, monkeypatch, capsys, skill_file):
+    from looplet.__main__ import main
+
+    bundle = Path(__file__).parent / "fixtures" / "coder_skill_bundle"
+    monkeypatch.setattr("looplet.bundles.load_skill_bundle", lambda *args: pytest.fail("no import"))
+    workspace = tmp_path / "replayed"
+    assert (
+        main(
+            [
+                "replay",
+                str(tmp_path / "capture"),
+                "--cartridge",
+                str(bundle / "SKILL.md" if skill_file else bundle),
+                "--workspace",
+                str(workspace),
+                "--task",
+                "Review this repository",
+                "--json",
+            ]
+        )
+        == 1
+    )
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert "not skill bundles" in output.err
+    assert "load_skill_bundle() with replay_loop()" in output.err
+    assert "#replay-skill-bundles" in output.err
+    assert "cartridge not found" not in output.err
+    assert not workspace.exists()
 
 
 def test_cli_replay_executes_changed_tools(tmp_path, monkeypatch, capsys):

@@ -21,7 +21,8 @@ There are two runnable file formats:
 - a **skill bundle** is an executable packaged skill with a Python entrypoint.
 
 Use `new`, `run`, `inspect`, and `eval`; add `replay` when comparing captured responses. `run` detects either
-format; `inspect` defaults to cartridge declarations, bundle metadata, or a saved
+format; shell `replay` and `eval run` accept cartridges only.
+`inspect` defaults to cartridge declarations, bundle metadata, or a saved
 trace without importing authored agent code. The formats remain distinct.
 Default help shows the main workflow. `--help-all` reveals advanced
 commands and compatibility aliases; their individual help remains available.
@@ -135,11 +136,58 @@ looplet replay eval-runs/run-001/hello --cartridge ./agent.cartridge \
 ```
 
 Saved cases supply agent-visible task data and seed files; grader-only expectations are not forwarded to the agent.
+Replay reruns the selected cartridge's collectors against the new workspace.
+It saves a new eval record with those fresh artifacts, the saved case, and grader-only expectations.
+It does not copy old collected artifacts or run graders automatically.
+Run the printed `Grade:` command to assess the new record with the cartridge's graders.
+With `--json`, use the returned `trace_dir` as the input to `looplet eval <trace_dir> --evals ./agent.cartridge/evals --json`.
+The new trajectory records `parent_run_id` and `source_case_id`; raw traces with a trajectory record only the parent link.
+Saved expectations remain private grading evidence, not a protected oracle against tools with unrestricted filesystem access.
 Raw traces need `--task` because they may not preserve the task.
 `--task` replaces the saved agent task with the supplied goal; `--max-steps` overrides the cartridge budget.
 Use only trusted cartridges: loading imports authored code, and tools, hooks, networks, and other effects execute again.
 A fresh directory is not an operating-system sandbox, checkpoint restoration, or a guarantee of identical results.
 Authored tools and resources may contact services even though replay does not construct the original provider backend.
+
+### Replay skill bundles
+
+Shell `replay --cartridge` does not accept skill bundles, even though `run` and `inspect` support both formats.
+Use the public Python replay function with a fresh bundle preset instead:
+
+```python
+from pathlib import Path
+
+from looplet import RunResult, replay_loop
+from looplet.bundles import SkillRuntime, load_skill_bundle
+
+workspace = Path("replay-workspaces/bundle-001")
+workspace.mkdir(parents=True, mode=0o700)
+bundle = load_skill_bundle("skills/coder")
+runtime = SkillRuntime(
+  workspace=workspace,
+  max_steps=20,
+  options={"require_tests": False, "use_native_tools": True},
+)
+with bundle.import_context(), bundle.build_preset(runtime) as preset:
+  for step in replay_loop(
+    "bundle-trace",
+    tools=preset.tools,
+    state=preset.state,
+    hooks=preset.hooks,
+    config=preset.config,
+    task={"description": "Review this repository"},
+  ):
+    print(step.pretty())
+  result = RunResult.from_state(preset.state)
+  if not result.completed:
+    raise SystemExit(result.termination_reason)
+  print(result.output)
+```
+
+Replace the bundle path, capture path, task, and bundle-specific options with those from your original run.
+Match the captured tool protocol; this example uses native tools and disables the coder bundle's test-completion gate.
+The recipe runs fresh tools and hooks; it does not automatically save replay evidence or grade correctness.
+Use only trusted bundle code inside an appropriate operating-system sandbox.
 
 ## Build and run cartridges
 

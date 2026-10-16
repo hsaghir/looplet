@@ -143,7 +143,12 @@ Use `looplet replay` with an explicit trusted cartridge and a new workspace.
 The [CLI recipe](cli.md#replay-captured-responses) captures, inspects, and replays one agent without a model service.
 Saved eval cases supply their agent-visible task and seed files; raw traces require `--task`.
 The command records replay evidence separately and leaves the original capture unchanged.
+Saved-case replay reruns the cartridge's collectors and saves fresh artifacts with the original grader-only expectations and case.
+Human output prints a grading command; JSON output returns the new record's `trace_dir` for a separate `looplet eval` call.
+New trajectories link to the source through `parent_run_id` and, for saved cases, `source_case_id` metadata.
+Graders do not run automatically, and old collected artifacts are not reused as new observations.
 Fresh tool and hook effects still execute; it is not a sandbox or checkpoint restoration.
+Shell replay accepts cartridges only; use the [Python bundle recipe](cli.md#replay-skill-bundles) for skill bundles.
 
 `looplet show` and `replay_loop()` fail before rendering or execution when the
 evidence structures they consume are malformed. Replay also requires

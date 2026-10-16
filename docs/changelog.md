@@ -68,6 +68,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Saved-case replay preserves grader-only expectations, collects fresh outcome artifacts, and prints a separate grading command.
+- Replay trajectories record their source run and saved case identity without modifying original evidence.
+- Shell replay explains its cartridge-only format and links a tested Python recipe for skill bundles.
 - New saved evidence directories own wildcard Git ignore policies; existing policies are preserved, and guides describe reviewed summary exports.
 - Human eval output prints executable per-case inspection commands instead of leaving users to discover child trace paths.
 - `doctor` reports effective endpoint origins and configuration sources without URL credentials, paths, queries, or fragments.

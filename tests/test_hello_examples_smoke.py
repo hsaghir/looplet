@@ -50,6 +50,60 @@ def test_documented_shell_replay_works_without_provider(tmp_path):
     assert original == (tmp_path / "original-trace" / "trajectory.json").read_bytes()
 
 
+def test_documented_bundle_replay_works_without_provider(tmp_path, monkeypatch, capsys):
+    from looplet.__main__ import main
+
+    root = Path(__file__).resolve().parents[1]
+    guide = root / "docs" / "cli.md"
+    block = next(block for block in _python_blocks(guide) if "load_skill_bundle" in block)
+    shutil.copytree(
+        root / "tests" / "fixtures" / "coder_skill_bundle", tmp_path / "skills" / "coder"
+    )
+    original_workspace = tmp_path / "original-workspace"
+    original_workspace.mkdir()
+    monkeypatch.setattr(
+        "looplet.backends.make_backend", lambda **kwargs: pytest.fail("no provider")
+    )
+    monkeypatch.chdir(tmp_path)
+    assert (
+        main(
+            [
+                "run",
+                "skills/coder",
+                "Review this repository",
+                "--project-root",
+                str(original_workspace),
+                "--trace-dir",
+                "bundle-trace",
+                "--scripted-response",
+                '{"tool":"done","args":{"summary":"Reviewed"}}',
+                "--no-tests",
+                "--require-completed",
+                "--json",
+            ]
+        )
+        == 0
+    )
+    original = {
+        path.relative_to(tmp_path / "bundle-trace"): path.read_bytes()
+        for path in (tmp_path / "bundle-trace").rglob("*")
+        if path.is_file()
+    }
+    capsys.readouterr()
+    namespace = {"__name__": "__main__"}
+    exec(compile(block, str(guide), "exec"), namespace)
+    assert namespace["result"].completed
+    assert namespace["result"].output["summary"] == "Reviewed"
+    assert namespace["runtime"].workspace == Path("replay-workspaces/bundle-001")
+    assert {
+        path.relative_to(tmp_path / "bundle-trace"): path.read_bytes()
+        for path in (tmp_path / "bundle-trace").rglob("*")
+        if path.is_file()
+    } == original
+    with pytest.raises(FileExistsError):
+        exec(compile(block, str(guide), "exec"), {"__name__": "__main__"})
+
+
 def test_documented_summary_omits_private_evidence(tmp_path, monkeypatch):
     from looplet import EvalContext, save_eval_run
 

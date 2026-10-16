@@ -300,6 +300,7 @@ def _run_cartridge(
     output: TextIO,
     backend_override: Any = None,
     task_override: dict[str, Any] | None = None,
+    replay_case: Any = None,
 ) -> int:
     json_output = getattr(args, "json", False)
     if json_output and getattr(args, "pretty", False):
@@ -346,6 +347,8 @@ def _run_cartridge(
         return 1
 
     trajectory_metadata: dict[str, str] = {}
+    if replay_case is not None:
+        trajectory_metadata["source_case_id"] = replay_case.id
     parent_trace = getattr(args, "parent_trace", None)
     if parent_trace is not None:
         if getattr(args, "no_trace", False):
@@ -390,6 +393,7 @@ def _run_cartridge(
             print(_red(f"error: cannot prepare trace output: {exc}"), file=sys.stderr)
             return 1
 
+    replay_hook = None
     try:
         scripted_responses = getattr(args, "scripted_response", None)
         if backend_override is not None:
@@ -402,6 +406,17 @@ def _run_cartridge(
             backend = MockLLMBackend(responses=scripted_responses)
         else:
             backend = _build_backend()
+        if replay_case is not None:
+            from looplet.evals import EvalHook, load_cartridge_evals  # noqa: PLC0415
+
+            definitions = load_cartridge_evals(
+                workspace_path,
+                runtime={"project_root": str(effective_project_root)},
+                strict=True,
+            )
+            replay_hook = EvalHook(
+                evaluators=[], collectors=definitions.collectors, expected=replay_case.expected
+            )
         preset = cartridge_to_preset(str(workspace_path), runtime=runtime)
     except Exception as exc:
         print(_red(f"error: cartridge load failed: {exc}"), file=sys.stderr)
@@ -430,6 +445,9 @@ def _run_cartridge(
     hooks = []
     if sink is not None:
         hooks.append(sink.trajectory_hook())
+    if replay_hook is not None:
+        preset.hooks = [hook for hook in preset.hooks if not isinstance(hook, EvalHook)]
+        hooks.append(replay_hook)
     pretty = None
     if getattr(args, "pretty", False) and not args.quiet:
         from looplet.cli._pretty import PrettyPrinter  # noqa: PLC0415
@@ -484,6 +502,15 @@ def _run_cartridge(
         try:
             if sink is not None:
                 saved_trace_dir = sink.flush()
+                if replay_hook is not None:
+                    from looplet.evals import save_eval_run  # noqa: PLC0415
+
+                    save_eval_run(
+                        saved_trace_dir,
+                        recorder=sink.trajectory_hook(),
+                        eval_hook=replay_hook,
+                        case=replay_case,
+                    )
         except Exception as exc:
             print(_red(f"error: could not save trace: {exc}"), file=sys.stderr)
             trace_failed = True
@@ -538,6 +565,20 @@ def _run_cartridge(
         print(json.dumps(final_data, indent=2, default=str)[:2000])
     if saved_trace_dir is not None:
         print(f"\n  Trace: {saved_trace_dir}")
+        if replay_hook is not None and (workspace_path / "evals").is_dir():
+            print(
+                "  Grade: "
+                + shlex.join(
+                    [
+                        "looplet",
+                        "eval",
+                        str(saved_trace_dir),
+                        "--evals",
+                        str(workspace_path / "evals"),
+                        "--json",
+                    ]
+                )
+            )
     return completion_exit_code(result, require_completed=getattr(args, "require_completed", False))
 
 
@@ -556,6 +597,14 @@ def cmd_replay(args: argparse.Namespace) -> int:
                 raise ValueError("replay workspace already exists; choose a new --workspace path")
             workspace = workspace.resolve()
             if not (cartridge / "cartridge.json").is_file():
+                if (cartridge / "SKILL.md").is_file() or (
+                    cartridge.is_file() and cartridge.name == "SKILL.md"
+                ):
+                    raise ValueError(
+                        "shell replay supports cartridges, not skill bundles. "
+                        "Use load_skill_bundle() with replay_loop() in Python; "
+                        "see https://hsaghir.com/looplet/cli/#replay-skill-bundles"
+                    )
                 raise ValueError(f"cartridge not found: {cartridge}")
             if args.max_steps is not None and args.max_steps < 1:
                 raise ValueError("--max-steps must be positive")
@@ -592,7 +641,7 @@ def cmd_replay(args: argparse.Namespace) -> int:
             quiet=args.quiet,
             pretty=False,
             require_completed=args.require_completed,
-            parent_trace=None,
+            parent_trace=trace if (trace / "trajectory.json").is_file() else None,
             scripted_response=None,
         )
         return _run_cartridge(
@@ -600,6 +649,7 @@ def cmd_replay(args: argparse.Namespace) -> int:
             output=output,
             backend_override=_ReplayLLMBackend(calls),
             task_override=task,
+            replay_case=cases[0] if cases else None,
         )
 
 
@@ -695,6 +745,7 @@ def add_subparsers(sub: "argparse._SubParsersAction") -> None:
         help="Replay captured model responses with a cartridge and fresh workspace",
         description=(
             "Use captured model responses without constructing a provider backend. "
+            "Shell replay supports cartridges only; skill bundles use Python replay_loop(). "
             "Trusted cartridge code, tools, hooks, and network effects execute again. "
             "This is not checkpoint restoration or an operating-system sandbox."
         ),

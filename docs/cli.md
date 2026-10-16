@@ -108,6 +108,12 @@ directory. JSON output contains the parsed `trajectory.json` object and
 Missing or null timings do not contribute to human timing totals; JSON output
 and the stored evidence retain their original values.
 
+Unreleased builds also print the complete recorded result under `result:` for completed runs.
+Rejected completions and incomplete runs have no final-result section.
+Both `show` and trace `inspect` use this view.
+JSON output and saved files are unchanged.
+Inspect traces before sharing them; complete results may contain sensitive data.
+
 ### Replay captured responses
 
 This complete example needs no model service or API key after package installation:

@@ -224,6 +224,24 @@ def _render_show(trace_dir: Path, *, json_output: bool = False) -> int:
         for fm in modes:
             print(f"!! {fm}")
 
+    if term == "done" and traj.get("steps"):
+        terminal_step = traj["steps"][-1]
+        terminal_result = terminal_step.get("tool_result") or {}
+        final_output = terminal_result.get("data")
+        rejected = isinstance(final_output, dict) and final_output.get("rejected")
+        if (
+            final_output is not None
+            and not terminal_step.get("error")
+            and not terminal_result.get("error")
+            and not rejected
+        ):
+            print("\nresult:")
+            print(
+                final_output
+                if isinstance(final_output, str)
+                else json.dumps(final_output, indent=2)
+            )
+
     return 0
 
 

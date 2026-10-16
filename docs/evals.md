@@ -83,7 +83,8 @@ Edit the functions and case data directly as the contract grows.
 Current `master` uses a unique test filename so separate generated suites can be collected together.
 It also lets `eval init --python evals/` add a test to existing case and grader definitions without importing them.
 Existing test starters are refused.
-These changes are unreleased; published `0.4.0` uses `test_agent.py` and requires fresh starter paths.
+Generated runners also preserve case marks for pytest selection.
+These starter changes are unreleased; published `0.4.0` uses `test_agent.py` and requires fresh starter paths.
 The directory-based pytest command above works with either filename layout.
 
 Omit `--python` to create definitions without a test.
@@ -611,6 +612,9 @@ looplet eval cases show evals/ multiply_fix   # full JSON dump
 
 Use the same eval root as `eval init` and `eval check`, or pass a direct case directory or JSON/JSONL file.
 Browsing does not import graders. Listings preview the task description, goal, or notes in that order.
+
+Unreleased builds identify invalid case data by file and JSON entry number or JSONL line.
+Each case must be an object with an `id`.
 
 Run them with stock pytest. The shortest path uses two helpers, with no
 `pytest` import needed in your test file:

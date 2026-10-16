@@ -45,6 +45,11 @@ class TestEvalCase:
         with pytest.raises(ValueError, match="id"):
             EvalCase.from_dict({"task": {}})
 
+    @pytest.mark.parametrize("data", [None, 17, "id", [], True])
+    def test_non_object_raises_value_error(self, data) -> None:
+        with pytest.raises(ValueError, match="EvalCase must be an object"):
+            EvalCase.from_dict(data)
+
     def test_to_dict_omits_empty_optionals(self) -> None:
         c = EvalCase(id="bare", task={"description": "x"})
         d = c.to_dict()
@@ -113,6 +118,45 @@ class TestLoadCases:
         f.write_text("{not valid")
         with pytest.raises(ValueError, match="bad.json"):
             load_cases(f)
+
+    @pytest.mark.parametrize("suffix", ["json", "jsonl"])
+    @pytest.mark.parametrize(
+        "data, message",
+        [
+            (None, "EvalCase must be an object, got NoneType"),
+            (17, "EvalCase must be an object, got int"),
+            ("id", "EvalCase must be an object, got str"),
+            ({}, "EvalCase requires 'id'"),
+            ({"id": "broken", "task": []}, "EvalCase task must be an object"),
+        ],
+    )
+    def test_invalid_entry_reports_source(self, tmp_path: Path, suffix, data, message) -> None:
+        path = tmp_path / f"cases.{suffix}"
+        if suffix == "jsonl":
+            path.write_text('{"id": "valid"}\n# comment\n\n' + json.dumps(data) + "\n")
+            location = f"{path}:4:"
+        else:
+            path.write_text(json.dumps([{"id": "valid"}, data]))
+            location = f"{path}: entry 2:"
+        with pytest.raises(ValueError) as failure:
+            load_cases(path)
+        assert location in str(failure.value)
+        assert message in str(failure.value)
+
+    def test_invalid_single_object_reports_source(self, tmp_path: Path) -> None:
+        path = tmp_path / "case.json"
+        path.write_text(json.dumps({"id": "broken", "task": []}))
+        with pytest.raises(ValueError) as failure:
+            load_cases(path)
+        assert str(path) in str(failure.value)
+        assert "EvalCase task must be an object" in str(failure.value)
+
+    @pytest.mark.parametrize("separator", ["\u0085", "\u2028", "\u2029"])
+    def test_jsonl_preserves_unicode_in_strings(self, tmp_path: Path, separator) -> None:
+        path = tmp_path / "cases.jsonl"
+        goal = f"first{separator}second"
+        path.write_text(json.dumps({"id": "valid", "task": {"goal": goal}}, ensure_ascii=False))
+        assert load_cases(path)[0].task["goal"] == goal
 
     def test_save_case_to_dir_uses_id_as_filename(self, tmp_path: Path) -> None:
         c = EvalCase(id="foo_bar", task={"description": "x"})
@@ -234,6 +278,32 @@ class TestCasesCli:
     def test_ls_missing_path(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         rc = eval_cli(["cases", "ls", str(tmp_path / "nope")])
         assert rc == 1
+
+    @pytest.mark.parametrize("action", ["ls", "show", "check"])
+    @pytest.mark.parametrize("suffix, location", [("json", "entry 2"), ("jsonl", ":4:")])
+    def test_invalid_entry_reports_actionable_error(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], action, suffix, location
+    ) -> None:
+        definitions = tmp_path / "evals"
+        assert eval_cli(["init", str(definitions)]) == 0
+        capsys.readouterr()
+        path = definitions / "cases" / f"bad.{suffix}"
+        if suffix == "jsonl":
+            path.write_text('{"id": "valid"}\n# comment\n\nnull\n')
+        else:
+            path.write_text(json.dumps([{"id": "valid"}, None]))
+        arguments = (
+            ["check", str(definitions), "--json"]
+            if action == "check"
+            else ["cases", action, str(definitions)]
+        )
+        assert eval_cli(arguments) == 1
+        output = capsys.readouterr()
+        assert "Traceback" not in output.out + output.err
+        error = json.loads(output.out)["errors"][0] if action == "check" else output.out
+        assert str(path) in error
+        assert location in error
+        assert "EvalCase must be an object, got NoneType" in error
 
 
 class TestParametrizeCases:

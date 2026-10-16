@@ -1320,6 +1320,44 @@ def test_cli_eval_init_prints_runnable_next_steps(tmp_path, capsys, python_test)
     assert "1 failed" in failing.stdout
 
 
+def test_cli_eval_init_python_preserves_case_marks(tmp_path, capsys):
+    import subprocess
+    import sys
+
+    from looplet.__main__ import main
+
+    definitions = tmp_path / "evals"
+    assert main(["eval", "init", str(definitions), "--python"]) == 0
+    capsys.readouterr()
+    case_path = definitions / "cases" / "hello.json"
+    case = json.loads(case_path.read_text())
+    case["marks"] = ["smoke"]
+    case_path.write_text(json.dumps(case))
+    for selection, exit_code, expected in [
+        ("smoke", 0, "1 passed"),
+        ("not smoke", 5, "1 deselected"),
+    ]:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                str(definitions),
+                "-q",
+                "-m",
+                selection,
+                "-o",
+                "markers=smoke: Fast eval cases.",
+            ],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        assert completed.returncode == exit_code, completed.stdout + completed.stderr
+        assert expected in completed.stdout
+
+
 @pytest.mark.parametrize(
     "relative", ["cases/hello.json", "eval_outcome.py", "test_agent.py", "test_agent_custom.py"]
 )

@@ -425,7 +425,7 @@ class TestProvenanceSinkSmoke:
     def test_rebinding_before_run_and_reset_keep_the_current_capture(self, tmp_path):
         from looplet.provenance import _load_trace_calls
 
-        sink = ProvenanceSink(tmp_path, metadata={"parent_run_id": "parent"})
+        sink = ProvenanceSink(tmp_path, overwrite=True, metadata={"parent_run_id": "parent"})
         first_hook = sink.trajectory_hook()
         sink.wrap_llm(MockLLMBackend(responses=["unused"]))
         llm = sink.wrap_llm(MockLLMBackend(responses=["first", "second", "fresh"]))
@@ -448,6 +448,48 @@ class TestProvenanceSinkSmoke:
         assert len(second_hook.trajectory.llm_calls) == 1
         assert _load_trace_calls(tmp_path)[0]["response"] == "fresh"
         assert not (tmp_path / "call_01_response.txt").exists()
+
+    @pytest.mark.parametrize(
+        "filename", ["trajectory.json", "manifest.jsonl", "call_00_response.txt"]
+    )
+    def test_existing_evidence_requires_explicit_overwrite(self, tmp_path, filename):
+        evidence = tmp_path / filename
+        evidence.write_text("original evidence")
+
+        with pytest.raises(FileExistsError, match="overwrite=True"):
+            ProvenanceSink(tmp_path)
+
+        assert evidence.read_text() == "original evidence"
+
+    def test_flush_rechecks_destination_and_preserves_the_first_run(self, tmp_path):
+        first = ProvenanceSink(tmp_path)
+        second = ProvenanceSink(tmp_path)
+        first.trajectory_hook()
+        first.flush()
+        original = (tmp_path / "trajectory.json").read_bytes()
+        second.trajectory_hook()
+
+        with pytest.raises(FileExistsError, match="Trace already exists"):
+            second.flush()
+
+        assert (tmp_path / "trajectory.json").read_bytes() == original
+
+    def test_default_directory_is_unique_across_sinks_and_resets(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        sink = ProvenanceSink()
+        first_id = sink.trajectory_hook().trajectory.run_id
+        first = sink.flush()
+        assert sink.flush() == first
+        sink.reset()
+        second_id = sink.trajectory_hook().trajectory.run_id
+        second = sink.flush()
+        other = ProvenanceSink()
+        other.trajectory_hook()
+        third = other.flush()
+
+        assert len({first, second, third}) == 3
+        assert json.loads((first / "trajectory.json").read_text())["run_id"] == first_id
+        assert json.loads((second / "trajectory.json").read_text())["run_id"] == second_id
 
     def test_wrap_llm_and_flush(self, tmp_path: Path):
         sink = ProvenanceSink(dir=tmp_path / "run")

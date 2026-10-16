@@ -279,6 +279,8 @@ def cmd_describe(args: argparse.Namespace) -> int:
             print(_bold("runtime inspection required"))
             for name in report["runtime_required"]:
                 print(f"  {name}")
+        for warning in report["warnings"]:
+            print(_yellow(f"warning: {warning}"), file=sys.stderr)
         return 0
 
     try:
@@ -294,21 +296,24 @@ def cmd_describe(args: argparse.Namespace) -> int:
         from looplet.bundles import validate_preset_contract
 
         validation = validate_preset_contract(preset)
+        report = inspect_cartridge(
+            cartridge_path, include_sensitive=getattr(args, "include_sensitive", False)
+        )
+        warnings = [*report["warnings"], *validation.warnings]
         if getattr(args, "json", False):
-            report = inspect_cartridge(
-                cartridge_path, include_sensitive=getattr(args, "include_sensitive", False)
-            )
             report.update(
                 mode="runtime",
                 runtime_validated=validation.ok,
                 errors=validation.errors,
-                warnings=validation.warnings,
+                warnings=warnings,
                 tools=preset.tools.introspect()["tools"],
                 hooks=[{"name": type(hook).__name__} for hook in preset.hooks],
             )
             print(json.dumps(report, indent=2, default=str))
             return 0 if validation.ok else 1
         print(_dim("  runtime; authored code was executed to validate wiring"))
+        for warning in warnings:
+            print(_yellow(f"warning: {warning}"), file=sys.stderr)
         if not validation.ok:
             for error in validation.errors:
                 print(_red(f"error: {error}"), file=sys.stderr)

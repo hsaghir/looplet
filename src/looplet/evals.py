@@ -3068,7 +3068,12 @@ def _run_saved_evaluation(parsed: Namespace, *, output: TextIO) -> int:
     records: list[EvalRunRecord] = []
     names: list[str] = []
     load_failures: list[str] = []
-    for d in sorted(traces_root.iterdir()):
+    trace_dirs = (
+        [traces_root]
+        if (traces_root / "trajectory.json").is_file()
+        else sorted(traces_root.iterdir())
+    )
+    for d in trace_dirs:
         if d.is_dir() and (d / "trajectory.json").exists():
             try:
                 descriptor = read_artifact_descriptor(d, expected_kinds=("eval_run", "provenance"))

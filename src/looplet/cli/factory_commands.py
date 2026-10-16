@@ -23,6 +23,7 @@ import sys
 import time
 import uuid
 from pathlib import Path
+from shlex import quote
 from typing import Any, TextIO
 
 from looplet.bundled import bundled_cartridge_path
@@ -116,6 +117,12 @@ def cmd_new(args: argparse.Namespace) -> int:
             print(_red(f"error: {exc}"), file=sys.stderr)
             return 1
         print(f"scaffolded cartridge draft: {root}")
+        print(f"edit mission and workflow: {root / 'prompts' / 'system.md'}")
+        for name in dict.fromkeys(tools):
+            if name != "done":
+                print(f"implement schema and tool: {root / 'tools' / name}")
+        print(f"check wiring: looplet inspect {quote(str(root))} --mode runtime")
+        print("Wiring checks do not prove behavior. Add an outcome eval before release.")
         return 0
 
     if args.max_steps is not None and args.max_steps < 1:

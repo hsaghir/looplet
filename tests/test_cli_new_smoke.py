@@ -111,6 +111,30 @@ def test_explicit_bundle_declaration_modes_never_import_entrypoint(tmp_path, cap
         assert report["runtime_validated"] is False
 
 
+@pytest.mark.parametrize("mode", ["declaration", "runtime"])
+def test_inspection_distinguishes_unfinished_tools_from_valid_wiring(tmp_path, capsys, mode):
+    from looplet.cartridge.scaffold import scaffold_cartridge
+
+    root = scaffold_cartridge(tmp_path / "draft.cartridge", name="draft", tools=["lookup"])
+    implementation = root / "tools" / "lookup" / "execute.py"
+    assert main(["inspect", str(root), "--mode", mode, "--json"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["runtime_validated"] is (mode == "runtime")
+    assert report["readiness"] == "draft"
+    assert report["unfinished_tools"] == [str(implementation)]
+    assert any("Unimplemented scaffold tool" in warning for warning in report["warnings"])
+
+    implementation.write_text(
+        '"""Historical scaffold: implement lookup marker, not an unfinished body."""\n'
+        'def execute(ctx, **kwargs):\n    return {"owner": "platform"}\n'
+    )
+    assert main(["inspect", str(root), "--mode", mode, "--json"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["readiness"] == "not_assessed"
+    assert report["unfinished_tools"] == []
+    assert report["warnings"] == []
+
+
 def test_runtime_cartridge_json_redirects_authored_shutdown_output(tmp_path, capsys, monkeypatch):
     from looplet import minimal_preset
     from looplet.cartridge.scaffold import scaffold_cartridge
@@ -249,7 +273,12 @@ def test_new_offline_scaffolds_without_backend(tmp_path, monkeypatch, capsys) ->
     assert "Look up service owners" in (target / "prompts" / "system.md").read_text()
     assert (target / "tools" / "lookup" / "execute.py").is_file()
     assert (target / "tools" / "done" / "execute.py").is_file()
-    assert "scaffolded cartridge draft" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "scaffolded cartridge draft" in output
+    assert str(target / "prompts" / "system.md") in output
+    assert str(target / "tools" / "lookup") in output
+    assert "--mode runtime" in output
+    assert "do not prove behavior" in output
 
 
 def test_new_offline_preserves_existing_files(tmp_path, capsys) -> None:

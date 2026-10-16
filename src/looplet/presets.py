@@ -990,6 +990,7 @@ def minimal_preset(
     max_steps: int = 10,
     tools: list[ToolSpec] | None = None,
     system_prompt: str = "You are a helpful assistant.",
+    validate: bool = False,
 ) -> AgentPreset:
     """Minimal agent preset - bare loop with optional custom tools.
 
@@ -1003,6 +1004,7 @@ def minimal_preset(
         tools: Optional list of ToolSpec to register. If None,
             registers only a ``done`` tool.
         system_prompt: System prompt for the LLM.
+        validate: Check top-level tool argument types and enum choices.
 
     Example::
 
@@ -1012,7 +1014,7 @@ def minimal_preset(
                      parameters={"q": "str"}, execute=my_search),
         ])
     """
-    reg = tools_from(tuple(tools or []))
+    reg = tools_from(tuple(tools or []), validate=validate)
     # Always include done
     if "done" not in reg.tool_names:
         register_done_tool(reg)

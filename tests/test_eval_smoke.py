@@ -789,6 +789,44 @@ class TestEvalCliIntegrity:
 
         assert eval_cli([str(traces), "--evals", str(eval_file)]) == 0
 
+    @pytest.mark.parametrize("kind", ["provenance", "eval_run"])
+    @pytest.mark.parametrize("json_output", [False, True])
+    def test_single_trace_and_parent_share_assessment(
+        self, tmp_path: Path, capsys, kind, json_output
+    ):
+        from looplet import save_eval_run
+        from looplet.artifact_compat import write_artifact_descriptor
+
+        traces = self._trace(tmp_path)
+        run = traces / "one"
+        if kind == "eval_run":
+            save_eval_run(run, context=EvalContext(steps=[], stop_reason="done"))
+        else:
+            write_artifact_descriptor(run, kind="provenance", components=["trajectory"])
+        eval_file = tmp_path / "eval_completed.py"
+        eval_file.write_text("def eval_completed(ctx):\n    return ctx.completed\n")
+        options = ["--evals", str(eval_file), *(["--json"] if json_output else [])]
+
+        for source in (run, traces):
+            assert eval_cli([str(source), *options]) == 0
+            captured = capsys.readouterr()
+            if json_output:
+                report = json.loads(captured.out)
+                assert report["passed"] and report["valid"]
+                assert [case["id"] for case in report["cases"]] == ["one"]
+            else:
+                assert "1 trajectories" in captured.out
+
+    def test_single_corrupt_trace_fails_closed(self, tmp_path: Path, capsys):
+        traces = self._trace(tmp_path)
+        run = traces / "one"
+        (run / "trajectory.json").write_text("not json")
+        eval_file = tmp_path / "eval_completed.py"
+        eval_file.write_text("def eval_completed(ctx):\n    return ctx.completed\n")
+
+        assert eval_cli([str(run), "--evals", str(eval_file), "--json"]) == 1
+        assert "Invalid trajectory.json" in capsys.readouterr().err
+
     def test_accepts_mixed_provenance_and_eval_run_records(self, tmp_path: Path):
         from looplet import save_eval_run
         from looplet.artifact_compat import write_artifact_descriptor

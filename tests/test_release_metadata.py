@@ -20,7 +20,7 @@ def test_package_version_is_consistent_and_changelog_has_release() -> None:
 
     assert version == looplet.__version__
     assert f"## [{version}]" in (ROOT / "CHANGELOG.md").read_text()
-    assert f"checkout identifies as `{version}`" in readme
+    assert f"latest PyPI release is `{version}`" in readme
 
 
 def test_published_install_guidance_is_separate_from_source_version() -> None:
@@ -37,23 +37,24 @@ def test_published_install_guidance_is_separate_from_source_version() -> None:
     assert f"## [{version}]" in (ROOT / "CHANGELOG.md").read_text()
 
 
-def test_tutorial_install_references_use_one_immutable_revision() -> None:
-    revisions = []
+def test_tutorial_installs_use_the_current_published_version() -> None:
+    version = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["version"]
     for document in ("README.md", "docs/index.md", "docs/quickstart.md", "docs/install.md"):
+        content = (ROOT / document).read_text()
         references = re.findall(
-            r"looplet(?:\[openai\])? @ git\+https://github\.com/hsaghir/looplet\.git@([a-f0-9]{40})",
-            (ROOT / document).read_text(),
+            r'python -m pip install "looplet(?:\[[a-z,]+\])?==([0-9.]+)"', content
         )
-        assert references, f"Missing immutable tutorial install in {document}"
-        revisions.extend(references)
-    assert len(set(revisions)) == 1
+        assert references, f"Missing published tutorial install in {document}"
+        assert set(references) == {version}
+        assert "git+https://github.com/hsaghir/looplet" not in content
 
 
 def test_current_cli_uses_the_same_install_as_the_python_tutorial() -> None:
     cli = (ROOT / "docs" / "cli.md").read_text()
     install = (ROOT / "docs" / "install.md").read_text()
-    assert "single pinned source install" in cli
-    assert "shared pinned source install" in cli
+    assert "install.md#install-the-published-package" in cli
+    assert "shared pinned source install" not in cli
+    assert "source additions" not in cli
     assert "older pinned Quickstart snapshot" not in cli
     assert 'pip install -e ".[openai]"' not in cli
     assert "Clone the repository only when you want to change Looplet itself." in install

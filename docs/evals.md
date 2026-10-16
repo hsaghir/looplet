@@ -57,27 +57,34 @@ Each case separates agent-visible `task` data from grader-only `expected` data.
 Create a file-output example when you need a starter:
 
 ```bash
-looplet eval init evals/
+python -m pip install pytest
+looplet eval init --python evals/
 looplet eval check evals/ --json
+python -m pytest evals/test_agent.py
 ```
 
 ```text
 evals/
     cases/hello.json
     eval_outcome.py
+    test_agent.py
 ```
 
-The Python file contains a required grader and its outcome collector.
+`eval_outcome.py` contains a required grader and its outcome collector.
 It checks the content of `result.txt`, not the agent's claim about that file.
 Missing output fails the contract.
+`test_agent.py` runs a Python agent with fixed model responses, then checks the collected file.
+It needs no model key or service.
+Replace its agent factory and backend with your own when you add your agent.
+Keep tools and collectors bound to the same workspace.
 Existing starter files are never overwritten.
 Edit the functions and case data directly as the contract grows.
 
-For a Python agent, the next step is a pytest test that runs the agent and assesses its result.
+Omit `--python` to create definitions without a test.
 The [Quickstart](quickstart.md#3-check-the-answer) provides complete executable files.
 You can also check graders kept in an agent module with `looplet eval check first_loop.py`.
 `looplet eval run` expects a cartridge directory, not the standalone `evals/` directory created above.
-Creating and checking definitions does not create a Python execution adapter.
+`--python` writes an ordinary pytest example; it does not add a Python runner to the CLI.
 
 `eval check` accepts one file or a directory; saved cases are optional.
 It imports trusted Python definitions.
@@ -157,6 +164,7 @@ Policy hooks still run. The reference coder ships no implicit eval hook.
 
 The CLI saves each invocation under a unique `.looplet/evals/<cartridge>-<id>/` directory in the current directory.
 Human output prints the path; JSON reports it as `output_dir`.
+Human output also prints failed graders' explanations and details beside their case and grader names.
 Copy the printed per-case `Inspect:` commands to inspect individual traces; `output_dir` is their parent.
 Use `--out eval-runs/run-001` for an explicit path, or `--no-save` to disable evidence persistence.
 These options are mutually exclusive.
@@ -586,14 +594,17 @@ rather than exposing it to the agent.
 Browse the corpus from the CLI:
 
 ```bash
-looplet eval cases ls evals/cases/
+looplet eval cases ls evals/
 #   add_basic     [smoke      ] Create math_utils.add() with a regression test
 #   multiply_fix  [regression ] Fix the multiply bug in calc.py
 #
 #   2 case(s)
 
-looplet eval cases show evals/cases/ multiply_fix   # full JSON dump
+looplet eval cases show evals/ multiply_fix   # full JSON dump
 ```
+
+Use the same eval root as `eval init` and `eval check`, or pass a direct case directory or JSON/JSONL file.
+Browsing does not import graders. Listings preview the task description, goal, or notes in that order.
 
 Run them with stock pytest. The shortest path uses two helpers, with no
 `pytest` import needed in your test file:

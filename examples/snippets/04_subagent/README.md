@@ -20,7 +20,7 @@ It needs no model service:
 uv run python examples/snippets/04_subagent/async_demo.py
 ```
 
-The async example uses the source version of Looplet, not PyPI `0.4.0`.
+The async example requires Looplet `0.4.0` or newer.
 Both examples explicitly load and close their child presets.
 The loops remain ordinary Looplet loops.
 Use `run_sub_loop_async` for one async child.

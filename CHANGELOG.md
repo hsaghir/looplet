@@ -6,8 +6,12 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-16
+
 ### Added
 
+- `looplet eval init --python` creates a runnable pytest starter and prints validation and test commands.
+- Raw shell replay accepts `--seed-from` for an explicit starting input tree, preserving inputs and excluding Git and Looplet metadata.
 - `looplet replay` uses captured responses with a trusted cartridge and fresh workspace, preserving original evidence and excluding grader-only expectations.
 - `tools_from` and `minimal_preset` accept `validate=True` for top-level typed argument checks before tool effects.
 - `ProvenanceSink` chooses unique directories by default and requires `overwrite=True` to replace existing evidence.
@@ -68,6 +72,10 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Human cartridge eval reports print failed grader explanations and details beside case and grader identities.
+- `new` accepts the same model and endpoint overrides as run and eval without changing environment variables.
+- Case browsing accepts eval roots as well as direct case paths and previews `task.goal` when no description is provided.
+- Published `0.4.0` installs support the current tutorial and CLI without Git or source-only dependencies.
 - Shell replay restores saved tasks and defaults to recorded tool-step counts, including budget-stopped captures and multi-tool turns.
 - Run and eval commands share model and endpoint options without changing environment variables.
 - Saved-case replay preserves grader-only expectations, collects fresh outcome artifacts, and prints a separate grading command.
@@ -212,9 +220,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   while preserving legacy behavior. New graders should return a boolean or
   explicit `EvalResult(score=..., metrics=...)`.
 
-## [0.4.0] - 2026-08-28
+### Earlier 0.4.0 Changes
 
-### Added
+#### Added
 
 - `looplet-proof` runs the complete network-free failure-to-regression
   workflow from an installed wheel; its cartridge, collector, grader, and
@@ -225,7 +233,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - `looplet conform` now ships its schema-v2 fixtures in the wheel and checks
   both successful loads and required rejection cases without a source checkout.
 
-### Changed
+#### Changed
 
 - The public README now follows one Python-first adoption path, uses the
   installed proof as its primary action, and moves protocol and skill-bundle
@@ -249,7 +257,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   and `run-workspace` commands were removed; maintained scripts can regenerate
   current recordings when needed.
 
-### CLI
+#### CLI
 
 - Re-running `looplet migrate` on an already-current cartridge is now a true
   no-op and reports `already current` instead of claiming files were rewritten.
@@ -271,7 +279,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - `looplet eval run --json` emits the existing threshold and integrity verdict
   with per-case completion and grader results.
 
-### Fixed
+#### Fixed
 
 - Tool dispatch now preserves string arguments byte-for-byte, derives optional
   simple-schema parameters from callable defaults, and retains MCP JSON Schema

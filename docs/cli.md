@@ -29,8 +29,8 @@ commands and compatibility aliases; their individual help remains available.
 `run-cartridge` / `run-workspace`, `run-bundle`, `describe`, and `show` remain
 available when a script needs an explicit format.
 
-Unified `run`, `inspect`, `run-bundle`, and `new --offline` are source additions, not part of PyPI `0.3.0`.
-The single pinned source install in [Install](install.md#install-the-source-version) includes these commands and their options.
+Unified `run`, `inspect`, `run-bundle`, and `new --offline` are included in Looplet `0.4.0`.
+The [published install](install.md#install-the-published-package) includes these commands and their options.
 Add the provider extra when using a real model.
 
 ## Diagnose and inspect runs
@@ -110,7 +110,7 @@ and the stored evidence retain their original values.
 
 ### Replay captured responses
 
-This complete example needs no model service or API key after the source installation:
+This complete example needs no model service or API key after package installation:
 
 ```bash
 looplet new "Finish with a short summary" ./replay-demo.cartridge --offline
@@ -127,6 +127,19 @@ Choose unused paths when repeating this example; existing evidence and replay wo
 The final command uses recorded model responses and writes a separate trace under the new workspace's `.looplet/traces/` directory.
 Its JSON and `--require-completed` behavior match `run`.
 It does not grade correctness or modify the original capture.
+
+Raw captures do not contain a snapshot of the original workspace. Supply a reviewed starting input tree explicitly when tools need files:
+
+```bash
+looplet replay ./original-trace --cartridge ./agent.cartridge \
+  --workspace ./seeded-replay-workspace --seed-from ./starting-inputs
+```
+
+The new workspace must be outside the seed directory. Nested files, binary data, empty directories, and file permissions are copied without modifying the inputs.
+Git metadata, `.looplet` directories, and the selected trace and cartridge trees are excluded.
+Symlinks and special files in the included tree are rejected before cartridge loading.
+Choose agent-visible inputs only; this option does not reconstruct historical files or isolate tool effects.
+Saved eval cases already supply their seed files and reject `--seed-from` rather than mixing input sources.
 
 For a saved eval case, pass its individual case directory instead of a parent run directory:
 
@@ -207,6 +220,13 @@ looplet new \
   --tool run_tests
 ```
 
+Live creation accepts the same model and endpoint overrides as `run` and `eval run`:
+
+```bash
+looplet new "Inspect local inputs" ./local-agent.cartridge \
+  --model local-model --base-url http://localhost:11434/v1
+```
+
 For a draft with placeholder tools and no provider or API key:
 
 ```bash
@@ -239,7 +259,7 @@ looplet run ./agent.cartridge \
   --max-steps 20
 ```
 
-`run`, its explicit cartridge and bundle aliases, and `eval run` accept the same provider options:
+Live `new`, `run`, its explicit cartridge and bundle aliases, and `eval run` accept the same provider options:
 
 ```bash
 looplet run ./agent.cartridge "Inspect the current change" \
@@ -281,7 +301,7 @@ looplet run ./agent.cartridge "Inspect the change" --require-completed --json > 
 `--require-completed` returns nonzero for budget exhaustion, hook stops, or other incomplete results.
 It works in human and JSON modes, including the explicit cartridge and bundle commands.
 It checks completion, not correctness; use an outcome grader for that.
-The flag is included in the shared pinned source install, not PyPI `0.3.0`.
+The flag is included in Looplet `0.4.0`.
 
 `--project-root` (`--workspace`, `-w`) controls the directory available to
 project-aware tools. It
@@ -343,7 +363,9 @@ python -m pytest test_first_loop.py
 ```
 
 `eval check` imports trusted definitions and validates their shape; it does not run an agent.
-`eval init evals/` optionally creates plain grader, collector, and case files.
+`eval init --python evals/` creates plain grader, collector, case, and pytest files.
+Run the generated test with `python -m pytest evals/test_agent.py`.
+Omit `--python` to create definitions only.
 Use `load_evals("evals")` in your Python test to load those definitions.
 `eval run evals/` is not the next command: the runner below requires a cartridge.
 
@@ -422,10 +444,12 @@ Use `save_eval_run()` when preserving those inputs; see the [Quickstart](quickst
 ### Browse case data
 
 ```bash
-looplet eval cases ls evals/cases/
-looplet eval cases show evals/cases/ regression_42
+looplet eval cases ls evals/
+looplet eval cases show evals/ regression_42
 ```
 
+Both commands accept an eval root, a direct case directory, or a JSON/JSONL file without importing graders.
+Listings preview `task.description`, then `task.goal`, then case notes.
 Cases are JSON source data. Keep agent-visible task input under `task` and
 protected expectations in the top-level `expected` object.
 
@@ -504,5 +528,5 @@ searchable tags. Validate and run the output before distributing it.
   does not expose as JSON.
 
 Before `1.0`, command options and machine-readable fields may change in a minor
-release. For PyPI installations, pin `looplet>=0.3,<0.4`.
+release. For PyPI installations, pin `looplet>=0.4,<0.5`.
 Review the [changelog](changelog.md) before upgrading.

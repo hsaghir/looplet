@@ -890,6 +890,51 @@ def test_cli_run_json_emits_one_eval_report(tmp_path: Path, monkeypatch, capsys)
     }
 
 
+@pytest.mark.parametrize(
+    ("score", "label", "threshold", "required", "state"),
+    [
+        (0.25, None, 0.5, False, "threshold_fail"),
+        (0.25, None, 0.0, True, "explicit_fail"),
+        (None, "skipped", 0.5, True, "skipped"),
+        (None, "skipped", 0.5, False, None),
+        (None, "error", 0.5, False, "grader_error"),
+        (0.5, None, 0.5, False, None),
+        (1.0, "fail", 0.5, False, "explicit_fail"),
+        (1.0, "pass", 0.5, False, None),
+    ],
+)
+def test_cli_eval_human_failure_details_follow_policy(
+    tmp_path, monkeypatch, capsys, score, label, threshold, required, state
+):
+    import looplet.evals as evaluation
+    from looplet import EvalResult, eval_mark
+    from looplet.__main__ import main
+
+    cart = _make_cartridge(tmp_path)
+    load_original = evaluation.load_cartridge_evals
+
+    @eval_mark(*(["required"] if required else []))
+    def eval_policy(ctx):
+        return EvalResult(score=score, label=label, explanation="Policy diagnostic marker")
+
+    def eval_success(ctx):
+        return True
+
+    def load_definitions(*arguments, **keywords):
+        return load_original(*arguments, **keywords)._replace(graders=[eval_policy, eval_success])
+
+    monkeypatch.setattr(evaluation, "load_cartridge_evals", load_definitions)
+    monkeypatch.setattr(
+        "looplet.backends.make_backend", lambda **kwargs: MockLLMBackend(_scripted())
+    )
+    arguments = ["eval", "run", str(cart), "--no-save", "--threshold", str(threshold)]
+    assert main(arguments) == (1 if state is not None else 0)
+    output = capsys.readouterr().out
+    assert ("Policy diagnostic marker" in output) is (state is not None)
+    if state is not None:
+        assert f"make_greeting / eval_policy: {state}" in output
+
+
 @pytest.mark.parametrize("json_output", [False, True])
 def test_cli_run_routes_authored_output_without_changing_human_mode(
     tmp_path: Path, monkeypatch, capsys, json_output: bool
@@ -1237,6 +1282,112 @@ def test_cli_replay_executes_changed_tools(tmp_path, monkeypatch, capsys):
     assert (original / "workspace" / "greeting.py").read_text() == original_contents
 
 
+@pytest.mark.parametrize("python_test", [False, True])
+def test_cli_eval_init_prints_runnable_next_steps(tmp_path, capsys, python_test):
+    import subprocess
+    import sys
+
+    from looplet.__main__ import main
+
+    definitions = tmp_path / "project with spaces" / "evals"
+    arguments = ["eval", "init", str(definitions)]
+    if python_test:
+        arguments.append("--python")
+    assert main(arguments) == 0
+    output = capsys.readouterr()
+    assert "Check: looplet eval check" in output.out
+    starter = definitions / "test_agent.py"
+    assert starter.exists() is python_test
+    assert main(["eval", "check", str(definitions), "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["valid"] is True
+    if not python_test:
+        return
+    assert "Test: python -m pytest" in output.out
+    command = [sys.executable, "-m", "pytest", str(starter), "-q"]
+    passing = subprocess.run(
+        command, cwd=definitions.parent, capture_output=True, text=True, timeout=20
+    )
+    assert passing.returncode == 0, passing.stdout + passing.stderr
+    case_path = definitions / "cases" / "hello.json"
+    case = json.loads(case_path.read_text())
+    case["expected"]["content"] = "The grader must reject the observed hello output."
+    case_path.write_text(json.dumps(case))
+    failing = subprocess.run(
+        command, cwd=definitions.parent, capture_output=True, text=True, timeout=20
+    )
+    assert failing.returncode == 1, failing.stdout + failing.stderr
+    assert "1 failed" in failing.stdout
+
+
+@pytest.mark.parametrize("relative", ["cases/hello.json", "eval_outcome.py", "test_agent.py"])
+def test_cli_eval_init_python_preserves_existing_files(tmp_path, capsys, relative):
+    from looplet.__main__ import main
+
+    definitions = tmp_path / "evals"
+    existing = definitions / relative
+    existing.parent.mkdir(parents=True)
+    existing.write_text("user-owned content\n")
+    assert main(["eval", "init", str(definitions), "--python"]) == 1
+    assert "Refusing to overwrite" in capsys.readouterr().err
+    assert existing.read_text() == "user-owned content\n"
+    assert [path for path in definitions.rglob("*") if path.is_file()] == [existing]
+
+
+@pytest.mark.parametrize("json_output", [False, True])
+@pytest.mark.parametrize("save_evidence", [False, True])
+def test_cli_eval_exposes_failed_grader_explanations(
+    tmp_path, monkeypatch, capsys, json_output, save_evidence
+):
+    import looplet.evals as evaluation
+    from looplet import EvalResult, eval_mark
+    from looplet.__main__ import main
+
+    cart = _make_cartridge(tmp_path)
+    load_original = evaluation.load_cartridge_evals
+
+    @eval_mark("required")
+    def eval_validation(ctx):
+        return EvalResult(
+            score=0.0,
+            label="fail",
+            explanation="No validation result was collected",
+            details=["The host did not supply validation evidence."],
+        )
+
+    def eval_success(ctx):
+        return EvalResult(score=1.0, explanation="Passing grader detail")
+
+    def load_definitions(*arguments, **keywords):
+        return load_original(*arguments, **keywords)._replace(
+            graders=[eval_validation, eval_success]
+        )
+
+    monkeypatch.setattr(evaluation, "load_cartridge_evals", load_definitions)
+    monkeypatch.setattr(
+        "looplet.backends.make_backend", lambda **kwargs: MockLLMBackend(_scripted())
+    )
+    arguments = ["eval", "run", str(cart)]
+    if save_evidence:
+        arguments.extend(["--out", str(tmp_path / "records")])
+    else:
+        arguments.append("--no-save")
+    if json_output:
+        arguments.append("--json")
+    assert main(arguments) == 1
+    output = capsys.readouterr()
+    assert not output.err
+    assert "No validation result was collected" in output.out
+    assert "The host did not supply validation evidence." in output.out
+    if json_output:
+        report = json.loads(output.out)
+        assert report["passed"] is False
+        assert "Passing grader detail" in output.out
+    else:
+        assert "make_greeting" in output.out
+        assert "eval_validation" in output.out
+        assert "Passing grader detail" not in output.out
+
+
 @pytest.mark.parametrize("saved_case", [False, True])
 @pytest.mark.parametrize("original_budget", [1, 2])
 @pytest.mark.parametrize(
@@ -1381,6 +1532,210 @@ def test_cli_raw_replay_uses_saved_task_or_requires_override(
     else:
         assert "raw traces need --task" in output.err
         assert not workspace.exists()
+
+
+@pytest.mark.parametrize("layout", ["root", "cases", "file", "jsonl"])
+def test_cli_cases_browses_initialized_eval_paths(tmp_path, capsys, layout):
+    from looplet.__main__ import main
+
+    root = tmp_path / "evals"
+    assert main(["eval", "init", str(root)]) == 0
+    capsys.readouterr()
+    case_file = root / "cases/hello.json"
+    payload = json.loads(case_file.read_text())
+    (root / "eval_outcome.py").write_text("raise AssertionError('must not import graders')\n")
+    if layout == "root":
+        selected = root
+    elif layout == "cases":
+        selected = root / "cases"
+    elif layout == "file":
+        selected = case_file
+    else:
+        selected = tmp_path / "cases.jsonl"
+        selected.write_text(json.dumps(payload) + "\n")
+    assert main(["eval", "cases", "ls", str(selected)]) == 0
+    listing = capsys.readouterr().out
+    assert "hello" in listing
+    assert payload["task"]["goal"] in listing
+    assert main(["eval", "cases", "show", str(selected), "hello"]) == 0
+    shown = json.loads(capsys.readouterr().out)
+    assert shown["id"] == "hello"
+    assert shown["task"] == payload["task"]
+
+
+def test_cli_cases_eval_root_reports_duplicate_ids(tmp_path, capsys):
+    from looplet.__main__ import main
+
+    root = tmp_path / "evals"
+    assert main(["eval", "init", str(root)]) == 0
+    capsys.readouterr()
+    (root / "cases/duplicate.json").write_bytes((root / "cases/hello.json").read_bytes())
+    assert main(["eval", "cases", "ls", str(root)]) == 1
+    output = capsys.readouterr().out
+    assert "duplicate" in output.lower()
+    assert "hello" in output
+
+
+def test_cli_raw_replay_seeds_input_directory(tmp_path, monkeypatch, capsys):
+    from looplet.__main__ import main
+
+    source = tmp_path / "seed inputs"
+    cart = _make_cartridge(source)
+    (cart / "tools/write_file/execute.py").write_text(
+        _WRITE_EXEC.replace(
+            "    target = root / path",
+            '    content = (root / "inputs/source.txt").read_text() + content\n'
+            "    target = root / path",
+        )
+    )
+    (source / "inputs/empty").mkdir(parents=True)
+    (source / "inputs/source.txt").write_text("observed seed input\n")
+    (source / "inputs/data.bin").write_bytes(b"\x00\x80\xff")
+    (source / "inputs/data.bin").chmod(0o750)
+    for metadata in (".git", ".looplet"):
+        (source / metadata).mkdir()
+        (source / metadata / "private.txt").write_text("not a replay input")
+    original = source / "captured trace"
+    arguments = [
+        "run",
+        str(cart),
+        "Write greeting.py",
+        "--project-root",
+        str(source),
+        "--trace-dir",
+        str(original),
+        "--json",
+    ]
+    for response in _scripted():
+        arguments.extend(["--scripted-response", response])
+    assert main(arguments) == 0
+    capsys.readouterr()
+    expected = (source / "greeting.py").read_bytes()
+    (source / "greeting.py").unlink()
+    source_before = {
+        path.relative_to(source): path.read_bytes() for path in source.rglob("*") if path.is_file()
+    }
+    trace_before = {
+        path.relative_to(original): path.read_bytes()
+        for path in original.rglob("*")
+        if path.is_file()
+    }
+    monkeypatch.setattr(
+        "looplet.backends.make_backend", lambda **kwargs: pytest.fail("no provider")
+    )
+    fresh = tmp_path / "fresh replay"
+    assert (
+        main(
+            [
+                "replay",
+                str(original),
+                "--cartridge",
+                str(cart),
+                "--workspace",
+                str(fresh),
+                "--seed-from",
+                str(source),
+                "--json",
+            ]
+        )
+        == 0
+    )
+    assert json.loads(capsys.readouterr().out)["completed"]
+    assert (fresh / "greeting.py").read_bytes() == expected
+    assert (fresh / "inputs/data.bin").read_bytes() == b"\x00\x80\xff"
+    assert stat.S_IMODE((fresh / "inputs/data.bin").stat().st_mode) == stat.S_IMODE(
+        (source / "inputs/data.bin").stat().st_mode
+    )
+    assert (fresh / "inputs/empty").is_dir()
+    assert not (fresh / ".git").exists()
+    assert not (fresh / ".looplet/private.txt").exists()
+    assert not (fresh / original.name).exists()
+    assert not (fresh / cart.name).exists()
+    assert source_before == {
+        path.relative_to(source): path.read_bytes() for path in source.rglob("*") if path.is_file()
+    }
+    assert trace_before == {
+        path.relative_to(original): path.read_bytes()
+        for path in original.rglob("*")
+        if path.is_file()
+    }
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "missing",
+        "file",
+        "source_symlink",
+        "symlink_file",
+        "symlink_directory",
+        "fifo",
+        "nested_workspace",
+        "trace_source",
+        "cartridge_source",
+        "saved_case",
+    ],
+)
+def test_cli_replay_rejects_invalid_seed_before_authored_load(
+    tmp_path, monkeypatch, capsys, failure
+):
+    from looplet import ProvenanceSink
+    from looplet.__main__ import main
+
+    cart = _make_cartridge(tmp_path)
+    sink = ProvenanceSink(tmp_path / "trace")
+    sink.wrap_llm(MockLLMBackend(_scripted())).generate("captured response")
+    trace = sink.flush()
+    source = tmp_path / "seed"
+    fresh = tmp_path / "fresh"
+    if failure == "file":
+        source.write_text("not a directory")
+    elif failure == "source_symlink":
+        source.symlink_to(tmp_path / "outside", target_is_directory=True)
+    elif failure == "trace_source":
+        source = trace
+    elif failure == "cartridge_source":
+        source = cart
+    elif failure != "missing":
+        source.mkdir()
+        if failure.startswith("symlink_"):
+            (source / "linked").symlink_to(
+                tmp_path / "outside", target_is_directory=failure == "symlink_directory"
+            )
+        elif failure == "fifo":
+            if not hasattr(os, "mkfifo"):
+                pytest.skip("FIFOs are not supported")
+            os.mkfifo(source / "pipe")
+        elif failure == "nested_workspace":
+            fresh = source / "nested"
+        elif failure == "saved_case":
+            (trace / "case.json").write_text(json.dumps(_CASE))
+    monkeypatch.setattr(
+        "looplet.cartridge_to_preset", lambda *args, **kwargs: pytest.fail("no authored load")
+    )
+    assert (
+        main(
+            [
+                "replay",
+                str(trace),
+                "--cartridge",
+                str(cart),
+                "--workspace",
+                str(fresh),
+                "--task",
+                "Write greeting.py",
+                "--seed-from",
+                str(source),
+                "--json",
+            ]
+        )
+        == 1
+    )
+    output = capsys.readouterr()
+    assert not output.out
+    assert "cannot prepare replay" in output.err
+    assert "Traceback" not in output.err
+    assert not fresh.exists()
 
 
 @pytest.mark.parametrize(

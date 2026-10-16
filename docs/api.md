@@ -75,7 +75,7 @@ It is not another execution engine.
 You still supply the backend and task mapping explicitly.
 You can inspect or change the objects before the run.
 
-The source version has two result helpers that are not in PyPI `0.3.0`:
+Looplet `0.4.0` includes two result helpers:
 
 | API | Meaning |
 | --- | --- |
@@ -141,7 +141,7 @@ Use `tools_from([...], validate=True)` or `minimal_preset(..., validate=True)` f
 These options check top-level types, nullability, and enum choices before effects.
 They reject invalid values rather than coercing them.
 Nested schemas and other constraints remain tool-owned.
-These options are in the shared source install, not PyPI `0.3.0`.
+These options are included in Looplet `0.4.0`.
 
 The base registry checks argument names and required fields, not full types or every JSON Schema keyword.
 Without `validate=True`, type hints describe the model's schema but do not enforce values at dispatch.
@@ -303,7 +303,7 @@ They use the same loop.
 | `run_cartridge_evals(...)` | Own collection and grading for a cartridge's self-tests, replacing embedded eval observers. |
 | `save_eval_run(...)` / `load_eval_run(...)` | Persist and restore one self-contained eval record. |
 
-Use `looplet eval init` for a plain-file starter and `looplet eval check` for trusted definition validation.
+Use `looplet eval init --python` for a runnable pytest starter and `looplet eval check` for trusted definition validation.
 Definition validation does not execute the agent or prove its correctness.
 Custom hosts can use `eval_discover()`, `eval_run()`, and `eval_run_batch()`.
 For pytest, use `parametrize_cases()` and `assert_evals_pass()` as needed.

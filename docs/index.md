@@ -86,11 +86,11 @@ The loop still yields steps, so your code can inspect each result and stop befor
 
 ## Start with one loop
 
-Use this source install for the Python examples and CLI commands in these guides.
+Install the published package for the Python examples and CLI commands in these guides.
 Run it inside a virtual environment:
 
 ```bash
-python -m pip install "looplet @ git+https://github.com/hsaghir/looplet.git@9de0299ad20227b2da89e9d09986f26b704c64ca"
+python -m pip install "looplet==0.4.0"
 ```
 
 See the [Quickstart](quickstart.md) for environment setup and the same agent's tests.
@@ -182,7 +182,7 @@ They are not required for the first example.
 
 ## Check a tool change
 
-Run `looplet-proof` after the source install to check the complete regression example.
+Run `looplet-proof` after installation to check the complete regression example.
 
 <div class="proof-terminal" markdown>
 

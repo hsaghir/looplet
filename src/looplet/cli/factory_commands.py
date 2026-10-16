@@ -19,6 +19,7 @@ import argparse
 import json
 import os
 import shlex
+import shutil
 import sys
 import time
 import uuid
@@ -27,7 +28,13 @@ from shlex import quote
 from typing import Any, TextIO
 
 from looplet.bundled import bundled_cartridge_path
-from looplet.cli import add_run_options, completion_exit_code, completion_payload, execution_output
+from looplet.cli import (
+    add_backend_options,
+    add_run_options,
+    completion_exit_code,
+    completion_payload,
+    execution_output,
+)
 
 
 def _bold(s: str) -> str:
@@ -129,7 +136,12 @@ def cmd_new(args: argparse.Namespace) -> int:
         print(_red("error: --max-steps must be positive"), file=sys.stderr)
         return 1
     try:
-        backend = _build_backend()
+        backend_options = {
+            name: value
+            for name in ("model", "base_url")
+            if (value := getattr(args, name, None)) is not None
+        }
+        backend = _build_backend(**backend_options)
     except Exception as exc:
         print(_red(f"error: {exc}"), file=sys.stderr)
         return 1
@@ -588,6 +600,27 @@ def _run_cartridge(
     return completion_exit_code(result, require_completed=getattr(args, "require_completed", False))
 
 
+def _replay_seed_paths(source: Path, *, excluded: tuple[Path, ...]) -> list[tuple[Path, Path]]:
+    paths: list[tuple[Path, Path]] = []
+
+    def visit(directory: Path) -> None:
+        for entry in sorted(directory.iterdir()):
+            if entry.name in {".git", ".looplet"} or entry in excluded:
+                continue
+            if entry.is_symlink():
+                raise ValueError(f"replay seed inputs cannot contain symbolic links: {entry}")
+            if entry.is_dir():
+                paths.append((entry, entry.relative_to(source)))
+                visit(entry)
+            elif entry.is_file():
+                paths.append((entry, entry.relative_to(source)))
+            else:
+                raise ValueError(f"replay seed inputs must be files or directories: {entry}")
+
+    visit(source)
+    return paths
+
+
 def cmd_replay(args: argparse.Namespace) -> int:
     """Replay captured responses with a trusted cartridge in a fresh workspace."""
     from looplet.evals import load_cases, seed_case_workspace  # noqa: PLC0415
@@ -659,7 +692,32 @@ def cmd_replay(args: argparse.Namespace) -> int:
                 )
                 if not task:
                     raise ValueError("raw traces need --task when the capture has no saved task")
+            seed_paths: list[tuple[Path, Path]] = []
+            seed_from = getattr(args, "seed_from", None)
+            if seed_from is not None:
+                if cases:
+                    raise ValueError(
+                        "--seed-from is for raw traces; saved cases supply their own seed files"
+                    )
+                source = seed_from.expanduser()
+                if source.is_symlink() or not source.is_dir():
+                    raise ValueError(
+                        "--seed-from must name an existing directory, not a symbolic link"
+                    )
+                source = source.resolve()
+                if workspace.is_relative_to(source):
+                    raise ValueError("replay workspace must be outside the seed directory")
+                if source.is_relative_to(trace) or source.is_relative_to(cartridge):
+                    raise ValueError("replay seed inputs must be outside the trace and cartridge")
+                seed_paths = _replay_seed_paths(source, excluded=(trace, cartridge))
             workspace.mkdir(parents=True, mode=0o700)
+            for source_path, relative in seed_paths:
+                target = workspace / relative
+                if source_path.is_dir():
+                    target.mkdir(parents=True, exist_ok=True)
+                else:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(source_path, target)
             if cases:
                 seed_case_workspace(cases[0], workspace)
         except (OSError, ValueError) as exc:
@@ -759,6 +817,7 @@ def add_subparsers(sub: "argparse._SubParsersAction") -> None:
         action="append",
         help="Pre-scaffold a tool by name (repeatable). When omitted, the agent picks tools from the brief.",
     )
+    add_backend_options(new_p)
     new_p.add_argument(
         "--max-steps",
         type=int,
@@ -793,6 +852,11 @@ def add_subparsers(sub: "argparse._SubParsersAction") -> None:
     )
     replay_p.add_argument(
         "--workspace", type=Path, required=True, help="New workspace path; must not exist"
+    )
+    replay_p.add_argument(
+        "--seed-from",
+        type=Path,
+        help="Copy raw replay inputs from a trusted directory; excludes Git and Looplet metadata",
     )
     replay_p.add_argument(
         "--task", help="Override the saved task; required only when no task was captured"

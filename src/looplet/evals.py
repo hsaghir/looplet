@@ -835,7 +835,8 @@ def load_cases(path: str | Path) -> list["EvalCase"]:
       case dicts;
     * a single ``.jsonl`` file with one case dict per line;
     * a directory containing any mix of ``*.json`` / ``*.jsonl`` files
-      (sorted by file name, then by their internal order).
+            (sorted by file name, then by their internal order);
+        * an eval definitions root containing a ``cases/`` directory.
 
     Cases are returned in deterministic order so pytest IDs are stable.
     Raises :class:`FileNotFoundError` if ``path`` doesn't exist and
@@ -845,6 +846,8 @@ def load_cases(path: str | Path) -> list["EvalCase"]:
     if not root.exists():
         raise FileNotFoundError(f"No such case path: {root}")
 
+    if root.is_dir() and (root / "cases").is_dir():
+        root = root / "cases"
     if root.is_file():
         files = [root]
     else:
@@ -2813,7 +2816,7 @@ def _filter_evals(
 # ── CLI runner ───────────────────────────────────────────────────
 
 
-def _init_eval_definitions(path: Path) -> list[Path]:
+def _init_eval_definitions(path: Path, *, python_test: bool = False) -> list[Path]:
     if path.exists() and not path.is_dir():
         raise ValueError(f"Eval directory is not a directory: {path}")
     sources = {
@@ -2844,6 +2847,53 @@ def _init_eval_definitions(path: Path) -> list[Path]:
             '    return {"content": content}\n'
         ),
     }
+    if python_test:
+        sources["test_agent.py"] = (
+            '"""Run a Python agent and check its independently collected output."""\n\n'
+            "import json\n"
+            "from pathlib import Path\n\n"
+            "import pytest\n\n"
+            "from looplet import (\n"
+            "    EvalHook,\n"
+            "    MockLLMBackend,\n"
+            "    load_evals,\n"
+            "    minimal_preset,\n"
+            "    seed_case_workspace,\n"
+            "    tool,\n"
+            ")\n\n\n"
+            "@pytest.mark.parametrize(\n"
+            '    "case", load_evals(Path(__file__).parent).cases, ids=lambda case: case.id\n'
+            ")\n"
+            "def test_agent(case, tmp_path):\n"
+            "    definitions = load_evals(\n"
+            '        Path(__file__).parent, runtime={"project_root": str(tmp_path)}\n'
+            "    )\n"
+            "    seed_case_workspace(case, tmp_path)\n\n"
+            '    @tool(description="Write the result in the project directory.")\n'
+            "    def write_result(content: str) -> dict:\n"
+            '        (tmp_path / "result.txt").write_text(content, encoding="utf-8")\n'
+            '        return {"written": True}\n\n'
+            '    @tool(description="Finish the task.")\n'
+            "    def done() -> dict:\n"
+            "        return {}\n\n"
+            "    grading = EvalHook(\n"
+            "        evaluators=definitions.graders,\n"
+            "        collectors=definitions.collectors,\n"
+            "        expected=case.expected,\n"
+            "    )\n"
+            "    backend = MockLLMBackend([\n"
+            '        json.dumps({"tool": "write_result", "args": {"content": "hello"}}),\n'
+            '        json.dumps({"tool": "done", "args": {}}),\n'
+            "    ])\n"
+            "    task = {\n"
+            '        key: value for key, value in case.task.items() if key not in {"files", "expected"}\n'
+            "    }\n"
+            "    with minimal_preset(tools=[write_result, done], max_steps=2, validate=True) as agent:\n"
+            "        agent.hooks.append(grading)\n"
+            "        result = agent.run_result(backend, task=task)\n"
+            "    assert result.completed\n"
+            "    grading.assessment().assert_passed()\n"
+        )
     targets = {
         _contained_child(path, relative, label="eval starter file"): content
         for relative, content in sources.items()
@@ -2938,17 +2988,28 @@ def _eval_definitions_cli(args: list[str]) -> int:
             else "Python file or eval directory (default: evals)"
         ),
     )
-    if action == "check":
+    if action == "init":
+        parser.add_argument(
+            "--python",
+            dest="python_test",
+            action="store_true",
+            help="Create a runnable pytest example with fixed model responses.",
+        )
+    else:
         parser.add_argument("--json", action="store_true", help="Emit one definition check report")
     parsed = parser.parse_args(args[1:])
     if action == "init":
         try:
-            files = _init_eval_definitions(parsed.path)
+            files = _init_eval_definitions(parsed.path, python_test=parsed.python_test)
         except (OSError, ValueError) as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
         for path in files:
             print(f"created {path}")
+        print(f"Check: looplet eval check {shlex.quote(str(parsed.path))}")
+        if parsed.python_test:
+            print("Install test dependency: python -m pip install pytest")
+            print(f"Test: python -m pytest {shlex.quote(str(parsed.path / 'test_agent.py'))}")
         return 0
 
     from looplet.cli import execution_output  # noqa: PLC0415
@@ -3397,6 +3458,28 @@ def _run_cartridge_evaluation(parsed: Namespace, *, output: TextIO) -> int:
             if row_number == 0:
                 print("-+-".join("-" * width for width in widths))
 
+        required_names = {
+            item["name"]
+            for item in report["grader_manifest"]
+            if "required" in item.get("marks", [])
+        }
+        printed_failure_details = False
+        for record in records:
+            for result in record.results:
+                required = result.name in required_names
+                state = _eval_result_state(result, required=required, threshold=parsed.threshold)
+                if not _eval_state_fails(state, required=required):
+                    continue
+                if not printed_failure_details:
+                    print("\nfailure details:")
+                    printed_failure_details = True
+                case_id = record.case.id if record.case is not None else "?"
+                print(f"  {case_id} / {result.name}: {state}")
+                if result.explanation:
+                    print(f"    {result.explanation}")
+                for detail in result.details:
+                    print(f"    {detail}")
+
     failed = not report["passed"]
     if parsed.json:
         print(json.dumps(report, indent=2), file=output)
@@ -3425,9 +3508,9 @@ def _cases_cli(args: list[str]) -> int:
     )
     sub = parser.add_subparsers(dest="action", required=True)
     p_ls = sub.add_parser("ls", help="List cases (one line per case).")
-    p_ls.add_argument("path", help="Case file or directory.")
+    p_ls.add_argument("path", help="Eval root, case directory, or case file.")
     p_show = sub.add_parser("show", help="Show a case in full.")
-    p_show.add_argument("path", help="Case file or directory.")
+    p_show.add_argument("path", help="Eval root, case directory, or case file.")
     p_show.add_argument(
         "case_id",
         nargs="?",
@@ -3456,7 +3539,9 @@ def _cases_cli(args: list[str]) -> int:
         for c in cases:
             marks = ",".join(c.marks) or "-"
             desc = textwrap.shorten(
-                (c.task.get("description") or c.notes or "").replace("\n", " "),
+                str(c.task.get("description") or c.task.get("goal") or c.notes or "").replace(
+                    "\n", " "
+                ),
                 width=60,
                 placeholder="...",
             )

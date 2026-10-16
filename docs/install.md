@@ -4,22 +4,21 @@ Looplet requires Python 3.11 or newer.
 The core package has no third-party runtime dependencies.
 Model provider adapters are optional extras.
 
-## Install the source version
+## Install the published package
 
-Use this immutable source snapshot for the [Quickstart](quickstart.md) and the CLI guide.
+Use Looplet `0.4.0` for the [Quickstart](quickstart.md) and the CLI guide.
 Install it in your own project without cloning the repository:
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-python -m pip install "looplet @ git+https://github.com/hsaghir/looplet.git@9de0299ad20227b2da89e9d09986f26b704c64ca"
+python -m pip install "looplet==0.4.0"
 ```
 
-Add `[openai]`, `[anthropic]`, or `[all]` after `looplet` for provider adapters in the same snapshot.
-This needs Git and network access during installation.
+Add `[openai]`, `[anthropic]`, or `[all]` before `==0.4.0` for provider adapters.
+Installation needs network access, but not Git.
 The fixed-response tutorial itself needs neither a model key nor a model service.
 This one install includes result helpers, typed-validation options, capture safeguards, and the unified CLI commands.
-PyPI `0.3.0` remains supported, but does not contain these additions.
 
 ## Develop Looplet
 
@@ -44,34 +43,27 @@ python -m pip install -e ".[openai]"
 
 Use `.[anthropic]` for Anthropic or `.[all]` for both adapters.
 
-## Install the published package
+## Choose provider extras
 
-Use a published package when you need a released version.
-The latest PyPI release is `0.3.0`.
-Use a source install for the current Quickstart and new APIs.
+The latest PyPI release is `0.4.0`.
 Run its install command inside a virtual environment.
 
 | Goal | Command |
 | --- | --- |
-| Core APIs or fixed model responses | `python -m pip install looplet` |
-| OpenAI or a compatible endpoint | `python -m pip install "looplet[openai]"` |
-| Anthropic | `python -m pip install "looplet[anthropic]"` |
-| Both provider adapters | `python -m pip install "looplet[all]"` |
+| Core APIs or fixed model responses | `python -m pip install "looplet==0.4.0"` |
+| OpenAI or a compatible endpoint | `python -m pip install "looplet[openai]==0.4.0"` |
+| Anthropic | `python -m pip install "looplet[anthropic]==0.4.0"` |
+| Both provider adapters | `python -m pip install "looplet[all]==0.4.0"` |
 
 Pin the minor version in your application:
 
 ```toml title="pyproject.toml"
-dependencies = ["looplet>=0.3,<0.4"]
+dependencies = ["looplet>=0.4,<0.5"]
 ```
 
 Before version `1.0`, a minor release can change an API incompatibly.
 Read the [changelog](changelog.md) before you change the minor version.
-Source-only features have a note in their API or command guide.
-
-The pinned source install is an interim path, not a new PyPI release.
-Keep it until a published version contains the tutorial APIs.
-After that release, replace the VCS dependency with its published version pin and rerun your tests.
-This guide does not publish a package or change release tags.
+The examples and CLI options in these guides are included in this release.
 
 ## Verify without a provider
 
@@ -196,7 +188,7 @@ looplet doctor
 | `--json` | Print a JSON report |
 | `--strict` | Return a non-zero exit code for warnings too |
 
-The source command-line interface shares backend selection across `doctor`, `new`, `run`, and `eval`.
+The command-line interface shares backend selection across `doctor`, `new`, `run`, and `eval`.
 It selects Anthropic if an Anthropic key is present.
 Otherwise, it selects OpenAI if an OpenAI key or compatible base URL is present.
 Set `LOOPLET_PROVIDER=openai` or `LOOPLET_PROVIDER=anthropic` to choose explicitly.
@@ -205,14 +197,13 @@ Automatic selection warns when Anthropic and OpenAI settings are both configured
 `doctor --strict` treats this ambiguity as a failed configuration check.
 An explicit provider choice removes the warning without changing stored credentials.
 
-These selection changes are not in PyPI `0.3.0`.
-That release has an OpenAI-only `doctor` command.
-See the [command-line guide](cli.md) for source-only features and older command names.
+Looplet `0.4.0` includes these selection rules for both providers.
+See the [command-line guide](cli.md) for options and older command names.
 
 ## Prepare a package release
 
-The source version is `0.4.0`; it is not yet the published PyPI version.
-Maintainers can qualify its distribution without publishing:
+Maintainers can qualify a distribution without publishing.
+Use the version declared in the selected revision:
 
 ```bash
 gh workflow run publish.yml --repo hsaghir/looplet --ref master -f version=0.4.0
@@ -222,7 +213,7 @@ A non-tag dispatch runs tests, builds distributions, and checks an installed whe
 It uploads build artifacts but does not publish to PyPI or create a GitHub release.
 Publication requires a matching release tag and the configured PyPI environment.
 Before tagging, update the versioned changelog and obtain release approval.
-Keep the source install above until the compatible package is available on PyPI.
+Publish only the qualified commit after its pull request has merged.
 
 ## Next
 

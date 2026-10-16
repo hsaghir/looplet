@@ -305,6 +305,7 @@ def _tools() -> BaseToolRegistry:
         "deny_reason",
         "completion_stop",
         "block_only",
+        "block_permission",
     ],
 )
 async def test_named_effects_conform_across_drivers_and_transports(
@@ -324,7 +325,8 @@ async def test_named_effects_conform_across_drivers_and_transports(
         "should_stop": ("should_stop", Stop("specific_stop")),
         "deny_reason": ("check_permission", Deny("specific denial")),
         "completion_stop": ("check_done", Stop("unsupported_completion_stop")),
-        "block_only": ("pre_dispatch", Block("unsupported_tool_block")),
+        "block_only": ("pre_dispatch", Block("specific denial")),
+        "block_permission": ("check_permission", Block("specific denial")),
     }
     target_slot, effect = cases[scenario]
 
@@ -386,7 +388,7 @@ async def test_named_effects_conform_across_drivers_and_transports(
             else list(composable_loop(**kwargs))
         )
         assert steps[0].tool_call.tool == "add"
-        if scenario == "deny_reason":
+        if scenario in {"deny_reason", "block_only", "block_permission"}:
             assert "specific denial" in steps[0].tool_result.error
         else:
             assert steps[0].tool_result.data == {

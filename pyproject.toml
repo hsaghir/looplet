@@ -96,6 +96,8 @@ include = [
     "cartridge.schema.json",
     "docs/index.md",
     "docs/quickstart.md",
+    "docs/install.md",
+    "docs/evals.md",
     "docs/tutorial.md",
     "docs/hooks.md",
     "docs/skills.md",

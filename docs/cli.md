@@ -25,7 +25,7 @@ commands and compatibility aliases; their individual help remains available.
 available when a script needs an explicit format.
 
 Unified `run`, `inspect`, `run-bundle`, and `new --offline` are unreleased
-source additions, not part of PyPI `0.4.0`. Install this checkout with
+source additions, not part of PyPI `0.3.0`. Install this checkout with
 `pip install -e ".[openai]"` (or the appropriate provider extra) to use them.
 
 ## Diagnose and inspect runs
@@ -317,7 +317,8 @@ searchable tags. Validate and run the output before distributing it.
 
 ## Automation conventions
 
-- Treat exit code 0 as success and any non-zero code as a failed operation.
+- Exit code 0 means command success, not agent completion or a correct answer.
+- For `run --json`, also require `completed=true`. Use a passing eval to check correctness.
 - Use `--json` only on commands that advertise it; do not parse human output.
 - Pin the Looplet minor version when a script depends on output fields.
 - Capture stdout, stderr, command arguments, package version, and artifact hash
@@ -327,5 +328,5 @@ searchable tags. Validate and run the output before distributing it.
   does not expose as JSON.
 
 Before `1.0`, command options and machine-readable fields may change in a minor
-release. Pin `looplet>=0.4,<0.5` and review the [changelog](changelog.md) when
-upgrading.
+release. For PyPI installations, pin `looplet>=0.3,<0.4`.
+Review the [changelog](changelog.md) before upgrading.

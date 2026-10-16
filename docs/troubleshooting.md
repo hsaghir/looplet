@@ -51,17 +51,18 @@ export OPENAI_API_KEY=x
 looplet doctor
 ```
 
-If the endpoint accepts chat completions but not native tool schemas, the
-probe reports that distinction and the loop automatically falls back:
+Some endpoints accept chat completions but reject native tool schemas.
+Looplet reports that error and does not automatically change protocols.
+Select the JSON-text protocol explicitly for these endpoints:
 
 ```python
 from looplet import LoopConfig
 
-config = LoopConfig(use_native_tools=True)
+config = LoopConfig(use_native_tools=False)
 ```
 
-The fallback is recorded through the normal logger. Set the same setting to
-`False` only when a release harness intentionally requires text mode.
+Keep `use_native_tools=True` for backends that support native tool calls.
+The same rule applies to custom backends that implement only `generate(...)`.
 
 ## Anthropic backend configuration
 
@@ -73,9 +74,11 @@ export ANTHROPIC_API_KEY=...
 export ANTHROPIC_MODEL=claude-sonnet-4-20250514
 ```
 
-`looplet doctor` currently probes the OpenAI-compatible environment. For an
-Anthropic-only deployment, construct `AnthropicBackend.from_env()` in a smoke
-test and make one explicitly budgeted provider call.
+The source version of `looplet doctor` probes the configured provider.
+Set `LOOPLET_PROVIDER=anthropic` to choose Anthropic explicitly.
+Without an override, it selects Anthropic when an Anthropic key is present.
+Otherwise, it selects a configured OpenAI-compatible provider.
+PyPI `0.3.0` has an OpenAI-only `doctor`; use the source version for Anthropic checks.
 
 ## The loop produces no steps
 

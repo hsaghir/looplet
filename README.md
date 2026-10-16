@@ -14,21 +14,9 @@ It yields a `Step` after each call.
 Your code can inspect the result and stop before the next call.
 
 Looplet also provides context management for longer runs and hooks to control each stage of the loop.
-Add only the features that your agent needs:
-
-- **[Model choice](docs/install.md) and [retries](docs/api.md#backends):** Use OpenAI, Anthropic, or connect another model. Add retries or fallback models to synchronous model calls.
-- **[Python tools](docs/api.md#tools):** Use normal Python functions as tools. Describe accepted inputs. Add argument checks before a tool runs.
-- **[Context management](docs/operations.md#context-pressure-and-compaction):** Track context limits. Shorten old history with summaries or truncation. Remove large tool results from later prompts.
-- **[Prompt and tool hooks](docs/hooks.md):** Add context or build a custom prompt. Check or change calls before tools run. Inspect or change results afterward.
-- **[Run controls](docs/operations.md#stagnation-and-call-limits):** Set step and tool-call limits. Detect repeated actions or cancel a run.
-- **[Async and streaming](docs/operations.md):** Run async model calls and tools. Read model text as it arrives with a streaming backend.
-- **[Saved runs and replay](docs/provenance.md):** Save prompts, responses, results, and stop reasons. Reuse saved model responses to test changed tools. Tool effects can still change.
-- **[Tests and comparisons](docs/evals.md):** Check files or records that the agent produced. Compare tool changes with saved responses. Compare model changes with new runs.
-- **[Checkpoints](docs/operations.md#checkpoints-and-cancellation):** Save loop state and continue a later run. Checkpoints do not undo tool effects.
-- **[Reusable agents](docs/cartridge.md):** Keep tools, prompts, and settings in Python or an agent directory. Share that setup across projects.
-- **[Skills](docs/skills.md) and [child agents](docs/cartridge.md#builtin-tools):** Load extra task instructions when needed. Delegate part of a task to another agent.
-- **[Command line](docs/cli.md):** Create, run, inspect, and test agents from your shell.
-- **[Other processes](docs/portability.md):** Connect tools and hooks running in other processes. Share state and model access across process boundaries.
+Add only the features that your agent needs.
+Start in Python; use a cartridge when you need an agent stored and shared as files.
+The [Quickstart](docs/quickstart.md) runs one agent, checks its answer, saves its calls, and replays them.
 
 A short loop is enough if it already meets your needs.
 Use Looplet when you need these controls without separate code for each agent.
@@ -100,7 +88,7 @@ This example selects the JSON-text protocol for its fixed responses.
 Real models use native tool calls by default.
 See [Install](docs/install.md) for provider adapters and configuration.
 
-The [Quickstart](docs/quickstart.md) shows how to inspect each field and stop early.
+The [Quickstart](docs/quickstart.md) adds a result helper, pytest checks, capture, and replay to this same agent.
 For async code, use `async_composable_loop()` with `contextlib.aclosing`.
 
 ## Add only what you need
@@ -116,12 +104,12 @@ You do not need a new execution engine to use them.
 | Limit calls or detect repeated actions | Step limits, tool-call limits, and repetition checks | [Run controls](docs/operations.md#stagnation-and-call-limits) |
 | Save prompts, responses, and steps | `ProvenanceSink` | [Capture and replay](docs/provenance.md) |
 | Check files or other results | Collectors and graders | [Tests and graders](docs/evals.md) |
-| Reuse tools, state, config, and hooks | `AgentPreset` | [Python API](docs/api.md#optional-preset-conveniences) |
+| Build a fresh agent run for each task | A Python factory returning `AgentPreset` | [Python API](docs/api.md#optional-preset-conveniences) |
 | Store an agent in files | A cartridge directory | [Cartridges](docs/cartridge.md) |
 | Use an agent from a shell | `new`, `run`, `inspect`, and `eval` | [Command-line guide](docs/cli.md) |
 | Connect tools or other hosts | Protocol adapters | [Portability](docs/portability.md) |
 
-The unified shell commands and preset result helpers are not in PyPI `0.4.0`.
+The unified shell commands and preset result helpers are not in PyPI `0.3.0`.
 Use the source install above for these features.
 Older commands, such as `run-cartridge`, `describe`, and `show`, remain supported.
 
@@ -204,11 +192,12 @@ Before version `1.0`, a minor release can change an API incompatibly.
 Pin the minor version for a published install:
 
 ```toml
-looplet>=0.4,<0.5
+looplet>=0.3,<0.4
 ```
 
-The current release is `0.4.0`.
-The repository also contains changes for the next release.
+The latest PyPI release is `0.3.0`.
+This checkout identifies as `0.4.0` and includes unpublished changes.
+Use a source install for the examples and new APIs in this guide.
 See the [changelog](CHANGELOG.md) and [release plan](ROADMAP.md#path-to-10).
 
 ## Contributing

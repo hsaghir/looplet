@@ -7,7 +7,13 @@ Your host owns execution and supplies the observed result.
 ## Start with one function
 
 ```python
-from looplet import eval_assess
+from looplet import EvalContext, eval_assess
+
+observed_context = EvalContext(
+    steps=[],
+    final_output={"answer": 42},
+    task={"expected": {"answer": 42}},
+)
 
 def eval_answer(ctx):
     return ctx.final_output["answer"] == ctx.expected["answer"]
@@ -16,8 +22,9 @@ report = eval_assess([eval_answer], observed_context)
 report.assert_passed()
 ```
 
-`observed_context` is your host's `EvalContext`, containing the output and grader-only expectations.
-This grades an existing observation; it does not execute the agent.
+This complete example grades a fixed observation; it does not execute an agent.
+`observed_context` holds the observed output and grader-only expectations.
+The [Quickstart](quickstart.md) builds this context from an actual run and adds pytest, capture, and replay.
 A boolean is enough for a pass/fail contract.
 Use `EvalResult` when you need scores, metrics, or explanations.
 No files, saved cases, collectors, or cartridge are required.
@@ -135,7 +142,7 @@ The scaffold remains a self-test contract, not a protected promotion holdout.
 run the self-tests:
 
 ```bash
-looplet eval run ./agent.cartridge --out eval-runs/run-001 --json --summary-version 2
+looplet eval run ./agent.cartridge --out eval-runs/run-001 --json --assessment-version 2
 ```
 
 The Python equivalent is `run_cartridge_evals()`. This runner owns evaluation
@@ -241,7 +248,7 @@ Use `hook.assessment()` after live grading to avoid running those graders twice.
 Use `EvalReport.from_records(records, threshold=0.7)` to assess saved grades without rescoring.
 These interfaces share the same result classification and gate policy.
 
-Version 2 is the default for these Python assessment APIs and `assert_evals_pass()`.
+Version 2 is the default for Python assessment APIs, `assert_evals_pass()`, and both CLI routes.
 It rejects empty observations, empty grader selections, duplicate results, and gates without any verdict-producing check.
 Passive metrics and optional skipped judges remain visible but cannot establish a passing gate alone.
 Required missing, skipped, or measurement-only checks fail closed.
@@ -255,7 +262,9 @@ Require completion explicitly in a grader when your contract needs it.
 
 Version 1 retains the previous gate semantics and JSON fields.
 Pass `version=1` to Python assessment APIs for compatibility.
-Both CLI routes default to version 1; select version 2 with `--summary-version 2`.
+Use `--assessment-version 1` on either CLI route for the same legacy policy.
+The existing `--summary-version` flag remains an alias.
+These options change acceptance rules and JSON fields, not just output formatting.
 An empty assertion suite now fails by default instead of silently succeeding.
 Raw `eval_run()` lists, `eval_run_batch()` tables, and hook text reports keep their existing shapes.
 
@@ -650,8 +659,8 @@ default, but required graders still enforce their $0.5$ floor.
 Both CLI routes emit the same transient `looplet.eval-summary` report with `--json`:
 
 ```bash
-looplet eval run ./agent.cartridge --threshold 0.7 --json --summary-version 2 > eval-summary.json
-looplet eval eval-runs/run-001/ --evals evals/ --threshold 0.7 --json --summary-version 2
+looplet eval run ./agent.cartridge --threshold 0.7 --json --assessment-version 2 > eval-summary.json
+looplet eval eval-runs/run-001/ --evals evals/ --threshold 0.7 --json --assessment-version 2
 jq -e '.schema == "looplet.eval-summary" and .version == 2 and .valid and .passed' \
     eval-summary.json
 ```

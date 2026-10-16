@@ -473,7 +473,7 @@ def test_host_can_still_explicitly_load_an_embedded_eval_hook(tmp_path: Path) ->
     assert (workspace / "embedded-collector-count.txt").read_text() == "1"
 
 
-@pytest.mark.parametrize("version", [1, 2])
+@pytest.mark.parametrize("version", [None, 1, 2])
 @pytest.mark.parametrize(
     ("body", "required", "judge", "collector_body", "passed"),
     [
@@ -554,7 +554,7 @@ def test_verdict_agrees_live_saved_pytest_and_cli(
     judge: bool,
     collector_body: str | None,
     passed: bool | tuple[bool, bool],
-    version: int,
+    version: int | None,
 ) -> None:
     cart = _make_cartridge(tmp_path)
     (cart / "evals" / "eval_correctness.py").write_text(
@@ -581,21 +581,27 @@ def test_verdict_agrees_live_saved_pytest_and_cli(
     ]
     assert signature(offline) == signature(record.results)
     assert record.context.artifacts["expected_leaked"] is False
+    effective_version = 2 if version is None else version
+    assessment_args = {} if version is None else {"version": version}
     if isinstance(passed, tuple):
-        passed = passed[version - 1]
-    captured = EvalReport.from_records([reloaded], version=version)
+        passed = passed[effective_version - 1]
+    captured = EvalReport.from_records([reloaded], **assessment_args)
     assert captured.passed is passed
-    rescored = eval_assess(graders, reloaded.context, case=reloaded.case, version=version)
+    rescored = eval_assess(graders, reloaded.context, case=reloaded.case, **assessment_args)
     assert rescored.passed is passed
     assert captured.grader_manifest == rescored.grader_manifest
     if passed:
-        assert_evals_pass(reloaded.context, graders, version=version)
+        assert_evals_pass(reloaded.context, graders, **assessment_args)
     else:
         with pytest.raises(AssertionError):
-            assert_evals_pass(reloaded.context, graders, version=version)
+            assert_evals_pass(reloaded.context, graders, **assessment_args)
 
     expected_exit = 0 if passed else 1
-    policy_args = ["--summary-version", str(version)]
+    policy_args = (
+        []
+        if version is None
+        else ["--summary-version" if version == 1 else "--assessment-version", str(version)]
+    )
     assert (
         eval_cli([str(tmp_path / "live"), "--evals", str(cart / "evals"), *policy_args])
         == expected_exit
@@ -622,6 +628,7 @@ def test_verdict_agrees_live_saved_pytest_and_cli(
             for result in case["results"]:
                 result.pop("duration_ms", None)
     assert report == saved_report
+    assert report["version"] == effective_version
     assert report["passed"] is passed
     assert report["state"] == ("pass" if passed else "fail")
 
@@ -789,7 +796,7 @@ def test_cli_run_json_emits_one_eval_report(tmp_path: Path, monkeypatch, capsys)
     assert rc == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["schema"] == "looplet.eval-summary"
-    assert payload["version"] == 1
+    assert payload["version"] == 2
     assert payload["state"] == "pass"
     assert payload["passed"] is True
     assert payload["threshold"] == 1.0

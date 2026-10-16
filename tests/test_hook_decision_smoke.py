@@ -116,7 +116,6 @@ class TestNormaliseHookReturn:
         ("slot", "decision", "ignored"),
         [
             ("check_done", Stop("not a completion gate"), ("stop",)),
-            ("pre_dispatch", Block("not a permission decision"), ("block",)),
             ("pre_prompt", HookDecision(updated_args={"x": 1}), ("updated_args",)),
             ("stop", Stop("already terminal"), ("stop",)),
         ],
@@ -128,6 +127,19 @@ class TestNormaliseHookReturn:
         assert decision.ignored_effects(slot) == ignored
         assert "ignores effect fields" in caplog.text
         assert all(name in caplog.text for name in ignored)
+
+    @pytest.mark.parametrize("slot", ["pre_dispatch", "pre_tool_use", "check_permission"])
+    @pytest.mark.parametrize("permission", [None, "allow", "deny"])
+    def test_block_denies_tool_gates_without_mutating_the_decision(self, caplog, slot, permission):
+        decision = HookDecision(block="not in sandbox", permission=permission, metadata={"rule": 1})
+        normalized = normalize_hook_return(decision, slot=slot)
+        assert normalized is not None
+        assert normalized.permission == "deny"
+        assert normalized.block == "not in sandbox"
+        assert normalized.metadata == {"rule": 1}
+        assert normalized.ignored_effects(slot) == ()
+        assert decision.permission == permission
+        assert not caplog.text
 
     def test_applicability_is_shared_and_audit_metadata_is_not_an_effect(self, caplog):
         from looplet.hook_decision import hook_effect_fields
@@ -180,14 +192,19 @@ class TestNormaliseHookReturn:
 # ── End-to-end wiring tests ──────────────────────────────────
 
 
-def _tools_with_add_and_done() -> BaseToolRegistry:
+def _tools_with_add_and_done(executed: list[str] | None = None) -> BaseToolRegistry:
+    def add(**arguments):
+        if executed is not None:
+            executed.append("add")
+        return {"sum": arguments["a"] + arguments["b"]}
+
     reg = BaseToolRegistry()
     reg.register(
         ToolSpec(
             name="add",
             description="add",
             parameters={"a": "int", "b": "int"},
-            execute=lambda *, a, b: {"sum": a + b},
+            execute=add,
         )
     )
     reg.register(
@@ -305,8 +322,10 @@ class TestHookDecisionWiringPreDispatch:
         add_step = next(s for s in steps if s.tool_call.tool == "add")
         assert add_step.tool_result.data == {"sum": 100}
 
-    def test_deny_short_circuits_into_permission_error(self):
-        """Deny(reason) from pre_dispatch records PERMISSION_DENIED."""
+    @pytest.mark.parametrize("decision_factory", [Deny, Block])
+    def test_deny_short_circuits_into_permission_error(self, decision_factory):
+        """A denial from pre_dispatch prevents the tool from running."""
+        executed = []
         llm = MockLLMBackend(
             responses=[
                 '{"tool":"add","args":{"a":1,"b":2},"reasoning":""}',
@@ -317,19 +336,20 @@ class TestHookDecisionWiringPreDispatch:
         class Blocker:
             def pre_dispatch(self, state, session_log, tool_call, step_num):
                 if tool_call.tool == "add":
-                    return Deny("not in sandbox")
+                    return decision_factory("not in sandbox")
                 return None
 
         steps = list(
             composable_loop(
                 llm=llm,
-                tools=_tools_with_add_and_done(),
+                tools=_tools_with_add_and_done(executed),
                 state=DefaultState(max_steps=5),
                 hooks=[Blocker()],
                 config=LoopConfig(max_steps=5),
             )
         )
         add_step = next(s for s in steps if s.tool_call.tool == "add")
+        assert executed == []
         assert add_step.tool_result.error is not None
         assert "not in sandbox" in add_step.tool_result.error
 

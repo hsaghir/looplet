@@ -5,8 +5,9 @@ from __future__ import annotations
 import ast
 import re
 import shutil
+import sys
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -17,11 +18,15 @@ from looplet.examples import hello_world, ollama_hello
 pytestmark = pytest.mark.smoke
 
 
-@pytest.mark.parametrize("document", ["README.md", "docs/quickstart.md", "docs/index.md"])
+def _python_blocks(path: Path) -> list[str]:
+    return re.findall(r"^```python[^\n]*\n(.*?)^```[ \t]*$", path.read_text(), re.M | re.S)
+
+
+@pytest.mark.parametrize("document", ["README.md", "docs/index.md"])
 def test_documented_first_loop(document: str, monkeypatch) -> None:
     root = Path(__file__).resolve().parents[1]
     path = root / document
-    blocks = re.findall(r"^```python[^\n]*\n(.*?)^```[ \t]*$", path.read_text(), re.M | re.S)
+    blocks = _python_blocks(path)
     assert blocks, f"No Python example in {document}"
     observations = []
 
@@ -49,27 +54,45 @@ def test_documented_first_loop(document: str, monkeypatch) -> None:
     assert observations[0][0].call_count == 2
     assert observations[0][1].call_count == 2
 
-    if document != "docs/quickstart.md":
-        quickstart = root / "docs/quickstart.md"
-        first_loop = re.findall(
-            r"^```python[^\n]*\n(.*?)^```[ \t]*$", quickstart.read_text(), re.M | re.S
-        )[0]
-        assert ast.dump(ast.parse(blocks[0])) == ast.dump(ast.parse(first_loop))
-        return
+    first_loop = _python_blocks(root / "README.md")[0]
+    assert ast.dump(ast.parse(blocks[0])) == ast.dump(ast.parse(first_loop))
 
-    assert len(blocks) == 2
-    exec(compile(blocks[1], str(path), "exec"), namespace)
-    stopped_state = namespace["state"]
-    assert stopped_state is not state
-    assert [step.tool_call.tool for step in stopped_state.steps] == ["lookup_owner"]
-    assert stopped_state.steps[0].tool_result.data == {
-        "service": "payments",
-        "owner": "fintech-platform",
-    }
-    assert stopped_state.termination_reason == "stream_closed"
-    assert not RunResult.from_state(stopped_state).completed
-    assert observations[1][0].call_count == 1
-    assert observations[1][1].call_count == 1
+
+def test_quickstart_runs_grades_captures_and_replays(tmp_path: Path, monkeypatch) -> None:
+    guide = Path(__file__).resolve().parents[1] / "docs" / "quickstart.md"
+    blocks = _python_blocks(guide)
+    assert blocks
+    module = ModuleType("first_loop")
+    monkeypatch.setitem(sys.modules, "first_loop", module)
+    monkeypatch.chdir(tmp_path)
+    for block in blocks:
+        exec(compile(block, str(guide), "exec"), module.__dict__)
+
+    assert not hasattr(module, "result")
+    assert not (tmp_path / "traces").exists()
+    module.test_owner()
+    module.test_repeated_runs_are_independent()
+    namespace = {"__name__": "__main__"}
+    for block in blocks:
+        exec(compile(block, str(guide), "exec"), namespace)
+    assert namespace["report"].passed
+    assert namespace["captured_result"].output == namespace["replayed_result"].output
+    assert namespace["captured_backend"].calls == 2
+    assert namespace["state"].termination_reason == "stream_closed"
+    assert [step.tool_call.tool for step in namespace["result"].steps] == ["lookup_owner", "done"]
+    assert [step.tool_call.tool for step in namespace["state"].steps] == ["lookup_owner"]
+    assert not RunResult.from_state(namespace["state"]).completed
+    assert (tmp_path / "traces" / "owner" / "trajectory.json").is_file()
+    assert (tmp_path / "traces" / "owner" / "manifest.jsonl").is_file()
+    namespace["result"].output["summary"] = "wrong owner"
+    assert not module.assess_result(namespace["result"]).passed
+
+
+def test_eval_introduction_is_self_contained() -> None:
+    guide = Path(__file__).resolve().parents[1] / "docs" / "evals.md"
+    namespace = {}
+    exec(compile(_python_blocks(guide)[0], str(guide), "exec"), namespace)
+    assert namespace["report"].passed
 
 
 def test_documented_report_contract(tmp_path: Path, monkeypatch) -> None:

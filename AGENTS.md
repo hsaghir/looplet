@@ -961,7 +961,7 @@ shapes. Legacy returns (`str`, `bool`, raw `ToolResult`) still work via
 | Allow / no opinion | `return None` |
 | Append text to next prompt | `return InjectContext("...")` |
 | Reject `done()` in `check_done` | `return Block("reason for the model")` |
-| Deny dispatch in a tool/permission slot | `return Deny("reason")` |
+| Deny dispatch in a tool/permission slot | `return Deny("reason")` or `return Block("reason")` |
 | Stop the loop cleanly | `return Stop("done-ish reason")` |
 | Short-circuit with a cached result | `return HookDecision(updated_result=ToolResult(...))` |
 | Rewrite the model's tool args | `return HookDecision(updated_args={"path": "..."})` |
@@ -972,8 +972,8 @@ over bare `HookDecision(...)` for single-intent cases.
 `hook_effect_fields(slot)` and `decision.ignored_effects(slot)` in
 `looplet.hook_decision` make applicability inspectable. Unsupported fields
 are logged and remain ignored: `Stop` in `check_done` does not stop or reject
-completion, and a block-only decision in `pre_dispatch` does not deny a tool.
-Use `Block` for completion rejection and `Deny` for tool gates. Model lifecycle
+completion. `Block` denies calls in `pre_dispatch`, `pre_tool_use`, and `check_permission`.
+Use `Block` for completion rejection and `Deny` or `Block` for tool gates. Model lifecycle
 events apply context/stop in both drivers; terminal `stop` is observation-only.
 
 ## Symbol index (A–Z)

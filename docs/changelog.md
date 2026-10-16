@@ -68,6 +68,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Shell replay restores saved tasks and defaults to recorded tool-step counts, including budget-stopped captures and multi-tool turns.
+- Run and eval commands share model and endpoint options without changing environment variables.
 - Saved-case replay preserves grader-only expectations, collects fresh outcome artifacts, and prints a separate grading command.
 - Replay trajectories record their source run and saved case identity without modifying original evidence.
 - Shell replay explains its cartridge-only format and links a tested Python recipe for skill bundles.

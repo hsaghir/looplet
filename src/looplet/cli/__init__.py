@@ -7,6 +7,7 @@ in :mod:`looplet.__main__`.
 
 from __future__ import annotations
 
+import os
 import sys
 from argparse import ArgumentParser
 from contextlib import AbstractContextManager, nullcontext, redirect_stdout
@@ -16,8 +17,30 @@ from typing import Any
 from looplet.types import RunResult
 
 
+def add_backend_options(parser: ArgumentParser) -> None:
+    """Register provider overrides shared by run and eval commands."""
+    parser.add_argument("--model", default=None, help="Override the selected provider's model.")
+    parser.add_argument(
+        "--base-url", default=None, help="OpenAI-compatible base URL (else $OPENAI_BASE_URL)."
+    )
+
+
+def build_cli_backend(*, model: str | None = None, base_url: str | None = None) -> Any:
+    """Apply explicit overrides without changing the caller's environment."""
+    from looplet.backends import OpenAIBackend, make_backend  # noqa: PLC0415
+
+    if base_url:
+        return OpenAIBackend(
+            base_url=base_url,
+            api_key=os.environ.get("OPENAI_API_KEY") or "x",
+            model=model or os.environ.get("OPENAI_MODEL", "gpt-4o"),
+        )
+    return make_backend(model=model) if model is not None else make_backend()
+
+
 def add_run_options(parser: ArgumentParser) -> None:
     """Register the shared execution, trace, and cartridge presentation options."""
+    add_backend_options(parser)
     cartridge = parser.add_argument_group("Cartridge-only options")
     parser.add_argument("--trace-dir", type=Path, help="Write provenance trace output here")
     cartridge.add_argument("--parent-trace", type=Path, help="Link a run to a parent trace")

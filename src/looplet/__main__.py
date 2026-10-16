@@ -408,6 +408,8 @@ def _render_run(
     no_trace: bool,
     json_output: bool = False,
     require_completed: bool = False,
+    model: str | None = None,
+    base_url: str | None = None,
 ) -> int:
     output = sys.stdout
     with execution_output(json_output):
@@ -424,6 +426,8 @@ def _render_run(
             json_output=json_output,
             output=output,
             require_completed=require_completed,
+            model=model,
+            base_url=base_url,
         )
 
 
@@ -441,8 +445,9 @@ def _run_bundle(
     json_output: bool,
     output: TextIO,
     require_completed: bool = False,
+    model: str | None = None,
+    base_url: str | None = None,
 ) -> int:
-    from looplet.backends import make_backend  # noqa: PLC0415
     from looplet.bundles import (  # noqa: PLC0415
         BundleValidation,
         SkillRuntime,
@@ -450,6 +455,7 @@ def _run_bundle(
         run_skill_bundle,
         validate_skill_bundle,
     )
+    from looplet.cli import build_cli_backend  # noqa: PLC0415
     from looplet.resilient import ResilientBackend  # noqa: PLC0415
     from looplet.testing import MockLLMBackend  # noqa: PLC0415
     from looplet.types import RunResult  # noqa: PLC0415
@@ -501,7 +507,13 @@ def _run_bundle(
             print(f"  - {error}", file=sys.stderr)
 
     bundle_run = getattr(bundle.module, "run", None)
-    legacy_run = callable(bundle_run) and not json_output and not require_completed
+    legacy_run = (
+        callable(bundle_run)
+        and not json_output
+        and not require_completed
+        and model is None
+        and base_url is None
+    )
     scripted_mode = scripted or bool(scripted_responses)
     for index, response in enumerate(scripted_responses, start=1):
         if not response.strip():
@@ -640,7 +652,7 @@ def _run_bundle(
         model_label = "scripted MockLLMBackend"
     else:
         try:
-            backend = make_backend()
+            backend = build_cli_backend(model=model, base_url=base_url)
         except Exception as exc:
             print(f"error: {exc}", file=sys.stderr)
             _close_validation_preset(validation)
@@ -1191,6 +1203,8 @@ def main(argv: list[str] | None = None) -> int:
                     pretty=args.pretty,
                     parent_trace=args.parent_trace,
                     scripted_response=args.scripted_response,
+                    model=args.model,
+                    base_url=args.base_url,
                 )
             )
         for flag, enabled in (
@@ -1213,6 +1227,8 @@ def main(argv: list[str] | None = None) -> int:
             no_trace=args.no_trace,
             json_output=args.json,
             require_completed=args.require_completed,
+            model=args.model,
+            base_url=args.base_url,
         )
     if args.command == "blueprint":
         return _render_blueprint(

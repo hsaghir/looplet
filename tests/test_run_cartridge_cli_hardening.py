@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -96,6 +97,79 @@ def test_python_script_has_an_actionable_command(tmp_path, monkeypatch, capsys):
     message = capsys.readouterr().err
     assert "python " in message and "my agent.py'" in message
     assert "SKILL.md" not in message
+
+
+@pytest.mark.parametrize(
+    ("command", "package_kind"),
+    [
+        ("run", "cartridge"),
+        ("run-cartridge", "cartridge"),
+        ("run-workspace", "cartridge"),
+        ("run", "bundle"),
+        ("run-bundle", "bundle"),
+    ],
+)
+@pytest.mark.parametrize("json_output", [False, True])
+@pytest.mark.parametrize(
+    ("model", "base_url"),
+    [
+        ("chosen-model", None),
+        (None, "http://localhost:11434/v1"),
+        ("chosen-model", "http://localhost:11434/v1"),
+    ],
+)
+def test_run_provider_options_reach_backend_without_environment_changes(
+    tmp_path, monkeypatch, capsys, command, package_kind, json_output, model, base_url
+):
+    if package_kind == "cartridge":
+        target = _custom_terminal_cartridge(tmp_path, name="done", return_expression="{}")
+        terminal_args = {"answer": "ok"}
+        options = []
+    else:
+        target = tmp_path / "bundle"
+        shutil.copytree(Path(__file__).parent / "fixtures" / "coder_skill_bundle", target)
+        terminal_args = {"summary": "finished"}
+        options = ["--no-tests"]
+    monkeypatch.setenv("LOOPLET_PROVIDER", "anthropic")
+    monkeypatch.setenv("OPENAI_MODEL", "environment-model")
+    monkeypatch.setenv("OPENAI_API_KEY", "test")
+    environment = dict(os.environ)
+    received = []
+
+    def build_backend(**kwargs):
+        received.append(kwargs)
+        return MockLLMBackend([json.dumps({"tool": "done", "args": terminal_args})])
+
+    def openai_backend(**kwargs):
+        return build_backend(provider="openai", **kwargs)
+
+    monkeypatch.setattr("looplet.backends.make_backend", build_backend)
+    monkeypatch.setattr("looplet.backends.OpenAIBackend", openai_backend)
+    arguments = [
+        command,
+        str(target),
+        "finish",
+        "--project-root",
+        str(tmp_path),
+        "--no-trace",
+        *options,
+    ]
+    if model is not None:
+        arguments.extend(["--model", model])
+    if base_url is not None:
+        arguments.extend(["--base-url", base_url])
+    if json_output:
+        arguments.append("--json")
+    assert main(arguments) == 0
+    assert len(received) == 1
+    assert received[0].get("model") == (model or "environment-model" if base_url else model)
+    assert received[0].get("base_url") == base_url
+    assert received[0].get("provider") == ("openai" if base_url else None)
+    assert dict(os.environ) == environment
+    output = capsys.readouterr()
+    if json_output:
+        assert json.loads(output.out)["completed"] is True
+    assert not output.err
 
 
 @pytest.mark.parametrize("package_kind", ["cartridge", "bundle"])

@@ -57,11 +57,11 @@ def _check_env() -> int:
     return 0
 
 
-def _build_backend():
-    """Construct the environment-selected backend through the shared resolver."""
-    from looplet.backends import make_backend  # noqa: PLC0415
+def _build_backend(*, model: str | None = None, base_url: str | None = None):
+    """Construct a backend through the shared CLI resolver."""
+    from looplet.cli import build_cli_backend  # noqa: PLC0415
 
-    return make_backend()
+    return build_cli_backend(model=model, base_url=base_url)
 
 
 def _factory_workspace_path() -> Path:
@@ -405,7 +405,13 @@ def _run_cartridge(
                 raise ValueError("--scripted-response must not be empty")
             backend = MockLLMBackend(responses=scripted_responses)
         else:
-            backend = _build_backend()
+            backend = _build_backend(
+                **{
+                    name: value
+                    for name in ("model", "base_url")
+                    if (value := getattr(args, name, None)) is not None
+                }
+            )
         if replay_case is not None:
             from looplet.evals import EvalHook, load_cartridge_evals  # noqa: PLC0415
 
@@ -611,6 +617,24 @@ def cmd_replay(args: argparse.Namespace) -> int:
             if workspace.is_relative_to(trace) or workspace.is_relative_to(cartridge):
                 raise ValueError("replay workspace must be outside the trace and cartridge")
             calls = _load_trace_calls(trace)
+            trajectory_path = trace / "trajectory.json"
+            trajectory = (
+                json.loads(trajectory_path.read_text(encoding="utf-8"))
+                if trajectory_path.is_file()
+                else {}
+            )
+            if not isinstance(trajectory, dict):
+                raise ValueError("trajectory.json must contain an object")
+            recorded_steps = trajectory.get("step_count")
+            replay_max_steps = args.max_steps
+            if replay_max_steps is None:
+                replay_max_steps = (
+                    recorded_steps
+                    if isinstance(recorded_steps, int)
+                    and not isinstance(recorded_steps, bool)
+                    and recorded_steps > 0
+                    else len(calls)
+                )
             cases = load_cases(trace / "case.json") if (trace / "case.json").is_file() else []
             if args.task is not None:
                 if not args.task.strip():
@@ -623,7 +647,18 @@ def cmd_replay(args: argparse.Namespace) -> int:
                     if key not in {"files", "expected"}
                 }
             else:
-                raise ValueError("raw traces need --task with the original task description")
+                recorded_task = trajectory.get("task")
+                task = (
+                    {
+                        key: value
+                        for key, value in recorded_task.items()
+                        if key not in {"files", "expected"}
+                    }
+                    if isinstance(recorded_task, dict)
+                    else {}
+                )
+                if not task:
+                    raise ValueError("raw traces need --task when the capture has no saved task")
             workspace.mkdir(parents=True, mode=0o700)
             if cases:
                 seed_case_workspace(cases[0], workspace)
@@ -634,7 +669,7 @@ def cmd_replay(args: argparse.Namespace) -> int:
             workspace=cartridge,
             task=str(task.get("goal", "Replay captured task")),
             project_root=workspace,
-            max_steps=args.max_steps,
+            max_steps=replay_max_steps,
             trace_dir=None,
             no_trace=False,
             json=args.json,
@@ -760,9 +795,13 @@ def add_subparsers(sub: "argparse._SubParsersAction") -> None:
         "--workspace", type=Path, required=True, help="New workspace path; must not exist"
     )
     replay_p.add_argument(
-        "--task", help="Original task for a raw trace; overrides a saved case task"
+        "--task", help="Override the saved task; required only when no task was captured"
     )
-    replay_p.add_argument("--max-steps", type=int, help="Override the cartridge tool-call budget")
+    replay_p.add_argument(
+        "--max-steps",
+        type=int,
+        help="Override replay budget (default: recorded tool steps or captured response count)",
+    )
     replay_p.add_argument("--quiet", action="store_true", help="Suppress per-step output")
     replay_p.add_argument("--json", action="store_true", help="Emit the shared completion object")
     replay_p.add_argument(

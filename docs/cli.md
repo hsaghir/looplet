@@ -120,7 +120,7 @@ looplet run ./replay-demo.cartridge "Say hello" --project-root . \
   --require-completed
 looplet inspect ./original-trace
 looplet replay ./original-trace --cartridge ./replay-demo.cartridge \
-  --workspace ./replayed-workspace --task "Say hello" --require-completed --json
+  --workspace ./replayed-workspace --require-completed --json
 ```
 
 Choose unused paths when repeating this example; existing evidence and replay workspaces are refused.
@@ -143,8 +143,11 @@ Run the printed `Grade:` command to assess the new record with the cartridge's g
 With `--json`, use the returned `trace_dir` as the input to `looplet eval <trace_dir> --evals ./agent.cartridge/evals --json`.
 The new trajectory records `parent_run_id` and `source_case_id`; raw traces with a trajectory record only the parent link.
 Saved expectations remain private grading evidence, not a protected oracle against tools with unrestricted filesystem access.
-Raw traces need `--task` because they may not preserve the task.
-`--task` replaces the saved agent task with the supplied goal; `--max-steps` overrides the cartridge budget.
+Raw traces reuse agent-visible task data from `trajectory.json` when available.
+Pass `--task` only when no task was saved or when replacing the saved task with a new goal.
+Replay defaults to the recorded tool-step count, or captured response count when step metadata is absent.
+This preserves budget-stopped captures without requesting extra responses by default and accounts for native multi-tool turns.
+`--max-steps` overrides this replay budget; a larger value can exhaust the recorded responses.
 Use only trusted cartridges: loading imports authored code, and tools, hooks, networks, and other effects execute again.
 A fresh directory is not an operating-system sandbox, checkpoint restoration, or a guarantee of identical results.
 Authored tools and resources may contact services even though replay does not construct the original provider backend.
@@ -235,6 +238,19 @@ looplet run ./agent.cartridge \
   --project-root . \
   --max-steps 20
 ```
+
+`run`, its explicit cartridge and bundle aliases, and `eval run` accept the same provider options:
+
+```bash
+looplet run ./agent.cartridge "Inspect the current change" \
+  --model local-model --base-url http://localhost:11434/v1
+```
+
+`--model` overrides the selected provider's model.
+`--base-url` explicitly selects an OpenAI-compatible endpoint, even when another provider is configured.
+Omitted options keep the existing environment-based defaults; overrides do not change environment variables.
+Bundle runs with explicit provider options use the shared preset runner instead of a legacy presentation callback.
+Scripted runs do not construct a provider backend.
 
 Use `-` as the task to read it from standard input:
 

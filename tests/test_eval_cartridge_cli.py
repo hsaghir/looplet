@@ -1237,8 +1237,105 @@ def test_cli_replay_executes_changed_tools(tmp_path, monkeypatch, capsys):
     assert (original / "workspace" / "greeting.py").read_text() == original_contents
 
 
+@pytest.mark.parametrize("saved_case", [False, True])
+@pytest.mark.parametrize("original_budget", [1, 2])
+@pytest.mark.parametrize(
+    ("native_tools", "batched_turn"), [(False, False), (True, False), (True, True)]
+)
+def test_cli_replay_restores_task_and_bounds_default_budget(
+    tmp_path, monkeypatch, capsys, saved_case, original_budget, native_tools, batched_turn
+):
+    from looplet.__main__ import main
+
+    cart = _make_cartridge(tmp_path)
+    (cart / "runtime.yaml").write_text(f"use_native_tools: {str(native_tools).lower()}\n")
+    responses = _scripted()
+    if batched_turn:
+        responses = [json.dumps({"tools": [json.loads(response) for response in responses]})]
+    if saved_case:
+        original = run_cartridge_evals(
+            cart,
+            llm=MockLLMBackend(responses),
+            output_dir=tmp_path / "original",
+            max_steps=original_budget,
+        )[0].directory
+    else:
+        project = tmp_path / "project"
+        project.mkdir()
+        original = tmp_path / "original"
+        arguments = [
+            "run",
+            str(cart),
+            "Write greeting.py",
+            "--project-root",
+            str(project),
+            "--trace-dir",
+            str(original),
+            "--max-steps",
+            str(original_budget),
+            "--json",
+        ]
+        for response in responses:
+            arguments.extend(["--scripted-response", response])
+        assert main(arguments) == 0
+    snapshot = {
+        path.relative_to(original): path.read_bytes()
+        for path in original.rglob("*")
+        if path.is_file()
+    }
+    monkeypatch.setattr(
+        "looplet.backends.make_backend", lambda **kwargs: pytest.fail("no provider")
+    )
+    capsys.readouterr()
+    workspace = tmp_path / "replayed"
+    assert main(
+        [
+            "replay",
+            str(original),
+            "--cartridge",
+            str(cart),
+            "--workspace",
+            str(workspace),
+            "--require-completed",
+            "--json",
+        ]
+    ) == (1 if original_budget == 1 else 0)
+    output = capsys.readouterr()
+    completion = json.loads(output.out)
+    assert completion["completed"] is (original_budget == 2)
+    assert completion["termination_reason"] == (
+        "budget_exhausted" if original_budget == 1 else "done"
+    )
+    assert completion["steps"] == original_budget
+    assert "replay exhausted" not in output.err
+    replayed = json.loads((Path(completion["trace_dir"]) / "trajectory.json").read_text())
+    assert replayed["task"]["goal"] == "Write greeting.py"
+    assert (workspace / "greeting.py").is_file()
+    assert snapshot == {
+        path.relative_to(original): path.read_bytes()
+        for path in original.rglob("*")
+        if path.is_file()
+    }
+
+
 @pytest.mark.parametrize("explicit_task", [False, True])
-def test_cli_raw_replay_requires_original_task(tmp_path, capsys, explicit_task):
+@pytest.mark.parametrize(
+    "recorded_task",
+    [
+        None,
+        {
+            "goal": "Recorded original task",
+            "ticket": {"id": 7},
+            "files": {"private.txt": "not agent task data"},
+            "expected": {"private_marker": "ORACLE_ONLY_FOR_GRADING"},
+        },
+        "invalid task",
+        {"files": {}, "expected": {"private_marker": "ORACLE_ONLY_FOR_GRADING"}},
+    ],
+)
+def test_cli_raw_replay_uses_saved_task_or_requires_override(
+    tmp_path, monkeypatch, capsys, explicit_task, recorded_task
+):
     from looplet import ProvenanceSink
     from looplet.__main__ import main
 
@@ -1248,6 +1345,13 @@ def test_cli_raw_replay_requires_original_task(tmp_path, capsys, explicit_task):
     backend.generate("original task")
     backend.generate("original task after tool")
     trace = sink.flush()
+    if recorded_task is not None:
+        (trace / "trajectory.json").write_text(
+            json.dumps({"run_id": "raw-capture", "task": recorded_task})
+        )
+    monkeypatch.setattr(
+        "looplet.backends.make_backend", lambda **kwargs: pytest.fail("no provider")
+    )
     workspace = tmp_path / "raw replay"
     arguments = [
         "replay",
@@ -1260,10 +1364,20 @@ def test_cli_raw_replay_requires_original_task(tmp_path, capsys, explicit_task):
     ]
     if explicit_task:
         arguments.extend(["--task", "Write greeting.py"])
-    assert main(arguments) == (0 if explicit_task else 1)
+    has_saved_task = isinstance(recorded_task, dict) and "goal" in recorded_task
+    assert main(arguments) == (0 if explicit_task or has_saved_task else 1)
     output = capsys.readouterr()
-    if explicit_task:
-        assert json.loads(output.out)["completed"]
+    if explicit_task or has_saved_task:
+        completion = json.loads(output.out)
+        assert completion["completed"]
+        replay_trace = Path(completion["trace_dir"])
+        replayed = json.loads((replay_trace / "trajectory.json").read_text())
+        assert replayed["task"] == (
+            {"goal": "Write greeting.py"}
+            if explicit_task
+            else {"goal": "Recorded original task", "ticket": {"id": 7}}
+        )
+        assert "ORACLE_ONLY_FOR_GRADING" not in (replay_trace / "call_00_prompt.txt").read_text()
     else:
         assert "raw traces need --task" in output.err
         assert not workspace.exists()

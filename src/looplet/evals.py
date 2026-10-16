@@ -3210,7 +3210,7 @@ def _run_cartridge_cli(args: list[str]) -> int:
     """
     import argparse
 
-    from looplet.cli import execution_output
+    from looplet.cli import add_backend_options, execution_output
 
     parser = argparse.ArgumentParser(
         prog="looplet eval run",
@@ -3228,10 +3228,7 @@ def _run_cartridge_cli(args: list[str]) -> int:
         action="store_true",
         help="Run without saving eval evidence or captured model calls.",
     )
-    parser.add_argument("--model", default=None, help="Override the selected provider's model.")
-    parser.add_argument(
-        "--base-url", default=None, help="OpenAI-compatible base URL (else $OPENAI_BASE_URL)."
-    )
+    add_backend_options(parser)
     parser.add_argument("--max-steps", type=int, default=None, help="Override max_steps per case.")
     parser.add_argument(
         "--no-capture",
@@ -3286,7 +3283,7 @@ def _run_cartridge_cli(args: list[str]) -> int:
 
 
 def _run_cartridge_evaluation(parsed: Namespace, *, output: TextIO) -> int:
-    import os
+    from looplet.cli import build_cli_backend
 
     cdir = Path(parsed.cartridge)
     if (cdir.is_file() and cdir.suffix == ".py") or (
@@ -3316,22 +3313,11 @@ def _run_cartridge_evaluation(parsed: Namespace, *, output: TextIO) -> int:
         return 1
     grader_manifest = _eval_grader_manifest(overview.graders)
 
-    from looplet.backends import OpenAIBackend, make_backend  # noqa: PLC0415
-
-    def build_backend(model: str | None):
-        if parsed.base_url:
-            return OpenAIBackend(
-                base_url=parsed.base_url,
-                api_key=os.environ.get("OPENAI_API_KEY") or "x",
-                model=model or os.environ.get("OPENAI_MODEL", "gpt-4o"),
-            )
-        return make_backend(model=model)
-
     try:
-        llm = build_backend(parsed.model)
+        llm = build_cli_backend(model=parsed.model, base_url=parsed.base_url)
         judge_llm = None
         if parsed.judge_model:
-            judge_llm = build_backend(parsed.judge_model)
+            judge_llm = build_cli_backend(model=parsed.judge_model, base_url=parsed.base_url)
         elif parsed.judge:
             judge_llm = llm
     except Exception as exc:

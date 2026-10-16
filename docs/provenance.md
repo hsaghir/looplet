@@ -2,7 +2,8 @@
 
 `looplet.provenance` captures exactly what your agent saw and did: every
 prompt, response, and step. It writes them to a
-diff-friendly directory you can `cat`, `grep`, and check into git.
+diff-friendly directory for private inspection with tools such as `cat` and `grep`.
+Keep raw captures out of version control; share only reviewed exports.
 
 **The loop:** capture → inspect → turn the failure into a contract → replay
 captured responses against a changed harness.
@@ -90,8 +91,8 @@ After `flush()`, the directory contains:
 ```
 
 Every file is human-readable. `trajectory.json` and `manifest.jsonl` are
-machine-parseable. You can diff, grep, version-control, attach to bug
-reports, or feed to a separate analysis pipeline.
+machine-parseable. You can diff, grep, or feed them to a private analysis pipeline.
+Review and redact evidence before attaching it to bug reports or uploading it elsewhere.
 
 Omitting `dir` gives each sink a unique directory under `.looplet/traces/`.
 `flush()` returns its path; `reset()` selects a new automatic path.
@@ -104,6 +105,45 @@ Do not use one explicit trace directory for concurrent writers.
 A trace alone does not preserve grader expectations or collected artifacts.
 Use `save_eval_run()` for a grading record that you can reload and reassess.
 See the [Quickstart](quickstart.md#4-capture-the-same-agent) for the complete handoff.
+
+### Share a reviewed summary
+
+New trace and eval-record directories contain a wildcard `.gitignore` before evidence is written.
+This protects new captures even when the surrounding project has no ignore policy.
+Looplet preserves an existing directory policy and does not edit your project's ignore file.
+Git ignore rules do not untrack existing files or prevent `git add -f`.
+They are not redaction or access controls.
+
+Export only the fields that a reviewer needs, outside the raw capture directory:
+
+```python
+import json
+from pathlib import Path
+
+from looplet import load_eval_run
+
+record = load_eval_run("eval-runs/run-001/hello")
+summary = {
+  "completed": record.context.completed,
+  "step_count": record.context.step_count,
+}
+with Path("reviewed-summary.json").open("x", encoding="utf-8") as output:
+  json.dump(summary, output, indent=2)
+  output.write("\n")
+```
+
+Review that file before committing or uploading it.
+This summary omits prompts, responses, task data, expectations, and artifacts.
+It is not replay evidence, a correctness verdict, or automatic permission to disclose run information.
+Configure `redact=` before capture when a fuller export is needed, and review that export separately.
+
+### Replay from the shell
+
+Use `looplet replay` with an explicit trusted cartridge and a new workspace.
+The [CLI recipe](cli.md#replay-captured-responses) captures, inspects, and replays one agent without a model service.
+Saved eval cases supply their agent-visible task and seed files; raw traces require `--task`.
+The command records replay evidence separately and leaves the original capture unchanged.
+Fresh tool and hook effects still execute; it is not a sandbox or checkpoint restoration.
 
 `looplet show` and `replay_loop()` fail before rendering or execution when the
 evidence structures they consume are malformed. Replay also requires

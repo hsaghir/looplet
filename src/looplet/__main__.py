@@ -2,6 +2,7 @@
 
 Subcommands:
     show <trace-dir>              One-page summary of a captured trace directory.
+    replay <trace-dir>            Replay captured responses with a trusted cartridge.
     doctor                        Check local looplet/backend configuration.
     run <bundle> <task>           Run a runnable skill bundle.
     blueprint <bundle>            Print a bundle blueprint as JSON.
@@ -231,6 +232,62 @@ def _status_line(status: str, name: str, detail: str) -> str:
     return f"{marks.get(status, '?')} {name}: {detail}"
 
 
+def _endpoint_check(backend: Any) -> dict[str, str] | None:
+    import os
+    from urllib.parse import urlsplit
+
+    from looplet.backends import AnthropicBackend, OpenAIBackend
+
+    endpoint = getattr(getattr(backend, "_client", None), "base_url", None)
+    if endpoint is None:
+        return None
+    try:
+        parsed = urlsplit(str(endpoint))
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise ValueError("unsupported endpoint")
+        host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
+        port = f":{parsed.port}" if parsed.port is not None else ""
+        origin = f"{parsed.scheme}://{host}{port}"
+    except ValueError:
+        return {
+            "name": "endpoint",
+            "status": "warn",
+            "detail": "endpoint could not be safely displayed",
+        }
+    source = "provider client default"
+    normalized = parsed._replace(path=parsed.path.rstrip("/"), query=parsed.query.rstrip("/"))
+    variables: tuple[str, ...] = ()
+    if isinstance(backend, AnthropicBackend):
+        variables = ("ANTHROPIC_BASE_URL",)
+    elif isinstance(backend, OpenAIBackend):
+        provider = os.environ.get("LOOPLET_PROVIDER", "").lower()
+        if provider in {"openai", "oai"} or (
+            not provider and (os.environ.get("OPENAI_API_KEY") or os.environ.get("OPENAI_BASE_URL"))
+        ):
+            variables = ("OPENAI_BASE_URL",)
+        else:
+            variables = ("COPILOT_PROXY_URL", "LOOPLET_TAX_LLM_BASE_URL", "OPENAI_BASE_URL")
+    for variable in variables:
+        configured = os.environ.get(variable)
+        if not configured:
+            continue
+        try:
+            candidate = urlsplit(configured)
+        except ValueError:
+            continue
+        if (
+            candidate._replace(path=candidate.path.rstrip("/"), query=candidate.query.rstrip("/"))
+            == normalized
+        ):
+            source = variable
+            break
+    return {
+        "name": "endpoint",
+        "status": "ok",
+        "detail": f"{origin} (origin only; source: {source})",
+    }
+
+
 def _doctor_checks(*, probe_backend: bool) -> list[dict[str, str]]:
     import warnings
 
@@ -261,6 +318,9 @@ def _doctor_checks(*, probe_backend: bool) -> list[dict[str, str]]:
                     "detail": str(getattr(llm, "_model", "backend default")),
                 }
             )
+            endpoint = _endpoint_check(llm)
+            if endpoint is not None:
+                checks.append(endpoint)
         except Exception as exc:
             checks.append({"name": "backend_config", "status": "warn", "detail": str(exc)})
     for warning in backend_warnings:
@@ -880,6 +940,7 @@ def main(argv: list[str] | None = None) -> int:
             ("run", "Run a cartridge or skill bundle"),
             ("inspect", "Inspect declarations, live wiring, or captured traces"),
             ("eval", "Test agent behavior against cases"),
+            ("replay", "Replay captured responses in a fresh workspace"),
         ):
             print(f"  {command:10s} {description}")
         print("\nUse COMMAND --help for options; --help-all lists every command and alias.")

@@ -157,6 +157,7 @@ Policy hooks still run. The reference coder ships no implicit eval hook.
 
 The CLI saves each invocation under a unique `.looplet/evals/<cartridge>-<id>/` directory in the current directory.
 Human output prints the path; JSON reports it as `output_dir`.
+Copy the printed per-case `Inspect:` commands to inspect individual traces; `output_dir` is their parent.
 Use `--out eval-runs/run-001` for an explicit path, or `--no-save` to disable evidence persistence.
 These options are mutually exclusive.
 The Python API still requires `output_dir=` to persist runs.
@@ -196,6 +197,10 @@ rescoring, and pytest use the same graders, not different eval formats.
 Case files, expected data, collectors, and graders belong to the evaluation
 owner. Colocated cartridge cases are self-tests; protected promotion holdouts
 remain host-owned. Fresh case workspaces are not an OS security boundary.
+New persisted case directories own a wildcard `.gitignore` before seeding, including when model capture is disabled.
+Existing ignore policies are preserved; tracked files and force-adds are not protected.
+See [reviewed summaries](provenance.md#share-a-reviewed-summary) before sharing evidence.
+Use the [CLI replay recipe](cli.md#replay-captured-responses) to replay one captured case in a new workspace.
 
 The [network-free regression proof](regression-demo.md) shows this pipeline
 end to end: one captured run, one tool fix, the same model responses, and a

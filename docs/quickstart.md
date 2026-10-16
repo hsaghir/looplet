@@ -15,7 +15,7 @@ PyPI `0.3.0` does not include these result helpers.
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-python -m pip install "looplet @ git+https://github.com/hsaghir/looplet.git@ed7ce2da51b7217e23158d4aa74efa06c037751e"
+python -m pip install "looplet @ git+https://github.com/hsaghir/looplet.git@8fe1196fe27160f737896029621b86c14c9b8a5d"
 ```
 
 The core package has no third-party runtime dependencies.
@@ -196,6 +196,8 @@ Run the printed `inspect` command to read the saved run.
 Each execution gets a unique directory under `.looplet/traces/`.
 An explicit `ProvenanceSink(dir=...)` refuses existing evidence unless you pass `overwrite=True`.
 Capture can contain secrets or personal data; review it before sharing or committing it.
+New record directories own a wildcard `.gitignore`; it does not protect already tracked files or replace redaction.
+See [reviewed summaries](provenance.md#share-a-reviewed-summary) before exporting evidence.
 
 The grading hook owns the live assessment once.
 `save_eval_run()` saves its expectations separately from the agent-visible task.
@@ -244,6 +246,7 @@ Replay does not call the original model backend.
 Tools and their effects run again.
 Use isolated workspaces and controlled inputs for tools that write files or contact services.
 A changed prompt or model needs a new model run, not replay.
+For packaged agents, the [shell replay recipe](cli.md#replay-captured-responses) provides the same handoff through `looplet replay`.
 
 ## Inspect steps or stop early
 
@@ -297,7 +300,7 @@ See the [Python API](api.md#execution-core) for that form.
 Keep `first_loop.py` unchanged and install the adapter for the same tutorial snapshot:
 
 ```bash
-python -m pip install "looplet[openai] @ git+https://github.com/hsaghir/looplet.git@ed7ce2da51b7217e23158d4aa74efa06c037751e"
+python -m pip install "looplet[openai] @ git+https://github.com/hsaghir/looplet.git@8fe1196fe27160f737896029621b86c14c9b8a5d"
 export OPENAI_API_KEY=...
 export OPENAI_MODEL=gpt-4o
 ```

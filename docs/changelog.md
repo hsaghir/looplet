@@ -8,6 +8,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `looplet replay` uses captured responses with a trusted cartridge and fresh workspace, preserving original evidence and excluding grader-only expectations.
 - `tools_from` and `minimal_preset` accept `validate=True` for top-level typed argument checks before tool effects.
 - `ProvenanceSink` chooses unique directories by default and requires `overwrite=True` to replace existing evidence.
 - Scaffold inspection lists unimplemented tools and separates draft readiness from structural runtime validation.
@@ -29,7 +30,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - `inspect`, `describe`, and `blueprint` share explicit `--mode declaration|runtime`
   vocabulary. Runtime reports validate one built preset and close resources;
   declaration inspection stays import-free and legacy defaults remain supported.
-- Default help promotes `new`, `run`, `inspect`, and `eval`; `--help-all` lists
+- Default help promotes `new`, `run`, `inspect`, `eval`, and `replay`; `--help-all` lists
   every advanced command and compatibility alias without removing capabilities.
 - Installed-wheel qualification executes paired raw-loop/preset sync/async
   clients, checking outcome parity, visible state, fresh executions, early exit,
@@ -67,6 +68,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- New saved evidence directories own wildcard Git ignore policies; existing policies are preserved, and guides describe reviewed summary exports.
+- Human eval output prints executable per-case inspection commands instead of leaving users to discover child trace paths.
+- `doctor` reports effective endpoint origins and configuration sources without URL credentials, paths, queries, or fragments.
 - Automatic provider selection warns about conflicting Anthropic and OpenAI settings; `doctor --strict` requires an explicit choice.
 - CLI cartridge evals save evidence in unique directories by default; `--no-save` explicitly disables persistence without changing Python API defaults.
 - Human eval tables size and separate columns for long grader names and metric values.

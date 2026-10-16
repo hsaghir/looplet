@@ -30,6 +30,11 @@ def begin_artifact_write(directory: str | Path) -> None:
     """Mark an artifact incomplete before removing its previous descriptor."""
     root = Path(directory)
     root.mkdir(parents=True, exist_ok=True)
+    try:
+        with (root / ".gitignore").open("x", encoding="utf-8") as ignore:
+            ignore.write("*\n")
+    except FileExistsError:
+        pass
     _atomic_write(root / ARTIFACT_PENDING, "incomplete\n")
     (root / ARTIFACT_DESCRIPTOR).unlink(missing_ok=True)
 

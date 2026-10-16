@@ -90,7 +90,7 @@ Use this source install for the Python examples and CLI commands in these guides
 Run it inside a virtual environment:
 
 ```bash
-python -m pip install "looplet @ git+https://github.com/hsaghir/looplet.git@ed7ce2da51b7217e23158d4aa74efa06c037751e"
+python -m pip install "looplet @ git+https://github.com/hsaghir/looplet.git@8fe1196fe27160f737896029621b86c14c9b8a5d"
 ```
 
 See the [Quickstart](quickstart.md) for environment setup and the same agent's tests.

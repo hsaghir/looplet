@@ -20,10 +20,10 @@ There are two runnable file formats:
   hooks, resources, and optional evals;
 - a **skill bundle** is an executable packaged skill with a Python entrypoint.
 
-Use one workflow: `new`, `run`, `inspect`, then `eval`. `run` detects either
+Use `new`, `run`, `inspect`, and `eval`; add `replay` when comparing captured responses. `run` detects either
 format; `inspect` defaults to cartridge declarations, bundle metadata, or a saved
 trace without importing authored agent code. The formats remain distinct.
-Default help shows the four-command workflow. `--help-all` reveals advanced
+Default help shows the main workflow. `--help-all` reveals advanced
 commands and compatibility aliases; their individual help remains available.
 `run-cartridge` / `run-workspace`, `run-bundle`, `describe`, and `show` remain
 available when a script needs an explicit format.
@@ -55,6 +55,10 @@ set `LOOPLET_PROVIDER` when multiple providers are available. See
 Automatic selection warns when Anthropic and OpenAI settings are both present.
 The existing Anthropic-first precedence remains unchanged.
 `doctor` reports a `provider_selection` warning; `--strict` fails until you choose a provider explicitly.
+
+The `endpoint` check shows the effective scheme, host, port, and matching configuration variable or provider client default.
+It displays only the origin; user info, paths, queries, and fragments are omitted because they may contain credentials.
+This identifies the configured destination without claiming connectivity when `--no-backend` is used.
 
 ### `looplet inspect <path>`
 
@@ -102,6 +106,40 @@ directory. JSON output contains the parsed `trajectory.json` object and
 [saved artifacts](artifacts.md) for the complete layout.
 Missing or null timings do not contribute to human timing totals; JSON output
 and the stored evidence retain their original values.
+
+### Replay captured responses
+
+This complete example needs no model service or API key after the source installation:
+
+```bash
+looplet new "Finish with a short summary" ./replay-demo.cartridge --offline
+looplet run ./replay-demo.cartridge "Say hello" --project-root . \
+  --trace-dir ./original-trace \
+  --scripted-response '{"tool":"done","args":{"summary":"Hello"}}' \
+  --require-completed
+looplet inspect ./original-trace
+looplet replay ./original-trace --cartridge ./replay-demo.cartridge \
+  --workspace ./replayed-workspace --task "Say hello" --require-completed --json
+```
+
+Choose unused paths when repeating this example; existing evidence and replay workspaces are refused.
+The final command uses recorded model responses and writes a separate trace under the new workspace's `.looplet/traces/` directory.
+Its JSON and `--require-completed` behavior match `run`.
+It does not grade correctness or modify the original capture.
+
+For a saved eval case, pass its individual case directory instead of a parent run directory:
+
+```bash
+looplet replay eval-runs/run-001/hello --cartridge ./agent.cartridge \
+  --workspace ./replay-workspaces/hello-001 --require-completed
+```
+
+Saved cases supply agent-visible task data and seed files; grader-only expectations are not forwarded to the agent.
+Raw traces need `--task` because they may not preserve the task.
+`--task` replaces the saved agent task with the supplied goal; `--max-steps` overrides the cartridge budget.
+Use only trusted cartridges: loading imports authored code, and tools, hooks, networks, and other effects execute again.
+A fresh directory is not an operating-system sandbox, checkpoint restoration, or a guarantee of identical results.
+Authored tools and resources may contact services even though replay does not construct the original provider backend.
 
 ## Build and run cartridges
 
@@ -255,6 +293,8 @@ looplet eval run ./agent.cartridge \
 
 Each invocation saves cases under a unique `.looplet/evals/<cartridge>-<id>/` directory in the current directory.
 Human output prints that directory; JSON includes it as `output_dir`.
+Human output also prints a shell-quoted `Inspect:` command for each saved case.
+Use those commands directly; the parent `output_dir` groups cases and is not an individual trace.
 Failed grades retain the same evidence as passing grades.
 Use `--out` to choose another directory, or `--no-save` to disable persistence explicitly.
 `--out` and `--no-save` cannot be combined.
@@ -285,6 +325,8 @@ Consumers should tolerate added fields.
 For an explicit `--out`, choose a fresh directory for each invocation, such as `eval-runs/run-002` next.
 Existing selected case paths are refused before any case executes, including with `--no-capture`.
 Previous evidence and workspaces are not deleted.
+Each saved case owns a wildcard `.gitignore`, including its workspace, so new evidence stays out of ordinary Git staging.
+Existing ignore policies are preserved; already tracked files and force-adds remain the host's responsibility.
 Human tables size columns for grader names and values and separate them with visible delimiters.
 Ordinary Python diagnostics from loaded graders, collectors, and harness code
 go to stderr in JSON mode and are not redacted.

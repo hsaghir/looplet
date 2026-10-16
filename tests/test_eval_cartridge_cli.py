@@ -890,6 +890,51 @@ def test_cli_run_json_emits_one_eval_report(tmp_path: Path, monkeypatch, capsys)
     }
 
 
+@pytest.mark.parametrize(
+    ("score", "label", "threshold", "required", "state"),
+    [
+        (0.25, None, 0.5, False, "threshold_fail"),
+        (0.25, None, 0.0, True, "explicit_fail"),
+        (None, "skipped", 0.5, True, "skipped"),
+        (None, "skipped", 0.5, False, None),
+        (None, "error", 0.5, False, "grader_error"),
+        (0.5, None, 0.5, False, None),
+        (1.0, "fail", 0.5, False, "explicit_fail"),
+        (1.0, "pass", 0.5, False, None),
+    ],
+)
+def test_cli_eval_human_failure_details_follow_policy(
+    tmp_path, monkeypatch, capsys, score, label, threshold, required, state
+):
+    import looplet.evals as evaluation
+    from looplet import EvalResult, eval_mark
+    from looplet.__main__ import main
+
+    cart = _make_cartridge(tmp_path)
+    load_original = evaluation.load_cartridge_evals
+
+    @eval_mark(*(["required"] if required else []))
+    def eval_policy(ctx):
+        return EvalResult(score=score, label=label, explanation="Policy diagnostic marker")
+
+    def eval_success(ctx):
+        return True
+
+    def load_definitions(*arguments, **keywords):
+        return load_original(*arguments, **keywords)._replace(graders=[eval_policy, eval_success])
+
+    monkeypatch.setattr(evaluation, "load_cartridge_evals", load_definitions)
+    monkeypatch.setattr(
+        "looplet.backends.make_backend", lambda **kwargs: MockLLMBackend(_scripted())
+    )
+    arguments = ["eval", "run", str(cart), "--no-save", "--threshold", str(threshold)]
+    assert main(arguments) == (1 if state is not None else 0)
+    output = capsys.readouterr().out
+    assert ("Policy diagnostic marker" in output) is (state is not None)
+    if state is not None:
+        assert f"make_greeting / eval_policy: {state}" in output
+
+
 @pytest.mark.parametrize("json_output", [False, True])
 def test_cli_run_routes_authored_output_without_changing_human_mode(
     tmp_path: Path, monkeypatch, capsys, json_output: bool
@@ -1235,6 +1280,112 @@ def test_cli_replay_executes_changed_tools(tmp_path, monkeypatch, capsys):
     assert json.loads(capsys.readouterr().out)["completed"]
     assert (workspace / "greeting.py").read_text() == original_contents + "\nreplayed = True\n"
     assert (original / "workspace" / "greeting.py").read_text() == original_contents
+
+
+@pytest.mark.parametrize("python_test", [False, True])
+def test_cli_eval_init_prints_runnable_next_steps(tmp_path, capsys, python_test):
+    import subprocess
+    import sys
+
+    from looplet.__main__ import main
+
+    definitions = tmp_path / "project with spaces" / "evals"
+    arguments = ["eval", "init", str(definitions)]
+    if python_test:
+        arguments.append("--python")
+    assert main(arguments) == 0
+    output = capsys.readouterr()
+    assert "Check: looplet eval check" in output.out
+    starter = definitions / "test_agent.py"
+    assert starter.exists() is python_test
+    assert main(["eval", "check", str(definitions), "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["valid"] is True
+    if not python_test:
+        return
+    assert "Test: python -m pytest" in output.out
+    command = [sys.executable, "-m", "pytest", str(starter), "-q"]
+    passing = subprocess.run(
+        command, cwd=definitions.parent, capture_output=True, text=True, timeout=20
+    )
+    assert passing.returncode == 0, passing.stdout + passing.stderr
+    case_path = definitions / "cases" / "hello.json"
+    case = json.loads(case_path.read_text())
+    case["expected"]["content"] = "The grader must reject the observed hello output."
+    case_path.write_text(json.dumps(case))
+    failing = subprocess.run(
+        command, cwd=definitions.parent, capture_output=True, text=True, timeout=20
+    )
+    assert failing.returncode == 1, failing.stdout + failing.stderr
+    assert "1 failed" in failing.stdout
+
+
+@pytest.mark.parametrize("relative", ["cases/hello.json", "eval_outcome.py", "test_agent.py"])
+def test_cli_eval_init_python_preserves_existing_files(tmp_path, capsys, relative):
+    from looplet.__main__ import main
+
+    definitions = tmp_path / "evals"
+    existing = definitions / relative
+    existing.parent.mkdir(parents=True)
+    existing.write_text("user-owned content\n")
+    assert main(["eval", "init", str(definitions), "--python"]) == 1
+    assert "Refusing to overwrite" in capsys.readouterr().err
+    assert existing.read_text() == "user-owned content\n"
+    assert [path for path in definitions.rglob("*") if path.is_file()] == [existing]
+
+
+@pytest.mark.parametrize("json_output", [False, True])
+@pytest.mark.parametrize("save_evidence", [False, True])
+def test_cli_eval_exposes_failed_grader_explanations(
+    tmp_path, monkeypatch, capsys, json_output, save_evidence
+):
+    import looplet.evals as evaluation
+    from looplet import EvalResult, eval_mark
+    from looplet.__main__ import main
+
+    cart = _make_cartridge(tmp_path)
+    load_original = evaluation.load_cartridge_evals
+
+    @eval_mark("required")
+    def eval_validation(ctx):
+        return EvalResult(
+            score=0.0,
+            label="fail",
+            explanation="No validation result was collected",
+            details=["The host did not supply validation evidence."],
+        )
+
+    def eval_success(ctx):
+        return EvalResult(score=1.0, explanation="Passing grader detail")
+
+    def load_definitions(*arguments, **keywords):
+        return load_original(*arguments, **keywords)._replace(
+            graders=[eval_validation, eval_success]
+        )
+
+    monkeypatch.setattr(evaluation, "load_cartridge_evals", load_definitions)
+    monkeypatch.setattr(
+        "looplet.backends.make_backend", lambda **kwargs: MockLLMBackend(_scripted())
+    )
+    arguments = ["eval", "run", str(cart)]
+    if save_evidence:
+        arguments.extend(["--out", str(tmp_path / "records")])
+    else:
+        arguments.append("--no-save")
+    if json_output:
+        arguments.append("--json")
+    assert main(arguments) == 1
+    output = capsys.readouterr()
+    assert not output.err
+    assert "No validation result was collected" in output.out
+    assert "The host did not supply validation evidence." in output.out
+    if json_output:
+        report = json.loads(output.out)
+        assert report["passed"] is False
+        assert "Passing grader detail" in output.out
+    else:
+        assert "make_greeting" in output.out
+        assert "eval_validation" in output.out
+        assert "Passing grader detail" not in output.out
 
 
 @pytest.mark.parametrize("saved_case", [False, True])

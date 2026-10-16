@@ -11,7 +11,7 @@ A cartridge is optional for normal loop use.
 
 The complete example is in
 [`examples/regression_demo/`](https://github.com/hsaghir/looplet/tree/master/examples/regression_demo).
-Run it after the source install:
+Run it after package installation:
 
 ```bash
 looplet-proof

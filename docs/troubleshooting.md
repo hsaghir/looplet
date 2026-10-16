@@ -74,11 +74,11 @@ export ANTHROPIC_API_KEY=...
 export ANTHROPIC_MODEL=claude-sonnet-4-20250514
 ```
 
-The source version of `looplet doctor` probes the configured provider.
+`looplet doctor` probes the configured provider.
 Set `LOOPLET_PROVIDER=anthropic` to choose Anthropic explicitly.
 Without an override, it selects Anthropic when an Anthropic key is present.
 Otherwise, it selects a configured OpenAI-compatible provider.
-PyPI `0.3.0` has an OpenAI-only `doctor`; use the source version for Anthropic checks.
+Looplet `0.4.0` checks both OpenAI and Anthropic configurations.
 
 ## The loop produces no steps
 

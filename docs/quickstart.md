@@ -6,20 +6,19 @@ You do not need a model key until the optional real-model section.
 Start with Python functions.
 Cartridges and bundles are optional packaging formats, not prerequisites.
 
-## 1. Install the source version
+## 1. Install Looplet
 
-Install this immutable tutorial snapshot in your own project.
-It contains the APIs used below and does not require a local repository checkout.
-PyPI `0.3.0` does not include these result helpers.
+Install the published package in your own project.
+It contains the APIs used below and does not require Git or a repository checkout.
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-python -m pip install "looplet @ git+https://github.com/hsaghir/looplet.git@9de0299ad20227b2da89e9d09986f26b704c64ca"
+python -m pip install "looplet==0.4.0"
 ```
 
 The core package has no third-party runtime dependencies.
-The install needs Git and network access; the fixed-response runs do not.
+The install needs network access; the fixed-response runs do not.
 On Windows, activate `.venv\Scripts\Activate.ps1` in PowerShell.
 See [Install](install.md) for virtual environments and model providers.
 
@@ -164,7 +163,9 @@ looplet eval check first_loop.py --json
 
 Run Python agents with `python first_loop.py`; run their tests with pytest.
 `looplet run` loads cartridges or bundles; `looplet eval run` executes cartridge eval cases.
-`eval init evals/` creates optional definitions; it does not create a Python runner.
+`eval init --python evals/` creates definitions and a runnable pytest example.
+Run it with `python -m pytest evals/test_agent.py`.
+Omit `--python` to create definitions only.
 
 ## 4. Capture the same agent
 
@@ -297,10 +298,10 @@ See the [Python API](api.md#execution-core) for that form.
 
 ## Use the same agent with a real model
 
-Keep `first_loop.py` unchanged and install the adapter for the same tutorial snapshot:
+Keep `first_loop.py` unchanged and install the adapter for the same release:
 
 ```bash
-python -m pip install "looplet[openai] @ git+https://github.com/hsaghir/looplet.git@9de0299ad20227b2da89e9d09986f26b704c64ca"
+python -m pip install "looplet[openai]==0.4.0"
 export OPENAI_API_KEY=...
 export OPENAI_MODEL=gpt-4o
 ```

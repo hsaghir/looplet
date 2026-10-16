@@ -30,15 +30,15 @@ It does not require a workflow graph, a hosted service, or a cartridge.
 
 ## Run one loop
 
-Use this source install for the Python examples and CLI commands in these guides.
-It includes their APIs; no local repository checkout is needed.
+Install the published package for the Python examples and CLI commands in these guides.
+No local repository checkout is needed.
 
 ```bash
-python -m pip install "looplet @ git+https://github.com/hsaghir/looplet.git@9de0299ad20227b2da89e9d09986f26b704c64ca"
+python -m pip install "looplet==0.4.0"
 ```
 
 Run this inside a virtual environment; see [Install](docs/install.md).
-Git and network access are required during installation.
+Installation needs network access, but not Git.
 
 The example uses fixed model responses.
 It runs without a model service or an API key.
@@ -114,8 +114,7 @@ You do not need a new execution engine to use them.
 | Use an agent from a shell | `new`, `run`, `inspect`, and `eval` | [Command-line guide](docs/cli.md) |
 | Connect tools or other hosts | Protocol adapters | [Portability](docs/portability.md) |
 
-The source install above includes the Python helpers and CLI commands used in these guides.
-PyPI `0.3.0` does not include these additions.
+Looplet `0.4.0` includes the Python helpers and CLI commands used in these guides.
 Older commands, such as `run-cartridge`, `describe`, and `show`, remain supported.
 
 ## Check results
@@ -127,7 +126,7 @@ Use a collector to read the files or records that the agent produced.
 Use a grader to compare that evidence with the expected result.
 Required graders can fail a test or a continuous integration check.
 
-Run the regression example after the source install:
+Run the regression example after installation:
 
 ```bash
 looplet-proof
@@ -197,12 +196,11 @@ Before version `1.0`, a minor release can change an API incompatibly.
 Pin the minor version for a published install:
 
 ```toml
-looplet>=0.3,<0.4
+looplet>=0.4,<0.5
 ```
 
-The latest PyPI release is `0.3.0`.
-This checkout identifies as `0.4.0` and includes unpublished changes.
-Use a source install for the examples and new APIs in this guide.
+The latest PyPI release is `0.4.0`.
+It includes the examples and APIs in this guide.
 See the [changelog](CHANGELOG.md) and [release plan](ROADMAP.md#path-to-10).
 
 ## Contributing

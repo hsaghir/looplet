@@ -358,6 +358,32 @@ def _run_cartridge(args: argparse.Namespace, *, output: TextIO) -> int:
             return 1
         trajectory_metadata["parent_run_id"] = parent_run_id
 
+    sink = None
+    if not getattr(args, "no_trace", False):
+        effective_trace_dir = getattr(args, "trace_dir", None)
+        if effective_trace_dir is None:
+            cartridge_name = workspace_path.name.removesuffix(".cartridge")
+            effective_trace_dir = (
+                effective_project_root
+                / ".looplet"
+                / "traces"
+                / f"{cartridge_name}-{uuid.uuid4().hex[:12]}"
+            )
+        try:
+            sink = ProvenanceSink(dir=effective_trace_dir, metadata=trajectory_metadata)
+        except FileExistsError:
+            print(
+                _red(
+                    f"error: trace output already exists: {effective_trace_dir}. "
+                    "Choose a new --trace-dir or omit it for a unique trace path."
+                ),
+                file=sys.stderr,
+            )
+            return 1
+        except OSError as exc:
+            print(_red(f"error: cannot prepare trace output: {exc}"), file=sys.stderr)
+            return 1
+
     try:
         scripted_responses = getattr(args, "scripted_response", None)
         if scripted_responses:
@@ -385,19 +411,7 @@ def _run_cartridge(args: argparse.Namespace, *, output: TextIO) -> int:
         preset.config.max_steps = args.max_steps
         preset.state.max_steps = args.max_steps
     state = preset.state
-    sink = None
-    effective_trace_dir = None
-    if not getattr(args, "no_trace", False):
-        effective_trace_dir = getattr(args, "trace_dir", None)
-        if effective_trace_dir is None:
-            cartridge_name = workspace_path.name.removesuffix(".cartridge")
-            effective_trace_dir = (
-                effective_project_root
-                / ".looplet"
-                / "traces"
-                / f"{cartridge_name}-{uuid.uuid4().hex[:12]}"
-            )
-        sink = ProvenanceSink(dir=effective_trace_dir, metadata=trajectory_metadata)
+    if sink is not None:
         backend = sink.wrap_llm(backend)
 
     hooks = []

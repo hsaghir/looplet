@@ -1551,6 +1551,8 @@ def run_cartridge_evals(
             :class:`looplet.types.LLMBackend` surface).
         output_dir: when set, persist ``<output_dir>/<case_id>/`` per
             case; the seeded sandbox lives at ``…/<case_id>/workspace``.
+            Existing selected case paths raise ``FileExistsError`` before
+            any case executes. Choose a fresh directory for each run.
             When ``None``, sandboxes are throwaway tempdirs.
         runtime: base runtime dict merged into every case's load
             (the per-case sandbox path is injected under
@@ -1597,6 +1599,22 @@ def run_cartridge_evals(
     if not overview.graders:
         raise ValueError("No graders selected")
 
+    run_dirs: dict[str, Path] = {}
+    if output_dir is not None:
+        output_root = Path(output_dir)
+        for case in selected:
+            run_dir = _contained_child(
+                output_root,
+                _validate_case_id(case.id),
+                label="eval run directory",
+            )
+            if run_dir.exists() or run_dir.is_symlink():
+                raise FileExistsError(
+                    f"Eval output already exists: {run_dir}. "
+                    "Choose a new output_dir (CLI: --out) to preserve saved runs."
+                )
+            run_dirs[case.id] = run_dir
+
     records: list[EvalRunRecord] = []
     for case in selected:
         if "expected" in case.task:
@@ -1605,16 +1623,7 @@ def run_cartridge_evals(
                 "use the top-level case expected field"
             )
         if output_dir is not None:
-            output_root = Path(output_dir)
-            run_dir = _contained_child(
-                output_root,
-                _validate_case_id(case.id),
-                label="eval run directory",
-            )
-            if run_dir.is_symlink():
-                run_dir.unlink()
-            elif run_dir.exists():
-                shutil.rmtree(run_dir)
+            run_dir = run_dirs[case.id]
             if capture:
                 run_dir.mkdir(parents=True, mode=0o700)
             sandbox = run_dir / "workspace"
@@ -3337,7 +3346,7 @@ def _run_cartridge_evaluation(parsed: Namespace, *, output: TextIO) -> int:
             judge_llm=judge_llm,
             capture=not parsed.no_capture,
         )
-    except ValueError as exc:
+    except (ValueError, FileExistsError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 

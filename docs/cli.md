@@ -128,6 +128,19 @@ The final command uses recorded model responses and writes a separate trace unde
 Its JSON and `--require-completed` behavior match `run`.
 It does not grade correctness or modify the original capture.
 
+Raw captures do not contain a snapshot of the original workspace. Supply a reviewed starting input tree explicitly when tools need files:
+
+```bash
+looplet replay ./original-trace --cartridge ./agent.cartridge \
+  --workspace ./seeded-replay-workspace --seed-from ./starting-inputs
+```
+
+The new workspace must be outside the seed directory. Nested files, binary data, empty directories, and file permissions are copied without modifying the inputs.
+Git metadata, `.looplet` directories, and the selected trace and cartridge trees are excluded.
+Symlinks and special files in the included tree are rejected before cartridge loading.
+Choose agent-visible inputs only; this option does not reconstruct historical files or isolate tool effects.
+Saved eval cases already supply their seed files and reject `--seed-from` rather than mixing input sources.
+
 For a saved eval case, pass its individual case directory instead of a parent run directory:
 
 ```bash
@@ -207,6 +220,13 @@ looplet new \
   --tool run_tests
 ```
 
+Live creation accepts the same model and endpoint overrides as `run` and `eval run`:
+
+```bash
+looplet new "Inspect local inputs" ./local-agent.cartridge \
+  --model local-model --base-url http://localhost:11434/v1
+```
+
 For a draft with placeholder tools and no provider or API key:
 
 ```bash
@@ -239,7 +259,7 @@ looplet run ./agent.cartridge \
   --max-steps 20
 ```
 
-`run`, its explicit cartridge and bundle aliases, and `eval run` accept the same provider options:
+Live `new`, `run`, its explicit cartridge and bundle aliases, and `eval run` accept the same provider options:
 
 ```bash
 looplet run ./agent.cartridge "Inspect the current change" \
@@ -424,10 +444,12 @@ Use `save_eval_run()` when preserving those inputs; see the [Quickstart](quickst
 ### Browse case data
 
 ```bash
-looplet eval cases ls evals/cases/
-looplet eval cases show evals/cases/ regression_42
+looplet eval cases ls evals/
+looplet eval cases show evals/ regression_42
 ```
 
+Both commands accept an eval root, a direct case directory, or a JSON/JSONL file without importing graders.
+Listings preview `task.description`, then `task.goal`, then case notes.
 Cases are JSON source data. Keep agent-visible task input under `task` and
 protected expectations in the top-level `expected` object.
 

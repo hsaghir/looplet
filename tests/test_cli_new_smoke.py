@@ -31,6 +31,52 @@ def test_new_help() -> None:
     assert exc.value.code == 0
 
 
+@pytest.mark.parametrize(
+    ("model", "base_url"),
+    [
+        (None, None),
+        ("chosen-model", None),
+        (None, "http://localhost:11434/v1"),
+        ("chosen-model", "http://localhost:11434/v1"),
+    ],
+)
+def test_new_provider_options_share_resolver_without_environment_changes(
+    tmp_path, monkeypatch, capsys, model, base_url
+):
+    from looplet import MockLLMBackend
+
+    monkeypatch.setenv("LOOPLET_PROVIDER", "anthropic")
+    monkeypatch.setenv("OPENAI_MODEL", "environment-model")
+    monkeypatch.setenv("OPENAI_API_KEY", "test")
+    environment = dict(os.environ)
+    received = []
+
+    def make_backend(**kwargs):
+        received.append(kwargs)
+        return MockLLMBackend([])
+
+    def stop_at_factory():
+        raise ValueError("controlled factory fixture boundary")
+
+    monkeypatch.setattr("looplet.backends.make_backend", make_backend)
+    monkeypatch.setattr(
+        "looplet.backends.OpenAIBackend", lambda **kwargs: make_backend(provider="openai", **kwargs)
+    )
+    monkeypatch.setattr("looplet.cli.factory_commands._factory_workspace_path", stop_at_factory)
+    arguments = ["new", "Read the local input", str(tmp_path / "local.cartridge")]
+    if model is not None:
+        arguments.extend(["--model", model])
+    if base_url is not None:
+        arguments.extend(["--base-url", base_url])
+    assert main(arguments) == 1
+    assert "controlled factory fixture boundary" in capsys.readouterr().err
+    assert len(received) == 1
+    assert received[0].get("model") == (model or "environment-model" if base_url else model)
+    assert received[0].get("base_url") == base_url
+    assert received[0].get("provider") == ("openai" if base_url else None)
+    assert dict(os.environ) == environment
+
+
 def test_root_help_discloses_workflow_before_advanced_commands(capsys):
     with pytest.raises(SystemExit) as stopped:
         main(["--help"])

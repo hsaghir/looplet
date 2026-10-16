@@ -142,6 +142,9 @@ Configure `redact=` before capture when a fuller export is needed, and review th
 Use `looplet replay` with an explicit trusted cartridge and a new workspace.
 The [CLI recipe](cli.md#replay-captured-responses) captures, inspects, and replays one agent without a model service.
 Saved eval cases supply their agent-visible task and seed files; raw traces reuse saved trajectory tasks when available.
+Raw traces do not snapshot starting files. Use `--seed-from ./starting-inputs` to copy a reviewed input directory into the new workspace without modifying the source.
+The workspace must be outside that directory. Git and Looplet metadata and the selected trace and cartridge trees are excluded; included symlinks and special files are rejected.
+Saved cases reject `--seed-from` because they already define their seed files.
 Pass `--task` when no task was saved, or to replace the saved task with a new goal.
 The default replay budget uses recorded tool steps, with captured response count as a fallback.
 Use `--max-steps` to override that budget.

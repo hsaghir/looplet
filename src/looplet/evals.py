@@ -835,7 +835,8 @@ def load_cases(path: str | Path) -> list["EvalCase"]:
       case dicts;
     * a single ``.jsonl`` file with one case dict per line;
     * a directory containing any mix of ``*.json`` / ``*.jsonl`` files
-      (sorted by file name, then by their internal order).
+            (sorted by file name, then by their internal order);
+        * an eval definitions root containing a ``cases/`` directory.
 
     Cases are returned in deterministic order so pytest IDs are stable.
     Raises :class:`FileNotFoundError` if ``path`` doesn't exist and
@@ -845,6 +846,8 @@ def load_cases(path: str | Path) -> list["EvalCase"]:
     if not root.exists():
         raise FileNotFoundError(f"No such case path: {root}")
 
+    if root.is_dir() and (root / "cases").is_dir():
+        root = root / "cases"
     if root.is_file():
         files = [root]
     else:
@@ -3505,9 +3508,9 @@ def _cases_cli(args: list[str]) -> int:
     )
     sub = parser.add_subparsers(dest="action", required=True)
     p_ls = sub.add_parser("ls", help="List cases (one line per case).")
-    p_ls.add_argument("path", help="Case file or directory.")
+    p_ls.add_argument("path", help="Eval root, case directory, or case file.")
     p_show = sub.add_parser("show", help="Show a case in full.")
-    p_show.add_argument("path", help="Case file or directory.")
+    p_show.add_argument("path", help="Eval root, case directory, or case file.")
     p_show.add_argument(
         "case_id",
         nargs="?",
@@ -3536,7 +3539,9 @@ def _cases_cli(args: list[str]) -> int:
         for c in cases:
             marks = ",".join(c.marks) or "-"
             desc = textwrap.shorten(
-                (c.task.get("description") or c.notes or "").replace("\n", " "),
+                str(c.task.get("description") or c.task.get("goal") or c.notes or "").replace(
+                    "\n", " "
+                ),
                 width=60,
                 placeholder="...",
             )

@@ -594,14 +594,17 @@ rather than exposing it to the agent.
 Browse the corpus from the CLI:
 
 ```bash
-looplet eval cases ls evals/cases/
+looplet eval cases ls evals/
 #   add_basic     [smoke      ] Create math_utils.add() with a regression test
 #   multiply_fix  [regression ] Fix the multiply bug in calc.py
 #
 #   2 case(s)
 
-looplet eval cases show evals/cases/ multiply_fix   # full JSON dump
+looplet eval cases show evals/ multiply_fix   # full JSON dump
 ```
+
+Use the same eval root as `eval init` and `eval check`, or pass a direct case directory or JSON/JSONL file.
+Browsing does not import graders. Listings preview the task description, goal, or notes in that order.
 
 Run them with stock pytest. The shortest path uses two helpers, with no
 `pytest` import needed in your test file:

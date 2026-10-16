@@ -1524,6 +1524,24 @@ def load_eval_run(directory: str | Path) -> "EvalRunRecord":
     return EvalRunRecord(case=case, context=context, results=results, directory=root)
 
 
+def _select_eval_cases(
+    available_cases: list[EvalCase], case_ids: list[str] | None
+) -> list[EvalCase]:
+    wanted = set(case_ids) if case_ids is not None else None
+    if wanted is not None:
+        available = {case.id for case in available_cases}
+        unknown = sorted(wanted - available)
+        if unknown:
+            raise ValueError(
+                f"Unknown eval case id(s): {', '.join(unknown)}; "
+                f"available: {', '.join(sorted(available)) or '(none)'}"
+            )
+    selected = [case for case in available_cases if wanted is None or case.id in wanted]
+    if not selected:
+        raise ValueError("No eval cases selected")
+    return selected
+
+
 def run_cartridge_evals(
     cartridge_dir: str | Path,
     *,
@@ -1589,18 +1607,7 @@ def run_cartridge_evals(
     cdir = Path(cartridge_dir)
     base_runtime = dict(runtime or {})
     overview = load_cartridge_evals(cdir, runtime=base_runtime, strict=True)
-    wanted = set(cases) if cases is not None else None
-    if wanted is not None:
-        available = {case.id for case in overview.cases}
-        unknown = sorted(wanted - available)
-        if unknown:
-            raise ValueError(
-                f"Unknown eval case id(s): {', '.join(unknown)}; "
-                f"available: {', '.join(sorted(available)) or '(none)'}"
-            )
-    selected = [c for c in overview.cases if wanted is None or c.id in wanted]
-    if not selected:
-        raise ValueError("No eval cases selected")
+    selected = _select_eval_cases(overview.cases, cases)
     if not overview.graders:
         raise ValueError("No graders selected")
 
@@ -2848,7 +2855,12 @@ def _init_eval_definitions(path: Path, *, python_test: bool = False) -> list[Pat
         ),
     }
     if python_test:
-        sources["test_agent.py"] = (
+        existing_tests = sorted(path.glob("test_agent*.py"))
+        if existing_tests:
+            raise ValueError(f"Refusing to overwrite eval definition: {existing_tests[0]}")
+        if (path / "cases").is_dir() and any(path.glob("eval_*.py")):
+            sources = {}
+        sources[f"test_agent_{uuid.uuid4().hex[:12]}.py"] = (
             '"""Run a Python agent and check its independently collected output."""\n\n'
             "import json\n"
             "from pathlib import Path\n\n"
@@ -2993,7 +3005,7 @@ def _eval_definitions_cli(args: list[str]) -> int:
             "--python",
             dest="python_test",
             action="store_true",
-            help="Create a runnable pytest example with fixed model responses.",
+            help="Add a runnable pytest example without replacing existing definitions or tests.",
         )
     else:
         parser.add_argument("--json", action="store_true", help="Emit one definition check report")
@@ -3009,7 +3021,7 @@ def _eval_definitions_cli(args: list[str]) -> int:
         print(f"Check: looplet eval check {shlex.quote(str(parsed.path))}")
         if parsed.python_test:
             print("Install test dependency: python -m pip install pytest")
-            print(f"Test: python -m pytest {shlex.quote(str(parsed.path / 'test_agent.py'))}")
+            print(f"Test: python -m pytest {shlex.quote(str(parsed.path))}")
         return 0
 
     from looplet.cli import execution_output  # noqa: PLC0415
@@ -3372,6 +3384,11 @@ def _run_cartridge_evaluation(parsed: Namespace, *, output: TextIO) -> int:
     if not overview.graders:
         print(f"error: no graders (evals/eval_*.py) under {cdir / 'evals'}", file=sys.stderr)
         return 1
+    try:
+        selected_cases = _select_eval_cases(overview.cases, parsed.case)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     grader_manifest = _eval_grader_manifest(overview.graders)
 
     try:
@@ -3398,7 +3415,7 @@ def _run_cartridge_evaluation(parsed: Namespace, *, output: TextIO) -> int:
 
     if not parsed.json:
         print(
-            f"running {cdir.name}: {len(overview.cases)} case(s), "
+            f"running {cdir.name}: {len(selected_cases)} case(s), "
             f"{len(overview.graders)} grader(s), {len(overview.collectors)} collector(s)"
             f"{'  [judge on]' if judge_llm is not None else ''}\n"
         )

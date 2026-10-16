@@ -364,7 +364,7 @@ python -m pytest test_first_loop.py
 
 `eval check` imports trusted definitions and validates their shape; it does not run an agent.
 `eval init --python evals/` creates plain grader, collector, case, and pytest files.
-Run the generated test with `python -m pytest evals/test_agent.py`.
+Run the generated test with `python -m pytest evals/`.
 Omit `--python` to create definitions only.
 Use `load_evals("evals")` in your Python test to load those definitions.
 `eval run evals/` is not the next command: the runner below requires a cartridge.

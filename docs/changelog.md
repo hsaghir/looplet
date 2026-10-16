@@ -6,6 +6,13 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Python eval starters use unique test filenames so multiple generated suites collect with default pytest imports.
+- `eval init --python` adds a test to existing case and grader definitions without importing or replacing them.
+- Cartridge eval commands validate selected case IDs before constructing agent or judge backends.
+- The report-agent tutorial uses installed demo files without requiring a repository checkout.
+
 ## [0.4.0] - 2026-10-16
 
 ### Added

@@ -87,7 +87,7 @@ from looplet import minimal_preset
 
 
 def run_agent(llm, task):
-    with minimal_preset(tools=[lookup_owner], max_steps=5) as run:
+    with minimal_preset(tools=[lookup_owner], max_steps=5, validate=True) as run:
         return run.run_result(llm, task=task)
 
 
@@ -137,8 +137,15 @@ Model Context Protocol (MCP) discovery retains the server's full `inputSchema`.
 New MCP servers should use JSON Schema `required` lists.
 Older `(optional)` markers and JSON-string array or object repair remain supported.
 
-The base registry checks argument names and required fields, not every JSON Schema keyword.
-Put other constraints in the tool, MCP server, or `ValidatingToolRegistry`.
+Use `tools_from([...], validate=True)` or `minimal_preset(..., validate=True)` for typed Python tools.
+These options check top-level types, nullability, and enum choices before effects.
+They reject invalid values rather than coercing them.
+Nested schemas and other constraints remain tool-owned.
+These options are in the shared source install, not PyPI `0.3.0`.
+
+The base registry checks argument names and required fields, not full types or every JSON Schema keyword.
+Without `validate=True`, type hints describe the model's schema but do not enforce values at dispatch.
+Put other constraints in the tool, MCP server, or an explicit validation schema.
 
 A required argument must be present.
 A nullable schema, including an inferred `int | None`, accepts `None`.

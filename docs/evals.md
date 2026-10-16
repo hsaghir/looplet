@@ -254,6 +254,12 @@ Use `hook.assessment()` after live grading to avoid running those graders twice.
 Use `EvalReport.from_records(records, threshold=0.7)` to assess saved grades without rescoring.
 These interfaces share the same result classification and gate policy.
 
+A raw `ProvenanceSink` trace records execution, not a complete grading context.
+Use `save_eval_run(..., eval_hook=hook, recorder=recorder)` to retain expectations, artifacts, grades, and captured responses.
+Expectations stay in grader-only evidence, not the agent-visible task.
+The [Quickstart](quickstart.md#4-capture-the-same-agent) shows capture, persistence, reload, and reassessment together.
+The CLI accepts either a single saved run directory or a directory containing immediate child runs.
+
 Version 2 is the default for Python assessment APIs, `assert_evals_pass()`, and both CLI routes.
 It rejects empty observations, empty grader selections, duplicate results, and gates without any verdict-producing check.
 Passive metrics and optional skipped judges remain visible but cannot establish a passing gate alone.

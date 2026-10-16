@@ -30,11 +30,11 @@ It does not require a workflow graph, a hosted service, or a cartridge.
 
 ## Run one loop
 
-Install the pinned tutorial snapshot for this example.
-It includes the APIs used here; no local repository checkout is needed.
+Use this source install for the Python examples and CLI commands in these guides.
+It includes their APIs; no local repository checkout is needed.
 
 ```bash
-python -m pip install "looplet @ git+https://github.com/hsaghir/looplet.git@dbe536b3235ec8dce1dad201efcef13d1053eafc"
+python -m pip install "looplet @ git+https://github.com/hsaghir/looplet.git@efa5ed906f6c9d1f3a7762869c90da026653ff27"
 ```
 
 Run this inside a virtual environment; see [Install](docs/install.md).
@@ -59,7 +59,7 @@ llm = MockLLMBackend([
     '{"tool":"lookup_owner","args":{"service":"payments"}}',
     '{"tool":"done","args":{"summary":"The payments owner is fintech-platform."}}',
 ])
-tools = tools_from([lookup_owner], include_done=True)
+tools = tools_from([lookup_owner], include_done=True, validate=True)
 state = DefaultState(max_steps=2)
 
 with closing(composable_loop(
@@ -84,6 +84,10 @@ The tool has already run when your code receives that step.
 Use `break` to stop before the next call.
 `closing` closes the loop and runs its end hooks.
 Your code must close resources that it creates.
+
+`validate=True` checks top-level argument types, nullability, and enum choices before tools run.
+Nested data and other constraints remain the tool's responsibility.
+Without this option, the base registry checks argument names and required fields, not full types.
 
 This example selects the JSON-text protocol for its fixed responses.
 Real models use native tool calls by default.
@@ -110,8 +114,8 @@ You do not need a new execution engine to use them.
 | Use an agent from a shell | `new`, `run`, `inspect`, and `eval` | [Command-line guide](docs/cli.md) |
 | Connect tools or other hosts | Protocol adapters | [Portability](docs/portability.md) |
 
-The unified shell commands and preset result helpers are not in PyPI `0.3.0`.
-The snapshot above supports this tutorial; install the current checkout for later source-only CLI additions.
+The source install above includes the Python helpers and CLI commands used in these guides.
+PyPI `0.3.0` does not include these additions.
 Older commands, such as `run-cartridge`, `describe`, and `show`, remain supported.
 
 ## Check results

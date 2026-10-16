@@ -679,6 +679,7 @@ def tools_from(
     include_done: bool = False,
     done_name: str = "done",
     done_parameters: dict[str, Any] | None = None,
+    validate: bool = False,
 ) -> BaseToolRegistry:
     """Build a ``BaseToolRegistry`` from ``ToolSpec`` objects or callables.
 
@@ -689,11 +690,21 @@ def tools_from(
     ``include_think`` and ``include_done`` add looplet's standard helper
     tools after user tools; ``done_parameters`` customizes the completion
     payload while preserving the decorator-first construction path.
+    Set ``validate=True`` to check top-level types, nullability, and enums
+    before effects. Nested schemas and other constraints remain tool-owned.
+    The default retains the base registry's argument-name checks.
     """
-    registry = BaseToolRegistry()
+    if validate:
+        from looplet.validation import ValidatingToolRegistry  # noqa: PLC0415
+
+        registry: BaseToolRegistry = ValidatingToolRegistry()
+        register = registry.register_typed
+    else:
+        registry = BaseToolRegistry()
+        register = registry.register
     for item in specs_or_callables:
         spec = item if isinstance(item, ToolSpec) else cast(ToolSpec, tool(item))
-        registry.register(spec)
+        register(spec)
     if include_think:
         register_think_tool(registry)
     if include_done:

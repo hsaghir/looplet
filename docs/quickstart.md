@@ -15,7 +15,7 @@ PyPI `0.3.0` does not include these result helpers.
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-python -m pip install "looplet @ git+https://github.com/hsaghir/looplet.git@dbe536b3235ec8dce1dad201efcef13d1053eafc"
+python -m pip install "looplet @ git+https://github.com/hsaghir/looplet.git@efa5ed906f6c9d1f3a7762869c90da026653ff27"
 ```
 
 The core package has no third-party runtime dependencies.
@@ -47,7 +47,7 @@ def scripted_backend():
 
 
 def run_agent(llm, *, hooks=(), use_native_tools=False):
-    with minimal_preset(tools=[lookup_owner], max_steps=2) as run:
+    with minimal_preset(tools=[lookup_owner], max_steps=2, validate=True) as run:
         run.config.use_native_tools = use_native_tools
         run.hooks.extend(hooks)
         return run.run_result(llm, task={"goal": "Find the payments owner, then finish."})
@@ -77,6 +77,10 @@ It is single-use, not a reusable configuration object.
 `run_agent()` creates and closes a fresh instance for each call.
 Reuse the function for repeated or concurrent tasks, not the instance inside it.
 
+`validate=True` checks top-level tool argument types and enum choices before effects.
+Nested schemas and other constraints remain tool-owned.
+The base registry retains its lighter argument-name checks when this option is omitted.
+
 ## 3. Check the answer
 
 Completion does not prove correctness.
@@ -84,6 +88,9 @@ Append this block to `first_loop.py` to compare the observed answer with a host-
 
 ```python
 from looplet import EvalContext, eval_assess
+
+
+EXPECTED_OWNER = {"summary": "The payments owner is fintech-platform."}
 
 
 def eval_owner(ctx):
@@ -95,7 +102,7 @@ def assess_result(result):
         steps=result.steps,
         final_output=result.output,
         stop_reason=result.termination_reason,
-        task={"expected": {"summary": "The payments owner is fintech-platform."}},
+        task={"expected": dict(EXPECTED_OWNER)},
     )
     return eval_assess([eval_owner], observed_context)
 
@@ -153,30 +160,48 @@ Append this block to `first_loop.py`.
 Capture records model calls and tool steps; it does not change the agent's tools or task.
 
 ```python
-from looplet import ProvenanceSink
+from looplet import EvalHook, ProvenanceSink, save_eval_run
 
 if __name__ == "__main__":
-    sink = ProvenanceSink(dir="traces/owner")
+    sink = ProvenanceSink()
+    grading = EvalHook(evaluators=[eval_owner], expected=EXPECTED_OWNER)
     captured_backend = scripted_backend()
     try:
         captured_result = run_agent(
             sink.wrap_llm(captured_backend),
-            hooks=[sink.trajectory_hook()],
+            hooks=[sink.trajectory_hook(), grading],
         )
     finally:
-        sink.flush()
+        trace_dir = sink.flush()
 
-    assess_result(captured_result).assert_passed()
+    save_eval_run(trace_dir, recorder=sink.trajectory_hook(), eval_hook=grading)
+    grading.assessment().assert_passed()
+    print(f"Inspect with: looplet inspect {trace_dir}")
+    print(f"Grade with: looplet eval {trace_dir} --evals first_loop.py --json")
 ```
 
-Inspect the saved run:
-
-```bash
-looplet inspect traces/owner
-```
-
-Use a different trace directory for each run you want to keep.
+Run the printed `inspect` command to read the saved run.
+Each execution gets a unique directory under `.looplet/traces/`.
+An explicit `ProvenanceSink(dir=...)` refuses existing evidence unless you pass `overwrite=True`.
 Capture can contain secrets or personal data; review it before sharing or committing it.
+
+The grading hook owns the live assessment once.
+`save_eval_run()` saves its expectations separately from the agent-visible task.
+A raw trace alone does not preserve grader expectations or collected artifacts.
+Reload the saved evidence when you want to rerun a grader without running the agent:
+
+```python
+from looplet import load_eval_run
+
+if __name__ == "__main__":
+    saved_run = load_eval_run(trace_dir)
+    saved_report = eval_assess([eval_owner], saved_run.context)
+    saved_report.assert_passed()
+```
+
+The printed `eval` command uses the same saved evidence and grader.
+It accepts this single run directory or its parent directory.
+Offline rescoring reruns graders, not collectors, tools, or agent model calls.
 
 ## 5. Replay and check the result
 
@@ -191,8 +216,8 @@ from looplet import DefaultState, RunResult, replay_loop, tools_from
 if __name__ == "__main__":
     replay_state = DefaultState(max_steps=2)
     with closing(replay_loop(
-        "traces/owner",
-        tools=tools_from([lookup_owner], include_done=True),
+        trace_dir,
+        tools=tools_from([lookup_owner], include_done=True, validate=True),
         state=replay_state,
         task={"goal": "Find the payments owner, then finish."},
     )) as steps:
@@ -221,7 +246,7 @@ if __name__ == "__main__":
     state = DefaultState(max_steps=2)
     with closing(composable_loop(
         llm=scripted_backend(),
-        tools=tools_from([lookup_owner], include_done=True),
+        tools=tools_from([lookup_owner], include_done=True, validate=True),
         state=state,
         config=LoopConfig(max_steps=2, use_native_tools=False),
         task={"goal": "Find the payments owner, then finish."},
@@ -260,7 +285,7 @@ See the [Python API](api.md#execution-core) for that form.
 Keep `first_loop.py` unchanged and install the adapter for the same tutorial snapshot:
 
 ```bash
-python -m pip install "looplet[openai] @ git+https://github.com/hsaghir/looplet.git@dbe536b3235ec8dce1dad201efcef13d1053eafc"
+python -m pip install "looplet[openai] @ git+https://github.com/hsaghir/looplet.git@efa5ed906f6c9d1f3a7762869c90da026653ff27"
 export OPENAI_API_KEY=...
 export OPENAI_MODEL=gpt-4o
 ```

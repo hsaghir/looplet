@@ -28,9 +28,9 @@ commands and compatibility aliases; their individual help remains available.
 `run-cartridge` / `run-workspace`, `run-bundle`, `describe`, and `show` remain
 available when a script needs an explicit format.
 
-Unified `run`, `inspect`, `run-bundle`, and `new --offline` are unreleased
-source additions, not part of PyPI `0.3.0`. Install this checkout with
-`pip install -e ".[openai]"` (or the appropriate provider extra) to use them.
+Unified `run`, `inspect`, `run-bundle`, and `new --offline` are source additions, not part of PyPI `0.3.0`.
+The single pinned source install in [Install](install.md#install-the-source-version) includes these commands and their options.
+Add the provider extra when using a real model.
 
 ## Diagnose and inspect runs
 
@@ -130,6 +130,11 @@ Set `max_steps` in the generated `config.yaml` to limit the agent itself.
 Review the prompt, schemas, implementations, and runtime
 policy, then add an outcome contract before release.
 
+The scaffold command prints the prompt and tool paths to edit next.
+Inspection lists generated tool stubs under `unfinished_tools` and labels them `readiness: draft`.
+Runtime wiring can be valid while these stubs remain unfinished.
+`readiness: not_assessed` means no scaffold stub was found; it does not certify behavior.
+
 ### `looplet run <path> <task>`
 
 Load a cartridge and run one task:
@@ -170,7 +175,7 @@ looplet run ./agent.cartridge "Inspect the change" --require-completed --json > 
 `--require-completed` returns nonzero for budget exhaustion, hook stops, or other incomplete results.
 It works in human and JSON modes, including the explicit cartridge and bundle commands.
 It checks completion, not correctness; use an outcome grader for that.
-The flag is a current-checkout addition, not part of the older pinned Quickstart snapshot.
+The flag is included in the shared pinned source install, not PyPI `0.3.0`.
 
 `--project-root` (`--workspace`, `-w`) controls the directory available to
 project-aware tools. It
@@ -268,6 +273,14 @@ go to stderr in JSON mode and are not redacted.
 
 ### Grade saved trajectories
 
+Grade one saved run, using the same path that `inspect` accepts:
+
+```bash
+looplet eval traces/incident-42 --evals eval_agent.py --json
+```
+
+Or grade the immediate child runs of a directory:
+
 ```bash
 looplet eval traces/ \
   --evals eval_agent.py \
@@ -279,6 +292,8 @@ looplet eval traces/ \
 Use `--exclude slow` to omit marked graders. This path grades existing traces;
 it does not execute a cartridge or make new agent model calls unless a grader
 requests a judge backend supplied by the host.
+Raw capture does not include grader-only expectations or collected artifacts.
+Use `save_eval_run()` when preserving those inputs; see the [Quickstart](quickstart.md#4-capture-the-same-agent).
 
 ### Browse case data
 

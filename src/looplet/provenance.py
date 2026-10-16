@@ -913,6 +913,10 @@ class TrajectoryRecorder:
 class ProvenanceSink:
     """3-line facade: wrap the LLM, add the hook, flush on exit.
 
+    Omitting ``dir`` selects a unique path under ``.looplet/traces``.
+    Existing evidence requires ``overwrite=True``. Repeated flushes of one
+    run remain supported. Automatic paths change after ``reset()``.
+
     Example::
 
         sink = ProvenanceSink(dir="traces/run_1/")
@@ -930,15 +934,20 @@ class ProvenanceSink:
 
     def __init__(
         self,
-        dir: str | Path,
+        dir: str | Path | None = None,
         *,
+        overwrite: bool = False,
         max_chars_per_call: int = 200_000,
         redact: Callable[[str], str] | None = None,
         redact_upstream: bool = True,
         capture_context: bool = True,
         metadata: dict[str, Any] | None = None,
     ) -> None:
-        self._dir = Path(dir)
+        self._automatic_dir = dir is None
+        self._dir = Path(dir) if dir is not None else Path(".looplet/traces") / uuid4().hex
+        self._overwrite = overwrite
+        self._flushed = False
+        self._check_directory()
         self._max_chars = max_chars_per_call
         self._redact = redact
         self._redact_upstream = redact_upstream
@@ -946,6 +955,19 @@ class ProvenanceSink:
         self._metadata = dict(metadata or {})
         self._recording_llm: _RecordingBase | None = None
         self._hook: TrajectoryRecorder | None = None
+
+    def _check_directory(self) -> None:
+        if self._overwrite or self._flushed or not self._dir.is_dir():
+            return
+        if any(
+            path.name in {"trajectory.json", "manifest.jsonl"}
+            or _CALL_ARTIFACT.fullmatch(path.name)
+            for path in self._dir.iterdir()
+        ):
+            raise FileExistsError(
+                f"Trace already exists in {self._dir}. Use a new directory, "
+                "omit dir for a unique path, or set overwrite=True to replace it."
+            )
 
     def wrap_llm(self, backend: Any, *, async_: bool | None = None) -> Any:
         """Wrap ``backend`` in a recording backend and stash a reference.
@@ -984,17 +1006,24 @@ class ProvenanceSink:
 
     def flush(self) -> Path:
         """Write everything to disk and return the directory path."""
+        self._check_directory()
         if self._hook is not None:
-            return self._hook.save(self._dir)
-        if self._recording_llm is not None:
-            return self._recording_llm.save(self._dir)
-        self._dir.mkdir(parents=True, exist_ok=True)
-        return self._dir
+            output = self._hook.save(self._dir)
+        elif self._recording_llm is not None:
+            output = self._recording_llm.save(self._dir)
+        else:
+            self._dir.mkdir(parents=True, exist_ok=True)
+            output = self._dir
+        self._flushed = True
+        return output
 
     def reset(self) -> None:
         if self._recording_llm is not None:
             self._recording_llm.reset()
         self._hook = None
+        self._flushed = False
+        if self._automatic_dir:
+            self._dir = Path(".looplet/traces") / uuid4().hex
 
 
 # ── Replay ──────────────────────────────────────────────────────────

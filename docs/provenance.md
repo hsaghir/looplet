@@ -14,19 +14,20 @@ bit-for-bit deterministic simulation.
 
 ```python
 # 1. Capture
-sink = ProvenanceSink(dir="traces/run_1/")
+sink = ProvenanceSink()
 llm = sink.wrap_llm(AnthropicBackend(...))
 for step in composable_loop(llm=llm, tools=tools, state=state,
                             hooks=[sink.trajectory_hook()]):
     print(step.pretty())
-sink.flush()
+trace_dir = sink.flush()
+print(trace_dir)
 
 # 2. Read (from the shell)
-$ python -m looplet show traces/run_1/
+$ python -m looplet show <printed-trace-directory>
 
 # 3. Replay (change hooks/tools, no LLM cost)
 from looplet import replay_loop
-for step in replay_loop("traces/run_1/", tools=tools):
+for step in replay_loop(trace_dir, tools=tools):
     print(step.pretty())
 ```
 
@@ -54,7 +55,7 @@ security boundary.
 from looplet import ProvenanceSink, composable_loop, DefaultState
 from looplet.backends import AnthropicBackend
 
-sink = ProvenanceSink(dir="traces/run_1/")
+sink = ProvenanceSink()
 
 llm = sink.wrap_llm(AnthropicBackend(api_key=...))
 hooks = [sink.trajectory_hook()]
@@ -63,7 +64,8 @@ state = DefaultState(max_steps=15)
 for step in composable_loop(llm=llm, tools=tools, state=state, hooks=hooks):
     print(step.pretty())
 
-sink.flush()
+trace_dir = sink.flush()
+print(trace_dir)
 ```
 
 You may call `trajectory_hook()` before or after `wrap_llm()`; both setup
@@ -75,7 +77,7 @@ call `reset()` before reusing the sink and obtain its new trajectory hook.
 After `flush()`, the directory contains:
 
 ```
-traces/run_1/
+.looplet/traces/<unique-id>/
 ├── trajectory.json         # run_id, steps, stop reason, session log, metadata
 ├── steps/
 │   ├── step_01.json        # tool_call, tool_result, context_before, linked LLM indices
@@ -91,9 +93,17 @@ Every file is human-readable. `trajectory.json` and `manifest.jsonl` are
 machine-parseable. You can diff, grep, version-control, attach to bug
 reports, or feed to a separate analysis pipeline.
 
-Saving to an existing trace directory replaces Looplet-owned call and step
-files from the prior run. Files that do not match those exact artifact names
-are preserved. Do not use one explicit trace directory for concurrent writers.
+Omitting `dir` gives each sink a unique directory under `.looplet/traces/`.
+`flush()` returns its path; `reset()` selects a new automatic path.
+An explicit directory refuses existing evidence unless you pass `overwrite=True`.
+Repeated flushes of the same run remain supported.
+Low-level recorder `save()` methods still replace their owned call and step files.
+They preserve files that do not match those artifact names.
+Do not use one explicit trace directory for concurrent writers.
+
+A trace alone does not preserve grader expectations or collected artifacts.
+Use `save_eval_run()` for a grading record that you can reload and reassess.
+See the [Quickstart](quickstart.md#4-capture-the-same-agent) for the complete handoff.
 
 `looplet show` and `replay_loop()` fail before rendering or execution when the
 evidence structures they consume are malformed. Replay also requires

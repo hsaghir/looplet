@@ -8,6 +8,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `tools_from` and `minimal_preset` accept `validate=True` for top-level typed argument checks before tool effects.
+- `ProvenanceSink` chooses unique directories by default and requires `overwrite=True` to replace existing evidence.
+- Scaffold inspection lists unimplemented tools and separates draft readiness from structural runtime validation.
 - `run` and its explicit aliases accept `--require-completed` to fail incomplete runs without changing default exit codes.
 - `load_evals` loads ordinary grader and collector functions from one file or directory without requiring a cartridge.
 - `looplet eval init` creates a non-clobbering outcome contract; `eval check` validates trusted definitions without running an agent.
@@ -64,6 +67,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Saved-run evaluation accepts either a single trace or a parent directory without changing assessment rules.
+- The Quickstart saves grader-owned expectations and outcomes, reloads them, and regrades without rerunning the agent.
+- One pinned source install supports the current Python and CLI guides without requiring a contributor checkout.
 - Tutorial installs use one immutable source revision until a published package contains the required APIs.
 - The Quickstart shows native-provider selection and an executable Python-to-pytest eval handoff around the same agent.
 - Python scripts and standalone eval definitions receive actionable CLI guidance instead of packaging errors.

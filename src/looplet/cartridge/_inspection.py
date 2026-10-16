@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import sys
 from pathlib import Path
 from typing import Any
@@ -40,6 +41,28 @@ def _layers(root: Path, seen: frozenset[Path] = frozenset()) -> list[Path]:
     if not parent_path.is_absolute():
         parent_path = root / parent_path
     return [*_layers(parent_path.resolve(), seen | {resolved}), root]
+
+
+def _is_scaffold_stub(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError, UnicodeError):
+        return False
+    return any(
+        isinstance(node, ast.Raise)
+        and isinstance(node.exc, ast.Call)
+        and isinstance(node.exc.func, ast.Name)
+        and node.exc.func.id == "NotImplementedError"
+        and any(
+            isinstance(argument, ast.Constant)
+            and isinstance(argument.value, str)
+            and argument.value.startswith("scaffold: implement ")
+            for argument in node.exc.args
+        )
+        for node in ast.walk(tree)
+    )
 
 
 def inspect_cartridge(
@@ -124,10 +147,14 @@ def inspect_cartridge(
     tools: list[dict[str, Any]] = []
     hooks: list[dict[str, Any]] = []
     resources: list[str] = []
+    unfinished_tools: list[str] = []
     for relative, path in sorted(files.items()):
         parts = Path(relative).parts
         if parts[0] == "tools" and path.name == "tool.yaml":
             definition = _mapping(path)
+            implementation = path.with_name("execute.py")
+            if _is_scaffold_stub(implementation):
+                unfinished_tools.append(str(implementation))
             tools.append(
                 {
                     **definition,
@@ -229,4 +256,7 @@ def inspect_cartridge(
         "hooks": hooks,
         "resources": sorted(set(resources)),
         "runtime_required": sorted(unresolved),
+        "readiness": "draft" if unfinished_tools else "not_assessed",
+        "unfinished_tools": unfinished_tools,
+        "warnings": [f"Unimplemented scaffold tool: {path}" for path in unfinished_tools],
     }

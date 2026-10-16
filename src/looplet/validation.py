@@ -44,21 +44,20 @@ class FieldSpec:
 
     Args:
         name: Field name (must match the arg key).
-        field_type: Type tag - one of 'str'|'int'|'float'|'bool'|'list'|'dict'|'any',
-            or a Python type for backwards compatibility.
+        field_type: A type tag, Python type, or tuple of accepted Python types.
         required: Whether the field must be present.
         description: Human-readable description for documentation.
-        allowed_values: Restrict to a fixed set of string values (enum-like).
+        allowed_values: Restrict to a fixed set of values (enum-like).
     """
 
     name: str
-    field_type: str | type
+    field_type: str | type | tuple[type, ...]
     required: bool = True
     description: str = ""
-    allowed_values: list[str] | None = None
+    allowed_values: list[Any] | None = None
 
     def __post_init__(self) -> None:
-        if isinstance(self.field_type, type):
+        if isinstance(self.field_type, (type, tuple)):
             return
         if self.field_type != "any" and self.field_type not in _TYPE_MAP:
             raise ValueError(f"unsupported field type: {self.field_type!r}")
@@ -128,16 +127,18 @@ def validate_args(schema: OutputSchema, args: dict[str, Any]) -> ValidationResul
         if spec.field_type != "any":
             expected = (
                 spec.field_type
-                if isinstance(spec.field_type, type)
+                if isinstance(spec.field_type, (type, tuple))
                 else _TYPE_MAP.get(spec.field_type)
             )
             if expected is not None:
-                # bool is a subclass of int - check bool before int to avoid false positives
-                if spec.field_type == "int" and isinstance(value, bool):
-                    errors.append(f"field {name!r}: expected int, got {type(value).__name__}")
-                elif not isinstance(value, expected):
+                expected_types = expected if isinstance(expected, tuple) else (expected,)
+                wrong_bool = (
+                    isinstance(value, bool) and int in expected_types and bool not in expected_types
+                )
+                if wrong_bool or not isinstance(value, expected):
+                    expected_name = " or ".join(kind.__name__ for kind in expected_types)
                     errors.append(
-                        f"field {name!r}: expected {spec.field_type}, got {type(value).__name__}"
+                        f"field {name!r}: expected {expected_name}, got {type(value).__name__}"
                     )
 
         # allowed_values check
@@ -177,6 +178,38 @@ class ValidatingToolRegistry(BaseToolRegistry):
         """Register a ToolSpec with an accompanying validation schema."""
         self.register(spec)
         self._schemas[spec.name] = schema
+
+    def register_typed(self, spec: Any) -> None:
+        """Validate top-level JSON types and enums from a tool's parameter schema."""
+        parameter_schema = spec.to_json_schema()
+        required = set(parameter_schema.get("required", []))
+        type_map: dict[str, tuple[type, ...]] = {
+            "string": (str,),
+            "integer": (int,),
+            "number": (float, int),
+            "boolean": (bool,),
+            "array": (list,),
+            "object": (dict,),
+            "null": (type(None),),
+        }
+        fields = {}
+        for name, parameter in parameter_schema.get("properties", {}).items():
+            declared = parameter.get("type")
+            declared_types = declared if isinstance(declared, list) else [declared]
+            python_types = tuple(
+                dict.fromkeys(
+                    kind
+                    for declared_type in declared_types
+                    for kind in type_map.get(declared_type, ())
+                )
+            )
+            fields[name] = FieldSpec(
+                name=name,
+                field_type=python_types or "any",
+                required=name in required,
+                allowed_values=parameter.get("enum"),
+            )
+        self.register_with_schema(spec, OutputSchema(fields=fields))
 
     @property
     def _base(self) -> BaseToolRegistry:

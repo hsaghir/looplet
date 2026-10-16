@@ -105,3 +105,55 @@ class TestToolDecorator:
         schema = tag_item.to_json_schema()
         assert schema["properties"]["tag"]["type"] == ["string", "null"]
         assert schema["required"] == ["name"]
+
+    @pytest.mark.parametrize("async_dispatch", [False, True])
+    @pytest.mark.parametrize("quantity", ["not-an-integer", True])
+    async def test_opt_in_validation_rejects_wrong_types_before_effects(
+        self, async_dispatch, quantity
+    ):
+        effects = []
+
+        @tool
+        def echo_quantity(quantity: int) -> dict:
+            effects.append(quantity)
+            return {"quantity": quantity}
+
+        registry = tools_from([echo_quantity], validate=True)
+        call = ToolCall(tool="echo_quantity", args={"quantity": quantity})
+        result = await registry.async_dispatch(call) if async_dispatch else registry.dispatch(call)
+
+        assert result.error is not None
+        assert "expected int" in result.error
+        assert result.error_detail.kind.value == "validation"
+        assert effects == []
+
+    @pytest.mark.parametrize(
+        ("args", "valid"),
+        [
+            ({"quantity": None, "mode": "fast"}, True),
+            ({"quantity": 0, "mode": "safe"}, True),
+            ({"quantity": "bad", "mode": "fast"}, False),
+            ({"quantity": 1, "mode": "unknown"}, False),
+            ({"mode": "fast"}, False),
+        ],
+    )
+    def test_validation_preserves_nullability_enums_and_required_arguments(self, args, valid):
+        def configure(quantity: int | None, mode: Literal["fast", "safe"]) -> dict:
+            return {"quantity": quantity, "mode": mode}
+
+        registry = tools_from([configure], validate=True)
+        result = registry.dispatch(ToolCall(tool="configure", args=args))
+
+        assert (result.error is None) is valid
+
+    def test_minimal_preset_can_validate_without_changing_the_base_registry(self):
+        from looplet import minimal_preset
+
+        @tool
+        def echo_quantity(quantity: int) -> dict:
+            return {"quantity": quantity}
+
+        call = ToolCall(tool="echo_quantity", args={"quantity": "bad"})
+        assert tools_from([echo_quantity]).dispatch(call).data == {"quantity": "bad"}
+        with minimal_preset(tools=[echo_quantity], validate=True) as run:
+            assert run.tools.dispatch(call).error is not None

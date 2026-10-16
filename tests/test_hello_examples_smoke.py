@@ -96,8 +96,24 @@ def test_quickstart_runs_grades_captures_and_replays(tmp_path: Path, monkeypatch
     assert [step.tool_call.tool for step in namespace["result"].steps] == ["lookup_owner", "done"]
     assert [step.tool_call.tool for step in namespace["state"].steps] == ["lookup_owner"]
     assert not RunResult.from_state(namespace["state"]).completed
-    assert (tmp_path / "traces" / "owner" / "trajectory.json").is_file()
-    assert (tmp_path / "traces" / "owner" / "manifest.jsonl").is_file()
+    trace_dir = namespace["trace_dir"]
+    assert (trace_dir / "trajectory.json").is_file()
+    assert (trace_dir / "manifest.jsonl").is_file()
+    assert namespace["saved_report"].passed
+    assert namespace["saved_run"].context.expected == namespace["EXPECTED_OWNER"]
+    trajectory = json.loads((trace_dir / "trajectory.json").read_text())
+    assert "expected" not in trajectory["task"]
+    assert json.loads((trace_dir / "expected.json").read_text()) == namespace["EXPECTED_OWNER"]
+
+    from looplet.evals import eval_cli
+
+    (tmp_path / "first_loop.py").write_text("\n\n".join(blocks))
+    assert eval_cli([str(trace_dir), "--evals", str(tmp_path / "first_loop.py"), "--json"]) == 0
+    original = (trace_dir / "trajectory.json").read_bytes()
+    capture_block = next(block for block in blocks if "save_eval_run(trace_dir" in block)
+    exec(compile(capture_block, str(guide), "exec"), namespace)
+    assert namespace["trace_dir"] != trace_dir
+    assert (trace_dir / "trajectory.json").read_bytes() == original
     namespace["result"].output["summary"] = "wrong owner"
     assert not module.assess_result(namespace["result"]).passed
 

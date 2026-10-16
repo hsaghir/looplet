@@ -49,6 +49,16 @@ def test_tutorial_install_references_use_one_immutable_revision() -> None:
     assert len(set(revisions)) == 1
 
 
+def test_current_cli_uses_the_same_install_as_the_python_tutorial() -> None:
+    cli = (ROOT / "docs" / "cli.md").read_text()
+    install = (ROOT / "docs" / "install.md").read_text()
+    assert "single pinned source install" in cli
+    assert "shared pinned source install" in cli
+    assert "older pinned Quickstart snapshot" not in cli
+    assert 'pip install -e ".[openai]"' not in cli
+    assert "Clone the repository only when you want to change Looplet itself." in install
+
+
 def test_lockfile_and_latest_release_match_project_version() -> None:
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
     version = project["version"]

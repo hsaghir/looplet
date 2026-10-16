@@ -85,8 +85,22 @@ def test_missing_project_root_fails_before_backend(
     assert "project root is not a directory" in capsys.readouterr().err
 
 
-def test_incomplete_human_run_does_not_say_done(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+def test_python_script_has_an_actionable_command(tmp_path, monkeypatch, capsys):
+    script = tmp_path / "my agent.py"
+    script.write_text("raise AssertionError('must not execute')\n")
+    monkeypatch.setattr(
+        "looplet.bundles.load_skill_bundle", lambda *_args: pytest.fail("must not load a bundle")
+    )
+    assert main(["run", str(script), "finish"]) == 1
+    message = capsys.readouterr().err
+    assert "python " in message and "my agent.py'" in message
+    assert "SKILL.md" not in message
+
+
+@pytest.mark.parametrize("require_completed", [False, True])
+@pytest.mark.parametrize("json_output", [False, True])
+def test_incomplete_run_requires_completion_only_when_requested(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys, require_completed, json_output
 ) -> None:
     cartridge = _custom_terminal_cartridge(tmp_path, name="done", return_expression="{}")
     work = cartridge / "tools" / "work"
@@ -98,14 +112,43 @@ def test_incomplete_human_run_does_not_say_done(
         [json.dumps({"tool": "work", "args": {}, "reasoning": "work"})],
     )
 
-    rc = factory_commands.cmd_run_workspace(
-        _args(cartridge, project_root=tmp_path, json_output=False)
-    )
+    arguments = _args(cartridge, project_root=tmp_path, json_output=json_output)
+    arguments.require_completed = require_completed
+    rc = factory_commands.cmd_run_workspace(arguments)
 
-    assert rc == 0
+    assert rc == int(require_completed)
     out = capsys.readouterr().out
-    assert "stopped (budget_exhausted)" in out
-    assert "done in" not in out
+    if json_output:
+        assert json.loads(out)["completed"] is False
+    else:
+        assert "stopped (budget_exhausted)" in out
+        assert "done in" not in out
+
+
+@pytest.mark.parametrize("command", ["run", "run-cartridge", "run-workspace"])
+@pytest.mark.parametrize("completed", [False, True])
+def test_completion_requirement_is_available_on_all_cartridge_commands(
+    tmp_path, capsys, command, completed
+):
+    cartridge = _custom_terminal_cartridge(tmp_path, name="done", return_expression="{}")
+    tool_name = "done" if completed else "missing_tool"
+    assert main(
+        [
+            command,
+            str(cartridge),
+            "finish",
+            "--project-root",
+            str(tmp_path),
+            "--require-completed",
+            "--no-trace",
+            "--json",
+            "--max-steps",
+            "1",
+            "--scripted-response",
+            json.dumps({"tool": tool_name, "args": {"answer": "ok"}}),
+        ]
+    ) == (0 if completed else 1)
+    assert json.loads(capsys.readouterr().out)["completed"] is completed
 
 
 @pytest.mark.parametrize(

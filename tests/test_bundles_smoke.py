@@ -111,8 +111,10 @@ class TestSkillBundles:
         assert not missing.exists()
         assert "project root is not a directory" in capsys.readouterr().err
 
+    @pytest.mark.parametrize("command", ["run", "run-bundle"])
+    @pytest.mark.parametrize("require_completed", [False, True])
     def test_cli_bundle_json_reports_completion_and_preserves_stdin(
-        self, tmp_path, monkeypatch, capsys
+        self, tmp_path, monkeypatch, capsys, command, require_completed
     ):
         from types import ModuleType
 
@@ -134,7 +136,7 @@ class TestSkillBundles:
         assert (
             cli_main(
                 [
-                    "run",
+                    command,
                     str(CODER_BUNDLE),
                     "-",
                     "--project-root",
@@ -142,6 +144,7 @@ class TestSkillBundles:
                     "--max-steps",
                     "1",
                     "--json",
+                    *(["--require-completed"] if require_completed else []),
                     "--scripted-response",
                     '{"tool":"done","args":{"summary":"finished"}}',
                 ]
@@ -155,7 +158,11 @@ class TestSkillBundles:
         trajectory = json.loads((Path(payload["trace_dir"]) / "trajectory.json").read_text())
         assert trajectory["task"] == {"description": "exact task\nsecond line\n"}
 
-    def test_cli_bundle_json_reports_budget_stop_without_trace(self, tmp_path, monkeypatch, capsys):
+    @pytest.mark.parametrize("require_completed", [False, True])
+    @pytest.mark.parametrize("json_output", [False, True])
+    def test_cli_bundle_reports_budget_stop_without_trace(
+        self, tmp_path, monkeypatch, capsys, require_completed, json_output
+    ):
         from types import ModuleType
 
         from looplet import DefaultState, LoopConfig, tool, tools_from
@@ -175,30 +182,34 @@ class TestSkillBundles:
             build=lambda runtime: preset,
             module=ModuleType("build_only_bundle"),
         )
+        if require_completed:
+            bundle.module.run = lambda **kwargs: pytest.fail("completion requires observed state")
         monkeypatch.setattr("looplet.bundles.load_skill_bundle", lambda *_args: bundle)
-        assert (
-            cli_main(
-                [
-                    "run-bundle",
-                    str(CODER_BUNDLE),
-                    "finish",
-                    "--workspace",
-                    str(tmp_path),
-                    "--max-steps",
-                    "1",
-                    "--json",
-                    "--no-trace",
-                    "--scripted-response",
-                    '{"tool":"work","args":{}}',
-                ]
-            )
-            == 0
-        )
-        payload = json.loads(capsys.readouterr().out)
-        assert payload["completed"] is False
-        assert payload["termination_reason"] == "budget_exhausted"
-        assert payload["trace_dir"] is None
-        assert payload["result"] is None
+        assert cli_main(
+            [
+                "run-bundle",
+                str(CODER_BUNDLE),
+                "finish",
+                "--workspace",
+                str(tmp_path),
+                "--max-steps",
+                "1",
+                *(["--json"] if json_output else []),
+                *(["--require-completed"] if require_completed else []),
+                "--no-trace",
+                "--scripted-response",
+                '{"tool":"work","args":{}}',
+            ]
+        ) == int(require_completed)
+        output = capsys.readouterr().out
+        if json_output:
+            payload = json.loads(output)
+            assert payload["completed"] is False
+            assert payload["termination_reason"] == "budget_exhausted"
+            assert payload["trace_dir"] is None
+            assert payload["result"] is None
+        else:
+            assert "stopped (budget_exhausted)" in output
 
     @pytest.mark.parametrize(
         "task, options, message",

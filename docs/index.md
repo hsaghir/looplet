@@ -86,7 +86,13 @@ The loop still yields steps, so your code can inspect each result and stop befor
 
 ## Start with one loop
 
-Install the source version as described in the [Quickstart](quickstart.md).
+Install the pinned source snapshot inside a virtual environment:
+
+```bash
+python -m pip install "looplet @ git+https://github.com/hsaghir/looplet.git@dbe536b3235ec8dce1dad201efcef13d1053eafc"
+```
+
+See the [Quickstart](quickstart.md) for environment setup and the same agent's tests.
 This example uses fixed responses and does not contact a model service.
 
 ```python title="first_loop.py"

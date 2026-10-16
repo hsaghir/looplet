@@ -6,8 +6,21 @@ Model provider adapters are optional extras.
 
 ## Install the source version
 
-The [Quickstart](quickstart.md) uses the source version.
-It includes changes that are not in the published package yet.
+The [Quickstart](quickstart.md) uses this immutable source snapshot.
+Install it in your own project without cloning the repository:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install "looplet @ git+https://github.com/hsaghir/looplet.git@dbe536b3235ec8dce1dad201efcef13d1053eafc"
+```
+
+Add `[openai]`, `[anthropic]`, or `[all]` after `looplet` for provider adapters in the same snapshot.
+This needs Git and network access during installation.
+The fixed-response tutorial itself needs neither a model key nor a model service.
+PyPI `0.3.0` remains supported, but does not contain the tutorial's result helpers.
+
+For development or later unreleased CLI additions, install the current checkout instead.
 Run these commands in a directory where you want the repository:
 
 ```bash
@@ -51,6 +64,11 @@ dependencies = ["looplet>=0.3,<0.4"]
 Before version `1.0`, a minor release can change an API incompatibly.
 Read the [changelog](changelog.md) before you change the minor version.
 Source-only features have a note in their API or command guide.
+
+The pinned source install is an interim path, not a new PyPI release.
+Keep it until a published version contains the tutorial APIs.
+After that release, replace the VCS dependency with its published version pin and rerun your tests.
+This guide does not publish a package or change release tags.
 
 ## Verify without a provider
 

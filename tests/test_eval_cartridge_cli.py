@@ -159,6 +159,29 @@ def _make_cartridge(root: Path, *, with_evals: bool = True) -> Path:
     return cart
 
 
+@pytest.mark.parametrize("path_kind", ["directory", "file"])
+def test_standalone_python_eval_has_actionable_run_guidance(
+    tmp_path, monkeypatch, capsys, path_kind
+):
+    definitions = tmp_path / "evals"
+    assert eval_cli(["init", str(definitions)]) == 0
+    assert eval_cli(["check", str(definitions), "--json"]) == 0
+    capsys.readouterr()
+    grader = definitions / "eval_outcome.py"
+    grader.write_text("raise AssertionError('must not import')\n")
+    monkeypatch.setattr(
+        "looplet.backends.make_backend", lambda **kwargs: pytest.fail("must not build a provider")
+    )
+    path = definitions if path_kind == "directory" else grader
+    assert eval_cli(["run", str(path)]) == 1
+    output = capsys.readouterr()
+    assert not output.out
+    assert "standalone Python eval directory" in output.err
+    assert "pytest" in output.err and "load_evals()" in output.err
+    assert "eval check" in output.err
+    assert "evals/evals/cases" not in output.err
+
+
 def test_generated_definitions_work_with_existing_cartridge_runner(tmp_path):
     cartridge = _make_cartridge(tmp_path, with_evals=False)
     assert eval_cli(["init", str(cartridge / "evals")]) == 0

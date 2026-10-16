@@ -30,14 +30,15 @@ It does not require a workflow graph, a hosted service, or a cartridge.
 
 ## Run one loop
 
-Install the source version for this example.
-Some features in this repository are not in the published package yet.
+Install the pinned tutorial snapshot for this example.
+It includes the APIs used here; no local repository checkout is needed.
 
 ```bash
-git clone https://github.com/hsaghir/looplet.git
-cd looplet
-python -m pip install -e .
+python -m pip install "looplet @ git+https://github.com/hsaghir/looplet.git@dbe536b3235ec8dce1dad201efcef13d1053eafc"
 ```
+
+Run this inside a virtual environment; see [Install](docs/install.md).
+Git and network access are required during installation.
 
 The example uses fixed model responses.
 It runs without a model service or an API key.
@@ -110,7 +111,7 @@ You do not need a new execution engine to use them.
 | Connect tools or other hosts | Protocol adapters | [Portability](docs/portability.md) |
 
 The unified shell commands and preset result helpers are not in PyPI `0.3.0`.
-Use the source install above for these features.
+The snapshot above supports this tutorial; install the current checkout for later source-only CLI additions.
 Older commands, such as `run-cartridge`, `describe`, and `show`, remain supported.
 
 ## Check results

@@ -18,23 +18,29 @@ from looplet.types import RunResult
 
 def add_run_options(parser: ArgumentParser) -> None:
     """Register the shared execution, trace, and cartridge presentation options."""
+    cartridge = parser.add_argument_group("Cartridge-only options")
     parser.add_argument("--trace-dir", type=Path, help="Write provenance trace output here")
-    parser.add_argument("--parent-trace", type=Path, help="Link a cartridge run to a parent trace")
+    cartridge.add_argument("--parent-trace", type=Path, help="Link a run to a parent trace")
     parser.add_argument(
         "--no-trace", action="store_true", help="Disable default provenance capture"
     )
-    parser.add_argument("--quiet", action="store_true", help="Suppress cartridge per-step output")
+    cartridge.add_argument("--quiet", action="store_true", help="Suppress per-step output")
     parser.add_argument(
         "--scripted-response",
         action="append",
         default=[],
         help="Mock LLM response; repeat for a network-free run",
     )
-    parser.add_argument(
+    cartridge.add_argument(
         "--pretty", action="store_true", help="Render a live human-friendly cartridge trace"
     )
     parser.add_argument(
         "--json", action="store_true", help="Emit one machine-readable completion object"
+    )
+    parser.add_argument(
+        "--require-completed",
+        action="store_true",
+        help="Return nonzero unless the agent reaches accepted completion",
     )
 
 
@@ -59,3 +65,8 @@ def completion_payload(
         "result": result.output,
         "trace_dir": str(trace_dir) if trace_dir is not None else None,
     }
+
+
+def completion_exit_code(result: RunResult, *, require_completed: bool = False) -> int:
+    """Keep command success distinct from an optional completion requirement."""
+    return int(result.failed or (require_completed and not result.completed))

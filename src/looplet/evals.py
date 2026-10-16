@@ -3267,6 +3267,16 @@ def _run_cartridge_evaluation(parsed: Namespace, *, output: TextIO) -> int:
     import os
 
     cdir = Path(parsed.cartridge)
+    if (cdir.is_file() and cdir.suffix == ".py") or (
+        not (cdir / "cartridge.json").is_file() and (cdir / "cases").is_dir()
+    ):
+        print(
+            "error: `eval run` expects a cartridge, not a standalone Python eval directory or file.\n"
+            "For Python agents, load definitions with load_evals() and run your pytest tests.\n"
+            "Use `looplet eval check <path>` to validate definitions without running them.",
+            file=sys.stderr,
+        )
+        return 1
     if not cdir.is_dir():
         print(f"error: cartridge not found: {cdir}", file=sys.stderr)
         return 1

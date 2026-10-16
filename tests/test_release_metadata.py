@@ -37,6 +37,18 @@ def test_published_install_guidance_is_separate_from_source_version() -> None:
     assert f"## [{version}]" in (ROOT / "CHANGELOG.md").read_text()
 
 
+def test_tutorial_install_references_use_one_immutable_revision() -> None:
+    revisions = []
+    for document in ("README.md", "docs/index.md", "docs/quickstart.md", "docs/install.md"):
+        references = re.findall(
+            r"looplet(?:\[openai\])? @ git\+https://github\.com/hsaghir/looplet\.git@([a-f0-9]{40})",
+            (ROOT / document).read_text(),
+        )
+        assert references, f"Missing immutable tutorial install in {document}"
+        revisions.extend(references)
+    assert len(set(revisions)) == 1
+
+
 def test_lockfile_and_latest_release_match_project_version() -> None:
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
     version = project["version"]

@@ -993,9 +993,212 @@ def test_cli_default_output_preserves_each_run(
         record = load_eval_run(directory / "make_greeting")
         assert record.context.completed
         assert (record.directory / "manifest.jsonl").exists() is capture
+        assert (record.directory / ".gitignore").read_text() == "*\n"
+        if not json_output:
+            import shlex
+
+            from looplet.__main__ import main
+
+            command = next(
+                line.removeprefix("Inspect: ")
+                for line in output.out.splitlines()
+                if line.startswith("Inspect: ")
+            )
+            assert main(shlex.split(command)[1:]) == 0
+            capsys.readouterr()
         saved.append(directory)
     assert len(list((tmp_path / ".looplet" / "evals").iterdir())) == 2
     assert all((directory / "make_greeting" / "trajectory.json").is_file() for directory in saved)
+
+
+@pytest.mark.parametrize("json_output", [False, True])
+@pytest.mark.parametrize("max_steps", [None, 1])
+@pytest.mark.parametrize("native_tools", [False, True])
+def test_cli_replay_uses_fresh_workspace_without_provider(
+    tmp_path, monkeypatch, capsys, json_output, max_steps, native_tools
+):
+    from looplet.__main__ import main
+
+    cart = _make_cartridge(tmp_path)
+    (cart / "runtime.yaml").write_text(f"use_native_tools: {str(native_tools).lower()}\n")
+    (cart / "tools" / "write_file" / "execute.py").write_text(
+        _WRITE_EXEC.replace(
+            "    root = Path", "    print('authored replay diagnostic')\n    root = Path"
+        )
+    )
+    case_file = cart / "evals" / "cases" / "make_greeting.json"
+    case_data = json.loads(case_file.read_text())
+    case_data["expected"]["private_marker"] = "ORACLE_ONLY_FOR_GRADING"
+    case_file.write_text(json.dumps(case_data))
+    records = run_cartridge_evals(
+        cart, llm=MockLLMBackend(_scripted()), output_dir=tmp_path / "original"
+    )
+    original = records[0].directory
+    snapshot = {
+        path.relative_to(original): path.read_bytes()
+        for path in original.rglob("*")
+        if path.is_file()
+    }
+    capsys.readouterr()
+
+    def unexpected_provider(**kwargs):
+        pytest.fail("replay must not construct a provider")
+
+    monkeypatch.setattr("looplet.backends.make_backend", unexpected_provider)
+    workspace = tmp_path / "replay workspace"
+    arguments = [
+        "replay",
+        str(original),
+        "--cartridge",
+        str(cart),
+        "--workspace",
+        str(workspace),
+        "--require-completed",
+    ]
+    if json_output:
+        arguments.append("--json")
+    if max_steps is not None:
+        arguments.extend(["--max-steps", str(max_steps)])
+    assert main(arguments) == (1 if max_steps == 1 else 0)
+    output = capsys.readouterr()
+    assert (workspace / "greeting.py").read_bytes() == (
+        original / "workspace" / "greeting.py"
+    ).read_bytes()
+    assert (workspace / "test_greeting.py").is_file()
+    if json_output:
+        completion = json.loads(output.out)
+        assert completion["completed"] is (max_steps is None)
+        assert "authored replay diagnostic" in output.err
+        replay_trace = Path(completion["trace_dir"])
+    else:
+        assert "captured responses" in output.out
+        replay_trace = next((workspace / ".looplet" / "traces").iterdir())
+    assert replay_trace.is_relative_to(workspace)
+    assert "ORACLE_ONLY_FOR_GRADING" not in (replay_trace / "call_00_prompt.txt").read_text()
+    assert (replay_trace / ".gitignore").read_text() == "*\n"
+    assert snapshot == {
+        path.relative_to(original): path.read_bytes()
+        for path in original.rglob("*")
+        if path.is_file()
+    }
+
+
+def test_cli_replay_executes_changed_tools(tmp_path, monkeypatch, capsys):
+    from looplet.__main__ import main
+
+    cart = _make_cartridge(tmp_path)
+    original = run_cartridge_evals(
+        cart, llm=MockLLMBackend(_scripted()), output_dir=tmp_path / "original"
+    )[0].directory
+    original_contents = (original / "workspace" / "greeting.py").read_text()
+    implementation = cart / "tools" / "write_file" / "execute.py"
+    implementation.write_text(
+        _WRITE_EXEC.replace(
+            "target.write_text(content)", 'target.write_text(content + "\\nreplayed = True\\n")'
+        )
+    )
+    monkeypatch.setattr(
+        "looplet.backends.make_backend", lambda **kwargs: pytest.fail("no provider")
+    )
+    capsys.readouterr()
+    workspace = tmp_path / "changed-tool-replay"
+    assert (
+        main(
+            [
+                "replay",
+                str(original),
+                "--cartridge",
+                str(cart),
+                "--workspace",
+                str(workspace),
+                "--json",
+            ]
+        )
+        == 0
+    )
+    assert json.loads(capsys.readouterr().out)["completed"]
+    assert (workspace / "greeting.py").read_text() == original_contents + "\nreplayed = True\n"
+    assert (original / "workspace" / "greeting.py").read_text() == original_contents
+
+
+@pytest.mark.parametrize("explicit_task", [False, True])
+def test_cli_raw_replay_requires_original_task(tmp_path, capsys, explicit_task):
+    from looplet import ProvenanceSink
+    from looplet.__main__ import main
+
+    cart = _make_cartridge(tmp_path)
+    sink = ProvenanceSink(tmp_path / "raw")
+    backend = sink.wrap_llm(MockLLMBackend(_scripted()))
+    backend.generate("original task")
+    backend.generate("original task after tool")
+    trace = sink.flush()
+    workspace = tmp_path / "raw replay"
+    arguments = [
+        "replay",
+        str(trace),
+        "--cartridge",
+        str(cart),
+        "--workspace",
+        str(workspace),
+        "--json",
+    ]
+    if explicit_task:
+        arguments.extend(["--task", "Write greeting.py"])
+    assert main(arguments) == (0 if explicit_task else 1)
+    output = capsys.readouterr()
+    if explicit_task:
+        assert json.loads(output.out)["completed"]
+    else:
+        assert "raw traces need --task" in output.err
+        assert not workspace.exists()
+
+
+@pytest.mark.parametrize(
+    "failure", ["existing_workspace", "nested_workspace", "missing_calls", "invalid_budget"]
+)
+def test_cli_replay_preflights_before_authored_load(tmp_path, monkeypatch, capsys, failure):
+    from looplet import ProvenanceSink
+    from looplet.__main__ import main
+
+    cart = _make_cartridge(tmp_path)
+    sink = ProvenanceSink(tmp_path / "trace")
+    sink.wrap_llm(MockLLMBackend(_scripted())).generate("original task")
+    trace = sink.flush()
+    workspace = tmp_path / "fresh"
+    if failure == "existing_workspace":
+        workspace.mkdir()
+        (workspace / "keep.txt").write_text("untouched")
+    elif failure == "nested_workspace":
+        workspace = trace / "nested"
+    elif failure == "missing_calls":
+        (trace / "call_00_response.txt").unlink()
+    arguments = [
+        "replay",
+        str(trace),
+        "--cartridge",
+        str(cart),
+        "--workspace",
+        str(workspace),
+        "--task",
+        "Write greeting.py",
+        "--json",
+    ]
+    if failure == "invalid_budget":
+        arguments.extend(["--max-steps", "0"])
+
+    def unexpected_load(*args, **kwargs):
+        pytest.fail("invalid replay must fail before authored cartridge load")
+
+    monkeypatch.setattr("looplet.cartridge_to_preset", unexpected_load)
+    assert main(arguments) == 1
+    output = capsys.readouterr()
+    assert not output.out
+    assert "cannot prepare replay" in output.err
+    assert "Traceback" not in output.err
+    if failure == "existing_workspace":
+        assert (workspace / "keep.txt").read_text() == "untouched"
+    else:
+        assert not workspace.exists()
 
 
 @pytest.mark.parametrize("json_output", [False, True])

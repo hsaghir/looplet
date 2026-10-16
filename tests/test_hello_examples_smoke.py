@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import json
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -22,6 +23,52 @@ pytestmark = pytest.mark.smoke
 
 def _python_blocks(path: Path) -> list[str]:
     return re.findall(r"^```python[^\n]*\n(.*?)^```[ \t]*$", path.read_text(), re.M | re.S)
+
+
+def test_documented_shell_replay_works_without_provider(tmp_path):
+    guide = Path(__file__).resolve().parents[1] / "docs" / "cli.md"
+    section = guide.read_text().split("### Replay captured responses\n", 1)[1]
+    block = re.search(r"```bash\n(.*?)```", section, re.S).group(1)
+    commands = block.replace("\\\n", "").strip().splitlines()
+    original = None
+    for command in commands:
+        arguments = shlex.split(command)
+        assert arguments[0] == "looplet"
+        if arguments[1] == "replay":
+            original = (tmp_path / "original-trace" / "trajectory.json").read_bytes()
+        result = subprocess.run(
+            [sys.executable, "-m", "looplet", *arguments[1:]],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+    replayed = json.loads(result.stdout)
+    assert replayed["completed"]
+    assert Path(replayed["trace_dir"]).is_relative_to(tmp_path / "replayed-workspace")
+    assert original == (tmp_path / "original-trace" / "trajectory.json").read_bytes()
+
+
+def test_documented_summary_omits_private_evidence(tmp_path, monkeypatch):
+    from looplet import EvalContext, save_eval_run
+
+    guide = Path(__file__).resolve().parents[1] / "docs" / "provenance.md"
+    block = next(block for block in _python_blocks(guide) if "reviewed-summary.json" in block)
+    save_eval_run(
+        tmp_path / "eval-runs" / "run-001" / "hello",
+        context=EvalContext(
+            steps=[], final_output="PRIVATE_RESPONSE", artifacts={"raw": "PRIVATE_ARTIFACT"}
+        ),
+    )
+    monkeypatch.chdir(tmp_path)
+    exec(compile(block, str(guide), "exec"), {"__name__": "__main__"})
+    exported = (tmp_path / "reviewed-summary.json").read_text()
+    assert json.loads(exported) == {"completed": False, "step_count": 0}
+    assert "PRIVATE" not in exported
+    assert exported.endswith("\n")
+    with pytest.raises(FileExistsError):
+        exec(compile(block, str(guide), "exec"), {"__name__": "__main__"})
 
 
 @pytest.mark.parametrize("document", ["README.md", "docs/index.md"])

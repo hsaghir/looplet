@@ -196,6 +196,8 @@ Run the printed `inspect` command to read the saved run.
 Each execution gets a unique directory under `.looplet/traces/`.
 An explicit `ProvenanceSink(dir=...)` refuses existing evidence unless you pass `overwrite=True`.
 Capture can contain secrets or personal data; review it before sharing or committing it.
+New record directories own a wildcard `.gitignore`; it does not protect already tracked files or replace redaction.
+See [reviewed summaries](provenance.md#share-a-reviewed-summary) before exporting evidence.
 
 The grading hook owns the live assessment once.
 `save_eval_run()` saves its expectations separately from the agent-visible task.
@@ -244,6 +246,7 @@ Replay does not call the original model backend.
 Tools and their effects run again.
 Use isolated workspaces and controlled inputs for tools that write files or contact services.
 A changed prompt or model needs a new model run, not replay.
+For packaged agents, the [shell replay recipe](cli.md#replay-captured-responses) provides the same handoff through `looplet replay`.
 
 ## Inspect steps or stop early
 

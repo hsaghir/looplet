@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -19,6 +21,68 @@ from looplet.provenance import (
 )
 from looplet.testing import MockLLMBackend
 from looplet.types import LLMBackend, Step, ToolCall, ToolResult
+
+
+@pytest.mark.parametrize("writer", ["calls", "trajectory", "eval"])
+def test_saved_evidence_is_git_ignored_in_consumer_project(tmp_path, writer):
+    from looplet import EvalContext, save_eval_run
+
+    environment = dict(os.environ)
+    local_names = subprocess.run(
+        ["git", "rev-parse", "--local-env-vars"],
+        cwd=Path(__file__).resolve().parent,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+    for name in local_names:
+        environment.pop(name, None)
+    subprocess.run(["git", "init", "--quiet", str(tmp_path)], env=environment, check=True)
+    directory = tmp_path / ".looplet" / "runs" / writer
+    if writer == "calls":
+        recorder = RecordingLLMBackend(MockLLMBackend(["private response"]))
+        recorder.generate("private prompt")
+        recorder.save(directory)
+    elif writer == "trajectory":
+        TrajectoryRecorder().save(directory)
+    else:
+        save_eval_run(directory, context=EvalContext(steps=[], final_output="private output"))
+    assert (directory / ".gitignore").read_text() == "*\n"
+    status = subprocess.run(
+        [
+            "git",
+            "-c",
+            "core.excludesFile=/dev/null",
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+        ],
+        cwd=tmp_path,
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert not status.stdout
+    ignored = subprocess.run(
+        ["git", "check-ignore", str(directory / "private.txt")],
+        cwd=tmp_path,
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert "private.txt" in ignored.stdout
+
+
+def test_evidence_save_preserves_existing_ignore_policy(tmp_path):
+    policy = tmp_path / ".gitignore"
+    policy.write_text("*.txt\n")
+    recorder = RecordingLLMBackend(MockLLMBackend(["response"]))
+    recorder.generate("prompt")
+    recorder.save(tmp_path)
+    recorder.save(tmp_path)
+    assert policy.read_text() == "*.txt\n"
 
 
 class TestRecordingLLMBackendSmoke:

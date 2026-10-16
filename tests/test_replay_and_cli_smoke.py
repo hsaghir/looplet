@@ -474,6 +474,68 @@ class TestShowCLISmoke:
 
 class TestDoctorCLISmoke:
     @pytest.mark.parametrize("json_output", [False, True])
+    @pytest.mark.parametrize(
+        ("provider", "variable", "endpoint", "origin"),
+        [
+            ("openai", "OPENAI_BASE_URL", "http://localhost:1234/v1", "http://localhost:1234"),
+            ("openai", "OPENAI_BASE_URL", "http://[::1]:1234/v1", "http://[::1]:1234"),
+            (
+                "openai",
+                "OPENAI_BASE_URL",
+                "https://review_user:review_password@provider.invalid:8443/private-path?key=review_query#review_fragment",
+                "https://provider.invalid:8443",
+            ),
+            (
+                "anthropic",
+                "ANTHROPIC_BASE_URL",
+                "https://anthropic-review.invalid/private-path",
+                "https://anthropic-review.invalid",
+            ),
+            ("openai", None, None, "https://api.openai.com"),
+        ],
+    )
+    def test_doctor_reports_effective_endpoint_without_credentials(
+        self, capsys, json_output, provider, variable, endpoint, origin
+    ):
+        import os
+        from unittest.mock import patch
+
+        environment = {
+            "LOOPLET_PROVIDER": provider,
+            "OPENAI_API_KEY" if provider == "openai" else "ANTHROPIC_API_KEY": "review_key",
+        }
+        if variable is not None:
+            environment[variable] = endpoint
+        arguments = ["doctor", "--no-backend", "--strict"]
+        if json_output:
+            arguments.append("--json")
+        with patch.dict(os.environ, environment, clear=True):
+            assert cli_main(arguments) == 0
+        output = capsys.readouterr()
+        assert not output.err
+        if json_output:
+            checks = json.loads(output.out)["checks"]
+            detail = next(check["detail"] for check in checks if check["name"] == "endpoint")
+        else:
+            detail = next(
+                line for line in output.out.splitlines() if line.startswith("OK endpoint:")
+            )
+        assert origin in detail
+        assert (variable or "provider client default") in detail
+        assert "origin only" in detail
+        assert all(
+            secret not in output.out
+            for secret in (
+                "review_user",
+                "review_password",
+                "private-path",
+                "review_query",
+                "review_fragment",
+                "review_key",
+            )
+        )
+
+    @pytest.mark.parametrize("json_output", [False, True])
     @pytest.mark.parametrize("provider", [None, "openai", "anthropic"])
     def test_doctor_reports_ambiguous_provider_selection(self, capsys, provider, json_output):
         import os

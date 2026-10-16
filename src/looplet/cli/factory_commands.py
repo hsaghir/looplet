@@ -294,7 +294,13 @@ def cmd_run_workspace(args: argparse.Namespace) -> int:
         return _run_cartridge(args, output=output)
 
 
-def _run_cartridge(args: argparse.Namespace, *, output: TextIO) -> int:
+def _run_cartridge(
+    args: argparse.Namespace,
+    *,
+    output: TextIO,
+    backend_override: Any = None,
+    task_override: dict[str, Any] | None = None,
+) -> int:
     json_output = getattr(args, "json", False)
     if json_output and getattr(args, "pretty", False):
         print(_red("error: --json cannot be used with --pretty"), file=sys.stderr)
@@ -310,7 +316,7 @@ def _run_cartridge(args: argparse.Namespace, *, output: TextIO) -> int:
         return 1
 
     task: str = args.task
-    if task == "-":
+    if task == "-" and task_override is None:
         task = sys.stdin.read()
         if not task.strip():
             print(_red("error: task read from stdin is empty"), file=sys.stderr)
@@ -386,7 +392,9 @@ def _run_cartridge(args: argparse.Namespace, *, output: TextIO) -> int:
 
     try:
         scripted_responses = getattr(args, "scripted_response", None)
-        if scripted_responses:
+        if backend_override is not None:
+            backend = backend_override
+        elif scripted_responses:
             from looplet.testing import MockLLMBackend  # noqa: PLC0415
 
             if any(not response.strip() for response in scripted_responses):
@@ -399,9 +407,14 @@ def _run_cartridge(args: argparse.Namespace, *, output: TextIO) -> int:
         print(_red(f"error: cartridge load failed: {exc}"), file=sys.stderr)
         return 1
 
-    model_label = str(getattr(backend, "_model", type(backend).__name__))
+    model_label = (
+        "captured responses"
+        if backend_override is not None
+        else str(getattr(backend, "_model", type(backend).__name__))
+    )
     if not json_output:
-        print(f"{_bold('looplet run-cartridge')} {workspace_path}")
+        command = "looplet replay" if backend_override is not None else "looplet run-cartridge"
+        print(f"{_bold(command)} {workspace_path}")
         if not getattr(args, "pretty", False):
             print(_dim(f"  task:  {task[:100]}{'…' if len(task) > 100 else ''}"))
             print(_dim(f"  model: {model_label}"))
@@ -442,7 +455,7 @@ def _run_cartridge(args: argparse.Namespace, *, output: TextIO) -> int:
         for step in preset.run(
             backend,
             extra_hooks=hooks,
-            task={"goal": task},
+            task=task_override if task_override is not None else {"goal": task},
         ):
             n_steps += 1
             tool_call = step.tool_call
@@ -526,6 +539,67 @@ def _run_cartridge(args: argparse.Namespace, *, output: TextIO) -> int:
     if saved_trace_dir is not None:
         print(f"\n  Trace: {saved_trace_dir}")
     return completion_exit_code(result, require_completed=getattr(args, "require_completed", False))
+
+
+def cmd_replay(args: argparse.Namespace) -> int:
+    """Replay captured responses with a trusted cartridge in a fresh workspace."""
+    from looplet.evals import load_cases, seed_case_workspace  # noqa: PLC0415
+    from looplet.provenance import _load_trace_calls, _ReplayLLMBackend  # noqa: PLC0415
+
+    output = sys.stdout
+    with execution_output(args.json):
+        try:
+            trace = args.trace.expanduser().resolve()
+            cartridge = args.cartridge.expanduser().resolve()
+            workspace = args.workspace.expanduser().resolve()
+            if not (cartridge / "cartridge.json").is_file():
+                raise ValueError(f"cartridge not found: {cartridge}")
+            if args.max_steps is not None and args.max_steps < 1:
+                raise ValueError("--max-steps must be positive")
+            if workspace.exists() or workspace.is_symlink():
+                raise ValueError("replay workspace already exists; choose a new --workspace path")
+            if workspace.is_relative_to(trace) or workspace.is_relative_to(cartridge):
+                raise ValueError("replay workspace must be outside the trace and cartridge")
+            calls = _load_trace_calls(trace)
+            cases = load_cases(trace / "case.json") if (trace / "case.json").is_file() else []
+            if args.task is not None:
+                if not args.task.strip():
+                    raise ValueError("--task must not be empty")
+                task = {"goal": args.task}
+            elif cases:
+                task = {
+                    key: value
+                    for key, value in cases[0].task.items()
+                    if key not in {"files", "expected"}
+                }
+            else:
+                raise ValueError("raw traces need --task with the original task description")
+            workspace.mkdir(parents=True, mode=0o700)
+            if cases:
+                seed_case_workspace(cases[0], workspace)
+        except (OSError, ValueError) as exc:
+            print(_red(f"error: cannot prepare replay: {exc}"), file=sys.stderr)
+            return 1
+        run_args = argparse.Namespace(
+            workspace=cartridge,
+            task=str(task.get("goal", "Replay captured task")),
+            project_root=workspace,
+            max_steps=args.max_steps,
+            trace_dir=None,
+            no_trace=False,
+            json=args.json,
+            quiet=args.quiet,
+            pretty=False,
+            require_completed=args.require_completed,
+            parent_trace=None,
+            scripted_response=None,
+        )
+        return _run_cartridge(
+            run_args,
+            output=output,
+            backend_override=_ReplayLLMBackend(calls),
+            task_override=task,
+        )
 
 
 def cmd_portability(args: argparse.Namespace) -> int:
@@ -615,6 +689,35 @@ def add_subparsers(sub: "argparse._SubParsersAction") -> None:
     )
     new_p.set_defaults(_handler=cmd_new)
 
+    replay_p = sub.add_parser(
+        "replay",
+        help="Replay captured model responses with a cartridge and fresh workspace",
+        description=(
+            "Use captured model responses without constructing a provider backend. "
+            "Trusted cartridge code, tools, hooks, and network effects execute again. "
+            "This is not checkpoint restoration or an operating-system sandbox."
+        ),
+    )
+    replay_p.add_argument(
+        "trace", type=Path, help="One captured trace or saved eval-case directory"
+    )
+    replay_p.add_argument(
+        "--cartridge", type=Path, required=True, help="Trusted cartridge to execute"
+    )
+    replay_p.add_argument(
+        "--workspace", type=Path, required=True, help="New workspace path; must not exist"
+    )
+    replay_p.add_argument(
+        "--task", help="Original task for a raw trace; overrides a saved case task"
+    )
+    replay_p.add_argument("--max-steps", type=int, help="Override the cartridge tool-call budget")
+    replay_p.add_argument("--quiet", action="store_true", help="Suppress per-step output")
+    replay_p.add_argument("--json", action="store_true", help="Emit the shared completion object")
+    replay_p.add_argument(
+        "--require-completed", action="store_true", help="Fail if completion is not accepted"
+    )
+    replay_p.set_defaults(_handler=cmd_replay)
+
     run_p = sub.add_parser(
         "run-cartridge",
         aliases=["run-workspace"],
@@ -673,4 +776,4 @@ def add_subparsers(sub: "argparse._SubParsersAction") -> None:
     portab_p.set_defaults(_handler=cmd_portability)
 
 
-__all__ = ["add_subparsers", "cmd_new", "cmd_portability", "cmd_run_workspace"]
+__all__ = ["add_subparsers", "cmd_new", "cmd_portability", "cmd_replay", "cmd_run_workspace"]

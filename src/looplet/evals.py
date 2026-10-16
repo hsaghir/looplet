@@ -66,6 +66,7 @@ import inspect
 import json
 import logging
 import math
+import shlex
 import shutil
 import sys
 import tempfile
@@ -1625,8 +1626,8 @@ def run_cartridge_evals(
             )
         if output_dir is not None:
             run_dir = run_dirs[case.id]
-            if capture:
-                run_dir.mkdir(parents=True, mode=0o700)
+            run_dir.mkdir(parents=True, mode=0o700)
+            begin_artifact_write(run_dir)
             sandbox = run_dir / "workspace"
         else:
             run_dir = None
@@ -3415,6 +3416,8 @@ def _run_cartridge_evaluation(parsed: Namespace, *, output: TextIO) -> int:
         print(json.dumps(report, indent=2), file=output)
     elif output_dir is not None:
         print(f"\npersisted {len(records)} run(s) under {output_dir}/")
+        for record in records:
+            print(f"Inspect: looplet inspect {shlex.quote(str(record.directory))}")
     else:
         print("\nevidence not saved (--no-save); model calls cannot be replayed")
     if report["integrity_failures"] and not parsed.json:

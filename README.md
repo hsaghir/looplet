@@ -34,7 +34,7 @@ Use this source install for the Python examples and CLI commands in these guides
 It includes their APIs; no local repository checkout is needed.
 
 ```bash
-python -m pip install "looplet @ git+https://github.com/hsaghir/looplet.git@1e92f55b031aedd7d04e3cd84b7e27dd6a982262"
+python -m pip install "looplet @ git+https://github.com/hsaghir/looplet.git@efa5ed906f6c9d1f3a7762869c90da026653ff27"
 ```
 
 Run this inside a virtual environment; see [Install](docs/install.md).

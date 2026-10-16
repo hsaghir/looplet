@@ -20,6 +20,7 @@ for step in composable_loop(llm=llm, tools=tools, state=state,
                             hooks=[sink.trajectory_hook()]):
     print(step.pretty())
 trace_dir = sink.flush()
+print(trace_dir)
 
 # 2. Read (from the shell)
 $ python -m looplet show <printed-trace-directory>

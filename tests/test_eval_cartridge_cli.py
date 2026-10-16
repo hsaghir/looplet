@@ -1154,7 +1154,14 @@ def test_cli_raw_replay_requires_original_task(tmp_path, capsys, explicit_task):
 
 
 @pytest.mark.parametrize(
-    "failure", ["existing_workspace", "nested_workspace", "missing_calls", "invalid_budget"]
+    "failure",
+    [
+        "existing_workspace",
+        "symlink_workspace",
+        "nested_workspace",
+        "missing_calls",
+        "invalid_budget",
+    ],
 )
 def test_cli_replay_preflights_before_authored_load(tmp_path, monkeypatch, capsys, failure):
     from looplet import ProvenanceSink
@@ -1168,6 +1175,8 @@ def test_cli_replay_preflights_before_authored_load(tmp_path, monkeypatch, capsy
     if failure == "existing_workspace":
         workspace.mkdir()
         (workspace / "keep.txt").write_text("untouched")
+    elif failure == "symlink_workspace":
+        workspace.symlink_to(tmp_path / "symlink-target", target_is_directory=True)
     elif failure == "nested_workspace":
         workspace = trace / "nested"
     elif failure == "missing_calls":
@@ -1197,6 +1206,9 @@ def test_cli_replay_preflights_before_authored_load(tmp_path, monkeypatch, capsy
     assert "Traceback" not in output.err
     if failure == "existing_workspace":
         assert (workspace / "keep.txt").read_text() == "untouched"
+    elif failure == "symlink_workspace":
+        assert workspace.is_symlink()
+        assert not (tmp_path / "symlink-target").exists()
     else:
         assert not workspace.exists()
 

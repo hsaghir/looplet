@@ -236,6 +236,8 @@ def _endpoint_check(backend: Any) -> dict[str, str] | None:
     import os
     from urllib.parse import urlsplit
 
+    from looplet.backends import AnthropicBackend, OpenAIBackend
+
     endpoint = getattr(getattr(backend, "_client", None), "base_url", None)
     if endpoint is None:
         return None
@@ -254,12 +256,18 @@ def _endpoint_check(backend: Any) -> dict[str, str] | None:
         }
     source = "provider client default"
     normalized = parsed._replace(path=parsed.path.rstrip("/"), query=parsed.query.rstrip("/"))
-    for variable in (
-        "OPENAI_BASE_URL",
-        "ANTHROPIC_BASE_URL",
-        "COPILOT_PROXY_URL",
-        "LOOPLET_TAX_LLM_BASE_URL",
-    ):
+    variables: tuple[str, ...] = ()
+    if isinstance(backend, AnthropicBackend):
+        variables = ("ANTHROPIC_BASE_URL",)
+    elif isinstance(backend, OpenAIBackend):
+        provider = os.environ.get("LOOPLET_PROVIDER", "").lower()
+        if provider in {"openai", "oai"} or (
+            not provider and (os.environ.get("OPENAI_API_KEY") or os.environ.get("OPENAI_BASE_URL"))
+        ):
+            variables = ("OPENAI_BASE_URL",)
+        else:
+            variables = ("COPILOT_PROXY_URL", "LOOPLET_TAX_LLM_BASE_URL", "OPENAI_BASE_URL")
+    for variable in variables:
         configured = os.environ.get(variable)
         if not configured:
             continue

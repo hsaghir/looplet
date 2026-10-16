@@ -551,13 +551,14 @@ def cmd_replay(args: argparse.Namespace) -> int:
         try:
             trace = args.trace.expanduser().resolve()
             cartridge = args.cartridge.expanduser().resolve()
-            workspace = args.workspace.expanduser().resolve()
+            workspace = args.workspace.expanduser()
+            if workspace.exists() or workspace.is_symlink():
+                raise ValueError("replay workspace already exists; choose a new --workspace path")
+            workspace = workspace.resolve()
             if not (cartridge / "cartridge.json").is_file():
                 raise ValueError(f"cartridge not found: {cartridge}")
             if args.max_steps is not None and args.max_steps < 1:
                 raise ValueError("--max-steps must be positive")
-            if workspace.exists() or workspace.is_symlink():
-                raise ValueError("replay workspace already exists; choose a new --workspace path")
             if workspace.is_relative_to(trace) or workspace.is_relative_to(cartridge):
                 raise ValueError("replay workspace must be outside the trace and cartridge")
             calls = _load_trace_calls(trace)

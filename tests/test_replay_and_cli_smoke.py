@@ -491,6 +491,7 @@ class TestDoctorCLISmoke:
                 "https://anthropic-review.invalid/private-path",
                 "https://anthropic-review.invalid",
             ),
+            ("proxy", "COPILOT_PROXY_URL", "http://localhost:4321/v1", "http://localhost:4321"),
             ("openai", None, None, "https://api.openai.com"),
         ],
     )
@@ -502,10 +503,14 @@ class TestDoctorCLISmoke:
 
         environment = {
             "LOOPLET_PROVIDER": provider,
-            "OPENAI_API_KEY" if provider == "openai" else "ANTHROPIC_API_KEY": "review_key",
+            "ANTHROPIC_API_KEY" if provider == "anthropic" else "OPENAI_API_KEY": "review_key",
         }
         if variable is not None:
             environment[variable] = endpoint
+            if provider in {"anthropic", "proxy"}:
+                environment["OPENAI_BASE_URL"] = endpoint
+        else:
+            environment["COPILOT_PROXY_URL"] = "https://api.openai.com/v1"
         arguments = ["doctor", "--no-backend", "--strict"]
         if json_output:
             arguments.append("--json")

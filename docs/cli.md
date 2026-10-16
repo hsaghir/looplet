@@ -136,7 +136,7 @@ looplet replay eval-runs/run-001/hello --cartridge ./agent.cartridge \
 
 Saved cases supply agent-visible task data and seed files; grader-only expectations are not forwarded to the agent.
 Raw traces need `--task` because they may not preserve the task.
-`--task` overrides a saved case's goal; `--max-steps` overrides the cartridge budget.
+`--task` replaces the saved agent task with the supplied goal; `--max-steps` overrides the cartridge budget.
 Use only trusted cartridges: loading imports authored code, and tools, hooks, networks, and other effects execute again.
 A fresh directory is not an operating-system sandbox, checkpoint restoration, or a guarantee of identical results.
 Authored tools and resources may contact services even though replay does not construct the original provider backend.

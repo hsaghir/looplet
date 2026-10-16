@@ -15,7 +15,7 @@ PyPI `0.3.0` does not include these result helpers.
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-python -m pip install "looplet @ git+https://github.com/hsaghir/looplet.git@ed7ce2da51b7217e23158d4aa74efa06c037751e"
+python -m pip install "looplet @ git+https://github.com/hsaghir/looplet.git@c07498736d82bb11c6341d0dc89cfe4adfa689bf"
 ```
 
 The core package has no third-party runtime dependencies.
@@ -300,7 +300,7 @@ See the [Python API](api.md#execution-core) for that form.
 Keep `first_loop.py` unchanged and install the adapter for the same tutorial snapshot:
 
 ```bash
-python -m pip install "looplet[openai] @ git+https://github.com/hsaghir/looplet.git@ed7ce2da51b7217e23158d4aa74efa06c037751e"
+python -m pip install "looplet[openai] @ git+https://github.com/hsaghir/looplet.git@c07498736d82bb11c6341d0dc89cfe4adfa689bf"
 export OPENAI_API_KEY=...
 export OPENAI_MODEL=gpt-4o
 ```

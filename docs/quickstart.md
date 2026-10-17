@@ -29,17 +29,17 @@ It does not contact a model service.
 The tool returns the team that owns a service.
 
 ```python title="first_loop.py"
-from looplet import MockLLMBackend, minimal_preset, tool
+from looplet import MockLLMBackend, minimal_preset
 
 
-@tool(description="Find the team that owns a service.")
 def lookup_owner(service: str) -> dict:
+    """Find the team that owns a service."""
     owners = {"payments": "fintech-platform", "search": "discovery"}
     return {"service": service, "owner": owners.get(service)}
 
 
-@tool(description="Finish with the service, its owner, and an optional explanation.")
 def done(service: str, owner: str, summary: str = "") -> dict:
+    """Finish with the service, its owner, and an optional explanation."""
     return {"service": service, "owner": owner, "summary": summary}
 
 
@@ -76,6 +76,13 @@ This helper defaults to JSON-text for its fixed responses.
 Pass `use_native_tools=True` when changing to a native-tool backend.
 The [real-model section](#use-the-same-agent-with-a-real-model) shows the complete change.
 The scripted run needs two calls; `max_steps` lets other runs use a different limit.
+
+These tools remain ordinary Python functions.
+Call them directly in your application or unit tests.
+`minimal_preset` infers tool schemas from their signatures and descriptions from their docstrings.
+The optional `@tool` decorator returns a `ToolSpec`, not a callable function.
+Call a decorated tool's `.execute(...)` method to test its underlying function.
+That direct call bypasses registry validation and hooks.
 
 `AgentPreset` holds one run's mutable state and resources.
 It is single-use, not a reusable configuration object.
@@ -132,7 +139,14 @@ See [Behavioral evals](evals.md) for collectors and saved cases.
 Put these tests beside `first_loop.py`:
 
 ```python title="test_first_loop.py"
-from first_loop import assess_result, run_agent, scripted_backend
+from first_loop import assess_result, done, lookup_owner, run_agent, scripted_backend
+
+
+def test_tools_are_regular_functions():
+    assert lookup_owner("payments") == {"service": "payments", "owner": "fintech-platform"}
+    assert done("payments", "fintech-platform") == {
+        "service": "payments", "owner": "fintech-platform", "summary": ""
+    }
 
 
 def test_owner():

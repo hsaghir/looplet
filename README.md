@@ -46,11 +46,11 @@ It runs without a model service or an API key.
 ```python
 from contextlib import closing
 
-from looplet import DefaultState, LoopConfig, MockLLMBackend, composable_loop, tool, tools_from
+from looplet import DefaultState, LoopConfig, MockLLMBackend, composable_loop, tools_from
 
 
-@tool(description="Find the team that owns a service.")
 def lookup_owner(service: str) -> dict:
+    """Find the team that owns a service."""
     owners = {"payments": "fintech-platform", "search": "discovery"}
     return {"service": service, "owner": owners.get(service)}
 
@@ -78,6 +78,9 @@ print(state.termination_reason)
 The loop calls `lookup_owner`, then `done`.
 The lookup returns `fintech-platform` as the payments owner.
 The last line prints `done`, the stop reason.
+
+The tool remains a normal Python function.
+You can also call `lookup_owner("payments")` directly.
 
 Each yielded step follows a tool call.
 The tool has already run when your code receives that step.

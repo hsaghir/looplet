@@ -170,13 +170,25 @@ before enabling summarization in a release harness.
 
 ## A run resumes old state
 
-When `LoopConfig(checkpoint_dir=...)` points at a directory containing
-checkpoints and no explicit `initial_checkpoint` is supplied, Looplet loads the
-latest checkpoint automatically. Use a fresh directory for a new run, or
-remove stale checkpoint files intentionally.
+Without an explicit `initial_checkpoint`, Looplet selects the highest-step incomplete checkpoint for the configured run.
+A terminal checkpoint prevents implicit resume of older snapshots.
+Use a fresh directory for a new task.
+Keep completed and interrupted runs as evidence instead of deleting their checkpoints to force a restart.
 
 Checkpoint JSON may contain task and conversation data. Apply the same access,
 retention, and redaction policy used for traces.
+
+## Resume raises UncertainToolEffect
+
+A tool was interrupted before Looplet recorded its result.
+The external effect may already have happened.
+Looplet blocks another model or tool call to prevent a blind retry.
+
+Stop the worker and preserve the pending checkpoint.
+Inspect the call ID, effective arguments, and the external system's authoritative state.
+Follow the [worked reconciliation example](host-integration.md#reconcile-an-interrupted-tool).
+Keep recovery blocked when the effect cannot be established.
+Do not remove `pending_calls`, delete the directory, or change the run identity to bypass this guard.
 
 ## MCP tools hang or fail at startup
 

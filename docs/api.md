@@ -158,6 +158,16 @@ The optional `@tool` decorator replaces the function with a `ToolSpec`.
 Call its `.execute(...)` method to invoke the underlying function directly.
 Direct calls bypass registry validation and hooks; test dispatch separately when those controls matter.
 
+Unreleased builds also accept `functools.partial` objects and callable instances.
+A partial uses its underlying callable's name and docstring.
+A callable instance uses its class name and its class or `__call__` docstring.
+Use `tool(callable, name=..., description=...)` to override this metadata.
+Give multiple instances or partials distinct explicit names before registering them together.
+Schema inference uses the effective signature and resolves postponed annotations from the underlying function or `__call__` method.
+Positionally bound parameters are absent from the schema.
+Keyword-bound parameters keep their defaults and remain model-visible.
+Use a wrapper or positional binding for dependencies that must not be exposed as tool arguments.
+
 Unreleased registration rejects positional-only parameters because dispatch uses keyword arguments.
 Wrap existing positional-only functions with keyword-compatible functions.
 JSON arrays arrive as Python lists.
@@ -186,6 +196,8 @@ Unreleased builds preserve these additional annotation contracts:
 - `Annotated[T, ...]` uses the schema for `T`; metadata does not become a validation rule.
 - `Any` adds no type constraint, including for explicit null values.
 - Simple unions such as `str | int` retain all listed JSON types.
+- Mixed or nullable `Literal` choices retain every declared JSON type, including `None`.
+- Enum checks distinguish booleans from numeric values, so `True` does not match an allowed `1`.
 
 Missing annotations retain the legacy string schema.
 Required-field presence and blank-string checks still apply.

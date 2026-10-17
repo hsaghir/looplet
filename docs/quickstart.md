@@ -366,13 +366,16 @@ See the [Python API](api.md#execution-core) for that form.
 
 ## Use the same agent with a real model
 
-Keep `first_loop.py` unchanged and install the adapter for the same release:
+Keep `first_loop.py` unchanged and add the adapter from the same source build:
 
 ```bash
-python -m pip install "looplet[openai]==0.4.0"
+python -m pip install "looplet[openai] @ https://github.com/hsaghir/looplet/archive/refs/heads/master.zip"
 export OPENAI_API_KEY=...
 export OPENAI_MODEL=gpt-4o
 ```
+
+Use the same full commit hash here if you pinned the earlier install.
+Adding a provider extra should not replace the source build with published `0.4.0`.
 
 Put this in a separate `first_loop_live.py` file:
 
@@ -398,7 +401,8 @@ This makes real provider calls and may incur charges.
 It uses the same tools and fresh-run factory, with native tool calls enabled explicitly.
 The live example allows up to eight tool calls, including completion.
 Adjust `max_steps` for your task; budget exhaustion means the run did not finish.
-For Anthropic, install the `anthropic` extra and replace `OpenAIBackend` with `AnthropicBackend`.
+For Anthropic, install the `anthropic` extra from the same source revision.
+Replace `OpenAIBackend` with `AnthropicBackend`.
 Configure its key as described in [Install](install.md#configure-anthropic).
 Use `use_native_tools=False` only when you intentionally select JSON-text responses.
 

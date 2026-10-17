@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from functools import partial
 from typing import Annotated, Any, Literal, Union
 
 import pytest
@@ -65,6 +66,101 @@ class TestToolDecorator:
         shout_result = registry.dispatch(ToolCall(tool="shout", args={"text": "hi"}))
         assert shout_result.data == {"text": "HI"}
 
+    @pytest.mark.parametrize("async_dispatch", [False, True])
+    @pytest.mark.parametrize("kind", ["partial", "nested_partial", "instance", "partial_instance"])
+    async def test_bound_callables_preserve_signature_and_metadata(self, kind, async_dispatch):
+        effects = []
+        owners = {"payments": "fintech-platform"}
+
+        def lookup_owner(owners: dict, service: str, limit: int = 1) -> dict:
+            """Find the team that owns a service."""
+            effects.append((service, limit))
+            return {"owner": owners.get(service), "limit": limit}
+
+        class OwnerLookup:
+            def __call__(self, service: str, limit: int = 1) -> dict:
+                """Find the team that owns a service."""
+                return lookup_owner(owners, service, limit)
+
+        candidates = {
+            "partial": (partial(lookup_owner, owners), "lookup_owner", 1),
+            "nested_partial": (partial(partial(lookup_owner, owners), limit=2), "lookup_owner", 2),
+            "instance": (OwnerLookup(), "OwnerLookup", 1),
+            "partial_instance": (partial(OwnerLookup(), limit=2), "OwnerLookup", 2),
+        }
+        candidate, name, limit = candidates[kind]
+        registry = tools_from([candidate], validate=True)
+        spec = registry.tool_specs[name]
+        assert spec.description == "Find the team that owns a service."
+        assert spec.to_json_schema() == {
+            "type": "object",
+            "properties": {
+                "service": {"type": "string"},
+                "limit": {"type": "integer", "default": limit},
+            },
+            "required": ["service"],
+        }
+        call = ToolCall(tool=name, args={"service": "payments"})
+        result = await registry.async_dispatch(call) if async_dispatch else registry.dispatch(call)
+        assert result.error is None
+        assert result.data == {"owner": "fintech-platform", "limit": limit}
+        assert effects == [("payments", limit)]
+        invalid = ToolCall(tool=name, args={"service": "payments", "limit": "two"})
+        rejected = (
+            await registry.async_dispatch(invalid) if async_dispatch else registry.dispatch(invalid)
+        )
+        assert rejected.error is not None
+        assert effects == [("payments", limit)]
+        assert candidate("payments") == result.data
+
+    def test_explicit_callable_metadata_overrides_inference(self):
+        class Increment:
+            def __call__(self, value: int, offset: int = 1) -> dict:
+                return {"value": value + offset}
+
+        candidate = partial(Increment(), offset=2)
+        spec = tool(candidate, name="add_two", description="Add two to a value.")
+        assert spec.name == "add_two"
+        assert spec.description == "Add two to a value."
+        result = tools_from([spec], validate=True).dispatch(
+            ToolCall(tool="add_two", args={"value": 3})
+        )
+        assert result.error is None
+        assert result.data == {"value": 5}
+
+    def test_callable_instance_without_docstring_has_a_description(self):
+        class Echo:
+            def __call__(self, value: str) -> dict:
+                return {"value": value}
+
+        spec = tool(Echo())
+        assert spec.name == "Echo"
+        assert spec.description == "Call Echo."
+
+    @pytest.mark.parametrize("kind", ["partial", "instance", "partial_instance"])
+    async def test_async_bound_callables_are_awaited(self, kind):
+        effects = []
+
+        async def lookup_owner(prefix: str, service: str) -> dict:
+            effects.append(service)
+            return {"owner": prefix + service}
+
+        class OwnerLookup:
+            async def __call__(self, service: str) -> dict:
+                return await lookup_owner("owner-", service)
+
+        candidates = {
+            "partial": (partial(lookup_owner, "owner-"), "lookup_owner"),
+            "instance": (OwnerLookup(), "OwnerLookup"),
+            "partial_instance": (partial(OwnerLookup()), "OwnerLookup"),
+        }
+        candidate, name = candidates[kind]
+        registry = tools_from([candidate], validate=True)
+        result = await registry.async_dispatch(ToolCall(tool=name, args={"service": "payments"}))
+        assert result.error is None
+        assert result.data == {"owner": "owner-payments"}
+        assert effects == ["payments"]
+
     def test_tools_from_can_customize_done_and_include_think(self) -> None:
         @tool(description="Audit a package.")
         def audit_package(name: str) -> dict:
@@ -123,6 +219,34 @@ class TestToolDecorator:
                 None,
                 {"enum": ["fast", "safe", None], "type": ["string", "null"]},
             ),
+            (
+                Literal["auto", 1, 2],
+                1,
+                {"enum": ["auto", 1, 2], "type": ["string", "integer"]},
+            ),
+            (
+                Literal["auto", 1, 2],
+                2,
+                {"enum": ["auto", 1, 2], "type": ["string", "integer"]},
+            ),
+            (
+                Literal[1, 2, "auto"],
+                "auto",
+                {"enum": [1, 2, "auto"], "type": ["integer", "string"]},
+            ),
+            (
+                Literal["auto", None],
+                None,
+                {"enum": ["auto", None], "type": ["string", "null"]},
+            ),
+            (
+                Literal[None, "auto"],
+                "auto",
+                {"enum": [None, "auto"], "type": ["null", "string"]},
+            ),
+            (Literal[True, 2], 2, {"enum": [True, 2], "type": ["boolean", "integer"]}),
+            (Literal[1, False], False, {"enum": [1, False], "type": ["integer", "boolean"]}),
+            (Literal[1, False], 1, {"enum": [1, False], "type": ["integer", "boolean"]}),
         ],
     )
     async def test_annotation_schema_and_dispatch_agree(
@@ -155,6 +279,12 @@ class TestToolDecorator:
             (str | int, 3.5),
             (str | int, True),
             (Literal["fast", "safe"] | None, "unknown"),
+            (Literal["auto", 1, 2], 3),
+            (Literal["auto", 1, 2], True),
+            (Literal["auto", None], "unknown"),
+            (Literal[1, False], True),
+            (Literal[True, 2], 1),
+            (Literal[0, True], False),
         ],
     )
     async def test_annotation_validation_rejects_invalid_values(

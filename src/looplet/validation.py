@@ -142,7 +142,10 @@ def validate_args(schema: OutputSchema, args: dict[str, Any]) -> ValidationResul
                     )
 
         # allowed_values check
-        if spec.allowed_values is not None and value not in spec.allowed_values:
+        if spec.allowed_values is not None and not any(
+            isinstance(value, bool) == isinstance(allowed, bool) and value == allowed
+            for allowed in spec.allowed_values
+        ):
             errors.append(
                 f"field {name!r}: value {value!r} not in allowed values {spec.allowed_values}"
             )

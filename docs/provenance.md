@@ -245,13 +245,19 @@ Live responses and tool arguments remain unchanged.
 Replay uses the saved, redacted values; it does not recover the original values.
 Review captured evidence before sharing or replaying it.
 
+**Unreleased:** Trajectory and step captures scrub string keys and values before JSON encoding.
+JSON-sensitive replacements remain valid JSON.
+Recorded tool schemas, backend error text, and manifest metadata also use the callback.
+Live schemas and raised exceptions remain unchanged.
+Upstream scrubbing applies to prompt strings, not native tool schemas.
+
 `ProvenanceSink(redact=...)` accepts the same callable and inherits the
 same semantics:
 
 ```python
 sink = ProvenanceSink(dir="traces/", redact=redact_pii)
 llm  = sink.wrap_llm(AnthropicBackend(...))
-# PII is stripped before Anthropic sees it AND before the trace is written.
+# Prompt strings are scrubbed upstream. Captures use a separate scrubbed copy.
 ```
 
 If you want the legacy record-only behaviour (scrub the trace but

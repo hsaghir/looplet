@@ -151,6 +151,26 @@ def _truncate(s: str, limit: int) -> str:
     return s[:keep] + f"\n... [truncated {len(s) - keep} chars] ..."
 
 
+def _redact_value(value: Any, redact: Callable[[str], str] | None) -> Any:
+    if isinstance(value, str):
+        return redact(value) if redact is not None else value
+    if isinstance(value, (list, tuple)):
+        return [_redact_value(item, redact) for item in value]
+    if isinstance(value, dict):
+        return {
+            _redact_value(key, redact): _redact_value(item, redact) for key, item in value.items()
+        }
+    if redact is not None and value is not None and not isinstance(value, (bool, int, float)):
+        return redact(str(value))
+    return value
+
+
+def _recorded_json(value: Any, redact: Callable[[str], str] | None) -> str:
+    if redact is not None:
+        value = _redact_value(value, redact)
+    return json.dumps(value, indent=2, default=str)
+
+
 class _RecordingBase:
     """Shared state for sync/async recording backends."""
 
@@ -204,16 +224,7 @@ class _RecordingBase:
         return _truncate(out, self._max_chars)
 
     def _redact_native_response(self, value: Any) -> Any:
-        if isinstance(value, str):
-            return self._redact(value) if self._redact is not None else value
-        if isinstance(value, list):
-            return [self._redact_native_response(item) for item in value]
-        if isinstance(value, dict):
-            return {
-                self._redact_native_response(key): self._redact_native_response(item)
-                for key, item in value.items()
-            }
-        return value
+        return _redact_value(value, self._redact)
 
     def _record(
         self,
@@ -245,9 +256,9 @@ class _RecordingBase:
             response=stored_response,
             temperature=temperature,
             max_tokens=max_tokens,
-            tools=tools,
+            tools=_redact_value(tools, self._redact),
             step_num=self.current_step_num,
-            error=error,
+            error=self._scrub(error) if error is not None else None,
             scope=self._call_scope.get(),
         )
         self.calls.append(call)
@@ -276,7 +287,7 @@ class _RecordingBase:
                 (root / f"call_{idx}_response.txt").write_text(
                     _format_response_block(c), encoding="utf-8"
                 )
-                mf.write(json.dumps(c.to_dict()) + "\n")
+                mf.write(json.dumps(_redact_value(c.to_dict(), self._redact)) + "\n")
         if publish_descriptor:
             write_artifact_descriptor(root, kind="provenance", components=("model_calls",))
         return root
@@ -892,9 +903,7 @@ class TrajectoryRecorder:
         if publish_descriptor:
             begin_artifact_write(root)
         _clear_call_artifacts(root)
-        traj_text = json.dumps(self.trajectory.to_dict(), indent=2, default=str)
-        if self._redact is not None:
-            traj_text = self._redact(traj_text)
+        traj_text = _recorded_json(self.trajectory.to_dict(), self._redact)
         (root / "trajectory.json").write_text(traj_text, encoding="utf-8")
         steps_dir = root / "steps"
         steps_dir.mkdir(exist_ok=True)
@@ -902,9 +911,7 @@ class TrajectoryRecorder:
             if path.is_file() and _STEP_ARTIFACT.fullmatch(path.name):
                 path.unlink()
         for s in self.trajectory.steps:
-            step_text = json.dumps(s.to_dict(), indent=2, default=str)
-            if self._redact is not None:
-                step_text = self._redact(step_text)
+            step_text = _recorded_json(s.to_dict(), self._redact)
             (steps_dir / f"step_{s.step_num:02d}.json").write_text(
                 step_text,
                 encoding="utf-8",

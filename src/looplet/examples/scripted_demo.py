@@ -141,7 +141,8 @@ def main(argv: list[str] | None = None) -> int:
                     "args": {"summary": "cleaned 2 cancelled rows; 2 remain"},
                 }
             ),
-        ]
+        ],
+        cycle=False,
     )
 
     # ── 3. Sync approval handler - scripted "yes" for determinism

@@ -62,7 +62,7 @@ def lookup_owner(service: str) -> dict:
 llm = MockLLMBackend([
     '{"tool":"lookup_owner","args":{"service":"payments"}}',
     '{"tool":"done","args":{"summary":"The payments owner is fintech-platform."}}',
-])
+], cycle=False)
 tools = tools_from([lookup_owner], include_done=True, validate=True)
 state = DefaultState(max_steps=2)
 
@@ -82,6 +82,7 @@ print(RunResult.from_state(state).termination_reason)
 The loop calls `lookup_owner`, then `done`.
 The lookup returns `fintech-platform` as the payments owner.
 The last line prints `done`, the stop reason.
+`cycle=False` rejects unexpected extra model calls instead of repeating the script.
 
 The tool remains a normal Python function.
 You can also call `lookup_owner("payments")` directly.

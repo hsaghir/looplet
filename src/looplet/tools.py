@@ -262,7 +262,13 @@ def _json_type_for_annotation(annotation: Any) -> dict[str, Any]:
             schema.update(_json_type_for_annotation(type(literal_values[0])))
         return schema
 
-    if origin in (list, tuple, set, frozenset):
+    if origin in (tuple, set, frozenset) or annotation in (tuple, set, frozenset):
+        raise TypeError(
+            f"Cannot infer a tool parameter schema for {annotation!r}. "
+            "JSON arrays arrive as Python lists. "
+            "Use a list parameter and convert it inside a wrapper."
+        )
+    if origin is list:
         schema = {"type": "array"}
         if args:
             schema["items"] = _json_type_for_annotation(args[0])
@@ -276,9 +282,6 @@ def _json_type_for_annotation(annotation: Any) -> dict[str, Any]:
         float: "number",
         bool: "boolean",
         list: "array",
-        tuple: "array",
-        set: "array",
-        frozenset: "array",
         dict: "object",
         type(None): "null",
     }
@@ -508,8 +511,9 @@ class ToolSpec:
         """Return mismatches between the schema and the execute signature.
 
         The audit is intentionally limited to the contract facts that affect
-        dispatch: declared names and requiredness. ``ctx`` is injected by the
-        registry, and ``**kwargs`` permits declarative extension parameters.
+        dispatch: declared names, requiredness, and keyword compatibility.
+        ``ctx`` is injected by the registry, and ``**kwargs`` permits
+        declarative extension parameters.
         """
         try:
             signature = inspect.signature(self.execute)
@@ -528,7 +532,11 @@ class ToolSpec:
             not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
         }
         declared_names = set(self.parameter_names())
-        errors: list[str] = []
+        errors = [
+            f"callable parameter {name!r} is positional-only; use a keyword-compatible wrapper"
+            for name, parameter in signature.parameters.items()
+            if parameter.kind == inspect.Parameter.POSITIONAL_ONLY
+        ]
 
         if not accepts_kwargs:
             undeclared = sorted(set(callable_parameters) - declared_names)
@@ -822,6 +830,21 @@ class BaseToolRegistry:
         overwrites are a common source of bugs when composing
         multiple ``Skill`` bundles that happen to share a tool name.
         """
+        try:
+            signature = inspect.signature(spec.execute)
+        except (TypeError, ValueError):
+            signature = None
+        if signature is not None:
+            positional_only = [
+                name
+                for name, parameter in signature.parameters.items()
+                if parameter.kind == inspect.Parameter.POSITIONAL_ONLY
+            ]
+            if positional_only:
+                raise TypeError(
+                    f"Tool {spec.name!r} has positional-only parameters: {positional_only}. "
+                    "Use a keyword-compatible wrapper."
+                )
         spec.sync_required_parameters_from_callable()
         if spec.name in self._tools:
             existing = self._tools[spec.name]

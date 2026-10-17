@@ -601,6 +601,8 @@ def test_documented_summary_omits_private_evidence(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("document", ["README.md", "docs/index.md"])
 def test_documented_first_loop(document: str, tmp_path, monkeypatch) -> None:
+    from looplet.testing import LLMResponsesExhausted
+
     root = Path(__file__).resolve().parents[1]
     path = root / document
     blocks = _python_blocks(path)
@@ -630,6 +632,8 @@ def test_documented_first_loop(document: str, tmp_path, monkeypatch) -> None:
     assert RunResult.from_state(state).completed
     assert observations[0][0].call_count == 2
     assert observations[0][1].call_count == 2
+    with pytest.raises(LLMResponsesExhausted):
+        namespace["llm"].generate("Unexpected extra model call")
 
     first_loop = _python_blocks(root / "README.md")[0]
     assert ast.dump(ast.parse(blocks[0])) == ast.dump(ast.parse(first_loop))
@@ -643,6 +647,19 @@ def test_documented_first_loop(document: str, tmp_path, monkeypatch) -> None:
         timeout=20,
     )
     assert typed.returncode == 0, typed.stdout + typed.stderr
+
+
+def test_quickstart_scripted_backend_rejects_extra_model_calls() -> None:
+    from looplet.testing import LLMResponsesExhausted
+
+    guide = Path(__file__).resolve().parents[1] / "docs" / "quickstart.md"
+    namespace = {"__name__": "first_loop"}
+    exec(compile(_quickstart_agent_source(guide), str(guide), "exec"), namespace)
+    backend = namespace["scripted_backend"]()
+    backend.generate("First scripted call")
+    backend.generate("Second scripted call")
+    with pytest.raises(LLMResponsesExhausted):
+        backend.generate("Unexpected extra model call")
 
 
 def test_quickstart_runs_grades_captures_and_replays(tmp_path: Path, monkeypatch) -> None:

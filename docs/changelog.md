@@ -13,6 +13,10 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Trajectory JSON redacts string values before encoding, preserving valid JSON for escaped text and replacement strings.
+- Captures redact backend errors, recorded tool schemas, and manifest metadata without changing live arguments or exceptions.
+- Tool registration rejects positional-only signatures. Inferred container annotations require JSON-compatible inputs and explicit conversion for sets or tuples.
+- Introductory scripted examples use strict response exhaustion while mock defaults remain unchanged.
 - Public sync and async loop help documents parameters, budget overrides, and iterator cleanup.
 - Introductory guides recommend a non-editable current-source install while the patch remains unpublished.
 - The CLI guide compares format support before packaging and uses strict completion in primary run examples.

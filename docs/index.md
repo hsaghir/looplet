@@ -86,13 +86,16 @@ The loop still yields steps, so your code can inspect each result and stop befor
 
 ## Start with one loop
 
-Install the published package for the Python examples and CLI commands in these guides.
+Install the current source build for the examples and fixes in these guides.
 Run it inside a virtual environment:
 
 ```bash
-python -m pip install "looplet==0.4.0"
+python -m pip install "looplet @ https://github.com/hsaghir/looplet/archive/refs/heads/master.zip"
 ```
 
+This non-editable development build needs no Git installation or local checkout.
+It identifies as `0.4.1.dev0`; PyPI `0.4.0` lacks later safety fixes.
+The archive follows `master`; pin an approved full commit hash for deployment.
 See the [Quickstart](quickstart.md) for environment setup and the same agent's tests.
 This example uses fixed responses and does not contact a model service.
 `validate=True` checks top-level argument types, nullability, and enum choices before tools run.

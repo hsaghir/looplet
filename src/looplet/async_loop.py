@@ -463,7 +463,35 @@ async def async_composable_loop(
     max_steps: int | None = None,
     system_prompt: str | None = None,
 ) -> AsyncGenerator[Step, None]:
-    """Run the async loop with exception-safe per-run cleanup."""
+    """Run the asynchronous tool-calling loop and yield recorded steps.
+
+    Args:
+        llm: Backend whose ``generate()`` result can be awaited.
+        task: A dict of task fields, such as ``{'description': 'Find the owner'}``.
+            A bare string is not accepted. Defaults to an empty dict.
+        tools: Required tool registry, usually built with ``tools_from(...)``.
+            Do not pass a list of functions directly.
+        context: Optional application object passed unchanged to hook methods.
+        hooks: Hook instances that observe or steer the loop. Defaults to an empty list.
+        config: ``LoopConfig`` with budgets, prompt builders, and runtime options.
+            Defaults to a new ``LoopConfig``.
+        state: Mutable ``AgentState`` for this run. If omitted, creates ``DefaultState``
+            with the effective ``config.max_steps`` limit.
+        session_log: Memory log for this run. Defaults to a new ``SessionLog``.
+        stream: Optional event emitter for structured loop lifecycle events.
+        conversation: Optional conversation that records prompts, responses, and tool messages.
+        max_steps: Optional override for ``config.max_steps``.
+            An omitted state also receives this limit. The supplied config is not mutated.
+        system_prompt: Optional override for ``config.system_prompt``.
+            The supplied config is not mutated.
+
+    Yields:
+        A ``Step`` for each recorded loop step, including failed tool calls.
+
+    Consume the iterator with ``async for``. If stopping early, await its ``aclose()`` method
+    or use ``contextlib.aclosing``. Cleanup runs on exhaustion, closure, and exceptions.
+    Early closure marks an unfinished run as stopped, not completed.
+    """
     effective_config = _resolve_loop_config(
         config, max_steps=max_steps, system_prompt=system_prompt
     )

@@ -10,6 +10,8 @@ looplet --help-all
 looplet <command> --help
 ```
 
+## Choose an agent format
+
 Python agents do not need packaging: use `python first_loop.py` and `python -m pytest test_first_loop.py`.
 See the [Quickstart](quickstart.md) for both files.
 The `run` command below loads packaged agents, not arbitrary Python scripts.
@@ -19,6 +21,21 @@ There are two runnable file formats:
 - a **cartridge** is a reviewable agent harness containing prompts, tools,
   hooks, resources, and optional evals;
 - a **skill bundle** is an executable packaged skill with a Python entrypoint.
+
+Choose a cartridge when you need shell replay or shipped CLI eval cases.
+Choose a skill bundle when you need its Python packaging and entrypoint.
+Both use the same underlying loop, but their shell workflows differ:
+
+| Workflow | Python agent | Cartridge | Skill bundle |
+| --- | --- | --- | --- |
+| Create | Write Python | `looplet new` | Write a bundle entrypoint |
+| Run | `python first_loop.py` | `looplet run` | `looplet run` |
+| Inspect declarations | Read Python | `looplet inspect` | `looplet inspect` |
+| Replay captured responses | `replay_loop()` in Python | `looplet replay` | [`replay_loop()` in Python](#replay-skill-bundles) |
+| Run behavioral tests | `python -m pytest` | `looplet eval run` | `python -m pytest` |
+
+Bundle replay requires Python; `eval run` requires cartridge cases.
+These are format limits, not extra flags to enable on a bundle.
 
 Use `new`, `run`, `inspect`, and `eval`; add `replay` when comparing captured responses. `run` detects either
 format; shell `replay` and `eval run` accept cartridges only.
@@ -30,7 +47,7 @@ commands and compatibility aliases; their individual help remains available.
 available when a script needs an explicit format.
 
 Unified `run`, `inspect`, `run-bundle`, and `new --offline` are included in Looplet `0.4.0`.
-The [published install](install.md#install-the-published-package) includes these commands and their options.
+Use the [recommended install](install.md#install-the-current-build) for later fixes described in this guide.
 Add the provider extra when using a real model.
 
 ## Diagnose and inspect runs
@@ -288,8 +305,15 @@ Load a cartridge and run one task:
 looplet run ./agent.cartridge \
   "Inspect the current change" \
   --project-root . \
-  --max-steps 20
+  --max-steps 20 \
+  --require-completed
 ```
+
+Use `--require-completed` in automation so an incomplete task returns nonzero.
+Without this flag, exit code `0` means the loop ran, not that the task completed.
+Budget exhaustion and hook stops can return `0` with `completed: false`.
+Tool errors can also exhaust the budget without accepted completion.
+Accepted completion still does not prove correctness; use an outcome grader for that.
 
 In unreleased builds, `--max-steps` overrides the charged-step budget for `DefaultState`.
 Successful nonterminal free calls do not consume it; total tool and model calls can exceed this value.
@@ -299,7 +323,7 @@ Live `new`, `run`, its explicit cartridge and bundle aliases, and `eval run` acc
 
 ```bash
 looplet run ./agent.cartridge "Inspect the current change" \
-  --model local-model --base-url http://localhost:11434/v1
+  --model local-model --base-url http://localhost:11434/v1 --require-completed
 ```
 
 `--model` overrides the selected provider's model.
@@ -311,20 +335,20 @@ Scripted runs do not construct a provider backend.
 Use `-` as the task to read it from standard input:
 
 ```bash
-git diff | looplet run ./review.cartridge - --project-root .
+git diff | looplet run ./review.cartridge - --project-root . --require-completed
 ```
 
 Link a follow-up run to an earlier trace without changing execution:
 
 ```bash
 looplet run ./repair.cartridge "Repair the finding" \
-  --parent-trace .looplet/traces/review-a1b2c3
+  --parent-trace .looplet/traces/review-a1b2c3 --require-completed
 ```
 
 Emit one completion object for a shell pipeline:
 
 ```bash
-looplet run ./agent.cartridge "Inspect the change" --json \
+looplet run ./agent.cartridge "Inspect the change" --require-completed --json \
   | jq -e '.completed'
 ```
 

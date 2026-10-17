@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import inspect
 import json
 import re
 import shlex
@@ -16,10 +17,84 @@ from unittest.mock import Mock
 
 import pytest
 
-from looplet import MockLLMBackend, RunResult, composable_loop
+from looplet import MockLLMBackend, RunResult, async_composable_loop, composable_loop
 from looplet.examples import hello_world, ollama_hello
 
 pytestmark = pytest.mark.smoke
+
+
+@pytest.mark.parametrize("loop_function", [composable_loop, async_composable_loop])
+def test_public_loop_help_documents_inputs_and_cleanup(loop_function):
+    documentation = inspect.getdoc(loop_function)
+    assert documentation is not None
+    for parameter in inspect.signature(loop_function).parameters:
+        assert f"{parameter}:" in documentation
+    assert "dict" in documentation
+    assert "bare string" in documentation
+    assert "tools_from" in documentation
+    assert "override" in documentation
+    assert "close()" in documentation
+
+
+@pytest.mark.parametrize(
+    "guide_name", ["README.md", "docs/index.md", "docs/quickstart.md", "docs/install.md"]
+)
+def test_frontdoor_install_uses_current_source_without_checkout(guide_name):
+    guide = Path(__file__).resolve().parents[1] / guide_name
+    command = re.findall(r"^```bash[^\n]*\n(.*?)^```[ \t]*$", guide.read_text(), re.M | re.S)[0]
+    arguments = shlex.split(command.replace("\\\n", " "))
+    assert "looplet @ https://github.com/hsaghir/looplet/archive/refs/heads/master.zip" in arguments
+    assert "-e" not in arguments
+
+
+@pytest.mark.parametrize("completed", [False, True])
+def test_primary_cli_run_example_requires_completion(tmp_path, completed):
+    guide = Path(__file__).resolve().parents[1] / "docs" / "cli.md"
+    section = guide.read_text().split("### `looplet run <path> <task>`", 1)[1]
+    command = re.findall(r"^```bash[^\n]*\n(.*?)^```[ \t]*$", section, re.M | re.S)[0]
+    arguments = shlex.split(command.replace("\\\n", " "))
+    assert arguments[:2] == ["looplet", "run"]
+    assert "--require-completed" in arguments
+    arguments[arguments.index("--max-steps") + 1] = "1"
+
+    scaffold = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "looplet",
+            "new",
+            "Finish with a summary",
+            "./agent.cartridge",
+            "--offline",
+        ],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+    )
+    assert scaffold.returncode == 0, scaffold.stderr
+    response = {
+        "tool": "done" if completed else "never_registered",
+        "args": {"summary": "Reviewed"} if completed else {},
+    }
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "looplet",
+            *arguments[1:],
+            "--scripted-response",
+            json.dumps(response),
+            "--json",
+            "--no-trace",
+        ],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode == (0 if completed else 1), result.stderr
+    outcome = json.loads(result.stdout)
+    assert outcome["completed"] is completed
+    assert outcome["termination_reason"] == ("done" if completed else "budget_exhausted")
 
 
 def _python_blocks(path: Path) -> list[str]:

@@ -12,6 +12,7 @@ Covers:
 
 from __future__ import annotations
 
+from contextlib import aclosing, closing
 from types import SimpleNamespace
 from typing import Any
 
@@ -32,10 +33,11 @@ from looplet.backends import (
     _openai_message_to_blocks,
     _to_openai_tools,
 )
+from looplet.hook_decision import HookDecision
 from looplet.native_tools import NativeToolPolicy, NativeToolUnsupportedError
 from looplet.scaffolding import llm_call_with_retry
 from looplet.testing import AsyncMockLLMBackend, MockLLMBackend
-from looplet.types import NativeToolBackend
+from looplet.types import CancelToken, NativeToolBackend
 
 # ── Helpers ──────────────────────────────────────────────────────
 
@@ -269,17 +271,171 @@ class _NoToolBackend:
 
 
 class _NativeBackend:
-    def __init__(self) -> None:
+    def __init__(self, blocks: list[dict[str, Any]] | None = None) -> None:
         self.calls: list[dict[str, Any]] = []
+        self.blocks = (
+            blocks
+            if blocks is not None
+            else [{"type": "tool_use", "id": "n1", "name": "done", "input": {}}]
+        )
 
     def generate(self, prompt, *, max_tokens=2000, system_prompt="", temperature=0.2):
         raise AssertionError("generate() should not be called in native mode")
 
     def generate_with_tools(
-        self, prompt, *, tools, max_tokens=2000, system_prompt="", temperature=0.2
+        self,
+        prompt,
+        *,
+        tools,
+        max_tokens=2000,
+        system_prompt="",
+        temperature=0.2,
+        cancel_token=None,
     ):
         self.calls.append({"prompt": prompt, "tools": tools})
-        return [{"type": "tool_use", "id": "n1", "name": "done", "input": {}}]
+        return self.blocks
+
+
+class _AsyncNativeBackend(_NativeBackend):
+    async def generate_with_tools(self, prompt, **kwargs):
+        return super().generate_with_tools(prompt, **kwargs)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+async def test_serial_native_batch_stops_at_consumed_step(is_async):
+    effects = []
+
+    @tool(description="Record one value.")
+    def record(value: int) -> dict:
+        effects.append(value)
+        return {"value": value}
+
+    blocks = [
+        {"type": "tool_use", "id": "first", "name": "record", "input": {"value": 1}},
+        {"type": "tool_use", "id": "second", "name": "record", "input": {"value": 2}},
+        {"type": "tool_use", "id": "finish", "name": "done", "input": {}},
+    ]
+    backend = _AsyncNativeBackend(blocks) if is_async else _NativeBackend(blocks)
+    state = DefaultState(max_steps=3)
+    kwargs = {
+        "llm": backend,
+        "tools": tools_from([record], include_done=True),
+        "state": state,
+        "config": LoopConfig(max_steps=3, concurrent_dispatch=False),
+        "task": {},
+    }
+
+    if is_async:
+        async with aclosing(async_composable_loop(**kwargs)) as steps:
+            first = await anext(steps)
+            assert effects == [1]
+    else:
+        with closing(composable_loop(**kwargs)) as steps:
+            first = next(steps)
+            assert effects == [1]
+
+    assert first.tool_call.args == {"value": 1}
+    assert len(state.steps) == 1
+    assert state.queries_used == 1
+    assert state.termination_reason == "stream_closed"
+    assert len(backend.calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+async def test_serial_native_batch_intercepts_after_prior_step(is_async):
+    effects = []
+    observations = []
+
+    @tool(description="Record one value.")
+    def record(value: int) -> dict:
+        effects.append(value)
+        return {"value": value}
+
+    class Observe:
+        def pre_dispatch(self, state, session_log, tool_call, step_num):
+            if tool_call.tool == "record":
+                observations.append((tool_call.args["value"], len(state.steps), list(effects)))
+
+    blocks = [
+        {"type": "tool_use", "id": "first", "name": "record", "input": {"value": 1}},
+        {"type": "tool_use", "id": "second", "name": "record", "input": {"value": 2}},
+        {"type": "tool_use", "id": "finish", "name": "done", "input": {}},
+    ]
+    state = DefaultState(max_steps=3)
+    kwargs = {
+        "llm": _AsyncNativeBackend(blocks) if is_async else _NativeBackend(blocks),
+        "tools": tools_from([record], include_done=True),
+        "hooks": [Observe()],
+        "state": state,
+        "config": LoopConfig(max_steps=3, concurrent_dispatch=False),
+        "task": {},
+    }
+    if is_async:
+        steps = [step async for step in async_composable_loop(**kwargs)]
+    else:
+        steps = list(composable_loop(**kwargs))
+
+    assert observations == [(1, 0, []), (2, 1, [1])]
+    assert effects == [1, 2]
+    assert [step.tool_call.tool for step in steps] == ["record", "record", "done"]
+    assert state.termination_reason == "done"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+@pytest.mark.parametrize("stop_kind", ["cancel", "post_dispatch", "should_stop"])
+async def test_serial_native_batch_respects_stop_before_next_call(is_async, stop_kind):
+    effects = []
+    token = CancelToken()
+
+    @tool(description="Record one value.")
+    def record(value: int) -> dict:
+        effects.append(value)
+        return {"value": value}
+
+    class StopAfterFirst:
+        def post_dispatch(self, state, session_log, tool_call, tool_result, step_num):
+            if stop_kind == "post_dispatch":
+                return HookDecision(stop="first_finished")
+
+        def should_stop(self, state, step_num, new_entities):
+            if stop_kind == "should_stop":
+                return HookDecision(stop="first_finished")
+
+    blocks = [
+        {"type": "tool_use", "id": "first", "name": "record", "input": {"value": 1}},
+        {"type": "tool_use", "id": "second", "name": "record", "input": {"value": 2}},
+        {"type": "tool_use", "id": "finish", "name": "done", "input": {}},
+    ]
+    state = DefaultState(max_steps=3)
+    kwargs = {
+        "llm": _AsyncNativeBackend(blocks) if is_async else _NativeBackend(blocks),
+        "tools": tools_from([record], include_done=True),
+        "hooks": [StopAfterFirst()],
+        "state": state,
+        "config": LoopConfig(max_steps=3, concurrent_dispatch=False, cancel_token=token),
+        "task": {},
+    }
+    if is_async:
+        async with aclosing(async_composable_loop(**kwargs)) as steps:
+            first = await anext(steps)
+            if stop_kind == "cancel":
+                token.cancel()
+            remaining = [step async for step in steps]
+    else:
+        with closing(composable_loop(**kwargs)) as steps:
+            first = next(steps)
+            if stop_kind == "cancel":
+                token.cancel()
+            remaining = list(steps)
+
+    assert first.tool_call.args == {"value": 1}
+    assert effects == [1]
+    assert remaining == []
+    assert len(state.steps) == 1
+    assert state.termination_reason == ("cancelled" if stop_kind == "cancel" else "first_finished")
 
 
 class _NativeFailureBackend:

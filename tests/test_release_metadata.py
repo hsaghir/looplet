@@ -57,7 +57,31 @@ def test_current_cli_uses_the_same_install_as_the_python_tutorial() -> None:
     assert "source additions" not in cli
     assert "older pinned Quickstart snapshot" not in cli
     assert 'pip install -e ".[openai]"' not in cli
-    assert "Clone the repository only when you want to change Looplet itself." in install
+    published = install.split("## Install the published package\n", 1)[1].split("\n## ", 1)[0]
+    assert "git clone" not in published
+    assert install.index("## Install the published package") < install.index("## Develop Looplet")
+
+
+def test_unreleased_safety_fixes_are_explicitly_scoped() -> None:
+    readme = (ROOT / "README.md").read_text()
+    install = (ROOT / "docs" / "install.md").read_text()
+    provenance = (ROOT / "docs" / "provenance.md").read_text()
+    published = re.search(r"latest PyPI release is `(\d+\.\d+\.\d+)`", readme)
+    assert published is not None
+    safety = install.split("## Unreleased Safety Fixes\n", 1)[1].split("\n## ", 1)[0]
+
+    assert f"| Behavior | Published `{published.group(1)}` | Unreleased builds |" in safety
+    for behavior in (
+        "Serial native batches",
+        "Native response redaction",
+        "Python replay defaults",
+    ):
+        assert f"| {behavior} |" in safety
+    assert "`redact=` does not scrub native response blocks." in safety
+    assert "install.md#unreleased-safety-fixes" in readme
+    assert "install.md#unreleased-safety-fixes" in provenance
+    assert "**Unreleased:**" in provenance
+    assert "**Unreleased defaults:**" in provenance
 
 
 def test_lockfile_and_latest_release_match_project_version() -> None:

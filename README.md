@@ -11,7 +11,7 @@
 You provide the model, tools, task, and limits.
 Looplet checks each tool call, runs the tool, and records the result.
 It yields a `Step` after each call.
-Your code can inspect the result and stop before the next call.
+Your code can inspect each step and stop iteration.
 
 Looplet also provides context management for longer runs and hooks to control each stage of the loop.
 Add only the features that your agent needs.
@@ -81,7 +81,10 @@ The last line prints `done`, the stop reason.
 
 Each yielded step follows a tool call.
 The tool has already run when your code receives that step.
-Use `break` to stop before the next call.
+Use `break` to stop iteration before requesting another step.
+For native batches, preventing later calls requires the [unreleased serial-dispatch fix](docs/install.md#unreleased-safety-fixes).
+Published `0.4.0` may execute the batch before yielding its first step.
+With `concurrent_dispatch=True`, the batch runs before its results are yielded.
 `closing` closes the loop and runs its end hooks.
 Your code must close resources that it creates.
 
@@ -114,7 +117,8 @@ You do not need a new execution engine to use them.
 | Use an agent from a shell | `new`, `run`, `inspect`, and `eval` | [Command-line guide](docs/cli.md) |
 | Connect tools or other hosts | Protocol adapters | [Portability](docs/portability.md) |
 
-Looplet `0.4.0` includes the Python helpers and CLI commands used in these guides.
+Looplet `0.4.0` includes the Python helpers and unified CLI.
+The guides mark later behavior as unreleased.
 Older commands, such as `run-cartridge`, `describe`, and `show`, remain supported.
 
 ## Check results

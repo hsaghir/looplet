@@ -24,6 +24,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - Serial native batches check permissions, dispatch tools, record steps, and yield one call at a time.
 - Serial runs honor cancellation, deadlines, and hook stops before the next call in a batch.
 - Installation and capture guides distinguish published `0.4.0` from unreleased safety fixes.
+- Python introductions use callable functions and show direct unit tests. The optional decorator's non-callable `ToolSpec` behavior is explicit.
+- Checkpoint errors link to a tested SQLite reconciliation recipe. Recovery guides distinguish retry, verified effects, and unresolved evidence.
 
 ## [0.4.0] - 2026-10-16
 

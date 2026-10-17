@@ -253,8 +253,8 @@ visibility. They can coexist but answer different questions.
 
 ## Checkpoints and cancellation
 
-Set a checkpoint directory to save JSON checkpoints and automatically resume
-the latest checkpoint on a later run:
+Set a checkpoint directory to save JSON checkpoints.
+A later run can resume an incomplete checkpoint:
 
 ```python
 from looplet import LoopConfig
@@ -266,9 +266,16 @@ config = LoopConfig(
 )
 ```
 
-Use a unique directory per logical task. If the directory already contains
-checkpoints and `initial_checkpoint` is unset, Looplet loads the checkpoint
-with the highest step number.
+Use a unique directory per logical task.
+With no explicit `initial_checkpoint`, Looplet selects the highest-step incomplete checkpoint for that run.
+A terminal checkpoint prevents implicit resume of earlier snapshots.
+Calling the loop again can still start fresh; it does not undo earlier effects.
+
+An interrupted tool can leave an `effect_unknown` pending record.
+Resume then raises `UncertainToolEffect` before another model or tool call.
+This prevents a blind retry that could duplicate an external effect.
+Inspect the external system before resolving the record.
+See the [worked recovery example](host-integration.md#reconcile-an-interrupted-tool).
 
 Cancellation is cooperative:
 

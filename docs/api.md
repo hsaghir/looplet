@@ -8,7 +8,7 @@ Use the [Quickstart](quickstart.md) for a complete example.
 Import the main APIs from `looplet`:
 
 ```python
-from looplet import composable_loop, tool, tools_from
+from looplet import composable_loop, tools_from
 ```
 
 Some provider and advanced APIs need a submodule import.
@@ -117,8 +117,8 @@ See [bounded delegation](host-integration.md#bounded-delegation) for parent cont
 
 | API | Use it for |
 | --- | --- |
-| `@tool(...)` | Build a `ToolSpec` from an ordinary typed callable. |
 | `tools_from([...])` | Create a registry from ordinary typed functions or tool specs and optionally add the standard `done` tool. |
+| `@tool(...)` | Optionally replace a function with a non-callable `ToolSpec`. |
 | `ToolSpec` | Inspect or construct a tool name, description, schema, and implementation explicitly. |
 | `BaseToolRegistry` | Register, validate, look up, and dispatch tools. |
 | `BaseToolRegistry.async_dispatch(...)` | Await coroutine tools directly and move blocking sync tools off the event loop. |
@@ -126,6 +126,13 @@ See [bounded delegation](host-integration.md#bounded-delegation) for parent cont
 | `ToolContext` | Access host resources, workspace details, cancellation, progress, and the selected backend inside a tool. |
 | `ToolContext.async_llm` | Access the async backend inside async tools or child loops without the synchronous bridge. |
 | `ToolError` / `ToolValidationError` | Return or test structured failures without parsing exception text. |
+
+Start with ordinary typed functions and pass them to `tools_from` or `minimal_preset`.
+Their names remain callable in application code and unit tests.
+The registry infers schemas from signatures and descriptions from docstrings.
+The optional `@tool` decorator replaces the function with a `ToolSpec`.
+Call its `.execute(...)` method to invoke the underlying function directly.
+Direct calls bypass registry validation and hooks; test dispatch separately when those controls matter.
 
 Prefer explicit schemas for public tools or tools with high-risk effects.
 Check required fields, invalid arguments, and effects even if a decorator creates the schema.

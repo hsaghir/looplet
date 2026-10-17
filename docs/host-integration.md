@@ -372,6 +372,85 @@ must reconcile the external effect and persist a consistent checkpoint before
 resuming; clearing the pending record without reconciliation can repeat an
 effect. This guard is not exactly-once execution.
 
+### Reconcile an interrupted tool
+
+Reconciliation means checking the external effect before deciding whether a retry is safe.
+Stop the worker and other writers for this operation first.
+Preserve the checkpoint directory and inspect `UncertainToolEffect.calls`.
+Each call includes its ID, tool name, and effective arguments.
+
+This bounded example handles one `create_record(record_id, body)` call.
+Its only effect is one row in a host-owned SQLite database.
+The `records` table has `record_id TEXT PRIMARY KEY` and `body TEXT NOT NULL` columns.
+The row itself is the effect, not a separate receipt for another action.
+Use the same database that the tool used.
+
+```python
+from contextlib import closing
+from dataclasses import replace
+from pathlib import Path
+import sqlite3
+
+from looplet.checkpoint import FileCheckpointStore
+
+
+def reconcile_create_record(store, database: Path, *, run_id=None):
+    checkpoint = store.load_latest_for_resume(run_id=run_id)
+    if checkpoint is None:
+        raise ValueError("No incomplete checkpoint to reconcile.")
+    calls = checkpoint.metadata.get("pending_calls", [])
+    if len(calls) != 1 or calls[0]["tool"] != "create_record":
+        raise ValueError("This recipe handles one create_record call only.")
+    call = calls[0]
+    args = call["effective_args"]
+    uri = database.resolve().as_uri() + "?mode=ro"
+    with closing(sqlite3.connect(uri, uri=True)) as connection:
+        row = connection.execute(
+            "SELECT body FROM records WHERE record_id = ?", (args["record_id"],)
+        ).fetchone()
+    if row is not None and row[0] != args["body"]:
+        raise ValueError("The external record disagrees; keep recovery blocked.")
+    decision = "retry" if row is None else "stopped"
+    resolved = replace(
+        checkpoint,
+        metadata={
+            **checkpoint.metadata,
+            "pending_calls": [],
+            "reconciliation": {
+                "call": call,
+                "observed_record": None if row is None else row[0],
+                "decision": decision,
+            },
+        },
+    )
+    if decision == "stopped":
+        resolved = replace(
+            resolved,
+            run_status="failed",
+            run_phase="terminal",
+            termination_reason="reconciled_tool_effect",
+        )
+    store.save(resolved, key=f"step_{checkpoint.step_number}_pending")
+    return decision
+```
+
+Call `reconcile_create_record(FileCheckpointStore(checkpoint_dir), Path(database_path), run_id=run_id)` with the original run identity.
+Omit `run_id` only when the original run had no envelope.
+The read-only connection refuses a missing database instead of creating an empty one.
+An unavailable database, missing table, or conflicting row leaves the pending checkpoint unchanged.
+
+When the function returns `retry`, restart the original script with the same identity and checkpoint directory.
+The verified absence permits recovery; other checkpoint state and counters remain unchanged.
+When it returns `stopped`, do not rerun the original goal.
+The terminal checkpoint records failure, not successful agent completion.
+Use the verified row as host evidence or start a separate read-only verification task.
+
+This recipe does not handle native response batches, payments, messages, or effects outside this database.
+Those need their own atomic receipts, idempotency keys, or host-specific result restoration.
+Do not treat a missing log entry or a timeout as proof of no effect.
+Leave unresolved calls blocked.
+Never delete pending evidence merely to make resume succeed.
+
 ## Evaluation and evidence
 
 Choose one evaluation owner. Python hosts explicitly attach one `EvalHook`

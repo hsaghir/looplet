@@ -7,6 +7,7 @@ import json
 import re
 import shlex
 import shutil
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -176,6 +177,7 @@ def test_quickstart_runs_grades_captures_and_replays(tmp_path: Path, monkeypatch
     assert not hasattr(module, "result")
     assert not (tmp_path / "traces").exists()
     from_env.assert_not_called()
+    module.test_tools_are_regular_functions()
     module.test_owner()
     module.test_repeated_runs_are_independent()
     native_responses = module.scripted_backend()
@@ -289,7 +291,7 @@ def test_quickstart_python_test_and_definition_commands(tmp_path: Path) -> None:
         timeout=20,
     )
     assert tested.returncode == 0, tested.stdout + tested.stderr
-    assert "2 passed" in tested.stdout
+    assert "3 passed" in tested.stdout
     checked = subprocess.run(
         [sys.executable, "-m", "looplet", "eval", "check", "first_loop.py", "--json"],
         cwd=tmp_path,
@@ -308,6 +310,104 @@ def test_eval_introduction_is_self_contained() -> None:
     namespace = {}
     exec(compile(_python_blocks(guide)[0], str(guide), "exec"), namespace)
     assert namespace["report"].passed
+
+
+@pytest.mark.parametrize("record_state", ["absent", "committed", "conflicting", "missing"])
+def test_documented_checkpoint_reconciliation(tmp_path: Path, record_state: str) -> None:
+    from contextlib import closing
+
+    from looplet import DefaultState, LoopConfig, RunEnvelope, tools_from
+    from looplet.checkpoint import FileCheckpointStore, UncertainToolEffect
+
+    guide = Path(__file__).resolve().parents[1] / "docs" / "host-integration.md"
+    block = next(block for block in _python_blocks(guide) if "def reconcile_create_record" in block)
+    namespace = {}
+    exec(compile(block, str(guide), "exec"), namespace)
+    database = tmp_path / "records.sqlite3"
+    if record_state != "missing":
+        with closing(sqlite3.connect(database)) as connection:
+            connection.execute(
+                "CREATE TABLE records (record_id TEXT PRIMARY KEY, body TEXT NOT NULL)"
+            )
+            connection.commit()
+    interrupted = True
+    calls = []
+
+    def create_record(record_id: str, body: str) -> dict:
+        calls.append(record_id)
+        if interrupted and record_state in {"absent", "missing"}:
+            raise KeyboardInterrupt
+        with closing(sqlite3.connect(database)) as connection:
+            stored_body = "conflicting body" if record_state == "conflicting" else body
+            connection.execute("INSERT INTO records VALUES (?, ?)", (record_id, stored_body))
+            connection.commit()
+        if interrupted:
+            raise KeyboardInterrupt
+        return {"record_id": record_id, "body": body}
+
+    tools = tools_from([create_record], include_done=True, validate=True)
+    config = LoopConfig(
+        max_steps=3,
+        use_native_tools=False,
+        checkpoint_dir=str(tmp_path / "checkpoints"),
+        run_envelope=RunEnvelope(run_id="record-run"),
+    )
+    response = json.dumps(
+        {"tool": "create_record", "args": {"record_id": "record-42", "body": "verified"}}
+    )
+    with pytest.raises(KeyboardInterrupt):
+        list(composable_loop(MockLLMBackend([response]), tools=tools, config=config))
+    store = FileCheckpointStore(config.checkpoint_dir)
+    pending = store.load_latest_for_resume(run_id="record-run")
+    assert pending is not None
+    original = {path.name: path.read_bytes() for path in Path(config.checkpoint_dir).glob("*.json")}
+    retry_backend = MockLLMBackend([response])
+    with pytest.raises(UncertainToolEffect, match="reconcile-an-interrupted-tool"):
+        list(composable_loop(retry_backend, tools=tools, config=config))
+    assert retry_backend.calls == 0
+
+    reconcile = namespace["reconcile_create_record"]
+    if record_state in {"conflicting", "missing"}:
+        expected = ValueError if record_state == "conflicting" else sqlite3.OperationalError
+        with pytest.raises(expected):
+            reconcile(store, database, run_id="record-run")
+        assert original == {
+            path.name: path.read_bytes() for path in Path(config.checkpoint_dir).glob("*.json")
+        }
+        assert store.load_latest_for_resume(run_id="record-run").metadata["pending_calls"]
+        assert calls == ["record-42"]
+        return
+
+    decision = reconcile(store, database, run_id="record-run")
+    resolved = store.load(f"step_{pending.step_number}_pending", run_id="record-run")
+    assert resolved is not None
+    assert resolved.config_snapshot == pending.config_snapshot
+    assert resolved.domain_state == pending.domain_state
+    assert resolved.conversation_data == pending.conversation_data
+    assert not resolved.metadata["pending_calls"]
+    assert resolved.metadata["reconciliation"]["call"] == pending.metadata["pending_calls"][0]
+    if record_state == "committed":
+        assert decision == "stopped"
+        assert resolved.is_terminal and resolved.run_status == "failed"
+        assert resolved.termination_reason == "reconciled_tool_effect"
+        assert store.load_latest_for_resume(run_id="record-run") is None
+        assert calls == ["record-42"]
+    else:
+        assert decision == "retry" and not resolved.is_terminal
+        interrupted = False
+        state = DefaultState(max_steps=3)
+        steps = list(
+            composable_loop(
+                MockLLMBackend([response, '{"tool":"done","args":{"summary":"created"}}']),
+                tools=tools,
+                config=config,
+                state=state,
+            )
+        )
+        assert [step.tool_call.tool for step in steps] == ["create_record", "done"]
+        assert RunResult.from_state(state).completed
+    with closing(sqlite3.connect(database)) as connection:
+        assert connection.execute("SELECT * FROM records").fetchall() == [("record-42", "verified")]
 
 
 def test_documented_report_contract(tmp_path: Path, monkeypatch) -> None:

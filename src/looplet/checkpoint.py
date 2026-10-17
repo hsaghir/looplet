@@ -36,7 +36,11 @@ class UncertainToolEffect(RuntimeError):
     def __init__(self, calls: list[dict[str, Any]]) -> None:
         self.calls = calls
         ids = ", ".join(str(call.get("call_id")) for call in calls)
-        super().__init__(f"Tool effects unknown for calls {ids}; reconcile before resuming")
+        super().__init__(
+            f"Tool effects unknown for calls {ids}; reconcile before resuming. "
+            "Keep the pending checkpoint. See "
+            "https://hsaghir.com/looplet/host-integration/#reconcile-an-interrupted-tool"
+        )
 
 
 def validate_checkpoint_identity(checkpoint: "Checkpoint", run_id: str | None) -> None:

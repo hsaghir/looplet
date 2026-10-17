@@ -101,11 +101,11 @@ Nested data and other constraints remain tool-owned.
 ```python title="first_loop.py"
 from contextlib import closing
 
-from looplet import DefaultState, LoopConfig, MockLLMBackend, composable_loop, tool, tools_from
+from looplet import DefaultState, LoopConfig, MockLLMBackend, composable_loop, tools_from
 
 
-@tool(description="Find the team that owns a service.")
 def lookup_owner(service: str) -> dict:
+  """Find the team that owns a service."""
   owners = {"payments": "fintech-platform", "search": "discovery"}
   return {"service": service, "owner": owners.get(service)}
 

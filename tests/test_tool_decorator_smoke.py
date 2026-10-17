@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Any, Literal, Union
 
 import pytest
 
@@ -105,6 +105,83 @@ class TestToolDecorator:
         schema = tag_item.to_json_schema()
         assert schema["properties"]["tag"]["type"] == ["string", "null"]
         assert schema["required"] == ["name"]
+
+    @pytest.mark.parametrize("async_dispatch", [False, True])
+    @pytest.mark.parametrize(
+        ("annotation", "value", "schema"),
+        [
+            (Annotated[int, "Maximum results"], 3, {"type": "integer"}),
+            (str | int, 3, {"type": ["string", "integer"]}),
+            (Union[str, int], "item-3", {"type": ["string", "integer"]}),
+            (str | int | None, None, {"type": ["string", "integer", "null"]}),
+            (Any, {"count": 3}, {}),
+            (Any, [3], {}),
+            (Any, None, {}),
+            (Annotated[Any, "Opaque JSON"], {"count": 3}, {}),
+            (
+                Literal["fast", "safe"] | None,
+                None,
+                {"enum": ["fast", "safe", None], "type": ["string", "null"]},
+            ),
+        ],
+    )
+    async def test_annotation_schema_and_dispatch_agree(
+        self, async_dispatch, annotation, value, schema
+    ):
+        effects = []
+
+        def echo(value):
+            effects.append(value)
+            return {"value": value}
+
+        echo.__annotations__["value"] = annotation
+        registry = tools_from([echo], validate=True)
+        assert registry.tool_specs["echo"].parameters["properties"]["value"] == schema
+        call = ToolCall(tool="echo", args={"value": value})
+
+        result = await registry.async_dispatch(call) if async_dispatch else registry.dispatch(call)
+
+        assert result.error is None
+        assert result.data == {"value": value}
+        assert effects == [value]
+        assert registry.dispatch(ToolCall(tool="echo", args={})).error is not None
+        assert effects == [value]
+
+    @pytest.mark.parametrize("async_dispatch", [False, True])
+    @pytest.mark.parametrize(
+        ("annotation", "value"),
+        [
+            (Annotated[int, "Maximum results"], "3"),
+            (str | int, 3.5),
+            (str | int, True),
+            (Literal["fast", "safe"] | None, "unknown"),
+        ],
+    )
+    async def test_annotation_validation_rejects_invalid_values(
+        self, async_dispatch, annotation, value
+    ):
+        effects = []
+
+        def echo(value):
+            effects.append(value)
+
+        echo.__annotations__["value"] = annotation
+        registry = tools_from([echo], validate=True)
+        call = ToolCall(tool="echo", args={"value": value})
+
+        result = await registry.async_dispatch(call) if async_dispatch else registry.dispatch(call)
+
+        assert result.error is not None
+        assert effects == []
+
+    @pytest.mark.parametrize("annotation", [complex, str | list[int]])
+    def test_unsupported_annotations_fail_before_registration(self, annotation):
+        def echo(value):
+            return value
+
+        echo.__annotations__["value"] = annotation
+        with pytest.raises(TypeError, match="explicit ToolSpec.parameters schema"):
+            tools_from([echo])
 
     @pytest.mark.parametrize("async_dispatch", [False, True])
     @pytest.mark.parametrize("quantity", ["not-an-integer", True])

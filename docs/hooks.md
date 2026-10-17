@@ -240,7 +240,7 @@ class BudgetWarningHook:
     def pre_prompt(self, state, session_log, context, step_num):
         remaining = state.budget_remaining
         if remaining <= 2:
-            return "⚠ CRITICAL: Only {remaining} steps left. Wrap up NOW."
+            return f"⚠ CRITICAL: Only {remaining} steps left. Wrap up NOW."
         if remaining <= 5:
             return f"Budget alert: {remaining} steps remaining."
         return None

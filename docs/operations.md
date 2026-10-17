@@ -77,6 +77,25 @@ cannot force every provider SDK to cancel its underlying request. Set socket
 and request timeouts in the provider client as well. Avoid retrying validation,
 authentication, permission, and other permanent failures.
 
+### Tool timeouts
+
+`ToolSpec(timeout_s=...)` sets a caller-side timeout, not an execution or effect boundary.
+A synchronous worker may continue and commit effects after the caller receives `TIMEOUT`.
+Async cancellation is cooperative; a coroutine may delay or suppress it.
+Neither outcome proves that the external effect did not occur.
+
+Unreleased builds mark tool timeout exceptions as `retriable=False`.
+Their error text warns about continuing execution and unknown effects.
+`error_detail.context` includes `effect_unknown=True`.
+The recovery hint names the action `reconcile_tool_effect`.
+Published `0.4.0` may instead return a blank, retryable timeout error.
+
+These diagnostics do not stop the run or prevent another dispatch.
+Stop new calls in your host before investigating.
+Wait for the worker or use a host-owned process boundary when execution must be contained.
+Inspect the external system's authoritative state before deciding whether a retry is safe.
+Do not infer retry safety from a timeout, cancellation, or failure to observe a local result.
+
 ## Context pressure and compaction
 
 Thresholds classify an approximate token count. A threshold hook requests

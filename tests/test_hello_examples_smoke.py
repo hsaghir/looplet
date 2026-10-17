@@ -26,6 +26,14 @@ def _python_blocks(path: Path) -> list[str]:
     return re.findall(r"^```python[^\n]*\n(.*?)^```[ \t]*$", path.read_text(), re.M | re.S)
 
 
+def _quickstart_agent_source(guide: Path) -> str:
+    blocks = _python_blocks(guide)
+    main = ast.parse(blocks[0]).body[-1]
+    assert isinstance(main, ast.If)
+    declarations = "".join(blocks[0].splitlines(keepends=True)[: main.lineno - 1])
+    return declarations + "\n\n" + blocks[1]
+
+
 def test_documented_shell_replay_works_without_provider(tmp_path):
     guide = Path(__file__).resolve().parents[1] / "docs" / "cli.md"
     section = guide.read_text().split("### Replay captured responses\n", 1)[1]
@@ -171,54 +179,77 @@ def test_quickstart_runs_grades_captures_and_replays(tmp_path: Path, monkeypatch
     module = ModuleType("first_loop")
     monkeypatch.setitem(sys.modules, "first_loop", module)
     monkeypatch.chdir(tmp_path)
-    for block in blocks:
-        exec(compile(block, str(guide), "exec"), module.__dict__)
+    exec(compile(_quickstart_agent_source(guide), str(guide), "exec"), module.__dict__)
+    tests = {}
+    exec(compile(blocks[2], str(guide), "exec"), tests)
 
     assert not hasattr(module, "result")
     assert not (tmp_path / "traces").exists()
     from_env.assert_not_called()
-    module.test_tools_are_regular_functions()
-    module.test_owner()
-    module.test_repeated_runs_are_independent()
+    tests["test_tools_are_regular_functions"]()
+    tests["test_owner"]()
+    tests["test_repeated_runs_are_independent"]()
     native_responses = module.scripted_backend()
     native_backend = SimpleNamespace(
         generate=Mock(side_effect=AssertionError("live example must use native tools")),
         generate_with_tools=Mock(wraps=native_responses.generate_with_tools),
     )
     from_env.return_value = native_backend
-    namespace = {"__name__": "__main__"}
-    for block in blocks:
-        exec(compile(block, str(guide), "exec"), namespace)
-    assert namespace["report"].passed
-    assert namespace["captured_result"].output == namespace["replayed_result"].output
-    assert namespace["captured_backend"].calls == 2
-    assert namespace["state"].termination_reason == "stream_closed"
+    observed_agent = Mock(wraps=module.run_agent)
+    monkeypatch.setattr(module, "run_agent", observed_agent)
+    capture_block = next(block for block in blocks if "def capture_agent" in block)
+    imported_capture = {"__name__": "first_loop_capture"}
+    exec(compile(capture_block, str(guide), "exec"), imported_capture)
+    observed_agent.assert_not_called()
+    assert not (tmp_path / ".looplet").exists()
+
+    captured = {"__name__": "__main__"}
+    exec(compile(capture_block, str(guide), "exec"), captured)
+    assert observed_agent.call_count == 1
+    assert captured["captured_backend"].calls == 2
+    trace_dir = captured["trace_dir"]
+    assert len(list(tmp_path.rglob("trajectory.json"))) == 1
+    monkeypatch.setattr(sys, "argv", ["first_loop_rescore.py", str(trace_dir)])
+    rescored = {"__name__": "__main__"}
+    exec(compile(blocks[4], str(guide), "exec"), rescored)
+    assert rescored["saved_report"].passed
+    replayed = {"__name__": "__main__"}
+    monkeypatch.setattr(sys, "argv", ["first_loop_replay.py", str(trace_dir)])
+    exec(compile(blocks[5], str(guide), "exec"), replayed)
+    assert captured["captured_result"].output == replayed["replayed_result"].output
+    assert observed_agent.call_count == 1
+
+    stopped = {"__name__": "__main__"}
+    exec(compile(blocks[6], str(guide), "exec"), stopped)
+    assert stopped["state"].termination_reason == "stream_closed"
+    assert stopped["backend"].calls == 1
+    assert [step.tool_call.tool for step in stopped["state"].steps] == ["lookup_owner"]
+    assert not RunResult.from_state(stopped["state"]).completed
+    live = {"__name__": "__main__"}
+    exec(compile(blocks[7], str(guide), "exec"), live)
+    assert observed_agent.call_count == 2
     from_env.assert_called_once_with()
     native_backend.generate.assert_not_called()
     assert native_backend.generate_with_tools.call_count == 2
-    assert [step.tool_call.tool for step in namespace["result"].steps] == ["lookup_owner", "done"]
-    assert [step.tool_call.tool for step in namespace["state"].steps] == ["lookup_owner"]
-    assert not RunResult.from_state(namespace["state"]).completed
-    trace_dir = namespace["trace_dir"]
+    assert [step.tool_call.tool for step in live["result"].steps] == ["lookup_owner", "done"]
     assert (trace_dir / "trajectory.json").is_file()
     assert (trace_dir / "manifest.jsonl").is_file()
-    assert namespace["saved_report"].passed
-    assert namespace["saved_run"].context.expected == namespace["EXPECTED_OWNER"]
+    assert rescored["saved_run"].context.expected == module.EXPECTED_OWNER
     trajectory = json.loads((trace_dir / "trajectory.json").read_text())
     assert "expected" not in trajectory["task"]
-    assert json.loads((trace_dir / "expected.json").read_text()) == namespace["EXPECTED_OWNER"]
+    assert json.loads((trace_dir / "expected.json").read_text()) == module.EXPECTED_OWNER
 
     from looplet.evals import eval_cli
 
-    (tmp_path / "first_loop.py").write_text("\n\n".join(blocks))
+    (tmp_path / "first_loop.py").write_text(_quickstart_agent_source(guide))
     assert eval_cli([str(trace_dir), "--evals", str(tmp_path / "first_loop.py"), "--json"]) == 0
     original = (trace_dir / "trajectory.json").read_bytes()
-    capture_block = next(block for block in blocks if "save_eval_run(trace_dir" in block)
-    exec(compile(capture_block, str(guide), "exec"), namespace)
-    assert namespace["trace_dir"] != trace_dir
+    exec(compile(capture_block, str(guide), "exec"), captured)
+    assert observed_agent.call_count == 3
+    assert captured["trace_dir"] != trace_dir
     assert (trace_dir / "trajectory.json").read_bytes() == original
-    namespace["result"].output["owner"] = "wrong-owner"
-    assert not module.assess_result(namespace["result"]).passed
+    captured["captured_result"].output["owner"] = "wrong-owner"
+    assert not module.assess_result(captured["captured_result"]).passed
 
 
 @pytest.mark.parametrize(
@@ -233,8 +264,7 @@ def test_quickstart_runs_grades_captures_and_replays(tmp_path: Path, monkeypatch
 def test_quickstart_grades_structured_facts_not_prose(owner, summary, passed):
     guide = Path(__file__).resolve().parents[1] / "docs" / "quickstart.md"
     namespace = {"__name__": "first_loop"}
-    for block in _python_blocks(guide)[:2]:
-        exec(compile(block, str(guide), "exec"), namespace)
+    exec(compile(_quickstart_agent_source(guide), str(guide), "exec"), namespace)
     backend = MockLLMBackend(
         [
             json.dumps({"tool": "lookup_owner", "args": {"service": "payments"}}),
@@ -257,8 +287,7 @@ def test_quickstart_grades_structured_facts_not_prose(owner, summary, passed):
 def test_quickstart_run_budget_is_configurable(max_steps, completed):
     guide = Path(__file__).resolve().parents[1] / "docs" / "quickstart.md"
     namespace = {"__name__": "first_loop"}
-    for block in _python_blocks(guide)[:2]:
-        exec(compile(block, str(guide), "exec"), namespace)
+    exec(compile(_quickstart_agent_source(guide), str(guide), "exec"), namespace)
     lookup = json.dumps({"tool": "lookup_owner", "args": {"service": "payments"}})
     backend = MockLLMBackend(
         [
@@ -281,7 +310,7 @@ def test_quickstart_run_budget_is_configurable(max_steps, completed):
 def test_quickstart_python_test_and_definition_commands(tmp_path: Path) -> None:
     guide = Path(__file__).resolve().parents[1] / "docs" / "quickstart.md"
     blocks = _python_blocks(guide)
-    (tmp_path / "first_loop.py").write_text("\n\n".join(blocks[:2]))
+    (tmp_path / "first_loop.py").write_text(_quickstart_agent_source(guide))
     (tmp_path / "test_first_loop.py").write_text(blocks[2])
     tested = subprocess.run(
         [sys.executable, "-m", "pytest", "test_first_loop.py", "-q"],
@@ -303,6 +332,56 @@ def test_quickstart_python_test_and_definition_commands(tmp_path: Path) -> None:
     report = json.loads(checked.stdout)
     assert report["valid"]
     assert [grader["name"] for grader in report["graders"]] == ["eval_owner"]
+
+    examples = dict(
+        re.findall(r'^```python title="([^"]+)"\n(.*?)^```[ \t]*$', guide.read_text(), re.M | re.S)
+    )
+    examples["first_loop.py"] = _quickstart_agent_source(guide)
+    examples["first_loop.py"] += (
+        "\nreused_tools = [lookup_owner, done]\n"
+        "with minimal_preset(tools=reused_tools) as typed_run:\n"
+        "    pass\n"
+    )
+    for name, code in examples.items():
+        (tmp_path / name).write_text(code)
+    typed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pyright",
+            "--pythonpath",
+            sys.executable,
+            "--outputjson",
+            *examples,
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert typed.returncode == 0, typed.stdout + typed.stderr
+
+
+@pytest.mark.parametrize(
+    ("remaining", "expected"), [(2, "Only 2 steps"), (4, "4 steps remaining"), (8, None)]
+)
+def test_documented_budget_warning_uses_remaining_count(remaining, expected):
+    from looplet import DefaultState
+
+    guide = Path(__file__).resolve().parents[1] / "docs" / "hooks.md"
+    block = next(block for block in _python_blocks(guide) if "class BudgetWarningHook:" in block)
+    namespace = {}
+    exec(compile(block, str(guide), "exec"), namespace)
+
+    message = namespace["BudgetWarningHook"]().pre_prompt(
+        DefaultState(max_steps=remaining), None, None, 1
+    )
+
+    if expected is None:
+        assert message is None
+    else:
+        assert expected in message
+        assert "{remaining}" not in message
 
 
 def test_eval_introduction_is_self_contained() -> None:

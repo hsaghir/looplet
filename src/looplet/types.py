@@ -384,8 +384,9 @@ class ToolError:
     retriable: bool = False
     """Advisory hint for recovery hooks and external orchestrators.
 
-    Set ``True`` for transient failures (rate limits, timeouts, network
-    errors) where a retry has a real chance of success.  The built-in
+    Set ``True`` for transient failures where retrying is safe and has a
+    real chance of success. Tool timeout exceptions default to ``False``
+    because their effects are unknown. The built-in
     loop does **not** automatically retry based on this flag; it is
     consumed by:
 

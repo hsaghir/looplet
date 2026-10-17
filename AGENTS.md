@@ -907,7 +907,7 @@ class AgentState(Protocol):
 
 Tools classify errors via `ErrorKind`:
 - `PERMISSION_DENIED` - blocked by permission check
-- `TIMEOUT` - execution exceeded deadline (retriable)
+- `TIMEOUT` - tool effects may be unknown; reconcile before retrying (non-retriable by default)
 - `VALIDATION` - bad args or unknown tool
 - `EXECUTION` - generic runtime failure
 - `PARSE` - LLM response couldn't be parsed

@@ -90,7 +90,9 @@ class TestDispatchMapsExceptions:
         assert res.error is not None  # plain string
         assert res.error_detail is not None
         assert res.error_detail.kind == ErrorKind.TIMEOUT
-        assert res.error_detail.retriable is True
+        assert res.error_detail.retriable is False
+        assert "deadline" in res.error
+        assert res.error_detail.context == {"effect_unknown": True}
 
     def test_value_error_maps_to_validation(self):
         def _bad(**kw):

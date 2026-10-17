@@ -17,6 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import (
+    Annotated,
     Any,
     Callable,
     Literal,
@@ -150,7 +151,17 @@ def _classify_exception(e: BaseException) -> ToolError:
     if isinstance(e, ToolValidationError):
         return ToolError(kind=ErrorKind.VALIDATION, message=str(e), retriable=False)
     if isinstance(e, TimeoutError):
-        return ToolError(kind=ErrorKind.TIMEOUT, message=msg, retriable=True)
+        detail = f" {e}" if str(e) else ""
+        return ToolError(
+            kind=ErrorKind.TIMEOUT,
+            message=(
+                f"TimeoutError:{detail} The tool may still be running. "
+                "Its effects are unknown. Stop the run and reconcile effects before retrying."
+            ),
+            retriable=False,
+            context={"effect_unknown": True},
+            recovery_hint={"action": "reconcile_tool_effect", "effect_unknown": True},
+        )
     if isinstance(e, (ValueError, TypeError, KeyError)):
         return ToolError(kind=ErrorKind.VALIDATION, message=msg, retriable=False)
     if isinstance(e, PermissionError):
@@ -211,11 +222,16 @@ def _accepts_ctx(fn: Callable[..., Any]) -> bool:
 
 def _json_type_for_annotation(annotation: Any) -> dict[str, Any]:
     """Return a small JSON Schema fragment for a Python type annotation."""
-    if annotation is inspect.Signature.empty or annotation is Any:
+    if annotation is inspect.Signature.empty:
         return {"type": "string"}
+    if annotation is Any:
+        return {}
 
     origin = get_origin(annotation)
     args = get_args(annotation)
+
+    if origin is Annotated:
+        return _json_type_for_annotation(args[0])
 
     if origin in (types.UnionType, Union):
         non_none = [arg for arg in args if arg is not type(None)]
@@ -226,8 +242,18 @@ def _json_type_for_annotation(annotation: Any) -> dict[str, Any]:
                 typ = schema["type"]
                 schema = dict(schema)
                 schema["type"] = [typ, "null"] if isinstance(typ, str) else [*typ, "null"]
+                if "enum" in schema and None not in schema["enum"]:
+                    schema["enum"] = [*schema["enum"], None]
             return schema
-        return {"type": "string"}
+        schemas = [_json_type_for_annotation(arg) for arg in args]
+        if any(not schema for schema in schemas):
+            return {}
+        if all(set(schema) == {"type"} and isinstance(schema["type"], str) for schema in schemas):
+            return {"type": list(dict.fromkeys(schema["type"] for schema in schemas))}
+        raise TypeError(
+            f"Cannot infer a tool parameter schema for {annotation!r}. "
+            "Use an explicit ToolSpec.parameters schema for this union."
+        )
 
     if origin is Literal:
         literal_values = list(args)
@@ -254,10 +280,14 @@ def _json_type_for_annotation(annotation: Any) -> dict[str, Any]:
         set: "array",
         frozenset: "array",
         dict: "object",
+        type(None): "null",
     }
     if annotation in type_map:
         return {"type": type_map[annotation]}
-    return {"type": "string"}
+    raise TypeError(
+        f"Cannot infer a tool parameter schema for {annotation!r}. "
+        "Use supported annotations or an explicit ToolSpec.parameters schema."
+    )
 
 
 def _schema_from_callable(fn: Callable[..., Any]) -> dict[str, Any]:
@@ -348,13 +378,15 @@ class ToolSpec:
     """True if the tool does not consume agent budget (e.g. think, reflect)."""
 
     timeout_s: float | None = None
-    """Maximum wall-clock seconds for tool execution.
+    """Caller-side wait limit in seconds for tool execution.
 
     When set, :meth:`BaseToolRegistry.dispatch` wraps the ``execute``
     call in a thread with a deadline. If the tool exceeds the timeout,
     dispatch returns a ``ToolResult`` with ``error_kind == TIMEOUT``
-    and ``retriable == True``. ``None`` means no framework-level
-    timeout (the tool itself is responsible for timing out).
+    and ``retriable == False``. The worker may continue and commit effects.
+    The host must reconcile those effects before retrying.
+    Async cancellation also does not prove that no effect occurred.
+    ``None`` means no framework-level wait limit.
     """
 
     infer_optional_from_signature: bool = False
@@ -998,8 +1030,12 @@ class BaseToolRegistry:
             value = sanitized[param]
             parameter_schema = spec.to_json_schema().get("properties", {}).get(param, {})
             parameter_type = parameter_schema.get("type")
-            nullable = parameter_type == "null" or (
-                isinstance(parameter_type, list) and "null" in parameter_type
+            nullable = (
+                parameter_type is None
+                and ("enum" not in parameter_schema or None in parameter_schema["enum"])
+            ) or (
+                parameter_type == "null"
+                or (isinstance(parameter_type, list) and "null" in parameter_type)
             )
             if (value is None and not nullable) or (isinstance(value, str) and not value.strip()):
                 schema_hint = _format_param_hint(spec)

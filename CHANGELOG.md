@@ -26,6 +26,10 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - Installation and capture guides distinguish published `0.4.0` from unreleased safety fixes.
 - Python introductions use callable functions and show direct unit tests. The optional decorator's non-callable `ToolSpec` behavior is explicit.
 - Checkpoint errors link to a tested SQLite reconciliation recipe. Recovery guides distinguish retry, verified effects, and unresolved evidence.
+- Tool timeout errors warn that effects may continue and require reconciliation. They no longer imply retry safety.
+- Tool schema inference preserves `Annotated`, `Any`, and simple unions. Unsupported annotations fail with explicit-schema guidance.
+- `minimal_preset` types its existing callable-tool support, including reusable sequences.
+- Quickstart capture, rescoring, replay, and early-stop scripts run separately. Extracted Python examples are type-checked, and the budget-hook example renders its count.
 
 ## [0.4.0] - 2026-10-16
 

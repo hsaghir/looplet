@@ -23,13 +23,16 @@ This one install includes result helpers, typed-validation options, capture safe
 ## Unreleased Safety Fixes
 
 The published `0.4.0` package does not include later fixes on `master`.
-These differences matter when stopping native calls or sharing captured evidence:
+These differences matter for native calls, tool contracts, timeout handling, and captured evidence:
 
 | Behavior | Published `0.4.0` | Unreleased builds |
 | --- | --- | --- |
 | Serial native batches | A batch may execute before its first yielded `Step`. | Each serial call runs before its own step; stopping prevents later calls. |
 | Native response redaction | `redact=` does not scrub native response blocks. | `redact=` scrubs nested string values and keys. |
 | Python replay defaults | Uses model-call count as the budget and an empty task. | Uses saved tool steps and task when omitted. |
+| Tool timeout errors | May report a blank, retryable timeout. | Warns about unknown effects and requires reconciliation before retrying. |
+| Rich Python annotations | `Annotated`, `Any`, and multi-type unions may become string schemas. | Preserves supported contracts and rejects unsupported annotations clearly. |
+| Callable preset typing | Accepts functions at runtime but declares only `ToolSpec` inputs. | Type annotations match callable inputs and reusable sequences. |
 
 Do not treat published `0.4.0` native captures as redacted.
 Keep them private and review evidence before sharing it.

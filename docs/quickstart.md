@@ -80,6 +80,7 @@ The scripted run needs two calls; `max_steps` lets other runs use a different li
 These tools remain ordinary Python functions.
 Call them directly in your application or unit tests.
 `minimal_preset` infers tool schemas from their signatures and descriptions from their docstrings.
+Published `0.4.0` may show a false `ToolSpec` type error for these functions; the corrected annotation is unreleased.
 The optional `@tool` decorator returns a `ToolSpec`, not a callable function.
 Call a decorated tool's `.execute(...)` method to test its underlying function.
 That direct call bypasses registry validation and hooks.
@@ -96,7 +97,9 @@ The base registry retains its lighter argument-name checks when this option is o
 ## 3. Check the answer
 
 Completion does not prove correctness.
-Append this block to `first_loop.py` to compare the observed answer with a host-owned expectation:
+Add these definitions above the main block in `first_loop.py`.
+Replace the existing main block with the one at the end of this example.
+The grader compares the observed answer with a host-owned expectation:
 
 ```python
 from looplet import EvalContext, eval_assess
@@ -125,6 +128,9 @@ def assess_result(result):
 
 
 if __name__ == "__main__":
+    result = run_agent(scripted_backend())
+    print(result.output)
+    print(result.completed, result.termination_reason)
     report = assess_result(result)
     report.assert_passed()
     print(report.passed)
@@ -183,19 +189,22 @@ Omit `--python` to create definitions only.
 
 ## 4. Capture the same agent
 
-Append this block to `first_loop.py`.
+Put this block in a separate `first_loop_capture.py` file.
+Importing `first_loop` loads its functions without running its main block.
 Capture records model calls and tool steps; it does not change the agent's tools or task.
 
-```python
+```python title="first_loop_capture.py"
 from looplet import EvalHook, ProvenanceSink, save_eval_run
 
-if __name__ == "__main__":
+from first_loop import EXPECTED_OWNER, eval_owner, run_agent, scripted_backend
+
+
+def capture_agent(llm):
     sink = ProvenanceSink()
     grading = EvalHook(evaluators=[eval_owner], expected=EXPECTED_OWNER)
-    captured_backend = scripted_backend()
     try:
         captured_result = run_agent(
-            sink.wrap_llm(captured_backend),
+            sink.wrap_llm(llm),
             hooks=[sink.trajectory_hook(), grading],
         )
     finally:
@@ -203,11 +212,27 @@ if __name__ == "__main__":
 
     save_eval_run(trace_dir, recorder=sink.trajectory_hook(), eval_hook=grading)
     grading.assessment().assert_passed()
+    return captured_result, trace_dir
+
+
+if __name__ == "__main__":
+    captured_backend = scripted_backend()
+    captured_result, trace_dir = capture_agent(captured_backend)
+    print(captured_result.output)
     print(f"Inspect with: looplet inspect {trace_dir}")
     print(f"Grade with: looplet eval {trace_dir} --evals first_loop.py --json")
+    print(f"Rescore with: python first_loop_rescore.py {trace_dir}")
+    print(f"Replay with: python first_loop_replay.py {trace_dir}")
+```
+
+Run one captured agent:
+
+```bash
+python first_loop_capture.py
 ```
 
 Run the printed `inspect` command to read the saved run.
+This command executes the agent once and saves one trajectory.
 Each execution gets a unique directory under `.looplet/traces/`.
 An explicit `ProvenanceSink(dir=...)` refuses existing evidence unless you pass `overwrite=True`.
 Capture can contain secrets or personal data; review it before sharing or committing it.
@@ -219,33 +244,48 @@ The grading hook owns the live assessment once.
 A raw trace alone does not preserve grader expectations or collected artifacts.
 Reload the saved evidence when you want to rerun a grader without running the agent:
 
-```python
-from looplet import load_eval_run
+```python title="first_loop_rescore.py"
+import sys
+
+from looplet import eval_assess, load_eval_run
+
+from first_loop import eval_owner
+
 
 if __name__ == "__main__":
-    saved_run = load_eval_run(trace_dir)
+    if len(sys.argv) != 2:
+        raise SystemExit("Usage: python first_loop_rescore.py TRACE_DIR")
+    saved_run = load_eval_run(sys.argv[1])
     saved_report = eval_assess([eval_owner], saved_run.context)
     saved_report.assert_passed()
+    print(saved_report.passed)
 ```
 
+Run the printed `Rescore` command after creating this file.
 The printed `eval` command uses the same saved evidence and grader.
 It accepts this single run directory or its parent directory.
 Offline rescoring reruns graders, not collectors, tools, or agent model calls.
 
 ## 5. Replay and check the result
 
-Append this block to `first_loop.py`.
+Put this block in a separate `first_loop_replay.py` file.
 It uses the saved responses, the same tools, and fresh run state:
 
-```python
+```python title="first_loop_replay.py"
+import sys
 from contextlib import closing
 
 from looplet import DefaultState, RunResult, replay_loop, tools_from
 
+from first_loop import assess_result, done, lookup_owner
+
+
 if __name__ == "__main__":
+    if len(sys.argv) != 2:
+        raise SystemExit("Usage: python first_loop_replay.py TRACE_DIR")
     replay_state = DefaultState(max_steps=2)
     with closing(replay_loop(
-        trace_dir,
+        sys.argv[1],
         tools=tools_from([lookup_owner, done], validate=True),
         state=replay_state,
         task={"goal": "Find the payments owner, then finish."},
@@ -257,6 +297,7 @@ if __name__ == "__main__":
     assess_result(replayed_result).assert_passed()
 ```
 
+Run the printed `Replay` command after creating this file.
 Replay does not call the original model backend.
 Tools and their effects run again.
 Use isolated workspaces and controlled inputs for tools that write files or contact services.
@@ -267,15 +308,21 @@ For packaged agents, the [shell replay recipe](cli.md#replay-captured-responses)
 
 `run_result()` consumes and closes the same iterator that `composable_loop()` returns.
 Use the iterator directly when your application must inspect each step or stop between calls.
-Append this block to `first_loop.py` to stop after the lookup:
+Put this block in `first_loop_stop.py` to stop after the lookup:
 
-```python
-from looplet import LoopConfig, composable_loop
+```python title="first_loop_stop.py"
+from contextlib import closing
+
+from looplet import DefaultState, LoopConfig, RunResult, composable_loop, tools_from
+
+from first_loop import done, lookup_owner, scripted_backend
+
 
 if __name__ == "__main__":
     state = DefaultState(max_steps=2)
+    backend = scripted_backend()
     with closing(composable_loop(
-        llm=scripted_backend(),
+        llm=backend,
         tools=tools_from([lookup_owner, done], validate=True),
         state=state,
         config=LoopConfig(max_steps=2, use_native_tools=False),
@@ -285,7 +332,11 @@ if __name__ == "__main__":
             print(step.tool_call.tool, step.tool_result.data)
             break
 
-    print(state.termination_reason)
+    print(RunResult.from_state(state).termination_reason)
+```
+
+```bash
+python first_loop_stop.py
 ```
 
 Only the payments lookup occurs.

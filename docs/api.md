@@ -150,6 +150,18 @@ They reject invalid values rather than coercing them.
 Nested schemas and other constraints remain tool-owned.
 These options are included in Looplet `0.4.0`.
 
+Unreleased builds preserve these additional annotation contracts:
+
+- `Annotated[T, ...]` uses the schema for `T`; metadata does not become a validation rule.
+- `Any` adds no type constraint, including for explicit null values.
+- Simple unions such as `str | int` retain all listed JSON types.
+
+Missing annotations retain the legacy string schema.
+Required-field presence and blank-string checks still apply.
+Unsupported annotations raise `TypeError` during tool construction instead of silently becoming strings.
+Use an explicit `ToolSpec.parameters` schema for those contracts.
+Unreleased `minimal_preset` annotations also accept its existing callable-tool inputs and reusable sequences.
+
 The base registry checks argument names and required fields, not full types or every JSON Schema keyword.
 Without `validate=True`, type hints describe the model's schema but do not enforce values at dispatch.
 Put other constraints in the tool, MCP server, or an explicit validation schema.

@@ -25,6 +25,7 @@ from __future__ import annotations
 import os
 import subprocess
 import threading
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Iterable, cast
 
@@ -988,7 +989,7 @@ def research_agent_preset(
 def minimal_preset(
     *,
     max_steps: int = 10,
-    tools: list[ToolSpec] | None = None,
+    tools: Sequence[ToolSpec | Callable[..., Any]] | None = None,
     system_prompt: str = "You are a helpful assistant.",
     validate: bool = False,
 ) -> AgentPreset:
@@ -1001,7 +1002,7 @@ def minimal_preset(
 
     Args:
         max_steps: Maximum tool calls.
-        tools: Optional list of ToolSpec to register. If None,
+        tools: Optional sequence of typed functions or ToolSpec objects. If None,
             registers only a ``done`` tool.
         system_prompt: System prompt for the LLM.
         validate: Check top-level tool argument types and enum choices.

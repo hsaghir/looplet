@@ -8,9 +8,13 @@ Claude Code's tool implementation patterns:
 
 from __future__ import annotations
 
+import asyncio
 import os
 import tempfile
+import threading
 import time
+
+import pytest
 
 from looplet import BaseToolRegistry, ErrorKind, ToolCall, ToolSpec
 from looplet.scaffolding import truncate_tool_result
@@ -80,7 +84,59 @@ class TestToolTimeout:
         assert r.error is not None
         assert r.error_kind == ErrorKind.TIMEOUT
         assert r.error_detail is not None
-        assert r.error_detail.retriable is True
+        assert r.error_detail.retriable is False
+
+    @pytest.mark.parametrize("async_dispatch", [False, True])
+    def test_timeout_reports_unknown_effect_before_worker_commits(self, async_dispatch) -> None:
+        release = threading.Event()
+        finished = threading.Event()
+        effects = []
+
+        def write_record():
+            try:
+                assert release.wait(2)
+                effects.append("committed")
+            finally:
+                finished.set()
+
+        registry = BaseToolRegistry()
+        registry.register(
+            ToolSpec(
+                name="write_record",
+                description="Write one record.",
+                parameters={},
+                execute=write_record,
+                timeout_s=0.1,
+            )
+        )
+        call = ToolCall(tool="write_record", args={})
+
+        def check_result(result):
+            assert result.error_kind == ErrorKind.TIMEOUT
+            assert result.error_detail is not None
+            assert not result.error_detail.retriable
+            assert result.error_detail.context == {"effect_unknown": True}
+            assert result.error_detail.recovery_hint == {
+                "action": "reconcile_tool_effect",
+                "effect_unknown": True,
+            }
+            assert "may still be running" in result.error
+            assert "reconcile effects before retrying" in result.error
+            assert effects == []
+            release.set()
+
+        async def dispatch_async():
+            check_result(await registry.async_dispatch(call))
+
+        try:
+            if async_dispatch:
+                asyncio.run(dispatch_async())
+            else:
+                check_result(registry.dispatch(call))
+        finally:
+            release.set()
+            assert finished.wait(2)
+        assert effects == ["committed"]
 
     def test_fast_tool_no_timeout(self) -> None:
         reg = BaseToolRegistry()

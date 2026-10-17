@@ -40,6 +40,9 @@ python -m pip install "looplet==0.4.0"
 Run this inside a virtual environment; see [Install](docs/install.md).
 Installation needs network access, but not Git.
 
+Source builds identify as `0.4.1.dev0`, not published `0.4.0`.
+See [unreleased safety fixes](docs/install.md#unreleased-safety-fixes) before choosing a build.
+
 The example uses fixed model responses.
 It runs without a model service or an API key.
 

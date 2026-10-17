@@ -9,6 +9,7 @@ from __future__ import annotations
 import inspect
 import logging
 import time
+import warnings
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
 from dataclasses import replace as _dc_replace
@@ -492,7 +493,9 @@ class LoopConfig:
     this config. Supply a custom or restored state when the host needs it.
 
     Essential fields (set these first):
-      - ``max_steps`` - how many tool calls before the loop stops.
+            - ``max_steps`` - charged-step budget for ``DefaultState``.
+                Successful free calls do not consume this budget.
+                It does not bound total tool or model calls.
         This is authoritative for ``DefaultState``; a supplied state with a
         different limit is synchronized with a warning. The loop's explicit
         ``max_steps=`` convenience argument overrides the config value.
@@ -1965,6 +1968,17 @@ def _validate_loop_inputs(task: Any, tools: BaseToolRegistry, config: LoopConfig
         raise ValueError("config.max_steps must be a positive integer")
     if config.max_parallel_calls <= 0:
         raise ValueError("config.max_parallel_calls must be positive")
+    terminal_names = config.resolve_terminal_outcomes()
+    if not set(terminal_names).intersection(tools.tool_names):
+        warnings.warn(
+            "No configured terminal tool is registered "
+            f"({', '.join(terminal_names)}). "
+            "Register a matching tool before running the loop. "
+            "For default completion, use tools_from(..., include_done=True). "
+            "Ignore this warning only when hooks or host code intentionally stop the run.",
+            UserWarning,
+            stacklevel=3,
+        )
 
 
 def _set_context_overrides(config: LoopConfig) -> list[tuple[Any, Any]]:

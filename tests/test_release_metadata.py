@@ -13,14 +13,26 @@ import looplet
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_package_version_is_consistent_and_changelog_has_release() -> None:
+def test_package_version_is_consistent_with_its_release_stage() -> None:
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
     version = project["version"]
     readme = (ROOT / "README.md").read_text()
+    published = re.search(r"latest PyPI release is `(\d+\.\d+\.\d+)`", readme)
+    assert published is not None
 
     assert version == looplet.__version__
-    assert f"## [{version}]" in (ROOT / "CHANGELOG.md").read_text()
-    assert f"latest PyPI release is `{version}`" in readme
+    if ".dev" in version:
+        source_base = tuple(int(part) for part in version.split(".dev", 1)[0].split("."))
+        published_base = tuple(int(part) for part in published.group(1).split("."))
+        assert source_base > published_base
+        assert "## [Unreleased]" in (ROOT / "CHANGELOG.md").read_text()
+        assert f"Source builds identify as `{version}`" in readme
+        assert (
+            f"Development source builds use `{version}`" in (ROOT / "docs/install.md").read_text()
+        )
+    else:
+        assert version == published.group(1)
+        assert f"## [{version}]" in (ROOT / "CHANGELOG.md").read_text()
 
 
 def test_published_install_guidance_is_separate_from_source_version() -> None:
@@ -38,7 +50,10 @@ def test_published_install_guidance_is_separate_from_source_version() -> None:
 
 
 def test_tutorial_installs_use_the_current_published_version() -> None:
-    version = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["version"]
+    readme = (ROOT / "README.md").read_text()
+    published = re.search(r"latest PyPI release is `(\d+\.\d+\.\d+)`", readme)
+    assert published is not None
+    version = published.group(1)
     for document in ("README.md", "docs/index.md", "docs/quickstart.md", "docs/install.md"):
         content = (ROOT / document).read_text()
         references = re.findall(
@@ -84,7 +99,7 @@ def test_unreleased_safety_fixes_are_explicitly_scoped() -> None:
     assert "**Unreleased defaults:**" in provenance
 
 
-def test_lockfile_and_latest_release_match_project_version() -> None:
+def test_lockfile_and_latest_published_release_match_metadata() -> None:
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
     version = project["version"]
     lockfile = tomllib.loads((ROOT / "uv.lock").read_text())
@@ -96,7 +111,11 @@ def test_lockfile_and_latest_release_match_project_version() -> None:
 
     release_headings = [line for line in changelog.splitlines() if line.startswith("## [0")]
     assert release_headings
-    heading_prefix = f"## [{version}] - "
+    published = re.search(
+        r"latest PyPI release is `(\d+\.\d+\.\d+)`", (ROOT / "README.md").read_text()
+    )
+    assert published is not None
+    heading_prefix = f"## [{published.group(1)}] - "
     assert release_headings[0].startswith(heading_prefix)
     release_date = date.fromisoformat(release_headings[0].removeprefix(heading_prefix))
     assert release_date <= date.today()

@@ -864,7 +864,7 @@ def coding_agent_preset(
 
     Args:
         workspace: Directory the agent operates in.
-        max_steps: Maximum tool calls before the loop stops.
+        max_steps: Maximum charged steps; successful free calls do not count.
         context_window: LLM context window size in tokens.
         system_prompt: Override system prompt. If empty, uses a sensible default.
         require_tests: If True, includes guardrail hook that blocks done()
@@ -940,7 +940,7 @@ def research_agent_preset(
 
     Args:
         workspace: Directory the agent operates in.
-        max_steps: Maximum tool calls (default 30 for research).
+        max_steps: Maximum charged steps (default 30); successful free calls do not count.
         context_window: LLM context window size in tokens.
         system_prompt: Override system prompt.
 
@@ -1001,7 +1001,7 @@ def minimal_preset(
     Call this factory for each task and close the instance afterward.
 
     Args:
-        max_steps: Maximum tool calls.
+        max_steps: Maximum charged steps; successful free calls do not count.
         tools: Optional sequence of typed functions or ToolSpec objects. If None,
             registers only a ``done`` tool.
         system_prompt: System prompt for the LLM.

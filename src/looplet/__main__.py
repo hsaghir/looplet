@@ -16,6 +16,7 @@ Subcommands:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import platform
@@ -342,6 +343,26 @@ def _endpoint_check(backend: Any) -> dict[str, str] | None:
     }
 
 
+def _build_check(package_root: Path) -> dict[str, str]:
+    digest = hashlib.sha256()
+    try:
+        for source in sorted(package_root.rglob("*.py")):
+            relative_path = source.relative_to(package_root)
+            if relative_path.parts[0] == "_bundled":
+                continue
+            digest.update(relative_path.as_posix().encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(source.read_bytes())
+            digest.update(b"\0")
+    except OSError as exc:
+        return {
+            "name": "build",
+            "status": "warn",
+            "detail": f"Source fingerprint unavailable ({type(exc).__name__})",
+        }
+    return {"name": "build", "status": "ok", "detail": f"sha256:{digest.hexdigest()}"}
+
+
 def _doctor_checks(*, probe_backend: bool) -> list[dict[str, str]]:
     import warnings
 
@@ -356,6 +377,7 @@ def _doctor_checks(*, probe_backend: bool) -> list[dict[str, str]]:
         }
     )
     checks.append({"name": "looplet", "status": "ok", "detail": f"version {__version__}"})
+    checks.append(_build_check(Path(__file__).parent))
 
     from looplet.backends import ProviderSelectionWarning, make_backend  # noqa: PLC0415
 
@@ -1070,7 +1092,11 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         help="Existing directory the agent operates on (defaults to the current project)",
     )
-    run.add_argument("--max-steps", type=int, help="Maximum tool calls (bundle default: 20)")
+    run.add_argument(
+        "--max-steps",
+        type=int,
+        help="Charged-step budget; successful free calls do not count (bundle default: 20)",
+    )
     bundle_options = run.add_argument_group("Skill-bundle-only options")
     bundle_options.add_argument(
         "--scripted",
@@ -1096,7 +1122,12 @@ def main(argv: list[str] | None = None) -> int:
         default=Path.cwd(),
         help="Directory supplied to the live factory",
     )
-    blueprint.add_argument("--max-steps", type=int, default=20, help="Maximum tool calls")
+    blueprint.add_argument(
+        "--max-steps",
+        type=int,
+        default=20,
+        help="Charged-step budget; successful free calls do not count",
+    )
     blueprint_mode = blueprint.add_mutually_exclusive_group()
     blueprint_mode.add_argument(
         "--instantiate", action="store_true", help="Build and close live resources (the default)"

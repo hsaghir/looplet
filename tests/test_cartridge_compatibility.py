@@ -28,6 +28,39 @@ def _cartridge(tmp_path: Path, compatibility: dict | None = None) -> Path:
     return root
 
 
+@pytest.mark.parametrize(
+    ("version", "constraint", "expected"),
+    [
+        ("0.4.1.dev0", ">=0.4,<0.6", True),
+        ("0.4.1.dev0", ">0.4.0", True),
+        ("0.4.1.dev0", "<0.4.1", True),
+        ("0.4.1.dev0", "<=0.4.1", True),
+        ("0.4.1.dev0", "==0.4.1", False),
+        ("0.4.1.dev0", ">=0.4.1", False),
+        ("0.4.1.dev0", ">0.4.1", False),
+        ("0.4.1.dev2", ">=0.4,<0.6", True),
+        ("0.4.0.dev0", ">=0.4", False),
+        ("0.4.1", ">=0.4.1", True),
+        ("0.4", "==0.4.0", True),
+        ("0.4.0", "==0.4", True),
+    ],
+)
+def test_compatibility_orders_development_before_final_release(
+    version: str, constraint: str, expected: bool
+) -> None:
+    from looplet.cartridge._load import _version_satisfies
+
+    assert _version_satisfies(version, constraint) is expected
+
+
+@pytest.mark.parametrize("version", ["0.4.1.dev", "0.4.1.devbad", "0.4.1.dev0.extra"])
+def test_compatibility_rejects_invalid_development_versions(version: str) -> None:
+    from looplet.cartridge._load import _version_satisfies
+
+    with pytest.raises(CartridgeSerializationError, match="invalid Looplet version constraint"):
+        _version_satisfies(version, ">=0.4")
+
+
 def test_legacy_manifest_has_empty_compatibility(tmp_path: Path) -> None:
     cartridge = Cartridge.from_directory(_cartridge(tmp_path))
     assert cartridge.compatibility.to_dict() == {}

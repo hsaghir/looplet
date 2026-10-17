@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import warnings
+
 import pytest
 
 from looplet import (
@@ -69,6 +71,76 @@ def _run_loop(
             config=LoopConfig(max_steps=max_steps),
         )
     )
+
+
+@pytest.mark.parametrize("is_async", [False, True])
+@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize("mode", ["missing", "default", "custom", "secondary"])
+async def test_terminal_setup_warning_precedes_model_calls(is_async, native, mode) -> None:
+    import json
+
+    from looplet import RunResult, async_composable_loop
+    from looplet.testing import AsyncMockLLMBackend
+
+    tools = _tools()
+    config = LoopConfig(max_steps=1, use_native_tools=native)
+    if mode == "missing":
+        tools._tools.pop("done")
+    elif mode == "custom":
+        terminal = tools._tools.pop("done")
+        terminal.name = "finish"
+        tools.register(terminal)
+        config.done_tool = "finish"
+    elif mode == "secondary":
+        config.done_tool = "finish"
+        config.done_tools = ["done"]
+    terminal_name = "finish" if mode == "custom" else "done"
+    backend_type = AsyncMockLLMBackend if is_async else MockLLMBackend
+    backend = backend_type([json.dumps({"tool": terminal_name, "args": {"answer": "finished"}})])
+    method = "generate_with_tools" if native else "generate"
+    original = getattr(backend, method)
+    warnings_before_call = []
+
+    def warned() -> bool:
+        return any("No configured terminal tool" in str(item.message) for item in captured)
+
+    if is_async:
+
+        async def observed(*args, **kwargs):
+            warnings_before_call.append(warned())
+            return await original(*args, **kwargs)
+
+    else:
+
+        def observed(*args, **kwargs):
+            warnings_before_call.append(warned())
+            return original(*args, **kwargs)
+
+    setattr(backend, method, observed)
+    state = DefaultState(max_steps=1)
+    with warnings.catch_warnings(record=True) as captured:
+        warnings.simplefilter("always")
+        if is_async:
+            steps = [
+                step
+                async for step in async_composable_loop(
+                    llm=backend, tools=tools, state=state, config=config
+                )
+            ]
+        else:
+            steps = list(composable_loop(llm=backend, tools=tools, state=state, config=config))
+    missing = mode == "missing"
+    assert warnings_before_call == [missing]
+    messages = [
+        str(item.message) for item in captured if "No configured terminal tool" in str(item.message)
+    ]
+    assert len(messages) == int(missing)
+    if missing:
+        assert "include_done=True" in messages[0]
+        assert steps[0].tool_result.error
+    else:
+        assert steps[0].tool_result.error is None
+    assert RunResult.from_state(state).completed is not missing
 
 
 def test_done_accepted_fires_once_with_done_payload() -> None:
@@ -329,6 +401,61 @@ async def test_free_tool_preserves_completion_budget(
     else:
         assert result.termination_reason == "budget_exhausted"
         assert result.output is None
+
+
+@pytest.mark.parametrize("is_async", [False, True])
+@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize("deadline_enabled", [False, True])
+async def test_deadline_bounds_repeated_free_calls(
+    is_async, native, deadline_enabled, monkeypatch
+) -> None:
+    import json
+
+    from looplet import RunEnvelope, RunResult, async_composable_loop
+    from looplet.testing import AsyncMockLLMBackend
+
+    clock = [100.0]
+    monkeypatch.setattr("looplet.loop.time.time", lambda: clock[0])
+
+    def note() -> dict[str, str]:
+        clock[0] += 1.0
+        return {"note": "recorded"}
+
+    tools = _tools()
+    tools.register(ToolSpec("note", "Record a note.", {}, note, free=True))
+    responses = [json.dumps({"tool": "note", "args": {}})] * 3
+    responses.append(json.dumps({"tool": "done", "args": {"answer": "accepted"}}))
+    config = LoopConfig(
+        max_steps=1,
+        use_native_tools=native,
+        run_envelope=(
+            RunEnvelope(run_id="bounded-free", deadline_at=103.0) if deadline_enabled else None
+        ),
+    )
+    state = DefaultState(max_steps=config.max_steps)
+    if is_async:
+        steps = [
+            step
+            async for step in async_composable_loop(
+                llm=AsyncMockLLMBackend(responses=responses),
+                tools=tools,
+                state=state,
+                config=config,
+            )
+        ]
+    else:
+        steps = list(
+            composable_loop(
+                llm=MockLLMBackend(responses=responses), tools=tools, state=state, config=config
+            )
+        )
+
+    assert all(step.metadata["budget_free"] for step in steps[:3])
+    assert len(steps) == (3 if deadline_enabled else 4)
+    assert state.budget_remaining == int(deadline_enabled)
+    result = RunResult.from_state(state)
+    assert result.completed is not deadline_enabled
+    assert result.termination_reason == ("deadline_exceeded" if deadline_enabled else "done")
 
 
 def test_done_accepted_does_not_fire_on_max_steps_without_done() -> None:

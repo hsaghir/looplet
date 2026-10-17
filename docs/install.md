@@ -23,6 +23,8 @@ This one install includes result helpers, typed-validation options, capture safe
 ## Unreleased Safety Fixes
 
 The published `0.4.0` package does not include later fixes on `master`.
+Development source builds use `0.4.1.dev0`; the latest PyPI release remains `0.4.0`.
+Run `looplet doctor --no-backend --json` to record the version and library source fingerprint.
 These differences matter for completion, budgets, tool contracts, native calls, and captured evidence:
 
 | Behavior | Published `0.4.0` | Unreleased builds |
@@ -36,6 +38,7 @@ These differences matter for completion, budgets, tool contracts, native calls, 
 | Failed terminal dispatch | May report accepted completion with no output, even with `--require-completed`. | Rejects failed calls and permits correction within the remaining budget. |
 | Free tool budget | `DefaultState` charges every recorded step despite `free=True`. | Successful free calls preserve budget; failures and terminal attempts still consume steps. |
 | CLI failure details | Completion output may omit the underlying error. | Human and JSON output include bounded last-error details for incomplete runs. |
+| Missing terminal setup | Unknown terminal calls consume turns before failure. | Warns before the first model call when no configured terminal tool is registered. |
 
 Do not treat published `0.4.0` native captures as redacted.
 Keep them private and review evidence before sharing it.

@@ -364,6 +364,13 @@ domain state, session data, and conversation data. A worker can reconstruct
 resume inputs with `resume_loop_state(checkpoint)` and continue with the same
 agent version and host envelope.
 
+Pass `max_steps` to `resume_loop_state` when the host changes the total step cap.
+Earlier charged work still counts against that cap.
+
+In unreleased builds, automatic resume rejects unreadable or invalid checkpoints for the selected run.
+Preserve damaged files and reconcile possible effects before repairing recovery state.
+See the [recovery behavior and installation requirements](operations.md#checkpoints-and-cancellation).
+
 When `checkpoint_dir` is configured, sync and async loops persist a pending
 dispatch before calling a tool. An interrupted dispatch records the call ID,
 proposed and effective arguments, and `effect_unknown` status. A later resume

@@ -424,28 +424,26 @@ is for single-call internal operations.
 
 ## Hook-to-hook communication: `step_context`
 
-Hooks sometimes need to share data within the same step - e.g. an
-entity-extraction hook writes entities in `post_dispatch`, and a
-briefing hook reads them in the next step's `pre_prompt`.
+Hooks can share data within one step through `state.step_context`.
+The loop clears this dictionary before each step's `pre_prompt` hooks.
+A later hook in the same step can read values written by an earlier hook.
 
-Use `state.step_context` for this. The loop clears it to `{}` at the
-start of every step, so it's ephemeral - no manual cleanup needed:
+Use `state.metadata` when data must survive into a later turn:
 
 ```python
 class EntityExtractor:
     def post_dispatch(self, state, session_log, tool_call, tool_result, step_num):
         entities = extract_from(tool_result.data)
-        state.step_context["entities"] = entities
+        state.metadata["entities"] = entities
         return None
 
 class BriefingBuilder:
     def pre_prompt(self, state, session_log, context, step_num):
-        entities = state.step_context.get("entities", [])
+        entities = state.metadata.get("entities", [])
         if entities:
             return f"Entities found so far: {', '.join(entities)}"
         return None
 
-# Both hooks share data within each step:
 hooks = [EntityExtractor(), BriefingBuilder()]
 ```
 
@@ -453,7 +451,7 @@ hooks = [EntityExtractor(), BriefingBuilder()]
 
 | | `state.step_context` | `state.metadata` |
 |---|---|---|
-| **Lifetime** | Cleared every step | Persists entire run |
+| **Lifetime** | Cleared every step | Persists across turns |
 | **Use for** | Ephemeral hook-to-hook data | Persistent agent metadata |
 | **Cleanup** | Automatic (loop clears it) | Manual |
 | **In `snapshot()`** | No | Yes |

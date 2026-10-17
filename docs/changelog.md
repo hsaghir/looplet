@@ -8,6 +8,11 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Source builds identify as `0.4.1.dev0`; published installation commands remain pinned to `0.4.0`.
+- Cartridge compatibility checks place development builds before the matching final release and preserve numeric version constraints.
+- `doctor` reports a SHA-256 fingerprint of library Python sources without requiring Git metadata.
+- Budget help describes charged steps and links to a cooperative deadline example for repeated free calls.
+- Loops warn before model execution when no configured terminal tool is registered, without changing registry defaults.
 - Sync and async loops reject failed terminal dispatches instead of reporting accepted completion.
 - Default child registries install an isolated completion tool when cloning excludes the parent terminal. Explicit child registries remain caller-owned.
 - `DefaultState` preserves budget for successful free tools while charging failures, intercepted calls, and terminal attempts.

@@ -61,6 +61,11 @@ The `endpoint` check shows the effective scheme, host, port, and matching config
 It displays only the origin; user info, paths, queries, and fragments are omitted because they may contain credentials.
 This identifies the configured destination without claiming connectivity when `--no-backend` is used.
 
+In unreleased builds, the `build` check fingerprints library Python sources without requiring Git.
+It excludes bundled examples and bytecode caches.
+Compare the version and fingerprint together; same-version local builds may contain different source code.
+This fingerprint is not an official release identifier or a security attestation.
+
 ### `looplet inspect <path>`
 
 Inspect a cartridge, skill bundle, or saved trace without running it:
@@ -274,6 +279,10 @@ looplet run ./agent.cartridge \
   --max-steps 20
 ```
 
+In unreleased builds, `--max-steps` overrides the charged-step budget for `DefaultState`.
+Successful nonterminal free calls do not consume it; total tool and model calls can exceed this value.
+See [bound free-tool runs](operations.md#bound-free-tool-runs) for a cooperative deadline.
+
 Live `new`, `run`, its explicit cartridge and bundle aliases, and `eval run` accept the same provider options:
 
 ```bash
@@ -419,7 +428,7 @@ Notable options:
 | --- | --- |
 | `--case ID` | Run one case; repeat to select several. |
 | `--case-mark MARK` | Run cases with any selected mark; repeat to select several marks. Unreleased. |
-| `--max-steps N` | Override the per-case tool-call budget. |
+| `--max-steps N` | Override the per-case charged-step budget. Successful free calls do not count in unreleased builds. |
 | `--model NAME` | Override the selected provider's model. |
 | `--base-url URL` | Explicitly select an OpenAI-compatible endpoint for agent and judge. |
 | `--judge` | Enable graders whose signature requests an LLM. |

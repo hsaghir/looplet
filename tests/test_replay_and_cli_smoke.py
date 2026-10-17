@@ -757,7 +757,76 @@ class TestShowCLISmoke:
         assert "traceback" not in captured.err.lower()
 
 
+@pytest.mark.parametrize("command", ["run", "blueprint"])
+def test_step_budget_help_clarifies_free_calls(command, capsys):
+    with pytest.raises(SystemExit) as stopped:
+        cli_main([command, "--help"])
+    assert stopped.value.code == 0
+    output = " ".join(capsys.readouterr().out.split())
+    assert "Charged-step budget" in output
+    assert "successful free calls do not count" in output
+
+
 class TestDoctorCLISmoke:
+    @pytest.mark.parametrize("json_output", [False, True])
+    def test_doctor_reports_build_fingerprint(self, capsys, json_output):
+        arguments = ["doctor", "--no-backend"]
+        if json_output:
+            arguments.append("--json")
+        assert cli_main(arguments) == 0
+        output = capsys.readouterr().out
+        if json_output:
+            checks = json.loads(output)["checks"]
+            build = next(check for check in checks if check["name"] == "build")
+            assert build["status"] == "ok"
+            detail = build["detail"]
+        else:
+            detail = next(line for line in output.splitlines() if line.startswith("OK build:"))
+            detail = detail.removeprefix("OK build: ")
+        assert detail.startswith("sha256:")
+        assert len(detail.removeprefix("sha256:")) == 64
+        int(detail.removeprefix("sha256:"), 16)
+
+    def test_build_fingerprint_tracks_sources_without_git(self, tmp_path):
+        from looplet.__main__ import _build_check
+
+        first = tmp_path / "first" / "looplet"
+        second = tmp_path / "second" / "looplet"
+        for package_root in (first, second):
+            (package_root / "nested").mkdir(parents=True)
+            (package_root / "__init__.py").write_text("VERSION = 1\n")
+            (package_root / "nested" / "tools.py").write_text("VALUE = 2\n")
+        original = _build_check(first)
+        assert original["status"] == "ok"
+        assert _build_check(second) == original
+        (second / "__pycache__").mkdir()
+        (second / "__pycache__" / "tools.pyc").write_bytes(b"cache")
+        assert _build_check(second) == original
+        (second / "_bundled").mkdir()
+        (second / "_bundled" / "example.py").write_text("EXAMPLE = 1\n")
+        assert _build_check(second) == original
+        source = second / "nested" / "tools.py"
+        source.write_text("VALUE = 3\n")
+        changed = _build_check(second)
+        assert changed != original
+        source.rename(source.with_name("renamed.py"))
+        assert _build_check(second) != changed
+
+    def test_build_fingerprint_reports_unreadable_sources(self, tmp_path, monkeypatch):
+        from looplet.__main__ import _build_check
+
+        (tmp_path / "__init__.py").write_text("VERSION = 1\n")
+
+        def denied_read(source):
+            raise PermissionError("private-path")
+
+        monkeypatch.setattr(Path, "read_bytes", denied_read)
+        assert _build_check(tmp_path) == {
+            "name": "build",
+            "status": "warn",
+            "detail": "Source fingerprint unavailable (PermissionError)",
+        }
+
     @pytest.mark.parametrize("json_output", [False, True])
     @pytest.mark.parametrize(
         ("provider", "variable", "endpoint", "origin"),

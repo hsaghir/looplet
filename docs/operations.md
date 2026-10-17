@@ -317,6 +317,34 @@ arbitrary blocking system call.
 Checkpoint and trace files may contain prompts, tool results, and task data.
 Apply explicit access, redaction, retention, and deletion policies.
 
+## Bound free-tool runs
+
+In unreleased builds, `max_steps` limits charged steps, not total tool or model calls.
+Successful nonterminal free calls preserve that budget.
+Add a host deadline when repeated free calls must stop:
+
+```python
+from time import time
+
+from looplet import DefaultState, LoopConfig, RunEnvelope, composable_loop
+
+
+config = LoopConfig(
+    max_steps=8,
+    run_envelope=RunEnvelope(run_id="bounded-run", deadline_at=time() + 30),
+)
+state = DefaultState(max_steps=config.max_steps)
+for step in composable_loop(llm=llm, tools=tools, state=state, config=config, task=task):
+    route(step)
+```
+
+Use this configuration with `async_composable_loop` for async runs.
+The deadline uses a Unix timestamp and applies even when charged budget remains.
+The loop reports `deadline_exceeded` when it observes expiry at a cancellation boundary.
+This control is cooperative; it does not interrupt a provider or tool call already running.
+Configure provider timeouts and cooperative tool cancellation separately.
+Use a supervised process when the host requires forced termination.
+
 ## Release checklist
 
 Before enabling an operational control in a release harness:

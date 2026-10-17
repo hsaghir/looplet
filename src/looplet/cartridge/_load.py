@@ -188,7 +188,10 @@ def _version_tuple(value: str) -> tuple[int, ...]:
 def _version_satisfies(version: str, constraint: str) -> bool:
     import re  # noqa: PLC0415
 
-    current = _version_tuple(version)
+    release, development_marker, development_number = version.strip().partition(".dev")
+    if development_marker and not development_number.isdigit():
+        raise CartridgeSerializationError(f"invalid Looplet version constraint: {version!r}")
+    current = _version_tuple(release)
     clauses = [clause.strip() for clause in constraint.split(",")]
     if not clauses or any(not clause for clause in clauses):
         raise CartridgeSerializationError(f"invalid Looplet version constraint: {constraint!r}")
@@ -199,8 +202,8 @@ def _version_satisfies(version: str, constraint: str) -> bool:
         operator = match.group(1) or "=="
         target = _version_tuple(match.group(2))
         width = max(len(current), len(target))
-        left = current + (0,) * (width - len(current))
-        right = target + (0,) * (width - len(target))
+        left = current + (0,) * (width - len(current)) + (0 if development_marker else 1,)
+        right = target + (0,) * (width - len(target)) + (1,)
         comparisons = {
             "==": left == right,
             ">=": left >= right,

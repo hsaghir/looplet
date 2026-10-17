@@ -76,6 +76,7 @@ Successful free steps record `metadata["budget_free"] = True`.
 Native batches remain capped by the available step count before execution.
 Custom states define their own budget accounting.
 Use cancellation or a deadline to bound runs that keep making successful free calls.
+See [bound free-tool runs](operations.md#bound-free-tool-runs) for a deadline example.
 See the [published-version differences](install.md#unreleased-safety-fixes).
 
 ## Optional preset conveniences
@@ -147,6 +148,11 @@ Explicit `sub_tools` registries remain unchanged and must register their own ter
 
 Start with ordinary typed functions and pass them to `tools_from` or `minimal_preset`.
 Their names remain callable in application code and unit tests.
+`minimal_preset` installs `done` automatically; `tools_from` does not.
+Use `tools_from([...], include_done=True)` for the standard completion tool.
+Register a matching terminal tool yourself when using a custom `done_tool` or `done_tools`.
+Unreleased loops warn before the first model call if no configured terminal tool is registered.
+Hooks and host code can intentionally stop such runs; the warning does not reject them.
 The registry infers schemas from signatures and descriptions from docstrings.
 The optional `@tool` decorator replaces the function with a `ToolSpec`.
 Call its `.execute(...)` method to invoke the underlying function directly.

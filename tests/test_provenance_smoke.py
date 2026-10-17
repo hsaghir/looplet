@@ -162,6 +162,99 @@ class TestRecordingLLMBackendSmoke:
         assert "***" in rec.calls[0].prompt
 
     @pytest.mark.parametrize("asynchronous", [False, True])
+    @pytest.mark.parametrize("native", [False, True])
+    async def test_errors_are_redacted_without_changing_the_raised_exception(
+        self, tmp_path, asynchronous, native
+    ):
+        secret = 'private_"value"\\path'
+        replacement = '[redacted "error"]\n'
+        failure = RuntimeError(secret)
+
+        class Backend:
+            def generate(self, prompt, **kwargs):
+                raise failure
+
+            def generate_with_tools(self, prompt, **kwargs):
+                raise failure
+
+        class AsyncBackend(Backend):
+            async def generate(self, prompt, **kwargs):
+                return super().generate(prompt, **kwargs)
+
+            async def generate_with_tools(self, prompt, **kwargs):
+                return super().generate_with_tools(prompt, **kwargs)
+
+        backend = AsyncBackend() if asynchronous else Backend()
+        recorder_type = AsyncRecordingLLMBackend if asynchronous else RecordingLLMBackend
+        recorder = recorder_type(backend, redact=lambda text: text.replace(secret, replacement))
+        with pytest.raises(RuntimeError) as raised:
+            if native:
+                result = recorder.generate_with_tools("request", tools=[])
+            else:
+                result = recorder.generate("request")
+            if asynchronous:
+                await result
+
+        assert raised.value is failure
+        assert str(failure) == secret
+        assert recorder.calls[0].error == "RuntimeError: " + replacement
+        recorder.calls[0].metadata["private"] = secret
+        recorder.save(tmp_path)
+        manifest = json.loads((tmp_path / "manifest.jsonl").read_text())
+        assert manifest["error"] == "RuntimeError: " + replacement
+        assert manifest["metadata"] == {"private": replacement}
+        assert secret not in (tmp_path / "call_00_response.txt").read_text()
+
+    @pytest.mark.parametrize("asynchronous", [False, True])
+    async def test_tool_schemas_are_redacted_only_in_the_recorded_copy(
+        self, tmp_path, asynchronous
+    ):
+        secret = 'private_"schema"\\path'
+        replacement = '[redacted "schema"]\n'
+        schemas = [{"name": "lookup", "description": secret, "parameters": {secret: [secret]}}]
+        original = json.dumps(schemas)
+
+        class Backend:
+            tools = None
+
+            def generate(self, prompt, **kwargs):
+                return ""
+
+            def generate_with_tools(self, prompt, *, tools, **kwargs):
+                self.tools = tools
+                return []
+
+        class AsyncBackend(Backend):
+            async def generate(self, prompt, **kwargs):
+                return super().generate(prompt, **kwargs)
+
+            async def generate_with_tools(self, prompt, *, tools, **kwargs):
+                return super().generate_with_tools(prompt, tools=tools, **kwargs)
+
+        backend = AsyncBackend() if asynchronous else Backend()
+        recorder_type = AsyncRecordingLLMBackend if asynchronous else RecordingLLMBackend
+        recorder = recorder_type(backend, redact=lambda text: text.replace(secret, replacement))
+        result = recorder.generate_with_tools("request", tools=schemas)
+        if asynchronous:
+            await result
+
+        expected = [
+            {
+                "name": "lookup",
+                "description": replacement,
+                "parameters": {replacement: [replacement]},
+            }
+        ]
+        assert backend.tools is schemas
+        assert json.dumps(schemas) == original
+        assert recorder.calls[0].tools == expected
+        schemas[0]["description"] = "changed after capture"
+        assert recorder.calls[0].tools == expected
+        recorder.save(tmp_path)
+        prompt = (tmp_path / "call_00_prompt.txt").read_text()
+        assert json.loads(prompt.split("## TOOLS\n", 1)[1]) == expected
+
+    @pytest.mark.parametrize("asynchronous", [False, True])
     @pytest.mark.parametrize("redact_upstream", [False, True])
     def test_native_responses_are_redacted_without_mutating_live_blocks(
         self, tmp_path, asynchronous, redact_upstream
@@ -428,6 +521,41 @@ class TestTrajectoryRecorderSmoke:
         doc = json.loads((out / "trajectory.json").read_text())
         assert doc["step_count"] == 1
         assert doc["termination_reason"] == "done"
+
+    @pytest.mark.parametrize(
+        "secret", ["plain-secret", 'secret_"quoted"\\path', "secret_\u00e9\u2028"]
+    )
+    def test_save_redacts_structured_strings_without_changing_live_data(self, tmp_path, secret):
+        replacement = 'redacted "value"\\path\n'
+        hook = TrajectoryRecorder(redact=lambda text: text.replace(secret, replacement))
+        payload = {secret: [secret, Path(secret), (secret,), 2, True, None]}
+        hook.trajectory.metadata["payload"] = payload
+        record = StepRecord(
+            step_num=1,
+            timestamp=0.0,
+            duration_ms=0.0,
+            pretty=secret,
+            tool_call={"args": payload},
+            tool_result={"data": payload},
+            context_before=secret,
+            metadata={"value": secret},
+        )
+        hook.trajectory.steps.append(record)
+
+        hook.save(tmp_path)
+
+        expected = {replacement: [replacement, replacement, [replacement], 2, True, None]}
+        document = json.loads((tmp_path / "trajectory.json").read_text())
+        saved_step = json.loads((tmp_path / "steps" / "step_01.json").read_text())
+        assert document["metadata"]["payload"] == expected
+        assert document["steps"][0] == saved_step
+        assert saved_step["tool_call"]["args"] == expected
+        assert saved_step["tool_result"]["data"] == expected
+        assert saved_step["pretty"] == saved_step["context_before"] == replacement
+        assert saved_step["metadata"] == {"value": replacement}
+        assert hook.trajectory.metadata["payload"] is payload
+        assert payload == {secret: [secret, Path(secret), (secret,), 2, True, None]}
+        assert record.pretty == record.context_before == secret
 
     def test_metadata_set_after_post_dispatch_lands_in_trajectory(self):
         """Regression: hooks downstream of TrajectoryRecorder may mutate

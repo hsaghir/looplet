@@ -158,6 +158,13 @@ The optional `@tool` decorator replaces the function with a `ToolSpec`.
 Call its `.execute(...)` method to invoke the underlying function directly.
 Direct calls bypass registry validation and hooks; test dispatch separately when those controls matter.
 
+Unreleased registration rejects positional-only parameters because dispatch uses keyword arguments.
+Wrap existing positional-only functions with keyword-compatible functions.
+JSON arrays arrive as Python lists.
+Schema inference rejects `tuple`, `set`, and `frozenset` parameter annotations.
+Accept a `list` parameter and convert it inside your tool or wrapper.
+Explicit schemas do not convert lists into other Python containers.
+
 Prefer explicit schemas for public tools or tools with high-risk effects.
 Check required fields, invalid arguments, and effects even if a decorator creates the schema.
 

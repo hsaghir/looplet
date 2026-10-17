@@ -183,6 +183,86 @@ class TestToolDecorator:
         with pytest.raises(TypeError, match="explicit ToolSpec.parameters schema"):
             tools_from([echo])
 
+    @pytest.mark.parametrize("validate", [False, True])
+    @pytest.mark.parametrize("explicit_spec", [False, True])
+    def test_positional_only_parameters_fail_before_registration(self, validate, explicit_spec):
+        effects = []
+
+        def lookup(value: str, /) -> dict:
+            effects.append(value)
+            return {"value": value}
+
+        item = (
+            ToolSpec(
+                name="lookup",
+                description="Look up a value.",
+                parameters={"value": "str"},
+                execute=lookup,
+            )
+            if explicit_spec
+            else lookup
+        )
+        with pytest.raises(TypeError, match="positional-only.*keyword-compatible"):
+            tools_from([item], validate=validate)
+        assert effects == []
+
+    def test_contract_audit_reports_positional_only_parameters(self):
+        def lookup(value: str, /) -> dict:
+            return {"value": value}
+
+        spec = ToolSpec(
+            name="lookup",
+            description="Look up a value.",
+            parameters={"value": "str"},
+            execute=lookup,
+        )
+        assert any("positional-only" in error for error in spec.contract_errors())
+
+    @pytest.mark.parametrize("validate", [False, True])
+    @pytest.mark.parametrize(
+        "annotation",
+        [
+            tuple,
+            tuple[str, ...],
+            set,
+            set[str],
+            frozenset,
+            frozenset[str],
+            list[set[str]],
+            set[str] | None,
+        ],
+    )
+    def test_non_json_container_annotations_fail_before_registration(self, annotation, validate):
+        effects = []
+
+        def overlap(values):
+            effects.append(values)
+            return values.intersection({"blue"})
+
+        overlap.__annotations__["values"] = annotation
+        with pytest.raises(TypeError, match="Python lists.*list parameter.*wrapper"):
+            tools_from([overlap], validate=validate)
+        assert effects == []
+
+    @pytest.mark.parametrize("async_dispatch", [False, True])
+    async def test_json_list_wrapper_can_convert_before_calling_domain_code(self, async_dispatch):
+        effects = []
+
+        def overlap(values: set[str]) -> list[str]:
+            effects.append(values)
+            return sorted(values.intersection({"blue"}))
+
+        def lookup(values: list[str]) -> dict:
+            return {"overlap": overlap(set(values))}
+
+        registry = tools_from([lookup], validate=True)
+        call = ToolCall(tool="lookup", args={"values": ["blue", "red", "blue"]})
+        result = await registry.async_dispatch(call) if async_dispatch else registry.dispatch(call)
+
+        assert result.error is None
+        assert result.data == {"overlap": ["blue"]}
+        assert effects == [{"blue", "red"}]
+
     @pytest.mark.parametrize("async_dispatch", [False, True])
     @pytest.mark.parametrize("quantity", ["not-an-integer", True])
     async def test_opt_in_validation_rejects_wrong_types_before_effects(

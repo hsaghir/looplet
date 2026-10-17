@@ -49,7 +49,7 @@ def scripted_backend():
     return MockLLMBackend([
         '{"tool":"lookup_owner","args":{"service":"payments"}}',
         '{"tool":"done","args":{"service":"payments","owner":"fintech-platform","summary":"The payments owner is fintech-platform."}}',
-    ])
+    ], cycle=False)
 
 
 def run_agent(llm, *, hooks=(), use_native_tools=False, max_steps=2):
@@ -78,6 +78,7 @@ This helper defaults to JSON-text for its fixed responses.
 Pass `use_native_tools=True` when changing to a native-tool backend.
 The [real-model section](#use-the-same-agent-with-a-real-model) shows the complete change.
 The scripted run needs two calls; `max_steps` lets other runs use a different limit.
+`cycle=False` rejects unexpected extra model calls instead of repeating the script.
 
 These tools remain ordinary Python functions.
 Call them directly in your application or unit tests.

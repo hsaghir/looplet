@@ -54,8 +54,11 @@ mechanics:
 from looplet.testing import MockLLMBackend
 
 
-llm = MockLLMBackend(responses=[tool_call_json, done_json])
+llm = MockLLMBackend(responses=[tool_call_json, done_json], cycle=False)
 ```
+
+Use `cycle=False` so unexpected extra model calls fail instead of repeating tool actions.
+The default still cycles for backward compatibility.
 
 This is appropriate for:
 

@@ -116,7 +116,7 @@ def lookup_owner(service: str) -> dict:
 llm = MockLLMBackend([
   '{"tool":"lookup_owner","args":{"service":"payments"}}',
   '{"tool":"done","args":{"summary":"The payments owner is fintech-platform."}}',
-])
+], cycle=False)
 tools = tools_from([lookup_owner], include_done=True, validate=True)
 state = DefaultState(max_steps=2)
 
@@ -140,6 +140,7 @@ Use `break` to stop before the next call.
 
 The example selects the JSON-text protocol for its fixed responses.
 Real models use native tool calls by default.
+`cycle=False` rejects unexpected extra model calls instead of repeating the script.
 The [Quickstart](quickstart.md) explains each field and shows early exit.
 See [Install](install.md) to configure a real model.
 

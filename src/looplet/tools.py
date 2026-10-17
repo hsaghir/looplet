@@ -375,7 +375,11 @@ class ToolSpec:
     """True if the tool is read-only and can run concurrently with other safe tools."""
 
     free: bool = False
-    """True if the tool does not consume agent budget (e.g. think, reflect)."""
+    """Preserve DefaultState budget after a successful nonterminal call.
+
+    Failures, intercepted calls, and terminal attempts still consume steps.
+    Custom states define their own budget accounting.
+    """
 
     timeout_s: float | None = None
     """Caller-side wait limit in seconds for tool execution.

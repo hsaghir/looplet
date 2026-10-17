@@ -40,9 +40,45 @@ async def test_async_child_uses_async_loop_and_shared_budget():
     )
     assert result["steps"][0]["tool_result"]["data"] == {"sum": 3}
     assert result["stop_reason"] == "done"
+    assert result["completed"]
     assert result["llm_calls"] == 2
     assert result["parent_id"] == "parent-async"
     assert budget.remaining == 0
+
+
+@pytest.mark.parametrize("async_mode", [False, True])
+@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize("terminal_name", ["done", "finish"])
+async def test_default_child_completion_is_isolated(async_mode, native, terminal_name):
+    import json
+
+    from looplet import run_sub_loop_async
+    from looplet.testing import AsyncMockLLMBackend
+
+    parent_calls = []
+    parent = BaseToolRegistry()
+    parent_terminal = ToolSpec(
+        name=terminal_name,
+        description="Complete the parent.",
+        parameters={"answer": "str"},
+        execute=lambda **args: parent_calls.append(args),
+    )
+    parent.register(parent_terminal)
+    backend_type = AsyncMockLLMBackend if async_mode else MockLLMBackend
+    options = {
+        "llm": backend_type(
+            [json.dumps({"tool": terminal_name, "args": {"summary": "child finished"}})]
+        ),
+        "tools": parent,
+        "state_mutating_tools": [terminal_name],
+        "config": LoopConfig(max_steps=1, use_native_tools=native, done_tool=terminal_name),
+    }
+    result = await run_sub_loop_async(**options) if async_mode else run_sub_loop(**options)
+    assert result["completed"]
+    assert result["output"] == {"status": "completed", "summary": "child finished"}
+    assert result["steps"][0]["tool_result"].get("error") is None
+    assert parent_calls == []
+    assert parent._tools[terminal_name] is parent_terminal
 
 
 @pytest.mark.parametrize("async_mode", [False, True])
@@ -83,7 +119,7 @@ async def test_async_child_awaits_parent_events():
         async def on_event(self, payload):
             received.append(payload.event)
 
-    await run_sub_loop_async(
+    result = await run_sub_loop_async(
         llm=AsyncMockLLMBackend(
             responses=[
                 '{"tool":"add","args":{"a":1,"b":2}}',
@@ -94,6 +130,7 @@ async def test_async_child_awaits_parent_events():
         config=LoopConfig(max_steps=3, use_native_tools=False),
         parent_hooks=[Observer()],
     )
+    assert result["completed"]
     assert LifecycleEvent.PRE_TOOL_USE in received
     assert received.count(LifecycleEvent.SUBAGENT_START) == 1
     assert received.count(LifecycleEvent.SUBAGENT_STOP) == 1
@@ -136,6 +173,7 @@ async def test_parallel_children_are_bounded_and_ordered():
     release.set()
     results = await task
     assert peak == 2
+    assert all(result["completed"] for result in results)
     assert [result["subagent_id"] for result in results] == [
         "child-0",
         "child-1",
@@ -338,6 +376,7 @@ async def test_child_cannot_widen_execution_capabilities(async_mode):
     assert effects == []
     assert result["steps"][0]["tool_result"]["error"]
     assert config.execution_policy.capabilities == frozenset({"shell", "network"})
+    assert result["completed"]
 
 
 @pytest.mark.parametrize("async_mode", [False, True])
@@ -397,7 +436,7 @@ def test_child_recovery_refuses_changed_request(tmp_path, change):
     from looplet.subagent import ChildRecoveryError, ChildRunPolicy
 
     options = {
-        "llm": MockLLMBackend(responses=['{"tool":"done","args":{"summary":"saved"}}']),
+        "llm": MockLLMBackend(responses=['{"tool":"done","args":{"answer":"saved"}}']),
         "sub_tools": _tools(),
         "task": {"goal": "original"},
         "subagent_id": "stable-child",
@@ -513,7 +552,7 @@ run_sub_loop(llm=InterruptedBackend(), sub_tools=tools, state=DefaultState(max_s
     tools._tools.pop("add")
     tools.register(ToolSpec(name="write", description="Write", parameters={}, execute=write))
     backend_type = AsyncMockLLMBackend if async_mode else MockLLMBackend
-    backend = backend_type(responses=['{"tool":"done","args":{"summary":"resumed"}}'], cycle=False)
+    backend = backend_type(responses=['{"tool":"done","args":{"answer":"resumed"}}'], cycle=False)
     recording = (AsyncRecordingLLMBackend if async_mode else RecordingLLMBackend)(backend)
     options = {
         "llm": recording,

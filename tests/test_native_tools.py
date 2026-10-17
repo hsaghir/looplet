@@ -361,7 +361,12 @@ async def test_serial_native_batch_intercepts_after_prior_step(is_async):
     blocks = [
         {"type": "tool_use", "id": "first", "name": "record", "input": {"value": 1}},
         {"type": "tool_use", "id": "second", "name": "record", "input": {"value": 2}},
-        {"type": "tool_use", "id": "finish", "name": "done", "input": {}},
+        {
+            "type": "tool_use",
+            "id": "finish",
+            "name": "done",
+            "input": {"summary": "Recorded both values."},
+        },
     ]
     state = DefaultState(max_steps=3)
     kwargs = {
@@ -380,6 +385,7 @@ async def test_serial_native_batch_intercepts_after_prior_step(is_async):
     assert observations == [(1, 0, []), (2, 1, [1])]
     assert effects == [1, 2]
     assert [step.tool_call.tool for step in steps] == ["record", "record", "done"]
+    assert steps[-1].tool_result.error is None
     assert state.termination_reason == "done"
 
 

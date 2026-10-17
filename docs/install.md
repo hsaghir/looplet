@@ -23,7 +23,7 @@ This one install includes result helpers, typed-validation options, capture safe
 ## Unreleased Safety Fixes
 
 The published `0.4.0` package does not include later fixes on `master`.
-These differences matter for native calls, tool contracts, timeout handling, and captured evidence:
+These differences matter for completion, budgets, tool contracts, native calls, and captured evidence:
 
 | Behavior | Published `0.4.0` | Unreleased builds |
 | --- | --- | --- |
@@ -33,6 +33,9 @@ These differences matter for native calls, tool contracts, timeout handling, and
 | Tool timeout errors | May report a blank, retryable timeout. | Warns about unknown effects and requires reconciliation before retrying. |
 | Rich Python annotations | `Annotated`, `Any`, and multi-type unions may become string schemas. | Preserves supported contracts and rejects unsupported annotations clearly. |
 | Callable preset typing | Accepts functions at runtime but declares only `ToolSpec` inputs. | Type annotations match callable inputs and reusable sequences. |
+| Failed terminal dispatch | May report accepted completion with no output, even with `--require-completed`. | Rejects failed calls and permits correction within the remaining budget. |
+| Free tool budget | `DefaultState` charges every recorded step despite `free=True`. | Successful free calls preserve budget; failures and terminal attempts still consume steps. |
+| CLI failure details | Completion output may omit the underlying error. | Human and JSON output include bounded last-error details for incomplete runs. |
 
 Do not treat published `0.4.0` native captures as redacted.
 Keep them private and review evidence before sharing it.

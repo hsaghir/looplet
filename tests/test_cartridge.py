@@ -458,7 +458,9 @@ def test_hello_workspace_loads_and_runs_end_to_end() -> None:
         responses=[
             _json.dumps({"thought": "polite", "tool": "greet", "args": {"name": "Alice"}}),
             _json.dumps({"thought": "polite", "tool": "greet", "args": {"name": "Bob"}}),
-            _json.dumps({"thought": "finish", "tool": "done", "args": {"answer": "Greeted both."}}),
+            _json.dumps(
+                {"thought": "finish", "tool": "done", "args": {"summary": "Greeted both."}}
+            ),
         ]
     )
     steps = list(
@@ -474,6 +476,7 @@ def test_hello_workspace_loads_and_runs_end_to_end() -> None:
 
     assert len(steps) == 3
     assert [s.tool_call.tool for s in steps] == ["greet", "greet", "done"]
+    assert steps[-1].tool_result.error is None
     # Shared log captured both greetings - proves @ref + setup.py wired
     # the SAME GreetingLog instance into the tool and the hook.
     assert hook.log.names() == ["Alice", "Bob"]

@@ -218,6 +218,119 @@ def test_dispatched_done_rejection_retries_within_budget(
         assert state.termination_reason == "budget_exhausted"
 
 
+@pytest.mark.parametrize("is_async", [False, True])
+@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize("invalid_args", [{}, {"summary": "wrong field"}])
+@pytest.mark.parametrize("accept_retry", [False, True])
+async def test_failed_terminal_dispatch_is_not_accepted(
+    is_async, native, invalid_args, accept_retry
+) -> None:
+    import json
+
+    from looplet import RunResult, async_composable_loop
+    from looplet.testing import AsyncMockLLMBackend
+
+    responses = [json.dumps({"tool": "done", "args": invalid_args})]
+    if accept_retry:
+        responses.append(json.dumps({"tool": "done", "args": {"answer": "accepted"}}))
+    state = DefaultState(max_steps=len(responses))
+    config = LoopConfig(max_steps=len(responses), use_native_tools=native)
+    recorder = DoneAcceptedRecorder()
+    if is_async:
+        steps = [
+            step
+            async for step in async_composable_loop(
+                llm=AsyncMockLLMBackend(responses=responses),
+                tools=_tools(),
+                state=state,
+                config=config,
+                hooks=[recorder],
+            )
+        ]
+    else:
+        steps = list(
+            composable_loop(
+                llm=MockLLMBackend(responses=responses),
+                tools=_tools(),
+                state=state,
+                config=config,
+                hooks=[recorder],
+            )
+        )
+
+    assert steps[0].tool_result.error
+    assert steps[0].tool_result.data["rejected"] is True
+    assert steps[0].tool_result.data["reason"] == steps[0].tool_result.error
+    result = RunResult.from_state(state)
+    assert result.completed is accept_retry
+    assert len(recorder.done_accepted_payloads) == int(accept_retry)
+    if accept_retry:
+        assert result.output == {"answer": "accepted"}
+        assert recorder.done_accepted_payloads[0].step_num == 2
+    else:
+        assert result.output is None
+        assert result.termination_reason == "budget_exhausted"
+
+
+@pytest.mark.parametrize("is_async", [False, True])
+@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize("mode", ["paid", "free", "failed-free"])
+@pytest.mark.parametrize("accept_completion", [False, True])
+async def test_free_tool_preserves_completion_budget(
+    is_async, native, mode, accept_completion
+) -> None:
+    import json
+
+    from looplet import RunResult, async_composable_loop
+    from looplet.testing import AsyncMockLLMBackend
+
+    def note() -> dict[str, str]:
+        if mode == "failed-free":
+            raise ValueError("Could not record the note")
+        return {"note": "recorded"}
+
+    tools = _tools()
+    tools.register(
+        ToolSpec(
+            name="note",
+            description="Record a note.",
+            parameters={},
+            execute=note,
+            free=mode != "paid",
+        )
+    )
+    responses = [
+        json.dumps({"tool": "note", "args": {}}),
+        json.dumps({"tool": "done", "args": {"answer": "accepted"} if accept_completion else {}}),
+    ]
+    state = DefaultState(max_steps=1)
+    config = LoopConfig(max_steps=1, use_native_tools=native)
+    remaining = []
+    if is_async:
+        async for _step in async_composable_loop(
+            llm=AsyncMockLLMBackend(responses=responses), tools=tools, state=state, config=config
+        ):
+            remaining.append(state.budget_remaining)
+    else:
+        for _step in composable_loop(
+            llm=MockLLMBackend(responses=responses), tools=tools, state=state, config=config
+        ):
+            remaining.append(state.budget_remaining)
+
+    is_free = mode == "free"
+    assert remaining == ([1, 0] if is_free else [0])
+    assert state.step_count == (2 if is_free else 1)
+    assert state.queries_used == int(mode == "paid")
+    assert state.steps[0].metadata.get("budget_free", False) is is_free
+    result = RunResult.from_state(state)
+    assert result.completed is (is_free and accept_completion)
+    if result.completed:
+        assert result.output == {"answer": "accepted"}
+    else:
+        assert result.termination_reason == "budget_exhausted"
+        assert result.output is None
+
+
 def test_done_accepted_does_not_fire_on_max_steps_without_done() -> None:
     recorder = DoneAcceptedRecorder()
 

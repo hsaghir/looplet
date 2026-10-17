@@ -101,7 +101,7 @@ Nested data and other constraints remain tool-owned.
 ```python title="first_loop.py"
 from contextlib import closing
 
-from looplet import DefaultState, LoopConfig, MockLLMBackend, composable_loop, tools_from
+from looplet import DefaultState, LoopConfig, MockLLMBackend, RunResult, composable_loop, tools_from
 
 
 def lookup_owner(service: str) -> dict:
@@ -127,7 +127,7 @@ with closing(composable_loop(
   for step in steps:
     print(step.tool_call.tool, step.tool_result.data)
 
-print(state.termination_reason)
+print(RunResult.from_state(state).termination_reason)
 ```
 
 Each `Step` contains a tool call and its result.

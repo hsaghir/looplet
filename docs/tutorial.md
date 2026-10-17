@@ -214,7 +214,7 @@ It saves one record per case.
 ```python title="tests/test_report_agent.py"
 import json
 
-from looplet import run_cartridge_evals
+from looplet import EvalReport, run_cartridge_evals
 from looplet.testing import MockLLMBackend
 
 
@@ -238,6 +238,7 @@ def test_report_contract(tmp_path):
         output_dir=tmp_path / "runs",
     )
 
+    EvalReport.from_records(records, threshold=1.0).assert_passed()
     scores = {result.name: result.score for result in records[0].results}
     assert scores["eval_profit_is_correct"] == 1.0
     assert records[0].context.artifacts["observed_profit"] == 40
@@ -251,6 +252,8 @@ python -m pytest tests/test_report_agent.py
 ```
 
 This test checks the tools and graders under fixed model responses.
+The full assessment checks every required grader, including accepted completion.
+A correct file alone cannot pass it.
 It does not measure model quality.
 A prompt or model change needs new model runs.
 

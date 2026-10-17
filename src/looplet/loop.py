@@ -3531,6 +3531,13 @@ def _composable_loop_impl(
                         dispatch_mode=dispatch_mode,
                     ),
                 )
+                if (
+                    tool_spec
+                    and tool_spec.free
+                    and not was_intercepted
+                    and tool_result.error is None
+                ):
+                    step.metadata["budget_free"] = True
                 cur_step_count = state.step_count
                 state.steps.append(step)
                 yield step
@@ -3804,18 +3811,18 @@ def _composable_loop_impl(
                     emit_lifecycle=False,
                 )
                 tool_result = _pd_done.tool_result
-                rejected_done = isinstance(tool_result.data, dict) and (
-                    tool_result.data.get("rejected") is True
-                    or tool_result.data.get("status") == "rejected"
+                done_data = tool_result.data if isinstance(tool_result.data, dict) else {}
+                rejected_done = tool_result.error is not None or (
+                    done_data.get("rejected") is True or done_data.get("status") == "rejected"
                 )
                 if rejected_done:
                     reason = str(
-                        tool_result.data.get("reason")
-                        or tool_result.data.get("error")
+                        done_data.get("reason")
+                        or done_data.get("error")
                         or tool_result.error
                         or "Final answer was not accepted"
                     )
-                    tool_result.data = {**tool_result.data, "rejected": True, "reason": reason}
+                    tool_result.data = {**done_data, "rejected": True, "reason": reason}
                     tool_result.error = reason
                     quality_gate_message = reason
                 step = Step(

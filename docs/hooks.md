@@ -132,6 +132,9 @@ composable_loop(llm, tools=reg, hooks=hooks, ...)
 - `check_done`: The first blocking decision rejects completion; a nonblocking decision does not.
 - `should_stop`: The first stop decision or legacy True stops the loop.
 
+Checking cached `pre_dispatch` results requires the unreleased permission fix.
+See [source installation](install.md#unreleased-safety-fixes).
+
 > When a hook terminates the loop via `should_stop`, return
 > `HookDecision(stop="my_reason")` instead of a plain `True`. The reason
 > string surfaces as `EvalContext.stop_reason` in saved trajectories, so
@@ -163,17 +166,26 @@ Prevent the agent from stopping prematurely:
 
 ```python
 class MinimumEvidenceGate:
-    def __init__(self, min_tools: int = 3):
+    def __init__(self, min_tools: int = 3, *, done_tools: tuple[str, ...] = ("done",)):
         self.min_tools = min_tools
+        self.done_tools = done_tools
 
     def check_done(self, state, session_log, context, step_num):
-        if len(state.steps) < self.min_tools:
+        successful_calls = sum(
+            step.tool_result.error is None and step.tool_call.tool not in self.done_tools
+            for step in state.steps
+        )
+        if successful_calls < self.min_tools:
             return (
-                f"Insufficient evidence: only {len(state.steps)} tools called. "
-                f"Call at least {self.min_tools} before concluding."
+                f"Insufficient evidence: only {successful_calls} successful non-completion calls. "
+                f"Make at least {self.min_tools} successful non-completion calls before concluding."
             )
         return None  # allow done()
 ```
+
+List every completion tool in `done_tools` when using custom completion names.
+This example counts successful calls; it does not judge evidence quality.
+Use a collector and grader to check the task's outputs.
 
 `check_done` accepts an optional `tool_call` kwarg carrying the
 candidate `done()` invocation (and its proposed final answer). Hooks

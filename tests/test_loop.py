@@ -736,6 +736,102 @@ class TestComposableLoopHooks:
         # Real search should NOT have been called - intercepted
         assert "real_search" not in dispatched
 
+    @pytest.mark.parametrize("async_driver", [False, True])
+    @pytest.mark.parametrize("native", [False, True])
+    @pytest.mark.parametrize("cache_kind", ["result", "decision", "denial"])
+    @pytest.mark.parametrize("permission_first", [False, True])
+    @pytest.mark.parametrize("allowed", [False, True])
+    def test_cached_result_requires_permission(
+        self, async_driver, native, cache_kind, permission_first, allowed
+    ):
+        import asyncio
+
+        from looplet import (
+            AsyncMockLLMBackend,
+            HookDecision,
+            MockLLMBackend,
+            async_composable_loop,
+            composable_loop,
+        )
+        from looplet.loop import LoopConfig
+        from looplet.tools import ToolSpec
+        from looplet.types import ErrorKind, ToolResult
+
+        executed = []
+        checked_args = []
+
+        def search(scope):
+            executed.append(scope)
+            return {"private": "live result"}
+
+        class CacheHook:
+            def pre_dispatch(self, state, session_log, tool_call, step_num):
+                if tool_call.tool != "search":
+                    return None
+                if cache_kind == "denial":
+                    return HookDecision(permission="deny", block="cache blocked")
+                cached = ToolResult(
+                    tool="search", args_summary="cached", data={"private": "cached result"}
+                )
+                if cache_kind == "decision":
+                    return HookDecision(updated_args={"scope": "rewritten"}, updated_result=cached)
+                return cached
+
+        class PermissionGate:
+            def check_permission(self, tool_call, state):
+                if tool_call.tool != "search":
+                    return True
+                checked_args.append(dict(tool_call.args))
+                return allowed
+
+        hooks = (
+            [PermissionGate(), CacheHook()] if permission_first else [CacheHook(), PermissionGate()]
+        )
+        backend = (AsyncMockLLMBackend if async_driver else MockLLMBackend)(
+            [
+                '{"tool":"search","args":{"scope":"original"}}',
+                '{"tool":"done","args":{"summary":"finished"}}',
+            ]
+        )
+        arguments = {
+            "llm": backend,
+            "tools": _make_registry_with_done(
+                ToolSpec(
+                    name="search", description="Search", parameters={"scope": {}}, execute=search
+                )
+            ),
+            "state": SimpleState(max_steps=2),
+            "config": LoopConfig(max_steps=2, use_native_tools=native),
+            "hooks": hooks,
+        }
+        if async_driver:
+
+            async def collect_steps():
+                return [step async for step in async_composable_loop(**arguments)]
+
+            steps = asyncio.run(collect_steps())
+        else:
+            steps = list(composable_loop(**arguments))
+
+        assert not executed
+        expected_args = (
+            []
+            if cache_kind == "denial"
+            else [{"scope": "rewritten" if cache_kind == "decision" else "original"}]
+        )
+        assert checked_args == expected_args
+        result = steps[0].tool_result
+        if allowed and cache_kind != "denial":
+            assert result.error is None
+            assert result.data == {"private": "cached result"}
+        else:
+            assert result.data is None
+            assert result.error_detail is not None
+            assert result.error_detail.kind is ErrorKind.PERMISSION_DENIED
+            if cache_kind == "denial":
+                assert "cache blocked" in result.error
+        assert steps[-1].tool_call.tool == "done"
+
     def test_multi_tool_in_one_response(self):
         from looplet.loop import LoopConfig, composable_loop
         from looplet.tools import ToolSpec

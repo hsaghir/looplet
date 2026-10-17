@@ -367,6 +367,11 @@ agent version and host envelope.
 Pass `max_steps` to `resume_loop_state` when the host changes the total step cap.
 Earlier charged work still counts against that cap.
 
+Automatic checkpoints do not call `state.snapshot()` or save arbitrary application metadata.
+Configure both [application-state callbacks](operations.md#preserve-application-state)
+to persist application data and hook progress across restarts.
+Keep `state.steps` limited to the current iterator; recovery already restores its prior offset.
+
 In unreleased builds, automatic resume rejects unreadable or invalid checkpoints for the selected run.
 Preserve damaged files and reconcile possible effects before repairing recovery state.
 See the [recovery behavior and installation requirements](operations.md#checkpoints-and-cancellation).

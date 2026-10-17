@@ -34,6 +34,25 @@ def _quickstart_agent_source(guide: Path) -> str:
     return declarations + "\n\n" + blocks[1]
 
 
+def _interrupt_after_calls(backend, calls, async_driver, monkeypatch):
+    generate = backend.generate
+    if async_driver:
+
+        async def interrupt(*arguments, **keywords):
+            if backend.calls == calls:
+                raise KeyboardInterrupt("Synthetic interruption")
+            return await generate(*arguments, **keywords)
+
+    else:
+
+        def interrupt(*arguments, **keywords):
+            if backend.calls == calls:
+                raise KeyboardInterrupt("Synthetic interruption")
+            return generate(*arguments, **keywords)
+
+    monkeypatch.setattr(backend, "generate", interrupt)
+
+
 def test_documented_migration_adapter_matches_loop_protocol():
     guide = Path(__file__).resolve().parents[1] / "docs" / "migrate.md"
     blocks = _python_blocks(guide)
@@ -66,6 +85,97 @@ def test_documented_migration_adapter_matches_loop_protocol():
     assert final_step.tool_call.tool == "done"
     assert final_step.tool_result.error is None
     assert final_step.tool_result.data["summary"] == "The payments owner is fintech-platform."
+
+
+@pytest.mark.parametrize("async_driver", [False, True])
+@pytest.mark.parametrize("native", [False, True])
+async def test_documented_application_metadata_survives_resume(
+    tmp_path, monkeypatch, async_driver, native
+):
+    from looplet import (
+        AsyncMockLLMBackend,
+        DefaultState,
+        async_composable_loop,
+        tools_from,
+    )
+    from looplet.checkpoint import FileCheckpointStore
+
+    guide = Path(__file__).resolve().parents[1] / "docs" / "operations.md"
+    block = next(
+        block for block in _python_blocks(guide) if "def checkpoint_application_state(" in block
+    )
+    namespace = {"__name__": "documented_metadata_recovery"}
+    exec(compile(block, str(guide), "exec"), namespace)
+    config = namespace["config"]
+    config.checkpoint_dir = str(tmp_path)
+    config.max_steps = 2
+    config.use_native_tools = native
+    application = {"entities": ["customer-42"], "limits": {"allowed": [1, 2]}}
+    original = DefaultState(max_steps=2, metadata={"app": application})
+
+    def lookup() -> dict:
+        """Read one synthetic record."""
+        return {"observed": True}
+
+    tools = tools_from([lookup], include_done=True, validate=True)
+    backend_class = AsyncMockLLMBackend if async_driver else MockLLMBackend
+    backend = backend_class(['{"tool":"lookup","args":{}}'], cycle=False)
+    _interrupt_after_calls(backend, 1, async_driver, monkeypatch)
+
+    async def run(llm, state, hooks=()):
+        arguments = {"llm": llm, "tools": tools, "state": state, "config": config, "hooks": hooks}
+        if async_driver:
+            return [step async for step in async_composable_loop(**arguments)]
+        return list(composable_loop(**arguments))
+
+    with pytest.raises(KeyboardInterrupt, match="Synthetic interruption"):
+        await run(backend, original)
+    checkpoint = FileCheckpointStore(tmp_path).load_latest_for_resume()
+    assert checkpoint is not None and checkpoint.step_number == 1
+    assert checkpoint.domain_state == {"app": application}
+    recorded = json.loads(json.dumps(checkpoint.to_dict()))
+    observations = []
+
+    class ObserveRestore:
+        def pre_prompt(self, state, session_log, context, step_num):
+            observations.append(
+                (step_num, len(state.steps), state.budget_remaining, state.metadata["app"])
+            )
+
+    restored = DefaultState(max_steps=2, metadata={"host_marker": "retained"})
+    resumed_backend = backend_class(['{"tool":"done","args":{"summary":"Finished."}}'], cycle=False)
+    steps = await run(resumed_backend, restored, [ObserveRestore()])
+    assert RunResult.from_state(restored).completed
+    assert observations == [(2, 0, 1, application)]
+    assert [step.tool_call.tool for step in steps] == ["done"]
+    assert restored.metadata["host_marker"] == "retained"
+    assert restored.metadata["app"] == application
+    assert restored.budget_remaining == 0
+    assert restored.queries_used == 1
+    assert backend.calls == resumed_backend.calls == 1
+    assert checkpoint.to_dict() == recorded
+
+
+def test_documented_metadata_callbacks_copy_values_and_accept_legacy_snapshots():
+    from looplet import DefaultState
+
+    guide = Path(__file__).resolve().parents[1] / "docs" / "operations.md"
+    block = next(
+        block for block in _python_blocks(guide) if "def checkpoint_application_state(" in block
+    )
+    namespace = {"__name__": "documented_metadata_callbacks"}
+    exec(compile(block, str(guide), "exec"), namespace)
+    state = DefaultState(metadata={"app": {"entities": ["customer-42"]}, "run_status": "running"})
+    snapshot = namespace["checkpoint_application_state"](SimpleNamespace(state=state))
+    state.metadata["app"]["entities"].append("later")
+    assert snapshot == {"app": {"entities": ["customer-42"]}}
+    restored = DefaultState(metadata={"app": {"existing": True}, "host_marker": "retained"})
+    namespace["restore_application_state"](SimpleNamespace(state=restored), {})
+    assert restored.metadata["app"] == {"existing": True}
+    namespace["restore_application_state"](SimpleNamespace(state=restored), snapshot)
+    restored.metadata["app"]["entities"].append("new")
+    assert snapshot == {"app": {"entities": ["customer-42"]}}
+    assert restored.metadata["host_marker"] == "retained"
 
 
 @pytest.mark.parametrize("async_driver", [False, True])
@@ -195,6 +305,123 @@ async def test_documented_quality_gate_requires_successful_work(async_driver, na
         assert all(
             "successful non-completion" in step.tool_result.error for step in completion_steps
         )
+
+
+@pytest.mark.parametrize(
+    "test_name", ["test_quality_gate_rejects_early", "test_quality_gate_allows_enough"]
+)
+def test_documented_quality_gate_unit_examples(test_name):
+    guide = Path(__file__).resolve().parents[1] / "docs" / "hooks.md"
+    blocks = _python_blocks(guide)
+    namespace = {"__name__": "documented_gate_tests"}
+    for marker in ("class MinimumEvidenceGate:", "def test_quality_gate_rejects_early("):
+        block = next(block for block in blocks if marker in block)
+        exec(compile(block, str(guide), "exec"), namespace)
+    namespace[test_name]()
+
+
+@pytest.mark.parametrize("async_driver", [False, True])
+@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize("terminal", ["done", "finish"])
+@pytest.mark.parametrize("persist_metadata", [False, True])
+async def test_documented_quality_gate_restores_checkpointed_progress(
+    tmp_path, monkeypatch, async_driver, native, terminal, persist_metadata
+):
+    from copy import deepcopy
+
+    from looplet import (
+        AsyncMockLLMBackend,
+        DefaultState,
+        async_composable_loop,
+        tools_from,
+    )
+    from looplet.checkpoint import FileCheckpointStore
+
+    root = Path(__file__).resolve().parents[1]
+    namespace = {"__name__": "documented_gate_recovery"}
+    for guide_name, marker in (
+        ("operations.md", "def checkpoint_application_state("),
+        ("hooks.md", "class MinimumEvidenceGate:"),
+    ):
+        guide = root / "docs" / guide_name
+        block = next(block for block in _python_blocks(guide) if marker in block)
+        exec(compile(block, str(guide), "exec"), namespace)
+    config = namespace["config"]
+    config.checkpoint_dir = str(tmp_path)
+    config.use_native_tools = native
+    config.done_tool = terminal
+    if not persist_metadata:
+        config.checkpoint_state = None
+        config.restore_checkpoint_state = None
+    executed = []
+
+    def lookup() -> dict:
+        """Read one synthetic record."""
+        executed.append("lookup")
+        return {"observed": True}
+
+    tools = tools_from([lookup], include_done=True, done_name=terminal, validate=True)
+    backend_class = AsyncMockLLMBackend if async_driver else MockLLMBackend
+    backend = backend_class(['{"tool":"lookup","args":{}}'] * 3, cycle=False)
+    _interrupt_after_calls(backend, 3, async_driver, monkeypatch)
+    gate_class = namespace["MinimumEvidenceGate"]
+
+    async def run(llm, state, observers=()):
+        arguments = {
+            "llm": llm,
+            "tools": tools,
+            "state": state,
+            "config": config,
+            "hooks": [gate_class(done_tools=(terminal,)), *observers],
+        }
+        if async_driver:
+            return [step async for step in async_composable_loop(**arguments)]
+        return list(composable_loop(**arguments))
+
+    original = DefaultState(max_steps=4, metadata={"app": {"entities": ["customer-42"]}})
+    with pytest.raises(KeyboardInterrupt, match="Synthetic interruption"):
+        await run(backend, original)
+    checkpoint = FileCheckpointStore(tmp_path).load_latest_for_resume()
+    assert checkpoint is not None and checkpoint.step_number == 3
+    recorded = json.loads(json.dumps(checkpoint.to_dict()))
+    observations = []
+
+    class ObserveRestore:
+        def pre_prompt(self, state, session_log, context, step_num):
+            observations.append(
+                {
+                    "step_num": step_num,
+                    "steps": len(state.steps),
+                    "budget": state.budget_remaining,
+                    "session_entries": len(session_log.entries),
+                    "app": deepcopy(state.metadata.get("app", {})),
+                }
+            )
+
+    restored = DefaultState(max_steps=4)
+    resumed_backend = backend_class(
+        [json.dumps({"tool": terminal, "args": {"summary": "Finished."}})], cycle=False
+    )
+    steps = await run(resumed_backend, restored, [ObserveRestore()])
+    assert RunResult.from_state(restored).completed is persist_metadata
+    assert observations[0] == {
+        "step_num": 4,
+        "steps": 0,
+        "budget": 1,
+        "session_entries": 3,
+        "app": ({"entities": ["customer-42"], "successful_calls": 3} if persist_metadata else {}),
+    }
+    assert [step.number for step in steps] == [4]
+    assert [step.tool_call.tool for step in steps] == [terminal]
+    assert executed == ["lookup"] * 3
+    assert backend.calls == 3 and resumed_backend.calls == 1
+    assert restored.budget_remaining == 0 and restored.queries_used == 3
+    assert checkpoint.to_dict() == recorded
+    if persist_metadata:
+        assert steps[0].tool_result.error is None
+        assert restored.metadata["app"]["successful_calls"] == 3
+    else:
+        assert "successful non-completion" in steps[0].tool_result.error
 
 
 def test_documented_shell_replay_works_without_provider(tmp_path):

@@ -635,7 +635,7 @@ class TestComposableLoopHooks:
 
         steps = list(
             composable_loop(
-                MockLLMBackend(['{"tool":"done","args":{}}', '{"tool":"done","args":{}}']),
+                MockLLMBackend(['{"tool":"done","args":{"summary":"finished"}}'] * 2),
                 state=SimpleState(),
                 tools=_make_registry_with_done(),
                 hooks=[RejectOnce()],
@@ -644,6 +644,7 @@ class TestComposableLoopHooks:
         )
         assert [step.number for step in steps] == [1, 2]
         assert events == [1, 2]
+        assert steps[-1].tool_result.error is None
 
     @pytest.mark.parametrize("max_steps", [True, 1.5])
     def test_max_steps_must_be_positive_integer(self, max_steps):
@@ -865,7 +866,7 @@ class TestComposableLoopHooks:
         )
         response = (
             '{"tools": [{"tool": "search", "args": {}}, '
-            '{"tool": "done", "args": {}}, '
+            '{"tool": "done", "args": {"summary": "finished"}}, '
             '{"tool": "ignored", "args": {}}]}'
         )
 
@@ -880,6 +881,7 @@ class TestComposableLoopHooks:
 
         assert called == ["search"]
         assert [step.tool_call.tool for step in steps] == ["search", "done"]
+        assert steps[-1].tool_result.error is None
         ignored = steps[-1].metadata["turn"]["ignored_after_terminal"]
         assert ignored[0]["tool"] == "ignored"
 

@@ -1424,6 +1424,13 @@ async def _async_composable_loop_impl(
                         dispatch_mode=dispatch_mode,
                     ),
                 )
+                if (
+                    tool_spec
+                    and tool_spec.free
+                    and not was_intercepted
+                    and tool_result.error is None
+                ):
+                    step.metadata["budget_free"] = True
                 state.steps.append(step)
                 yield step
 
@@ -1660,6 +1667,20 @@ async def _async_composable_loop_impl(
                     emit_lifecycle=False,
                 )
                 tool_result = _pd_done.tool_result
+                done_data = tool_result.data if isinstance(tool_result.data, dict) else {}
+                rejected_done = tool_result.error is not None or (
+                    done_data.get("rejected") is True or done_data.get("status") == "rejected"
+                )
+                if rejected_done:
+                    reason = str(
+                        done_data.get("reason")
+                        or done_data.get("error")
+                        or tool_result.error
+                        or "Final answer was not accepted"
+                    )
+                    tool_result.data = {**done_data, "rejected": True, "reason": reason}
+                    tool_result.error = reason
+                    post_dispatch_parts.append(reason)
 
                 step = Step(
                     number=cur_step,
@@ -1677,6 +1698,9 @@ async def _async_composable_loop_impl(
                     highlights=[],
                     recall_key=tool_result.result_key or "",
                 )
+                if rejected_done:
+                    await _notify_post_step_async(hooks, state, session_log, cur_step)
+                    continue
                 _set_run_lifecycle(
                     loop_ctx,
                     status=RunStatus.COMPLETED,

@@ -318,6 +318,19 @@ It works in human and JSON modes, including the explicit cartridge and bundle co
 It checks completion, not correctness; use an outcome grader for that.
 The flag is included in Looplet `0.4.0`.
 
+Unreleased builds reject failed terminal dispatches, including invalid `done` arguments.
+Published `0.4.0` can falsely report those calls as completed, even with `--require-completed`.
+See the [unreleased safety fixes](install.md#unreleased-safety-fixes).
+
+Unreleased cartridge and generic bundle runners show the last recorded error when a run does not complete.
+Their JSON completion object adds a nullable `error` field with `step`, `tool`, and `message`.
+Messages are limited to 2,000 characters; full error evidence remains in the trace.
+The field excludes tool arguments and result payloads.
+It is `null` after accepted completion or when no error was recorded.
+Review error messages before sharing output; tool-authored text can contain sensitive data.
+Custom bundle `run()` callbacks still own their human presentation.
+JSON mode, strict completion, or explicit provider options select the generic bundle runner.
+
 `--project-root` (`--workspace`, `-w`) controls the directory available to
 project-aware tools. It
 defaults to `LOOPLET_PROJECT_ROOT`, the current Git repository, or the current

@@ -564,7 +564,7 @@ def _prepare_sub_loop(
     Parent flow-control methods do not run on child state.
     Caller-supplied state, tools, hooks, and resources remain caller-owned.
     """
-    from looplet import DefaultState
+    from looplet import DefaultState, register_done_tool
     from looplet.loop import LoopConfig
     from looplet.session import SessionLog
 
@@ -600,6 +600,9 @@ def _prepare_sub_loop(
     if sub_tools is None:
         exclude = state_mutating_tools or ["done"]
         sub_tools = clone_tools_excluding(tools, exclude)
+        terminal_name = config.done_tool if config is not None else "done"
+        if terminal_name not in sub_tools._tools:
+            register_done_tool(sub_tools, name=terminal_name)
     if policy is not None and policy.allowed_tools is not None:
         sub_tools = _restrict_tools(sub_tools, policy.allowed_tools)
 

@@ -80,12 +80,26 @@ def completion_payload(
     trace_dir: Path | None,
 ) -> dict[str, Any]:
     """The shared CLI completion view for cartridge and bundle runs."""
+    error = None
+    if not result.completed:
+        for step in reversed(result.steps):
+            message = step.tool_result.error
+            if message is None and isinstance(step.tool_result.data, dict):
+                message = step.tool_result.data.get("error")
+            if message:
+                error = {
+                    "step": step.number,
+                    "tool": step.tool_result.tool,
+                    "message": str(message)[:2000],
+                }
+                break
     return {
         "completed": result.completed,
         "termination_reason": result.termination_reason or "unknown",
         "steps": steps,
         "duration_ms": round(duration_ms, 2),
         "result": result.output,
+        "error": error,
         "trace_dir": str(trace_dir) if trace_dir is not None else None,
     }
 

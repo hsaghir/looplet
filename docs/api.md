@@ -64,6 +64,20 @@ The caller owns the tools, clients, and resources that it supplies.
 `RunResult.from_state(state)` returns accepted output, steps, and stop status.
 Completion does not prove that an answer is correct.
 
+Unreleased builds reject terminal calls whose dispatch fails.
+Invalid completion arguments do not produce accepted output.
+The agent can correct the call while budget remains.
+
+In unreleased builds, `DefaultState.max_steps` limits charged steps.
+A successful nonterminal `ToolSpec(free=True)` call does not reduce `budget_remaining`.
+Failed calls, intercepted calls, and terminal attempts still consume one step.
+`step_count` includes every recorded step, including free calls.
+Successful free steps record `metadata["budget_free"] = True`.
+Native batches remain capped by the available step count before execution.
+Custom states define their own budget accounting.
+Use cancellation or a deadline to bound runs that keep making successful free calls.
+See the [published-version differences](install.md#unreleased-safety-fixes).
+
 ## Optional preset conveniences
 
 `AgentPreset` holds `tools`, `state`, `config`, and `hooks`.
@@ -114,6 +128,10 @@ Use `run_sub_loop` for a child loop.
 Use `run_sub_loop_async` or `run_sub_loops_async` for async or bounded parallel children.
 They accept explicit backends, tools, state, hooks, and configuration.
 See [bounded delegation](host-integration.md#bounded-delegation) for parent controls, result fields, and recovery.
+
+Unreleased child loops install an isolated completion tool when cloning excludes the parent terminal.
+That tool accepts a `summary` and does not invoke the parent's terminal tool.
+Explicit `sub_tools` registries remain unchanged and must register their own terminal tool.
 
 | API | Use it for |
 | --- | --- |

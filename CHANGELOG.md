@@ -8,6 +8,11 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Sync and async loops reject failed terminal dispatches instead of reporting accepted completion.
+- Default child registries install an isolated completion tool when cloning excludes the parent terminal. Explicit child registries remain caller-owned.
+- `DefaultState` preserves budget for successful free tools while charging failures, intercepted calls, and terminal attempts.
+- Cartridge and generic bundle completion output includes bounded last-error details without tool arguments or result payloads.
+- The report tutorial asserts the full required assessment, including completion. Copied README and site examples use typed result access and pass Pyright.
 - Python eval starters use unique test filenames so multiple generated suites collect with default pytest imports.
 - `eval init --python` adds a test to existing case and grader definitions without importing or replacing them.
 - Cartridge eval commands validate selected case IDs before constructing agent or judge backends.

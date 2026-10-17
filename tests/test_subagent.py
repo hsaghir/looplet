@@ -429,12 +429,16 @@ class TestToolRegistryCloning:
                 tools=parent_registry,
                 state_mutating_tools=exclude,
             )
+        if "done" in parent_tools and "done" in (exclude or ["done"]):
+            child_terminal = mock_new_registry._tools["done"]
+            assert child_terminal.execute is not parent_registry._tools["done"].execute
+            assert set(child_terminal.parameters) == {"summary"}
         return registered
 
-    def test_done_tool_excluded_by_default(self):
-        """'done' tool is excluded from sub-agent registry by default."""
+    def test_parent_done_is_replaced_by_isolated_completion(self):
+        """The child gets its own completion tool, not the parent's terminal."""
         registered = self._run_and_get_cloned_registry(["search", "done", "analyze"])
-        assert "done" not in registered
+        assert registered.count("done") == 1
 
     def test_other_tools_included(self):
         """Non-excluded tools are copied to sub-registry."""
@@ -443,11 +447,11 @@ class TestToolRegistryCloning:
         assert "analyze" in registered
 
     def test_custom_exclusions(self):
-        """Custom state_mutating_tools are excluded."""
+        """Excluded parent tools stay out while isolated completion remains available."""
         registered = self._run_and_get_cloned_registry(
             ["search", "done", "write_file"], exclude=["done", "write_file"]
         )
-        assert "done" not in registered
+        assert registered.count("done") == 1
         assert "write_file" not in registered
         assert "search" in registered
 

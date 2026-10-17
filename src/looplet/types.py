@@ -762,8 +762,12 @@ class DefaultState:
 
     @property
     def budget_remaining(self) -> int:
-        """Return how many more steps the agent may take before the loop stops."""
-        return max(0, self.max_steps - len(self.steps))
+        """Return the remaining charged steps, excluding successful free tool calls."""
+        charged_steps = sum(
+            not (isinstance(step, Step) and step.metadata.get("budget_free") is True)
+            for step in self.steps
+        )
+        return max(0, self.max_steps - charged_steps)
 
     def context_summary(self) -> str:
         """Render recent step results into the LLM's context.

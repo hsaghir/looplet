@@ -765,15 +765,16 @@ def _run_bundle(
     finally:
         _close_validation_preset(validation)
     result = RunResult.from_state(preset.state)
+    payload = completion_payload(
+        result,
+        steps=n_steps,
+        duration_ms=(time.perf_counter() - started) * 1000,
+        trace_dir=effective_trace_dir,
+    )
     if json_output:
         print(
             json.dumps(
-                completion_payload(
-                    result,
-                    steps=n_steps,
-                    duration_ms=(time.perf_counter() - started) * 1000,
-                    trace_dir=effective_trace_dir,
-                ),
+                payload,
                 indent=2,
                 default=str,
             ),
@@ -785,6 +786,8 @@ def _run_bundle(
         if result.failed:
             status = f"failed ({reason})"
         print(f"\n  {status} - {n_steps} steps")
+        if payload["error"] is not None:
+            print(f"  error: {payload['error']['message']}")
         if effective_trace_dir is not None:
             print(f"  Trace: {effective_trace_dir}")
     return completion_exit_code(result, require_completed=require_completed)

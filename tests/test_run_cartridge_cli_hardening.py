@@ -238,6 +238,116 @@ def test_incomplete_run_requires_completion_only_when_requested(
         assert "done in" not in out
 
 
+@pytest.mark.parametrize("json_output", [False, True])
+@pytest.mark.parametrize("require_completed", [False, True])
+@pytest.mark.parametrize("tool_name", ["done", "missing_tool"])
+def test_failed_calls_report_their_error_without_false_completion(
+    tmp_path, monkeypatch, capsys, json_output, require_completed, tool_name
+):
+    cartridge = _custom_terminal_cartridge(tmp_path, name="done", return_expression="{}")
+    _patch_backend(monkeypatch, [json.dumps({"tool": tool_name, "args": {}})])
+    arguments = _args(cartridge, project_root=tmp_path, json_output=json_output)
+    arguments.require_completed = require_completed
+
+    assert factory_commands.cmd_run_workspace(arguments) == int(require_completed)
+
+    captured = capsys.readouterr()
+    expected = "missing required argument" if tool_name == "done" else "Unknown tool"
+    if json_output:
+        payload = json.loads(captured.out)
+        assert payload["completed"] is False
+        assert payload["termination_reason"] == "budget_exhausted"
+        assert payload["result"] is None
+        assert payload["error"]["step"] == 1
+        assert payload["error"]["tool"] == tool_name
+        assert expected in payload["error"]["message"]
+        assert not captured.err
+    else:
+        assert expected in captured.out
+        assert "stopped (budget_exhausted)" in captured.out
+        assert "done in" not in captured.out
+
+
+@pytest.mark.parametrize("json_output", [False, True])
+@pytest.mark.parametrize("require_completed", [False, True])
+@pytest.mark.parametrize("tool_name", ["done", "missing_tool"])
+def test_generic_bundle_failure_presentation_uses_shared_error(
+    tmp_path, capsys, json_output, require_completed, tool_name
+):
+    target = tmp_path / "bundle"
+    shutil.copytree(Path(__file__).parent / "fixtures" / "coder_skill_bundle", target)
+    arguments = [
+        "run",
+        str(target),
+        "finish",
+        "--project-root",
+        str(tmp_path),
+        "--no-trace",
+        "--no-tests",
+        "--max-steps",
+        "1",
+        "--model",
+        "scripted-model",
+        "--scripted-response",
+        json.dumps({"tool": tool_name, "args": {"invalid": "wrong field"}}),
+    ]
+    if json_output:
+        arguments.append("--json")
+    if require_completed:
+        arguments.append("--require-completed")
+
+    assert main(arguments) == int(require_completed)
+
+    output = capsys.readouterr()
+    expected = "unexpected argument" if tool_name == "done" else "Unknown tool"
+    if json_output:
+        payload = json.loads(output.out)
+        assert payload["completed"] is False
+        assert payload["result"] is None
+        assert payload["error"]["tool"] == tool_name
+        assert expected in payload["error"]["message"]
+    else:
+        assert "stopped (budget_exhausted)" in output.out
+        assert expected in output.out
+
+
+def test_recovered_completion_does_not_report_an_old_error(tmp_path, monkeypatch, capsys):
+    cartridge = _custom_terminal_cartridge(tmp_path, name="done", return_expression="{}")
+    _patch_backend(
+        monkeypatch,
+        [
+            json.dumps({"tool": "done", "args": {}}),
+            json.dumps({"tool": "done", "args": {"answer": "accepted"}}),
+        ],
+    )
+    arguments = _args(cartridge, project_root=tmp_path, max_steps=2)
+    arguments.require_completed = True
+    assert factory_commands.cmd_run_workspace(arguments) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["completed"] is True
+    assert payload["error"] is None
+
+
+def test_completion_error_is_bounded_and_excludes_tool_payloads():
+    from looplet import RunPhase, RunResult, RunStatus, Step, ToolCall, ToolResult
+    from looplet.cli import completion_payload
+
+    step = Step(
+        number=1,
+        tool_call=ToolCall(tool="done", args={"private": "not diagnostic output"}),
+        tool_result=ToolResult(
+            tool="done",
+            args_summary="private",
+            data={"private": "not diagnostic output"},
+            error="x" * 3000,
+        ),
+    )
+    result = RunResult(RunStatus.STOPPED, RunPhase.TERMINAL, "budget_exhausted", None, (step,))
+    payload = completion_payload(result, steps=1, duration_ms=0, trace_dir=None)
+    assert payload["error"] == {"step": 1, "tool": "done", "message": "x" * 2000}
+    assert "private" not in json.dumps(payload)
+
+
 @pytest.mark.parametrize("command", ["run", "run-cartridge", "run-workspace"])
 @pytest.mark.parametrize("completed", [False, True])
 def test_completion_requirement_is_available_on_all_cartridge_commands(
@@ -362,6 +472,7 @@ def test_runner_returns_nonzero_on_fatal_provider_error(
     assert payload["completed"] is False
     assert payload["termination_reason"] == "llm_error"
     assert payload["result"] is None
+    assert "provider unavailable" in payload["error"]["message"]
 
 
 def test_runner_reports_trace_failure_and_closes_preset(

@@ -548,15 +548,16 @@ def _run_cartridge(
     final_data = result.output
     if isinstance(final_data, dict):
         final_summary = str(final_data.get("summary", ""))
+    payload = completion_payload(
+        result,
+        steps=n_steps,
+        duration_ms=elapsed * 1000,
+        trace_dir=saved_trace_dir,
+    )
     if json_output:
         print(
             json.dumps(
-                completion_payload(
-                    result,
-                    steps=n_steps,
-                    duration_ms=elapsed * 1000,
-                    trace_dir=saved_trace_dir,
-                ),
+                payload,
                 indent=2,
                 default=str,
             ),
@@ -575,6 +576,8 @@ def _run_cartridge(
         status = _dim(f"· stopped ({termination_reason or 'unknown'})")
     print(f"{status} in {elapsed:.1f}s - {n_steps} steps")
     print()
+    if payload["error"] is not None:
+        print(_red(f"error: {payload['error']['message']}"))
     if final_summary:
         print(_bold("result:"))
         print(final_summary)

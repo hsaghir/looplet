@@ -135,7 +135,7 @@ def test_documented_summary_omits_private_evidence(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("document", ["README.md", "docs/index.md"])
-def test_documented_first_loop(document: str, monkeypatch) -> None:
+def test_documented_first_loop(document: str, tmp_path, monkeypatch) -> None:
     root = Path(__file__).resolve().parents[1]
     path = root / document
     blocks = _python_blocks(path)
@@ -168,6 +168,16 @@ def test_documented_first_loop(document: str, monkeypatch) -> None:
 
     first_loop = _python_blocks(root / "README.md")[0]
     assert ast.dump(ast.parse(blocks[0])) == ast.dump(ast.parse(first_loop))
+    script = tmp_path / "first_loop.py"
+    script.write_text(blocks[0])
+    typed = subprocess.run(
+        [sys.executable, "-m", "pyright", "--pythonpath", sys.executable, str(script)],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert typed.returncode == 0, typed.stdout + typed.stderr
 
 
 def test_quickstart_runs_grades_captures_and_replays(tmp_path: Path, monkeypatch) -> None:
@@ -489,7 +499,18 @@ def test_documented_checkpoint_reconciliation(tmp_path: Path, record_state: str)
         assert connection.execute("SELECT * FROM records").fetchall() == [("record-42", "verified")]
 
 
-def test_documented_report_contract(tmp_path: Path, monkeypatch) -> None:
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "none",
+        "incomplete",
+        "required-failed",
+        "required-skipped",
+        "required-error",
+        "missing-required",
+    ],
+)
+def test_documented_report_contract(tmp_path: Path, monkeypatch, fault: str) -> None:
     root = Path(__file__).resolve().parents[1]
     path = root / "docs/tutorial.md"
     blocks = re.findall(r'^```\w+ title="([^"]+)"\n(.*?)^```[ \t]*$', path.read_text(), re.M | re.S)
@@ -510,11 +531,62 @@ def test_documented_report_contract(tmp_path: Path, monkeypatch) -> None:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(code)
 
+    faulty_returns = {
+        "required-failed": "False",
+        "required-skipped": "None",
+        "required-error": "1 / 0",
+    }
+    if fault in faulty_returns:
+        grader_path = next((cartridge / "evals").glob("eval_*.py"))
+        module = ast.parse(grader_path.read_text())
+        grader = next(
+            node
+            for node in module.body
+            if isinstance(node, ast.FunctionDef) and node.name == "eval_completed"
+        )
+        grader.body = [ast.Return(value=ast.parse(faulty_returns[fault], mode="eval").body)]
+        grader_path.write_text(ast.unparse(ast.fix_missing_locations(module)) + "\n")
+
     monkeypatch.chdir(tmp_path)
     namespace = {"__name__": "__main__"}
     test_code = dict(blocks)["tests/test_report_agent.py"]
     exec(compile(test_code, str(path), "exec"), namespace)
-    namespace["test_report_contract"](tmp_path)
+    run_evals = namespace["run_cartridge_evals"]
+    observed = []
+
+    def observed_run(*args, **kwargs):
+        if fault == "incomplete":
+            kwargs["llm"] = MockLLMBackend(
+                [
+                    json.dumps({"tool": "publish_report", "args": {"revenue": 120, "cost": 80}}),
+                    json.dumps({"tool": "missing_completion_tool", "args": {}}),
+                ],
+                cycle=True,
+            )
+        records = run_evals(*args, **kwargs)
+        if fault == "missing-required":
+            records[0].results[:] = [
+                result for result in records[0].results if result.name != "eval_completed"
+            ]
+        observed.extend(records)
+        return records
+
+    namespace["run_cartridge_evals"] = observed_run
+    if fault == "none":
+        namespace["test_report_contract"](tmp_path)
+    else:
+        with pytest.raises(AssertionError, match="eval_completed"):
+            namespace["test_report_contract"](tmp_path)
+    assert observed[0].context.artifacts["observed_profit"] == 40
+    assert (
+        next(
+            result.score
+            for result in observed[0].results
+            if result.name == "eval_profit_is_correct"
+        )
+        == 1.0
+    )
+    assert observed[0].context.completed is (fault != "incomplete")
 
 
 class TestHelloWorldExample:

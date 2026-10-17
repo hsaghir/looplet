@@ -170,11 +170,14 @@ class MinimumEvidenceGate:
         self.min_tools = min_tools
         self.done_tools = done_tools
 
+    def post_step(self, state, session_log, step_num):
+        step = state.steps[-1]
+        if step.tool_result.error is None and step.tool_call.tool not in self.done_tools:
+            progress = state.metadata.setdefault("app", {})
+            progress["successful_calls"] = progress.get("successful_calls", 0) + 1
+
     def check_done(self, state, session_log, context, step_num):
-        successful_calls = sum(
-            step.tool_result.error is None and step.tool_call.tool not in self.done_tools
-            for step in state.steps
-        )
+        successful_calls = state.metadata.get("app", {}).get("successful_calls", 0)
         if successful_calls < self.min_tools:
             return (
                 f"Insufficient evidence: only {successful_calls} successful non-completion calls. "
@@ -184,6 +187,15 @@ class MinimumEvidenceGate:
 ```
 
 List every completion tool in `done_tools` when using custom completion names.
+`post_step` records progress before the committed checkpoint is saved.
+It excludes failed calls and completion attempts, including rejected completions.
+Use one gate per task and configure both
+[application-state callbacks](operations.md#preserve-application-state)
+to preserve this counter across restarts.
+`checkpoint_dir` alone does not save application metadata.
+After recovery, `state.steps` contains only the current iterator's steps;
+do not reload old steps to reconstruct the counter.
+
 This example counts successful calls; it does not judge evidence quality.
 Use a collector and grader to check the task's outputs.
 
@@ -374,19 +386,41 @@ async host.
 
 Hooks are plain Python classes - test them in isolation:
 
+Reuse `MinimumEvidenceGate` from above.
+Record each successful step and notify `post_step` before checking completion.
+
 ```python
+from looplet import DefaultState
+from looplet.types import Step, ToolCall, ToolResult
+
+
+def record_successful_work(hook, count):
+    state = DefaultState(max_steps=count + 1)
+    for number in range(1, count + 1):
+        state.steps.append(
+            Step(
+                number=number,
+                tool_call=ToolCall(tool="lookup"),
+                tool_result=ToolResult(tool="lookup", args_summary="", data={"observed": True}),
+            )
+        )
+        hook.post_step(state, None, number)
+    return state
+
+
 def test_quality_gate_rejects_early():
     hook = MinimumEvidenceGate(min_tools=3)
-    state = MockState(steps=[1, 2])  # only 2 steps
+    state = record_successful_work(hook, 2)
     result = hook.check_done(state, None, None, 2)
-    assert result is not None  # should reject
+    assert result is not None
     assert "Insufficient" in result
+
 
 def test_quality_gate_allows_enough():
     hook = MinimumEvidenceGate(min_tools=3)
-    state = MockState(steps=[1, 2, 3])  # enough
+    state = record_successful_work(hook, 3)
     result = hook.check_done(state, None, None, 3)
-    assert result is None  # should allow
+    assert result is None
 ```
 
 ---

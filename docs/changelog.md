@@ -8,10 +8,12 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Documented application-state checkpoint and restore callbacks with nested-copy and legacy-snapshot tests.
 - `looplet --version` prints the installed package version without a command or backend.
 
 ### Changed
 
+- The quality-gate example checkpoints its successful-call counter across resumes, and its copied unit tests use real steps.
 - `DefaultState` restores charged-step budgets across checkpoint resumes, including free-call accounting. Explicit cap changes retain prior charged work.
 - Automatic resume rejects corrupt or unreadable checkpoints before model or tool calls. Checkpoints namespaced to other runs remain isolated.
 - The hook-sharing guide uses persistent metadata across turns and tests the copied example.

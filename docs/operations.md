@@ -307,6 +307,52 @@ This prevents a blind retry that could duplicate an external effect.
 Inspect the external system before resolving the record.
 See the [worked recovery example](host-integration.md#reconcile-an-interrupted-tool).
 
+### Preserve application state
+
+Automatic checkpoints save conversation history, session entries, tool-result storage, and budget counters.
+They do not call `state.snapshot()` or save arbitrary `state.metadata` by default.
+Provide both callbacks when application state must survive a restart.
+
+Keep application-owned JSON-safe data under `state.metadata["app"]`.
+This namespace separates application data from lifecycle fields that Looplet owns.
+
+```python
+from copy import deepcopy
+
+from looplet import DefaultState, LoopConfig
+
+
+def checkpoint_application_state(loop_ctx):
+    return {"app": deepcopy(loop_ctx.state.metadata.get("app", {}))}
+
+
+def restore_application_state(loop_ctx, saved):
+    if "app" in saved:
+        loop_ctx.state.metadata["app"] = deepcopy(saved["app"])
+
+
+state = DefaultState(max_steps=4, metadata={"app": {"entities": ["customer-42"]}})
+config = LoopConfig(
+    max_steps=4,
+    checkpoint_dir=".looplet/checkpoints/task-42",
+    checkpoint_state=checkpoint_application_state,
+    restore_checkpoint_state=restore_application_state,
+)
+```
+
+Pass `state` and `config` to either loop.
+Recreate this configuration with fresh state when restarting.
+The callbacks copy nested values and leave other host metadata unchanged.
+Older checkpoints without `app` leave existing application metadata unchanged.
+Extend this namespace for hook progress or other application data.
+
+Do not repopulate `state.steps`.
+Recovery already supplies the prior step offset.
+Adding old steps can count that offset twice.
+Checkpoint files contain application data; apply the same privacy controls as traces.
+
+### Cancellation
+
 Cancellation is cooperative:
 
 ```python

@@ -7,7 +7,7 @@ from typing import Annotated, Any, Literal, Union
 
 import pytest
 
-from looplet import ToolContext, ToolSpec, tool, tools_from
+from looplet import ToolContext, ToolSpec, minimal_preset, tool, tools_from
 from looplet.types import ToolCall
 
 pytestmark = pytest.mark.smoke
@@ -65,6 +65,103 @@ class TestToolDecorator:
         assert result.data == {"value": 3}
         shout_result = registry.dispatch(ToolCall(tool="shout", args={"text": "hi"}))
         assert shout_result.data == {"text": "HI"}
+
+    @pytest.mark.parametrize("entrypoint", ["tool", "registry", "preset"])
+    @pytest.mark.parametrize(
+        "kind", ["args", "kwargs", "ctx_args", "ctx_kwargs", "partial", "instance"]
+    )
+    def test_variadic_signatures_fail_during_inference(self, entrypoint, kind):
+        effects = []
+
+        def collect_args(*values: int) -> dict:
+            effects.append(values)
+            return {"values": list(values)}
+
+        def collect_kwargs(**filters: str) -> dict:
+            effects.append(filters)
+            return filters
+
+        def collect_ctx_args(*ctx: ToolContext) -> dict:
+            effects.append(ctx)
+            return {}
+
+        def collect_ctx_kwargs(**ctx: ToolContext) -> dict:
+            effects.append(ctx)
+            return {}
+
+        class VariadicLookup:
+            def __call__(self, **filters: str) -> dict:
+                return collect_kwargs(**filters)
+
+        candidates = {
+            "args": (collect_args, "values"),
+            "kwargs": (collect_kwargs, "filters"),
+            "ctx_args": (collect_ctx_args, "ctx"),
+            "ctx_kwargs": (collect_ctx_kwargs, "ctx"),
+            "partial": (partial(collect_args, 1), "values"),
+            "instance": (VariadicLookup(), "filters"),
+        }
+        candidate, parameter = candidates[kind]
+        with pytest.raises(TypeError, match="variadic parameter") as raised:
+            if entrypoint == "tool":
+                tool(candidate)
+            elif entrypoint == "registry":
+                tools_from([candidate], validate=True)
+            else:
+                with minimal_preset(tools=[candidate], validate=True):
+                    pass
+        assert repr(parameter) in str(raised.value)
+        assert "wrapper" in str(raised.value)
+        assert effects == []
+
+    @pytest.mark.parametrize("async_dispatch", [False, True])
+    async def test_variadic_functions_work_with_explicit_wrappers(self, async_dispatch):
+        def collect_args(*values: int) -> dict:
+            return {"total": sum(values)}
+
+        def collect_kwargs(**filters: str) -> dict:
+            return filters
+
+        def sum_values(values: list[int]) -> dict:
+            return collect_args(*values)
+
+        def filter_service(filters: dict) -> dict:
+            return collect_kwargs(**filters)
+
+        registry = tools_from([sum_values, filter_service], validate=True)
+        for call, expected in (
+            (ToolCall(tool="sum_values", args={"values": [1, 2]}), {"total": 3}),
+            (
+                ToolCall(tool="filter_service", args={"filters": {"region": "us-east"}}),
+                {"region": "us-east"},
+            ),
+        ):
+            result = (
+                await registry.async_dispatch(call) if async_dispatch else registry.dispatch(call)
+            )
+            assert result.error is None
+            assert result.data == expected
+
+    @pytest.mark.parametrize("async_dispatch", [False, True])
+    async def test_variadic_kwargs_remain_supported_with_an_explicit_schema(self, async_dispatch):
+        def filter_service(query: str, **filters: str) -> dict:
+            return {"query": query, "filters": filters}
+
+        spec = ToolSpec(
+            name="filter_service",
+            description="Find services in a region.",
+            parameters={
+                "type": "object",
+                "properties": {"query": {"type": "string"}, "region": {"type": "string"}},
+                "required": ["query", "region"],
+            },
+            execute=filter_service,
+        )
+        registry = tools_from([spec], validate=True)
+        call = ToolCall(tool="filter_service", args={"query": "payments", "region": "us-east"})
+        result = await registry.async_dispatch(call) if async_dispatch else registry.dispatch(call)
+        assert result.error is None
+        assert result.data == {"query": "payments", "filters": {"region": "us-east"}}
 
     @pytest.mark.parametrize("async_dispatch", [False, True])
     @pytest.mark.parametrize("kind", ["partial", "nested_partial", "instance", "partial_instance"])

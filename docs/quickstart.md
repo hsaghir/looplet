@@ -97,6 +97,51 @@ Reuse the function for repeated or concurrent tasks, not the instance inside it.
 Nested schemas and other constraints remain tool-owned.
 The base registry retains its lighter argument-name checks when this option is omitted.
 
+## Use the same agent with a real model
+
+This step is optional.
+The remaining sections keep using the fixed-response backend.
+
+Keep `first_loop.py` unchanged and add the adapter from the same source build:
+
+```bash
+python -m pip install "looplet[openai] @ https://github.com/hsaghir/looplet/archive/refs/heads/master.zip"
+export OPENAI_API_KEY=...
+export OPENAI_MODEL=gpt-4o
+```
+
+Use the same full commit hash here if you pinned the earlier install.
+Adding a provider extra should not replace the source build with published `0.4.0`.
+
+Put this in a separate `first_loop_live.py` file:
+
+```python title="first_loop_live.py"
+from looplet import OpenAIBackend
+
+from first_loop import run_agent
+
+
+if __name__ == "__main__":
+    result = run_agent(OpenAIBackend.from_env(), use_native_tools=True, max_steps=8)
+    print(result.output)
+    print(result.completed, result.termination_reason)
+    if not result.completed:
+        raise SystemExit(f"Agent stopped before completion: {result.termination_reason}")
+```
+
+```bash
+python first_loop_live.py
+```
+
+This makes real provider calls and may incur charges.
+It uses the same tools and fresh-run factory, with native tool calls enabled explicitly.
+The live example allows up to eight tool calls, including completion.
+Adjust `max_steps` for your task; budget exhaustion means the run did not finish.
+For Anthropic, install the `anthropic` extra from the same source revision.
+Replace `OpenAIBackend` with `AnthropicBackend`.
+Configure its key as described in [Install](install.md#configure-anthropic).
+Use `use_native_tools=False` only when you intentionally select JSON-text responses.
+
 ## 3. Check the answer
 
 Completion does not prove correctness.
@@ -363,48 +408,6 @@ Use a [hook](hooks.md) to approve or reject a call before the tool runs.
 Close resources that your code creates, such as database clients.
 For async code, use `async_composable_loop()` with `contextlib.aclosing`.
 See the [Python API](api.md#execution-core) for that form.
-
-## Use the same agent with a real model
-
-Keep `first_loop.py` unchanged and add the adapter from the same source build:
-
-```bash
-python -m pip install "looplet[openai] @ https://github.com/hsaghir/looplet/archive/refs/heads/master.zip"
-export OPENAI_API_KEY=...
-export OPENAI_MODEL=gpt-4o
-```
-
-Use the same full commit hash here if you pinned the earlier install.
-Adding a provider extra should not replace the source build with published `0.4.0`.
-
-Put this in a separate `first_loop_live.py` file:
-
-```python title="first_loop_live.py"
-from looplet import OpenAIBackend
-
-from first_loop import run_agent
-
-
-if __name__ == "__main__":
-    result = run_agent(OpenAIBackend.from_env(), use_native_tools=True, max_steps=8)
-    print(result.output)
-    print(result.completed, result.termination_reason)
-    if not result.completed:
-        raise SystemExit(f"Agent stopped before completion: {result.termination_reason}")
-```
-
-```bash
-python first_loop_live.py
-```
-
-This makes real provider calls and may incur charges.
-It uses the same tools and fresh-run factory, with native tool calls enabled explicitly.
-The live example allows up to eight tool calls, including completion.
-Adjust `max_steps` for your task; budget exhaustion means the run did not finish.
-For Anthropic, install the `anthropic` extra from the same source revision.
-Replace `OpenAIBackend` with `AnthropicBackend`.
-Configure its key as described in [Install](install.md#configure-anthropic).
-Use `use_native_tools=False` only when you intentionally select JSON-text responses.
 
 ## Choose the next guide
 

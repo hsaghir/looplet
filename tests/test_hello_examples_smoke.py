@@ -114,12 +114,19 @@ def _python_blocks(path: Path) -> list[str]:
     return re.findall(r"^```python[^\n]*\n(.*?)^```[ \t]*$", path.read_text(), re.M | re.S)
 
 
+def _named_python_blocks(path: Path) -> dict[str, str]:
+    return dict(
+        re.findall(r'^```python title="([^"]+)"\n(.*?)^```[ \t]*$', path.read_text(), re.M | re.S)
+    )
+
+
 def _quickstart_agent_source(guide: Path) -> str:
-    blocks = _python_blocks(guide)
-    main = ast.parse(blocks[0]).body[-1]
+    first_loop = _named_python_blocks(guide)["first_loop.py"]
+    main = ast.parse(first_loop).body[-1]
     assert isinstance(main, ast.If)
-    declarations = "".join(blocks[0].splitlines(keepends=True)[: main.lineno - 1])
-    return declarations + "\n\n" + blocks[1]
+    declarations = "".join(first_loop.splitlines(keepends=True)[: main.lineno - 1])
+    grading = next(block for block in _python_blocks(guide) if "def assess_result(" in block)
+    return declarations + "\n\n" + grading
 
 
 def _interrupt_after_calls(backend, calls, async_driver, monkeypatch):
@@ -662,6 +669,50 @@ def test_documented_first_loop(document: str, tmp_path, monkeypatch) -> None:
     assert typed.returncode == 0, typed.stdout + typed.stderr
 
 
+@pytest.mark.parametrize(("observed", "passed"), [("hello\n", True), ("wrong\n", False)])
+async def test_documented_async_host_collection_grades_observed_artifacts(
+    tmp_path, observed, passed
+):
+    guide = Path(__file__).resolve().parents[1] / "docs" / "evals.md"
+    block = next(block for block in _python_blocks(guide) if "async def assess_report" in block)
+    namespace = {"__name__": "async_host_example"}
+    exec(compile(block, str(guide), "exec"), namespace)
+    report_path = tmp_path / "result.txt"
+    report_path.write_text(observed, encoding="utf-8")
+
+    report = await namespace["assess_report"](report_path, "hello\n")
+
+    assert report.valid
+    assert report.passed is passed
+
+
+def test_quickstart_real_model_handoff_precedes_advanced_workflows(tmp_path, monkeypatch):
+    guide = Path(__file__).resolve().parents[1] / "docs" / "quickstart.md"
+    text = guide.read_text()
+    first_run = text.index("## 2. Run the agent and get its answer")
+    live = text.index("## Use the same agent with a real model")
+    grading = text.index("## 3. Check the answer")
+    capture = text.index("## 4. Capture the same agent")
+    assert first_run < live < grading < capture
+    assert "This step is optional." in text[live:grading]
+    examples = _named_python_blocks(guide)
+    module = ModuleType("first_loop")
+    monkeypatch.setitem(sys.modules, "first_loop", module)
+    monkeypatch.chdir(tmp_path)
+    exec(compile(examples["first_loop.py"], str(guide), "exec"), module.__dict__)
+    assert not hasattr(module, "assess_result")
+    backend = module.scripted_backend()
+    from_env = Mock(return_value=backend)
+    monkeypatch.setattr("looplet.OpenAIBackend.from_env", from_env)
+    namespace = {"__name__": "__main__"}
+
+    exec(compile(examples["first_loop_live.py"], str(guide), "exec"), namespace)
+
+    from_env.assert_called_once_with()
+    assert namespace["result"].completed
+    assert backend.calls == 2
+
+
 def test_quickstart_scripted_backend_rejects_extra_model_calls() -> None:
     from looplet.testing import LLMResponsesExhausted
 
@@ -677,8 +728,8 @@ def test_quickstart_scripted_backend_rejects_extra_model_calls() -> None:
 
 def test_quickstart_runs_grades_captures_and_replays(tmp_path: Path, monkeypatch) -> None:
     guide = Path(__file__).resolve().parents[1] / "docs" / "quickstart.md"
-    blocks = _python_blocks(guide)
-    assert blocks
+    examples = _named_python_blocks(guide)
+    assert examples
     from_env = Mock()
     monkeypatch.setattr("looplet.OpenAIBackend.from_env", from_env)
     module = ModuleType("first_loop")
@@ -686,7 +737,7 @@ def test_quickstart_runs_grades_captures_and_replays(tmp_path: Path, monkeypatch
     monkeypatch.chdir(tmp_path)
     exec(compile(_quickstart_agent_source(guide), str(guide), "exec"), module.__dict__)
     tests = {}
-    exec(compile(blocks[2], str(guide), "exec"), tests)
+    exec(compile(examples["test_first_loop.py"], str(guide), "exec"), tests)
 
     assert not hasattr(module, "result")
     assert not (tmp_path / "traces").exists()
@@ -702,7 +753,7 @@ def test_quickstart_runs_grades_captures_and_replays(tmp_path: Path, monkeypatch
     from_env.return_value = native_backend
     observed_agent = Mock(wraps=module.run_agent)
     monkeypatch.setattr(module, "run_agent", observed_agent)
-    capture_block = next(block for block in blocks if "def capture_agent" in block)
+    capture_block = examples["first_loop_capture.py"]
     imported_capture = {"__name__": "first_loop_capture"}
     exec(compile(capture_block, str(guide), "exec"), imported_capture)
     observed_agent.assert_not_called()
@@ -716,22 +767,22 @@ def test_quickstart_runs_grades_captures_and_replays(tmp_path: Path, monkeypatch
     assert len(list(tmp_path.rglob("trajectory.json"))) == 1
     monkeypatch.setattr(sys, "argv", ["first_loop_rescore.py", str(trace_dir)])
     rescored = {"__name__": "__main__"}
-    exec(compile(blocks[4], str(guide), "exec"), rescored)
+    exec(compile(examples["first_loop_rescore.py"], str(guide), "exec"), rescored)
     assert rescored["saved_report"].passed
     replayed = {"__name__": "__main__"}
     monkeypatch.setattr(sys, "argv", ["first_loop_replay.py", str(trace_dir)])
-    exec(compile(blocks[5], str(guide), "exec"), replayed)
+    exec(compile(examples["first_loop_replay.py"], str(guide), "exec"), replayed)
     assert captured["captured_result"].output == replayed["replayed_result"].output
     assert observed_agent.call_count == 1
 
     stopped = {"__name__": "__main__"}
-    exec(compile(blocks[6], str(guide), "exec"), stopped)
+    exec(compile(examples["first_loop_stop.py"], str(guide), "exec"), stopped)
     assert stopped["state"].termination_reason == "stream_closed"
     assert stopped["backend"].calls == 1
     assert [step.tool_call.tool for step in stopped["state"].steps] == ["lookup_owner"]
     assert not RunResult.from_state(stopped["state"]).completed
     live = {"__name__": "__main__"}
-    exec(compile(blocks[7], str(guide), "exec"), live)
+    exec(compile(examples["first_loop_live.py"], str(guide), "exec"), live)
     assert observed_agent.call_count == 2
     from_env.assert_called_once_with()
     native_backend.generate.assert_not_called()
@@ -814,9 +865,9 @@ def test_quickstart_run_budget_is_configurable(max_steps, completed):
 
 def test_quickstart_python_test_and_definition_commands(tmp_path: Path) -> None:
     guide = Path(__file__).resolve().parents[1] / "docs" / "quickstart.md"
-    blocks = _python_blocks(guide)
+    examples = _named_python_blocks(guide)
     (tmp_path / "first_loop.py").write_text(_quickstart_agent_source(guide))
-    (tmp_path / "test_first_loop.py").write_text(blocks[2])
+    (tmp_path / "test_first_loop.py").write_text(examples["test_first_loop.py"])
     tested = subprocess.run(
         [sys.executable, "-m", "pytest", "test_first_loop.py", "-q"],
         cwd=tmp_path,
@@ -838,9 +889,6 @@ def test_quickstart_python_test_and_definition_commands(tmp_path: Path) -> None:
     assert report["valid"]
     assert [grader["name"] for grader in report["graders"]] == ["eval_owner"]
 
-    examples = dict(
-        re.findall(r'^```python title="([^"]+)"\n(.*?)^```[ \t]*$', guide.read_text(), re.M | re.S)
-    )
     examples["first_loop.py"] = _quickstart_agent_source(guide)
     examples["first_loop.py"] += (
         "\nreused_tools = [lookup_owner, done]\n"

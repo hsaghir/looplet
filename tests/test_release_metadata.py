@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import tomllib
 from datetime import date
 from pathlib import Path
@@ -49,7 +50,7 @@ def test_published_install_guidance_is_separate_from_source_version() -> None:
     assert f"## [{version}]" in (ROOT / "CHANGELOG.md").read_text()
 
 
-def test_tutorial_installs_use_the_current_published_version() -> None:
+def test_optional_published_installs_use_the_current_published_version() -> None:
     readme = (ROOT / "README.md").read_text()
     published = re.search(r"latest PyPI release is `(\d+\.\d+\.\d+)`", readme)
     assert published is not None
@@ -59,22 +60,38 @@ def test_tutorial_installs_use_the_current_published_version() -> None:
         references = re.findall(
             r'python -m pip install "looplet(?:\[[a-z,]+\])?==([0-9.]+)"', content
         )
-        assert references, f"Missing published tutorial install in {document}"
-        assert set(references) == {version}
+        if document == "docs/install.md":
+            assert references, "Keep an explicit published-version fallback"
+        assert set(references) <= {version}
         assert "git+https://github.com/hsaghir/looplet" not in content
 
 
 def test_current_cli_uses_the_same_install_as_the_python_tutorial() -> None:
     cli = (ROOT / "docs" / "cli.md").read_text()
     install = (ROOT / "docs" / "install.md").read_text()
-    assert "install.md#install-the-published-package" in cli
+    assert "install.md#install-the-current-build" in cli
     assert "shared pinned source install" not in cli
     assert "source additions" not in cli
     assert "older pinned Quickstart snapshot" not in cli
     assert 'pip install -e ".[openai]"' not in cli
     published = install.split("## Install the published package\n", 1)[1].split("\n## ", 1)[0]
     assert "git clone" not in published
+    assert install.index("## Install the current build") < install.index(
+        "## Install the published package"
+    )
     assert install.index("## Install the published package") < install.index("## Develop Looplet")
+
+
+def test_release_qualification_uses_declared_source_version() -> None:
+    version = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["version"]
+    install = (ROOT / "docs" / "install.md").read_text()
+    preparation = install.split("## Prepare a package release\n", 1)[1]
+    command = next(line for line in preparation.splitlines() if line.startswith("gh workflow run "))
+    arguments = shlex.split(command)
+    assert arguments[:4] == ["gh", "workflow", "run", "publish.yml"]
+    assert arguments[arguments.index("--ref") + 1] == "master"
+    assert arguments[-2:] == ["-f", f"version={version}"]
+    assert "does not publish to PyPI" in preparation
 
 
 def test_unreleased_safety_fixes_are_explicitly_scoped() -> None:

@@ -8,19 +8,21 @@ Cartridges and bundles are optional packaging formats, not prerequisites.
 
 ## 1. Install Looplet
 
-Install the published package in your own project.
-It contains the APIs used below and does not require Git or a repository checkout.
+Install the current source build in your own project.
+It includes the fixes used below and does not require Git or a repository checkout.
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-python -m pip install "looplet==0.4.0"
+python -m pip install "looplet @ https://github.com/hsaghir/looplet/archive/refs/heads/master.zip"
 ```
 
 The core package has no third-party runtime dependencies.
 The install needs network access; the fixed-response runs do not.
+This is a non-editable development build, `0.4.1.dev0`, not a published patch release.
+The archive follows `master`; pin an approved full commit hash for deployment.
 On Windows, activate `.venv\Scripts\Activate.ps1` in PowerShell.
-See [Install](install.md) for virtual environments and model providers.
+See [Install](install.md) for the published fallback, safety differences, and model providers.
 
 ## 2. Run the agent and get its answer
 

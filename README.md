@@ -30,18 +30,19 @@ It does not require a workflow graph, a hosted service, or a cartridge.
 
 ## Run one loop
 
-Install the published package for the Python examples and CLI commands in these guides.
-No local repository checkout is needed.
+Install the current source build for the examples and fixes in these guides.
+No Git installation or local repository checkout is needed.
 
 ```bash
-python -m pip install "looplet==0.4.0"
+python -m pip install "looplet @ https://github.com/hsaghir/looplet/archive/refs/heads/master.zip"
 ```
 
 Run this inside a virtual environment; see [Install](docs/install.md).
-Installation needs network access, but not Git.
+This installs a non-editable package and needs network access.
 
-Source builds identify as `0.4.1.dev0`, not published `0.4.0`.
-See [unreleased safety fixes](docs/install.md#unreleased-safety-fixes) before choosing a build.
+Source builds identify as `0.4.1.dev0`; this is not a published patch release.
+PyPI `0.4.0` lacks the [later safety fixes](docs/install.md#unreleased-safety-fixes).
+The archive follows `master`; pin an approved full commit hash for deployment.
 
 The example uses fixed model responses.
 It runs without a model service or an API key.
@@ -210,7 +211,7 @@ looplet>=0.4,<0.5
 ```
 
 The latest PyPI release is `0.4.0`.
-It includes the examples and APIs in this guide.
+The recommended source build includes later fixes that are not yet on PyPI.
 See the [changelog](CHANGELOG.md) and [release plan](ROADMAP.md#path-to-10).
 
 ## Contributing

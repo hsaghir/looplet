@@ -13,6 +13,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Public sync and async loop help documents parameters, budget overrides, and iterator cleanup.
+- Introductory guides recommend a non-editable current-source install while the patch remains unpublished.
+- The CLI guide compares format support before packaging and uses strict completion in primary run examples.
 - The quality-gate example checkpoints its successful-call counter across resumes, and its copied unit tests use real steps.
 - `DefaultState` restores charged-step budgets across checkpoint resumes, including free-call accounting. Explicit cap changes retain prior charged work.
 - Automatic resume rejects corrupt or unreadable checkpoints before model or tool calls. Checkpoints namespaced to other runs remain isolated.

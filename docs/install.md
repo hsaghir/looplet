@@ -20,9 +20,26 @@ Installation needs network access, but not Git.
 The fixed-response tutorial itself needs neither a model key nor a model service.
 This one install includes result helpers, typed-validation options, capture safeguards, and the unified CLI commands.
 
+## Unreleased Safety Fixes
+
+The published `0.4.0` package does not include later fixes on `master`.
+These differences matter when stopping native calls or sharing captured evidence:
+
+| Behavior | Published `0.4.0` | Unreleased builds |
+| --- | --- | --- |
+| Serial native batches | A batch may execute before its first yielded `Step`. | Each serial call runs before its own step; stopping prevents later calls. |
+| Native response redaction | `redact=` does not scrub native response blocks. | `redact=` scrubs nested string values and keys. |
+| Python replay defaults | Uses model-call count as the budget and an empty task. | Uses saved tool steps and task when omitted. |
+
+Do not treat published `0.4.0` native captures as redacted.
+Keep them private and review evidence before sharing it.
+An unreleased source build provides these fixes without changing the published wheel.
+Follow [Develop Looplet](#develop-looplet) when you need that build.
+Explicit concurrent dispatch still runs a batch before yielding its results.
+
 ## Develop Looplet
 
-Clone the repository only when you want to change Looplet itself.
+Clone the repository to change Looplet itself or use an unreleased fix.
 Run these commands in a directory where you want the repository:
 
 ```bash
@@ -63,7 +80,7 @@ dependencies = ["looplet>=0.4,<0.5"]
 
 Before version `1.0`, a minor release can change an API incompatibly.
 Read the [changelog](changelog.md) before you change the minor version.
-The examples and CLI options in these guides are included in this release.
+Examples and options marked unreleased require a source checkout.
 
 ## Verify without a provider
 

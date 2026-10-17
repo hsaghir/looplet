@@ -21,6 +21,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - Native response captures apply configured redaction to nested strings without changing live tool arguments.
 - Python replay uses recorded tool-step budgets and counts native batches in call-only captures.
 - Python replay restores saved task data by default. Explicit tasks, including `{}`, and config budgets remain authoritative.
+- Serial native batches check permissions, dispatch tools, record steps, and yield one call at a time.
+- Serial runs honor cancellation, deadlines, and hook stops before the next call in a batch.
+- Installation and capture guides distinguish published `0.4.0` from unreleased safety fixes.
 
 ## [0.4.0] - 2026-10-16
 

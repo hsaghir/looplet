@@ -1261,106 +1261,113 @@ async def _async_composable_loop_impl(
         regular_calls = tool_calls[:done_idx] if done_idx is not None else tool_calls
         if regular_calls:
             _set_run_lifecycle(loop_ctx, phase=RunPhase.DISPATCHING)
-            _intercept = await _intercept_tool_calls_async(
-                regular_calls,
-                hooks,
-                state,
-                session_log,
-                context,
-                step_num,
-            )
-            intercepted_results = _intercept.intercepted
-            post_dispatch_parts.extend(_intercept.extra_context)
 
-            dispatch_items = [
-                (i, tc) for i, tc in enumerate(regular_calls) if i not in intercepted_results
-            ]
-            calls_to_dispatch = [tc for _, tc in dispatch_items]
-
-            if calls_to_dispatch:
-                if _ckpt_store is not None:
-                    _save_pending_dispatch(
-                        _ckpt_store,
-                        calls=regular_calls,
-                        dispatching=calls_to_dispatch,
-                        step_number=step_num + len(regular_calls) - 1,
-                        session_log=session_log,
-                        conversation_data=_conv.serialize(),
-                        config_snapshot={
-                            "max_steps": config.max_steps,
-                            "queries_used": getattr(state, "queries_used", 0),
-                            "budget_remaining": getattr(state, "budget_remaining", 0),
-                        },
-                        tool_results_store=tools.snapshot_results(),
-                        domain_state=(
-                            checkpoint_state(loop_ctx) if checkpoint_state is not None else {}
-                        ),
-                        run_envelope=(
-                            loop_ctx.run_envelope.to_dict()
-                            if loop_ctx.run_envelope is not None
-                            else None
-                        ),
-                        metadata={"task": str(task), **_policy_checkpoint_metadata(state)},
-                        run_status=loop_ctx.status.value,
-                        run_phase=loop_ctx.phase.value,
+            async def _dispatch_regular_calls():
+                groups = (
+                    [regular_calls]
+                    if config.concurrent_dispatch
+                    else [[tool_call] for tool_call in regular_calls]
+                )
+                offset = 0
+                for group in groups:
+                    group_step = step_num + offset
+                    intercepted = await _intercept_tool_calls_async(
+                        group, hooks, state, session_log, context, group_step
                     )
-
-                def _ctx_for(_c: ToolCall, _cur_step: int):
-                    return _build_tool_ctx(
-                        config,
-                        tools=tools,
-                        hooks=hooks,
-                        tool_call=_c,
-                        step_num=_cur_step,
-                        state=state,
-                        session_log=session_log,
-                        llm=_sync_llm,
-                        async_llm=_get_llm(),
-                    )
-
-                if config.concurrent_dispatch:
-                    _tool_ctxs = [_ctx_for(_c, step_num + _idx) for _idx, _c in dispatch_items]
-                    if (
-                        type(tools).dispatch_batch is not BaseToolRegistry.dispatch_batch
-                        and type(tools).async_dispatch_batch
-                        is BaseToolRegistry.async_dispatch_batch
-                    ):
-                        dispatch_results = await asyncio.to_thread(
-                            tools.dispatch_batch,
-                            calls_to_dispatch,
-                            ctx=_tool_ctxs,
-                        )
-                    elif type(tools).async_dispatch_batch is BaseToolRegistry.async_dispatch_batch:
-                        dispatch_results = await tools.async_dispatch_batch(
-                            calls_to_dispatch,
-                            ctx=_tool_ctxs,
-                            max_concurrent=config.max_parallel_calls,
-                        )
+                    post_dispatch_parts.extend(intercepted.extra_context)
+                    dispatch_items = [
+                        (index, call)
+                        for index, call in enumerate(group)
+                        if index not in intercepted.intercepted
+                    ]
+                    calls_to_dispatch = [call for _, call in dispatch_items]
+                    if calls_to_dispatch:
+                        if _ckpt_store is not None:
+                            _save_pending_dispatch(
+                                _ckpt_store,
+                                calls=group,
+                                dispatching=calls_to_dispatch,
+                                step_number=group_step + len(group) - 1,
+                                session_log=session_log,
+                                conversation_data=_conv.serialize(),
+                                config_snapshot={
+                                    "max_steps": config.max_steps,
+                                    "queries_used": getattr(state, "queries_used", 0),
+                                    "budget_remaining": getattr(state, "budget_remaining", 0),
+                                },
+                                tool_results_store=tools.snapshot_results(),
+                                domain_state=(
+                                    checkpoint_state(loop_ctx)
+                                    if checkpoint_state is not None
+                                    else {}
+                                ),
+                                run_envelope=(
+                                    loop_ctx.run_envelope.to_dict()
+                                    if loop_ctx.run_envelope is not None
+                                    else None
+                                ),
+                                metadata={"task": str(task), **_policy_checkpoint_metadata(state)},
+                                run_status=loop_ctx.status.value,
+                                run_phase=loop_ctx.phase.value,
+                            )
+                        tool_contexts = [
+                            _build_tool_ctx(
+                                config,
+                                tools=tools,
+                                hooks=hooks,
+                                tool_call=call,
+                                step_num=group_step + index,
+                                state=state,
+                                session_log=session_log,
+                                llm=_sync_llm,
+                                async_llm=_get_llm(),
+                            )
+                            for index, call in dispatch_items
+                        ]
+                        if config.concurrent_dispatch:
+                            if (
+                                type(tools).dispatch_batch is not BaseToolRegistry.dispatch_batch
+                                and type(tools).async_dispatch_batch
+                                is BaseToolRegistry.async_dispatch_batch
+                            ):
+                                results = await asyncio.to_thread(
+                                    tools.dispatch_batch, calls_to_dispatch, ctx=tool_contexts
+                                )
+                            elif (
+                                type(tools).async_dispatch_batch
+                                is BaseToolRegistry.async_dispatch_batch
+                            ):
+                                results = await tools.async_dispatch_batch(
+                                    calls_to_dispatch,
+                                    ctx=tool_contexts,
+                                    max_concurrent=config.max_parallel_calls,
+                                )
+                            else:
+                                results = await tools.async_dispatch_batch(
+                                    calls_to_dispatch, ctx=tool_contexts
+                                )
+                        else:
+                            results = [
+                                await tools.async_dispatch(
+                                    calls_to_dispatch[0], ctx=tool_contexts[0]
+                                )
+                            ]
                     else:
-                        dispatch_results = await tools.async_dispatch_batch(
-                            calls_to_dispatch,
-                            ctx=_tool_ctxs,
+                        results = []
+                    dispatch_results = iter(results)
+                    for index, call in enumerate(group):
+                        was_intercepted = index in intercepted.intercepted
+                        result = (
+                            intercepted.intercepted[index]
+                            if was_intercepted
+                            else next(dispatch_results)
                         )
-                else:
-                    dispatch_results = []
-                    for _idx, _c in dispatch_items:
-                        _tool_ctx = _ctx_for(_c, step_num + _idx)
-                        dispatch_results.append(await tools.async_dispatch(_c, ctx=_tool_ctx))
-            else:
-                dispatch_results = []
+                        yield offset + index, call, result, was_intercepted
+                    offset += len(group)
 
-            dispatch_iter = iter(dispatch_results)
-            batch_results = []
-            for i in range(len(regular_calls)):
-                if i in intercepted_results:
-                    batch_results.append(intercepted_results[i])
-                else:
-                    batch_results.append(next(dispatch_iter))
-
-            for tc_idx, (tool_call, tool_result) in enumerate(zip(regular_calls, batch_results)):
+            async for tc_idx, tool_call, tool_result, was_intercepted in _dispatch_regular_calls():
                 cur_step = step_num + tc_idx
                 tool_spec = tools._tools.get(tool_call.tool)
-                was_intercepted = tc_idx in intercepted_results
                 if not (tool_spec and tool_spec.free) and not was_intercepted:
                     state.queries_used += 1
 
@@ -1454,6 +1461,29 @@ async def _async_composable_loop_impl(
                     )
                 _save_checkpoint(cur_step)
 
+                if not config.concurrent_dispatch:
+                    reason = None
+                    if _deadline_expired(loop_ctx):
+                        reason = "deadline_exceeded"
+                    elif config.cancel_token is not None and config.cancel_token.is_cancelled:
+                        reason = "cancelled"
+                    elif tc_idx + 1 < len(regular_calls) or done_idx is not None:
+                        reason = await _post_step_stop_reason_async(
+                            hooks,
+                            state=state,
+                            session_log=session_log,
+                            context=context,
+                            step_num=cur_step,
+                            new_entities=len(step_entities),
+                            requested_reason=stop_reason if done else None,
+                        )
+                    if reason is not None:
+                        stop_reason = reason
+                        done = True
+                        break
+
+        if not config.concurrent_dispatch and done:
+            break
         if _deadline_expired(loop_ctx):
             stop_reason = "deadline_exceeded"
             done = True

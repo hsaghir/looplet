@@ -48,6 +48,10 @@ surface of whatever it wraps. Prompts and responses may contain sensitive
 data, so configure `redact=` before capture when the run crosses a privacy or
 security boundary.
 
+**Version scope:** Native-response redaction and the Python replay defaults below are unreleased after `0.4.0`.
+Published `0.4.0` can save unredacted native response blocks even when `redact=` is configured.
+See [Unreleased Safety Fixes](install.md#unreleased-safety-fixes) before relying on these behaviors.
+
 ---
 
 ## Quick start: `ProvenanceSink`
@@ -235,7 +239,8 @@ llm = RecordingLLMBackend(
 
 **By default, `redact` scrubs prompt and `system_prompt` strings before
 they reach the wrapped backend.** The same callable scrubs recorded text responses.
-For native responses, it scrubs string values and object keys in a separate recorded copy.
+**Unreleased:** Native response string values and keys are scrubbed in a separate recorded copy.
+Published `0.4.0` does not scrub native response blocks.
 Live responses and tool arguments remain unchanged.
 Replay uses the saved, redacted values; it does not recover the original values.
 Review captured evidence before sharing or replaying it.
@@ -379,6 +384,10 @@ The LLM is **not** called again. Your tools, hooks, permission
 engine, and state are fresh. This is useful when a tool, hook, permission,
 or loop-runtime change is the variable under review. It is not an A/B test of
 prompt or model changes because the recorded decisions stay fixed.
+
+**Unreleased defaults:** The defaults below require a build after `0.4.0`.
+Published `0.4.0` uses captured model-call count as the budget and defaults to an empty task.
+Set `config` and `task` explicitly when using that release.
 
 Without `config`, replay uses the saved tool-step count and the first captured call's protocol.
 Call-only captures count native tool calls or text responses instead.

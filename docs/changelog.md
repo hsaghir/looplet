@@ -13,6 +13,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Inferred tool schemas reject variadic parameters during construction. Explicit schemas and list/dict wrappers remain supported.
+- Graders and collectors reject unsupported async callables with host-code guidance and close unexpected coroutine returns.
+- The Quickstart places its optional real-model handoff before grading, capture, and replay. The eval guide documents pre-awaited collection for synchronous grading.
 - The Quickstart adds provider extras from the current source build and preserves guidance for pinned revisions.
 - Tool schemas preserve every mixed or nullable `Literal` choice. Enum checks distinguish booleans from numeric values.
 - `tool` and `tools_from` accept partials and callable instances, preserving effective signatures, resolved annotations, and explicit metadata overrides.

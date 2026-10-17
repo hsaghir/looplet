@@ -318,9 +318,12 @@ def _schema_from_callable(fn: Callable[..., Any]) -> dict[str, Any]:
     properties: dict[str, Any] = {}
     required: list[str] = []
     for name, param in sig.parameters.items():
-        if name == "ctx":
-            continue
         if param.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
+            raise TypeError(
+                f"Cannot infer a tool schema for variadic parameter {name!r}. "
+                "Use an explicit list or dict parameter in a wrapper."
+            )
+        if name == "ctx":
             continue
         schema = _json_type_for_annotation(type_hints.get(name, param.annotation))
         if param.default is not inspect.Signature.empty:

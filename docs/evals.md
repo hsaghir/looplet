@@ -32,6 +32,41 @@ No files, saved cases, collectors, or cartridge are required.
 The same functions serve Python, pytest, saved-run grading, and cartridge evaluation.
 There is no second definition language or mandatory eval class.
 
+## Async hosts
+
+Graders and `EvalHook` collectors must be synchronous, including when the agent uses `async_composable_loop()`.
+Check trusted definitions with `looplet eval check PATH --json` before running them.
+The checker rejects declared async graders and collectors.
+Current source builds also reject async runtime callables and close unexpected coroutine returns before recording evaluation errors.
+Unsupported async work cannot establish a passing assessment.
+
+Await asynchronous collection in your host, then pass the observed artifacts to a synchronous grader:
+
+```python
+import asyncio
+from pathlib import Path
+
+from looplet import EvalContext, eval_assess
+
+
+def eval_report_text(ctx):
+    return ctx.artifacts["report_text"] == ctx.expected["report_text"]
+
+
+async def assess_report(report_path, expected_text):
+    observed_text = await asyncio.to_thread(Path(report_path).read_text, encoding="utf-8")
+    context = EvalContext(
+        steps=[],
+        artifacts={"report_text": observed_text},
+        task={"expected": {"report_text": expected_text}},
+    )
+    return eval_assess([eval_report_text], context)
+```
+
+Use `await assess_report(Path("result.txt"), "hello\n")` from your async host.
+The grader runs once after file collection.
+It does not rerun the agent or tools.
+
 ## Keep a contract in one file
 
 Put `eval_*` functions in a Python file when the contract needs version control or reuse.

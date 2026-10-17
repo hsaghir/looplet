@@ -2019,6 +2019,23 @@ def _recorded_collector_errors(ctx: EvalContext) -> list[EvalResult]:
     return failures
 
 
+def _call_sync_eval(function: Callable[..., Any], *arguments: Any, role: str) -> Any:
+    message = (
+        f"async {role}s are not supported. "
+        "Await asynchronous work in host code, then use a synchronous function."
+    )
+    if inspect.iscoroutinefunction(function) or inspect.iscoroutinefunction(
+        getattr(function, "__call__", None)
+    ):
+        raise TypeError(message)
+    result = function(*arguments)
+    if inspect.isawaitable(result):
+        if inspect.iscoroutine(result):
+            result.close()
+        raise TypeError(message)
+    return result
+
+
 def eval_run(
     evaluators: list[Callable],
     ctx: EvalContext,
@@ -2032,6 +2049,9 @@ def eval_run(
     Each evaluator is called with ``(ctx)`` or ``(ctx, llm)`` depending
     on its signature. Returns a list of :class:`EvalResult` in the
     same order as ``evaluators``.
+
+    Graders must be synchronous, including for async agent runs.
+    Await asynchronous work in host code before constructing the context.
 
     Args:
         evaluators: Functions to run (discovered via :func:`eval_discover`
@@ -2065,9 +2085,9 @@ def eval_run(
                         )
                     )
                     continue
-                raw = fn(ctx, judge_llm)
+                raw = _call_sync_eval(fn, ctx, judge_llm, role="grader")
             else:
-                raw = fn(ctx)
+                raw = _call_sync_eval(fn, ctx, role="grader")
             result = EvalResult.from_return(raw, name=name)
         except Exception as e:  # noqa: BLE001
             logger.warning("Eval %s raised: %s", name, e, exc_info=True)
@@ -2173,6 +2193,9 @@ class EvalHook:
     trajectory. A collector that raises or returns a non-dict never
     breaks the agent run, but is retained as an ``error`` result so an
     eval CLI cannot report a false green.
+
+    Graders and collectors must be synchronous, including for async loops.
+    Await asynchronous collection in host code before grading its artifacts.
 
     ``expected`` is optional grader-only case data. It is exposed as
     ``ctx.task["expected"]`` when this hook builds the context, but is
@@ -2361,7 +2384,7 @@ class EvalHook:
                 getattr(getattr(collector, "func", None), "__name__", type(collector).__name__),
             )
             try:
-                produced = collector(state)
+                produced = _call_sync_eval(collector, state, role="collector")
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "Eval collector %s raised; skipping",

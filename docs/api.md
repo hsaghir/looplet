@@ -170,6 +170,10 @@ Use a wrapper or positional binding for dependencies that must not be exposed as
 
 Unreleased registration rejects positional-only parameters because dispatch uses keyword arguments.
 Wrap existing positional-only functions with keyword-compatible functions.
+Unreleased schema inference also rejects `*args` and `**kwargs` parameters instead of silently omitting them.
+Use explicit `list` or `dict` parameters in wrappers.
+An explicit `ToolSpec` schema can expose named fields to an existing `**kwargs` implementation.
+It does not convert JSON arrays into positional arguments.
 JSON arrays arrive as Python lists.
 Schema inference rejects `tuple`, `set`, and `frozenset` parameter annotations.
 Accept a `list` parameter and convert it inside your tool or wrapper.
@@ -348,6 +352,10 @@ Python hosts attach `EvalHook` explicitly.
 Cartridge authors use `run_cartridge_evals()` or `looplet eval run`.
 Both save the same record with `save_eval_run()` and read it with `load_eval_run()`.
 They use the same loop.
+
+Graders and collectors are synchronous, including when the agent uses `async_composable_loop()`.
+Await collection in your host before passing observed artifacts to synchronous graders.
+See the [async-host pattern](evals.md#async-hosts) for a complete example and validation guidance.
 
 | API | Use it for |
 | --- | --- |

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import gc
 import json
 import tempfile
+from functools import partial
 from pathlib import Path
 
 import pytest
@@ -12,7 +14,9 @@ from looplet import (
     BaseToolRegistry,
     DefaultState,
     LoopConfig,
+    async_composable_loop,
     composable_loop,
+    tools_from,
 )
 from looplet.evals import (
     EvalContext,
@@ -26,7 +30,7 @@ from looplet.evals import (
     eval_run_batch,
     load_evals,
 )
-from looplet.testing import MockLLMBackend
+from looplet.testing import AsyncMockLLMBackend, MockLLMBackend
 from looplet.tools import ToolSpec
 from looplet.types import Step, ToolCall, ToolResult
 
@@ -317,6 +321,132 @@ class TestEvalResultFromReturn:
 
 
 class TestEvalRun:
+    @pytest.mark.parametrize("entrypoint", ["run", "assess"])
+    @pytest.mark.parametrize("with_judge", [False, True])
+    @pytest.mark.parametrize("wrapped", [False, True])
+    def test_async_graders_fail_with_host_guidance_without_unawaited_warnings(
+        self, entrypoint, with_judge, wrapped, recwarn
+    ):
+        effects = []
+        pending = []
+
+        async def eval_async(ctx):
+            effects.append("grader")
+            return False
+
+        async def eval_async_judge(ctx, llm):
+            return await eval_async(ctx)
+
+        def eval_wrapped(ctx):
+            result = eval_async(ctx)
+            pending.append(result)
+            return result
+
+        def eval_wrapped_judge(ctx, llm):
+            result = eval_async_judge(ctx, llm)
+            pending.append(result)
+            return result
+
+        candidate = (
+            (eval_wrapped_judge if wrapped else eval_async_judge)
+            if with_judge
+            else (eval_wrapped if wrapped else eval_async)
+        )
+        judge = MockLLMBackend([], cycle=False) if with_judge else None
+        context = _ctx(final_output={"answer": "wrong"})
+        try:
+            if entrypoint == "assess":
+                report = eval_assess([candidate], context, judge_llm=judge)
+                assert not report.valid and not report.passed
+                explanation = report.to_dict()["cases"][0]["results"][0]["explanation"]
+            else:
+                result = eval_run([candidate], context, judge_llm=judge)[0]
+                assert result.label == "error"
+                explanation = result.explanation
+            assert "async graders are not supported" in explanation
+            assert "host code" in explanation
+            assert effects == []
+            assert all(result.cr_frame is None for result in pending)
+            gc.collect()
+            assert not any(issubclass(warning.category, RuntimeWarning) for warning in recwarn)
+        finally:
+            for result in pending:
+                result.close()
+
+    @pytest.mark.parametrize("asynchronous", [False, True])
+    @pytest.mark.parametrize("kind", ["async", "partial", "wrapper", "instance"])
+    async def test_async_collectors_fail_with_host_guidance_without_unawaited_warnings(
+        self, asynchronous, kind, recwarn
+    ):
+        effects = []
+        pending = []
+
+        async def collect_async(state):
+            effects.append("collector")
+            return {"answer": "wrong"}
+
+        def collect_wrapped(state):
+            result = collect_async(state)
+            pending.append(result)
+            return result
+
+        class AsyncCollector:
+            async def __call__(self, state):
+                return await collect_async(state)
+
+        collector = {
+            "async": collect_async,
+            "partial": partial(collect_async),
+            "wrapper": collect_wrapped,
+            "instance": AsyncCollector(),
+        }[kind]
+
+        def eval_finished(ctx):
+            return ctx.completed
+
+        hook = EvalHook(evaluators=[eval_finished], collectors=[collector])
+        response = '{"tool":"done","args":{"summary":"Finished."}}'
+        state = DefaultState(max_steps=1)
+        tools = tools_from([], include_done=True, validate=True)
+        config = LoopConfig(max_steps=1, use_native_tools=False)
+        try:
+            if asynchronous:
+                steps = [
+                    step
+                    async for step in async_composable_loop(
+                        llm=AsyncMockLLMBackend([response], cycle=False),
+                        tools=tools,
+                        state=state,
+                        config=config,
+                        task={"goal": "Finish."},
+                        hooks=[hook],
+                    )
+                ]
+            else:
+                steps = list(
+                    composable_loop(
+                        llm=MockLLMBackend([response], cycle=False),
+                        tools=tools,
+                        state=state,
+                        config=config,
+                        task={"goal": "Finish."},
+                        hooks=[hook],
+                    )
+                )
+            assert len(steps) == 1 and steps[0].tool_result.error is None
+            failures = [result for result in hook.results if result.name.startswith("collector:")]
+            assert len(failures) == 1 and failures[0].label == "error"
+            assert "async collectors are not supported" in failures[0].explanation
+            assert "host code" in failures[0].explanation
+            assert not hook.assessment().valid and not hook.assessment().passed
+            assert effects == []
+            assert all(result.cr_frame is None for result in pending)
+            gc.collect()
+            assert not any(issubclass(warning.category, RuntimeWarning) for warning in recwarn)
+        finally:
+            for result in pending:
+                result.close()
+
     @pytest.mark.parametrize(
         "raw",
         [

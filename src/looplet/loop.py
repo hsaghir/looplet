@@ -1564,6 +1564,7 @@ async def _intercept_tool_calls_async(
         if handled:
             continue
 
+        pre_dispatch_denied = False
         for hook in hooks:
             method = getattr(hook, "pre_dispatch", None)
             if method is None:
@@ -1590,6 +1591,7 @@ async def _intercept_tool_calls_async(
             if decision.updated_args is not None:
                 tc.args = decision.updated_args
             if decision.permission == "deny":
+                pre_dispatch_denied = True
                 reason = decision.block or ""
                 message = f"Permission denied for tool '{tc.tool}'"
                 if reason:
@@ -1609,7 +1611,7 @@ async def _intercept_tool_calls_async(
             if decision.additional_context:
                 result.extra_context.append(decision.additional_context)
 
-        if tc_idx in result.intercepted:
+        if pre_dispatch_denied:
             continue
         for hook in hooks:
             method = getattr(hook, "check_permission", None)
@@ -2192,6 +2194,7 @@ def _intercept_tool_calls(
             continue
 
         # ── Per-method pre_dispatch hooks ───────────────────
+        pre_dispatch_denied = False
         for hook in hooks:
             if not hasattr(hook, "pre_dispatch"):
                 continue
@@ -2215,6 +2218,7 @@ def _intercept_tool_calls(
             if _decision.updated_args is not None:
                 tc.args = _decision.updated_args
             if _decision.permission == "deny":
+                pre_dispatch_denied = True
                 _prefix = f"Permission denied for tool '{tc.tool}'"
                 _reason = _decision.block or ""
                 _msg = f"{_prefix}: {_reason}" if _reason else _prefix
@@ -2237,7 +2241,7 @@ def _intercept_tool_calls(
             if _decision.additional_context:
                 result.extra_context.append(_decision.additional_context)
 
-        if tc_idx in result.intercepted:
+        if pre_dispatch_denied:
             continue
 
         # ── Per-method check_permission hooks ──────────────

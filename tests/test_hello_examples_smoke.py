@@ -68,6 +68,75 @@ def test_documented_migration_adapter_matches_loop_protocol():
     assert final_step.tool_result.data["summary"] == "The payments owner is fintech-platform."
 
 
+@pytest.mark.parametrize("async_driver", [False, True])
+@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize(
+    "scenario",
+    ["successful-work", "failed-work", "rejected-done", "custom-completion", "rejected-then-work"],
+)
+async def test_documented_quality_gate_requires_successful_work(async_driver, native, scenario):
+    from looplet import (
+        AsyncMockLLMBackend,
+        DefaultState,
+        LoopConfig,
+        async_composable_loop,
+        tools_from,
+    )
+
+    guide = Path(__file__).resolve().parents[1] / "docs" / "hooks.md"
+    block = next(block for block in _python_blocks(guide) if "class MinimumEvidenceGate:" in block)
+    namespace = {"__name__": "documented_quality_gate"}
+    exec(compile(block, str(guide), "exec"), namespace)
+    executed = []
+
+    def lookup_owner(service: str) -> dict:
+        """Find the team that owns a service."""
+        if scenario == "failed-work":
+            raise ValueError("Synthetic lookup failure")
+        executed.append(service)
+        return {"service": service, "owner": "fintech-platform"}
+
+    def complete(summary: str) -> dict:
+        """Finish the task."""
+        return {"summary": summary}
+
+    terminal = "finish" if scenario == "custom-completion" else "done"
+    complete.__name__ = terminal
+    lookup = json.dumps({"tool": "lookup_owner", "args": {"service": "payments"}})
+    done = json.dumps({"tool": terminal, "args": {"summary": "Finished."}})
+    responses = [lookup] * 3 + [done]
+    if scenario in ("rejected-done", "custom-completion"):
+        responses = [done] * 4
+    elif scenario == "rejected-then-work":
+        responses = [done] + responses
+    gate_class = namespace["MinimumEvidenceGate"]
+    gate = gate_class(done_tools=(terminal,)) if terminal != "done" else gate_class()
+    state = DefaultState(max_steps=len(responses))
+    arguments = {
+        "llm": (AsyncMockLLMBackend if async_driver else MockLLMBackend)(responses),
+        "tools": tools_from([lookup_owner, complete], validate=True),
+        "state": state,
+        "config": LoopConfig(max_steps=len(responses), done_tool=terminal, use_native_tools=native),
+        "hooks": [gate],
+    }
+    if async_driver:
+        steps = [step async for step in async_composable_loop(**arguments)]
+    else:
+        steps = list(composable_loop(**arguments))
+
+    expected_completion = scenario in ("successful-work", "rejected-then-work")
+    assert RunResult.from_state(state).completed is expected_completion
+    assert len(executed) == (3 if expected_completion else 0)
+    assert len(steps) == len(responses)
+    completion_steps = [step for step in steps if step.tool_call.tool == terminal]
+    if expected_completion:
+        assert completion_steps[-1].tool_result.error is None
+    else:
+        assert all(
+            "successful non-completion" in step.tool_result.error for step in completion_steps
+        )
+
+
 def test_documented_shell_replay_works_without_provider(tmp_path):
     guide = Path(__file__).resolve().parents[1] / "docs" / "cli.md"
     section = guide.read_text().split("### Replay captured responses\n", 1)[1]

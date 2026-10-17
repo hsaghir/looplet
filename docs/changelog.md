@@ -12,6 +12,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Cached `pre_dispatch` results pass custom permission gates in sync and async loops. Explicit denials still stop dispatch.
+- The quality-gate example counts successful non-completion calls and supports custom completion names. Tests execute the copied snippet.
 - The migration guide configures JSON-text mode for its sample adapter and tests the copied snippets together.
 - Prompts show the total step number separately from the charged-step budget.
 - Source builds identify as `0.4.1.dev0`; published installation commands remain pinned to `0.4.0`.

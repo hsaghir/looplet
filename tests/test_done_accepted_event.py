@@ -349,9 +349,10 @@ async def test_failed_terminal_dispatch_is_not_accepted(
 @pytest.mark.parametrize("mode", ["paid", "free", "failed-free"])
 @pytest.mark.parametrize("accept_completion", [False, True])
 async def test_free_tool_preserves_completion_budget(
-    is_async, native, mode, accept_completion
+    is_async, native, mode, accept_completion, monkeypatch
 ) -> None:
     import json
+    from unittest.mock import AsyncMock, Mock
 
     from looplet import RunResult, async_composable_loop
     from looplet.testing import AsyncMockLLMBackend
@@ -371,29 +372,37 @@ async def test_free_tool_preserves_completion_budget(
             free=mode != "paid",
         )
     )
-    responses = [
-        json.dumps({"tool": "note", "args": {}}),
-        json.dumps({"tool": "done", "args": {"answer": "accepted"} if accept_completion else {}}),
-    ]
+    responses = [json.dumps({"tool": "note", "args": {}})] * 3
+    responses.append(
+        json.dumps({"tool": "done", "args": {"answer": "accepted"} if accept_completion else {}})
+    )
+    backend = (AsyncMockLLMBackend if is_async else MockLLMBackend)(responses=responses)
+    method = "generate_with_tools" if native else "generate"
+    generate = (AsyncMock if is_async else Mock)(wraps=getattr(backend, method))
+    monkeypatch.setattr(backend, method, generate)
     state = DefaultState(max_steps=1)
     config = LoopConfig(max_steps=1, use_native_tools=native)
     remaining = []
     if is_async:
         async for _step in async_composable_loop(
-            llm=AsyncMockLLMBackend(responses=responses), tools=tools, state=state, config=config
+            llm=backend, tools=tools, state=state, config=config
         ):
             remaining.append(state.budget_remaining)
     else:
-        for _step in composable_loop(
-            llm=MockLLMBackend(responses=responses), tools=tools, state=state, config=config
-        ):
+        for _step in composable_loop(llm=backend, tools=tools, state=state, config=config):
             remaining.append(state.budget_remaining)
 
     is_free = mode == "free"
-    assert remaining == ([1, 0] if is_free else [0])
-    assert state.step_count == (2 if is_free else 1)
+    assert remaining == ([1, 1, 1, 0] if is_free else [0])
+    assert state.step_count == (4 if is_free else 1)
     assert state.queries_used == int(mode == "paid")
     assert state.steps[0].metadata.get("budget_free", False) is is_free
+    prompts = [
+        call.args[0] if call.args else call.kwargs["prompt"] for call in generate.call_args_list
+    ]
+    assert len(prompts) == state.step_count
+    for step_number, prompt in enumerate(prompts, start=1):
+        assert f"STEP {step_number} - charged-step budget: 1/1 remaining" in prompt
     result = RunResult.from_state(state)
     assert result.completed is (is_free and accept_completion)
     if result.completed:

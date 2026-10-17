@@ -57,7 +57,7 @@ and tool types.
 from looplet import LoopConfig, composable_loop
 
 
-config = LoopConfig(max_steps=8, use_native_tools=True)
+config = LoopConfig(max_steps=8, use_native_tools=False)
 
 for step in composable_loop(
     llm=current_backend,
@@ -68,10 +68,10 @@ for step in composable_loop(
     existing_logger.info(step.pretty())
 ```
 
-Native tool calling is now the default and requires a backend that supports
-structured `tool_use` responses. Backends without native support fail with a
-clear error. Set `use_native_tools=False` explicitly to use the JSON-text
-protocol instead.
+This recipe uses JSON-text mode for the adapter shown below.
+Native tool calling remains the default.
+Enable `use_native_tools=True` only when the backend supports structured `tool_use` responses.
+Backends without native support fail with a clear error.
 
 Run the same deterministic tool tests and a small set of representative tasks
 before adding any hook. If behavior changes, the loop replacement is the only
@@ -79,7 +79,9 @@ new variable.
 
 ## 3. Keep your provider adapter
 
-You can use an existing client through the backend protocol:
+You can use an existing client through the backend protocol.
+This adapter returns JSON-text tool calls through `generate()`.
+Keep `use_native_tools=False` with this adapter.
 
 ```python
 class ExistingBackend:

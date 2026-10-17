@@ -1018,6 +1018,7 @@ def main(argv: list[str] | None = None) -> int:
         prog="python -m looplet",
         description="Looplet - build, run, inspect, and test Python agents.",
     )
+    parser.add_argument("--version", action="version", version=f"looplet {__version__}")
     parser.add_argument(
         "--help-all", action="help", help="Show advanced commands and compatibility aliases"
     )

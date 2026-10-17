@@ -757,6 +757,24 @@ class TestShowCLISmoke:
         assert "traceback" not in captured.err.lower()
 
 
+@pytest.mark.parametrize("use_sys_argv", [False, True])
+def test_version_flag_needs_no_command_or_backend(capsys, monkeypatch, use_sys_argv):
+    from looplet import __version__
+
+    monkeypatch.setenv("LOOPLET_PROVIDER", "invalid-provider")
+    monkeypatch.setattr(
+        "looplet.backends.make_backend",
+        lambda **kwargs: pytest.fail("Version lookup must not build a backend"),
+    )
+    monkeypatch.setattr(sys, "argv", ["looplet", "--version"])
+    with pytest.raises(SystemExit) as stopped:
+        cli_main(None if use_sys_argv else ["--version"])
+    assert stopped.value.code == 0
+    captured = capsys.readouterr()
+    assert captured.out == f"looplet {__version__}\n"
+    assert captured.err == ""
+
+
 @pytest.mark.parametrize("command", ["run", "blueprint"])
 def test_step_budget_help_clarifies_free_calls(command, capsys):
     with pytest.raises(SystemExit) as stopped:

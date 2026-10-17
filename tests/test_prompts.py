@@ -24,9 +24,17 @@ class TestBasicPromptSections:
         assert "TOOLS" in prompt
         assert "search(query)" in prompt
 
-    def test_step_section_present(self) -> None:
-        prompt = build_prompt(step_number=3, max_steps=10)
-        assert "STEP 3/10" in prompt
+    @pytest.mark.parametrize(
+        ("step_number", "max_steps", "remaining"), [(3, 10, None), (4, 1, 1), (11, 10, 0)]
+    )
+    def test_step_section_present(self, step_number, max_steps, remaining) -> None:
+        prompt = build_prompt(
+            step_number=step_number,
+            max_steps=max_steps,
+            state_summary={"budget_remaining": remaining} if remaining is not None else None,
+        )
+        budget = "?" if remaining is None else remaining
+        assert f"STEP {step_number} - charged-step budget: {budget}/{max_steps} remaining" in prompt
 
     def test_all_sections_in_order(self) -> None:
         prompt = build_prompt(
@@ -104,7 +112,7 @@ class TestCustomSectionHeaders:
             max_steps=5,
             section_headers={"step": "TURN"},
         )
-        assert "TURN 1/5" in prompt
+        assert "TURN 1 - charged-step budget: ?/5 remaining" in prompt
 
     def test_partial_override_keeps_defaults(self) -> None:
         prompt = build_prompt(

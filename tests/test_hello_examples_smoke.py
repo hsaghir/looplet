@@ -70,6 +70,66 @@ def test_documented_migration_adapter_matches_loop_protocol():
 
 @pytest.mark.parametrize("async_driver", [False, True])
 @pytest.mark.parametrize("native", [False, True])
+async def test_documented_hooks_share_entities_across_turns(async_driver, native, monkeypatch):
+    from looplet import (
+        AsyncMockLLMBackend,
+        DefaultState,
+        LoopConfig,
+        async_composable_loop,
+        tools_from,
+    )
+
+    guide = Path(__file__).resolve().parents[1] / "docs" / "hooks.md"
+    block = next(block for block in _python_blocks(guide) if "class EntityExtractor:" in block)
+    extractions = []
+    briefings = []
+
+    def extract_from(data):
+        entities = data.get("entities", [])
+        extractions.append(entities)
+        return entities
+
+    namespace = {"__name__": "documented_hook_sharing", "extract_from": extract_from}
+    exec(compile(block, str(guide), "exec"), namespace)
+    hooks = namespace["hooks"]
+    pre_prompt = hooks[1].pre_prompt
+
+    def observe_briefing(state, session_log, context, step_num):
+        value = pre_prompt(state, session_log, context, step_num)
+        if value:
+            briefings.append(value)
+        return value
+
+    monkeypatch.setattr(hooks[1], "pre_prompt", observe_briefing)
+
+    def lookup() -> dict:
+        """Find one synthetic entity."""
+        return {"entities": ["customer-42"]}
+
+    responses = [
+        '{"tool":"lookup","args":{}}',
+        '{"tool":"done","args":{"summary":"Finished."}}',
+    ]
+    state = DefaultState(max_steps=2)
+    arguments = {
+        "llm": (AsyncMockLLMBackend if async_driver else MockLLMBackend)(responses),
+        "tools": tools_from([lookup], include_done=True, validate=True),
+        "state": state,
+        "config": LoopConfig(max_steps=2, use_native_tools=native),
+        "hooks": hooks,
+    }
+    if async_driver:
+        steps = [step async for step in async_composable_loop(**arguments)]
+    else:
+        steps = list(composable_loop(**arguments))
+    assert [step.tool_call.tool for step in steps] == ["lookup", "done"]
+    assert ["customer-42"] in extractions
+    assert briefings == ["Entities found so far: customer-42"]
+    assert RunResult.from_state(state).completed
+
+
+@pytest.mark.parametrize("async_driver", [False, True])
+@pytest.mark.parametrize("native", [False, True])
 @pytest.mark.parametrize(
     "scenario",
     ["successful-work", "failed-work", "rejected-done", "custom-completion", "rejected-then-work"],

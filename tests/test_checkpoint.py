@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from pathlib import Path
@@ -11,12 +12,14 @@ from unittest.mock import MagicMock
 import pytest
 
 from looplet import (
+    AsyncMockLLMBackend,
     BaseToolRegistry,
     DefaultState,
     LoopConfig,
     MockLLMBackend,
     RunEnvelope,
     ToolSpec,
+    async_composable_loop,
     composable_loop,
     register_done_tool,
 )
@@ -606,6 +609,136 @@ def test_pending_dispatch_stays_scoped_to_its_run(tmp_path: Path) -> None:
     assert store.load_latest_for_resume(run_id="run-b") is None
 
 
+@pytest.mark.parametrize("async_driver", [False, True])
+@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize("identified", [False, True])
+@pytest.mark.parametrize(
+    ("remaining", "previous_max_steps"), [(0, 4), (1, 4), (2, 4), (0, 2), (1, 2), (1, 6)]
+)
+@pytest.mark.parametrize("free_calls", [False, True])
+def test_resume_preserves_default_state_budget(
+    tmp_path: Path,
+    async_driver: bool,
+    native: bool,
+    identified: bool,
+    remaining: int,
+    previous_max_steps: int,
+    free_calls: bool,
+) -> None:
+    envelope = RunEnvelope(run_id="budget-run") if identified else None
+    store = FileCheckpointStore(tmp_path)
+    store.save(
+        Checkpoint(
+            step_number=previous_max_steps - remaining,
+            session_log_data={"entries": []},
+            conversation_data=None,
+            config_snapshot={
+                "max_steps": previous_max_steps,
+                "queries_used": previous_max_steps - remaining,
+                "budget_remaining": remaining,
+            },
+            tool_results_store={},
+            metadata={},
+            run_envelope=envelope.to_dict() if envelope is not None else None,
+        ),
+        "before-restart",
+    )
+    effects = []
+    observed_budgets = []
+    tools = BaseToolRegistry()
+    tools.register(ToolSpec("work", "Record synthetic work", {}, lambda: effects.append("work")))
+    tools.register(ToolSpec("note", "Record a free note", {}, lambda: "noted", free=True))
+    register_done_tool(tools)
+
+    class ObserveBudget:
+        def pre_prompt(self, state, session_log, context, step_num):
+            observed_budgets.append(state.budget_remaining)
+            return None
+
+    backend_class = AsyncMockLLMBackend if async_driver else MockLLMBackend
+    free_responses = ['{"tool":"note","args":{}}'] * 3 if free_calls else []
+    backend = backend_class(
+        free_responses
+        + ['{"tool":"work","args":{}}'] * 3
+        + ['{"tool":"done","args":{"summary":"Finished."}}']
+    )
+    state = DefaultState(max_steps=4)
+    arguments = {
+        "llm": backend,
+        "tools": tools,
+        "state": state,
+        "config": LoopConfig(
+            max_steps=4,
+            checkpoint_dir=str(tmp_path),
+            use_native_tools=native,
+            run_envelope=envelope,
+        ),
+        "hooks": [ObserveBudget()],
+    }
+
+    async def run_async():
+        return [step async for step in async_composable_loop(**arguments)]
+
+    steps = asyncio.run(run_async()) if async_driver else list(composable_loop(**arguments))
+    expected_remaining = max(0, remaining + 4 - previous_max_steps)
+    expected_free = ["note"] * 3 if free_calls and expected_remaining else []
+    assert observed_budgets == [expected_remaining] * len(expected_free) + list(
+        range(expected_remaining, 0, -1)
+    )
+    assert effects == ["work"] * expected_remaining
+    assert [step.tool_call.tool for step in steps] == expected_free + ["work"] * expected_remaining
+    assert state.budget_remaining == 0
+
+
+@pytest.mark.parametrize("remaining", [True, -1, 1.5, "1"])
+def test_default_state_rejects_invalid_restored_budget(remaining) -> None:
+    state = DefaultState(max_steps=4)
+    with pytest.raises(ValueError, match="nonnegative integer"):
+        state.budget_remaining = remaining
+    assert state.budget_remaining == 4
+
+
+def test_default_state_budget_restore_preserves_current_charges() -> None:
+    state = DefaultState(max_steps=4, steps=[object()])
+    state.budget_remaining = 2
+    assert state.budget_remaining == 2
+    state.steps.append(object())
+    assert state.budget_remaining == 1
+    state.budget_remaining = 1
+    assert state.budget_remaining == 1
+    state.budget_remaining = 9
+    assert state.budget_remaining == 2
+
+
+@pytest.mark.parametrize(("max_steps", "expected"), [(None, 1), (0, 0), (2, 0), (4, 1), (6, 3)])
+def test_resume_state_rebases_budget_without_changing_checkpoint(max_steps, expected) -> None:
+    checkpoint = _make_checkpoint()
+    checkpoint.config_snapshot = {"max_steps": 4, "queries_used": 2, "budget_remaining": 1}
+    original = checkpoint.config_snapshot.copy()
+    resumed = resume_loop_state(checkpoint, max_steps=max_steps)
+    assert resumed["state_counters"] == {"queries_used": 2, "budget_remaining": expected}
+    assert checkpoint.config_snapshot == original
+
+
+@pytest.mark.parametrize("max_steps", [None, 6])
+def test_resume_legacy_budget_without_saved_cap(max_steps) -> None:
+    checkpoint = _make_checkpoint()
+    checkpoint.config_snapshot = {"queries_used": 2, "budget_remaining": 1}
+    resumed = resume_loop_state(checkpoint, max_steps=max_steps)
+    assert resumed["state_counters"] == {"queries_used": 2, "budget_remaining": 1}
+
+
+@pytest.mark.parametrize("field", ["max_steps", "budget_remaining", "requested"])
+@pytest.mark.parametrize("value", [True, -1, 1.5, "1"])
+def test_resume_rejects_invalid_step_budgets(field, value) -> None:
+    checkpoint = _make_checkpoint()
+    checkpoint.config_snapshot = {"max_steps": 4, "budget_remaining": 1}
+    if field != "requested":
+        checkpoint.config_snapshot[field] = value
+    with pytest.raises(ValueError, match="nonnegative integers"):
+        resume_loop_state(checkpoint, max_steps=value if field == "requested" else 4)
+
+
 def test_completed_dispatch_does_not_block_resume(tmp_path: Path) -> None:
     tools = BaseToolRegistry()
     tools.register(ToolSpec("effect", "Side effect", {}, lambda: "ok"))
@@ -626,3 +759,113 @@ def test_completed_dispatch_does_not_block_resume(tmp_path: Path) -> None:
     )
     assert [step.tool_call.tool for step in steps] == ["effect", "done"]
     assert FileCheckpointStore(tmp_path).load_latest_for_resume() is None
+
+
+@pytest.mark.parametrize("async_driver", [False, True])
+@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize("identified", [False, True])
+@pytest.mark.parametrize("damage", ["json", "schema", "unreadable"])
+def test_corrupt_pending_checkpoint_blocks_resume(
+    tmp_path: Path, monkeypatch, async_driver: bool, native: bool, identified: bool, damage: str
+) -> None:
+    envelope = RunEnvelope(run_id="effect-run") if identified else None
+    store = FileCheckpointStore(tmp_path)
+    previous = _make_checkpoint(step=1)
+    previous.run_envelope = envelope.to_dict() if envelope is not None else None
+    store.save(previous, "step_1")
+    pending = _make_checkpoint(step=2)
+    pending.run_envelope = previous.run_envelope
+    pending.metadata["pending_calls"] = [
+        {
+            "call_id": "effect-1",
+            "tool": "effect",
+            "proposed_args": {},
+            "effective_args": {},
+            "execution_status": "effect_unknown",
+        }
+    ]
+    key = FileCheckpointStore.key_for(pending, "step_2_pending")
+    store.save(pending, "step_2_pending")
+    path = tmp_path / f"{key}.json"
+    if damage == "unreadable":
+        read_text = Path.read_text
+
+        def unreadable(candidate, *arguments, **keywords):
+            if candidate == path:
+                raise PermissionError("Synthetic checkpoint read failure")
+            return read_text(candidate, *arguments, **keywords)
+
+        monkeypatch.setattr(Path, "read_text", unreadable)
+    else:
+        path.write_text(
+            '{"step_number":' if damage == "json" else json.dumps({"step_number": "bad"})
+        )
+    damaged_bytes = path.read_bytes()
+    effects = ["original-effect"]
+    tools = BaseToolRegistry()
+    tools.register(
+        ToolSpec("effect", "Record a synthetic effect", {}, lambda: effects.append("repeated"))
+    )
+    register_done_tool(tools)
+    backend_class = AsyncMockLLMBackend if async_driver else MockLLMBackend
+    backend = backend_class(
+        ['{"tool":"effect","args":{}}', '{"tool":"done","args":{"summary":"Finished."}}']
+    )
+    arguments = {
+        "llm": backend,
+        "tools": tools,
+        "state": DefaultState(max_steps=4),
+        "config": LoopConfig(
+            max_steps=4,
+            checkpoint_dir=str(tmp_path),
+            use_native_tools=native,
+            run_envelope=envelope,
+        ),
+    }
+
+    async def run_async():
+        return [step async for step in async_composable_loop(**arguments)]
+
+    with pytest.raises(ValueError, match="Cannot safely resume") as error:
+        if async_driver:
+            asyncio.run(run_async())
+        else:
+            list(composable_loop(**arguments))
+    assert str(path) in str(error.value)
+    assert backend.calls == 0
+    assert effects == ["original-effect"]
+    assert path.read_bytes() == damaged_bytes
+
+
+@pytest.mark.parametrize("identified", [False, True])
+@pytest.mark.parametrize("terminal", [False, True])
+def test_corrupt_only_checkpoint_never_starts_fresh(
+    tmp_path: Path, identified: bool, terminal: bool
+) -> None:
+    checkpoint = _make_checkpoint()
+    checkpoint.run_envelope = RunEnvelope(run_id="broken-run").to_dict() if identified else None
+    if terminal:
+        checkpoint.run_status = "completed"
+        checkpoint.run_phase = "terminal"
+    store = FileCheckpointStore(tmp_path)
+    store.save(checkpoint, "step_3")
+    path = tmp_path / f"{FileCheckpointStore.key_for(checkpoint, 'step_3')}.json"
+    path.write_text('{"step_number":')
+    with pytest.raises(ValueError, match="Cannot safely resume"):
+        store.load_latest_for_resume(run_id=checkpoint.run_id)
+
+
+@pytest.mark.parametrize("identified", [False, True])
+def test_corrupt_other_run_does_not_block_resume(tmp_path: Path, identified: bool) -> None:
+    checkpoint = _make_checkpoint()
+    checkpoint.run_envelope = RunEnvelope(run_id="selected-run").to_dict() if identified else None
+    store = FileCheckpointStore(tmp_path)
+    store.save(checkpoint, "step_3")
+    other = _make_checkpoint(step=9)
+    other.run_envelope = RunEnvelope(run_id="other-run").to_dict()
+    store.save(other, "step_9_pending")
+    path = tmp_path / f"{FileCheckpointStore.key_for(other, 'step_9_pending')}.json"
+    path.write_text('{"step_number":')
+    selected = store.load_latest_for_resume(run_id=checkpoint.run_id)
+    assert selected is not None and selected.run_id == checkpoint.run_id
+    assert selected.step_number == checkpoint.step_number

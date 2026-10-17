@@ -12,6 +12,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- `DefaultState` restores charged-step budgets across checkpoint resumes, including free-call accounting. Explicit cap changes retain prior charged work.
+- Automatic resume rejects corrupt or unreadable checkpoints before model or tool calls. Checkpoints namespaced to other runs remain isolated.
+- The hook-sharing guide uses persistent metadata across turns and tests the copied example.
 - Cached `pre_dispatch` results pass custom permission gates in sync and async loops. Explicit denials still stop dispatch.
 - The quality-gate example counts successful non-completion calls and supports custom completion names. Tests execute the copied snippet.
 - The migration guide configures JSON-text mode for its sample adapter and tests the copied snippets together.

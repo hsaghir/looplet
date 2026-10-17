@@ -755,6 +755,8 @@ class DefaultState:
     - Not part of the agent's persistent state
     """
 
+    _budget_offset: int = field(default=0, init=False, repr=False)
+
     @property
     def step_count(self) -> int:
         """Return the total number of steps completed so far in this run."""
@@ -767,7 +769,18 @@ class DefaultState:
             not (isinstance(step, Step) and step.metadata.get("budget_free") is True)
             for step in self.steps
         )
-        return max(0, self.max_steps - charged_steps)
+        return max(0, self.max_steps - self._budget_offset - charged_steps)
+
+    @budget_remaining.setter
+    def budget_remaining(self, value: int) -> None:
+        """Restore remaining budget without discarding recorded charged steps."""
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError("budget_remaining must be a nonnegative integer")
+        charged_steps = sum(
+            not (isinstance(step, Step) and step.metadata.get("budget_free") is True)
+            for step in self.steps
+        )
+        self._budget_offset = max(0, self.max_steps - value - charged_steps)
 
     def context_summary(self) -> str:
         """Render recent step results into the LLM's context.

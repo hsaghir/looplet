@@ -290,6 +290,17 @@ With no explicit `initial_checkpoint`, Looplet selects the highest-step incomple
 A terminal checkpoint prevents implicit resume of earlier snapshots.
 Calling the loop again can still start fresh; it does not undo earlier effects.
 
+In unreleased builds, resumed `DefaultState` preserves the saved charged-step budget.
+Changing `max_steps` changes the total cap, not the number of additional steps.
+Its `steps` list contains only steps from the current iterator.
+Custom states must preserve cumulative charged budgets through their own state contract.
+
+Automatic resume refuses unreadable or invalid checkpoint files for the selected run.
+This includes legacy files whose run identity cannot be verified.
+Preserve damaged files and reconcile possible effects before repairing recovery state.
+Other named run namespaces remain isolated.
+These recovery changes require an [unreleased source build](install.md#unreleased-safety-fixes).
+
 An interrupted tool can leave an `effect_unknown` pending record.
 Resume then raises `UncertainToolEffect` before another model or tool call.
 This prevents a blind retry that could duplicate an external effect.

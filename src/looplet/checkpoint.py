@@ -302,6 +302,8 @@ class FileCheckpointStore:
         snapshots are not eligible for implicit auto-resume. ``run_id``
         scopes selection to one logical run; leaving it unset preserves the
         legacy identity-less checkpoint-directory behavior.
+        Corrupt selected-run or legacy files block recovery.
+        Other run namespaces remain isolated.
         """
         best: Checkpoint | None = None
         terminal_found = False
@@ -318,8 +320,15 @@ class FileCheckpointStore:
                     continue
                 if best is None or cp.step_number > best.step_number:
                     best = cp
-            except Exception:  # noqa: BLE001
-                logger.warning("Skipping corrupt checkpoint: %s", path)
+            except (OSError, ValueError, TypeError) as error:
+                if "__" in path.stem and (
+                    run_id is None or not path.stem.startswith(f"{run_id}__")
+                ):
+                    continue
+                raise ValueError(
+                    f"Cannot safely resume from checkpoint {path}. "
+                    "Preserve the file and reconcile recovery state before retrying."
+                ) from error
         return None if terminal_found else best
 
 
@@ -482,8 +491,10 @@ class CheckpointHook:
 # ── resume_loop_state ───────────────────────────────────────────────
 
 
-def resume_loop_state(checkpoint: Checkpoint) -> dict[str, Any]:
+def resume_loop_state(checkpoint: Checkpoint, *, max_steps: int | None = None) -> dict[str, Any]:
     """Reconstruct runnable loop state from a checkpoint.
+
+    When ``max_steps`` is supplied, saved spending applies to that total cap.
 
     Returns a dict with:
       - ``session_log``: reconstructed SessionLog
@@ -523,6 +534,15 @@ def resume_loop_state(checkpoint: Checkpoint) -> dict[str, Any]:
 
     cfg = checkpoint.config_snapshot or {}
     state_counters = {k: cfg[k] for k in ("queries_used", "budget_remaining") if k in cfg}
+    if max_steps is not None and "max_steps" in cfg and "budget_remaining" in cfg:
+        budgets = (max_steps, cfg["max_steps"], cfg["budget_remaining"])
+        if any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in budgets
+        ):
+            raise ValueError("checkpoint step budgets must be nonnegative integers")
+        state_counters["budget_remaining"] = max(
+            0, cfg["budget_remaining"] + max_steps - cfg["max_steps"]
+        )
 
     conv = None
     if checkpoint.conversation_data:

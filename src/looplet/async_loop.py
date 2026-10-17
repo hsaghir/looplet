@@ -603,7 +603,7 @@ async def _async_composable_loop_impl(
             config.initial_checkpoint,
             config.run_envelope.run_id if config.run_envelope is not None else None,
         )
-        resumed = _resume_loop_state(config.initial_checkpoint)
+        resumed = _resume_loop_state(config.initial_checkpoint, max_steps=config.max_steps)
         restore_backend = (
             config.router.select(purpose="reasoning") if config.router is not None else llm
         )

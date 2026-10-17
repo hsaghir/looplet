@@ -16,6 +16,7 @@ from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from dataclasses import dataclass, field
+from functools import partial
 from typing import (
     Annotated,
     Any,
@@ -259,7 +260,12 @@ def _json_type_for_annotation(annotation: Any) -> dict[str, Any]:
         literal_values = list(args)
         schema: dict[str, Any] = {"enum": literal_values}
         if literal_values:
-            schema.update(_json_type_for_annotation(type(literal_values[0])))
+            literal_types = list(
+                dict.fromkeys(
+                    _json_type_for_annotation(type(value))["type"] for value in literal_values
+                )
+            )
+            schema["type"] = literal_types[0] if len(literal_types) == 1 else literal_types
         return schema
 
     if origin in (tuple, set, frozenset) or annotation in (tuple, set, frozenset):
@@ -293,11 +299,20 @@ def _json_type_for_annotation(annotation: Any) -> dict[str, Any]:
     )
 
 
+def _callable_target(function: Callable[..., Any]) -> Callable[..., Any]:
+    while isinstance(function, partial):
+        function = function.func
+    return function
+
+
 def _schema_from_callable(fn: Callable[..., Any]) -> dict[str, Any]:
     """Infer a JSON Schema parameter object from a callable signature."""
     sig = inspect.signature(fn)
+    annotation_source = _callable_target(fn)
+    if not inspect.isroutine(annotation_source) and not inspect.isclass(annotation_source):
+        annotation_source = annotation_source.__call__
     try:
-        type_hints = get_type_hints(fn, include_extras=True)
+        type_hints = get_type_hints(annotation_source, include_extras=True)
     except Exception:
         type_hints = {}
     properties: dict[str, Any] = {}
@@ -319,8 +334,12 @@ def _schema_from_callable(fn: Callable[..., Any]) -> dict[str, Any]:
 
 def _description_from_callable(fn: Callable[..., Any]) -> str:
     doc = inspect.getdoc(fn) or ""
+    if not doc and not inspect.isroutine(fn) and not inspect.isclass(fn):
+        call_doc = fn.__call__.__doc__
+        doc = inspect.cleandoc(call_doc) if isinstance(call_doc, str) else ""
     if not doc:
-        return f"Call {fn.__name__.replace('_', ' ')}."
+        name = str(getattr(fn, "__name__", type(fn).__name__))
+        return f"Call {name.replace('_', ' ')}."
     return doc.splitlines()[0]
 
 
@@ -680,12 +699,16 @@ def tool(
     free: bool = False,
     timeout_s: float | None = None,
 ) -> ToolSpec | Callable[[Callable[..., Any]], ToolSpec]:
-    """Create a :class:`ToolSpec` from a Python function.
+    """Create a :class:`ToolSpec` from a Python callable.
 
     The decorator is the beginner-friendly path for tool construction:
     parameter names and required/optional status come from the function
     signature, JSON Schema types come from type hints, and the first
     docstring line becomes the description when one is not provided.
+
+    Partials use the underlying callable's name and effective signature.
+    Callable instances use their class name and class or ``__call__`` docstring.
+    Explicit ``name`` and ``description`` values override inferred metadata.
 
     Examples::
 
@@ -700,9 +723,10 @@ def tool(
     """
 
     def _build(inner: Callable[..., Any]) -> ToolSpec:
+        target = _callable_target(inner)
         return ToolSpec(
-            name=name or inner.__name__,
-            description=description or _description_from_callable(inner),
+            name=name or getattr(target, "__name__", type(target).__name__),
+            description=description or _description_from_callable(target),
             parameters=_schema_from_callable(inner),
             execute=inner,
             concurrent_safe=concurrent_safe,

@@ -13,6 +13,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- The Quickstart adds provider extras from the current source build and preserves guidance for pinned revisions.
+- Tool schemas preserve every mixed or nullable `Literal` choice. Enum checks distinguish booleans from numeric values.
+- `tool` and `tools_from` accept partials and callable instances, preserving effective signatures, resolved annotations, and explicit metadata overrides.
 - Trajectory JSON redacts string values before encoding, preserving valid JSON for escaped text and replacement strings.
 - Captures redact backend errors, recorded tool schemas, and manifest metadata without changing live arguments or exceptions.
 - Tool registration rejects positional-only signatures. Inferred container annotations require JSON-compatible inputs and explicit conversion for sets or tuples.

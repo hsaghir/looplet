@@ -47,6 +47,19 @@ def test_frontdoor_install_uses_current_source_without_checkout(guide_name):
     assert "-e" not in arguments
 
 
+def test_quickstart_provider_extra_keeps_current_source_build():
+    guide = Path(__file__).resolve().parents[1] / "docs" / "quickstart.md"
+    section = guide.read_text().split("## Use the same agent with a real model", 1)[1]
+    command = re.findall(r"^```bash[^\n]*\n(.*?)^```[ \t]*$", section, re.M | re.S)[0]
+    arguments = shlex.split(command.replace("\\\n", " "))
+    assert (
+        "looplet[openai] @ https://github.com/hsaghir/looplet/archive/refs/heads/master.zip"
+        in arguments
+    )
+    assert "-e" not in arguments
+    assert not any(argument.startswith("looplet[openai]==") for argument in arguments)
+
+
 @pytest.mark.parametrize("completed", [False, True])
 def test_primary_cli_run_example_requires_completion(tmp_path, completed):
     guide = Path(__file__).resolve().parents[1] / "docs" / "cli.md"

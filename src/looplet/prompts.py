@@ -65,8 +65,8 @@ def build_prompt(
         tool_catalog: String description of available tools.
         state_summary: Current agent state facts dict.
         context_history: Recent step results as a string.
-        step_number: Current step index.
-        max_steps: Maximum steps allowed.
+        step_number: Current total step index, including free calls.
+        max_steps: Charged-step budget; successful free calls do not consume it.
         session_log: Running session memory / log string.
         briefing: Per-step guidance text (from hooks).
         render_facts: Optional callable to render state_summary into
@@ -152,7 +152,7 @@ def build_prompt(
     # ── §7 STEP (counter + action instruction) ───────────────
     budget = state_summary.get("budget_remaining", "?")
     parts.append(
-        f"═══ {headers['step']} {step_number}/{max_steps} - budget: {budget} steps remaining ═══"
+        f"═══ {headers['step']} {step_number} - charged-step budget: {budget}/{max_steps} remaining ═══"
     )
     if isinstance(budget, int) and budget <= 3:
         parts.append(low_budget_warning)

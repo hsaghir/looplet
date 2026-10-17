@@ -6,8 +6,14 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `looplet --version` prints the installed package version without a command or backend.
+
 ### Changed
 
+- The migration guide configures JSON-text mode for its sample adapter and tests the copied snippets together.
+- Prompts show the total step number separately from the charged-step budget.
 - Source builds identify as `0.4.1.dev0`; published installation commands remain pinned to `0.4.0`.
 - Cartridge compatibility checks place development builds before the matching final release and preserve numeric version constraints.
 - `doctor` reports a SHA-256 fingerprint of library Python sources without requiring Git metadata.

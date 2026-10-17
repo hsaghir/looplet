@@ -35,6 +35,18 @@ Add the provider extra when using a real model.
 
 ## Diagnose and inspect runs
 
+### `looplet --version`
+
+Print the installed package version without selecting or contacting a provider:
+
+```bash
+looplet --version
+python -m looplet --version
+```
+
+This flag is available in unreleased builds.
+For published `0.4.0`, use `looplet doctor --no-backend` instead.
+
 ### `looplet doctor`
 
 Check Python, package version, the selected provider, and native-tool support.

@@ -34,6 +34,40 @@ def _quickstart_agent_source(guide: Path) -> str:
     return declarations + "\n\n" + blocks[1]
 
 
+def test_documented_migration_adapter_matches_loop_protocol():
+    guide = Path(__file__).resolve().parents[1] / "docs" / "migrate.md"
+    blocks = _python_blocks(guide)
+    owner = {"service": "payments", "owner": "fintech-platform"}
+    ownership_service = SimpleNamespace(lookup=Mock(return_value=owner))
+    client = Mock()
+    client.complete.side_effect = [
+        '{"tool":"lookup_owner","args":{"service":"payments"}}',
+        '{"tool":"done","args":{"summary":"The payments owner is fintech-platform."}}',
+    ]
+    logger = Mock()
+    namespace = {
+        "__name__": "documented_migration",
+        "ownership_service": ownership_service,
+        "existing_logger": logger,
+        "user_request": "Find the payments owner, then finish.",
+    }
+    tool_block = next(block for block in blocks if "include_done=True" in block)
+    adapter_block = next(block for block in blocks if "class ExistingBackend:" in block)
+    loop_block = next(block for block in blocks if "config = LoopConfig(" in block)
+    for block in (tool_block, adapter_block):
+        exec(compile(block, str(guide), "exec"), namespace)
+    namespace["current_backend"] = namespace["ExistingBackend"](client)
+    exec(compile(loop_block, str(guide), "exec"), namespace)
+
+    ownership_service.lookup.assert_called_once_with("payments")
+    assert client.complete.call_count == 2
+    assert logger.info.call_count == 2
+    final_step = namespace["step"]
+    assert final_step.tool_call.tool == "done"
+    assert final_step.tool_result.error is None
+    assert final_step.tool_result.data["summary"] == "The payments owner is fintech-platform."
+
+
 def test_documented_shell_replay_works_without_provider(tmp_path):
     guide = Path(__file__).resolve().parents[1] / "docs" / "cli.md"
     section = guide.read_text().split("### Replay captured responses\n", 1)[1]

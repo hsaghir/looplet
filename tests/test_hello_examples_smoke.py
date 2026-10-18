@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import inspect
 import json
+import os
 import re
 import shlex
 import shutil
@@ -667,6 +668,141 @@ def test_documented_first_loop(document: str, tmp_path, monkeypatch) -> None:
         timeout=20,
     )
     assert typed.returncode == 0, typed.stdout + typed.stderr
+
+
+async def test_provenance_async_replay_documented_example(tmp_path):
+    from looplet import DefaultState, ProvenanceSink, tools_from
+
+    guide = Path(__file__).resolve().parents[1] / "docs" / "provenance.md"
+    block = _named_python_blocks(guide)["replay_async.py"]
+    namespace = {"__name__": "replay_async"}
+    exec(compile(block, str(guide), "exec"), namespace)
+    effects = []
+    checked = []
+
+    def record_probe(value: str) -> dict:
+        effects.append(value)
+        return {"value": value}
+
+    class Gate:
+        async def check_permission(self, tool_call, state):
+            checked.append(tool_call.tool)
+            return tool_call.tool != "record_probe"
+
+    tools = tools_from([record_probe], include_done=True, validate=True)
+    sink = ProvenanceSink(dir=tmp_path / "capture")
+    state = DefaultState(max_steps=2)
+    captured = [
+        step
+        async for step in async_composable_loop(
+            llm=sink.wrap_llm(
+                MockLLMBackend(
+                    [
+                        '{"tool":"record_probe","args":{"value":"synthetic"}}',
+                        '{"tool":"done","args":{"summary":"Finished."}}',
+                    ],
+                    cycle=False,
+                )
+            ),
+            tools=tools,
+            state=state,
+            hooks=[Gate(), sink.trajectory_hook()],
+        )
+    ]
+    trace = sink.flush()
+    assert "Permission denied" in captured[0].tool_result.error
+    checked.clear()
+
+    replayed = await namespace["replay_agent"](trace, tools, hooks=[Gate()])
+
+    assert effects == [] and "record_probe" in checked
+    assert "Permission denied" in replayed[0].tool_result.error
+    assert replayed[-1].tool_call.tool == "done"
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("record_only", [False, True])
+async def test_provenance_redaction_modes_are_explicit_upfront(
+    tmp_path, monkeypatch, asynchronous, record_only
+):
+    guide = Path(__file__).resolve().parents[1] / "docs" / "provenance.md"
+    text = guide.read_text()
+    assert text.index("redact_upstream=False") < text.index("## Quick start:")
+    block = _named_python_blocks(guide)["capture_redaction.py"]
+    namespace = {"__name__": "capture_redaction"}
+    monkeypatch.chdir(tmp_path)
+    exec(compile(block, str(guide), "exec"), namespace)
+    seen = []
+
+    class Backend:
+        def generate(self, prompt, **kwargs):
+            seen.append(prompt)
+            return "Observed acct-example-42"
+
+    class AsyncBackend(Backend):
+        async def generate(self, prompt, **kwargs):
+            return super().generate(prompt, **kwargs)
+
+    sink = namespace["record_only" if record_only else "provider_and_record"]
+    recorder = sink.wrap_llm(AsyncBackend() if asynchronous else Backend())
+    prompt = "Look up acct-example-42"
+    result = await recorder.generate(prompt) if asynchronous else recorder.generate(prompt)
+    trace = sink.flush()
+
+    assert seen == [prompt if record_only else "Look up [REDACTED]"]
+    assert result == "Observed acct-example-42"
+    assert recorder.calls[0].prompt == "Look up [REDACTED]"
+    assert all("acct-example-42" not in path.read_text() for path in trace.glob("*.txt"))
+
+
+def test_provenance_golden_fixture_is_reviewable_and_git_addable(tmp_path, monkeypatch):
+    from looplet import DefaultState, ProvenanceSink, replay_loop, tools_from
+
+    repository = Path(__file__).resolve().parents[1]
+    guide = repository / "docs" / "provenance.md"
+    block = _named_python_blocks(guide)["reviewed_replay_fixture.py"]
+    environment = os.environ.copy()
+    names = subprocess.check_output(
+        ["git", "-C", str(repository), "rev-parse", "--local-env-vars"], text=True
+    ).splitlines()
+    for name in names:
+        environment.pop(name, None)
+    subprocess.run(
+        ["git", "-c", "init.defaultBranch=master", "init", "--quiet", str(tmp_path)],
+        env=environment,
+        check=True,
+    )
+    monkeypatch.chdir(tmp_path)
+    raw = ProvenanceSink(dir=tmp_path / "raw-capture")
+    raw.wrap_llm(MockLLMBackend(["private-marker"], cycle=False)).generate("private-marker")
+    raw_path = raw.flush()
+    before = {path: path.read_bytes() for path in raw_path.rglob("*") if path.is_file()}
+    namespace = {"__name__": "reviewed_replay_fixture"}
+
+    exec(compile(block, str(guide), "exec"), namespace)
+
+    fixture = namespace["fixture"]
+    assert {path: path.read_bytes() for path in raw_path.rglob("*") if path.is_file()} == before
+    assert all(
+        "private-marker" not in path.read_text() for path in fixture.iterdir() if path.is_file()
+    )
+    (fixture / "not-reviewed.txt").write_text("private-marker")
+    subprocess.run(["git", "add", "--", str(fixture)], env=environment, check=True)
+    staged = subprocess.check_output(
+        ["git", "diff", "--cached", "--name-only"], env=environment, text=True
+    ).splitlines()
+    expected = {
+        ".gitignore",
+        "artifact.json",
+        "manifest.jsonl",
+        "call_00_prompt.txt",
+        "call_00_response.txt",
+    }
+    assert set(staged) == {str(fixture / name) for name in expected}
+    state = DefaultState(max_steps=1)
+    steps = list(replay_loop(fixture, tools=tools_from([], include_done=True), state=state))
+    assert len(steps) == 1 and steps[0].tool_result.error is None
+    assert RunResult.from_state(state).completed
 
 
 @pytest.mark.parametrize(("observed", "passed"), [("hello\n", True), ("wrong\n", False)])

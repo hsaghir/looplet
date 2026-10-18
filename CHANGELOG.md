@@ -8,11 +8,14 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `async_replay_loop()` replays captured responses with awaited async tools and hooks, shared replay validation, and early-close cleanup.
 - Documented application-state checkpoint and restore callbacks with nested-copy and legacy-snapshot tests.
 - `looplet --version` prints the installed package version without a command or backend.
 
 ### Changed
 
+- Capture documentation distinguishes provider-input scrubbing from record-only redaction before first use, without changing privacy defaults.
+- Golden-test guidance uses a reviewed synthetic replay fixture with a narrow Git allowlist instead of committing raw captures.
 - Inferred tool schemas reject variadic parameters during construction. Explicit schemas and list/dict wrappers remain supported.
 - Graders and collectors reject unsupported async callables with host-code guidance and close unexpected coroutine returns.
 - The Quickstart places its optional real-model handoff before grading, capture, and replay. The eval guide documents pre-awaited collection for synchronous grading.

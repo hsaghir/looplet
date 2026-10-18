@@ -45,7 +45,7 @@ import json
 import logging
 import re
 import time
-from contextlib import contextmanager
+from contextlib import aclosing, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -944,6 +944,10 @@ class ProvenanceSink:
             ...
         sink.flush()
 
+    With ``redact``, prompt strings are scrubbed before the provider call
+    as well as in saved evidence. Use ``redact_upstream=False`` only when
+    the provider may receive the original input and scrubbing is record-only.
+
     The sink is safe to reuse across runs - call :meth:`reset` between
     them, or construct a fresh sink per run (cheaper and clearer).
     ``metadata`` is copied into the trajectory when its hook is created.
@@ -1305,7 +1309,8 @@ def replay_loop(
         tools: Tool registry for the replay loop.
         state: Optional :class:`AgentState`. Defaults to a fresh
             :class:`DefaultState` sized to the replay budget.
-        hooks: Optional hooks to install on the replay loop.
+        hooks: Optional synchronous hooks to install on the replay loop.
+            Use :func:`async_replay_loop` for async hooks or tools.
         config: Optional :class:`LoopConfig` - if omitted, a default is
             constructed from the recorded tool-step count and protocol.
             Call-only captures count native tool calls or text responses.
@@ -1329,7 +1334,56 @@ def replay_loop(
         for step in replay_loop("traces/run_1/", tools=my_tools):
             print(step.pretty())
     """
-    from looplet.loop import LoopConfig, composable_loop  # noqa: PLC0415
+    from looplet.loop import composable_loop  # noqa: PLC0415
+
+    yield from composable_loop(
+        **_prepare_replay(
+            trace_dir, tools=tools, state=state, hooks=hooks, config=config, task=task
+        )
+    )
+
+
+async def async_replay_loop(
+    trace_dir: str | Path,
+    *,
+    tools: Any,
+    state: Any | None = None,
+    hooks: list[Any] | None = None,
+    config: Any | None = None,
+    task: dict[str, Any] | None = None,
+) -> Any:
+    """Replay captured model responses through the async agent loop.
+
+    Accepts the same arguments, saved defaults, and evidence formats as
+    :func:`replay_loop`. Async hooks and tools are awaited by
+    :func:`async_composable_loop`; synchronous hooks and tools also work.
+    Model responses stay fixed while fresh tool and hook effects execute.
+    No live model service is called.
+
+    Yields :class:`Step` objects. Loading and validation errors match
+    :func:`replay_loop`. Use ``contextlib.aclosing`` when stopping early
+    so the underlying async loop is closed with the replay iterator.
+    """
+    from looplet.async_loop import async_composable_loop  # noqa: PLC0415
+
+    arguments = _prepare_replay(
+        trace_dir, tools=tools, state=state, hooks=hooks, config=config, task=task
+    )
+    async with aclosing(async_composable_loop(**arguments)) as iterator:
+        async for step in iterator:
+            yield step
+
+
+def _prepare_replay(
+    trace_dir: str | Path,
+    *,
+    tools: Any,
+    state: Any | None,
+    hooks: list[Any] | None,
+    config: Any | None,
+    task: dict[str, Any] | None,
+) -> dict[str, Any]:
+    from looplet.loop import LoopConfig  # noqa: PLC0415
     from looplet.types import DefaultState  # noqa: PLC0415
 
     trace_path = Path(trace_dir)
@@ -1375,11 +1429,11 @@ def replay_loop(
         task = recorded_task if recorded_task is not None else {}
     if state is None:
         state = DefaultState(max_steps=config.max_steps)
-    yield from composable_loop(
-        llm=backend,
-        tools=tools,
-        task=task,
-        state=state,
-        hooks=hooks or [],
-        config=config,
-    )
+    return {
+        "llm": backend,
+        "tools": tools,
+        "task": task,
+        "state": state,
+        "hooks": hooks or [],
+        "config": config,
+    }

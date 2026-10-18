@@ -80,7 +80,9 @@ class MyHook:
 for method existence with `hasattr()` before calling.
 
 Hook methods may be synchronous or `async def` when using
-`async_composable_loop()`. `pre_loop` may declare `tools=` (or `**kwargs`) to
+`async_composable_loop()`.
+Use [`async_replay_loop()`](provenance.md#replay-async-agents) when replaying async hooks; `replay_loop()` remains synchronous.
+`pre_loop` may declare `tools=` (or `**kwargs`) to
 register or inspect derived tools before the run starts. The `build_prompt`
 callable receives the prompt-part keyword arguments documented in the API map.
 

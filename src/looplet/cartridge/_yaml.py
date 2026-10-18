@@ -39,9 +39,19 @@ def _dump_yaml(value: Any, indent: int = 0) -> str:
     if isinstance(value, (int, float)):
         return repr(value)
     if isinstance(value, str):
-        if not value or any(c in value for c in ":#\n'\"") or value.strip() != value:
+        if (
+            not value
+            or any(c in value for c in ":#\n'\"")
+            or value.strip() != value
+            or value in ("null", "true", "false", "~", "|", "|-", "|+", ">", ">-", ">+")
+            or value.startswith(("[", "{"))
+        ):
             return json.dumps(value)
-        return value
+        try:
+            float(value)
+        except ValueError:
+            return value
+        return json.dumps(value)
     if isinstance(value, list):
         if not value:
             return "[]"

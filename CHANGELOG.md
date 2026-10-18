@@ -14,6 +14,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Cartridge round trips preserve supported per-tool argument validation without changing unvalidated tools. Nullable type tags and enum strings retain their YAML types.
+- Strict script-tool export rejects omitted dependencies with actionable guidance. Loose export records warnings and writes editable placeholders instead of broken function copies.
 - Capture documentation distinguishes provider-input scrubbing from record-only redaction before first use, without changing privacy defaults.
 - Golden-test guidance uses a reviewed synthetic replay fixture with a narrow Git allowlist instead of committing raw captures.
 - Inferred tool schemas reject variadic parameters during construction. Explicit schemas and list/dict wrappers remain supported.

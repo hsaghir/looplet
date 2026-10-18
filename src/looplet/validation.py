@@ -12,6 +12,7 @@ Provides:
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
@@ -77,6 +78,70 @@ class OutputSchema:
 
     fields: dict[str, FieldSpec]
     strict: bool = False
+
+
+_SCHEMA_TYPES = {kind.__name__: kind for kind in (str, int, float, bool, list, dict, type(None))}
+
+
+def _schema_to_payload(schema: OutputSchema) -> dict[str, Any]:
+    fields = {}
+    for name, spec in schema.fields.items():
+        accepted = spec.field_type
+        if isinstance(accepted, str):
+            accepted = _TYPE_MAP.get(accepted) if accepted != "any" else None
+        if accepted is None:
+            names = None
+        else:
+            kinds = accepted if isinstance(accepted, tuple) else (accepted,)
+            if any(kind not in _SCHEMA_TYPES.values() for kind in kinds):
+                raise ValueError(f"field {name!r} uses unsupported Python types: {kinds!r}")
+            names = [kind.__name__ for kind in kinds]
+        fields[name] = {
+            "types": names,
+            "required": spec.required,
+            "description": spec.description,
+            "allowed_values": spec.allowed_values,
+        }
+    payload = {"strict": schema.strict, "fields": fields}
+    encoded = json.loads(json.dumps(payload, allow_nan=False))
+    if encoded != payload:
+        raise ValueError("argument validation contains values that change during JSON encoding")
+    _schema_from_payload(encoded)
+    return encoded
+
+
+def _schema_from_payload(payload: Any) -> OutputSchema:
+    if not isinstance(payload, dict) or set(payload) != {"strict", "fields"}:
+        raise ValueError("argument_validation needs exactly 'strict' and 'fields'")
+    if type(payload["strict"]) is not bool or not isinstance(payload["fields"], dict):
+        raise ValueError("argument_validation needs a boolean 'strict' and a fields mapping")
+    fields = {}
+    for name, entry in payload["fields"].items():
+        expected = {"types", "required", "description", "allowed_values"}
+        if not isinstance(name, str) or not isinstance(entry, dict) or set(entry) != expected:
+            raise ValueError(f"invalid argument_validation field: {name!r}")
+        names = entry["types"]
+        if names is not None and (
+            not isinstance(names, list)
+            or any(not isinstance(kind, str) or kind not in _SCHEMA_TYPES for kind in names)
+        ):
+            raise ValueError(f"field {name!r} has unsupported validation types: {names!r}")
+        if type(entry["required"]) is not bool or not isinstance(entry["description"], str):
+            raise ValueError(
+                f"field {name!r} needs a boolean required flag and a description string"
+            )
+        allowed = entry["allowed_values"]
+        if allowed is not None and not isinstance(allowed, list):
+            raise ValueError(f"field {name!r} allowed_values must be a list or null")
+        fields[name] = FieldSpec(
+            name=name,
+            field_type="any" if names is None else tuple(_SCHEMA_TYPES[kind] for kind in names),
+            required=entry["required"],
+            description=entry["description"],
+            allowed_values=allowed,
+        )
+    json.dumps(payload, allow_nan=False)
+    return OutputSchema(fields=fields, strict=payload["strict"])
 
 
 # ── ValidationResult ─────────────────────────────────────────────────

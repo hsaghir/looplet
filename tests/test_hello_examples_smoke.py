@@ -244,6 +244,33 @@ def test_documented_custom_agent_starter_is_complete_and_repeatable(tmp_path, ow
     assert agent.read_bytes() == authored_source
 
 
+def test_documented_one_file_case_uses_the_exported_agent(tmp_path):
+    from looplet import load_eval_run
+
+    guide = Path(__file__).resolve().parents[1] / "docs" / "quickstart.md"
+    project = tmp_path / "case project with spaces"
+    project.mkdir()
+    exported = _run_documented_shell(guide, "copy_agent_starter.sh", project)
+    assert exported.returncode == 0, exported.stdout + exported.stderr
+    block = re.search(
+        r'^```json title="owner_case\.json"\n(.*?)^```[ \t]*$', guide.read_text(), re.M | re.S
+    )
+    assert block is not None
+    case = json.loads(block.group(1))
+    (project / "owner_case.json").write_text(block.group(1))
+    result = _run_documented_shell(guide, "one_file_case.sh", project)
+    assert result.returncode == 0, result.stdout + result.stderr
+    experiment = next((project / ".looplet/experiments").iterdir())
+    assert json.loads((experiment / "experiment.json").read_text())["passed"]
+    for name in ("capture", "replay"):
+        saved = load_eval_run(experiment / name)
+        assert saved.case is not None
+        assert saved.case.id == case["id"]
+        assert saved.case.task == case["task"]
+        assert saved.context.expected == case["expected"]
+        assert saved.results and all(result.passed for result in saved.results)
+
+
 def test_documented_one_file_provider_handoff_uses_the_exported_agent(tmp_path, monkeypatch):
     from looplet.examples import quickstart
 

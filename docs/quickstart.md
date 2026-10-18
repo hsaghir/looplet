@@ -91,6 +91,7 @@ PY
 ```
 
 Edit the tools, `EXPECTED_OWNER`, grader, and fixed responses in that file.
+The default `owner_case()` derives the task from `EXPECTED_OWNER["service"]` and keeps the expected answer separate.
 No other authored Python files are needed.
 Run this complete workflow again whenever you change the agent:
 
@@ -105,6 +106,27 @@ Use `--out NEW_DIRECTORY` to choose a new experiment directory explicitly.
 Existing directories are refused.
 Experiment directories store evidence; they do not isolate tool effects.
 
+Use one case file when the task needs different wording or expectations:
+
+```json title="owner_case.json"
+{
+    "id": "payments-owner",
+    "task": {"goal": "Look up who owns the payments service."},
+    "expected": {"service": "payments", "owner": "fintech-platform"}
+}
+```
+
+```bash title="one_file_case.sh"
+python my_agent.py --case owner_case.json --experiment
+```
+
+The task goes to the agent; expectations stay with the grader.
+Capture and replay save the same case.
+`--case` applies only to fresh runs; replay and rescoring use their saved case.
+Fixed responses are fixtures; update them when changing the expected tool calls or answers.
+For multiple cases or seed files, use the [factory CLI](#use-the-same-factory-in-the-shell).
+The one-file command refuses seeded cases instead of writing their files into the current directory.
+
 Use the individual operations when diagnosing a run:
 
 ```bash
@@ -117,18 +139,30 @@ looplet inspect ./replayed-capture
 Choose unused paths for new captures and replays.
 Replay saves fresh prompts, responses, steps, and grades without changing the original record.
 It reuses the saved task and expectations, then runs current tools and graders.
-Without `--max-steps`, replay uses the captured budget.
+Without `--max-steps`, replay uses the recorded tool-step count.
 An explicit replay limit is honored.
 A larger limit can exhaust the recorded responses.
 Replay does not call the original provider or restore historical workspace state.
 Use isolated workspaces when tools modify files or contact services.
+
+Use the same saved capture and exported factory from the CLI:
+
+```bash
+looplet replay ./original-capture --factory my_agent:build --evals my_agent.py --workspace ./cli-replay
+```
+
+Choose a new workspace path each time.
+CLI replay preserves the captured protocol, task, and expectations.
+It collects fresh evidence but does not run graders.
+Run its printed `Grade` command to assess the new record.
+Older eval captures without a case file retain their saved expectations too.
 
 #### Use the one-file agent with a real model
 
 Keep the exported file and install the provider extra from the same pinned preview:
 
 ```bash title="one_file_live.sh"
-python -m pip install "looplet[openai] @ https://github.com/hsaghir/looplet/archive/ca6800208836333e6eb36273724cb04d0b58bb6d.zip"
+python -m pip install "looplet[openai] @ https://github.com/hsaghir/looplet/archive/255ac5da2a827373fbe63e31eed1e06dfb815546.zip"
 export OPENAI_API_KEY=...
 export OPENAI_MODEL=gpt-4o
 python my_agent.py --backend openai --max-steps 8 --experiment

@@ -171,6 +171,14 @@ Flush the sink after closing the iterator, including interrupted runs.
 This records replay evidence; attach an `EvalHook` and use `save_eval_run()` to persist grades too.
 Tools and other effects execute again; a new record is not a sandbox or checkpoint restoration.
 
+The one-file starter saves an `EvalCase` with each capture.
+It keeps the task, case identity, and grader-only expectations together through Python and CLI replay.
+CLI replay restores the captured native-tool or JSON-text protocol instead of the factory default.
+Older eval captures with saved expectations can be replayed without first adding a case file or recapturing model calls.
+The new CLI replay record preserves those expectations for offline grading.
+Raw traces without expectations remain ungraded.
+The CLI `--evals` option supplies collectors; run the printed grading command separately.
+
 ### Share a reviewed summary
 
 New trace and eval-record directories contain a wildcard `.gitignore` before evidence is written.

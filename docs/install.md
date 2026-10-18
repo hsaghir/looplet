@@ -30,12 +30,14 @@ Use this separate environment for the [factory commands](quickstart.md#use-the-s
 ```bash
 python -m venv .venv-looplet-preview
 source .venv-looplet-preview/bin/activate
-python -m pip install "looplet @ https://github.com/hsaghir/looplet/archive/ca6800208836333e6eb36273724cb04d0b58bb6d.zip"
+python -m pip install "looplet @ https://github.com/hsaghir/looplet/archive/255ac5da2a827373fbe63e31eed1e06dfb815546.zip"
 looplet doctor --no-backend --json
 ```
 
-This non-editable install pins commit `ca68002` with factory commands and the complete one-file starter.
+This non-editable install pins commit `255ac5d` with factory commands and the complete one-file starter.
 The starter selects providers, saves replay evidence, and runs repeat-safe experiments.
+Its cases keep tasks and expectations together.
+CLI replay preserves the captured protocol and saved expectations.
 Installation needs network access, but not Git or a model key.
 It does not install a new PyPI release.
 Both builds report version `0.4.1`; the doctor report records their different library source fingerprints.

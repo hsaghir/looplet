@@ -125,8 +125,11 @@ The directory-based pytest command above works with either filename layout.
 Omit `--python` to create definitions without a test.
 The [Quickstart](quickstart.md#3-check-the-answer) provides complete executable files.
 You can also check graders kept in an agent module with `looplet eval check first_loop.py`.
-`looplet eval run` expects a cartridge directory, not the standalone `evals/` directory created above.
-`--python` writes an ordinary pytest example; it does not add a Python runner to the CLI.
+Definitions alone do not identify the agent that should run them.
+Published `0.4.1` requires a cartridge for CLI case execution.
+The [unreleased factory runner](#choose-one-execution-path) accepts the same Python agent without packaging.
+Use the [pinned preview install](install.md#try-unreleased-factory-commands) for that runner.
+`--python` creates a pytest starter; it does not select an execution path for you.
 
 `eval check` accepts one file or a directory; saved cases are optional.
 It imports trusted Python definitions.
@@ -192,6 +195,20 @@ Place this directory inside a cartridge to use the existing fresh-run CLI below.
 The scaffold remains a self-test contract, not a protected promotion holdout.
 
 ## Choose one execution path
+
+**Python factories (unreleased):** use the same factory and graders from the
+[Quickstart](quickstart.md#use-the-same-factory-in-the-shell):
+
+```bash
+looplet eval run --factory first_loop:build --evals first_loop.py \
+    --cases cases/owner.json --json
+```
+
+Install the [pinned preview](install.md#try-unreleased-factory-commands) first.
+Configure a provider, or use the Quickstart's complete fixed-response recipe.
+Each case gets a fresh preset and seeded workspace.
+The runner owns collection, grading, capture, and preset cleanup.
+Keep grader-only expectations out of the agent task.
 
 **Cartridge authors:** put cases, collectors, and graders under `evals/`, then
 run the self-tests:

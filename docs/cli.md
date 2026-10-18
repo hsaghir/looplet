@@ -30,6 +30,7 @@ The loop stays the same.
 
 **Unreleased:** shell run, eval, and replay accept trusted Python factories without packaging.
 Published `0.4.1` still requires a cartridge or bundle for shell execution.
+Use the [pinned preview install](install.md#try-unreleased-factory-commands) for factory commands.
 The [copyable Python workflow](quickstart.md#use-the-same-factory-in-the-shell) uses the same factory across all three commands.
 `run` accepts `module:factory`, not arbitrary Python scripts.
 The callable accepts `SkillRuntime` and returns a fresh `AgentPreset`.

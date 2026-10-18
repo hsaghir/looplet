@@ -22,6 +22,25 @@ The fixed-response tutorial itself needs neither a model key nor a model service
 Record package hashes in your dependency lockfile for deployment.
 Use `looplet doctor --no-backend --json` when you also need the library source fingerprint.
 
+## Try unreleased factory commands
+
+The factory shell workflow requires unreleased source, not the PyPI `0.4.1` package.
+Use this separate environment for the [factory commands](quickstart.md#use-the-same-factory-in-the-shell):
+
+```bash
+python -m venv .venv-looplet-preview
+source .venv-looplet-preview/bin/activate
+python -m pip install "looplet @ https://github.com/hsaghir/looplet/archive/03d5644095873366dd95620b1d0cc84bbd0ac838.zip"
+looplet doctor --no-backend --json
+```
+
+This non-editable install pins reviewed commit `03d5644` with factory run, eval, and replay support.
+Installation needs network access, but not Git or a model key.
+It does not install a new PyPI release.
+Both builds report version `0.4.1`; the doctor report records their different library source fingerprints.
+Keep the commit and source fingerprint with experiment results.
+The ordinary Python, pytest, capture, and replay examples work with released `0.4.1`.
+
 ## Install the published package
 
 The latest PyPI release is `0.4.1`.

@@ -70,8 +70,45 @@ python -m looplet.examples.quickstart --stop-after-lookup
 ```
 
 Read the [complete Python source](https://github.com/hsaghir/looplet/blob/master/src/looplet/examples/quickstart.py) to edit or reuse its functions.
-The remaining sections build the same example incrementally.
-Choose either path; the companion does not require files from those sections.
+
+### Make the complete example your own
+
+Use one editable file for your tools, capture, rescoring, and replay.
+Export the installed companion once; an existing file is never replaced:
+
+```bash title="copy_agent_starter.sh"
+python - <<'PY'
+from importlib.resources import files
+from pathlib import Path
+
+starter = files("looplet.examples").joinpath("quickstart.py")
+with Path("my_agent.py").open("x", encoding="utf-8") as output:
+    output.write(starter.read_text(encoding="utf-8"))
+PY
+```
+
+Edit the tools, `EXPECTED_OWNER`, grader, and fixed responses in that file.
+No other authored Python files are needed.
+Run this complete workflow again whenever you change the agent:
+
+```bash title="custom_agent_workflow.sh"
+python my_agent.py
+mkdir -p .looplet/experiments
+experiment_root="$(mktemp -d .looplet/experiments/owner.XXXXXXXX)"
+python my_agent.py --capture "$experiment_root/capture"
+looplet inspect "$experiment_root/capture"
+python my_agent.py --rescore "$experiment_root/capture"
+python my_agent.py --replay "$experiment_root/capture"
+```
+
+Each invocation creates a new experiment directory and preserves earlier evidence.
+The capture command prints its inspection path.
+Rescoring reads saved evidence; replay executes the current tools again.
+These commands work with released `0.4.1` and the pinned preview.
+Use the [real-model section](#use-the-same-agent-with-a-real-model) for adapter and protocol settings.
+
+The remaining sections explain the pieces incrementally.
+They are optional; the one-file starter does not import their example files.
 
 ## 2. Run the agent and get its answer
 
@@ -290,6 +327,7 @@ Omit `--python` to create definitions only.
 
 **Unreleased:** the following factory commands are not in published `0.4.1`.
 The Python and pytest commands above work with that release.
+Use the [pinned preview install](install.md#try-unreleased-factory-commands) before trying these shell commands.
 
 `build(runtime)` returns a fresh preset with the same tools.
 The CLI supplies `SkillRuntime` and closes the preset after each run.
@@ -311,20 +349,56 @@ Create `cases/owner.json` for the same host-owned expectation:
 Run, evaluate, and replay the same factory without a provider:
 
 ```bash title="python_factory_cli.sh"
+set -eu
+mkdir -p .looplet/experiments
+experiment_root="$(mktemp -d .looplet/experiments/owner.XXXXXXXX)"
+printf 'Experiment: %s\n' "$experiment_root"
+
 looplet run first_loop:build "Find the payments owner, then finish." \
     --scripted-response '{"tool":"lookup_owner","args":{"service":"payments"}}' \
     --scripted-response '{"tool":"done","args":{"service":"payments","owner":"fintech-platform"}}' \
-    --max-steps 2 --json
+    --max-steps 2 --json > "$experiment_root/run.json"
 
 looplet eval run --factory first_loop:build --evals first_loop.py \
-    --cases cases/owner.json --out shell-evals --max-steps 2 \
+    --cases cases/owner.json --out "$experiment_root/evals" --max-steps 2 \
     --scripted-response '{"tool":"lookup_owner","args":{"service":"payments"}}' \
     --scripted-response '{"tool":"done","args":{"service":"payments","owner":"fintech-platform"}}' \
-    --json
+    --json > "$experiment_root/eval.json"
 
-looplet replay shell-evals/owner --factory first_loop:build --evals first_loop.py \
-    --workspace replay-workspace --json
+case_dir="$(python - "$experiment_root/eval.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+with Path(sys.argv[1]).open(encoding="utf-8") as source:
+    report = json.load(source)
+print(Path(report["output_dir"]) / report["cases"][0]["id"])
+PY
+)"
+
+looplet replay "$case_dir" --factory first_loop:build --evals first_loop.py \
+    --workspace "$experiment_root/replay" --json > "$experiment_root/replay.json"
+
+replay_trace="$(python - "$experiment_root/replay.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+with Path(sys.argv[1]).open(encoding="utf-8") as source:
+    print(json.load(source)["trace_dir"])
+PY
+)"
+
+looplet inspect "$replay_trace"
+looplet eval "$replay_trace" --evals first_loop.py --json > "$experiment_root/grade.json"
+python -m json.tool "$experiment_root/grade.json"
 ```
+
+Repeat this whole recipe after changing the agent; each invocation creates a fresh experiment directory.
+The reports supply the case and replay paths, so no path substitutions are needed.
+The printed directory contains the run, eval, replay, and grade reports.
+This single-case example replays the first reported case; select each case when expanding your suite.
+Earlier evidence and workspaces are never overwritten.
 
 `run` reports accepted completion; without eval hooks, its `grading_status` is `not_graded`.
 `eval check` reports definition validity and `behavior_run: false`; it does not grade an answer.

@@ -58,6 +58,46 @@ def test_quickstart_provider_extra_keeps_fixed_release():
     assert not any("refs/heads/master" in argument for argument in arguments)
 
 
+def test_factory_shell_workflow_has_a_separate_pinned_preview_install():
+    docs = Path(__file__).resolve().parents[1] / "docs"
+    install = (docs / "install.md").read_text()
+    section = install.split("## Try unreleased factory commands\n", 1)[1].split("\n## ", 1)[0]
+    command = re.findall(r"^```bash[^\n]*\n(.*?)^```[ \t]*$", section, re.M | re.S)[0]
+    arguments = shlex.split(command.replace("\\\n", " "))
+    assert ".venv-looplet-preview" in arguments
+    assert "-e" not in arguments
+    assert any(
+        re.fullmatch(
+            r"looplet @ https://github.com/hsaghir/looplet/archive/[a-f0-9]{40}\.zip", item
+        )
+        for item in arguments
+    )
+    assert "source fingerprint" in section
+    assert "Both builds report version `0.4.1`" in section
+    assert "(install.md#try-unreleased-factory-commands)" in (docs / "quickstart.md").read_text()
+
+
+def test_python_eval_guidance_distinguishes_released_and_preview_runners():
+    docs = Path(__file__).resolve().parents[1] / "docs"
+    guide = (docs / "evals.md").read_text()
+    assert "Published `0.4.1` requires a cartridge for CLI case execution." in guide
+    assert "looplet eval run --factory first_loop:build --evals first_loop.py" in guide
+    for name in ("evals.md", "cli.md"):
+        assert "(install.md#try-unreleased-factory-commands)" in (docs / name).read_text()
+
+
+def test_factory_run_help_uses_agent_target_name(capsys):
+    from looplet.__main__ import main
+
+    with pytest.raises(SystemExit) as exit_status:
+        main(["run", "--help"])
+    assert exit_status.value.code == 0
+    output = capsys.readouterr().out
+    assert "AGENT task" in output
+    assert "bundle task" not in output
+    assert "Python module:factory reference" in output
+
+
 @pytest.mark.parametrize("completed", [False, True])
 def test_primary_cli_run_example_requires_completion(tmp_path, completed):
     guide = Path(__file__).resolve().parents[1] / "docs" / "cli.md"
@@ -125,6 +165,77 @@ def _quickstart_agent_source(guide: Path) -> str:
     declarations = "".join(first_loop.splitlines(keepends=True)[: main.lineno - 1])
     grading = next(block for block in _python_blocks(guide) if "def assess_result(" in block)
     return declarations + "\n\n" + grading
+
+
+def _run_documented_shell(guide: Path, name: str, project: Path):
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("The documented recipe uses Bash")
+    match = re.search(
+        rf'^```bash title="{re.escape(name)}"\n(.*?)^```[ \t]*$',
+        guide.read_text(),
+        re.M | re.S,
+    )
+    assert match is not None
+    script = project / name
+    script.write_text(match.group(1))
+    environment = os.environ.copy()
+    environment["PATH"] = (
+        str(Path(sys.executable).parent) + os.pathsep + environment.get("PATH", "")
+    )
+    return subprocess.run(
+        [bash, "-e", "-u", "-o", "pipefail", str(script)],
+        cwd=project,
+        env=environment,
+        text=True,
+        capture_output=True,
+        timeout=20,
+    )
+
+
+@pytest.mark.parametrize("owner", ["fintech-platform", "data-platform"])
+def test_documented_custom_agent_starter_is_complete_and_repeatable(tmp_path, owner):
+    from looplet import load_eval_run
+    from looplet.examples import quickstart
+
+    guide = Path(__file__).resolve().parents[1] / "docs" / "quickstart.md"
+    project = tmp_path / "custom agent with spaces"
+    project.mkdir()
+    exported = _run_documented_shell(guide, "copy_agent_starter.sh", project)
+    assert exported.returncode == 0, exported.stdout + exported.stderr
+    agent = project / "my_agent.py"
+    assert agent.read_bytes() == Path(quickstart.__file__).read_bytes()
+    assert list(project.glob("*.py")) == [agent]
+    agent.write_text(agent.read_text().replace("fintech-platform", owner))
+    authored_source = agent.read_bytes()
+
+    first = _run_documented_shell(guide, "custom_agent_workflow.sh", project)
+    assert first.returncode == 0, first.stdout + first.stderr
+    assert owner in first.stdout
+    experiments = project / ".looplet" / "experiments"
+    before = {path: path.read_bytes() for path in experiments.rglob("*") if path.is_file()}
+    assert before
+
+    second = _run_documented_shell(guide, "custom_agent_workflow.sh", project)
+    assert second.returncode == 0, second.stdout + second.stderr
+    assert owner in second.stdout
+    assert all(path.read_bytes() == content for path, content in before.items())
+    directories = list(experiments.iterdir())
+    assert len(directories) == 2
+    for directory in directories:
+        saved = load_eval_run(directory / "capture")
+        assert saved.context.completed
+        assert saved.context.expected["owner"] == owner
+        assert saved.context.final_output["owner"] == owner
+        assert (
+            "expected"
+            not in json.loads((directory / "capture" / "trajectory.json").read_text())["task"]
+        )
+
+    duplicate = _run_documented_shell(guide, "copy_agent_starter.sh", project)
+    assert duplicate.returncode != 0
+    assert "FileExistsError" in duplicate.stderr
+    assert agent.read_bytes() == authored_source
 
 
 def test_packaged_quickstart_runs_without_authored_files(tmp_path, monkeypatch, capsys):
@@ -1029,40 +1140,39 @@ def test_quickstart_real_model_handoff_precedes_advanced_workflows(tmp_path, mon
 def test_copied_quickstart_factory_cli_workflow(tmp_path):
     guide = Path(__file__).resolve().parents[1] / "docs" / "quickstart.md"
     source = guide.read_text()
-    (tmp_path / "first_loop.py").write_text(_quickstart_agent_source(guide))
+    project = tmp_path / "factory project with spaces"
+    project.mkdir()
+    (project / "first_loop.py").write_text(_quickstart_agent_source(guide))
     case = re.search(r'^```json title="cases/owner\.json"\n(.*?)^```[ \t]*$', source, re.M | re.S)
     assert case is not None
-    (tmp_path / "cases").mkdir()
-    (tmp_path / "cases" / "owner.json").write_text(case.group(1))
-    commands = re.search(
-        r'^```bash title="python_factory_cli\.sh"\n(.*?)^```[ \t]*$', source, re.M | re.S
-    )
-    assert commands is not None
-    arguments = [
-        shlex.split(line)
-        for line in commands.group(1).replace("\\\n", "").splitlines()
-        if line.strip()
-    ]
-    assert len(arguments) == 3
-    payloads = []
-    for command in arguments:
-        assert command[0] == "looplet"
-        completed = subprocess.run(
-            [sys.executable, "-m", "looplet", *command[1:]],
-            cwd=tmp_path,
-            text=True,
-            capture_output=True,
-            timeout=20,
-        )
-        assert completed.returncode == 0, completed.stdout + completed.stderr
-        payloads.append(json.loads(completed.stdout))
-    assert payloads[0]["completed"] and payloads[0]["grading_status"] == "not_graded"
-    assert payloads[1]["passed"]
-    assert payloads[2]["completed"] and payloads[2]["grading_status"] == "not_graded"
-    assert (tmp_path / "shell-evals" / "owner" / "case.json").is_file()
-    assert (tmp_path / "replay-workspace").is_dir()
-    assert not list(tmp_path.rglob("cartridge.json"))
-    assert not list(tmp_path.rglob("SKILL.md"))
+    (project / "cases").mkdir()
+    (project / "cases" / "owner.json").write_text(case.group(1))
+    first = _run_documented_shell(guide, "python_factory_cli.sh", project)
+    assert first.returncode == 0, first.stdout + first.stderr
+    experiments = project / ".looplet" / "experiments"
+    before = {path: path.read_bytes() for path in experiments.rglob("*") if path.is_file()}
+    assert before
+
+    second = _run_documented_shell(guide, "python_factory_cli.sh", project)
+    assert second.returncode == 0, second.stdout + second.stderr
+    assert all(path.read_bytes() == content for path, content in before.items())
+    directories = list(experiments.iterdir())
+    assert len(directories) == 2
+    for directory in directories:
+        run = json.loads((directory / "run.json").read_text())
+        assessment = json.loads((directory / "eval.json").read_text())
+        replay = json.loads((directory / "replay.json").read_text())
+        grading = json.loads((directory / "grade.json").read_text())
+        assert run["completed"] and run["grading_status"] == "not_graded"
+        assert assessment["passed"] and assessment["valid"]
+        assert replay["completed"] and replay["grading_status"] == "not_graded"
+        assert grading["passed"] and grading["valid"]
+        saved_case = project / assessment["output_dir"] / assessment["cases"][0]["id"]
+        assert (saved_case / "case.json").is_file()
+        assert (directory / "replay").is_dir()
+        assert Path(replay["trace_dir"]).is_dir()
+    assert not list(project.rglob("cartridge.json"))
+    assert not list(project.rglob("SKILL.md"))
 
 
 def test_quickstart_scripted_backend_rejects_extra_model_calls() -> None:

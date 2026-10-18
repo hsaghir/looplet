@@ -81,6 +81,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, NamedTuple, TextIO, cast
 
 from looplet.artifact_compat import (
+    ARTIFACT_DESCRIPTOR,
+    ARTIFACT_PENDING,
     begin_artifact_write,
     read_artifact_descriptor,
     write_artifact_descriptor,
@@ -3287,30 +3289,36 @@ def _run_saved_evaluation(parsed: Namespace, *, output: TextIO) -> int:
     records: list[EvalRunRecord] = []
     names: list[str] = []
     load_failures: list[str] = []
+
+    def is_saved_run(directory: Path) -> bool:
+        return directory.is_dir() and any(
+            (directory / marker).exists()
+            for marker in ("trajectory.json", "evals.json", ARTIFACT_DESCRIPTOR, ARTIFACT_PENDING)
+        )
+
     trace_dirs = (
         [traces_root]
-        if (traces_root / "trajectory.json").is_file()
-        else sorted(traces_root.iterdir())
+        if is_saved_run(traces_root)
+        else [directory for directory in sorted(traces_root.iterdir()) if is_saved_run(directory)]
     )
     for d in trace_dirs:
-        if d.is_dir() and (d / "trajectory.json").exists():
-            try:
-                descriptor = read_artifact_descriptor(d, expected_kinds=("eval_run", "provenance"))
-                is_eval_run = (
-                    descriptor["kind"] == "eval_run"
-                    if descriptor is not None
-                    else (d / "evals.json").is_file()
-                )
-                records.append(
-                    load_eval_run(d)
-                    if is_eval_run
-                    else EvalRunRecord(None, EvalContext.from_trajectory_dir(d), [], d)
-                )
-                names.append(d.name)
-            except Exception as e:  # noqa: BLE001
-                failure = f"{d.name}: {e}"
-                load_failures.append(failure)
-                print(f"  ERROR {failure}")
+        try:
+            descriptor = read_artifact_descriptor(d, expected_kinds=("eval_run", "provenance"))
+            is_eval_run = (
+                descriptor["kind"] == "eval_run"
+                if descriptor is not None
+                else (d / "evals.json").is_file()
+            )
+            records.append(
+                load_eval_run(d)
+                if is_eval_run
+                else EvalRunRecord(None, EvalContext.from_trajectory_dir(d), [], d)
+            )
+            names.append(d.name)
+        except Exception as e:  # noqa: BLE001
+            failure = f"{d.name}: {e}"
+            load_failures.append(failure)
+            print(f"  ERROR {failure}")
 
     if not records:
         print(f"No trajectories found in {traces_root}")

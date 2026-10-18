@@ -959,7 +959,13 @@ def _render_eval_assessment(report_path: Path, *, json_output: bool) -> int:
     for case in cases:
         print(f"\n  {case['id']}:")
         for result in case["results"]:
-            print(f"    {result['name']}: {result['state']}")
+            details = []
+            if result.get("score") is not None:
+                details.append(f"score={result['score']}")
+            if result.get("label"):
+                details.append(f"label={result['label']}")
+            suffix = f" ({', '.join(details)})" if details else ""
+            print(f"    {result['name']}: {result['state']}{suffix}")
             if result.get("explanation"):
                 print(f"      {result['explanation']}")
     for error in failures:

@@ -786,6 +786,9 @@ The first command executes fresh agent runs and collects outcomes.
 The second rescores existing observations; it does not repeat execution or collection.
 Ordinary grader diagnostic output goes to stderr in JSON mode.
 Partial trajectory load failures remain visible in the assessment and produce a failing exit code.
+Saved-run markers identify existing cases even when a required component is missing.
+Such cases produce integrity failures instead of being skipped.
+This cannot detect a case whose directory and markers are entirely absent.
 
 Successful evaluation setup returns zero only for a passing assessment.
 Failed assessments, setup errors, and report-save errors return nonzero.
@@ -829,6 +832,7 @@ Suite inspection shows saved case grades without applying a new threshold.
 The separate report records the new verdict, including failures, before the rescore command returns.
 Capture-time grades and other saved evidence remain unchanged.
 Without `--out`, rescoring remains transient.
+Reports may be saved beside case directories; evidence links include only saved-run directories.
 Choose a new output path each time; existing files and paths inside referenced evidence directories are refused.
 New report files use mode `0600`; newly created parent directories use `0700`.
 These permissions do not redact sensitive grader details or change existing directory permissions.
@@ -839,6 +843,7 @@ The nested summary uses the selected assessment version, 1 or 2.
 `--json` stdout remains the ordinary `looplet.eval-summary`, not the saved outer object.
 `looplet inspect REPORT.json --json` returns the stored outer object.
 Inspection reads the stored verdict and threshold; it does not rerun graders or attest authenticity.
+Human inspection shows each grader's state, score, and label when present.
 A readable failing report exits zero from inspection.
 Copy the report and referenced traces together when sharing private evidence.
 Moving the report alone does not carry the trace contents.

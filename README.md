@@ -30,19 +30,19 @@ It does not require a workflow graph, a hosted service, or a cartridge.
 
 ## Run one loop
 
-Install the current source build for the examples and fixes in these guides.
+Install the fixed release for the examples and fixes in these guides.
 No Git installation or local repository checkout is needed.
 
 ```bash
-python -m pip install "looplet @ https://github.com/hsaghir/looplet/archive/refs/heads/master.zip"
+python -m pip install "looplet==0.4.1"
 ```
 
 Run this inside a virtual environment; see [Install](docs/install.md).
 This installs a non-editable package and needs network access.
 
-Source builds identify as `0.4.1.dev0`; this is not a published patch release.
-PyPI `0.4.0` lacks the [later safety fixes](docs/install.md#unreleased-safety-fixes).
-The archive follows `master`; pin an approved full commit hash for deployment.
+The latest PyPI release is `0.4.1`.
+It includes the [safety fixes](docs/install.md#unreleased-safety-fixes) missing from `0.4.0`.
+Pin the version and artifact hashes in your dependency lockfile for deployment.
 
 The example uses fixed model responses.
 It runs without a model service or an API key.
@@ -90,7 +90,7 @@ You can also call `lookup_owner("payments")` directly.
 Each yielded step follows a tool call.
 The tool has already run when your code receives that step.
 Use `break` to stop iteration before requesting another step.
-For native batches, preventing later calls requires the [unreleased serial-dispatch fix](docs/install.md#unreleased-safety-fixes).
+For native batches, preventing later calls requires the [serial-dispatch fix in `0.4.1`](docs/install.md#unreleased-safety-fixes).
 Published `0.4.0` may execute the batch before yielding its first step.
 With `concurrent_dispatch=True`, the batch runs before its results are yielded.
 `closing` closes the loop and runs its end hooks.
@@ -126,7 +126,7 @@ You do not need a new execution engine to use them.
 | Connect tools or other hosts | Protocol adapters | [Portability](docs/portability.md) |
 
 Looplet `0.4.0` includes the Python helpers and unified CLI.
-The guides mark later behavior as unreleased.
+The guides identify behavior added in `0.4.1`.
 Older commands, such as `run-cartridge`, `describe`, and `show`, remain supported.
 
 ## Check results
@@ -208,10 +208,10 @@ Before version `1.0`, a minor release can change an API incompatibly.
 Pin the minor version for a published install:
 
 ```toml
-looplet>=0.4,<0.5
+looplet>=0.4.1,<0.5
 ```
 
-The latest PyPI release is `0.4.0`.
+The latest PyPI release is `0.4.1`.
 The recommended source build includes later fixes that are not yet on PyPI.
 See the [changelog](CHANGELOG.md) and [release plan](ROADMAP.md#path-to-10).
 

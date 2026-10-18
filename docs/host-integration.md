@@ -372,7 +372,7 @@ Configure both [application-state callbacks](operations.md#preserve-application-
 to persist application data and hook progress across restarts.
 Keep `state.steps` limited to the current iterator; recovery already restores its prior offset.
 
-In unreleased builds, automatic resume rejects unreadable or invalid checkpoints for the selected run.
+Since `0.4.1`, automatic resume rejects unreadable or invalid checkpoints for the selected run.
 Preserve damaged files and reconcile possible effects before repairing recovery state.
 See the [recovery behavior and installation requirements](operations.md#checkpoints-and-cancellation).
 

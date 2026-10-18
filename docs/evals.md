@@ -115,11 +115,11 @@ Keep tools and collectors bound to the same workspace.
 Existing starter files are never overwritten.
 Edit the functions and case data directly as the contract grows.
 
-Current `master` uses a unique test filename so separate generated suites can be collected together.
+Version `0.4.1` uses a unique test filename so separate generated suites can be collected together.
 It also lets `eval init --python evals/` add a test to existing case and grader definitions without importing them.
 Existing test starters are refused.
 Generated runners also preserve case marks for pytest selection.
-These starter changes are unreleased; published `0.4.0` uses `test_agent.py` and requires fresh starter paths.
+Version `0.4.0` uses `test_agent.py` and requires fresh starter paths.
 The directory-based pytest command above works with either filename layout.
 
 Omit `--python` to create definitions without a test.
@@ -648,14 +648,14 @@ looplet eval cases show evals/ multiply_fix   # full JSON dump
 Use the same eval root as `eval init` and `eval check`, or pass a direct case directory or JSON/JSONL file.
 Browsing does not import graders. Listings preview the task description, goal, or notes in that order.
 
-Unreleased builds identify invalid case data by file and JSON entry number or JSONL line.
+Since `0.4.1`, invalid case data identifies its file and JSON entry number or JSONL line.
 Each case must be an object with an `id`.
-Unreleased builds also reject unknown fields instead of discarding them.
+Since `0.4.1`, case loading also rejects unknown fields instead of discarding them.
 Errors suggest close field names, such as `expected` for `expectd`.
 Case fields are `id`, `task`, `expected`, `marks`, and `notes`.
 Saved run records retain forward compatibility and ignore unknown saved case fields.
 
-Unreleased builds can select live cartridge cases by mark:
+Version `0.4.1` can select live cartridge cases by mark:
 
 ```bash
 looplet eval cases ls evals/ --case-mark smoke

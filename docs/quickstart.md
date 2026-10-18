@@ -8,21 +8,64 @@ Cartridges and bundles are optional packaging formats, not prerequisites.
 
 ## 1. Install Looplet
 
-Install the current source build in your own project.
+Install release `0.4.1` in your own project.
 It includes the fixes used below and does not require Git or a repository checkout.
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-python -m pip install "looplet @ https://github.com/hsaghir/looplet/archive/refs/heads/master.zip"
+python -m pip install "looplet==0.4.1"
 ```
 
 The core package has no third-party runtime dependencies.
 The install needs network access; the fixed-response runs do not.
-This is a non-editable development build, `0.4.1.dev0`, not a published patch release.
-The archive follows `master`; pin an approved full commit hash for deployment.
+This is a non-editable install of a fixed package version.
+Pin artifact hashes in your dependency lockfile for deployment.
 On Windows, activate `.venv\Scripts\Activate.ps1` in PowerShell.
 See [Install](install.md) for the published fallback, safety differences, and model providers.
+
+## Run the complete example
+
+The package includes the complete example below in one Python module.
+These commands need no authored Python files, model key, or provider service:
+
+```bash
+python -m looplet.examples.quickstart
+```
+
+The command runs the agent and checks its answer.
+Use a new trace directory to capture the same run:
+
+```bash
+python -m looplet.examples.quickstart --capture ./quickstart-trace
+looplet inspect ./quickstart-trace
+```
+
+Rescore saved evidence without running tools or calling a model:
+
+```bash
+python -m looplet.examples.quickstart --rescore ./quickstart-trace
+```
+
+Replay captured model responses with fresh tools, then check the new result:
+
+```bash
+python -m looplet.examples.quickstart --replay ./quickstart-trace
+```
+
+Replay runs tool effects again.
+This example only reads an in-memory lookup table.
+Use isolated workspaces for tools that modify files or contact services.
+
+Stop after the lookup without calling `done`:
+
+```bash
+python -m looplet.examples.quickstart --stop-after-lookup
+```
+
+Read the [complete Python source](https://github.com/hsaghir/looplet/blob/master/src/looplet/examples/quickstart.py) to edit or reuse its functions.
+The remaining sections build the same example incrementally.
+Choose either path; the companion does not require files from those sections.
 
 ## 2. Run the agent and get its answer
 
@@ -83,7 +126,7 @@ The scripted run needs two calls; `max_steps` lets other runs use a different li
 These tools remain ordinary Python functions.
 Call them directly in your application or unit tests.
 `minimal_preset` infers tool schemas from their signatures and descriptions from their docstrings.
-Published `0.4.0` may show a false `ToolSpec` type error for these functions; the corrected annotation is unreleased.
+Version `0.4.0` may show a false `ToolSpec` type error for these functions; `0.4.1` corrects the annotation.
 The optional `@tool` decorator returns a `ToolSpec`, not a callable function.
 Call a decorated tool's `.execute(...)` method to test its underlying function.
 That direct call bypasses registry validation and hooks.
@@ -102,16 +145,15 @@ The base registry retains its lighter argument-name checks when this option is o
 This step is optional.
 The remaining sections keep using the fixed-response backend.
 
-Keep `first_loop.py` unchanged and add the adapter from the same source build:
+Keep `first_loop.py` unchanged and add the adapter from the same release:
 
 ```bash
-python -m pip install "looplet[openai] @ https://github.com/hsaghir/looplet/archive/refs/heads/master.zip"
+python -m pip install "looplet[openai]==0.4.1"
 export OPENAI_API_KEY=...
 export OPENAI_MODEL=gpt-4o
 ```
 
-Use the same full commit hash here if you pinned the earlier install.
-Adding a provider extra should not replace the source build with published `0.4.0`.
+Keep the package and provider extras on the same version.
 
 Put this in a separate `first_loop_live.py` file:
 
@@ -137,7 +179,7 @@ This makes real provider calls and may incur charges.
 It uses the same tools and fresh-run factory, with native tool calls enabled explicitly.
 The live example allows up to eight tool calls, including completion.
 Adjust `max_steps` for your task; budget exhaustion means the run did not finish.
-For Anthropic, install the `anthropic` extra from the same source revision.
+For Anthropic, install the `anthropic` extra from the same release.
 Replace `OpenAIBackend` with `AnthropicBackend`.
 Configure its key as described in [Install](install.md#configure-anthropic).
 Use `use_native_tools=False` only when you intentionally select JSON-text responses.

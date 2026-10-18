@@ -71,10 +71,10 @@ The same scope applies to sync and async backends.
 Prompt strings and recorded response copies are scrubbed; live responses and native tool schemas are not rewritten.
 Review exports separately; a redaction callback is not proof that every sensitive value was removed.
 
-**Version scope:** Native-response redaction and the Python replay defaults below are unreleased after `0.4.0`.
+**Version scope:** Native-response redaction and the Python replay defaults below require `0.4.1` or newer.
 Published `0.4.0` can save unredacted native response blocks even when `redact=` is configured.
-See [Unreleased Safety Fixes](install.md#unreleased-safety-fixes) before relying on these behaviors.
-`async_replay_loop()` also requires an unreleased source build.
+See [Safety fixes in `0.4.1`](install.md#unreleased-safety-fixes) before relying on these behaviors.
+`async_replay_loop()` also requires `0.4.1` or newer.
 
 ---
 
@@ -317,13 +317,13 @@ llm = RecordingLLMBackend(
 
 **By default, `redact` scrubs prompt and `system_prompt` strings before
 they reach the wrapped backend.** The same callable scrubs recorded text responses.
-**Unreleased:** Native response string values and keys are scrubbed in a separate recorded copy.
+**Since `0.4.1`:** Native response string values and keys are scrubbed in a separate recorded copy.
 Published `0.4.0` does not scrub native response blocks.
 Live responses and tool arguments remain unchanged.
 Replay uses the saved, redacted values; it does not recover the original values.
 Review captured evidence before sharing or replaying it.
 
-**Unreleased:** Trajectory and step captures scrub string keys and values before JSON encoding.
+**Since `0.4.1`:** Trajectory and step captures scrub string keys and values before JSON encoding.
 JSON-sensitive replacements remain valid JSON.
 Recorded tool schemas, backend error text, and manifest metadata also use the callback.
 Live schemas and raised exceptions remain unchanged.
@@ -472,7 +472,7 @@ engine, and state are fresh. This is useful when a tool, hook, permission,
 or loop-runtime change is the variable under review. It is not an A/B test of
 prompt or model changes because the recorded decisions stay fixed.
 
-**Unreleased defaults:** The defaults below require a build after `0.4.0`.
+**`0.4.1` defaults:** The defaults below require version `0.4.1` or newer.
 Published `0.4.0` uses captured model-call count as the budget and defaults to an empty task.
 Set `config` and `task` explicitly when using that release.
 

@@ -897,7 +897,7 @@ def _render_inspect(
             workspace=workspace,
             max_steps=max_steps,
         )
-    if path.suffix == ".py":
+    if path.suffix == ".py" and path.is_file():
         print(
             "error: inspect Python agents as module:factory, "
             "for example: looplet inspect my_agent:build --mode runtime",

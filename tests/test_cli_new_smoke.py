@@ -264,6 +264,17 @@ def test_python_factory_inspection_closes_after_blueprint_failure(tmp_path, monk
     assert "controlled blueprint failure" in captured.err
 
 
+def test_python_suffixed_trace_directory_remains_inspectable(tmp_path, capsys):
+    from looplet.examples import quickstart
+
+    trace = tmp_path / "capture.py"
+    assert quickstart.main(["--capture", str(trace)]) == 0
+    capsys.readouterr()
+    assert main(["inspect", str(trace), "--json"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["trajectory"]["termination_reason"] == "done"
+
+
 def test_python_file_inspection_explains_factory_reference(tmp_path, capsys):
     agent = tmp_path / "my_agent.py"
     agent.write_text("raise AssertionError('must not import')\n")

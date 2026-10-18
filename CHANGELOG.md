@@ -14,6 +14,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Commit-pinned preview installation separates unreleased factory commands from the published Python workflow.
+- Quickstart exports a complete editable Python agent and provides repeat-safe capture, eval, replay, and grading recipes.
 - Cartridge exports report detected external Python imports in metadata and a warning. Factory bundles report their required factory module.
 - Export guidance explains host dependencies and distinguishes strict conversion from a self-contained distribution.
 - Direct Python factory commands run, evaluate seeded cases, and replay captured responses without packaging. Eval and replay accept explicit `--factory` targets.

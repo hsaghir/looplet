@@ -1093,7 +1093,10 @@ def main(argv: list[str] | None = None) -> int:
         help="Run a Python factory, cartridge, or runnable skill bundle",
     )
     run.add_argument(
-        "bundle", type=Path, help="Python module:factory reference, cartridge, or skill-bundle path"
+        "bundle",
+        type=Path,
+        metavar="AGENT",
+        help="Python module:factory reference, cartridge, or skill-bundle path",
     )
     run.add_argument("task", help="Task description, or '-' to read it from stdin")
     run.add_argument(

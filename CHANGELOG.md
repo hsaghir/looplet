@@ -37,6 +37,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Saved-evidence rescoring reports missing components as integrity failures instead of silently skipping known cases.
+- Assessment evidence links exclude colocated reports and unrelated files.
+- Human saved-assessment inspection shows stored scores and labels beside result states.
 - Experiment trace paths are report-relative. Human inspection of copied legacy reports prefers matching colocated capture and replay directories.
 - Malformed saved starter evidence returns concise preservation and recovery guidance for rescoring and replay without hiding unrelated runtime errors.
 - Starter grades explain incomplete runs and expected-versus-observed mismatches in console errors, saved evidence, inspection, and rescoring.

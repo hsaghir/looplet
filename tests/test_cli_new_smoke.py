@@ -424,6 +424,43 @@ def test_saved_assessment_inspection_is_portable_and_read_only(tmp_path, capsys,
     assert {path: path.read_bytes() for path in copied.rglob("*") if path.is_file()} == before
 
 
+@pytest.mark.parametrize("version", [1, 2])
+@pytest.mark.parametrize(
+    ("score", "label"),
+    [(0.6, None), (0.0, "measured"), (0.7, "accepted"), (1.0, "pass"), (None, "skipped")],
+)
+def test_saved_assessment_inspection_shows_scores_and_labels(
+    tmp_path, capsys, version, score, label
+):
+    from looplet import EvalContext, EvalResult, eval_assess
+
+    def eval_current(context):
+        return EvalResult(
+            name="eval_current", score=score, label=label, explanation="grader detail"
+        )
+
+    report = eval_assess([eval_current], EvalContext(steps=[]), threshold=0.7, version=version)
+    target = tmp_path / "numeric assessment.json"
+    report.save(target)
+    before = target.read_bytes()
+    saved = json.loads(before)
+    result = saved["assessment"]["cases"][0]["results"][0]
+    assert main(["inspect", str(target)]) == 0
+    human = capsys.readouterr().out
+    assert "threshold: 0.7" in human
+    assert f"eval_current: {result['state']}" in human
+    assert "grader detail" in human
+    if score is None:
+        assert "score=" not in human
+    else:
+        assert f"score={score}" in human
+    if label:
+        assert f"label={label}" in human
+    assert main(["inspect", str(target), "--json"]) == 0
+    assert json.loads(capsys.readouterr().out) == saved
+    assert target.read_bytes() == before
+
+
 @pytest.mark.parametrize(
     "damage",
     ["json", "version", "summary", "threshold", "cases", "results", "evidence"],

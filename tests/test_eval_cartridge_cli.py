@@ -2438,19 +2438,117 @@ def test_cli_rescore_persists_separate_current_assessment(
     assert {path: path.read_bytes() for path in suite.rglob("*") if path.is_file()} == before
 
 
-def test_cli_rescore_retains_all_failed_loads_in_named_assessment(tmp_path, capsys) -> None:
+@pytest.mark.parametrize("damage", ["malformed", "missing", "legacy_missing", "pending"])
+@pytest.mark.parametrize("layout", ["case", "suite", "mixed_suite"])
+@pytest.mark.parametrize("version", [1, 2])
+def test_cli_rescore_retains_all_failed_loads_in_named_assessment(
+    tmp_path, capsys, damage, layout, version
+) -> None:
     cart = _make_cartridge(tmp_path)
+    if layout == "mixed_suite":
+        (cart / "evals" / "cases" / "healthy.json").write_text(
+            json.dumps({**_CASE, "id": "healthy"})
+        )
     suite = tmp_path / "saved suite"
-    run_cartridge_evals(cart, llm=MockLLMBackend(responses=_scripted()), output_dir=suite)
-    (suite / "make_greeting" / "trajectory.json").write_text("{\n")
+    run_cartridge_evals(cart, llm=MockLLMBackend(responses=_scripted() * 2), output_dir=suite)
+    case_dir = suite / "make_greeting"
+    if damage == "malformed":
+        (case_dir / "trajectory.json").write_text("{\n")
+    elif damage == "pending":
+        (case_dir / ".artifact.json.pending").write_text("incomplete\n")
+    else:
+        (case_dir / "trajectory.json").unlink()
+        if damage == "legacy_missing":
+            (case_dir / "artifact.json").unlink()
+    before = {path: path.read_bytes() for path in suite.rglob("*") if path.is_file()}
+    (cart / "evals" / "eval_correctness.py").write_text("def eval_current(ctx):\n    return True\n")
+    capsys.readouterr()
     target = tmp_path / "invalid assessment.json"
+    source = case_dir if layout == "case" else suite
     assert (
-        eval_cli([str(suite), "--evals", str(cart / "evals"), "--out", str(target), "--json"]) == 1
+        eval_cli(
+            [
+                str(source),
+                "--evals",
+                str(cart / "evals"),
+                "--out",
+                str(target),
+                "--assessment-version",
+                str(version),
+                "--json",
+            ]
+        )
+        == 1
     )
     summary = json.loads(capsys.readouterr().out)
     assert summary == json.loads(target.read_text())["assessment"]
-    assert summary["passed"] is False and summary["valid"] is False
-    assert any("trajectory load failed" in error for error in summary["integrity_failures"])
+    assert summary["passed"] is False
+    if version == 2:
+        assert summary["valid"] is False
+    assert any(
+        "trajectory load failed: make_greeting:" in error for error in summary["integrity_failures"]
+    )
+    assert [case["id"] for case in summary["cases"]] == (
+        ["healthy"] if layout == "mixed_suite" else []
+    )
+    assert (
+        eval_cli(
+            [
+                str(source),
+                "--evals",
+                str(cart / "evals"),
+                "--assessment-version",
+                str(version),
+                "--json",
+            ]
+        )
+        == 1
+    )
+    unsaved = capsys.readouterr()
+    if layout == "mixed_suite":
+        assert json.loads(unsaved.out)["passed"] is False
+    else:
+        assert "ERROR make_greeting:" in unsaved.err
+    assert {path: path.read_bytes() for path in suite.rglob("*") if path.is_file()} == before
+
+
+@pytest.mark.parametrize("passed", [False, True])
+@pytest.mark.parametrize("version", [1, 2])
+def test_cli_rescore_links_only_saved_runs_when_reports_share_suite(
+    tmp_path, capsys, passed, version
+) -> None:
+    cart = _make_cartridge(tmp_path)
+    suite = tmp_path / "saved suite"
+    run_cartridge_evals(cart, llm=MockLLMBackend(responses=_scripted()), output_dir=suite)
+    case_dir = suite / "make_greeting"
+    before = {path: path.read_bytes() for path in case_dir.rglob("*") if path.is_file()}
+    (cart / "evals" / "eval_correctness.py").write_text(
+        f"def eval_current(ctx):\n    return {passed!r}\n"
+    )
+    previous = None
+    previous_bytes = None
+    for name in ("assessment-one.json", "assessment-two.json"):
+        target = suite / name
+        assert eval_cli(
+            [
+                str(suite),
+                "--evals",
+                str(cart / "evals"),
+                "--out",
+                str(target),
+                "--assessment-version",
+                str(version),
+                "--json",
+            ]
+        ) == int(not passed)
+        saved = json.loads(target.read_text())
+        assert json.loads(capsys.readouterr().out) == saved["assessment"]
+        assert saved["assessment"]["passed"] is passed
+        assert saved["evidence"] == {"make_greeting": "make_greeting"}
+        if previous is not None:
+            assert previous.read_bytes() == previous_bytes
+        previous, previous_bytes = target, target.read_bytes()
+    assert {path: path.read_bytes() for path in case_dir.rglob("*") if path.is_file()} == before
 
 
 def test_cli_run_help_advertises_json(capsys) -> None:

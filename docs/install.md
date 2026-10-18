@@ -34,11 +34,11 @@ This is the same environment used at the start of the [Quickstart](quickstart.md
 ```bash
 python -m venv .venv-looplet-preview
 source .venv-looplet-preview/bin/activate
-python -m pip install "looplet @ https://github.com/hsaghir/looplet/archive/a2efcde34bd728dd1287eb6f3368ef1e57783c15.zip"
+python -m pip install "looplet @ https://github.com/hsaghir/looplet/archive/270ebab43f0be9deea4b2a039ded2bbd3d94acfd.zip"
 looplet doctor --no-backend --json
 ```
 
-This non-editable install pins commit `a2efcde` with factory commands and the complete one-file starter.
+This non-editable install pins commit `270ebab` with factory commands and the complete one-file starter.
 The starter selects providers, saves replay evidence, and runs repeat-safe experiments.
 Failed grades explain mismatches; experiment inspection shows stage status, errors, and available traces.
 Factory inspection supports declaration-only reports and explicit runtime wiring checks.

@@ -9,21 +9,27 @@ Use a Python factory for shell commands; package it only when you need a directo
 
 ## 1. Install Looplet
 
-Install release `0.4.1` in your own project.
-It includes the fixes used below and does not require Git or a repository checkout.
+Use this pinned preview for the whole guide, including the editable starter and factory commands.
+Those commands are unreleased and are not in published `0.4.1`.
+The install does not require Git or a repository checkout.
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-python -m pip install "looplet==0.4.1"
+python -m venv .venv-looplet-preview
+source .venv-looplet-preview/bin/activate
+python -m pip install "looplet @ https://github.com/hsaghir/looplet/archive/4ae69df2860c91ee22c6a5b777d7039a801d7dba.zip"
+looplet doctor --no-backend --json
 ```
 
 The core package has no third-party runtime dependencies.
 The install needs network access; the fixed-response runs do not.
-This is a non-editable install of a fixed package version.
+This is a non-editable install of commit `4ae69df`.
+Keep this environment active for the complete guide; no second install is needed for the starter.
+Both the preview and published package report version `0.4.1`.
+Keep the commit and the doctor's library source fingerprint with your results.
 Pin artifact hashes in your dependency lockfile for deployment.
-On Windows, activate `.venv\Scripts\Activate.ps1` in PowerShell.
-See [Install](install.md) for the published fallback, safety differences, and model providers.
+On Windows, activate `.venv-looplet-preview\Scripts\Activate.ps1` in PowerShell.
+See the [preview details](install.md#try-unreleased-factory-commands) for the same install.
+The [published fallback](install.md#install-the-published-package) supports the incremental Python examples, but not the editable starter workflow.
 
 ## Run the complete example
 
@@ -73,8 +79,8 @@ Read the [complete Python source](https://github.com/hsaghir/looplet/blob/master
 
 ### Make the complete example your own
 
-**Unreleased:** install the [pinned preview](install.md#try-unreleased-factory-commands) in its separate environment before using this starter.
-Published `0.4.1` still supports the packaged companion commands above.
+Keep using the environment from step 1.
+It already contains the complete starter and factory commands.
 
 Use one editable file for your tools, capture, rescoring, and replay.
 Export the installed companion once; an existing file is never replaced:
@@ -105,6 +111,19 @@ The command prints inspection commands for both records and an `experiment.json`
 Use `--out NEW_DIRECTORY` to choose a new experiment directory explicitly.
 Existing directories are refused.
 Experiment directories store evidence; they do not isolate tool effects.
+The starter prints human-readable output; it does not support `--json`.
+Unknown flags are rejected rather than abbreviated.
+
+Inspect the same exported factory without calling a model:
+
+```bash title="inspect_agent.sh"
+looplet inspect my_agent:build --mode runtime --json
+```
+
+Runtime inspection imports trusted Python, builds and validates one preset, then closes its resources.
+It checks structural wiring, not behavioral correctness.
+Without `--mode runtime`, inspection reports only the factory reference and does not import the module.
+Use `module:factory`, not the Python file path.
 
 Use one case file when the task needs different wording or expectations:
 
@@ -162,7 +181,7 @@ Older eval captures without a case file retain their saved expectations too.
 Keep the exported file and install the provider extra from the same pinned preview:
 
 ```bash title="one_file_live.sh"
-python -m pip install "looplet[openai] @ https://github.com/hsaghir/looplet/archive/255ac5da2a827373fbe63e31eed1e06dfb815546.zip"
+python -m pip install "looplet[openai] @ https://github.com/hsaghir/looplet/archive/4ae69df2860c91ee22c6a5b777d7039a801d7dba.zip"
 export OPENAI_API_KEY=...
 export OPENAI_MODEL=gpt-4o
 python my_agent.py --backend openai --max-steps 8 --experiment
@@ -173,6 +192,9 @@ The same file still owns the tools, factory, graders, and captured-response repl
 For Anthropic, install the `anthropic` extra from that preview and use `--backend anthropic`.
 Configure its key with the [provider settings](install.md#configure-anthropic).
 Add `--json-text` only for an endpoint that needs JSON-text instead of native tools.
+`--json-text` selects the model protocol; it does not request JSON output.
+Missing provider settings or SDKs produce a concise setup error before creating experiment output.
+Check the named variables, install the matching provider extra, and rerun the command.
 Replay and rescoring reject provider options because neither calls that provider.
 The file also exports `build(runtime)` for the existing `my_agent:build` factory CLI interface.
 
@@ -257,15 +279,15 @@ The base registry retains its lighter argument-name checks when this option is o
 This step is optional.
 The remaining sections keep using the fixed-response backend.
 
-Keep `first_loop.py` unchanged and add the adapter from the same release:
+Keep `first_loop.py` unchanged and add the adapter from the same pinned preview in your active environment:
 
 ```bash
-python -m pip install "looplet[openai]==0.4.1"
+python -m pip install "looplet[openai] @ https://github.com/hsaghir/looplet/archive/4ae69df2860c91ee22c6a5b777d7039a801d7dba.zip"
 export OPENAI_API_KEY=...
 export OPENAI_MODEL=gpt-4o
 ```
 
-Keep the package and provider extras on the same version.
+Keep the package and provider extras on the same commit.
 
 Put this in a separate `first_loop_live.py` file:
 
@@ -291,7 +313,7 @@ This makes real provider calls and may incur charges.
 It uses the same tools and fresh-run factory, with native tool calls enabled explicitly.
 The live example allows up to eight tool calls, including completion.
 Adjust `max_steps` for your task; budget exhaustion means the run did not finish.
-For Anthropic, install the `anthropic` extra from the same release.
+For Anthropic, install the `anthropic` extra from the same preview.
 Replace `OpenAIBackend` with `AnthropicBackend`.
 Configure its key as described in [Install](install.md#configure-anthropic).
 Use `use_native_tools=False` only when you intentionally select JSON-text responses.

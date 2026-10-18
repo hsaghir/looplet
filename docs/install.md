@@ -6,6 +6,10 @@ Model provider adapters are optional extras.
 
 ## Install the current build
 
+The complete [Quickstart](quickstart.md) uses the pinned preview below from its first step.
+Choose that environment before starting if you need the editable starter or factory commands.
+Keep it active throughout the guide, including optional provider setup.
+
 Use release `0.4.1` for new integrations.
 It includes the [safety fixes](#unreleased-safety-fixes) missing from `0.4.0`.
 Install it in your own project without Git or a repository checkout:
@@ -24,18 +28,19 @@ Use `looplet doctor --no-backend --json` when you also need the library source f
 
 ## Try unreleased factory commands
 
-The factory shell workflow requires unreleased source, not the PyPI `0.4.1` package.
-Use this separate environment for the [factory commands](quickstart.md#use-the-same-factory-in-the-shell):
+The editable starter and factory shell workflow require unreleased source, not the PyPI `0.4.1` package.
+This is the same environment used at the start of the [Quickstart](quickstart.md):
 
 ```bash
 python -m venv .venv-looplet-preview
 source .venv-looplet-preview/bin/activate
-python -m pip install "looplet @ https://github.com/hsaghir/looplet/archive/255ac5da2a827373fbe63e31eed1e06dfb815546.zip"
+python -m pip install "looplet @ https://github.com/hsaghir/looplet/archive/4ae69df2860c91ee22c6a5b777d7039a801d7dba.zip"
 looplet doctor --no-backend --json
 ```
 
-This non-editable install pins commit `255ac5d` with factory commands and the complete one-file starter.
+This non-editable install pins commit `4ae69df` with factory commands and the complete one-file starter.
 The starter selects providers, saves replay evidence, and runs repeat-safe experiments.
+Factory inspection supports declaration-only reports and explicit runtime wiring checks.
 Its cases keep tasks and expectations together.
 CLI replay preserves the captured protocol and saved expectations.
 Installation needs network access, but not Git or a model key.
@@ -43,6 +48,8 @@ It does not install a new PyPI release.
 Both builds report version `0.4.1`; the doctor report records their different library source fingerprints.
 Keep the commit and source fingerprint with experiment results.
 The ordinary Python, pytest, capture, and replay examples work with released `0.4.1`.
+Do not install the published package over this environment midway through the Quickstart.
+Add provider extras from the same pinned archive, as shown in the guide.
 
 ## Install the published package
 

@@ -473,3 +473,11 @@ class TestEvalCliHelp:
         out = capsys.readouterr().out
         assert "cases ls" in out
         assert "cases show" in out
+
+    def test_help_shows_python_factory_workflow(self, capsys: pytest.CaptureFixture[str]) -> None:
+        with pytest.raises(SystemExit) as stopped:
+            eval_cli(["--help"])
+        assert stopped.value.code == 0
+        out = " ".join(capsys.readouterr().out.split())
+        assert "looplet eval run --factory my_agent:build --evals my_agent.py --cases cases/" in out
+        assert out.index("run --factory") < out.index("run <cartridge>")

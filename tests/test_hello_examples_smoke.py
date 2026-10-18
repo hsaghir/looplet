@@ -1052,6 +1052,38 @@ def test_packaged_quickstart_failed_rescore_returns_nonzero(tmp_path, monkeypatc
     assert quickstart.main(["--rescore", str(trace)]) == 1
 
 
+@pytest.mark.parametrize("passed", [False, True])
+def test_quickstart_rescore_saves_new_verdict_without_replacing_capture(
+    tmp_path, monkeypatch, capsys, passed
+):
+    from looplet import load_eval_run
+    from looplet.examples import quickstart
+
+    trace = tmp_path / "saved run"
+    assert quickstart.main(["--capture", str(trace)]) == 0
+    capsys.readouterr()
+    before = {path: path.read_bytes() for path in trace.rglob("*") if path.is_file()}
+    monkeypatch.setattr(quickstart, "eval_owner", lambda context: passed)
+    monkeypatch.setattr(
+        quickstart, "scripted_backend", Mock(side_effect=AssertionError("no agent"))
+    )
+    target = tmp_path / "new assessment.json"
+    assert quickstart.main(["--rescore", str(trace), "--out", str(target)]) == int(not passed)
+    captured = capsys.readouterr()
+    assert "New assessment using current graders" in captured.out
+    assert str(target) in captured.out
+    assessment = json.loads(target.read_text())
+    assert assessment["assessment"]["passed"] is passed
+    assert load_eval_run(trace).results[0].score == 1.0
+    report_before = target.read_bytes()
+    assert quickstart.main(["--rescore", str(trace), "--out", str(target)]) == 1
+    assert "could not save assessment" in capsys.readouterr().err
+    assert target.read_bytes() == report_before
+    assert quickstart.main(["--rescore", str(trace), "--out", str(trace / "new.json")]) == 1
+    assert "outside saved evidence" in capsys.readouterr().err
+    assert {path: path.read_bytes() for path in trace.rglob("*") if path.is_file()} == before
+
+
 def test_quickstart_offers_companion_before_file_assembly():
     guide = Path(__file__).resolve().parents[1] / "docs" / "quickstart.md"
     text = guide.read_text()

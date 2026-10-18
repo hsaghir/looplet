@@ -787,8 +787,9 @@ The second rescores existing observations; it does not repeat execution or colle
 Ordinary grader diagnostic output goes to stderr in JSON mode.
 Partial trajectory load failures remain visible in the assessment and produce a failing exit code.
 
-The command itself exits non-zero exactly when `passed` is false. The report
-includes the trusted pre-run `grader_manifest`, case IDs and marks, and one
+Successful evaluation setup returns zero only for a passing assessment.
+Failed assessments, setup errors, and report-save errors return nonzero.
+The report includes the trusted pre-run `grader_manifest`, case IDs and marks, and one
 result record per expected grader. Each result carries its grader marks,
 `required`, `required_status`, and one closed `state` value:
 
@@ -812,6 +813,47 @@ Version 2 retains these result states and adds top-level and per-case `valid`.
 Unlike version 1, a required behavioral failure is not itself an integrity failure.
 Missing checks, skipped required checks, collector failures, and grader errors still invalidate evaluation.
 Measurement-only assessments are not release gates in version 2.
+
+### Save a separate assessment
+
+**Unreleased:** add `--out` when rescoring saved evidence to retain the new assessment:
+
+```bash
+looplet eval ./eval-runs --evals ./evals/ --threshold 0.7 \
+    --assessment-version 2 --out ./current-assessment.json --json > current-summary.json
+looplet inspect ./eval-runs
+looplet inspect ./current-assessment.json
+```
+
+Suite inspection shows saved case grades without applying a new threshold.
+The separate report records the new verdict, including failures, before the rescore command returns.
+Capture-time grades and other saved evidence remain unchanged.
+Without `--out`, rescoring remains transient.
+Choose a new output path each time; existing files and paths inside referenced evidence directories are refused.
+New report files use mode `0600`; newly created parent directories use `0700`.
+These permissions do not redact sensitive grader details or change existing directory permissions.
+
+The saved outer schema is `looplet.eval-assessment`, version 1.
+It contains a UTC `assessed_at` timestamp, the unchanged summary under `assessment`, and report-relative links under `evidence`.
+The nested summary uses the selected assessment version, 1 or 2.
+`--json` stdout remains the ordinary `looplet.eval-summary`, not the saved outer object.
+`looplet inspect REPORT.json --json` returns the stored outer object.
+Inspection reads the stored verdict and threshold; it does not rerun graders or attest authenticity.
+A readable failing report exits zero from inspection.
+Copy the report and referenced traces together when sharing private evidence.
+Moving the report alone does not carry the trace contents.
+
+Python hosts can save the same format:
+
+```python
+report = eval_assess([eval_owner], saved.context, case=saved.case)
+report.save("current-assessment.json", evidence={saved.directory.name: saved.directory})
+report.assert_passed()
+```
+
+Save before `assert_passed()` to retain failing assessments.
+The timestamp identifies assessment time, not the grader's code revision.
+Grader code is trusted Python and can have effects; rescoring is not sandboxing.
 
 This summary is a decision report, not a persisted run format.
 Fresh CLI evals save durable evidence by default; find it through `output_dir`.

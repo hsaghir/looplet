@@ -297,7 +297,9 @@ def main(argv: list[str] | None = None) -> int:
         type=int,
         help="Step limit; defaults to two for fresh runs or the saved replay budget",
     )
-    parser.add_argument("--out", type=Path, help="New replay or experiment directory")
+    parser.add_argument(
+        "--out", type=Path, help="New replay/experiment directory or rescore assessment JSON file"
+    )
     parser.add_argument("--case", type=Path, help="One JSON eval case for a fresh run")
     parser.add_argument("--backend", choices=("scripted", "openai", "anthropic"))
     parser.add_argument(
@@ -306,8 +308,10 @@ def main(argv: list[str] | None = None) -> int:
     arguments = parser.parse_args(argv)
     if arguments.max_steps is not None and arguments.max_steps <= 0:
         parser.error("--max-steps must be positive")
-    if arguments.out is not None and not (arguments.replay or arguments.experiment):
-        parser.error("--out requires --replay or --experiment")
+    if arguments.out is not None and not (
+        arguments.replay or arguments.experiment or arguments.rescore
+    ):
+        parser.error("--out requires --replay, --experiment, or --rescore")
     if arguments.rescore and arguments.max_steps is not None:
         parser.error("--max-steps does not apply to --rescore")
     if (arguments.replay or arguments.rescore) and (arguments.backend or arguments.json_text):
@@ -330,8 +334,19 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if arguments.rescore:
             saved = _load_saved_run(arguments.rescore)
-            report = eval_assess([eval_owner], saved.context)
+            report = eval_assess([eval_owner], saved.context, case=saved.case)
+            if arguments.out is not None:
+                try:
+                    report.save(arguments.out, evidence={saved.directory.name: saved.directory})
+                except (OSError, ValueError) as error:
+                    print(f"error: could not save assessment: {error}", file=sys.stderr)
+                    return 1
             print(report.passed)
+            print("New assessment using current graders; capture-time grades are unchanged.")
+            if arguments.out is not None:
+                print(f"Inspect with: looplet inspect {quote(str(arguments.out))}")
+            else:
+                print("Not saved; use --out NEW_REPORT.json to retain this assessment.")
             report.assert_passed()
             return 0
         if arguments.replay:

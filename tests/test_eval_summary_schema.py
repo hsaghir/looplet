@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import stat
 from pathlib import Path
 
 import pytest
@@ -163,6 +165,41 @@ def test_assessment_rejects_empty_cases_and_grader_inventory() -> None:
     assert report.integrity_failures == ["No evaluation cases", "No graders selected"]
     with pytest.raises(AssertionError, match="No graders selected"):
         report.assert_passed()
+
+
+@pytest.mark.parametrize("passed", [False, True])
+@pytest.mark.parametrize("version", [1, 2])
+def test_assessment_save_is_separate_private_and_exclusive(tmp_path, passed, version) -> None:
+    def eval_quality(context):
+        return passed
+
+    report = eval_assess(
+        [eval_quality],
+        EvalContext(steps=[], task={"expected": {"secret": "grader-only"}}),
+        version=version,
+    )
+    capture = tmp_path / "capture"
+    capture.mkdir()
+    marker = capture / "evidence.txt"
+    marker.write_text("original evidence\n")
+    target = tmp_path / "assessments" / "strict.json"
+    assert report.save(target, evidence={"run": capture}) == target
+    payload = json.loads(target.read_text())
+    assert payload["schema"] == "looplet.eval-assessment" and payload["version"] == 1
+    assert payload["assessed_at"].endswith("Z")
+    assert payload["assessment"] == report.to_dict()
+    assert payload["assessment"]["passed"] is passed
+    assert payload["evidence"] == {"run": "../capture"}
+    assert "grader-only" not in target.read_text()
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+    before = target.read_bytes()
+    with pytest.raises(FileExistsError):
+        report.save(target)
+    assert target.read_bytes() == before
+    with pytest.raises(ValueError, match="outside saved evidence"):
+        report.save(capture / "new.json", evidence={"run": capture})
+    assert list(capture.iterdir()) == [marker]
+    assert marker.read_text() == "original evidence\n"
 
 
 def test_assessment_separates_failed_behavior_from_invalid_evaluation() -> None:

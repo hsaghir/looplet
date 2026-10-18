@@ -8,6 +8,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Eval root help introduces Python factories before cartridge execution.
+- Saved trace inspection labels grades as capture-time observations rather than current assessments.
 - `--version` includes the doctor's Git-independent source fingerprint, distinguishing same-version preview builds without selecting a provider.
 - Human Python-factory inspection lists tools, the completion tool, step limit, protocol, and hook count, with an equivalent full-blueprint command.
 - The complete Quickstart uses one commit-pinned preview environment from installation through editable experiments and optional provider setup.
@@ -17,6 +19,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `inspect` lists saved eval suite cases and opens separate assessment reports without rerunning graders or inventing a historical gate policy.
+- Saved-evidence rescoring supports `--out`, and `EvalReport.save()` writes private, exclusive assessment files with relative evidence links without replacing capture-time grades.
 - `inspect` accepts Quickstart experiment directories and reports without rerunning code, while preserving legacy reports and trace inspection.
 - `inspect module:factory` supports safe reference-only declarations and explicit, resource-managed runtime wiring validation without selecting a model.
 - Factory CLI replay restores the captured tool protocol and carries saved expectations into fresh, regradable eval records.

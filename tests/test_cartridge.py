@@ -29,9 +29,11 @@ from looplet import (
     CartridgeSerializationError,
     DefaultState,
     LoopConfig,
+    ToolCall,
     cartridge_to_preset,
     composable_loop,
     preset_to_cartridge,
+    tools_from,
 )
 from looplet.memory import StaticMemorySource
 from looplet.presets import AgentPreset
@@ -48,6 +50,13 @@ def lookup_execute(*, key: str) -> dict:
 
 def done_execute(*, answer: str) -> dict:
     return {"answer": answer}
+
+
+def record_amount(amount: int, target: str) -> dict:
+    from pathlib import Path
+
+    Path(target).write_text(str(amount))
+    return {"amount": amount, "observed_type": type(amount).__name__}
 
 
 class DemoCounter:
@@ -212,6 +221,228 @@ def test_round_trip_preserves_tools(tmp_path: Path) -> None:
     assert lookup_spec.parameters == {"key": "str"}
 
 
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("validate", [False, True])
+@pytest.mark.parametrize("value", [4, "not-an-integer", True])
+async def test_round_trip_preserves_argument_validation(tmp_path, asynchronous, validate, value):
+    preset = _build_demo_preset()
+    done_spec = preset.tools._tools["done"]
+    preset.tools = tools_from([record_amount], validate=validate)
+    preset.tools.register(done_spec)
+    written = preset_to_cartridge(preset, tmp_path / "validated.cartridge", strict=True)
+    assert written.serialization_warnings == []
+    with cartridge_to_preset(written.path, strict=True) as loaded:
+        results = []
+        effects = []
+        for name, registry in (("original", preset.tools), ("reloaded", loaded.tools)):
+            target = tmp_path / f"{name}.txt"
+            call = ToolCall(
+                tool="record_amount",
+                args={"amount": value, "target": str(target)},
+                call_id="validation-probe",
+            )
+            result = (
+                await registry.async_dispatch(call) if asynchronous else registry.dispatch(call)
+            )
+            results.append(result)
+            effects.append(target.exists())
+        rejected = validate and type(value) is not int
+        assert effects == [not rejected, not rejected]
+        assert results[0].error == results[1].error
+        assert results[0].data == results[1].data
+        assert all(result.call_id == "validation-probe" for result in results)
+        if rejected:
+            assert all(result.error_detail.kind.value == "validation" for result in results)
+        else:
+            assert all(result.error is None for result in results)
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize(
+    ("field_type", "allowed_values"),
+    [
+        ((int, type(None)), [None, 4]),
+        (float, None),
+        ("any", None),
+        ((str, int, bool), [4, "auto", False]),
+    ],
+)
+@pytest.mark.parametrize("value", [None, 4, 4.5, True, "auto"])
+async def test_round_trip_preserves_custom_argument_validation(
+    tmp_path, asynchronous, field_type, allowed_values, value
+):
+    from looplet.validation import FieldSpec, OutputSchema, ValidatingToolRegistry
+
+    schema = OutputSchema(
+        fields={
+            "amount": FieldSpec("amount", field_type, allowed_values=allowed_values),
+            "target": FieldSpec("target", "str", description="Synthetic output path"),
+        },
+        strict=True,
+    )
+    registry = ValidatingToolRegistry()
+    registry.register_with_schema(
+        ToolSpec(
+            name="record_amount",
+            description="Record a synthetic amount.",
+            parameters={
+                "amount": {
+                    "type": ["integer", "number", "string", "boolean", "array", "object", "null"]
+                },
+                "target": "str",
+            },
+            execute=record_amount,
+        ),
+        schema,
+    )
+    preset = _build_demo_preset()
+    preset.tools = registry
+    written = preset_to_cartridge(preset, tmp_path / "custom.cartridge", strict=True)
+    with cartridge_to_preset(written.path, strict=True) as loaded:
+        results = []
+        effects = []
+        for name, current in (("original", registry), ("reloaded", loaded.tools)):
+            target = tmp_path / f"{name}.txt"
+            call = ToolCall(tool="record_amount", args={"amount": value, "target": str(target)})
+            result = await current.async_dispatch(call) if asynchronous else current.dispatch(call)
+            results.append(result)
+            effects.append(target.exists())
+        assert results[0].error == results[1].error
+        assert results[0].data == results[1].data
+        assert effects[0] == effects[1] == (results[0].error is None)
+        restored = loaded.tools._schemas["record_amount"]
+        assert restored.strict is True
+        assert restored.fields["target"].description == "Synthetic output path"
+        assert restored.fields["amount"].allowed_values == allowed_values
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_round_trip_validation_stays_selective_across_two_exports(tmp_path, asynchronous):
+    from looplet.cartridge._load import _version_satisfies
+    from looplet.validation import ValidatingToolRegistry
+
+    preset = _build_demo_preset()
+    preset.cartridge_manifest = {"compatibility": {"looplet": ">=0.4.0", "languages": ["python"]}}
+    original_done = preset.tools._tools["done"]
+    registry = tools_from([record_amount], validate=True)
+    registry.register(original_done)
+    preset.tools = registry
+    first = preset_to_cartridge(preset, tmp_path / "first", strict=True)
+    assert first.compatibility.looplet == ">=0.4.0,>0.4.0"
+    assert first.compatibility.languages == ("python",)
+    assert not _version_satisfies("0.4.0", first.compatibility.looplet)
+    with cartridge_to_preset(first.path, strict=True) as loaded:
+        second = preset_to_cartridge(loaded, tmp_path / "second", strict=True)
+        assert second.compatibility == first.compatibility
+    with cartridge_to_preset(second.path, strict=True) as reloaded:
+        assert isinstance(reloaded.tools, ValidatingToolRegistry)
+        assert set(reloaded.tools._schemas) == {"record_amount"}
+        for call in (
+            ToolCall(
+                tool="record_amount", args={"amount": "bad", "target": str(tmp_path / "effect")}
+            ),
+            ToolCall(tool="done", args={"answer": 4}),
+        ):
+            result = (
+                await reloaded.tools.async_dispatch(call)
+                if asynchronous
+                else reloaded.tools.dispatch(call)
+            )
+            assert bool(result.error) == (call.tool == "record_amount")
+        assert not (tmp_path / "effect").exists()
+
+
+@pytest.mark.parametrize("strict", [False, True])
+def test_round_trip_rejects_unsupported_argument_validation(tmp_path, strict):
+    from looplet.validation import FieldSpec, OutputSchema, ValidatingToolRegistry
+
+    class CustomAmount:
+        pass
+
+    preset = _build_demo_preset()
+    registry = ValidatingToolRegistry()
+    registry.register_with_schema(
+        preset.tools._tools["lookup"],
+        OutputSchema(fields={"key": FieldSpec("key", CustomAmount)}),
+    )
+    preset.tools = registry
+    with pytest.raises(
+        CartridgeSerializationError, match="argument validation.*unsupported Python types"
+    ):
+        preset_to_cartridge(preset, tmp_path / "unsupported", strict=strict)
+
+
+@pytest.mark.parametrize("strict", [False, True])
+@pytest.mark.parametrize("value", [("converted-tuple",), {"key:with:colons": "value"}])
+def test_round_trip_rejects_argument_enum_encoding_changes(tmp_path, strict, value):
+    from looplet.validation import FieldSpec, OutputSchema, ValidatingToolRegistry
+
+    preset = _build_demo_preset()
+    registry = ValidatingToolRegistry()
+    registry.register_with_schema(
+        preset.tools._tools["lookup"],
+        OutputSchema(fields={"key": FieldSpec("key", "any", allowed_values=[value])}),
+    )
+    preset.tools = registry
+    with pytest.raises(CartridgeSerializationError, match="argument validation cannot round-trip"):
+        preset_to_cartridge(preset, tmp_path / "unsupported-enum", strict=strict)
+
+
+@pytest.mark.parametrize("strict", [False, True])
+@pytest.mark.parametrize(
+    "policy",
+    [
+        None,
+        {},
+        {"strict": "yes", "fields": {}},
+        {
+            "strict": False,
+            "fields": {
+                "amount": {
+                    "types": ["Decimal"],
+                    "required": True,
+                    "description": "",
+                    "allowed_values": None,
+                }
+            },
+        },
+        {
+            "strict": False,
+            "fields": {
+                "amount": {
+                    "types": ["int"],
+                    "required": True,
+                    "description": "",
+                    "allowed_values": "bad",
+                }
+            },
+        },
+    ],
+)
+def test_invalid_argument_validation_fails_before_tool_import(tmp_path, strict, policy):
+    from looplet.cartridge._yaml import _dump_yaml, _load_yaml
+
+    written = preset_to_cartridge(_build_demo_preset(), tmp_path / "malformed", strict=True)
+    tool_dir = written.path / "tools" / "lookup"
+    path = tool_dir / "tool.yaml"
+    payload = _load_yaml(path.read_text())
+    payload["argument_validation"] = policy
+    path.write_text(_dump_yaml(payload) + "\n")
+    (tool_dir / "execute.py").write_text(
+        "raise AssertionError('must not import malformed validation')\n"
+    )
+    with pytest.raises(CartridgeSerializationError, match="invalid argument_validation"):
+        cartridge_to_preset(written.path, strict=strict)
+
+
+@pytest.mark.parametrize("value", ["null", "true", "false", "~", "4", "01", "1e2", "[]", "{}", "|"])
+def test_argument_validation_yaml_preserves_scalar_strings(value):
+    from looplet.cartridge._yaml import _dump_yaml, _load_yaml
+
+    payload = {"description": value, "allowed_values": [value]}
+    assert _load_yaml(_dump_yaml(payload)) == payload
+
+
 def test_round_trip_preserves_hook_with_to_config(tmp_path: Path) -> None:
     preset_to_cartridge(_build_demo_preset(), tmp_path / "ws")
     loaded = cartridge_to_preset(tmp_path / "ws")
@@ -285,6 +516,147 @@ def test_warnings_are_empty_for_clean_preset(tmp_path: Path) -> None:
     workspace = preset_to_cartridge(_build_demo_preset(), tmp_path / "ws")
     # The demo preset uses only round-trippable fields; no warnings expected.
     assert workspace.serialization_warnings == []
+
+
+@pytest.mark.parametrize("strict", [False, True])
+@pytest.mark.parametrize(
+    ("dependency", "source"),
+    [
+        (
+            "FIXED_FEE",
+            "FIXED_FEE = 2\ndef script_tool(amount: int) -> dict:\n    return {'total': amount + FIXED_FEE}\n",
+        ),
+        (
+            "Decimal",
+            "from decimal import Decimal\ndef script_tool(amount: int) -> dict:\n    return {'total': str(Decimal(amount) + Decimal('0.25'))}\n",
+        ),
+    ],
+)
+def test_script_tool_omitted_dependencies_are_not_silently_exported(
+    tmp_path, strict, dependency, source
+):
+    import runpy
+
+    script = tmp_path / "script.py"
+    script.write_text(source)
+    function = runpy.run_path(str(script), run_name="__main__")["script_tool"]
+    assert function(amount=4)["total"] in (6, "4.25")
+    preset = _build_demo_preset()
+    preset.tools = tools_from([function])
+    destination = tmp_path / "export"
+    if strict:
+        with pytest.raises(CartridgeSerializationError, match=f"script_tool.*{dependency}"):
+            preset_to_cartridge(preset, destination, strict=True)
+    else:
+        written = preset_to_cartridge(preset, destination)
+        assert any(
+            "script_tool" in warning and dependency in warning
+            for warning in written.serialization_warnings
+        )
+        with cartridge_to_preset(written.path, strict=True) as loaded:
+            result = loaded.tools.dispatch(ToolCall(tool="script_tool", args={"amount": 4}))
+            assert result.error and "NotImplementedError" in result.error
+            assert "NameError" not in result.error
+
+
+def test_self_contained_script_tool_round_trips(tmp_path):
+    import runpy
+
+    script = tmp_path / "script.py"
+    script.write_text("def script_tool(amount: int) -> dict:\n    return {'total': amount + 2}\n")
+    function = runpy.run_path(str(script), run_name="__main__")["script_tool"]
+    preset = _build_demo_preset()
+    preset.tools = tools_from([function])
+    written = preset_to_cartridge(preset, tmp_path / "self-contained", strict=True)
+    assert written.serialization_warnings == []
+    with cartridge_to_preset(written.path, strict=True) as loaded:
+        result = loaded.tools.dispatch(ToolCall(tool="script_tool", args={"amount": 4}))
+        assert result.error is None
+        assert result.data == {"total": 6}
+
+
+@pytest.mark.parametrize(
+    ("dependency", "source"),
+    [
+        (
+            "FIXED_FEE",
+            "FIXED_FEE = 2\ndef script_tool(amount: int = FIXED_FEE) -> dict:\n    return {'total': amount}\n",
+        ),
+        (
+            "Decimal",
+            "from decimal import Decimal\ndef script_tool(amount: Decimal) -> dict:\n    return {'total': str(amount)}\n",
+        ),
+        (
+            "decorate",
+            "def decorate(function):\n    return function\n@decorate\ndef script_tool(amount: int) -> dict:\n    return {'total': amount}\n",
+        ),
+        (
+            "helper",
+            "def helper(value):\n    return value + 2\ndef script_tool(amount: int) -> dict:\n    def nested():\n        return helper(amount)\n    return {'total': nested()}\n",
+        ),
+        (
+            "len",
+            "len = lambda values: 99\ndef script_tool(amount: int) -> dict:\n    return {'total': len([amount])}\n",
+        ),
+    ],
+)
+def test_script_tool_rejects_definition_and_nested_scope_dependencies(tmp_path, dependency, source):
+    import runpy
+
+    script = tmp_path / "script.py"
+    script.write_text(source)
+    function = runpy.run_path(str(script), run_name="__main__")["script_tool"]
+    assert function(amount=4)
+    preset = _build_demo_preset()
+    preset.tools = tools_from(
+        [
+            ToolSpec(
+                name="script_tool",
+                description="Synthetic script export probe.",
+                parameters={"amount": "int"},
+                execute=function,
+            )
+        ]
+    )
+    with pytest.raises(CartridgeSerializationError, match=f"script_tool.*{dependency}"):
+        preset_to_cartridge(preset, tmp_path / "export", strict=True)
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        (
+            "def script_tool(amount: int) -> dict:\n    from decimal import Decimal\n    return {'total': str(Decimal(amount) + Decimal('0.25'))}\n",
+            "4.25",
+        ),
+        (
+            "def script_tool(amount: int) -> dict:\n    import decimal\n    return {'total': str(decimal.Decimal(amount))}\n",
+            "4",
+        ),
+        (
+            "def script_tool(amount: int) -> dict:\n    def helper(value):\n        return value + 2\n    return {'total': helper(amount)}\n",
+            6,
+        ),
+        (
+            "def script_tool(amount: int) -> dict:\n    if amount < 2:\n        return {'total': 1}\n    return {'total': amount * script_tool(amount - 1)['total']}\n",
+            24,
+        ),
+    ],
+)
+def test_script_tool_preserves_local_imports_helpers_and_recursion(tmp_path, source, expected):
+    import runpy
+
+    script = tmp_path / "script.py"
+    script.write_text(source)
+    function = runpy.run_path(str(script), run_name="__main__")["script_tool"]
+    preset = _build_demo_preset()
+    preset.tools = tools_from([function])
+    written = preset_to_cartridge(preset, tmp_path / "export", strict=True)
+    assert written.serialization_warnings == []
+    with cartridge_to_preset(written.path, strict=True) as loaded:
+        result = loaded.tools.dispatch(ToolCall(tool="script_tool", args={"amount": 4}))
+        assert result.error is None
+        assert result.data == {"total": expected}
 
 
 # ── layout sanity ──────────────────────────────────────────────

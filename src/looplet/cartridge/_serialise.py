@@ -14,12 +14,15 @@ to an equivalent directory through this module.
 
 from __future__ import annotations
 
+import builtins
 import importlib
 import inspect
 import json
 import logging
 import re
 import shutil
+import symtable
+import textwrap
 from collections.abc import Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -41,7 +44,7 @@ from looplet.cartridge._render import (
     _render_dataclass_kwargs,
     _safe_filename,
 )
-from looplet.cartridge._yaml import _dump_yaml
+from looplet.cartridge._yaml import _dump_yaml, _load_yaml
 from looplet.refs import _REF_PREFIX, _resource_origin, resource_ref_for
 
 logger = logging.getLogger(__name__)
@@ -231,15 +234,43 @@ def preset_to_cartridge(
     tools_root = root / CartridgeLayout.TOOLS_DIR
     tools_root.mkdir(exist_ok=True)
     _builtin_names = set(builtin_tool_names)
+    from looplet.validation import ValidatingToolRegistry, _schema_to_payload
+
+    schemas = preset.tools._schemas if isinstance(preset.tools, ValidatingToolRegistry) else {}
     for spec in _iter_tool_specs(preset.tools):
+        argument_validation = None
+        if spec.name in schemas:
+            try:
+                argument_validation = _schema_to_payload(schemas[spec.name])
+                if _load_yaml(_dump_yaml(argument_validation)) != argument_validation:
+                    raise ValueError("argument validation changes during cartridge YAML encoding")
+            except (TypeError, ValueError, CartridgeSerializationError) as exc:
+                raise CartridgeSerializationError(
+                    f"tool {spec.name!r} argument validation cannot round-trip: {exc}"
+                ) from exc
         # Skip tools that are re-derived from declarative directives:
         # builtin tools come back via ``builtin_tools:`` and MCP tools via
         # ``mcp_servers:`` (their closure executors cannot round-trip).
         if getattr(spec, "name", None) in _builtin_names:
+            if argument_validation is not None:
+                raise CartridgeSerializationError(
+                    f"tool {spec.name!r} argument validation on a builtin cannot round-trip"
+                )
             continue
         if _is_mcp_tool(spec):
+            if argument_validation is not None:
+                raise CartridgeSerializationError(
+                    f"tool {spec.name!r} argument validation on an MCP tool cannot round-trip"
+                )
             continue
-        _write_tool(spec, tools_root, warnings, strict)
+        _write_tool(spec, tools_root, warnings, strict, argument_validation=argument_validation)
+        if argument_validation is not None:
+            compatibility = workspace.compatibility.to_dict()
+            constraint = workspace.compatibility.looplet or ""
+            minimum = ">0.4.0"
+            if minimum not in [part.strip() for part in constraint.split(",")]:
+                compatibility["looplet"] = f"{constraint},{minimum}" if constraint else minimum
+                workspace.compatibility = CartridgeCompatibility.from_dict(compatibility)
 
     # 4. hooks - one subdir per hook, ordered by index for deterministic load
     hooks_root = root / CartridgeLayout.HOOKS_DIR
@@ -821,7 +852,42 @@ def _iter_tool_specs(tools: "BaseToolRegistry") -> Iterable[Any]:
     )
 
 
-def _write_tool(spec: Any, tools_root: Path, warnings: list[str], strict: bool) -> None:
+def _source_dependencies(source: str, function: Any) -> list[str]:
+    table = symtable.symtable(source, "<tool export>", "exec")
+    namespace = getattr(function, "__globals__", {})
+    missing: set[str] = set()
+    sentinel = object()
+
+    def visit(scope: symtable.SymbolTable, *, root: bool = False) -> None:
+        for symbol in scope.get_symbols():
+            if not symbol.is_referenced() or (not root and not symbol.is_global()):
+                continue
+            name = symbol.get_name()
+            if (
+                not root
+                and name == getattr(function, "__name__", None)
+                and namespace.get(name) is function
+            ):
+                continue
+            original = namespace.get(name, sentinel)
+            builtin = getattr(builtins, name, sentinel)
+            if builtin is sentinel or (original is not sentinel and original is not builtin):
+                missing.add(name)
+        for child in scope.get_children():
+            visit(child)
+
+    visit(table, root=True)
+    return sorted(missing)
+
+
+def _write_tool(
+    spec: Any,
+    tools_root: Path,
+    warnings: list[str],
+    strict: bool,
+    *,
+    argument_validation: dict[str, Any] | None = None,
+) -> None:
     name = spec.name
     tool_dir = tools_root / _safe_filename(name)
     tool_dir.mkdir(parents=True, exist_ok=True)
@@ -831,6 +897,8 @@ def _write_tool(spec: Any, tools_root: Path, warnings: list[str], strict: bool) 
         "description": spec.description,
         "parameters": dict(spec.parameters or {}),
     }
+    if argument_validation is not None:
+        yaml_payload["argument_validation"] = argument_validation
     # Promote multi-paragraph descriptions to ``description.md`` so
     # the on-disk artefact stays legible and yaml-block-scalar-free
     # (paper §"Promoted to first-class"). Single-line descriptions
@@ -949,6 +1017,32 @@ def _write_tool(spec: Any, tools_root: Path, warnings: list[str], strict: bool) 
                 return
         except Exception:  # noqa: BLE001
             pass
+
+    source = textwrap.dedent(source)
+    try:
+        dependencies = _source_dependencies(source, fn)
+    except SyntaxError as exc:
+        msg = f"tool {name!r} source cannot be exported independently: {exc}"
+    else:
+        msg = (
+            (
+                f"tool {name!r} source depends on names not included in the export: "
+                f"{', '.join(dependencies)}. Move the function into an importable module "
+                "available to the receiving host, or make it self-contained with imports "
+                "inside the function and pass configuration as arguments or resources."
+            )
+            if dependencies
+            else ""
+        )
+    if msg:
+        if strict:
+            raise CartridgeSerializationError(msg)
+        warnings.append(msg)
+        (tool_dir / "execute.py").write_text(
+            f"def execute(**kwargs):\n    raise NotImplementedError({msg!r})\n",
+            encoding="utf-8",
+        )
+        return
 
     # Fallback: dump source. Add an `execute = <fn_name>` alias so the
     # loader finds it under the canonical name regardless of what the

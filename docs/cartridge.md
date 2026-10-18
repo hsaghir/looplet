@@ -371,7 +371,9 @@ dict (`name: kwargs`). Unknown names raise
 | CONTRACT-tier fields (`max_steps`, `done_tool`, `permissions`, `memory`, `model`, `extends`, `builtin_tools`, `builtin_hooks`; plus loader-populated metadata) | Serialised via `config.yaml` |
 | RUNTIME-tier fields (`max_tokens`, `temperature`, `recovery_temperature`, `max_turn_continuations`, `generate_kwargs`, `use_native_tools`, `concurrent_dispatch`, `max_parallel_calls`, `reactive_recovery`, `context_window`, `max_briefing_tokens`, `compact_service`, `cache_policy`, `checkpoint_dir`, `initial_checkpoint`, `tool_result_persist_dir`, `router`, `tracer`, `recovery_registry`) | Serialised via sibling `runtime.yaml`; schema v2 rejects these fields in `config.yaml`. |
 | `system_prompt` | Written to `prompts/system.md` |
-| Tools whose `execute` is a top-level function | `tools/<name>/{tool.yaml, execute.py}`; the source is preserved verbatim and an `execute = <orig_name>` alias is appended so the loader finds it under the canonical name |
+| Tools whose `execute` is an importable top-level function | `execute.py` imports the original function, retaining its module dependencies. The receiving host must have that module installed. |
+| Self-contained script functions | Function source and an `execute` alias are written to `execute.py`. Imports inside the function are retained. |
+| Supported `ValidatingToolRegistry` argument policies, including `tools_from(..., validate=True)` | Per-tool `argument_validation` preserves types, nullability, enums, required flags, and schema strictness. Tools without a policy keep base checks. |
 | Hooks with an opt-in `to_config(self) -> dict` method | `hooks/NN_<ClassName>/{hook.py, config.yaml}`; class source is preserved, kwargs come from `to_config()` |
 | Hooks whose constructor takes no kwargs | Same as above; `kwargs: {}` |
 | `StaticMemorySource` instances | One markdown file per source under `memory/` |
@@ -394,10 +396,25 @@ Behaviour controlled by `strict`:
 - `strict=True`: `CartridgeSerializationError` is raised on the first
   non-round-trippable field.
 
-Tools whose `execute` is a closure or lambda fall into the same
-bucket: a placeholder `execute()` is written and a warning is recorded
-(or raised under `strict=True`). The fix is to refactor the tool's
-`execute` into a top-level function.
+Tools whose `execute` is a closure or lambda get a placeholder and a warning,
+or an error under `strict=True`. Script functions that refer to omitted module
+constants, imports, helpers, decorators, defaults, or annotations behave the
+same way. The diagnostic names the missing dependencies without copying their
+values. Move the function into an importable module available to the receiving
+host, or make it self-contained: put imports inside the function and pass
+configuration as arguments or declared resources. Static checks do not prove
+that dynamic namespace lookups or arbitrary Python code are portable.
+
+Argument validation requires the current unreleased Python host, not published
+`0.4.0`. Exports add `compatibility.looplet: ">0.4.0"` while retaining existing
+constraints. Pin the same qualified source revision on exporting and receiving
+hosts. Supported policies use built-in Python types, nullable unions, and JSON
+enum values. Unsupported policies, including custom Python classes or policies
+on re-created builtin/MCP tools, raise `CartridgeSerializationError` in both
+modes. Values must preserve their types and keys through JSON and the cartridge
+YAML codec; unsupported encodings raise rather than change the policy.
+Malformed `argument_validation` also fails before importing the tool,
+even in loose mode. Validation enforcement is never silently omitted.
 
 Hooks whose source cannot be retrieved by `inspect.getsource` (e.g.
 defined dynamically) get a placeholder class and a warning.

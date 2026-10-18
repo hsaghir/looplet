@@ -1142,6 +1142,7 @@ def _workspace_to_preset_inner(
 
     # Tools
     registry = BaseToolRegistry()
+    argument_schemas: dict[str, Any] = {}
     tools_dir = root / CartridgeLayout.TOOLS_DIR
     if tools_dir.is_dir():
         # ── Detect single-file ↔ multi-file collisions early ──
@@ -1220,6 +1221,16 @@ def _workspace_to_preset_inner(
                 )
                 or {}
             )
+            argument_schema = None
+            if "argument_validation" in yaml_payload:
+                from looplet.validation import _schema_from_payload
+
+                try:
+                    argument_schema = _schema_from_payload(yaml_payload["argument_validation"])
+                except (TypeError, ValueError) as exc:
+                    raise CartridgeSerializationError(
+                        f"invalid argument_validation in {spec_path}: {exc}"
+                    ) from exc
             module = _import_module_from_path(execute_path, f"_chw_tool_{tool_dir.name}")
             execute_fn = getattr(module, "execute", None)
             if execute_fn is None:
@@ -1340,6 +1351,8 @@ def _workspace_to_preset_inner(
                     raise CartridgeSerializationError(msg)
                 logger.warning("%s", msg)
             registry.register(spec)
+            if argument_schema is not None:
+                argument_schemas[spec.name] = argument_schema
 
             # ``output_schema:`` on the done tool installs an
             # OutputSchema validator on the LoopConfig so the loop
@@ -1467,6 +1480,17 @@ def _workspace_to_preset_inner(
                 if strict:
                     raise CartridgeSerializationError(msg) from exc
                 logger.warning("%s; skipping server", msg)
+
+    if argument_schemas:
+        from looplet.validation import ValidatingToolRegistry
+
+        validated = ValidatingToolRegistry()
+        for tool_spec in registry._tools.values():
+            if tool_spec.name in argument_schemas:
+                validated.register_with_schema(tool_spec, argument_schemas[tool_spec.name])
+            else:
+                validated.register(tool_spec)
+        registry = validated
 
     # Hand the resource registry to the tool registry so any tool whose
     # ``ToolSpec.requires`` lists a resource name receives the live

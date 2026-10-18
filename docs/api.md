@@ -223,6 +223,12 @@ Its dispatch methods preserve cancellation, resources, timeouts, results, and ca
 Tools without a schema still use the base argument checks.
 A model can see a tool without permission to run it.
 
+Unreleased cartridge export and load preserve supported per-tool argument
+policies, including `validate=True`, without enabling validation for other tools.
+Custom Python types and non-JSON enum values cannot round-trip and raise an
+export error in either strict mode. See [round-trip guarantees](cartridge.md#round-trip-guarantees)
+for supported policies, script dependencies, and receiving-host requirements.
+
 `run_skill_bundle()` passes extra hooks and the gateway through `AgentPreset.run()`.
 It preserves the iterator's returned trace.
 It closes presets that it built, even if you close an iterator before its first step.

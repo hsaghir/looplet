@@ -253,11 +253,40 @@ def execute(ctx, *, service: str) -> dict:
 description and supports longer capability, usage, and limitation text.
 
 Supported tool fields are `name`, `description`, `parameters`, `requires`,
-`concurrent_safe`, `free`, `timeout_s`, `render`, and `output_schema`.
+`concurrent_safe`, `free`, `timeout_s`, `render`, `output_schema`, and the
+Python reference host's optional `argument_validation` policy.
 Schema v2 rejects per-tool `tags`; consuming policy owns its tool categories.
 
 Every `requires` name must resolve before execution. Tool directory and tool
 name should match; strict loaders must reject a mismatch.
+
+### Python argument validation
+
+The unreleased Python host can restore a per-tool `OutputSchema` policy:
+
+```yaml
+argument_validation:
+  strict: false
+  fields:
+    service:
+      types: [str]
+      required: true
+      description: Service name.
+      allowed_values: null
+```
+
+The block has exactly `strict` (a boolean) and `fields` (a mapping). Each field
+has exactly the four keys shown. `types` lists built-in Python type names:
+`str`, `int`, `float`, `bool`, `list`, `dict`, or `NoneType`. A null `types`
+value means no type constraint. `allowed_values` is a JSON array or null.
+These are flat argument checks, not full JSON Schema validation. Invalid
+policies must fail before the tool is imported, even in loose mode. Tools
+without this block retain base argument checks.
+
+Python exports containing this policy add `compatibility.looplet: ">0.4.0"`,
+preserving other constraints. This is a Python host policy, not a claim of
+support in other runtimes. Exporter and receiving host should use the same
+qualified source revision while the feature is unreleased.
 
 ### Single-file form
 

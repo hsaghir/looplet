@@ -84,7 +84,7 @@ A synchronous worker may continue and commit effects after the caller receives `
 Async cancellation is cooperative; a coroutine may delay or suppress it.
 Neither outcome proves that the external effect did not occur.
 
-Unreleased builds mark tool timeout exceptions as `retriable=False`.
+Since `0.4.1`, tool timeout exceptions are marked `retriable=False`.
 Their error text warns about continuing execution and unknown effects.
 `error_detail.context` includes `effect_unknown=True`.
 The recovery hint names the action `reconcile_tool_effect`.
@@ -290,7 +290,7 @@ With no explicit `initial_checkpoint`, Looplet selects the highest-step incomple
 A terminal checkpoint prevents implicit resume of earlier snapshots.
 Calling the loop again can still start fresh; it does not undo earlier effects.
 
-In unreleased builds, resumed `DefaultState` preserves the saved charged-step budget.
+Since `0.4.1`, resumed `DefaultState` preserves the saved charged-step budget.
 Changing `max_steps` changes the total cap, not the number of additional steps.
 Its `steps` list contains only steps from the current iterator.
 Custom states must preserve cumulative charged budgets through their own state contract.
@@ -299,7 +299,7 @@ Automatic resume refuses unreadable or invalid checkpoint files for the selected
 This includes legacy files whose run identity cannot be verified.
 Preserve damaged files and reconcile possible effects before repairing recovery state.
 Other named run namespaces remain isolated.
-These recovery changes require an [unreleased source build](install.md#unreleased-safety-fixes).
+These recovery changes require [version `0.4.1` or newer](install.md#unreleased-safety-fixes).
 
 An interrupted tool can leave an `effect_unknown` pending record.
 Resume then raises `UncertainToolEffect` before another model or tool call.
@@ -376,7 +376,7 @@ Apply explicit access, redaction, retention, and deletion policies.
 
 ## Bound free-tool runs
 
-In unreleased builds, `max_steps` limits charged steps, not total tool or model calls.
+Since `0.4.1`, `max_steps` limits charged steps, not total tool or model calls.
 Successful nonterminal free calls preserve that budget.
 Add a host deadline when repeated free calls must stop:
 

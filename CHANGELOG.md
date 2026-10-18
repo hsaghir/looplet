@@ -6,14 +6,20 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-17
+
 ### Added
 
+- A complete keyless Quickstart module runs, grades, captures, rescores, replays, and stops without authored Python files.
 - `async_replay_loop()` replays captured responses with awaited async tools and hooks, shared replay validation, and early-close cleanup.
 - Documented application-state checkpoint and restore callbacks with nested-copy and legacy-snapshot tests.
 - `looplet --version` prints the installed package version without a command or backend.
 
 ### Changed
 
+- Cartridge export stages a complete result before replacing the destination. Failed serialization and installation preserve existing output for retries.
+- Unsupported callable exports name the actual type and explain top-level wrappers, arguments, and declared resources instead of mislabeling partials and instances.
+- Installation guides pin the fixed `0.4.1` package and matching provider extras instead of a moving development archive.
 - Cartridge round trips preserve supported per-tool argument validation without changing unvalidated tools. Nullable type tags and enum strings retain their YAML types.
 - Strict script-tool export rejects omitted dependencies with actionable guidance. Loose export records warnings and writes editable placeholders instead of broken function copies.
 - Capture documentation distinguishes provider-input scrubbing from record-only redaction before first use, without changing privacy defaults.
@@ -21,7 +27,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - Inferred tool schemas reject variadic parameters during construction. Explicit schemas and list/dict wrappers remain supported.
 - Graders and collectors reject unsupported async callables with host-code guidance and close unexpected coroutine returns.
 - The Quickstart places its optional real-model handoff before grading, capture, and replay. The eval guide documents pre-awaited collection for synchronous grading.
-- The Quickstart adds provider extras from the current source build and preserves guidance for pinned revisions.
+- The Quickstart keeps provider extras on the same fixed package version.
 - Tool schemas preserve every mixed or nullable `Literal` choice. Enum checks distinguish booleans from numeric values.
 - `tool` and `tools_from` accept partials and callable instances, preserving effective signatures, resolved annotations, and explicit metadata overrides.
 - Trajectory JSON redacts string values before encoding, preserving valid JSON for escaped text and replacement strings.
@@ -29,7 +35,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - Tool registration rejects positional-only signatures. Inferred container annotations require JSON-compatible inputs and explicit conversion for sets or tuples.
 - Introductory scripted examples use strict response exhaustion while mock defaults remain unchanged.
 - Public sync and async loop help documents parameters, budget overrides, and iterator cleanup.
-- Introductory guides recommend a non-editable current-source install while the patch remains unpublished.
+- Introductory guides recommend a non-editable package install without a repository checkout.
 - The CLI guide compares format support before packaging and uses strict completion in primary run examples.
 - The quality-gate example checkpoints its successful-call counter across resumes, and its copied unit tests use real steps.
 - `DefaultState` restores charged-step budgets across checkpoint resumes, including free-call accounting. Explicit cap changes retain prior charged work.
@@ -39,7 +45,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - The quality-gate example counts successful non-completion calls and supports custom completion names. Tests execute the copied snippet.
 - The migration guide configures JSON-text mode for its sample adapter and tests the copied snippets together.
 - Prompts show the total step number separately from the charged-step budget.
-- Source builds identify as `0.4.1.dev0`; published installation commands remain pinned to `0.4.0`.
+- Package metadata, the public version, and published installation commands identify release `0.4.1`.
 - Cartridge compatibility checks place development builds before the matching final release and preserve numeric version constraints.
 - `doctor` reports a SHA-256 fingerprint of library Python sources without requiring Git metadata.
 - Budget help describes charged steps and links to a cooperative deadline example for repeated free calls.
@@ -64,7 +70,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - Python replay restores saved task data by default. Explicit tasks, including `{}`, and config budgets remain authoritative.
 - Serial native batches check permissions, dispatch tools, record steps, and yield one call at a time.
 - Serial runs honor cancellation, deadlines, and hook stops before the next call in a batch.
-- Installation and capture guides distinguish published `0.4.0` from unreleased safety fixes.
+- Installation and capture guides distinguish `0.4.0` limitations from the `0.4.1` safety fixes.
 - Python introductions use callable functions and show direct unit tests. The optional decorator's non-callable `ToolSpec` behavior is explicit.
 - Checkpoint errors link to a tested SQLite reconciliation recipe. Recovery guides distinguish retry, verified effects, and unresolved evidence.
 - Tool timeout errors warn that effects may continue and require reconciliation. They no longer imply retry safety.

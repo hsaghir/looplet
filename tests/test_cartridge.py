@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import textwrap
+from functools import partial
 from pathlib import Path
 
 import pytest
@@ -57,6 +58,11 @@ def record_amount(amount: int, target: str) -> dict:
 
     Path(target).write_text(str(amount))
     return {"amount": amount, "observed_type": type(amount).__name__}
+
+
+class LookupCallable:
+    def __call__(self, *, key: str) -> dict:
+        return lookup_execute(key=key)
 
 
 class DemoCounter:
@@ -142,6 +148,115 @@ def test_non_empty_directory_requires_overwrite(tmp_path: Path) -> None:
     # overwrite=True succeeds and wipes managed subdirs.
     workspace = preset_to_cartridge(_build_demo_preset(), out, overwrite=True)
     assert (workspace.path / CartridgeLayout.CARTRIDGE_JSON).is_file()
+    assert (out / "stale").read_text() == "hi"
+
+
+def test_export_accepts_long_destination_name(tmp_path):
+    out = tmp_path / ("a" * 240 + ".cartridge")
+    written = preset_to_cartridge(_build_demo_preset(), out, strict=True)
+    assert written.path == out
+    assert written.name == out.name
+    assert (out / "cartridge.json").is_file()
+
+
+def test_export_overwrite_preserves_unmanaged_symlinks(tmp_path):
+    out = tmp_path / "agent.cartridge"
+    preset_to_cartridge(_build_demo_preset(), out, strict=True)
+    external = tmp_path / "application.txt"
+    external.write_text("Keep this application-owned data.")
+    (out / "application.txt").symlink_to(external)
+    preset_to_cartridge(_build_demo_preset(), out, overwrite=True, strict=True)
+    assert (out / "application.txt").is_symlink()
+    assert (out / "application.txt").readlink() == external
+    assert external.read_text() == "Keep this application-owned data."
+
+
+@pytest.mark.parametrize("initial", ["missing", "empty", "existing"])
+def test_failed_strict_export_leaves_destination_unchanged(tmp_path, initial):
+    out = tmp_path / "agent.cartridge"
+    overwrite = initial == "existing"
+    if initial == "empty":
+        out.mkdir()
+    elif initial == "existing":
+        preset_to_cartridge(_build_demo_preset(), out, strict=True)
+        (out / "notes.txt").write_text("Keep this application-owned file.")
+    before = {
+        str(path.relative_to(out)): path.read_bytes() for path in out.rglob("*") if path.is_file()
+    }
+    siblings = sorted(path.name for path in tmp_path.iterdir())
+    preset = _build_demo_preset()
+    preset.tools.register(
+        ToolSpec(name="unsupported", description="", parameters={}, execute=lambda: {})
+    )
+
+    with pytest.raises(CartridgeSerializationError, match="closure or lambda"):
+        preset_to_cartridge(preset, out, overwrite=overwrite, strict=True)
+
+    assert out.exists() == (initial != "missing")
+    assert {
+        str(path.relative_to(out)): path.read_bytes() for path in out.rglob("*") if path.is_file()
+    } == before
+    assert sorted(path.name for path in tmp_path.iterdir()) == siblings
+    written = preset_to_cartridge(_build_demo_preset(), out, overwrite=overwrite, strict=True)
+    assert written.path == out
+    with cartridge_to_preset(out, strict=True) as restored:
+        result = restored.tools.dispatch(ToolCall(tool="lookup", args={"key": "x"}))
+        assert result.error is None
+        assert result.data == {"key": "x", "value": 1}
+
+
+@pytest.mark.parametrize("initial", ["missing", "empty", "existing"])
+def test_export_install_failure_restores_destination(tmp_path, monkeypatch, initial):
+    out = tmp_path / "agent.cartridge"
+    if initial == "empty":
+        out.mkdir()
+    elif initial == "existing":
+        preset_to_cartridge(_build_demo_preset(), out, strict=True)
+        (out / "notes.txt").write_text("Keep this application-owned file.")
+    before = {
+        str(path.relative_to(out)): path.read_bytes() for path in out.rglob("*") if path.is_file()
+    }
+    siblings = sorted(path.name for path in tmp_path.iterdir())
+    rename = Path.rename
+
+    def fail_install(source, destination):
+        if source.name == "cartridge" and Path(destination) == out.resolve():
+            raise OSError("simulated install failure")
+        return rename(source, destination)
+
+    monkeypatch.setattr(Path, "rename", fail_install)
+    with pytest.raises(OSError, match="simulated install failure"):
+        preset_to_cartridge(_build_demo_preset(), out, overwrite=initial == "existing", strict=True)
+    assert out.exists() == (initial != "missing")
+    assert {
+        str(path.relative_to(out)): path.read_bytes() for path in out.rglob("*") if path.is_file()
+    } == before
+    assert sorted(path.name for path in tmp_path.iterdir()) == siblings
+
+
+@pytest.mark.parametrize("kind", ["partial", "LookupCallable"])
+@pytest.mark.parametrize("strict", [False, True])
+def test_unsupported_callable_export_names_type_and_wrapper(tmp_path, kind, strict):
+    execute = partial(lookup_execute) if kind == "partial" else LookupCallable()
+    tool_name = "lookup_execute" if kind == "partial" else "LookupCallable"
+    preset = _build_demo_preset()
+    preset.tools = tools_from([execute], validate=True)
+    result = preset.tools.dispatch(ToolCall(tool=tool_name, args={"key": "x"}))
+    assert result.error is None
+    assert result.data == {"key": "x", "value": 1}
+    if strict:
+        with pytest.raises(CartridgeSerializationError) as raised:
+            preset_to_cartridge(preset, tmp_path / "unsupported.cartridge", strict=True)
+        messages = [str(raised.value)]
+    else:
+        written = preset_to_cartridge(preset, tmp_path / "unsupported.cartridge")
+        messages = written.serialization_warnings
+    assert len(messages) == 1
+    assert kind in messages[0]
+    assert "top-level function wrapper" in messages[0]
+    assert "arguments or declared resources" in messages[0]
+    assert "closure" not in messages[0]
+    assert "lambda" not in messages[0]
 
 
 def test_workspace_metadata_round_trips(tmp_path: Path) -> None:

@@ -64,11 +64,11 @@ The caller owns the tools, clients, and resources that it supplies.
 `RunResult.from_state(state)` returns accepted output, steps, and stop status.
 Completion does not prove that an answer is correct.
 
-Unreleased builds reject terminal calls whose dispatch fails.
+Since `0.4.1`, loops reject terminal calls whose dispatch fails.
 Invalid completion arguments do not produce accepted output.
 The agent can correct the call while budget remains.
 
-In unreleased builds, `DefaultState.max_steps` limits charged steps.
+Since `0.4.1`, `DefaultState.max_steps` limits charged steps.
 A successful nonterminal `ToolSpec(free=True)` call does not reduce `budget_remaining`.
 Failed calls, intercepted calls, and terminal attempts still consume one step.
 `step_count` includes every recorded step, including free calls.
@@ -130,7 +130,7 @@ Use `run_sub_loop_async` or `run_sub_loops_async` for async or bounded parallel 
 They accept explicit backends, tools, state, hooks, and configuration.
 See [bounded delegation](host-integration.md#bounded-delegation) for parent controls, result fields, and recovery.
 
-Unreleased child loops install an isolated completion tool when cloning excludes the parent terminal.
+Since `0.4.1`, child loops install an isolated completion tool when cloning excludes the parent terminal.
 That tool accepts a `summary` and does not invoke the parent's terminal tool.
 Explicit `sub_tools` registries remain unchanged and must register their own terminal tool.
 
@@ -151,14 +151,14 @@ Their names remain callable in application code and unit tests.
 `minimal_preset` installs `done` automatically; `tools_from` does not.
 Use `tools_from([...], include_done=True)` for the standard completion tool.
 Register a matching terminal tool yourself when using a custom `done_tool` or `done_tools`.
-Unreleased loops warn before the first model call if no configured terminal tool is registered.
+Since `0.4.1`, loops warn before the first model call if no configured terminal tool is registered.
 Hooks and host code can intentionally stop such runs; the warning does not reject them.
 The registry infers schemas from signatures and descriptions from docstrings.
 The optional `@tool` decorator replaces the function with a `ToolSpec`.
 Call its `.execute(...)` method to invoke the underlying function directly.
 Direct calls bypass registry validation and hooks; test dispatch separately when those controls matter.
 
-Unreleased builds also accept `functools.partial` objects and callable instances.
+Since `0.4.1`, tool inference also accepts `functools.partial` objects and callable instances.
 A partial uses its underlying callable's name and docstring.
 A callable instance uses its class name and its class or `__call__` docstring.
 Use `tool(callable, name=..., description=...)` to override this metadata.
@@ -168,9 +168,9 @@ Positionally bound parameters are absent from the schema.
 Keyword-bound parameters keep their defaults and remain model-visible.
 Use a wrapper or positional binding for dependencies that must not be exposed as tool arguments.
 
-Unreleased registration rejects positional-only parameters because dispatch uses keyword arguments.
+Since `0.4.1`, registration rejects positional-only parameters because dispatch uses keyword arguments.
 Wrap existing positional-only functions with keyword-compatible functions.
-Unreleased schema inference also rejects `*args` and `**kwargs` parameters instead of silently omitting them.
+Since `0.4.1`, schema inference also rejects `*args` and `**kwargs` parameters instead of silently omitting them.
 Use explicit `list` or `dict` parameters in wrappers.
 An explicit `ToolSpec` schema can expose named fields to an existing `**kwargs` implementation.
 It does not convert JSON arrays into positional arguments.
@@ -195,7 +195,7 @@ They reject invalid values rather than coercing them.
 Nested schemas and other constraints remain tool-owned.
 These options are included in Looplet `0.4.0`.
 
-Unreleased builds preserve these additional annotation contracts:
+Version `0.4.1` preserves these additional annotation contracts:
 
 - `Annotated[T, ...]` uses the schema for `T`; metadata does not become a validation rule.
 - `Any` adds no type constraint, including for explicit null values.
@@ -207,7 +207,7 @@ Missing annotations retain the legacy string schema.
 Required-field presence and blank-string checks still apply.
 Unsupported annotations raise `TypeError` during tool construction instead of silently becoming strings.
 Use an explicit `ToolSpec.parameters` schema for those contracts.
-Unreleased `minimal_preset` annotations also accept its existing callable-tool inputs and reusable sequences.
+Since `0.4.1`, `minimal_preset` annotations also accept its existing callable-tool inputs and reusable sequences.
 
 The base registry checks argument names and required fields, not full types or every JSON Schema keyword.
 Without `validate=True`, type hints describe the model's schema but do not enforce values at dispatch.
@@ -223,7 +223,7 @@ Its dispatch methods preserve cancellation, resources, timeouts, results, and ca
 Tools without a schema still use the base argument checks.
 A model can see a tool without permission to run it.
 
-Unreleased cartridge export and load preserve supported per-tool argument
+Since `0.4.1`, cartridge export and load preserve supported per-tool argument
 policies, including `validate=True`, without enabling validation for other tools.
 Custom Python types and non-JSON enum values cannot round-trip and raise an
 export error in either strict mode. See [round-trip guarantees](cartridge.md#round-trip-guarantees)

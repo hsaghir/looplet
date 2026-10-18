@@ -134,8 +134,8 @@ composable_loop(llm, tools=reg, hooks=hooks, ...)
 - `check_done`: The first blocking decision rejects completion; a nonblocking decision does not.
 - `should_stop`: The first stop decision or legacy True stops the loop.
 
-Checking cached `pre_dispatch` results requires the unreleased permission fix.
-See [source installation](install.md#unreleased-safety-fixes).
+Checking cached `pre_dispatch` results requires the permission fix in `0.4.1`.
+See [versioned safety fixes](install.md#unreleased-safety-fixes).
 
 > When a hook terminates the loop via `should_stop`, return
 > `HookDecision(stop="my_reason")` instead of a plain `True`. The reason

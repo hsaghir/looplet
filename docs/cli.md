@@ -61,7 +61,7 @@ looplet --version
 python -m looplet --version
 ```
 
-This flag is available in unreleased builds.
+This flag is available in `0.4.1` and newer.
 For published `0.4.0`, use `looplet doctor --no-backend` instead.
 
 ### `looplet doctor`
@@ -90,7 +90,7 @@ The `endpoint` check shows the effective scheme, host, port, and matching config
 It displays only the origin; user info, paths, queries, and fragments are omitted because they may contain credentials.
 This identifies the configured destination without claiming connectivity when `--no-backend` is used.
 
-In unreleased builds, the `build` check fingerprints library Python sources without requiring Git.
+Since `0.4.1`, the `build` check fingerprints library Python sources without requiring Git.
 It excludes bundled examples and bytecode caches.
 Compare the version and fingerprint together; same-version local builds may contain different source code.
 This fingerprint is not an official release identifier or a security attestation.
@@ -142,13 +142,13 @@ directory. JSON output contains the parsed `trajectory.json` object and
 Missing or null timings do not contribute to human timing totals; JSON output
 and the stored evidence retain their original values.
 
-Unreleased builds also print the complete recorded result under `result:` for completed runs.
+Since `0.4.1`, inspection also prints the complete recorded result under `result:` for completed runs.
 Rejected completions and incomplete runs have no final-result section.
 Both `show` and trace `inspect` use this view.
 Plain-trace JSON output and saved files are unchanged.
 Inspect traces before sharing them; complete results may contain sensitive data.
 
-Unreleased builds also show recorded grades under `saved evals:` and collected evidence under `artifacts:` for saved eval runs.
+Since `0.4.1`, inspection also shows recorded grades under `saved evals:` and collected evidence under `artifacts:` for saved eval runs.
 Their JSON output adds `evals` and `artifacts`; ordinary traces retain the existing JSON shape.
 Inspection does not rerun graders, collectors, tools, or models.
 The `done` header means loop completion, not correctness.
@@ -315,7 +315,7 @@ Budget exhaustion and hook stops can return `0` with `completed: false`.
 Tool errors can also exhaust the budget without accepted completion.
 Accepted completion still does not prove correctness; use an outcome grader for that.
 
-In unreleased builds, `--max-steps` overrides the charged-step budget for `DefaultState`.
+Since `0.4.1`, `--max-steps` overrides the charged-step budget for `DefaultState`.
 Successful nonterminal free calls do not consume it; total tool and model calls can exceed this value.
 See [bound free-tool runs](operations.md#bound-free-tool-runs) for a cooperative deadline.
 
@@ -363,11 +363,11 @@ It works in human and JSON modes, including the explicit cartridge and bundle co
 It checks completion, not correctness; use an outcome grader for that.
 The flag is included in Looplet `0.4.0`.
 
-Unreleased builds reject failed terminal dispatches, including invalid `done` arguments.
+Since `0.4.1`, loops reject failed terminal dispatches, including invalid `done` arguments.
 Published `0.4.0` can falsely report those calls as completed, even with `--require-completed`.
-See the [unreleased safety fixes](install.md#unreleased-safety-fixes).
+See the [safety fixes in `0.4.1`](install.md#unreleased-safety-fixes).
 
-Unreleased cartridge and generic bundle runners show the last recorded error when a run does not complete.
+Since `0.4.1`, cartridge and generic bundle runners show the last recorded error when a run does not complete.
 Their JSON completion object adds a nullable `error` field with `step`, `tool`, and `message`.
 Messages are limited to 2,000 characters; full error evidence remains in the trace.
 The field excludes tool arguments and result payloads.
@@ -463,8 +463,8 @@ Notable options:
 | Option | Effect |
 | --- | --- |
 | `--case ID` | Run one case; repeat to select several. |
-| `--case-mark MARK` | Run cases with any selected mark; repeat to select several marks. Unreleased. |
-| `--max-steps N` | Override the per-case charged-step budget. Successful free calls do not count in unreleased builds. |
+| `--case-mark MARK` | Run cases with any selected mark; repeat to select several marks. Added in `0.4.1`. |
+| `--max-steps N` | Override the per-case charged-step budget. Successful free calls do not count in `0.4.1` and newer. |
 | `--model NAME` | Override the selected provider's model. |
 | `--base-url URL` | Explicitly select an OpenAI-compatible endpoint for agent and judge. |
 | `--judge` | Enable graders whose signature requests an LLM. |
@@ -475,7 +475,7 @@ Notable options:
 | `--threshold VALUE` | Fail when any scored grader falls below the value. |
 | `--json` | Emit one report with the overall verdict and per-case grader results. |
 
-Unreleased builds accept the same mark filter when listing cases:
+Version `0.4.1` accepts the same mark filter when listing cases:
 
 ```bash
 looplet eval cases ls ./agent.cartridge/evals --case-mark smoke
@@ -615,5 +615,5 @@ searchable tags. Validate and run the output before distributing it.
   does not expose as JSON.
 
 Before `1.0`, command options and machine-readable fields may change in a minor
-release. For PyPI installations, pin `looplet>=0.4,<0.5`.
+release. For PyPI installations, pin `looplet>=0.4.1,<0.5`.
 Review the [changelog](changelog.md) before upgrading.

@@ -86,16 +86,16 @@ The loop still yields steps, so your code can inspect each result and stop befor
 
 ## Start with one loop
 
-Install the current source build for the examples and fixes in these guides.
+Install the fixed release for the examples and fixes in these guides.
 Run it inside a virtual environment:
 
 ```bash
-python -m pip install "looplet @ https://github.com/hsaghir/looplet/archive/refs/heads/master.zip"
+python -m pip install "looplet==0.4.1"
 ```
 
-This non-editable development build needs no Git installation or local checkout.
-It identifies as `0.4.1.dev0`; PyPI `0.4.0` lacks later safety fixes.
-The archive follows `master`; pin an approved full commit hash for deployment.
+This non-editable package needs no Git installation or local checkout.
+Release `0.4.1` includes the safety fixes missing from `0.4.0`.
+Pin the version and artifact hashes in your dependency lockfile for deployment.
 See the [Quickstart](quickstart.md) for environment setup and the same agent's tests.
 This example uses fixed responses and does not contact a model service.
 `validate=True` checks top-level argument types, nullability, and enum choices before tools run.

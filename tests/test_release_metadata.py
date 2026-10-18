@@ -43,8 +43,11 @@ def test_published_install_guidance_is_separate_from_source_version() -> None:
     assert published is not None
     version = published.group(1)
     major, minor, _patch = (int(part) for part in version.split("."))
-    pin = f"looplet>={major}.{minor},<{major}.{minor + 1}"
+    pin = f"looplet>={version},<{major}.{minor + 1}"
     assert pin in readme
+    assert (
+        "The recommended source build includes later fixes that are not yet on PyPI." not in readme
+    )
     assert pin in install
     assert f"latest PyPI release is `{version}`" in install
     assert f"## [{version}]" in (ROOT / "CHANGELOG.md").read_text()
@@ -94,15 +97,15 @@ def test_release_qualification_uses_declared_source_version() -> None:
     assert "does not publish to PyPI" in preparation
 
 
-def test_unreleased_safety_fixes_are_explicitly_scoped() -> None:
+def test_released_safety_fixes_are_explicitly_scoped() -> None:
     readme = (ROOT / "README.md").read_text()
     install = (ROOT / "docs" / "install.md").read_text()
     provenance = (ROOT / "docs" / "provenance.md").read_text()
     published = re.search(r"latest PyPI release is `(\d+\.\d+\.\d+)`", readme)
     assert published is not None
-    safety = install.split("## Unreleased Safety Fixes\n", 1)[1].split("\n## ", 1)[0]
+    safety = install.split("## Safety fixes in 0.4.1\n", 1)[1].split("\n## ", 1)[0]
 
-    assert f"| Behavior | Published `{published.group(1)}` | Unreleased builds |" in safety
+    assert f"| Behavior | Published `0.4.0` | Release `{published.group(1)}` |" in safety
     for behavior in (
         "Serial native batches",
         "Native response redaction",
@@ -112,8 +115,9 @@ def test_unreleased_safety_fixes_are_explicitly_scoped() -> None:
     assert "`redact=` does not scrub native response blocks." in safety
     assert "install.md#unreleased-safety-fixes" in readme
     assert "install.md#unreleased-safety-fixes" in provenance
-    assert "**Unreleased:**" in provenance
-    assert "**Unreleased defaults:**" in provenance
+    assert '<a id="unreleased-safety-fixes"></a>' in install
+    assert "**Since `0.4.1`:**" in provenance
+    assert "**`0.4.1` defaults:**" in provenance
 
 
 def test_lockfile_and_latest_published_release_match_metadata() -> None:

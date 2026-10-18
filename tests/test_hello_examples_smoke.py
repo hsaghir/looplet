@@ -40,25 +40,22 @@ def test_public_loop_help_documents_inputs_and_cleanup(loop_function):
 @pytest.mark.parametrize(
     "guide_name", ["README.md", "docs/index.md", "docs/quickstart.md", "docs/install.md"]
 )
-def test_frontdoor_install_uses_current_source_without_checkout(guide_name):
+def test_frontdoor_install_uses_fixed_release_without_checkout(guide_name):
     guide = Path(__file__).resolve().parents[1] / guide_name
     command = re.findall(r"^```bash[^\n]*\n(.*?)^```[ \t]*$", guide.read_text(), re.M | re.S)[0]
     arguments = shlex.split(command.replace("\\\n", " "))
-    assert "looplet @ https://github.com/hsaghir/looplet/archive/refs/heads/master.zip" in arguments
+    assert "looplet==0.4.1" in arguments
     assert "-e" not in arguments
 
 
-def test_quickstart_provider_extra_keeps_current_source_build():
+def test_quickstart_provider_extra_keeps_fixed_release():
     guide = Path(__file__).resolve().parents[1] / "docs" / "quickstart.md"
     section = guide.read_text().split("## Use the same agent with a real model", 1)[1]
     command = re.findall(r"^```bash[^\n]*\n(.*?)^```[ \t]*$", section, re.M | re.S)[0]
     arguments = shlex.split(command.replace("\\\n", " "))
-    assert (
-        "looplet[openai] @ https://github.com/hsaghir/looplet/archive/refs/heads/master.zip"
-        in arguments
-    )
+    assert "looplet[openai]==0.4.1" in arguments
     assert "-e" not in arguments
-    assert not any(argument.startswith("looplet[openai]==") for argument in arguments)
+    assert not any("refs/heads/master" in argument for argument in arguments)
 
 
 @pytest.mark.parametrize("completed", [False, True])
@@ -128,6 +125,108 @@ def _quickstart_agent_source(guide: Path) -> str:
     declarations = "".join(first_loop.splitlines(keepends=True)[: main.lineno - 1])
     grading = next(block for block in _python_blocks(guide) if "def assess_result(" in block)
     return declarations + "\n\n" + grading
+
+
+def test_packaged_quickstart_runs_without_authored_files(tmp_path, monkeypatch, capsys):
+    from looplet.examples import quickstart
+
+    monkeypatch.chdir(tmp_path)
+    first = quickstart.run_agent(quickstart.scripted_backend())
+    second = quickstart.run_agent(quickstart.scripted_backend())
+    assert first.completed and second.completed
+    assert first.output == second.output
+    assert first.steps[0] is not second.steps[0]
+    assert quickstart.assess_result(first).passed
+    assert quickstart.main([]) == 0
+    assert "True done" in capsys.readouterr().out
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_packaged_quickstart_capture_rescore_and_replay(tmp_path, monkeypatch):
+    from looplet.examples import quickstart
+
+    monkeypatch.chdir(tmp_path)
+    scripted = Mock(wraps=quickstart.scripted_backend)
+    monkeypatch.setattr(quickstart, "scripted_backend", scripted)
+    trace = tmp_path / "saved-run"
+    assert quickstart.main(["--capture", str(trace)]) == 0
+    assert scripted.call_count == 1
+    before = {
+        str(path.relative_to(trace)): path.read_bytes()
+        for path in trace.rglob("*")
+        if path.is_file()
+    }
+    assert json.loads((trace / "expected.json").read_text()) == quickstart.EXPECTED_OWNER
+    assert "expected" not in json.loads((trace / "trajectory.json").read_text())["task"]
+    assert quickstart.main(["--rescore", str(trace)]) == 0
+    assert quickstart.main(["--replay", str(trace)]) == 0
+    assert scripted.call_count == 1
+    assert {
+        str(path.relative_to(trace)): path.read_bytes()
+        for path in trace.rglob("*")
+        if path.is_file()
+    } == before
+
+
+def test_packaged_quickstart_stop_is_explicit(tmp_path, monkeypatch, capsys):
+    from looplet.examples import quickstart
+
+    monkeypatch.chdir(tmp_path)
+    backend = quickstart.scripted_backend()
+    stopped = quickstart.stop_after_lookup(backend)
+    assert backend.calls == 1
+    assert stopped.termination_reason == "stream_closed"
+    assert not stopped.completed
+    assert [step.tool_call.tool for step in stopped.steps] == ["lookup_owner"]
+    assert quickstart.main(["--stop-after-lookup"]) == 0
+    assert "False stream_closed" in capsys.readouterr().out
+
+
+def test_packaged_quickstart_launcher_propagates_failure(tmp_path):
+    result = subprocess.run(
+        [sys.executable, "-m", "looplet.examples.quickstart", "--max-steps", "1"],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode == 1, result.stderr
+    assert "budget_exhausted" in result.stdout
+
+
+def test_packaged_quickstart_preserves_existing_capture(tmp_path):
+    from looplet.examples import quickstart
+
+    trace = tmp_path / "saved-run"
+    assert quickstart.main(["--capture", str(trace)]) == 0
+    before = {
+        str(path.relative_to(trace)): path.read_bytes()
+        for path in trace.rglob("*")
+        if path.is_file()
+    }
+    assert quickstart.main(["--capture", str(trace)]) == 1
+    assert {
+        str(path.relative_to(trace)): path.read_bytes()
+        for path in trace.rglob("*")
+        if path.is_file()
+    } == before
+
+
+def test_packaged_quickstart_failed_rescore_returns_nonzero(tmp_path, monkeypatch):
+    from looplet.examples import quickstart
+
+    trace = tmp_path / "saved-run"
+    assert quickstart.main(["--capture", str(trace)]) == 0
+    monkeypatch.setattr(quickstart, "eval_owner", lambda context: False)
+    assert quickstart.main(["--rescore", str(trace)]) == 1
+
+
+def test_quickstart_offers_companion_before_file_assembly():
+    guide = Path(__file__).resolve().parents[1] / "docs" / "quickstart.md"
+    text = guide.read_text()
+    companion = text.index("python -m looplet.examples.quickstart")
+    assert companion < text.index('title="first_loop.py"')
+    for mode in ("--capture", "--rescore", "--replay", "--stop-after-lookup"):
+        assert f"python -m looplet.examples.quickstart {mode}" in text
 
 
 def _interrupt_after_calls(backend, calls, async_driver, monkeypatch):

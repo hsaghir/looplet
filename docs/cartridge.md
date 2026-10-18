@@ -364,6 +364,12 @@ dict (`name: kwargs`). Unknown names raise
 
 ## Round-trip guarantees
 
+Exports finish in a sibling staging directory before the destination changes.
+Serialization failures leave missing, empty, and existing destinations unchanged.
+Correct the preset and retry the same path without cleanup.
+With `overwrite=True`, successful exports replace managed files and retain application-owned files.
+If installation fails, the previous destination is restored.
+
 ### What round-trips losslessly
 
 | Component | How |
@@ -396,6 +402,11 @@ Behaviour controlled by `strict`:
 - `strict=True`: `CartridgeSerializationError` is raised on the first
   non-round-trippable field.
 
+Partials and callable instances work as Python tools but cannot serialize as plain function bodies.
+Their export diagnostics name the unsupported callable type.
+Use an importable top-level function wrapper.
+Pass bound values as arguments or declared resources.
+
 Tools whose `execute` is a closure or lambda get a placeholder and a warning,
 or an error under `strict=True`. Script functions that refer to omitted module
 constants, imports, helpers, decorators, defaults, or annotations behave the
@@ -405,9 +416,9 @@ host, or make it self-contained: put imports inside the function and pass
 configuration as arguments or declared resources. Static checks do not prove
 that dynamic namespace lookups or arbitrary Python code are portable.
 
-Argument validation requires the current unreleased Python host, not published
+Argument validation requires Python host version `0.4.1` or newer, not
 `0.4.0`. Exports add `compatibility.looplet: ">0.4.0"` while retaining existing
-constraints. Pin the same qualified source revision on exporting and receiving
+constraints. Pin the same qualified package version on exporting and receiving
 hosts. Supported policies use built-in Python types, nullable unions, and JSON
 enum values. Unsupported policies, including custom Python classes or policies
 on re-created builtin/MCP tools, raise `CartridgeSerializationError` in both

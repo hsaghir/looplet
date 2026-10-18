@@ -6,43 +6,43 @@ Model provider adapters are optional extras.
 
 ## Install the current build
 
-Use the current source build for new integrations.
-It includes the [safety fixes](#unreleased-safety-fixes) missing from PyPI `0.4.0`.
+Use release `0.4.1` for new integrations.
+It includes the [safety fixes](#unreleased-safety-fixes) missing from `0.4.0`.
 Install it in your own project without Git or a repository checkout:
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-python -m pip install "looplet @ https://github.com/hsaghir/looplet/archive/refs/heads/master.zip"
+python -m pip install "looplet==0.4.1"
 ```
 
-This installs a non-editable development build, `0.4.1.dev0`, not a published patch release.
+This installs a non-editable package at a fixed version.
 Installation needs network access, but not Git.
 The fixed-response tutorial itself needs neither a model key nor a model service.
-The archive follows `master`; replace `refs/heads/master` with an approved full commit hash when pinning a deployment.
-Record the archive hash in your dependency lockfile and the source fingerprint from `looplet doctor --no-backend --json`.
+Record package hashes in your dependency lockfile for deployment.
+Use `looplet doctor --no-backend --json` when you also need the library source fingerprint.
 
 ## Install the published package
 
-The latest PyPI release is `0.4.0`.
-Use `0.4.0` when you need to reproduce that published version.
-It lacks the safety fixes below; it is not the recommended build for new integrations.
+The latest PyPI release is `0.4.1`.
 Run this inside an activated virtual environment:
 
 ```bash
-python -m pip install "looplet==0.4.0"
+python -m pip install "looplet==0.4.1"
 ```
 
-Add `[openai]`, `[anthropic]`, or `[all]` before `==0.4.0` for provider adapters.
+Add `[openai]`, `[anthropic]`, or `[all]` before `==0.4.1` for provider adapters.
+Use `0.4.0` only when reproducing that older release; it lacks the fixes below.
 
-## Unreleased Safety Fixes
+<a id="unreleased-safety-fixes"></a>
 
-The published `0.4.0` package does not include later fixes on `master`.
-Development source builds use `0.4.1.dev0`; the latest PyPI release remains `0.4.0`.
+## Safety fixes in 0.4.1
+
+Release `0.4.1` includes the later safety fixes previously available only in source builds.
 Run `looplet doctor --no-backend --json` to record the version and library source fingerprint.
 These differences matter for completion, budgets, tool contracts, native calls, and captured evidence:
 
-| Behavior | Published `0.4.0` | Unreleased builds |
+| Behavior | Published `0.4.0` | Release `0.4.1` |
 | --- | --- | --- |
 | Serial native batches | A batch may execute before its first yielded `Step`. | Each serial call runs before its own step; stopping prevents later calls. |
 | Native response redaction | `redact=` does not scrub native response blocks. | `redact=` scrubs nested string values and keys. |
@@ -85,24 +85,24 @@ Use `.[anthropic]` for Anthropic or `.[all]` for both adapters.
 
 ## Choose provider extras
 
-Use these commands for the recommended source build inside a virtual environment.
+Use these commands for the fixed release inside a virtual environment.
 
 | Goal | Command |
 | --- | --- |
-| Core APIs or fixed model responses | `python -m pip install "looplet @ https://github.com/hsaghir/looplet/archive/refs/heads/master.zip"` |
-| OpenAI or a compatible endpoint | `python -m pip install "looplet[openai] @ https://github.com/hsaghir/looplet/archive/refs/heads/master.zip"` |
-| Anthropic | `python -m pip install "looplet[anthropic] @ https://github.com/hsaghir/looplet/archive/refs/heads/master.zip"` |
-| Both provider adapters | `python -m pip install "looplet[all] @ https://github.com/hsaghir/looplet/archive/refs/heads/master.zip"` |
+| Core APIs or fixed model responses | `python -m pip install "looplet==0.4.1"` |
+| OpenAI or a compatible endpoint | `python -m pip install "looplet[openai]==0.4.1"` |
+| Anthropic | `python -m pip install "looplet[anthropic]==0.4.1"` |
+| Both provider adapters | `python -m pip install "looplet[all]==0.4.1"` |
 
 For published versions, pin the minor version in your application:
 
 ```toml title="pyproject.toml"
-dependencies = ["looplet>=0.4,<0.5"]
+dependencies = ["looplet>=0.4.1,<0.5"]
 ```
 
 Before version `1.0`, a minor release can change an API incompatibly.
 Read the [changelog](changelog.md) before you change the minor version.
-Examples and options marked unreleased require the current source build, not an editable checkout.
+The examples and safety fixes in these guides are included in `0.4.1`.
 
 ## Verify without a provider
 
@@ -245,12 +245,12 @@ Maintainers can qualify a distribution without publishing.
 Use the version declared in the selected revision:
 
 ```bash
-gh workflow run publish.yml --repo hsaghir/looplet --ref master -f version=0.4.1.dev0
+gh workflow run publish.yml --repo hsaghir/looplet --ref master -f version=0.4.1
 ```
 
 A non-tag dispatch runs tests, builds distributions, and checks an installed wheel.
 It uploads build artifacts but does not publish to PyPI or create a GitHub release.
-This qualifies a development candidate; it does not make `0.4.1` available on PyPI.
+This qualifies a source candidate; it does not publish a new package version.
 Publication requires a matching release tag and the configured PyPI environment.
 Before tagging, update the versioned changelog and obtain release approval.
 Publish only the qualified commit after its pull request has merged.

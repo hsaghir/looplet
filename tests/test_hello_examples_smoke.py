@@ -238,6 +238,39 @@ def test_documented_custom_agent_starter_is_complete_and_repeatable(tmp_path, ow
     assert agent.read_bytes() == authored_source
 
 
+def test_copied_quickstart_exports_cli_factory(tmp_path):
+    from looplet.examples import quickstart
+
+    agent = tmp_path / "my_agent.py"
+    agent.write_bytes(Path(quickstart.__file__).read_bytes())
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "looplet",
+            "run",
+            "my_agent:build",
+            "Find the payments owner, then finish.",
+            "--scripted-response",
+            '{"tool":"lookup_owner","args":{"service":"payments"}}',
+            "--scripted-response",
+            '{"tool":"done","args":{"service":"payments","owner":"fintech-platform"}}',
+            "--max-steps",
+            "2",
+            "--json",
+        ],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        timeout=20,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    outcome = json.loads(result.stdout)
+    assert outcome["completed"]
+    assert outcome["grading_status"] == "not_graded"
+    assert outcome["result"]["owner"] == "fintech-platform"
+
+
 def test_packaged_quickstart_runs_without_authored_files(tmp_path, monkeypatch, capsys):
     from looplet.examples import quickstart
 
@@ -277,6 +310,108 @@ def test_packaged_quickstart_capture_rescore_and_replay(tmp_path, monkeypatch):
         for path in trace.rglob("*")
         if path.is_file()
     } == before
+
+
+def test_packaged_quickstart_replay_saves_evidence_and_honors_limits(
+    tmp_path, monkeypatch, capsys, recwarn
+):
+    from looplet import load_eval_run
+    from looplet.examples import quickstart
+
+    monkeypatch.chdir(tmp_path)
+    responses = [
+        '{"tool":"lookup_owner","args":{"service":"search"}}',
+        '{"tool":"lookup_owner","args":{"service":"payments"}}',
+        '{"tool":"done","args":{"service":"payments","owner":"fintech-platform"}}',
+    ]
+    monkeypatch.setattr(
+        quickstart, "scripted_backend", lambda: MockLLMBackend(responses, cycle=False)
+    )
+    source = tmp_path / "original capture"
+    assert quickstart.main(["--capture", str(source), "--max-steps", "3"]) == 0
+    original = {path: path.read_bytes() for path in source.rglob("*") if path.is_file()}
+    replay = tmp_path / "replayed record"
+    assert quickstart.main(["--replay", str(source), "--out", str(replay)]) == 0
+    assert load_eval_run(replay).context.completed
+    assert len((replay / "manifest.jsonl").read_text().split("\n")) == 4
+    assert (
+        json.loads((replay / "trajectory.json").read_text())["metadata"]["parent_run_id"]
+        == json.loads((source / "trajectory.json").read_text())["run_id"]
+    )
+    limited = tmp_path / "limited replay"
+    assert (
+        quickstart.main(["--replay", str(source), "--out", str(limited), "--max-steps", "1"]) == 1
+    )
+    record = load_eval_run(limited)
+    assert record.context.step_count == 1
+    assert record.context.stop_reason == "budget_exhausted"
+    assert not record.context.completed
+    assert "Stop reason: budget_exhausted" in capsys.readouterr().err
+    assert not any("differs from LoopConfig" in str(warning.message) for warning in recwarn)
+    assert {path: path.read_bytes() for path in source.rglob("*") if path.is_file()} == original
+
+
+def test_packaged_quickstart_experiments_are_repeat_safe(tmp_path, monkeypatch):
+    from looplet import load_eval_run
+    from looplet.examples import quickstart
+
+    monkeypatch.chdir(tmp_path)
+    assert quickstart.main(["--experiment"]) == 0
+    experiments = tmp_path / ".looplet/experiments"
+    original = {path: path.read_bytes() for path in experiments.rglob("*") if path.is_file()}
+    assert quickstart.main(["--experiment"]) == 0
+    assert {path: path.read_bytes() for path in original} == original
+    directories = list(experiments.iterdir())
+    assert len(directories) == 2
+    for directory in directories:
+        report = json.loads((directory / "experiment.json").read_text())
+        assert report["passed"]
+        assert (directory / ".gitignore").read_text() == "*\n"
+        for key in ("capture_dir", "replay_dir"):
+            record = load_eval_run(report[key])
+            assert record.context.completed
+            assert record.results and all(result.passed for result in record.results)
+
+
+@pytest.mark.parametrize("provider", ["openai", "anthropic"])
+@pytest.mark.parametrize("json_text", [False, True])
+def test_packaged_quickstart_live_capture_uses_the_same_agent(
+    tmp_path, monkeypatch, provider, json_text
+):
+    from looplet import load_eval_run
+    from looplet.examples import quickstart
+
+    monkeypatch.chdir(tmp_path)
+    backend = quickstart.scripted_backend()
+    factory = Mock(return_value=backend)
+    adapter = "OpenAIBackend" if provider == "openai" else "AnthropicBackend"
+    monkeypatch.setattr(f"looplet.{adapter}.from_env", factory)
+    monkeypatch.setattr(
+        quickstart, "scripted_backend", Mock(side_effect=AssertionError("scripted"))
+    )
+    arguments = ["--capture", "live", "--backend", provider]
+    if json_text:
+        arguments.append("--json-text")
+    assert quickstart.main(arguments) == 0
+    factory.assert_called_once_with()
+    assert backend.calls == 2
+    assert load_eval_run(tmp_path / "live").context.completed
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["--replay", "missing", "--backend", "openai"],
+        ["--rescore", "missing", "--max-steps", "1"],
+        ["--out", "unused"],
+    ],
+)
+def test_packaged_quickstart_rejects_ignored_options(arguments):
+    from looplet.examples import quickstart
+
+    with pytest.raises(SystemExit) as error:
+        quickstart.main(arguments)
+    assert error.value.code == 2
 
 
 def test_packaged_quickstart_stop_is_explicit(tmp_path, monkeypatch, capsys):

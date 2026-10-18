@@ -590,11 +590,12 @@ class TestProvenanceSinkSmoke:
     @pytest.mark.parametrize("native", [False, True])
     @pytest.mark.parametrize("hook_first", [False, True])
     @pytest.mark.parametrize("async_run", [False, True])
+    @pytest.mark.parametrize("replay_max_steps", [None, 1, 3])
     async def test_setup_order_preserves_replayable_model_evidence(
-        self, tmp_path, hook_first, async_run, native
+        self, tmp_path, hook_first, async_run, native, replay_max_steps
     ):
         from looplet import LoopConfig, async_composable_loop, composable_loop, tool, tools_from
-        from looplet.provenance import replay_loop
+        from looplet.provenance import async_replay_loop, replay_loop
         from looplet.testing import AsyncMockLLMBackend
 
         effects = []
@@ -602,7 +603,7 @@ class TestProvenanceSinkSmoke:
         @tool
         def echo(*, value: int) -> dict:
             effects.append(value)
-            return {"value": value}
+            return {"value": value, "execution": len(effects)}
 
         tools = tools_from([echo], include_done=True, done_parameters={"summary": "Summary"})
         responses = [
@@ -658,11 +659,40 @@ class TestProvenanceSinkSmoke:
         assert hook.trajectory.steps[0].llm_call_indices == [0]
         assert len((output / "manifest.jsonl").read_text().split("\n")) == 3
         assert all("SENSITIVE" not in path.read_text() for path in output.glob("*.txt"))
-        replayed = list(replay_loop(output, tools=tools))
-        assert [(step.tool_call.tool, step.tool_result.data) for step in replayed] == [
-            (step.tool_call.tool, step.tool_result.data) for step in steps
+        original = {path: path.read_bytes() for path in output.rglob("*") if path.is_file()}
+        replay_sink = ProvenanceSink(tmp_path / "replayed")
+        replay_arguments = {
+            "tools": tools,
+            "recording_sink": replay_sink,
+            "hooks": [replay_sink.trajectory_hook()],
+            "max_steps": replay_max_steps,
+        }
+        configuration = LoopConfig(max_steps=9, use_native_tools=native)
+        if replay_max_steps is not None:
+            replay_arguments["config"] = configuration
+        if async_run:
+            replayed = [step async for step in async_replay_loop(output, **replay_arguments)]
+        else:
+            replayed = list(replay_loop(output, **replay_arguments))
+        replay_output = replay_sink.flush()
+        expected_steps = 1 if replay_max_steps == 1 else 2
+        assert [step.tool_call.tool for step in replayed] == [
+            step.tool_call.tool for step in steps[:expected_steps]
         ]
+        assert replayed[0].tool_result.data == {"value": 7, "execution": 2}
+        assert configuration.max_steps == 9
+        assert len(replay_sink.trajectory_hook().trajectory.steps) == expected_steps
+        assert len(replay_sink.trajectory_hook().trajectory.llm_calls) == expected_steps
+        assert (replay_output / "manifest.jsonl").is_file()
+        assert {path: path.read_bytes() for path in output.rglob("*") if path.is_file()} == original
         assert effects == [7, 7]
+
+    @pytest.mark.parametrize("max_steps", [0, -1, True, 1.5])
+    def test_replay_rejects_invalid_explicit_budget(self, tmp_path, max_steps):
+        from looplet.provenance import replay_loop
+
+        with pytest.raises(ValueError, match="max_steps must be a positive integer"):
+            list(replay_loop(tmp_path / "missing", tools=None, max_steps=max_steps))
 
     @pytest.mark.parametrize("async_run", [False, True])
     async def test_hook_first_failed_call_is_saved(self, tmp_path, async_run):

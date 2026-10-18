@@ -157,6 +157,10 @@ def test_unreleased_cli_migration_and_dependency_guidance_are_explicit() -> None
     assert 'exported.metadata["python_imports"]' in cartridge
     assert "not a complete dependency lockfile" in cartridge
     assert "failed captures print their stop reason and an inspection command" in quickstart
+    assert "not in published `0.4.1`" in quickstart
+    assert "--factory" in cli and "--factory" in unreleased
+    assert "grading_status" in cli and "grading_status" in unreleased
+    assert "behavior_run: false" in cli and "behavior_run: false" in unreleased
 
 
 def test_site_changelog_matches_canonical_history() -> None:

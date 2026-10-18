@@ -792,6 +792,7 @@ def _run_bundle(
         steps=n_steps,
         duration_ms=(time.perf_counter() - started) * 1000,
         trace_dir=effective_trace_dir,
+        hooks=preset.hooks,
     )
     if json_output:
         print(
@@ -804,7 +805,12 @@ def _run_bundle(
         )
     else:
         reason = result.termination_reason or "unknown"
-        status = "done" if result.completed else f"stopped ({reason})"
+        grading_label = (
+            "not graded"
+            if payload["grading_status"] == "not_graded"
+            else f"grading {payload['grading_status']}"
+        )
+        status = f"completed; {grading_label}" if result.completed else f"stopped ({reason})"
         if result.failed:
             status = f"failed ({reason})"
         print(f"\n  {status} - {n_steps} steps")
@@ -1028,10 +1034,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\n{parser.description}\n\nWorkflow:")
         print("  Start here: python -m looplet.examples.quickstart")
         print("  Python: run your agent with `python your_agent.py`; packaging is optional.\n")
-        print("  Use a cartridge when you need shell run, replay, or eval commands.\n")
+        print("  Shell: run a Python module:factory; eval and replay also accept --factory.\n")
         for command, description in (
             ("new", "Create an agent cartridge"),
-            ("run", "Run a cartridge or skill bundle"),
+            ("run", "Run a Python factory, cartridge, or skill bundle"),
             ("inspect", "Inspect declarations, live wiring, or captured traces"),
             ("eval", "Test agent behavior against cases"),
             ("replay", "Replay captured responses in a fresh workspace"),
@@ -1084,9 +1090,11 @@ def main(argv: list[str] | None = None) -> int:
     run = sub.add_parser(
         "run",
         aliases=["run-bundle"],
-        help="Run a cartridge or runnable skill bundle",
+        help="Run a Python factory, cartridge, or runnable skill bundle",
     )
-    run.add_argument("bundle", type=Path, help="Path to a cartridge or runnable skill bundle")
+    run.add_argument(
+        "bundle", type=Path, help="Python module:factory reference, cartridge, or skill-bundle path"
+    )
     run.add_argument("task", help="Task description, or '-' to read it from stdin")
     run.add_argument(
         "--project-root",
@@ -1261,13 +1269,17 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 1
         from looplet.cartridge.runtime_helpers import resolve_project_root  # noqa: PLC0415
-        from looplet.cli.factory_commands import cmd_run_workspace  # noqa: PLC0415
+        from looplet.cli.factory_commands import (  # noqa: PLC0415
+            _is_factory_reference,
+            cmd_run_workspace,
+        )
 
         runtime = {"project_root": str(args.workspace)} if args.workspace is not None else None
         project_root = Path(resolve_project_root(runtime))
         is_cartridge = (args.bundle / "cartridge.json").is_file()
         is_bundle = (args.bundle / "SKILL.md").is_file() or args.bundle.name == "SKILL.md"
-        if args.command == "run" and is_cartridge:
+        is_factory = _is_factory_reference(str(args.bundle)) and not args.bundle.exists()
+        if args.command == "run" and (is_cartridge or is_factory):
             if is_bundle:
                 print(
                     "error: both cartridge.json and SKILL.md are present; "
@@ -1276,14 +1288,18 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 return 1
             if args.scripted:
-                print("error: use --scripted-response for cartridges", file=sys.stderr)
+                print(
+                    "error: use --scripted-response for cartridges or Python factories",
+                    file=sys.stderr,
+                )
                 return 1
             if args.no_tests:
                 print("error: --no-tests is only for skill bundles", file=sys.stderr)
                 return 1
             return cmd_run_workspace(
                 argparse.Namespace(
-                    workspace=args.bundle,
+                    workspace=project_root if is_factory else args.bundle,
+                    factory=str(args.bundle) if is_factory else None,
                     task=args.task,
                     project_root=project_root,
                     max_steps=args.max_steps,
@@ -1305,7 +1321,7 @@ def main(argv: list[str] | None = None) -> int:
             ("--parent-trace", args.parent_trace is not None),
         ):
             if enabled:
-                print(f"error: {flag} is only for cartridges", file=sys.stderr)
+                print(f"error: {flag} is only for cartridges or Python factories", file=sys.stderr)
                 return 1
         return _render_run(
             bundle_path=args.bundle,

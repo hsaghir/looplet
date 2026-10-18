@@ -23,6 +23,8 @@ import shutil
 import sys
 import time
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from shlex import quote
 from typing import Any, TextIO
@@ -301,9 +303,55 @@ def cmd_new(args: argparse.Namespace) -> int:
 
 
 # ── ``looplet run-cartridge`` (``run-workspace`` alias) ────────
+def _is_factory_reference(value: str) -> bool:
+    module, separator, attribute = value.partition(":")
+    return bool(
+        separator
+        and attribute.isidentifier()
+        and all(part.isidentifier() for part in module.split("."))
+    )
+
+
+@contextmanager
+def _factory_imports(factory_ref: str | None) -> Iterator[None]:
+    if factory_ref is None:
+        yield
+        return
+    previous = sys.path[:]
+    sys.path.insert(0, str(Path.cwd()))
+    try:
+        yield
+    finally:
+        sys.path[:] = previous
+
+
+def _build_factory_preset(factory_ref: str, project_root: Path, max_steps: int | None):
+    from looplet import AgentPreset
+    from looplet.blueprints import _resolve_factory
+    from looplet.bundles import SkillRuntime, validate_preset_contract
+
+    runtime = SkillRuntime(workspace=project_root, max_steps=max_steps or 20)
+    factory = _resolve_factory(factory_ref)
+    try:
+        preset = factory(runtime)
+    except Exception as exc:
+        raise ValueError(f"could not build factory {factory_ref!r}: {exc}") from exc
+    validation = validate_preset_contract(preset, runtime)
+    if not validation.ok:
+        if isinstance(preset, AgentPreset):
+            preset.close()
+        raise ValueError("; ".join(validation.errors))
+    for warning in validation.warnings:
+        print(f"warning: {warning}", file=sys.stderr)
+    return preset
+
+
 def cmd_run_workspace(args: argparse.Namespace) -> int:
     output = sys.stdout
-    with execution_output(getattr(args, "json", False)):
+    with (
+        execution_output(getattr(args, "json", False)),
+        _factory_imports(getattr(args, "factory", None)),
+    ):
         return _run_cartridge(args, output=output)
 
 
@@ -324,8 +372,9 @@ def _run_cartridge(
         return 1
 
     workspace_path: Path = args.workspace.resolve()
+    factory_ref = getattr(args, "factory", None)
 
-    if not workspace_path.is_dir():
+    if factory_ref is None and not workspace_path.is_dir():
         print(_red(f"error: cartridge not found at {workspace_path}"), file=sys.stderr)
         return 1
 
@@ -384,7 +433,11 @@ def _run_cartridge(
     if not getattr(args, "no_trace", False):
         effective_trace_dir = getattr(args, "trace_dir", None)
         if effective_trace_dir is None:
-            cartridge_name = workspace_path.name.removesuffix(".cartridge")
+            cartridge_name = (
+                factory_ref.split(":", 1)[1]
+                if factory_ref is not None
+                else workspace_path.name.removesuffix(".cartridge")
+            )
             effective_trace_dir = (
                 effective_project_root
                 / ".looplet"
@@ -426,19 +479,35 @@ def _run_cartridge(
                 }
             )
         if replay_case is not None:
-            from looplet.evals import EvalHook, load_cartridge_evals  # noqa: PLC0415
+            from looplet.evals import EvalHook, load_cartridge_evals, load_evals  # noqa: PLC0415
 
-            definitions = load_cartridge_evals(
-                workspace_path,
-                runtime={"project_root": str(effective_project_root)},
-                strict=True,
-            )
+            if factory_ref is None:
+                definitions = load_cartridge_evals(
+                    workspace_path,
+                    runtime={"project_root": str(effective_project_root)},
+                    strict=True,
+                )
+            elif getattr(args, "evals", None) is not None:
+                definitions = load_evals(
+                    args.evals,
+                    runtime={"project_root": str(effective_project_root)},
+                    strict=True,
+                )
+            else:
+                definitions = None
             replay_hook = EvalHook(
-                evaluators=[], collectors=definitions.collectors, expected=replay_case.expected
+                evaluators=[],
+                collectors=definitions.collectors if definitions is not None else [],
+                expected=replay_case.expected,
             )
-        preset = cartridge_to_preset(str(workspace_path), runtime=runtime)
+        preset = (
+            _build_factory_preset(factory_ref, effective_project_root, args.max_steps)
+            if factory_ref is not None
+            else cartridge_to_preset(str(workspace_path), runtime=runtime)
+        )
     except Exception as exc:
-        print(_red(f"error: cartridge load failed: {exc}"), file=sys.stderr)
+        source_kind = "factory" if factory_ref is not None else "cartridge"
+        print(_red(f"error: {source_kind} load failed: {exc}"), file=sys.stderr)
         return 1
 
     model_label = (
@@ -447,8 +516,14 @@ def _run_cartridge(
         else str(getattr(backend, "_model", type(backend).__name__))
     )
     if not json_output:
-        command = "looplet replay" if backend_override is not None else "looplet run-cartridge"
-        print(f"{_bold(command)} {workspace_path}")
+        command = (
+            "looplet replay"
+            if backend_override is not None
+            else "looplet run"
+            if factory_ref is not None
+            else "looplet run-cartridge"
+        )
+        print(f"{_bold(command)} {factory_ref or workspace_path}")
         if not getattr(args, "pretty", False):
             print(_dim(f"  task:  {task[:100]}{'…' if len(task) > 100 else ''}"))
             print(_dim(f"  model: {model_label}"))
@@ -472,7 +547,11 @@ def _run_cartridge(
         from looplet.cli._pretty import PrettyPrinter  # noqa: PLC0415
 
         pretty = PrettyPrinter(
-            title=f"looplet run-cartridge · {workspace_path.name}",
+            title=(
+                f"looplet run · {factory_ref}"
+                if factory_ref is not None
+                else f"looplet run-cartridge · {workspace_path.name}"
+            ),
             max_steps=preset.config.max_steps,
         )
         pretty.header(
@@ -554,6 +633,7 @@ def _run_cartridge(
         steps=n_steps,
         duration_ms=elapsed * 1000,
         trace_dir=saved_trace_dir,
+        hooks=preset.hooks,
     )
     if json_output:
         print(
@@ -570,7 +650,12 @@ def _run_cartridge(
 
     print()
     if result.completed:
-        status = _green("✓ done")
+        grading_label = (
+            "not graded"
+            if payload["grading_status"] == "not_graded"
+            else f"grading {payload['grading_status']}"
+        )
+        status = _green(f"✓ completed; {grading_label}")
     elif result.failed:
         status = _red(f"✗ failed ({termination_reason or 'unknown'})")
     else:
@@ -587,7 +672,10 @@ def _run_cartridge(
         print(json.dumps(final_data, indent=2, default=str)[:2000])
     if saved_trace_dir is not None:
         print(f"\n  Trace: {saved_trace_dir}")
-        if replay_hook is not None and (workspace_path / "evals").is_dir():
+        grade_source = (
+            getattr(args, "evals", None) if factory_ref is not None else workspace_path / "evals"
+        )
+        if replay_hook is not None and grade_source is not None and Path(grade_source).exists():
             print(
                 "  Grade: "
                 + shlex.join(
@@ -596,7 +684,7 @@ def _run_cartridge(
                         "eval",
                         str(saved_trace_dir),
                         "--evals",
-                        str(workspace_path / "evals"),
+                        str(grade_source),
                         "--json",
                     ]
                 )
@@ -626,20 +714,29 @@ def _replay_seed_paths(source: Path, *, excluded: tuple[Path, ...]) -> list[tupl
 
 
 def cmd_replay(args: argparse.Namespace) -> int:
-    """Replay captured responses with a trusted cartridge in a fresh workspace."""
+    """Replay captured responses with a trusted agent in a fresh workspace."""
     from looplet.evals import load_cases, seed_case_workspace  # noqa: PLC0415
     from looplet.provenance import _load_trace_calls, _ReplayLLMBackend  # noqa: PLC0415
 
     output = sys.stdout
-    with execution_output(args.json):
+    factory_ref = getattr(args, "factory", None)
+    with execution_output(args.json), _factory_imports(factory_ref):
         try:
             trace = args.trace.expanduser().resolve()
-            cartridge = args.cartridge.expanduser().resolve()
+            cartridge = (
+                args.cartridge.expanduser().resolve() if args.cartridge is not None else None
+            )
+            if factory_ref is not None and not _is_factory_reference(factory_ref):
+                raise ValueError("--factory must use module:factory syntax")
+            if getattr(args, "evals", None) is not None and factory_ref is None:
+                raise ValueError(
+                    "--evals requires --factory; cartridges supply their own collectors"
+                )
             workspace = args.workspace.expanduser()
             if workspace.exists() or workspace.is_symlink():
                 raise ValueError("replay workspace already exists; choose a new --workspace path")
             workspace = workspace.resolve()
-            if not (cartridge / "cartridge.json").is_file():
+            if cartridge is not None and not (cartridge / "cartridge.json").is_file():
                 if (cartridge / "SKILL.md").is_file() or (
                     cartridge.is_file() and cartridge.name == "SKILL.md"
                 ):
@@ -651,7 +748,9 @@ def cmd_replay(args: argparse.Namespace) -> int:
                 raise ValueError(f"cartridge not found: {cartridge}")
             if args.max_steps is not None and args.max_steps < 1:
                 raise ValueError("--max-steps must be positive")
-            if workspace.is_relative_to(trace) or workspace.is_relative_to(cartridge):
+            if workspace.is_relative_to(trace) or (
+                cartridge is not None and workspace.is_relative_to(cartridge)
+            ):
                 raise ValueError("replay workspace must be outside the trace and cartridge")
             calls = _load_trace_calls(trace)
             trajectory_path = trace / "trajectory.json"
@@ -673,6 +772,11 @@ def cmd_replay(args: argparse.Namespace) -> int:
                     else len(calls)
                 )
             cases = load_cases(trace / "case.json") if (trace / "case.json").is_file() else []
+            if getattr(args, "evals", None) is not None and not cases:
+                raise ValueError(
+                    "--evals requires a saved eval case; capture one with "
+                    "eval run --factory module:factory --evals <path>"
+                )
             if args.task is not None:
                 if not args.task.strip():
                     raise ValueError("--task must not be empty")
@@ -711,9 +815,12 @@ def cmd_replay(args: argparse.Namespace) -> int:
                 source = source.resolve()
                 if workspace.is_relative_to(source):
                     raise ValueError("replay workspace must be outside the seed directory")
-                if source.is_relative_to(trace) or source.is_relative_to(cartridge):
+                if source.is_relative_to(trace) or (
+                    cartridge is not None and source.is_relative_to(cartridge)
+                ):
                     raise ValueError("replay seed inputs must be outside the trace and cartridge")
-                seed_paths = _replay_seed_paths(source, excluded=(trace, cartridge))
+                excluded = (trace, cartridge) if cartridge is not None else (trace,)
+                seed_paths = _replay_seed_paths(source, excluded=excluded)
             workspace.mkdir(parents=True, mode=0o700)
             for source_path, relative in seed_paths:
                 target = workspace / relative
@@ -728,7 +835,9 @@ def cmd_replay(args: argparse.Namespace) -> int:
             print(_red(f"error: cannot prepare replay: {exc}"), file=sys.stderr)
             return 1
         run_args = argparse.Namespace(
-            workspace=cartridge,
+            workspace=cartridge if cartridge is not None else workspace,
+            factory=factory_ref,
+            evals=getattr(args, "evals", None),
             task=str(task.get("goal", "Replay captured task")),
             project_root=workspace,
             max_steps=replay_max_steps,
@@ -840,19 +949,26 @@ def add_subparsers(sub: "argparse._SubParsersAction") -> None:
 
     replay_p = sub.add_parser(
         "replay",
-        help="Replay captured model responses with a cartridge and fresh workspace",
+        help="Replay captured responses with a Python factory or cartridge",
         description=(
             "Use captured model responses without constructing a provider backend. "
-            "Shell replay supports cartridges only; skill bundles use Python replay_loop(). "
-            "Trusted cartridge code, tools, hooks, and network effects execute again. "
+            "Choose a trusted Python factory or cartridge; skill bundles use Python replay_loop(). "
+            "Trusted Python code, tools, hooks, and network effects execute again. "
             "This is not checkpoint restoration or an operating-system sandbox."
         ),
     )
     replay_p.add_argument(
         "trace", type=Path, help="One captured trace or saved eval-case directory"
     )
+    replay_source = replay_p.add_mutually_exclusive_group(required=True)
+    replay_source.add_argument("--cartridge", type=Path, help="Trusted cartridge to execute")
+    replay_source.add_argument(
+        "--factory", help="Trusted module:factory returning a fresh AgentPreset"
+    )
     replay_p.add_argument(
-        "--cartridge", type=Path, required=True, help="Trusted cartridge to execute"
+        "--evals",
+        type=Path,
+        help="Trusted Python collectors for --factory replay of a saved eval case",
     )
     replay_p.add_argument(
         "--workspace", type=Path, required=True, help="New workspace path; must not exist"

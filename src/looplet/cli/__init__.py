@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import sys
 from argparse import ArgumentParser
+from collections.abc import Iterable
 from contextlib import AbstractContextManager, nullcontext, redirect_stdout
 from pathlib import Path
 from typing import Any
@@ -41,7 +42,7 @@ def build_cli_backend(*, model: str | None = None, base_url: str | None = None) 
 def add_run_options(parser: ArgumentParser) -> None:
     """Register the shared execution, trace, and cartridge presentation options."""
     add_backend_options(parser)
-    cartridge = parser.add_argument_group("Cartridge-only options")
+    cartridge = parser.add_argument_group("Python factory and cartridge options")
     parser.add_argument("--trace-dir", type=Path, help="Write provenance trace output here")
     cartridge.add_argument("--parent-trace", type=Path, help="Link a run to a parent trace")
     parser.add_argument(
@@ -55,7 +56,7 @@ def add_run_options(parser: ArgumentParser) -> None:
         help="Mock LLM response; repeat for a network-free run",
     )
     cartridge.add_argument(
-        "--pretty", action="store_true", help="Render a live human-friendly cartridge trace"
+        "--pretty", action="store_true", help="Render a live human-friendly agent trace"
     )
     parser.add_argument(
         "--json", action="store_true", help="Emit one machine-readable completion object"
@@ -91,8 +92,19 @@ def completion_payload(
     steps: int,
     duration_ms: float,
     trace_dir: Path | None,
+    hooks: Iterable[Any] = (),
 ) -> dict[str, Any]:
     """The shared CLI completion view for cartridge and bundle runs."""
+    from looplet.evals import EvalHook
+
+    assessments = [
+        hook.assessment() for hook in hooks if isinstance(hook, EvalHook) and hook.results
+    ]
+    grading_status = "not_graded"
+    if assessments:
+        grading_status = (
+            "passed" if all(assessment.passed for assessment in assessments) else "failed"
+        )
     error = None
     if not result.completed:
         for step in reversed(result.steps):
@@ -108,6 +120,7 @@ def completion_payload(
                 break
     return {
         "completed": result.completed,
+        "grading_status": grading_status,
         "termination_reason": result.termination_reason or "unknown",
         "steps": steps,
         "duration_ms": round(duration_ms, 2),

@@ -10,16 +10,19 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 - CLI `run`, its format aliases, and `replay` require accepted completion by default. Use `--allow-incomplete` for the earlier command-success policy.
 - `--require-completed` remains supported. Strict bundle runs use the shared runner; custom human runners require `--allow-incomplete`.
-- Beginner help and guides start with Python, add cartridges for shell workflows, and defer skill bundles to advanced packaging.
+- README, docs home, and Quickstart introduce `minimal_preset` and `run_result` consistently. Cartridge and skill-bundle packaging remain optional.
 
 ### Added
 
 - Cartridge exports report detected external Python imports in metadata and a warning. Factory bundles report their required factory module.
 - Export guidance explains host dependencies and distinguishes strict conversion from a self-contained distribution.
+- Direct Python factory commands run, evaluate seeded cases, and replay captured responses without packaging. Eval and replay accept explicit `--factory` targets.
+- Shared completion payloads report `grading_status` from actual eval-hook results. Definition checks report `behavior_run: false` instead of implying behavioral success.
 
 ### Fixed
 
-- Failed Quickstart captures report their actual stop reason and a shell-safe inspection command while preserving evidence and nonzero exits.
+- Failed Quickstart captures, including the copyable recipe, report their stop reason and a shell-safe inspection command while preserving evidence and nonzero exits.
+- Unsaved eval workspaces are cleaned after reporting and setup failures. Factory build failures return actionable CLI errors.
 
 ## [0.4.1] - 2026-10-17
 

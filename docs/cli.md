@@ -16,25 +16,32 @@ Start with the [Quickstart](quickstart.md).
 Keep the agent in Python while you change and test it.
 You do not need to choose a packaging format first.
 
-Use a **cartridge** when you need shell run, replay, or shipped eval cases.
+Use a **cartridge** when you want to store and distribute the agent as a directory.
 A cartridge stores the agent's prompts, tools, hooks, and configuration in a reviewable directory.
 The loop stays the same.
 
-| Workflow | Start in Python | Add a cartridge when needed |
+| Workflow | Python, including unreleased factory commands | Optional cartridge |
 | --- | --- | --- |
 | Create | Write Python | `looplet new` or `preset_to_cartridge()` |
-| Run | `python first_loop.py` | `looplet run` |
+| Run | `python first_loop.py` or `looplet run module:factory` | `looplet run` |
 | Inspect | Read Python and captured steps | `looplet inspect` |
-| Replay captured responses | `replay_loop()` in Python | `looplet replay` |
-| Run behavioral tests | `python -m pytest` | `looplet eval run` |
+| Replay captured responses | `replay_loop()` or `replay --factory module:factory` | `looplet replay` |
+| Run behavioral tests | `python -m pytest` or `eval run --factory module:factory --evals evals/` | `looplet eval run` |
 
-The `run` command loads packaged agents, not arbitrary Python scripts.
-Keep using pytest for Python agents; `eval run` needs cartridge cases.
+**Unreleased:** shell run, eval, and replay accept trusted Python factories without packaging.
+Published `0.4.1` still requires a cartridge or bundle for shell execution.
+The [copyable Python workflow](quickstart.md#use-the-same-factory-in-the-shell) uses the same factory across all three commands.
+`run` accepts `module:factory`, not arbitrary Python scripts.
+The callable accepts `SkillRuntime` and returns a fresh `AgentPreset`.
+Use `runtime.workspace` for working files; `--project-root` does not change the Python import directory.
+The CLI imports from the current directory and installed Python environment.
+Importing and running factories executes trusted Python, not a sandbox.
 Existing Python factory integrations can use [skill bundles](#work-with-skill-bundles).
 They are an advanced packaging option, not a required step after the Quickstart.
 
-Use `new`, `run`, `inspect`, and `eval`; add `replay` when comparing captured responses. `run` detects either
-format; shell `replay` and `eval run` accept cartridges only.
+Use `new`, `run`, `inspect`, and `eval`; add `replay` when comparing captured responses.
+`run` detects packaged formats or a Python factory reference.
+Use `replay --factory` and `eval run --factory` for Python, or `--cartridge` and a cartridge path for packaged agents.
 `inspect` defaults to cartridge declarations, bundle metadata, or a saved
 trace without importing authored agent code. The formats remain distinct.
 Default help shows the main workflow. `--help-all` reveals advanced
@@ -194,7 +201,9 @@ looplet replay eval-runs/run-001/hello --cartridge ./agent.cartridge \
 ```
 
 Saved cases supply agent-visible task data and seed files; grader-only expectations are not forwarded to the agent.
-Replay reruns the selected cartridge's collectors against the new workspace.
+Cartridge replay reruns its collectors against the new workspace.
+Factory replay accepts `--evals <Python file or directory>` to collect fresh evidence for saved eval cases.
+Raw captures support factory replay without `--evals`; use `eval run --factory` to capture cases with grader expectations.
 It saves a new eval record with those fresh artifacts, the saved case, and grader-only expectations.
 It does not copy old collected artifacts or run graders automatically.
 Run the printed `Grade:` command to assess the new record with the cartridge's graders.
@@ -313,6 +322,12 @@ The flag preserves the earlier command-success policy; fatal execution failures 
 Published `0.4.1` still needs `--require-completed` for this behavior.
 Accepted completion does not prove correctness; use an outcome grader for that.
 
+**Unreleased:** human output distinguishes `completed; not graded` from runs with recorded eval-hook assessments.
+JSON adds `grading_status`: `not_graded`, `passed`, or `failed`.
+The field reflects actual eval-hook results and never changes the completion exit policy.
+Use `eval run` or `eval <trace-dir>` to gate on correctness.
+Definition checks report `behavior_run: false` and `grading_status: not_graded`.
+
 Since `0.4.1`, `--max-steps` overrides the charged-step budget for `DefaultState`.
 Successful nonterminal free calls do not consume it; total tool and model calls can exceed this value.
 See [bound free-tool runs](operations.md#bound-free-tool-runs) for a cooperative deadline.
@@ -387,7 +402,7 @@ Traces may
 contain full prompts, responses, and tool results; inspect them before sharing.
 `--parent-trace` reads the parent's `run_id` and records it as
 `metadata.parent_run_id`; it does not resume, replay, or orchestrate that run.
-`--json` suppresses human progress output and emits `completed`,
+`--json` suppresses human progress output and emits `completed`, `grading_status`,
 `termination_reason`, `steps`, `duration_ms`, the terminal `result`, and
 `trace_dir` (`null` with `--no-trace`). `completed` is true only when the agent
 reaches its configured terminal tool and the completion is accepted; budget
@@ -440,7 +455,10 @@ python -m pytest test_first_loop.py
 Run the generated test with `python -m pytest evals/`.
 Omit `--python` to create definitions only.
 Use `load_evals("evals")` in your Python test to load those definitions.
-`eval run evals/` is not the next command: the runner below requires a cartridge.
+For unreleased builds, use `looplet eval run --factory module:factory --evals evals/` to execute those cases.
+Use `--cases <path>` when the definitions are a standalone file or cases live elsewhere.
+Both factory and cartridge eval runners accept repeatable `--scripted-response` flags for keyless checks.
+Published `0.4.1` uses Python tests or the cartridge runner below.
 
 ### Run shipped cartridge cases
 
@@ -543,7 +561,7 @@ protected expectations in the top-level `expected` object.
 ## Work with skill bundles
 
 Use this section only when an existing integration needs a packaged Python factory or skill entrypoint.
-Otherwise, keep the Python-to-cartridge workflow above.
+Otherwise, keep the Python factory workflow above.
 
 | Workflow | Cartridge | Skill bundle |
 | --- | --- | --- |
@@ -552,7 +570,8 @@ Otherwise, keep the Python-to-cartridge workflow above.
 | Replay | `looplet replay` | [`replay_loop()` in Python](#replay-skill-bundles) |
 | Test behavior | `looplet eval run` | `python -m pytest` |
 
-Bundle replay requires Python; `eval run` requires cartridge cases.
+Bundle replay requires Python.
+Factory-backed bundles can use their original factory with the unreleased shell workflow above.
 These are format limits, not extra flags to enable on a bundle.
 
 ### Bundle-specific execution

@@ -686,14 +686,51 @@ def test_packaged_quickstart_live_capture_uses_the_same_agent(
         ["--out", "unused"],
         ["--replay", "missing", "--case", "unused"],
         ["--rescore", "missing", "--case", "unused"],
+        ["--json"],
+        ["--experiment", "--json"],
+        ["--backend", "openai", "--json"],
     ],
 )
-def test_packaged_quickstart_rejects_ignored_options(arguments):
+def test_packaged_quickstart_rejects_ignored_options(arguments, monkeypatch):
     from looplet.examples import quickstart
 
+    scripted = Mock(side_effect=AssertionError("unexpected scripted backend"))
+    provider = Mock(side_effect=AssertionError("unexpected provider setup"))
+    monkeypatch.setattr(quickstart, "scripted_backend", scripted)
+    monkeypatch.setattr(quickstart.OpenAIBackend, "from_env", provider)
     with pytest.raises(SystemExit) as error:
         quickstart.main(arguments)
     assert error.value.code == 2
+    scripted.assert_not_called()
+    provider.assert_not_called()
+
+
+@pytest.mark.parametrize("provider", ["openai", "anthropic"])
+@pytest.mark.parametrize(
+    "failure",
+    [
+        RuntimeError("missing provider settings"),
+        ImportError("missing provider extra"),
+        ValueError("invalid provider settings"),
+    ],
+)
+def test_packaged_quickstart_provider_setup_errors_are_actionable(
+    tmp_path, monkeypatch, capsys, provider, failure
+):
+    from looplet.examples import quickstart
+
+    adapter = quickstart.OpenAIBackend if provider == "openai" else quickstart.AnthropicBackend
+    setup = Mock(side_effect=failure)
+    monkeypatch.setattr(adapter, "from_env", setup)
+    output = tmp_path / "experiment"
+    assert quickstart.main(["--backend", provider, "--experiment", "--out", str(output)]) == 1
+    setup.assert_called_once_with()
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert f"error: {provider} setup failed: {failure}" in captured.err
+    assert f"https://hsaghir.com/looplet/install/#configure-{provider}" in captured.err
+    assert "Traceback" not in captured.err
+    assert not output.exists()
 
 
 def test_packaged_quickstart_stop_is_explicit(tmp_path, monkeypatch, capsys):

@@ -380,6 +380,7 @@ See the [async-host pattern](evals.md#async-hosts) for a complete example and va
 | `EvalHook` | Host-attached collection and scoring at the end of a live loop. |
 | `hook.assessment(...)` | Assess the latest grades without repeating collection or grading. |
 | `EvalReport.from_records(records, ...)` | Assess saved grades using a recorded or explicit trusted grader inventory. |
+| `EvalReport.save(path, evidence=...)` | Save a separate assessment to a new private JSON file, with optional relative evidence links. Unreleased. |
 | `eval_mark(...)` | Attach selection marks such as `required`, `smoke`, or `slow`. |
 | `run_cartridge_evals(...)` | Own collection and grading for a cartridge's self-tests, replacing embedded eval observers. |
 | `save_eval_run(...)` / `load_eval_run(...)` | Persist and restore one self-contained eval record. |

@@ -189,6 +189,37 @@ A readable failed eval still exits zero from inspection.
 Use `looplet eval <trace-dir> --evals ./evals/ --threshold 0.7` to rescore with your gate policy.
 Saved grades and artifacts may include sensitive data; review both before sharing.
 
+### Inspect saved suites and assessments
+
+**Unreleased:** inspect the directory created by `looplet eval run --out` to list its saved cases:
+
+```bash
+looplet inspect ./eval-runs
+looplet inspect ./eval-runs --json
+```
+
+The overview shows capture-time grades and a quoted inspection command for each case.
+Malformed cases remain visible and make inspection return nonzero.
+The JSON schema is `looplet.eval-suite` version 1, with `grading_source: "saved"` and a `cases` list.
+The overview does not infer an aggregate verdict or a historical threshold.
+
+Save a separate assessment when applying current graders:
+
+```bash
+looplet eval ./eval-runs --evals ./evals/ --threshold 0.7 --out ./current-assessment.json
+looplet inspect ./current-assessment.json
+looplet inspect ./current-assessment.json --json
+```
+
+Rescoring preserves original grades and saves failed assessments before returning nonzero.
+Existing output files and destinations inside referenced trace directories are refused.
+Without `--out`, the new assessment is not saved.
+Report inspection displays the stored verdict and threshold without rerunning graders.
+A readable failed report exits zero from inspection; this is not a passing behavioral gate.
+Move the report and its referenced evidence together to preserve relative navigation links.
+Reports contain grader explanations and are not sanitized exports.
+See [saved assessments](evals.md#save-a-separate-assessment) for the report schema and Python API.
+
 ### Replay captured responses
 
 This complete example needs no model service or API key after package installation:

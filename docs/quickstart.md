@@ -16,13 +16,13 @@ The install does not require Git or a repository checkout.
 ```bash
 python -m venv .venv-looplet-preview
 source .venv-looplet-preview/bin/activate
-python -m pip install "looplet @ https://github.com/hsaghir/looplet/archive/221e14fa4757eb1878645cfc5ecb96394babf719.zip"
+python -m pip install "looplet @ https://github.com/hsaghir/looplet/archive/a2efcde34bd728dd1287eb6f3368ef1e57783c15.zip"
 looplet doctor --no-backend --json
 ```
 
 The core package has no third-party runtime dependencies.
 The install needs network access; the fixed-response runs do not.
-This is a non-editable install of commit `221e14f`.
+This is a non-editable install of commit `a2efcde`.
 Keep this environment active for the complete guide; no second install is needed for the starter.
 Both the preview and published package report version `0.4.1`.
 The preview's `looplet --version` also prints the doctor's source fingerprint, distinguishing it from the published build.
@@ -59,8 +59,13 @@ Published `0.4.1` saves this evidence but may print only the failed grader name.
 Rescore saved evidence without running tools or calling a model:
 
 ```bash
-python -m looplet.examples.quickstart --rescore ./quickstart-trace
+python -m looplet.examples.quickstart --rescore ./quickstart-trace --out ./quickstart-assessment.json
+looplet inspect ./quickstart-assessment.json
 ```
+
+This saves a new assessment using the current grader without replacing capture-time grades.
+Choose a new report filename for each assessment; existing files are refused.
+Without `--out`, rescoring prints a transient result.
 
 Replay captured model responses with fresh tools, then check the new result:
 
@@ -176,12 +181,15 @@ Use the individual operations when diagnosing a run:
 
 ```bash
 python my_agent.py --capture ./original-capture
-python my_agent.py --rescore ./original-capture
+python my_agent.py --rescore ./original-capture --out ./current-assessment.json
+looplet inspect ./current-assessment.json
 python my_agent.py --replay ./original-capture --out ./replayed-capture --max-steps 2
 looplet inspect ./replayed-capture
 ```
 
-Choose unused paths for new captures and replays.
+Choose unused paths for captures, assessment reports, and replays.
+Rescoring saves its assessment before returning nonzero for a failed grade.
+Trace inspection still shows capture-time grades; report inspection shows the separately saved assessment.
 Replay saves fresh prompts, responses, steps, and grades without changing the original record.
 It reuses the saved task and expectations, then runs current tools and graders.
 Without `--max-steps`, replay uses the recorded tool-step count.
@@ -209,7 +217,7 @@ Older eval captures without a case file retain their saved expectations too.
 Keep the exported file and install the provider extra from the same pinned preview:
 
 ```bash title="one_file_live.sh"
-python -m pip install "looplet[openai] @ https://github.com/hsaghir/looplet/archive/221e14fa4757eb1878645cfc5ecb96394babf719.zip"
+python -m pip install "looplet[openai] @ https://github.com/hsaghir/looplet/archive/a2efcde34bd728dd1287eb6f3368ef1e57783c15.zip"
 export OPENAI_API_KEY=...
 export OPENAI_MODEL=gpt-4o
 python my_agent.py --backend openai --max-steps 8 --experiment
@@ -310,7 +318,7 @@ The remaining sections keep using the fixed-response backend.
 Keep `first_loop.py` unchanged and add the adapter from the same pinned preview in your active environment:
 
 ```bash
-python -m pip install "looplet[openai] @ https://github.com/hsaghir/looplet/archive/221e14fa4757eb1878645cfc5ecb96394babf719.zip"
+python -m pip install "looplet[openai] @ https://github.com/hsaghir/looplet/archive/a2efcde34bd728dd1287eb6f3368ef1e57783c15.zip"
 export OPENAI_API_KEY=...
 export OPENAI_MODEL=gpt-4o
 ```
@@ -512,14 +520,18 @@ with Path(sys.argv[1]).open(encoding="utf-8") as source:
 PY
 )"
 
+looplet inspect "$experiment_root/evals"
 looplet inspect "$replay_trace"
-looplet eval "$replay_trace" --evals first_loop.py --json > "$experiment_root/grade.json"
+looplet eval "$replay_trace" --evals first_loop.py --out "$experiment_root/assessment.json" \
+    --json > "$experiment_root/grade.json"
+looplet inspect "$experiment_root/assessment.json"
 python -m json.tool "$experiment_root/grade.json"
 ```
 
 Repeat this whole recipe after changing the agent; each invocation creates a fresh experiment directory.
 The reports supply the case and replay paths, so no path substitutions are needed.
-The printed directory contains the run, eval, replay, and grade reports.
+The printed directory contains the run, eval, replay, and grade reports, plus the separate assessment.
+Suite inspection lists saved case grades without rerunning graders or guessing the original gate policy.
 This single-case example replays the first reported case; select each case when expanding your suite.
 Earlier evidence and workspaces are never overwritten.
 
@@ -598,6 +610,8 @@ Reload the saved evidence when you want to rerun a grader without running the ag
 
 ```python title="first_loop_rescore.py"
 import sys
+from pathlib import Path
+from shlex import quote
 
 from looplet import eval_assess, load_eval_run
 
@@ -605,18 +619,27 @@ from first_loop import eval_owner
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        raise SystemExit("Usage: python first_loop_rescore.py TRACE_DIR")
+    if len(sys.argv) not in (2, 3):
+        raise SystemExit("Usage: python first_loop_rescore.py TRACE_DIR [NEW_REPORT.json]")
     saved_run = load_eval_run(sys.argv[1])
-    saved_report = eval_assess([eval_owner], saved_run.context)
-    saved_report.assert_passed()
+    saved_report = eval_assess([eval_owner], saved_run.context, case=saved_run.case)
+    report_path = (
+        Path(sys.argv[2]) if len(sys.argv) == 3
+        else saved_run.directory.with_name(saved_run.directory.name + "-assessment.json")
+    )
+    saved_report.save(report_path, evidence={saved_run.directory.name: saved_run.directory})
     print(saved_report.passed)
+    print(f"New assessment; capture-time grades are unchanged. Inspect: looplet inspect {quote(str(report_path))}")
+    saved_report.assert_passed()
 ```
 
 Run the printed `Rescore` command after creating this file.
 The printed `eval` command uses the same saved evidence and grader.
 It accepts this single run directory or its parent directory.
 Offline rescoring reruns graders, not collectors, tools, or agent model calls.
+The Python script saves a sibling assessment before asserting its verdict.
+Pass a new report filename as the second argument when rescoring the same capture again.
+Keep reports private; grader explanations can contain sensitive evidence.
 
 ## 5. Replay and check the result
 

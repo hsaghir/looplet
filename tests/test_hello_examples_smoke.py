@@ -482,6 +482,33 @@ def test_packaged_quickstart_runs_without_authored_files(tmp_path, monkeypatch, 
     assert list(tmp_path.iterdir()) == []
 
 
+def test_quickstart_failed_grade_explains_expected_and_observed(tmp_path, monkeypatch, capsys):
+    from looplet import load_eval_run
+    from looplet.__main__ import main
+    from looplet.examples import quickstart
+
+    monkeypatch.chdir(tmp_path)
+    case = quickstart.owner_case()
+    case.expected["owner"] = "security-team"
+    case_file = tmp_path / "case.json"
+    case_file.write_text(json.dumps({"id": case.id, "task": case.task, "expected": case.expected}))
+    trace = tmp_path / "failed capture"
+    mismatch = "owner: expected 'security-team', observed 'fintech-platform'."
+    assert quickstart.main(["--case", str(case_file), "--capture", str(trace)]) == 1
+    assert mismatch in capsys.readouterr().err
+    saved = load_eval_run(trace)
+    assert saved.context.completed
+    assert saved.results[0].explanation == mismatch
+    assert "security-team" not in (trace / "manifest.jsonl").read_text()
+    assert quickstart.main(["--rescore", str(trace)]) == 1
+    assert mismatch in capsys.readouterr().err
+    assert main(["inspect", str(trace)]) == 0
+    assert mismatch in capsys.readouterr().out
+    assert main(["eval", str(trace), "--evals", quickstart.__file__, "--json"]) == 1
+    report = json.loads(capsys.readouterr().out)
+    assert report["cases"][0]["results"][0]["explanation"] == mismatch
+
+
 def test_packaged_quickstart_capture_rescore_and_replay(tmp_path, monkeypatch):
     from looplet.examples import quickstart
 
@@ -562,11 +589,100 @@ def test_packaged_quickstart_experiments_are_repeat_safe(tmp_path, monkeypatch):
     for directory in directories:
         report = json.loads((directory / "experiment.json").read_text())
         assert report["passed"]
+        assert report["stage"] == "complete"
+        assert report["stages"] == dict.fromkeys(("capture", "rescore", "replay"), "passed")
+        assert report["error"] is None
         assert (directory / ".gitignore").read_text() == "*\n"
         for key in ("capture_dir", "replay_dir"):
             record = load_eval_run(report[key])
             assert record.context.completed
             assert record.results and all(result.passed for result in record.results)
+
+
+@pytest.mark.parametrize("failure", ["correctness", "budget"])
+@pytest.mark.parametrize("report_file", [False, True])
+def test_quickstart_failed_experiment_is_inspectable(
+    tmp_path, monkeypatch, capsys, failure, report_file
+):
+    from looplet import load_eval_run
+    from looplet.__main__ import main
+    from looplet.examples import quickstart
+
+    monkeypatch.chdir(tmp_path)
+    directory = tmp_path / "failed experiment"
+    arguments = ["--experiment", "--out", str(directory)]
+    if failure == "budget":
+        arguments.extend(["--max-steps", "1"])
+    else:
+        monkeypatch.setattr(
+            quickstart, "EXPECTED_OWNER", {"service": "payments", "owner": "security-team"}
+        )
+    assert quickstart.main(arguments) == 1
+    capsys.readouterr()
+    report_path = directory / "experiment.json"
+    report = json.loads(report_path.read_text())
+    assert report["passed"] is False
+    assert report["stage"] == "capture"
+    assert report["stages"] == {"capture": "failed", "rescore": "not_run", "replay": "not_run"}
+    assert report["capture_dir"] == str(directory / "capture")
+    assert report["replay_dir"] is None
+    assert not (directory / "replay").exists()
+    assert (
+        "Stop reason: " + ("budget_exhausted" if failure == "budget" else "done") in report["error"]
+    )
+    assert (
+        "security-team" in report["error"]
+        if failure == "correctness"
+        else "did not complete" in report["error"]
+    )
+    assert load_eval_run(directory / "capture").context.completed is (failure == "correctness")
+    original = {path: path.read_bytes() for path in directory.rglob("*") if path.is_file()}
+    target = report_path if report_file else directory
+    assert main(["inspect", str(target)]) == 0
+    human = capsys.readouterr().out
+    assert "capture: failed" in human
+    assert "rescore: not_run" in human and "replay: not_run" in human
+    assert "looplet inspect " + shlex.quote(str(directory / "capture")) in human
+    assert report["error"] in human
+    assert main(["inspect", str(target), "--json"]) == 0
+    assert json.loads(capsys.readouterr().out) == report
+    assert {path: path.read_bytes() for path in original} == original
+
+
+@pytest.mark.parametrize("stage", ["rescore", "replay"])
+def test_quickstart_experiment_records_later_stage_failure(tmp_path, monkeypatch, stage):
+    from looplet import load_eval_run
+    from looplet.examples import quickstart
+
+    monkeypatch.chdir(tmp_path)
+    if stage == "rescore":
+
+        def fail_rescore(*arguments, **options):
+            raise AssertionError("controlled rescore failure")
+
+        monkeypatch.setattr(quickstart, "eval_assess", fail_rescore)
+    else:
+        original = quickstart.replay_agent
+
+        def limited_replay(*arguments, **options):
+            return original(*arguments, max_steps=1, **options)
+
+        monkeypatch.setattr(quickstart, "replay_agent", limited_replay)
+    directory = tmp_path / "later failure"
+    assert quickstart.main(["--experiment", "--out", str(directory)]) == 1
+    report = json.loads((directory / "experiment.json").read_text())
+    assert report["passed"] is False
+    assert report["stage"] == stage and report["stages"][stage] == "failed"
+    assert report["stages"]["capture"] == "passed"
+    assert load_eval_run(report["capture_dir"]).context.completed
+    if stage == "rescore":
+        assert report["stages"]["replay"] == "not_run"
+        assert report["replay_dir"] is None
+        assert "controlled rescore failure" in report["error"]
+    else:
+        assert report["stages"]["rescore"] == "passed"
+        assert load_eval_run(report["replay_dir"]).context.stop_reason == "budget_exhausted"
+        assert "Stop reason: budget_exhausted" in report["error"]
 
 
 def test_quickstart_customized_service_keeps_task_and_expectations_together(tmp_path, monkeypatch):
@@ -807,7 +923,13 @@ def test_packaged_quickstart_failed_capture_reports_saved_evidence(
 
     assert quickstart.main(["--capture", str(trace), "--max-steps", str(max_steps)]) == 1
     output = capsys.readouterr()
-    assert "eval_owner: fail" in output.err
+    assert "eval_owner:" in output.err
+    explanation = (
+        "Run did not complete; stop reason: budget_exhausted."
+        if max_steps == 1
+        else "owner: expected 'wrong', observed 'fintech-platform'."
+    )
+    assert explanation in output.err
     assert f"Stop reason: {stop_reason}" in output.err
     command = next(
         line.removeprefix("Inspect with: ")

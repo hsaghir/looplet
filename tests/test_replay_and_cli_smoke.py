@@ -935,9 +935,11 @@ class TestShowCLISmoke:
 
 
 @pytest.mark.parametrize("use_sys_argv", [False, True])
-def test_version_flag_needs_no_command_or_backend(capsys, monkeypatch, use_sys_argv):
-    from looplet import __version__
+def test_version_flag_needs_no_command_or_backend(tmp_path, capsys, monkeypatch, use_sys_argv):
+    import looplet
+    from looplet.__main__ import _build_check
 
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("LOOPLET_PROVIDER", "invalid-provider")
     monkeypatch.setattr(
         "looplet.backends.make_backend",
@@ -948,8 +950,34 @@ def test_version_flag_needs_no_command_or_backend(capsys, monkeypatch, use_sys_a
         cli_main(None if use_sys_argv else ["--version"])
     assert stopped.value.code == 0
     captured = capsys.readouterr()
-    assert captured.out == f"looplet {__version__}\n"
+    identity = _build_check(Path(looplet.__file__).parent)["detail"]
+    assert identity.startswith("sha256:")
+    assert " ".join(captured.out.split()) == f"looplet {looplet.__version__} ({identity})"
     assert captured.err == ""
+
+
+def test_version_reports_unavailable_fingerprint_without_traceback(capsys, monkeypatch):
+    def denied_read(source):
+        raise PermissionError("private-path")
+
+    monkeypatch.setattr(Path, "read_bytes", denied_read)
+    with pytest.raises(SystemExit) as stopped:
+        cli_main(["--version"])
+    assert stopped.value.code == 0
+    captured = capsys.readouterr()
+    assert "Source fingerprint unavailable (PermissionError)" in captured.out
+    assert "private-path" not in captured.out
+    assert captured.err == ""
+
+
+def test_help_does_not_compute_build_fingerprint(capsys, monkeypatch):
+    def unexpected_build_check(package_root):
+        pytest.fail("Help must not fingerprint library sources")
+
+    monkeypatch.setattr("looplet.__main__._build_check", unexpected_build_check)
+    with pytest.raises(SystemExit) as stopped:
+        cli_main(["--help"])
+    assert stopped.value.code == 0
 
 
 @pytest.mark.parametrize("command", ["run", "blueprint"])

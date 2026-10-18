@@ -8,6 +8,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- `--version` includes the doctor's Git-independent source fingerprint, distinguishing same-version preview builds without selecting a provider.
 - Human Python-factory inspection lists tools, the completion tool, step limit, protocol, and hook count, with an equivalent full-blueprint command.
 - The complete Quickstart uses one commit-pinned preview environment from installation through editable experiments and optional provider setup.
 - CLI `run`, its format aliases, and `replay` require accepted completion by default. Use `--allow-incomplete` for the earlier command-success policy.
@@ -32,6 +33,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Experiment trace paths are report-relative. Human inspection of copied legacy reports prefers matching colocated capture and replay directories.
+- Malformed saved starter evidence returns concise preservation and recovery guidance for rescoring and replay without hiding unrelated runtime errors.
 - Starter grades explain incomplete runs and expected-versus-observed mismatches in console errors, saved evidence, inspection, and rescoring.
 - Experiment reports record per-stage status and errors. Uncreated capture or replay directories use null paths instead of missing destinations.
 - The one-file starter rejects unsupported flags such as `--json` instead of silently abbreviating them to `--json-text` and changing the model protocol.

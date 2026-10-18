@@ -34,11 +34,11 @@ This is the same environment used at the start of the [Quickstart](quickstart.md
 ```bash
 python -m venv .venv-looplet-preview
 source .venv-looplet-preview/bin/activate
-python -m pip install "looplet @ https://github.com/hsaghir/looplet/archive/b5aa201e5f06d71fcf1a4b165addb80a3caebe0f.zip"
+python -m pip install "looplet @ https://github.com/hsaghir/looplet/archive/221e14fa4757eb1878645cfc5ecb96394babf719.zip"
 looplet doctor --no-backend --json
 ```
 
-This non-editable install pins commit `b5aa201` with factory commands and the complete one-file starter.
+This non-editable install pins commit `221e14f` with factory commands and the complete one-file starter.
 The starter selects providers, saves replay evidence, and runs repeat-safe experiments.
 Failed grades explain mismatches; experiment inspection shows stage status, errors, and available traces.
 Factory inspection supports declaration-only reports and explicit runtime wiring checks.
@@ -47,7 +47,10 @@ Its cases keep tasks and expectations together.
 CLI replay preserves the captured protocol and saved expectations.
 Installation needs network access, but not Git or a model key.
 It does not install a new PyPI release.
-Both builds report version `0.4.1`; the doctor report records their different library source fingerprints.
+Both builds report version `0.4.1`; the preview appends its source fingerprint to `looplet --version`.
+This matches the doctor's `build` check and distinguishes same-version source builds without Git or provider calls.
+Experiment trace paths are report-relative; copied legacy reports prefer their colocated capture and replay directories.
+Malformed saved starter input returns concise recovery guidance without changing evidence.
 Keep the commit and source fingerprint with experiment results.
 The ordinary Python, pytest, capture, and replay examples work with released `0.4.1`.
 Do not install the published package over this environment midway through the Quickstart.

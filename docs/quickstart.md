@@ -16,15 +16,16 @@ The install does not require Git or a repository checkout.
 ```bash
 python -m venv .venv-looplet-preview
 source .venv-looplet-preview/bin/activate
-python -m pip install "looplet @ https://github.com/hsaghir/looplet/archive/b5aa201e5f06d71fcf1a4b165addb80a3caebe0f.zip"
+python -m pip install "looplet @ https://github.com/hsaghir/looplet/archive/221e14fa4757eb1878645cfc5ecb96394babf719.zip"
 looplet doctor --no-backend --json
 ```
 
 The core package has no third-party runtime dependencies.
 The install needs network access; the fixed-response runs do not.
-This is a non-editable install of commit `b5aa201`.
+This is a non-editable install of commit `221e14f`.
 Keep this environment active for the complete guide; no second install is needed for the starter.
 Both the preview and published package report version `0.4.1`.
+The preview's `looplet --version` also prints the doctor's source fingerprint, distinguishing it from the published build.
 Keep the commit and the doctor's library source fingerprint with your results.
 Pin artifact hashes in your dependency lockfile for deployment.
 On Windows, activate `.venv-looplet-preview\Scripts\Activate.ps1` in PowerShell.
@@ -120,6 +121,9 @@ looplet inspect PATH_TO_EXPERIMENT/experiment.json --json
 The report records the last stage, each stage's status, and any error.
 Stage statuses are `passed`, `failed`, or `not_run`; the last stage is `complete` after success.
 Trace paths are `null` when their directories were not created.
+Otherwise, paths are relative to `experiment.json`, not your current directory.
+Copy or move the whole experiment directory to keep its trace links working.
+Inspection also prefers colocated capture and replay directories in copied legacy reports.
 Failed runs keep their evidence; inspecting a readable failed report returns zero without rerunning anything.
 Use the printed trace commands for steps, results, and saved grades.
 Use `--out NEW_DIRECTORY` to choose a new experiment directory explicitly.
@@ -185,6 +189,8 @@ An explicit replay limit is honored.
 A larger limit can exhaust the recorded responses.
 Replay does not call the original provider or restore historical workspace state.
 Use isolated workspaces when tools modify files or contact services.
+Malformed saved input returns nonzero with concise recovery guidance.
+Keep damaged files; restore an intact copy or capture a fresh run in a new directory.
 
 Use the same saved capture and exported factory from the CLI:
 
@@ -203,7 +209,7 @@ Older eval captures without a case file retain their saved expectations too.
 Keep the exported file and install the provider extra from the same pinned preview:
 
 ```bash title="one_file_live.sh"
-python -m pip install "looplet[openai] @ https://github.com/hsaghir/looplet/archive/b5aa201e5f06d71fcf1a4b165addb80a3caebe0f.zip"
+python -m pip install "looplet[openai] @ https://github.com/hsaghir/looplet/archive/221e14fa4757eb1878645cfc5ecb96394babf719.zip"
 export OPENAI_API_KEY=...
 export OPENAI_MODEL=gpt-4o
 python my_agent.py --backend openai --max-steps 8 --experiment
@@ -304,7 +310,7 @@ The remaining sections keep using the fixed-response backend.
 Keep `first_loop.py` unchanged and add the adapter from the same pinned preview in your active environment:
 
 ```bash
-python -m pip install "looplet[openai] @ https://github.com/hsaghir/looplet/archive/b5aa201e5f06d71fcf1a4b165addb80a3caebe0f.zip"
+python -m pip install "looplet[openai] @ https://github.com/hsaghir/looplet/archive/221e14fa4757eb1878645cfc5ecb96394babf719.zip"
 export OPENAI_API_KEY=...
 export OPENAI_MODEL=gpt-4o
 ```

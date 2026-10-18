@@ -67,6 +67,9 @@ python -m looplet --version
 
 This flag is available in `0.4.1` and newer.
 For published `0.4.0`, use `looplet doctor --no-backend` instead.
+The unreleased preview appends the doctor's `sha256:` source fingerprint to distinguish same-version builds, including installations outside Git checkouts.
+An unreadable source reports an unavailable fingerprint instead of inventing a build identity.
+The fingerprint is not a release identifier or security attestation.
 
 ### `looplet doctor`
 
@@ -139,6 +142,9 @@ Pass the experiment directory or its report file; `--json` prints the saved repo
 New reports record the last stage, per-stage status, and any error.
 Stages are `passed`, `failed`, or `not_run`; uncreated trace directories have `null` paths.
 Human output links available traces and flags missing paths in older reports.
+New `capture_dir` and `replay_dir` values are relative to the report's parent directory, so complete experiments can move.
+For legacy absolute paths ending in `capture` or `replay`, human inspection prefers the matching directory beside the report when present.
+Otherwise it retains the saved absolute destination; `--json` always preserves saved values without rewriting evidence.
 Older reports remain readable but cannot identify a failed stage they did not record.
 Readable failed reports exit zero; malformed reports return nonzero with an error.
 Trace directories keep their existing inspection behavior, even when they contain a file named `experiment.json`.

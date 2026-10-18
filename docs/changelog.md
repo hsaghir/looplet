@@ -14,6 +14,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- One editable Quickstart agent supports factory execution, provider selection, and repeat-safe experiments with saved reports.
+- Quickstart replay saves fresh evidence and grades, honors explicit limits, and preserves the original capture.
+- Python replay accepts an optional recording sink and step limit for both synchronous and asynchronous hosts.
 - Commit-pinned preview installation separates unreleased factory commands from the published Python workflow.
 - Quickstart exports a complete editable Python agent and provides repeat-safe capture, eval, replay, and grading recipes.
 - Cartridge exports report detected external Python imports in metadata and a warning. Factory bundles report their required factory module.

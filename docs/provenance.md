@@ -134,6 +134,43 @@ A trace alone does not preserve grader expectations or collected artifacts.
 Use `save_eval_run()` for a grading record that you can reload and reassess.
 See the [Quickstart](quickstart.md#4-capture-the-same-agent) for the complete handoff.
 
+### Save a fresh replay record
+
+**Unreleased:** `recording_sink` and the direct `max_steps` replay option require the
+[pinned preview](install.md#try-unreleased-factory-commands).
+The [one-file starter](quickstart.md#make-the-complete-example-your-own) owns this workflow for routine experiments.
+
+Pass a fresh sink to the existing replay function when your host owns the tool registry:
+
+```python
+from contextlib import closing
+
+from looplet import ProvenanceSink, replay_loop
+
+replay_sink = ProvenanceSink()
+try:
+  with closing(replay_loop(
+    trace_dir,
+    tools=tools,
+    recording_sink=replay_sink,
+    max_steps=3,
+  )) as steps:
+    for step in steps:
+      print(step.pretty())
+finally:
+  print(replay_sink.flush())
+```
+
+Your host supplies `trace_dir` and `tools` from its captured run and current agent.
+The new record contains fresh replay prompts, captured responses, and observed tool steps.
+The original capture is unchanged.
+The same options work with `async_replay_loop()` and `contextlib.aclosing`.
+An explicit limit overrides the recorded budget without mutating a supplied `LoopConfig`.
+Omit it to use the recorded budget and protocol.
+Flush the sink after closing the iterator, including interrupted runs.
+This records replay evidence; attach an `EvalHook` and use `save_eval_run()` to persist grades too.
+Tools and other effects execute again; a new record is not a sandbox or checkpoint restoration.
+
 ### Share a reviewed summary
 
 New trace and eval-record directories contain a wildcard `.gitignore` before evidence is written.

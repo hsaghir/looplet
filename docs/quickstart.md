@@ -73,6 +73,9 @@ Read the [complete Python source](https://github.com/hsaghir/looplet/blob/master
 
 ### Make the complete example your own
 
+**Unreleased:** install the [pinned preview](install.md#try-unreleased-factory-commands) in its separate environment before using this starter.
+Published `0.4.1` still supports the packaged companion commands above.
+
 Use one editable file for your tools, capture, rescoring, and replay.
 Export the installed companion once; an existing file is never replaced:
 
@@ -92,20 +95,52 @@ No other authored Python files are needed.
 Run this complete workflow again whenever you change the agent:
 
 ```bash title="custom_agent_workflow.sh"
-python my_agent.py
-mkdir -p .looplet/experiments
-experiment_root="$(mktemp -d .looplet/experiments/owner.XXXXXXXX)"
-python my_agent.py --capture "$experiment_root/capture"
-looplet inspect "$experiment_root/capture"
-python my_agent.py --rescore "$experiment_root/capture"
-python my_agent.py --replay "$experiment_root/capture"
+python my_agent.py --experiment
 ```
 
-Each invocation creates a new experiment directory and preserves earlier evidence.
-The capture command prints its inspection path.
-Rescoring reads saved evidence; replay executes the current tools again.
-These commands work with released `0.4.1` and the pinned preview.
-Use the [real-model section](#use-the-same-agent-with-a-real-model) for adapter and protocol settings.
+Each invocation creates a new directory under `.looplet/experiments/` and preserves earlier evidence.
+It captures and grades the run, rescores saved evidence, then replays and grades fresh tool results.
+The command prints inspection commands for both records and an `experiment.json` report.
+Use `--out NEW_DIRECTORY` to choose a new experiment directory explicitly.
+Existing directories are refused.
+Experiment directories store evidence; they do not isolate tool effects.
+
+Use the individual operations when diagnosing a run:
+
+```bash
+python my_agent.py --capture ./original-capture
+python my_agent.py --rescore ./original-capture
+python my_agent.py --replay ./original-capture --out ./replayed-capture --max-steps 2
+looplet inspect ./replayed-capture
+```
+
+Choose unused paths for new captures and replays.
+Replay saves fresh prompts, responses, steps, and grades without changing the original record.
+It reuses the saved task and expectations, then runs current tools and graders.
+Without `--max-steps`, replay uses the captured budget.
+An explicit replay limit is honored.
+A larger limit can exhaust the recorded responses.
+Replay does not call the original provider or restore historical workspace state.
+Use isolated workspaces when tools modify files or contact services.
+
+#### Use the one-file agent with a real model
+
+Keep the exported file and install the provider extra from the same pinned preview:
+
+```bash title="one_file_live.sh"
+python -m pip install "looplet[openai] @ https://github.com/hsaghir/looplet/archive/ca6800208836333e6eb36273724cb04d0b58bb6d.zip"
+export OPENAI_API_KEY=...
+export OPENAI_MODEL=gpt-4o
+python my_agent.py --backend openai --max-steps 8 --experiment
+```
+
+This command makes real provider calls and may incur charges.
+The same file still owns the tools, factory, graders, and captured-response replay.
+For Anthropic, install the `anthropic` extra from that preview and use `--backend anthropic`.
+Configure its key with the [provider settings](install.md#configure-anthropic).
+Add `--json-text` only for an endpoint that needs JSON-text instead of native tools.
+Replay and rescoring reject provider options because neither calls that provider.
+The file also exports `build(runtime)` for the existing `my_agent:build` factory CLI interface.
 
 The remaining sections explain the pieces incrementally.
 They are optional; the one-file starter does not import their example files.
@@ -347,6 +382,10 @@ Create `cases/owner.json` for the same host-owned expectation:
 ```
 
 Run, evaluate, and replay the same factory without a provider:
+
+The one-file starter above handles routine experiments with `python my_agent.py --experiment`.
+The following manual CLI recipe is optional.
+It uses the incremental `first_loop` example and exposes each operation separately.
 
 ```bash title="python_factory_cli.sh"
 set -eu

@@ -223,6 +223,12 @@ def test_documented_custom_agent_starter_is_complete_and_repeatable(tmp_path, ow
     directories = list(experiments.iterdir())
     assert len(directories) == 2
     for directory in directories:
+        report = json.loads((directory / "experiment.json").read_text())
+        assert report["passed"]
+        assert Path(report["capture_dir"]) == (directory / "capture").resolve()
+        replayed = load_eval_run(report["replay_dir"])
+        assert replayed.context.completed and replayed.context.final_output["owner"] == owner
+        assert replayed.results and all(result.passed for result in replayed.results)
         saved = load_eval_run(directory / "capture")
         assert saved.context.completed
         assert saved.context.expected["owner"] == owner
@@ -236,6 +242,40 @@ def test_documented_custom_agent_starter_is_complete_and_repeatable(tmp_path, ow
     assert duplicate.returncode != 0
     assert "FileExistsError" in duplicate.stderr
     assert agent.read_bytes() == authored_source
+
+
+def test_documented_one_file_provider_handoff_uses_the_exported_agent(tmp_path, monkeypatch):
+    from looplet.examples import quickstart
+
+    guide = Path(__file__).resolve().parents[1] / "docs" / "quickstart.md"
+    script = re.search(
+        r'^```bash title="one_file_live\.sh"\n(.*?)^```[ \t]*$', guide.read_text(), re.M | re.S
+    )
+    assert script is not None
+    install = (guide.parent / "install.md").read_text()
+    pin = re.search(
+        r"looplet @ (https://github.com/hsaghir/looplet/archive/[a-f0-9]{40}\.zip)", install
+    )
+    assert pin is not None and f"looplet[openai] @ {pin.group(1)}" in script.group(1)
+    command = next(
+        line for line in script.group(1).splitlines() if line.startswith("python my_agent.py ")
+    )
+    arguments = shlex.split(command)
+    assert arguments[:2] == ["python", "my_agent.py"]
+    module = ModuleType("my_agent")
+    monkeypatch.setitem(sys.modules, "my_agent", module)
+    monkeypatch.chdir(tmp_path)
+    exec(compile(Path(quickstart.__file__).read_text(), "my_agent.py", "exec"), module.__dict__)
+    backend = quickstart.scripted_backend()
+    factory = Mock(return_value=backend)
+    monkeypatch.setattr("looplet.OpenAIBackend.from_env", factory)
+
+    assert module.main(arguments[2:]) == 0
+
+    factory.assert_called_once_with()
+    assert backend.calls == 2
+    assert not (tmp_path / "first_loop.py").exists()
+    assert len(list((tmp_path / ".looplet/experiments").iterdir())) == 1
 
 
 def test_copied_quickstart_exports_cli_factory(tmp_path):

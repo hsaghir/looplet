@@ -246,8 +246,8 @@ def test_documented_custom_agent_starter_is_complete_and_repeatable(tmp_path, ow
     for directory in directories:
         report = json.loads((directory / "experiment.json").read_text())
         assert report["passed"]
-        assert Path(report["capture_dir"]) == (directory / "capture").resolve()
-        replayed = load_eval_run(report["replay_dir"])
+        assert report["capture_dir"] == "capture"
+        replayed = load_eval_run(directory / report["replay_dir"])
         assert replayed.context.completed and replayed.context.final_output["owner"] == owner
         assert replayed.results and all(result.passed for result in replayed.results)
         saved = load_eval_run(directory / "capture")
@@ -594,7 +594,8 @@ def test_packaged_quickstart_experiments_are_repeat_safe(tmp_path, monkeypatch):
         assert report["error"] is None
         assert (directory / ".gitignore").read_text() == "*\n"
         for key in ("capture_dir", "replay_dir"):
-            record = load_eval_run(report[key])
+            assert not Path(report[key]).is_absolute()
+            record = load_eval_run(directory / report[key])
             assert record.context.completed
             assert record.results and all(result.passed for result in record.results)
 
@@ -624,7 +625,7 @@ def test_quickstart_failed_experiment_is_inspectable(
     assert report["passed"] is False
     assert report["stage"] == "capture"
     assert report["stages"] == {"capture": "failed", "rescore": "not_run", "replay": "not_run"}
-    assert report["capture_dir"] == str(directory / "capture")
+    assert report["capture_dir"] == "capture"
     assert report["replay_dir"] is None
     assert not (directory / "replay").exists()
     assert (
@@ -674,14 +675,17 @@ def test_quickstart_experiment_records_later_stage_failure(tmp_path, monkeypatch
     assert report["passed"] is False
     assert report["stage"] == stage and report["stages"][stage] == "failed"
     assert report["stages"]["capture"] == "passed"
-    assert load_eval_run(report["capture_dir"]).context.completed
+    assert load_eval_run(directory / report["capture_dir"]).context.completed
     if stage == "rescore":
         assert report["stages"]["replay"] == "not_run"
         assert report["replay_dir"] is None
         assert "controlled rescore failure" in report["error"]
     else:
         assert report["stages"]["rescore"] == "passed"
-        assert load_eval_run(report["replay_dir"]).context.stop_reason == "budget_exhausted"
+        assert (
+            load_eval_run(directory / report["replay_dir"]).context.stop_reason
+            == "budget_exhausted"
+        )
         assert "Stop reason: budget_exhausted" in report["error"]
 
 
@@ -712,6 +716,51 @@ def test_quickstart_customized_service_keeps_task_and_expectations_together(tmp_
     assert saved.context.final_output["service"] == "search"
     assert all(result.passed for result in saved.results)
     assert json.loads((trace / "trajectory.json").read_text())["task"] == saved.case.task
+
+
+@pytest.mark.parametrize("action", ["--rescore", "--replay"])
+@pytest.mark.parametrize("artifact", ["evals.json", "case.json", "trajectory.json"])
+def test_exported_quickstart_malformed_evidence_is_actionable(tmp_path, action, artifact):
+    from looplet.examples import quickstart
+
+    script = tmp_path / "my_agent.py"
+    script.write_bytes(Path(quickstart.__file__).read_bytes())
+    original = tmp_path / "intact capture"
+    quickstart.capture_agent(quickstart.scripted_backend(), original)
+    damaged = tmp_path / "damaged capture"
+    shutil.copytree(original, damaged)
+    (damaged / artifact).write_text("{\n")
+    before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    result = subprocess.run(
+        [sys.executable, str(script), action, str(damaged)],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        timeout=20,
+    )
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert "error: Could not read saved evidence" in result.stderr
+    assert str(damaged) in result.stderr
+    assert "Preserve these files" in result.stderr
+    assert "--capture NEW_TRACE_DIR" in result.stderr
+    assert "Traceback" not in result.stderr
+    assert {path: path.read_bytes() for path in before} == before
+    assert quickstart.main(["--rescore", str(original)]) == 0
+
+
+@pytest.mark.parametrize("action", ["--rescore", "--replay"])
+def test_quickstart_saved_input_handling_does_not_hide_runtime_errors(
+    tmp_path, monkeypatch, action
+):
+    from looplet.examples import quickstart
+
+    original = tmp_path / "capture"
+    quickstart.capture_agent(quickstart.scripted_backend(), original)
+    symbol = "eval_assess" if action == "--rescore" else "build"
+    monkeypatch.setattr(quickstart, symbol, Mock(side_effect=ValueError("runtime defect")))
+    with pytest.raises(ValueError, match="runtime defect"):
+        quickstart.main([action, str(original)])
 
 
 def test_quickstart_explicit_case_survives_python_and_cli_replay(tmp_path, monkeypatch):

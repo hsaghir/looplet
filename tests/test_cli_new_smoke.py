@@ -14,6 +14,7 @@ import io
 import json
 import os
 import shlex
+import shutil
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -289,6 +290,38 @@ def test_python_suffixed_trace_directory_remains_inspectable(tmp_path, capsys):
     assert main(["inspect", str(trace), "--json"]) == 0
     report = json.loads(capsys.readouterr().out)
     assert report["trajectory"]["termination_reason"] == "done"
+
+
+@pytest.mark.parametrize("legacy_paths", [False, True])
+@pytest.mark.parametrize("move_original", [False, True])
+def test_copied_experiment_inspects_its_own_records(tmp_path, capsys, legacy_paths, move_original):
+    from looplet import load_eval_run
+    from looplet.examples import quickstart
+
+    original = tmp_path / "original experiment"
+    assert quickstart.main(["--experiment", "--out", str(original)]) == 0
+    capsys.readouterr()
+    report_path = original / "experiment.json"
+    report = json.loads(report_path.read_text())
+    if legacy_paths:
+        report["capture_dir"] = str(original / "capture")
+        report["replay_dir"] = str(original / "replay")
+        report_path.write_text(json.dumps(report))
+    copied = tmp_path / "shared experiment"
+    shutil.copytree(original, copied)
+    if move_original:
+        original.rename(tmp_path / "archived original")
+    before = {path: path.read_bytes() for path in copied.rglob("*") if path.is_file()}
+    for target in (copied, copied / "experiment.json"):
+        assert main(["inspect", str(target)]) == 0
+        human = capsys.readouterr().out
+        assert "missing trace" not in human and str(original) not in human
+        for stage in ("capture", "replay"):
+            assert "looplet inspect " + shlex.quote(str(copied / stage)) in human
+            assert load_eval_run(copied / stage).context.completed
+        assert main(["inspect", str(target), "--json"]) == 0
+        assert json.loads(capsys.readouterr().out) == report
+    assert {path: path.read_bytes() for path in before} == before
 
 
 @pytest.mark.parametrize("passed", [False, True])

@@ -32,6 +32,20 @@ from looplet.bundles import SkillRuntime
 EXPECTED_OWNER = {"service": "payments", "owner": "fintech-platform"}
 
 
+class _SavedEvidenceError(ValueError):
+    """Saved evidence needs recovery before it can be graded or replayed."""
+
+
+def _load_saved_run(trace_dir: Path):
+    try:
+        return load_eval_run(trace_dir)
+    except ValueError as error:
+        raise _SavedEvidenceError(
+            f"Could not read saved evidence in {trace_dir}: {error}\n"
+            "Preserve these files; restore an intact capture or run --capture NEW_TRACE_DIR."
+        ) from error
+
+
 def owner_case() -> EvalCase:
     """Build the default task and grader expectations together."""
     return EvalCase(
@@ -141,7 +155,7 @@ def capture_agent(
 
 
 def replay_agent(trace_dir: Path, *, output_dir: Path | None = None, max_steps=None):
-    saved = load_eval_run(trace_dir)
+    saved = _load_saved_run(trace_dir)
     source = json.loads((trace_dir / "trajectory.json").read_text(encoding="utf-8"))
     sink = ProvenanceSink(dir=output_dir, metadata={"parent_run_id": source.get("run_id")})
     grading = EvalHook(evaluators=[eval_owner], expected=saved.context.expected)
@@ -207,7 +221,7 @@ def experiment_agent(
         print(f"Capture: looplet inspect {quote(str(capture_dir))}")
         stage = "rescore"
         stages[stage] = "failed"
-        saved = load_eval_run(capture_dir)
+        saved = _load_saved_run(capture_dir)
         eval_assess([eval_owner], saved.context).assert_passed()
         stages[stage] = "passed"
         stage = "replay"
@@ -223,8 +237,8 @@ def experiment_agent(
         raise
     finally:
         report["stage"] = stage
-        report["capture_dir"] = str(capture_dir) if capture_dir.is_dir() else None
-        report["replay_dir"] = str(replay_dir) if replay_dir.is_dir() else None
+        report["capture_dir"] = capture_dir.name if capture_dir.is_dir() else None
+        report["replay_dir"] = replay_dir.name if replay_dir.is_dir() else None
         report_path = output_dir / "experiment.json"
         with report_path.open("x", encoding="utf-8") as output:
             json.dump(report, output, indent=2)
@@ -315,7 +329,7 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(str(error))
     try:
         if arguments.rescore:
-            saved = load_eval_run(arguments.rescore)
+            saved = _load_saved_run(arguments.rescore)
             report = eval_assess([eval_owner], saved.context)
             print(report.passed)
             report.assert_passed()
@@ -362,7 +376,7 @@ def main(argv: list[str] | None = None) -> int:
             assess_result(result, case=case).assert_passed()
         print(True)
         return 0 if result.completed else 1
-    except (AssertionError, FileExistsError, FileNotFoundError) as error:
+    except (AssertionError, FileExistsError, FileNotFoundError, _SavedEvidenceError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
 

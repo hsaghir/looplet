@@ -929,6 +929,8 @@ def _render_experiment(report_path: Path, *, json_output: bool) -> int:
             trace_dir = Path(trace)
             if not trace_dir.is_absolute():
                 trace_dir = report_path.parent / trace_dir
+            elif trace_dir.name == name and (report_path.parent / name).is_dir():
+                trace_dir = report_path.parent / name
             if trace_dir.is_dir():
                 print(f"    inspect: looplet inspect {shlex.quote(str(trace_dir))}")
             else:
@@ -1166,7 +1168,10 @@ def main(argv: list[str] | None = None) -> int:
         prog="python -m looplet",
         description="Looplet - build, run, inspect, and test Python agents.",
     )
-    parser.add_argument("--version", action="version", version=f"looplet {__version__}")
+    version = f"looplet {__version__}"
+    if "--version" in raw:
+        version += f" ({_build_check(Path(__file__).parent)['detail']})"
+    parser.add_argument("--version", action="version", version=version)
     parser.add_argument(
         "--help-all", action="help", help="Show advanced commands and compatibility aliases"
     )

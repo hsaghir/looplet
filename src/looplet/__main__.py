@@ -821,6 +821,62 @@ def _run_bundle(
     return completion_exit_code(result, require_completed=require_completed)
 
 
+def _render_factory_inspect(
+    reference: str,
+    *,
+    json_output: bool,
+    mode: str,
+    workspace: Path | None,
+    max_steps: int,
+) -> int:
+    report = {
+        "factory": reference,
+        "mode": "declaration-only",
+        "runtime_validated": False,
+    }
+    if mode == "runtime":
+        from looplet.blueprints import SourceBlueprint, blueprint_from_preset  # noqa: PLC0415
+        from looplet.cli.factory_commands import (  # noqa: PLC0415
+            _build_factory_preset,
+            _factory_imports,
+        )
+
+        with execution_output(json_output):
+            try:
+                root = (workspace or Path.cwd()).resolve()
+                if not root.is_dir():
+                    raise ValueError("runtime inspection requires an existing --workspace")
+                if max_steps < 1:
+                    raise ValueError("--max-steps must be positive")
+                with (
+                    _factory_imports(reference),
+                    _build_factory_preset(reference, root, max_steps) as preset,
+                ):
+                    report.update(
+                        blueprint_from_preset(
+                            preset,
+                            name=reference,
+                            source=SourceBlueprint(kind="python-factory", entrypoint=reference),
+                        ).to_dict(),
+                        mode="runtime",
+                        runtime_validated=True,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                print(f"error: could not inspect Python factory {reference!r}", file=sys.stderr)
+                print(f"  - {type(exc).__name__}: {exc}", file=sys.stderr)
+                return 1
+    if json_output:
+        print(json.dumps(report, indent=2, sort_keys=True))
+    else:
+        print(f"Python factory: {reference}")
+        if report["runtime_validated"]:
+            print("  runtime wiring validated; behavior has not been graded")
+        else:
+            print("  declaration-only; executable wiring has not been validated")
+            print(f"  check wiring: looplet inspect {reference} --mode runtime")
+    return 0
+
+
 def _render_inspect(
     path: Path,
     *,
@@ -830,6 +886,24 @@ def _render_inspect(
     max_steps: int = 20,
     include_sensitive: bool = False,
 ) -> int:
+    from looplet.cli.factory_commands import _is_factory_reference  # noqa: PLC0415
+
+    reference = str(path)
+    if _is_factory_reference(reference):
+        return _render_factory_inspect(
+            reference,
+            json_output=json_output,
+            mode=mode,
+            workspace=workspace,
+            max_steps=max_steps,
+        )
+    if path.suffix == ".py" and path.is_file():
+        print(
+            "error: inspect Python agents as module:factory, "
+            "for example: looplet inspect my_agent:build --mode runtime",
+            file=sys.stderr,
+        )
+        return 1
     if path.name in {"cartridge.json", "workspace.json"}:
         path = path.parent
     if (path / "cartridge.json").is_file():
@@ -1050,7 +1124,9 @@ def main(argv: list[str] | None = None) -> int:
     inspect = sub.add_parser(
         "inspect", help="Inspect declarations or trace evidence; explicitly opt in to live wiring"
     )
-    inspect.add_argument("path", type=Path, help="Path to a cartridge, bundle, or trace")
+    inspect.add_argument(
+        "path", type=Path, help="Python module:factory, cartridge, bundle, or trace"
+    )
     inspect.add_argument("--json", action="store_true", help="Emit machine-readable inspection")
     inspect.add_argument(
         "--mode",
@@ -1058,7 +1134,7 @@ def main(argv: list[str] | None = None) -> int:
         default="declaration",
         help="Declaration mode never imports authored code; runtime mode builds and closes it",
     )
-    inspect.add_argument("--workspace", type=Path, help="Workspace for live bundle inspection")
+    inspect.add_argument("--workspace", type=Path, help="Existing workspace for runtime inspection")
     inspect.add_argument("--max-steps", type=int, default=20, help="Live bundle step budget")
     inspect.add_argument(
         "--include-sensitive", action="store_true", help="Include authored content"

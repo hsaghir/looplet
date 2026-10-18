@@ -8,12 +8,14 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- The complete Quickstart uses one commit-pinned preview environment from installation through editable experiments and optional provider setup.
 - CLI `run`, its format aliases, and `replay` require accepted completion by default. Use `--allow-incomplete` for the earlier command-success policy.
 - `--require-completed` remains supported. Strict bundle runs use the shared runner; custom human runners require `--allow-incomplete`.
 - README, docs home, and Quickstart introduce `minimal_preset` and `run_result` consistently. Cartridge and skill-bundle packaging remain optional.
 
 ### Added
 
+- `inspect module:factory` supports safe reference-only declarations and explicit, resource-managed runtime wiring validation without selecting a model.
 - Factory CLI replay restores the captured tool protocol and carries saved expectations into fresh, regradable eval records.
 - The one-file starter shares tasks and expectations through eval cases, supports `--case`, and records cases for CLI replay.
 - One editable Quickstart agent supports factory execution, provider selection, and repeat-safe experiments with saved reports.
@@ -28,6 +30,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- The one-file starter rejects unsupported flags such as `--json` instead of silently abbreviating them to `--json-text` and changing the model protocol.
+- Expected provider setup failures print concise configuration guidance without a Python traceback or empty experiment directory.
 - Failed Quickstart captures, including the copyable recipe, report their stop reason and a shell-safe inspection command while preserving evidence and nonzero exits.
 - Unsaved eval workspaces are cleaned after reporting and setup failures. Factory build failures return actionable CLI errors.
 

@@ -24,14 +24,14 @@ The loop stays the same.
 | --- | --- | --- |
 | Create | Write Python | `looplet new` or `preset_to_cartridge()` |
 | Run | `python first_loop.py` or `looplet run module:factory` | `looplet run` |
-| Inspect | Read Python and captured steps | `looplet inspect` |
+| Inspect | `looplet inspect module:factory --mode runtime` or saved steps | `looplet inspect` |
 | Replay captured responses | `replay_loop()` or `replay --factory module:factory` | `looplet replay` |
 | Run behavioral tests | `python -m pytest` or `eval run --factory module:factory --evals evals/` | `looplet eval run` |
 
-**Unreleased:** shell run, eval, and replay accept trusted Python factories without packaging.
+**Unreleased:** shell run, inspect, eval, and replay accept trusted Python factories without packaging.
 Published `0.4.1` still requires a cartridge or bundle for shell execution.
 Use the [pinned preview install](install.md#try-unreleased-factory-commands) for factory commands.
-The [copyable Python workflow](quickstart.md#use-the-same-factory-in-the-shell) uses the same factory across all three commands.
+The [copyable Python workflow](quickstart.md#use-the-same-factory-in-the-shell) uses the same factory across these commands.
 `run` accepts `module:factory`, not arbitrary Python scripts.
 The callable accepts `SkillRuntime` and returns a fresh `AgentPreset`.
 Use `runtime.workspace` for working files; `--project-root` does not change the Python import directory.
@@ -43,7 +43,7 @@ They are an advanced packaging option, not a required step after the Quickstart.
 Use `new`, `run`, `inspect`, and `eval`; add `replay` when comparing captured responses.
 `run` detects packaged formats or a Python factory reference.
 Use `replay --factory` and `eval run --factory` for Python, or `--cartridge` and a cartridge path for packaged agents.
-`inspect` defaults to cartridge declarations, bundle metadata, or a saved
+`inspect` defaults to a factory reference, cartridge declarations, bundle metadata, or a saved
 trace without importing authored agent code. The formats remain distinct.
 Default help shows the main workflow. `--help-all` reveals advanced
 commands and compatibility aliases; their individual help remains available.
@@ -99,11 +99,13 @@ It excludes bundled examples and bytecode caches.
 Compare the version and fingerprint together; same-version local builds may contain different source code.
 This fingerprint is not an official release identifier or a security attestation.
 
-### `looplet inspect <path>`
+### `looplet inspect <path-or-module:factory>`
 
-Inspect a cartridge, skill bundle, or saved trace without running it:
+Inspect a Python factory reference, cartridge, skill bundle, or saved trace:
 
 ```bash
+looplet inspect my_agent:build --json
+looplet inspect my_agent:build --mode runtime --workspace . --json
 looplet inspect ./agent.cartridge --json
 looplet inspect ./skills/code-review --json
 looplet inspect traces/incident-42 --json
@@ -114,13 +116,19 @@ looplet inspect ./skills/code-review --mode runtime --workspace . --json
 Cartridge output is declaration-only (`runtime_validated: false`). Bundle
 output contains metadata and metadata errors, not a loaded blueprint. Trace
 output preserves the `show` JSON contract, and rejects runtime mode.
+Factory declaration reports contain only the reference; they do not resolve or import it.
+Factory runtime reports include the preset blueprint and validated status without selecting a model.
+Use `module:factory`, not a Python file path; the callable receives `SkillRuntime` and returns `AgentPreset`.
+`--workspace` must name an existing directory; it does not change the import directory.
+`--max-steps` sets the factory's runtime step budget and must be positive.
 `--mode declaration` is the safe default. `--mode runtime` explicitly imports
 authored code, builds one preset, validates its executable contract, and closes
 its resources. Reports label `mode` and `runtime_validated`; invalid wiring
 returns nonzero. This is structural validation, not a behavioral eval.
 Cartridge declaration content remains redacted unless `--include-sensitive`
-is passed. Runtime bundle blueprints may include authored instructions/config;
+is passed. Runtime bundle and factory blueprints may include authored instructions/config;
 review them before sharing. Harness diagnostics go to stderr in JSON mode.
+Trusted factory imports and resource setup can have effects even though inspection calls no model.
 
 `describe` also accepts `--mode declaration|runtime`, including explicit runtime
 JSON; legacy `--instantiate --json` remains mutually exclusive. `blueprint`

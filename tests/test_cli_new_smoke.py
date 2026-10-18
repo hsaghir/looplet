@@ -150,6 +150,138 @@ def test_explicit_cartridge_inspection_modes_share_runtime_report(tmp_path, caps
     assert report["runtime_validated"] is False
 
 
+@pytest.mark.parametrize("explicit_mode", [False, True])
+def test_python_factory_declaration_never_imports_code(
+    tmp_path, monkeypatch, capsys, explicit_mode
+):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "safe_inspection.py").write_text("raise AssertionError('must not import')\n")
+    arguments = ["inspect", "safe_inspection:build", "--json"]
+    if explicit_mode:
+        arguments.extend(["--mode", "declaration"])
+    assert main(arguments) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["factory"] == "safe_inspection:build"
+    assert report["mode"] == "declaration-only"
+    assert report["runtime_validated"] is False
+    assert "safe_inspection" not in sys.modules
+
+
+@pytest.mark.parametrize("valid", [False, True])
+@pytest.mark.parametrize("json_output", [False, True])
+def test_python_factory_runtime_inspection_validates_once_and_closes(
+    tmp_path, monkeypatch, capsys, valid, json_output
+):
+    from looplet import bundles
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delitem(sys.modules, "live_inspection", raising=False)
+    sentinel = tmp_path / "lifecycle.txt"
+    (tmp_path / "live_inspection.py").write_text(
+        "from pathlib import Path\n"
+        "from looplet import minimal_preset\n"
+        "print('authored import output')\n"
+        f"sentinel = Path({str(sentinel)!r})\n"
+        "class Resource:\n"
+        "    def close(self):\n"
+        "        print('authored shutdown output')\n"
+        "        with sentinel.open('a') as output: output.write('close\\n')\n"
+        "def build(runtime):\n"
+        "    print('authored build output')\n"
+        "    assert runtime.max_steps == 7\n"
+        f"    assert runtime.workspace == Path({str(tmp_path)!r})\n"
+        "    with sentinel.open('a') as output: output.write('build\\n')\n"
+        "    preset = minimal_preset(max_steps=runtime.max_steps)\n"
+        "    preset.owned_resources.append(Resource())\n"
+        + ("" if valid else "    preset.config.done_tool = 'missing'\n")
+        + "    return preset\n"
+    )
+    validation_calls = []
+    original = bundles.validate_preset_contract
+
+    def validate(*arguments, **options):
+        validation_calls.append(True)
+        return original(*arguments, **options)
+
+    monkeypatch.setattr(bundles, "validate_preset_contract", validate)
+    options = ["--json"] if json_output else []
+    assert main(
+        [
+            "inspect",
+            "live_inspection:build",
+            "--mode",
+            "runtime",
+            "--workspace",
+            str(tmp_path),
+            "--max-steps",
+            "7",
+            *options,
+        ]
+    ) == (0 if valid else 1)
+    captured = capsys.readouterr()
+    assert validation_calls == [True]
+    assert sentinel.read_text() == "build\nclose\n"
+    assert "Traceback" not in captured.err
+    if json_output:
+        assert "authored import output" in captured.err
+        assert "authored build output" in captured.err
+        assert "authored shutdown output" in captured.err
+    if valid:
+        if json_output:
+            report = json.loads(captured.out)
+            assert report["mode"] == "runtime"
+            assert report["runtime_validated"] is True
+            assert report["factory"] == "live_inspection:build"
+            assert report["source"]["kind"] == "python-factory"
+            assert report["config"]["max_steps"] == 7
+        else:
+            assert "runtime wiring validated" in captured.out
+    else:
+        assert "missing" in captured.err
+
+
+def test_python_factory_inspection_closes_after_blueprint_failure(tmp_path, monkeypatch, capsys):
+    from looplet import minimal_preset
+
+    closed = []
+
+    class Resource:
+        def close(self):
+            closed.append(True)
+
+    preset = minimal_preset()
+    preset.owned_resources.append(Resource())
+    monkeypatch.setattr("looplet.cli.factory_commands._build_factory_preset", lambda *args: preset)
+
+    def fail(*arguments, **options):
+        raise ValueError("controlled blueprint failure")
+
+    monkeypatch.setattr("looplet.blueprints.blueprint_from_preset", fail)
+    assert main(["inspect", "broken:build", "--mode", "runtime", "--json"]) == 1
+    assert closed == [True]
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "controlled blueprint failure" in captured.err
+
+
+def test_python_suffixed_trace_directory_remains_inspectable(tmp_path, capsys):
+    from looplet.examples import quickstart
+
+    trace = tmp_path / "capture.py"
+    assert quickstart.main(["--capture", str(trace)]) == 0
+    capsys.readouterr()
+    assert main(["inspect", str(trace), "--json"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["trajectory"]["termination_reason"] == "done"
+
+
+def test_python_file_inspection_explains_factory_reference(tmp_path, capsys):
+    agent = tmp_path / "my_agent.py"
+    agent.write_text("raise AssertionError('must not import')\n")
+    assert main(["inspect", str(agent), "--mode", "runtime"]) == 1
+    assert "looplet inspect my_agent:build --mode runtime" in capsys.readouterr().err
+
+
 def test_explicit_bundle_declaration_modes_never_import_entrypoint(tmp_path, capsys):
     (tmp_path / "SKILL.md").write_text("---\nname: safe\ndescription: Safe fixture.\n---\n")
     (tmp_path / "looplet.py").write_text("raise AssertionError('must not import')\n")

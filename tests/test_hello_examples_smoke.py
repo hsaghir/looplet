@@ -37,9 +37,7 @@ def test_public_loop_help_documents_inputs_and_cleanup(loop_function):
     assert "close()" in documentation
 
 
-@pytest.mark.parametrize(
-    "guide_name", ["README.md", "docs/index.md", "docs/quickstart.md", "docs/install.md"]
-)
+@pytest.mark.parametrize("guide_name", ["README.md", "docs/index.md", "docs/install.md"])
 def test_frontdoor_install_uses_fixed_release_without_checkout(guide_name):
     guide = Path(__file__).resolve().parents[1] / guide_name
     command = re.findall(r"^```bash[^\n]*\n(.*?)^```[ \t]*$", guide.read_text(), re.M | re.S)[0]
@@ -48,17 +46,40 @@ def test_frontdoor_install_uses_fixed_release_without_checkout(guide_name):
     assert "-e" not in arguments
 
 
-def test_quickstart_provider_extra_keeps_fixed_release():
+def test_quickstart_uses_one_pinned_preview_environment():
+    docs = Path(__file__).resolve().parents[1] / "docs"
+    guide = (docs / "quickstart.md").read_text()
+    install = (docs / "install.md").read_text()
+    pin = re.search(
+        r"looplet @ (https://github.com/hsaghir/looplet/archive/[a-f0-9]{40}\.zip)", install
+    )
+    assert pin is not None
+    commands = re.findall(r"^```bash[^\n]*\n(.*?)^```[ \t]*$", guide, re.M | re.S)
+    first = shlex.split(commands[0])
+    assert f"looplet @ {pin.group(1)}" in first
+    assert ".venv-looplet-preview" in first
+    assert guide.count("python -m venv ") == 1
+    assert "separate environment before using this starter" not in guide
+    assert "Keep using the environment from step 1." in guide
+    installs = re.findall(r'python -m pip install "([^"]+)"', guide)
+    assert set(installs) == {f"looplet @ {pin.group(1)}", f"looplet[openai] @ {pin.group(1)}"}
+
+
+def test_quickstart_provider_extra_keeps_pinned_preview():
     guide = Path(__file__).resolve().parents[1] / "docs" / "quickstart.md"
     section = guide.read_text().split("## Use the same agent with a real model", 1)[1]
     command = re.findall(r"^```bash[^\n]*\n(.*?)^```[ \t]*$", section, re.M | re.S)[0]
     arguments = shlex.split(command.replace("\\\n", " "))
-    assert "looplet[openai]==0.4.1" in arguments
+    pin = re.search(
+        r"looplet @ (https://github.com/hsaghir/looplet/archive/[a-f0-9]{40}\.zip)",
+        guide.read_text(),
+    )
+    assert pin is not None and f"looplet[openai] @ {pin.group(1)}" in arguments
     assert "-e" not in arguments
     assert not any("refs/heads/master" in argument for argument in arguments)
 
 
-def test_factory_shell_workflow_has_a_separate_pinned_preview_install():
+def test_factory_shell_workflow_has_a_pinned_preview_install():
     docs = Path(__file__).resolve().parents[1] / "docs"
     install = (docs / "install.md").read_text()
     section = install.split("## Try unreleased factory commands\n", 1)[1].split("\n## ", 1)[0]
@@ -269,6 +290,18 @@ def test_documented_one_file_case_uses_the_exported_agent(tmp_path):
         assert saved.case.task == case["task"]
         assert saved.context.expected == case["expected"]
         assert saved.results and all(result.passed for result in saved.results)
+
+
+def test_documented_one_file_factory_inspection(tmp_path):
+    guide = Path(__file__).resolve().parents[1] / "docs" / "quickstart.md"
+    _run_documented_shell(guide, "copy_agent_starter.sh", tmp_path)
+    result = _run_documented_shell(guide, "inspect_agent.sh", tmp_path)
+    assert result.returncode == 0, result.stdout + result.stderr
+    report = json.loads(result.stdout)
+    assert report["factory"] == "my_agent:build"
+    assert report["mode"] == "runtime"
+    assert report["runtime_validated"] is True
+    assert {tool["name"] for tool in report["tools"]} == {"lookup_owner", "done"}
 
 
 def test_documented_one_file_provider_handoff_uses_the_exported_agent(tmp_path, monkeypatch):
@@ -686,14 +719,51 @@ def test_packaged_quickstart_live_capture_uses_the_same_agent(
         ["--out", "unused"],
         ["--replay", "missing", "--case", "unused"],
         ["--rescore", "missing", "--case", "unused"],
+        ["--json"],
+        ["--experiment", "--json"],
+        ["--backend", "openai", "--json"],
     ],
 )
-def test_packaged_quickstart_rejects_ignored_options(arguments):
+def test_packaged_quickstart_rejects_ignored_options(arguments, monkeypatch):
     from looplet.examples import quickstart
 
+    scripted = Mock(side_effect=AssertionError("unexpected scripted backend"))
+    provider = Mock(side_effect=AssertionError("unexpected provider setup"))
+    monkeypatch.setattr(quickstart, "scripted_backend", scripted)
+    monkeypatch.setattr(quickstart.OpenAIBackend, "from_env", provider)
     with pytest.raises(SystemExit) as error:
         quickstart.main(arguments)
     assert error.value.code == 2
+    scripted.assert_not_called()
+    provider.assert_not_called()
+
+
+@pytest.mark.parametrize("provider", ["openai", "anthropic"])
+@pytest.mark.parametrize(
+    "failure",
+    [
+        RuntimeError("missing provider settings"),
+        ImportError("missing provider extra"),
+        ValueError("invalid provider settings"),
+    ],
+)
+def test_packaged_quickstart_provider_setup_errors_are_actionable(
+    tmp_path, monkeypatch, capsys, provider, failure
+):
+    from looplet.examples import quickstart
+
+    adapter = quickstart.OpenAIBackend if provider == "openai" else quickstart.AnthropicBackend
+    setup = Mock(side_effect=failure)
+    monkeypatch.setattr(adapter, "from_env", setup)
+    output = tmp_path / "experiment"
+    assert quickstart.main(["--backend", provider, "--experiment", "--out", str(output)]) == 1
+    setup.assert_called_once_with()
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert f"error: {provider} setup failed: {failure}" in captured.err
+    assert f"https://hsaghir.com/looplet/install/#configure-{provider}" in captured.err
+    assert "Traceback" not in captured.err
+    assert not output.exists()
 
 
 def test_packaged_quickstart_stop_is_explicit(tmp_path, monkeypatch, capsys):

@@ -215,7 +215,7 @@ def stop_after_lookup(llm, *, max_steps=2, use_native_tools=False, case: EvalCas
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     actions = parser.add_mutually_exclusive_group()
     actions.add_argument(
         "--capture", type=Path, metavar="NEW_TRACE_DIR", help="Run and save graded evidence"
@@ -293,7 +293,15 @@ def main(argv: list[str] | None = None) -> int:
                 llm = scripted_backend()
             else:
                 backend = OpenAIBackend if backend_name == "openai" else AnthropicBackend
-                llm = backend.from_env()
+                try:
+                    llm = backend.from_env()
+                except (ImportError, RuntimeError, ValueError) as error:
+                    print(f"error: {backend_name} setup failed: {error}", file=sys.stderr)
+                    print(
+                        f"See https://hsaghir.com/looplet/install/#configure-{backend_name}",
+                        file=sys.stderr,
+                    )
+                    return 1
             options = {
                 "max_steps": arguments.max_steps or 2,
                 "use_native_tools": backend_name != "scripted" and not arguments.json_text,

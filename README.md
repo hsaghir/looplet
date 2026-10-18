@@ -30,7 +30,7 @@ It does not require a workflow graph, a hosted service, or a cartridge.
 
 ## Run one loop
 
-Install the fixed release for the examples and fixes in these guides.
+Install the fixed release for the example below.
 No Git installation or local repository checkout is needed.
 
 ```bash
@@ -96,6 +96,9 @@ Real models use native tool calls by default.
 See [Install](docs/install.md) for provider adapters and configuration.
 
 The [Quickstart](docs/quickstart.md) uses this same API and adds pytest checks, capture, and replay.
+Its complete editable starter and factory commands are unreleased.
+Start that guide with its pinned preview environment and keep using it throughout.
+The published package remains available for the Python APIs shown here.
 For async code, use `async_composable_loop()` with `contextlib.aclosing`.
 
 ## Add only what you need

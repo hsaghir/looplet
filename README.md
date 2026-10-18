@@ -212,7 +212,6 @@ looplet>=0.4.1,<0.5
 ```
 
 The latest PyPI release is `0.4.1`.
-The recommended source build includes later fixes that are not yet on PyPI.
 See the [changelog](CHANGELOG.md) and [release plan](ROADMAP.md#path-to-10).
 
 ## Contributing

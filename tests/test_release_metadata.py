@@ -45,6 +45,9 @@ def test_published_install_guidance_is_separate_from_source_version() -> None:
     major, minor, _patch = (int(part) for part in version.split("."))
     pin = f"looplet>={version},<{major}.{minor + 1}"
     assert pin in readme
+    assert (
+        "The recommended source build includes later fixes that are not yet on PyPI." not in readme
+    )
     assert pin in install
     assert f"latest PyPI release is `{version}`" in install
     assert f"## [{version}]" in (ROOT / "CHANGELOG.md").read_text()

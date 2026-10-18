@@ -335,11 +335,16 @@ Custom builders and older keyword renderers remain supported.
 | --- | --- |
 | `ProvenanceSink` | Capture model calls and trajectory records into readable files. |
 | `TrajectoryRecorder` | Lower-level step recording for custom hosts; start with `ProvenanceSink`. |
-| `replay_loop(...)` | Feed captured model responses through fresh harness execution. |
+| `replay_loop(...)` | Feed captured model responses through fresh synchronous harness execution. |
+| `async_replay_loop(...)` | Replay captured responses while awaiting async hooks and tools. |
 | `serialize_harness(...)` | Preserve a reviewable snapshot of the active harness. |
 
 Replay fixes recorded model responses only.
 Tools, clocks, networks, state, permissions, and random values can change.
+Use the [async replay pattern](provenance.md#replay-async-agents) for async agents and early iterator cleanup.
+`ProvenanceSink(redact=...)` scrubs provider prompt strings and saved evidence by default.
+Use `redact_upstream=False` for record-only scrubbing when the provider is authorized to receive the original input.
+Keep raw captures private; construct [reviewed synthetic fixtures](provenance.md#create-a-reviewed-replay-fixture) for versioned replay tests.
 See [Capture and replay](provenance.md) for the basic use.
 Use the [experiment guide](experiments.md) to choose a suitable comparison.
 

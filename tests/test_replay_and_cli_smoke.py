@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import gc
 import io
 import json
 import sys
 import warnings
+from contextlib import aclosing
 from pathlib import Path
 
 import pytest
@@ -13,8 +15,11 @@ import pytest
 from looplet import (
     BaseToolRegistry,
     DefaultState,
+    HookDecision,
     LoopConfig,
+    async_composable_loop,
     composable_loop,
+    tools_from,
 )
 from looplet.__main__ import main as cli_main
 from looplet.artifact_compat import ARTIFACT_DESCRIPTOR
@@ -25,7 +30,7 @@ from looplet.provenance import (
     _ReplayLLMBackend,
     replay_loop,
 )
-from looplet.testing import MockLLMBackend
+from looplet.testing import AsyncMockLLMBackend, MockLLMBackend
 from looplet.tools import ToolSpec
 
 
@@ -72,6 +77,162 @@ def _captured_dir(tmp_path: Path, *, task: dict | None = None) -> Path:
 
 
 class TestReplayLoopSmoke:
+    @pytest.mark.parametrize("native", [False, True])
+    @pytest.mark.parametrize("slot", ["check_permission", "pre_dispatch"])
+    async def test_async_replay_preserves_async_tool_denials(self, tmp_path, native, slot, recwarn):
+        from looplet import async_replay_loop
+
+        effects = []
+        gate_calls = []
+
+        async def record_probe(value: str) -> dict:
+            effects.append(value)
+            return {"value": value}
+
+        class PermissionGate:
+            async def check_permission(self, tool_call, state):
+                gate_calls.append(tool_call.tool)
+                return tool_call.tool != "record_probe"
+
+        class DispatchGate:
+            async def pre_dispatch(self, state, session_log, tool_call, step_num):
+                gate_calls.append(tool_call.tool)
+                if tool_call.tool == "record_probe":
+                    return HookDecision(permission="deny", block="Synthetic test denial")
+                return None
+
+        gate_class = PermissionGate if slot == "check_permission" else DispatchGate
+        responses = [
+            '{"tool":"record_probe","args":{"value":"synthetic-only"}}',
+            '{"tool":"done","args":{"summary":"Finished."}}',
+        ]
+        backend = AsyncMockLLMBackend(responses, cycle=False)
+        if native:
+            blocks = iter(
+                [
+                    [
+                        {
+                            "type": "tool_use",
+                            "id": "probe-1",
+                            "name": "record_probe",
+                            "input": {"value": "synthetic-only"},
+                        }
+                    ],
+                    [
+                        {
+                            "type": "tool_use",
+                            "id": "done-1",
+                            "name": "done",
+                            "input": {"summary": "Finished."},
+                        }
+                    ],
+                ]
+            )
+
+            async def generate_with_tools(prompt, **kwargs):
+                return next(blocks)
+
+            backend.generate_with_tools = generate_with_tools
+        sink = ProvenanceSink(dir=tmp_path / "async-capture")
+        tools = tools_from([record_probe], include_done=True, validate=True)
+        task = {"goal": "Synthetic replay permission test"}
+        captured = [
+            step
+            async for step in async_composable_loop(
+                llm=sink.wrap_llm(backend),
+                tools=tools,
+                config=LoopConfig(max_steps=2, use_native_tools=native),
+                task=task,
+                hooks=[gate_class(), sink.trajectory_hook()],
+            )
+        ]
+        trace = sink.flush()
+        before = {path: path.read_bytes() for path in trace.rglob("*") if path.is_file()}
+        assert effects == [] and "record_probe" in gate_calls
+        assert "Permission denied" in captured[0].tool_result.error
+        gate_calls.clear()
+        state = DefaultState(max_steps=2)
+
+        replayed = [
+            step
+            async for step in async_replay_loop(
+                trace,
+                tools=tools_from([record_probe], include_done=True, validate=True),
+                state=state,
+                hooks=[gate_class()],
+            )
+        ]
+
+        assert effects == [] and "record_probe" in gate_calls
+        assert "Permission denied" in replayed[0].tool_result.error
+        assert [step.tool_call.tool for step in replayed] == ["record_probe", "done"]
+        assert state.task == task and state._stop_reason == "done"
+        assert {path: path.read_bytes() for path in trace.rglob("*") if path.is_file()} == before
+        gc.collect()
+        assert not any(issubclass(warning.category, RuntimeWarning) for warning in recwarn)
+
+    @pytest.mark.parametrize("early_stop", [False, True])
+    async def test_async_replay_awaits_tools_and_closes_the_loop(self, tmp_path, early_stop):
+        from looplet import async_replay_loop
+
+        trace = _captured_dir(tmp_path)
+        effects = []
+        cleaned = []
+
+        async def add(a: int, b: int) -> dict:
+            effects.append((a, b))
+            return {"sum": a + b}
+
+        def done(answer: str) -> dict:
+            return {"answer": answer}
+
+        class CleanupHook:
+            async def on_loop_end(self, state, session_log, context, llm):
+                cleaned.append(state._stop_reason)
+                return 0
+
+        state = DefaultState(max_steps=3)
+        steps = []
+        async with aclosing(
+            async_replay_loop(
+                trace,
+                tools=tools_from([add, done], validate=True),
+                state=state,
+                hooks=[CleanupHook()],
+            )
+        ) as iterator:
+            async for step in iterator:
+                steps.append(step)
+                if early_stop:
+                    break
+
+        assert effects == ([(1, 2)] if early_stop else [(1, 2), (3, 4)])
+        assert len(steps) == (1 if early_stop else 3)
+        assert cleaned == (["stream_closed"] if early_stop else ["done"])
+
+    @pytest.mark.parametrize("limit", [None, 1, 7])
+    @pytest.mark.parametrize("override", [None, {}, {"goal": "replacement"}])
+    async def test_async_replay_preserves_task_and_budget_overrides(
+        self, tmp_path, limit, override
+    ):
+        from looplet import async_replay_loop
+
+        task = {"goal": "Compute both sums.", "context": {"labels": ["original"]}}
+        trace = _captured_dir(tmp_path, task=task)
+        state = DefaultState(max_steps=limit if limit is not None else 3)
+        config = None if limit is None else LoopConfig(max_steps=limit, use_native_tools=False)
+
+        steps = [
+            step
+            async for step in async_replay_loop(
+                trace, tools=_make_tools(), state=state, config=config, task=override
+            )
+        ]
+
+        assert state.task == (task if override is None else override)
+        assert len(steps) == (1 if limit == 1 else 3)
+        assert state._stop_reason == ("budget_exhausted" if limit == 1 else "done")
+
     def test_inspect_trace_uses_existing_show_contract(self, tmp_path, capsys):
         trace_dir = _captured_dir(tmp_path)
         assert cli_main(["inspect", str(trace_dir), "--json"]) == 0
@@ -104,8 +265,9 @@ class TestReplayLoopSmoke:
 
     @pytest.mark.parametrize("capture_trajectory", [False, True])
     @pytest.mark.parametrize("single_call", [False, True])
-    def test_native_replay_budget_counts_tool_steps(
-        self, tmp_path, capture_trajectory, single_call
+    @pytest.mark.parametrize("asynchronous", [False, True])
+    async def test_native_replay_budget_counts_tool_steps(
+        self, tmp_path, capture_trajectory, single_call, asynchronous
     ):
         calls = [
             {"type": "tool_use", "id": "add-1", "name": "add", "input": {"a": 1, "b": 2}},
@@ -140,7 +302,15 @@ class TestReplayLoopSmoke:
         before = {path: path.read_bytes() for path in trace_dir.rglob("*") if path.is_file()}
         state = DefaultState(max_steps=3)
 
-        replayed = list(replay_loop(trace_dir, tools=_make_tools(), state=state))
+        if asynchronous:
+            from looplet import async_replay_loop
+
+            replayed = [
+                step
+                async for step in async_replay_loop(trace_dir, tools=_make_tools(), state=state)
+            ]
+        else:
+            replayed = list(replay_loop(trace_dir, tools=_make_tools(), state=state))
 
         assert [step.tool_call.tool for step in original] == ["add", "add", "done"]
         assert [step.tool_call.tool for step in replayed] == ["add", "add", "done"]
@@ -188,8 +358,9 @@ class TestReplayLoopSmoke:
             ('{"task": "wrong type"}', "task must be an object"),
         ],
     )
-    def test_replay_rejects_invalid_defaults_before_running(
-        self, tmp_path, monkeypatch, payload, expected
+    @pytest.mark.parametrize("asynchronous", [False, True])
+    async def test_replay_rejects_invalid_defaults_before_running(
+        self, tmp_path, monkeypatch, payload, expected, asynchronous
     ):
         trace_dir = _captured_dir(tmp_path)
         (trace_dir / "trajectory.json").write_text(payload)
@@ -198,8 +369,14 @@ class TestReplayLoopSmoke:
             raise AssertionError("Invalid defaults must fail before execution")
 
         monkeypatch.setattr("looplet.loop.composable_loop", unexpected_loop)
+        monkeypatch.setattr("looplet.async_loop.async_composable_loop", unexpected_loop)
         with pytest.raises(ValueError, match=expected):
-            list(replay_loop(trace_dir, tools=_make_tools()))
+            if asynchronous:
+                from looplet import async_replay_loop
+
+                [step async for step in async_replay_loop(trace_dir, tools=_make_tools())]
+            else:
+                list(replay_loop(trace_dir, tools=_make_tools()))
 
     def test_missing_dir_raises(self, tmp_path: Path):
         with pytest.raises(FileNotFoundError):

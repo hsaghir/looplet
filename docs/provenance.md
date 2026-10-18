@@ -41,6 +41,7 @@ for step in replay_loop(trace_dir, tools=tools):
 | `TrajectoryRecorder` | Every loop step, with context-before and linked LLM calls | `LoopHook` |
 | `ProvenanceSink` | Both of the above in a 3-line drop-in | Not a protocol |
 | `replay_loop(dir, ...)` | Rerun the loop against cached LLM output | generator |
+| `async_replay_loop(dir, ...)` | Replay with awaited async tools and hooks | async generator |
 | `python -m looplet show <dir>` | One-page readable summary | CLI |
 
 All of it is zero-dependency and preserves the `NativeToolBackend` capability
@@ -48,9 +49,32 @@ surface of whatever it wraps. Prompts and responses may contain sensitive
 data, so configure `redact=` before capture when the run crosses a privacy or
 security boundary.
 
+**Choose the redaction scope before capture.** `ProvenanceSink(redact=...)` scrubs prompt strings before the provider receives them and in saved evidence.
+Adding this wrapper can therefore change the model's decisions.
+Use `redact_upstream=False` only when the provider is authorized to receive the original input and only saved evidence should be scrubbed.
+This option does not protect data sent to the provider.
+
+```python title="capture_redaction.py"
+from looplet import ProvenanceSink
+
+
+def scrub_account(text):
+  return text.replace("acct-example-42", "[REDACTED]")
+
+
+provider_and_record = ProvenanceSink(redact=scrub_account)
+record_only = ProvenanceSink(redact=scrub_account, redact_upstream=False)
+```
+
+Wrap the backend with the selected sink before executing the run.
+The same scope applies to sync and async backends.
+Prompt strings and recorded response copies are scrubbed; live responses and native tool schemas are not rewritten.
+Review exports separately; a redaction callback is not proof that every sensitive value was removed.
+
 **Version scope:** Native-response redaction and the Python replay defaults below are unreleased after `0.4.0`.
 Published `0.4.0` can save unredacted native response blocks even when `redact=` is configured.
 See [Unreleased Safety Fixes](install.md#unreleased-safety-fixes) before relying on these behaviors.
+`async_replay_loop()` also requires an unreleased source build.
 
 ---
 
@@ -140,6 +164,60 @@ Review that file before committing or uploading it.
 This summary omits prompts, responses, task data, expectations, and artifacts.
 It is not replay evidence, a correctness verdict, or automatic permission to disclose run information.
 Configure `redact=` before capture when a fuller export is needed, and review that export separately.
+
+### Create a reviewed replay fixture
+
+Keep incident captures private.
+For a shareable golden test, construct a separate fixture with synthetic, reviewed inputs and responses.
+Do not force-add the raw capture or replace its ignore policy.
+A summary export cannot substitute for the model-call files that replay requires.
+
+Run this example from your consumer project with a new fixture path:
+
+```python title="reviewed_replay_fixture.py"
+import json
+from pathlib import Path
+
+from looplet import ProvenanceSink
+from looplet.testing import MockLLMBackend
+
+
+fixture = Path("tests/fixtures/reviewed-done")
+fixture.mkdir(parents=True, exist_ok=False)
+allowed = [
+  ".gitignore",
+  "artifact.json",
+  "manifest.jsonl",
+  "call_00_prompt.txt",
+  "call_00_response.txt",
+]
+(fixture / ".gitignore").write_text(
+  "*\n" + "".join(f"!/{name}\n" for name in allowed),
+  encoding="utf-8",
+)
+response = json.dumps({
+  "tool": "done",
+  "args": {"summary": "Synthetic fixture complete."},
+})
+sink = ProvenanceSink(dir=fixture)
+recorder = sink.wrap_llm(MockLLMBackend([response], cycle=False))
+recorder.generate("Complete this synthetic test.", system_prompt="Synthetic data only.")
+sink.flush()
+```
+
+This makes no provider or tool calls.
+The pre-existing allowlist is preserved; unlisted files remain ignored.
+The filenames describe this one-response fixture, not a frozen artifact-format guarantee.
+Review every allowlisted file before staging it:
+
+```bash
+git add -- tests/fixtures/reviewed-done
+git diff --cached --name-only
+git diff --cached -- tests/fixtures/reviewed-done
+```
+
+Use this directory with `replay_loop()` or `async_replay_loop()` and your trusted fresh tools.
+Git ignore rules are not access controls or automatic approval to disclose the files.
 
 ### Replay from the shell
 
@@ -377,6 +455,9 @@ hook = TrajectoryRecorder(tracer=my_tracer)
 
 ## Replay captured responses through a fresh harness
 
+Use `replay_loop()` for synchronous tools and hooks.
+Use `async_replay_loop()` when a tool or hook is asynchronous.
+
 ```python
 from looplet import replay_loop
 
@@ -403,14 +484,37 @@ Without `task`, replay reuses the saved trajectory task, or `{}` when no task wa
 Pass `task={}` to request an empty task, or another dictionary to replace the saved task.
 Replay does not restore checkpoints or copy starting files.
 
+### Replay async agents
+
+The async entry point uses the same evidence validation, saved task, protocol, and budget defaults.
+It awaits async hooks and tools; synchronous implementations remain supported.
+Use `aclosing` to release loop-owned resources when iteration stops early:
+
+```python title="replay_async.py"
+from contextlib import aclosing
+
+from looplet import async_replay_loop
+
+
+async def replay_agent(trace_dir, tools, hooks=()):
+  steps = []
+  async with aclosing(async_replay_loop(trace_dir, tools=tools, hooks=list(hooks))) as iterator:
+    async for step in iterator:
+      steps.append(step)
+  return steps
+```
+
+Call `await replay_agent(trace_dir, tools, hooks=hooks)` from your async host.
+Fresh tools and hooks still execute; use an isolated workspace for side effects.
+The shell replay command remains synchronous.
+
 **Common uses:**
 
 - **Change a hook, re-run.** Add a new permission rule or logging
   hook, replay, see how step outputs differ.
 - **Upgrade looplet and diff the loop.** If the replay produces
   different steps with the same LLM output, the loop behavior changed.
-- **Golden tests.** Capture once, check the directory into git,
-  `replay_loop` in CI.
+- **Golden tests.** Create a [reviewed synthetic replay fixture](#create-a-reviewed-replay-fixture), then replay it in CI.
 - **Reproduce a tool failure.** Hold model responses fixed, change one tool
   implementation, then let a collector grade the fresh world state.
 

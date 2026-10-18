@@ -178,7 +178,7 @@ from looplet.presets import (
     research_agent_preset,
 )
 from looplet.prompts import preview_prompt
-from looplet.provenance import ProvenanceSink, TrajectoryRecorder, replay_loop
+from looplet.provenance import ProvenanceSink, TrajectoryRecorder, async_replay_loop, replay_loop
 from looplet.resilient import ResilientBackend, RetryExhausted
 from looplet.run_records import ArtifactRef, RunEvent, RunRecord, event_from_payload
 from looplet.run_store import FileRunStore, MemoryRunStore, RunStore
@@ -355,6 +355,7 @@ __all__ = [
     "TrajectoryRecorder",
     "ProvenanceSink",
     "replay_loop",
+    "async_replay_loop",
     "serialize_harness",
     # ── CARTRIDGE FORMAT (canonical; SPEC.md v2.0) ──────────────
     "Cartridge",

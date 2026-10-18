@@ -24,6 +24,14 @@ FORWARDED_CAPABILITIES = frozenset(
 MUTABLE_CAPABILITIES = frozenset({"last_usage", "_client", "_state_path"})
 
 
+class TerminalLLMError(RuntimeError):
+    """A backend failure that cannot recover by repeating the same call."""
+
+    def __init__(self, message: str, *, termination_reason: str) -> None:
+        super().__init__(message)
+        self.termination_reason = termination_reason
+
+
 def backend_attribute(backend: Any, name: str) -> Any:
     """Forward only supported run capabilities, never generation itself."""
     if name not in FORWARDED_CAPABILITIES:

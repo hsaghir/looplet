@@ -2394,6 +2394,37 @@ def test_cli_run_fails_on_collector_error(tmp_path: Path, monkeypatch, capsys) -
 # ── CLI preflight / error paths (no live model needed) ───────────
 
 
+@pytest.mark.parametrize("explanation", ["Expected hello; observed goodbye.", ""])
+@pytest.mark.parametrize("verbose", [False, True])
+@pytest.mark.parametrize("version", [1, 2])
+def test_cli_rescore_shows_failure_explanations(
+    tmp_path, capsys, explanation, verbose, version
+) -> None:
+    cart = _make_cartridge(tmp_path)
+    suite = tmp_path / "saved suite"
+    run_cartridge_evals(cart, llm=MockLLMBackend(responses=_scripted()), output_dir=suite)
+    before = {path: path.read_bytes() for path in suite.rglob("*") if path.is_file()}
+    (cart / "evals" / "eval_correctness.py").write_text(
+        "from looplet import EvalResult\n\n"
+        "def eval_current(ctx):\n"
+        "    return EvalResult(name='eval_current', score=0.0, label='fail', "
+        f"explanation={explanation!r})\n"
+    )
+    arguments = [
+        str(suite),
+        "--evals",
+        str(cart / "evals"),
+        "--assessment-version",
+        str(version),
+    ]
+    if verbose:
+        arguments.append("--verbose")
+    assert eval_cli(arguments) == 1
+    detail = f"fail: {explanation}" if explanation else "fail"
+    assert f"make_greeting/eval_current: {detail}" in capsys.readouterr().out
+    assert {path: path.read_bytes() for path in suite.rglob("*") if path.is_file()} == before
+
+
 @pytest.mark.parametrize("passed", [False, True])
 @pytest.mark.parametrize("json_output", [False, True])
 @pytest.mark.parametrize("version", [1, 2])

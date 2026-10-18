@@ -979,27 +979,36 @@ def _render_eval_assessment(report_path: Path, *, json_output: bool) -> int:
     return 0
 
 
+def _read_experiment_report(
+    report_path: Path,
+) -> tuple[dict[str, Any], dict[str, str] | None]:
+    stage_names: tuple[str, ...] = ("capture", "rescore", "replay")
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    if isinstance(report, dict) and report.get("schema") == "looplet.eval-assessment":
+        return report, None
+    if not isinstance(report, dict) or not isinstance(report.get("passed"), bool):
+        raise ValueError("expected an experiment object with a boolean passed field")
+    for key in ("capture_dir", "replay_dir"):
+        if key not in report or (report[key] is not None and not isinstance(report[key], str)):
+            raise ValueError(f"{key} must be a trace path or null")
+    stages = report.get("stages")
+    if stages is None:
+        stages = dict.fromkeys(stage_names, "passed" if report["passed"] else "unknown")
+    elif not isinstance(stages, dict) or any(
+        stages.get(name) not in ("passed", "failed", "not_run") for name in stage_names
+    ):
+        raise ValueError("stages must give capture, rescore and replay status")
+    return report, cast(dict[str, str], stages)
+
+
 def _render_experiment(report_path: Path, *, json_output: bool) -> int:
-    stage_names = ("capture", "rescore", "replay")
     try:
-        report = json.loads(report_path.read_text(encoding="utf-8"))
-        if isinstance(report, dict) and report.get("schema") == "looplet.eval-assessment":
-            return _render_eval_assessment(report_path, json_output=json_output)
-        if not isinstance(report, dict) or not isinstance(report.get("passed"), bool):
-            raise ValueError("expected an experiment object with a boolean passed field")
-        for key in ("capture_dir", "replay_dir"):
-            if key not in report or (report[key] is not None and not isinstance(report[key], str)):
-                raise ValueError(f"{key} must be a trace path or null")
-        stages = report.get("stages")
-        if stages is None:
-            stages = dict.fromkeys(stage_names, "passed" if report["passed"] else "unknown")
-        elif not isinstance(stages, dict) or any(
-            stages.get(name) not in ("passed", "failed", "not_run") for name in stage_names
-        ):
-            raise ValueError("stages must give capture, rescore and replay status")
+        report, stages = _read_experiment_report(report_path)
     except (OSError, ValueError) as error:
         print(f"error: invalid experiment report {report_path}: {error}", file=sys.stderr)
         return 1
+    if stages is None:
+        return _render_eval_assessment(report_path, json_output=json_output)
     if json_output:
         print(json.dumps(report, indent=2))
         return 0
@@ -1007,7 +1016,7 @@ def _render_experiment(report_path: Path, *, json_output: bool) -> int:
     print(
         f"  {'passed' if report['passed'] else 'failed'}; stage: {report.get('stage', 'unknown')}"
     )
-    for name in stage_names:
+    for name in ("capture", "rescore", "replay"):
         print(f"  {name}: {stages[name]}")
         trace = report.get(f"{name}_dir")
         if trace:
@@ -1023,6 +1032,64 @@ def _render_experiment(report_path: Path, *, json_output: bool) -> int:
     if report.get("error"):
         print(f"\nfailure: {report['error']}")
     return 0
+
+
+def _render_experiment_history(path: Path, *, json_output: bool) -> int | None:
+    try:
+        children = sorted(
+            child
+            for child in path.iterdir()
+            if child.is_dir() and (child / "experiment.json").is_file()
+        )
+    except OSError as error:
+        print(f"error: could not list experiment history {path}: {error}", file=sys.stderr)
+        return 1
+    if not children:
+        return None
+    experiments: list[dict[str, Any]] = []
+    for child in children:
+        entry = {
+            "id": child.name,
+            "experiment_dir": child.name,
+            "passed": None,
+            "stage": "unknown",
+            "stages": None,
+            "error": None,
+        }
+        try:
+            report, stages = _read_experiment_report(child / "experiment.json")
+            if stages is None:
+                raise ValueError("expected an experiment report, not a saved assessment")
+            entry.update(
+                passed=report["passed"], stage=report.get("stage", "unknown"), stages=stages
+            )
+        except (OSError, ValueError) as error:
+            entry["error"] = str(error)
+        experiments.append(entry)
+    report = {
+        "schema": "looplet.experiment-history",
+        "version": 1,
+        "kind": "experiment_history",
+        "experiments": experiments,
+    }
+    if json_output:
+        print(json.dumps(report, indent=2))
+    else:
+        print(f"Saved experiment history: {path}")
+        print("  Read-only summaries; inspection does not rerun agents, tools, or graders.")
+        for entry in experiments:
+            status = (
+                "unreadable"
+                if entry["error"] is not None
+                else ("passed" if entry["passed"] else "failed")
+            )
+            print(f"\n  {entry['id']}: {status}; stage: {entry['stage']}")
+            if entry["error"] is not None:
+                print(f"    error: {entry['error']}")
+            print(
+                f"    inspect: looplet inspect {shlex.quote(str(path / entry['experiment_dir']))}"
+            )
+    return 1 if any(entry["error"] is not None for entry in experiments) else 0
 
 
 def _render_eval_suite(path: Path, *, json_output: bool) -> int | None:
@@ -1170,6 +1237,9 @@ def _render_inspect(
         suite_status = _render_eval_suite(path, json_output=json_output)
         if suite_status is not None:
             return suite_status
+        history_status = _render_experiment_history(path, json_output=json_output)
+        if history_status is not None:
+            return history_status
     return _render_show(path, json_output=json_output)
 
 

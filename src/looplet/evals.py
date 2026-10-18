@@ -3415,6 +3415,7 @@ def _run_saved_evaluation(parsed: Namespace, *, output: TextIO) -> int:
             print(f"    - {failure}")
     failed_checks = [
         f"{case['id']}/{item['name']}: {item.get('label') or item['state']}"
+        f"{': ' + item['explanation'] if item.get('explanation') else ''}"
         for case in report["cases"]
         for item in case["results"]
         if _eval_state_fails(item["state"], required=item["required"])

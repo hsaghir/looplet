@@ -409,6 +409,61 @@ class TestReplayLoopSmoke:
         steps = list(replay_loop(trace_dir, tools=_make_tools(), hooks=[counter]))
         assert counter.post == len(steps)  # post_dispatch fires for done() too
 
+    @pytest.mark.parametrize("native", [False, True])
+    @pytest.mark.parametrize("asynchronous", [False, True])
+    async def test_replay_exhaustion_stops_without_retry(
+        self, tmp_path, monkeypatch, native, asynchronous
+    ):
+        from looplet import RunResult, async_replay_loop
+        from looplet.run_records import run_diagnostics
+
+        response = '{"tool":"add","args":{"a":1,"b":2}}'
+        backend = MockLLMBackend([response], cycle=False)
+        if native:
+            backend.generate_with_tools = lambda prompt, **kwargs: [
+                {"type": "tool_use", "id": "add-1", "name": "add", "input": {"a": 1, "b": 2}}
+            ]
+        capture = ProvenanceSink(dir=tmp_path / "capture")
+        recorded = capture.wrap_llm(backend)
+        if native:
+            recorded.generate_with_tools("prompt", tools=[])
+        else:
+            recorded.generate("prompt")
+        trace = capture.flush()
+        before = {path: path.read_bytes() for path in trace.rglob("*") if path.is_file()}
+
+        def unexpected_backoff(delay):
+            pytest.fail(f"Exhausted replay must not retry after {delay}s")
+
+        async def unexpected_async_backoff(delay):
+            pytest.fail(f"Exhausted async replay must not retry after {delay}s")
+
+        monkeypatch.setattr("looplet.scaffolding.time.sleep", unexpected_backoff)
+        monkeypatch.setattr("looplet.async_loop.asyncio.sleep", unexpected_async_backoff)
+        state = DefaultState(max_steps=2)
+        replayed = ProvenanceSink(dir=tmp_path / "replay")
+        options = {
+            "tools": _make_tools(),
+            "state": state,
+            "recording_sink": replayed,
+            "max_steps": 2,
+        }
+        if asynchronous:
+            steps = [step async for step in async_replay_loop(trace, **options)]
+        else:
+            steps = list(replay_loop(trace, **options))
+        result = RunResult.from_state(state)
+        assert result.termination_reason == "replay_exhausted"
+        assert not result.completed
+        assert result.status.value == "failed"
+        assert run_diagnostics(result)["termination_reason"] == "replay_exhausted"
+        assert "replay exhausted" in steps[-1].tool_result.error
+        saved = replayed.flush()
+        assert json.loads((saved / "trajectory.json").read_text())["termination_reason"] == (
+            "replay_exhausted"
+        )
+        assert {path: path.read_bytes() for path in trace.rglob("*") if path.is_file()} == before
+
     def test_fallback_without_manifest(self, tmp_path: Path):
         """Replay should work from call_NN_response.txt even without manifest."""
         trace_dir = _captured_dir(tmp_path)

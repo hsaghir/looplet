@@ -39,6 +39,7 @@ import time
 from dataclasses import replace as _dc_replace
 from typing import Any, AsyncGenerator
 
+from looplet._backend_contract import TerminalLLMError
 from looplet._backend_contract import attempt_limit as _attempt_limit
 from looplet.checkpoint import Checkpoint as _Checkpoint
 from looplet.checkpoint import FileCheckpointStore as _FileCheckpointStore
@@ -406,6 +407,14 @@ async def async_llm_call(
 
         except Exception as e:
             last_error = e
+            if isinstance(e, TerminalLLMError):
+                logger.warning("Backend stopped (not retrying): %s", e)
+                return LLMResult(
+                    None,
+                    e,
+                    native_requested=bool(tools is not None and policy.enabled),
+                    native_attempted=native_attempted,
+                )
             if _is_prompt_too_long(e):
                 return LLMResult(None, e)
             if use_native and isinstance(e, NativeToolUnsupportedError):
@@ -759,6 +768,7 @@ async def _async_composable_loop_impl(
     # ── Main loop ───────────────────────────────────────────────
     done = False
     stop_reason = "budget_exhausted"
+    llm_failed = False
     llm_calls = 0
     _loop_t0 = time.perf_counter()
     consecutive_parse_failures = 0
@@ -1132,6 +1142,7 @@ async def _async_composable_loop_impl(
             ):
                 stop_reason = "cancelled"
                 break
+            llm_failed = True
             error_call = ToolCall(tool="__llm_error__", reasoning="LLM call failed")
             error_result = ToolResult(
                 tool="__llm_error__",
@@ -1146,7 +1157,7 @@ async def _async_composable_loop_impl(
             step = Step(number=step_num, tool_call=error_call, tool_result=error_result)
             state.steps.append(step)
             yield step
-            stop_reason = "llm_error"
+            stop_reason = llm_result.failure_reason
             _history.record_step(
                 step, theory="", entities=[], findings=[], highlights=[], recall_key=""
             )
@@ -1774,7 +1785,7 @@ async def _async_composable_loop_impl(
         else RunStatus.CANCELLED
         if stop_reason in {"cancelled", "deadline_exceeded"}
         else RunStatus.FAILED
-        if stop_reason in {"error", "llm_error"}
+        if llm_failed or stop_reason in {"error", "llm_error"}
         else RunStatus.STOPPED
     )
     _set_run_lifecycle(

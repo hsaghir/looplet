@@ -21,6 +21,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from looplet._backend_contract import TerminalLLMError
 from looplet._backend_contract import attempt_limit as _attempt_limit
 from looplet.native_tools import NativeToolPolicy, NativeToolUnsupportedError
 
@@ -201,6 +202,13 @@ class LLMResult:
     def ok(self) -> bool:
         """True if the call succeeded and text is available."""
         return self.text is not None
+
+    @property
+    def failure_reason(self) -> str:
+        """Preserve a terminal backend's reason without interpreting its message."""
+        if isinstance(self.error, TerminalLLMError):
+            return self.error.termination_reason
+        return "llm_error"
 
 
 # ── Token Estimation ─────────────────────────────────────────────
@@ -422,6 +430,14 @@ def llm_call_with_retry(
             )
         except Exception as e:
             last_error = e
+            if isinstance(e, TerminalLLMError):
+                logger.warning("Backend stopped (not retrying): %s", e)
+                return LLMResult(
+                    None,
+                    e,
+                    native_requested=bool(tools is not None and policy.enabled),
+                    native_attempted=native_attempted,
+                )
             if _is_prompt_too_long(e):
                 logger.warning("Prompt too long (not retrying): %s", e)
                 return LLMResult(None, e)

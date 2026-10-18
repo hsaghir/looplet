@@ -792,6 +792,9 @@ This cannot detect a case whose directory and markers are entirely absent.
 
 Successful evaluation setup returns zero only for a passing assessment.
 Failed assessments, setup errors, and report-save errors return nonzero.
+Human saved-evidence rescoring prints available explanations for failing checks, including with `--verbose`.
+If no explanation was recorded, it falls back to the label or result state.
+These explanations may contain expected answers; review them before sharing.
 The report includes the trusted pre-run `grader_manifest`, case IDs and marks, and one
 result record per expected grader. Each result carries its grader marks,
 `required`, `required_status`, and one closed `state` value:

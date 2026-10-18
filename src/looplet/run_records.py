@@ -193,6 +193,7 @@ def run_diagnostics(
         "deadline_exceeded",
         "error",
         "llm_error",
+        "replay_exhausted",
         "hook_stop",
         "hook_requested_stop",
     }

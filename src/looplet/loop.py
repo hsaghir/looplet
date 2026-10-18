@@ -2799,6 +2799,7 @@ def _composable_loop_impl(
     llm_calls = 0
     done = False
     stop_reason = "budget_exhausted"  # tracks why the loop exited
+    llm_failed = False
     # Recovery state - each strategy fires at most once
     recovery_state = {
         "budget_enforcement": False,
@@ -3260,8 +3261,9 @@ def _composable_loop_impl(
             ):
                 stop_reason = "cancelled"
                 break
-            logger.error("LLM call failed after retries at step %d", step_num)
-            error_call = ToolCall(tool="__llm_error__", reasoning="LLM call failed after retries")
+            llm_failed = True
+            logger.error("LLM call failed at step %d: %s", step_num, llm_result.error)
+            error_call = ToolCall(tool="__llm_error__", reasoning="LLM call failed")
             error_result = ToolResult(
                 tool="__llm_error__",
                 args_summary="",
@@ -3275,7 +3277,7 @@ def _composable_loop_impl(
             step = Step(number=step_num, tool_call=error_call, tool_result=error_result)
             state.steps.append(step)
             yield step
-            stop_reason = "llm_error"
+            stop_reason = llm_result.failure_reason
             _history.record_step(
                 step, theory="", entities=[], findings=[], highlights=[], recall_key=""
             )
@@ -3995,7 +3997,7 @@ def _composable_loop_impl(
         else RunStatus.CANCELLED
         if stop_reason in {"cancelled", "deadline_exceeded"}
         else RunStatus.FAILED
-        if stop_reason in {"error", "llm_error"}
+        if llm_failed or stop_reason in {"error", "llm_error"}
         else RunStatus.STOPPED
     )
     _set_run_lifecycle(

@@ -366,6 +366,98 @@ def test_saved_eval_suite_inspection_preserves_case_grades(
     assert {path: path.read_bytes() for path in suite.rglob("*") if path.is_file()} == before
 
 
+@pytest.mark.parametrize("json_output", [False, True])
+@pytest.mark.parametrize("legacy", [False, True])
+def test_experiment_history_inspection_is_read_only(
+    tmp_path, monkeypatch, capsys, json_output, legacy
+):
+    from looplet.examples import quickstart
+
+    history = tmp_path / "experiment history with spaces"
+    for name, extra, expected_exit in (
+        ("passed experiment", [], 0),
+        ("failed experiment", ["--max-steps", "1"], 1),
+    ):
+        target = history / name
+        assert quickstart.main(["--experiment", "--out", str(target), *extra]) == expected_exit
+        if legacy:
+            report_path = target / "experiment.json"
+            report = json.loads(report_path.read_text())
+            report = {key: report[key] for key in ("capture_dir", "replay_dir", "passed")}
+            report_path.write_text(json.dumps(report))
+    (history / "notes.json").write_text("{}\n")
+    (history / "unrelated directory").mkdir()
+    before = {path: path.read_bytes() for path in history.rglob("*") if path.is_file()}
+    capsys.readouterr()
+
+    def unexpected_grader(context):
+        pytest.fail("History inspection must not execute current graders")
+
+    monkeypatch.setattr(quickstart, "eval_owner", unexpected_grader)
+    arguments = ["inspect", str(history)]
+    if json_output:
+        arguments.append("--json")
+    assert main(arguments) == 0
+    captured = capsys.readouterr()
+    if json_output:
+        report = json.loads(captured.out)
+        assert report["schema"] == "looplet.experiment-history" and report["version"] == 1
+        assert report["kind"] == "experiment_history"
+        assert [entry["id"] for entry in report["experiments"]] == [
+            "failed experiment",
+            "passed experiment",
+        ]
+        for entry in report["experiments"]:
+            assert entry["passed"] is (entry["id"] == "passed experiment")
+            assert entry["experiment_dir"] == entry["id"] and entry["error"] is None
+            assert entry["stage"] == (
+                "unknown" if legacy else "complete" if entry["passed"] else "capture"
+            )
+    else:
+        assert "Saved experiment history:" in captured.out
+        assert "failed experiment: failed; stage:" in captured.out
+        assert "passed experiment: passed; stage:" in captured.out
+        links = [
+            shlex.split(line.split("inspect: ", 1)[1])
+            for line in captured.out.split("\n")
+            if "inspect: " in line
+        ]
+        assert len(links) == 2
+        for command in links:
+            assert main(command[1:]) == 0
+    assert {path: path.read_bytes() for path in history.rglob("*") if path.is_file()} == before
+
+
+@pytest.mark.parametrize("json_output", [False, True])
+@pytest.mark.parametrize(
+    "damaged", ["{", "[]", '{"passed": true}', '{"schema": "looplet.eval-assessment"}']
+)
+def test_experiment_history_retains_unreadable_reports(tmp_path, capsys, json_output, damaged):
+    from looplet.examples import quickstart
+
+    history = tmp_path / "history"
+    assert quickstart.main(["--experiment", "--out", str(history / "healthy")]) == 0
+    broken = history / "broken"
+    broken.mkdir()
+    (broken / "experiment.json").write_text(damaged)
+    before = {path: path.read_bytes() for path in history.rglob("*") if path.is_file()}
+    capsys.readouterr()
+    arguments = ["inspect", str(history)]
+    if json_output:
+        arguments.append("--json")
+    assert main(arguments) == 1
+    captured = capsys.readouterr()
+    assert "Traceback" not in captured.err
+    if json_output:
+        report = json.loads(captured.out)
+        entries = {entry["id"]: entry for entry in report["experiments"]}
+        assert entries["healthy"]["passed"] is True and entries["healthy"]["error"] is None
+        assert entries["broken"]["passed"] is None and entries["broken"]["error"]
+    else:
+        assert "broken: unreadable" in captured.out and "healthy: passed" in captured.out
+    assert {path: path.read_bytes() for path in history.rglob("*") if path.is_file()} == before
+
+
 @pytest.mark.parametrize("passed", [False, True])
 @pytest.mark.parametrize("report_file", [False, True])
 def test_legacy_experiment_inspection_is_read_only(tmp_path, capsys, passed, report_file):

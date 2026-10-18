@@ -52,7 +52,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Iterator
 from uuid import uuid4
 
-from looplet._backend_contract import MUTABLE_CAPABILITIES, backend_attribute, invoke_backend
+from looplet._backend_contract import (
+    MUTABLE_CAPABILITIES,
+    TerminalLLMError,
+    backend_attribute,
+    invoke_backend,
+)
 from looplet.artifact_compat import (
     begin_artifact_write,
     read_artifact_descriptor,
@@ -1075,10 +1080,11 @@ class _ReplayLLMBackend:
 
     def _next(self, expected_method: str) -> dict[str, Any]:
         if self._index >= len(self._calls):
-            raise RuntimeError(
+            raise TerminalLLMError(
                 f"replay exhausted: loop asked for call #{self._index + 1} "
                 f"but only {len(self._calls)} were recorded. Reduce the "
-                f"loop's max_steps or re-record the trace."
+                f"loop's max_steps or re-record the trace.",
+                termination_reason="replay_exhausted",
             )
         call = self._calls[self._index]
         if call.get("method") != expected_method:

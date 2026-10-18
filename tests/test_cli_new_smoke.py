@@ -324,6 +324,48 @@ def test_copied_experiment_inspects_its_own_records(tmp_path, capsys, legacy_pat
     assert {path: path.read_bytes() for path in before} == before
 
 
+@pytest.mark.parametrize("malformed", [False, True])
+def test_saved_eval_suite_inspection_preserves_case_grades(
+    tmp_path, capsys, monkeypatch, malformed
+):
+    from looplet import EvalCase
+    from looplet.examples import quickstart
+
+    suite = tmp_path / "saved suite"
+    for case_id, owner in (("owner", "fintech-platform"), ("wrong", "other-team")):
+        case = EvalCase(id=case_id, task={}, expected={"service": "payments", "owner": owner})
+        try:
+            quickstart.capture_agent(quickstart.scripted_backend(), suite / case_id, case=case)
+        except AssertionError:
+            assert case_id == "wrong"
+    if malformed:
+        (suite / "wrong" / "evals.json").write_text("{\n")
+    (suite / "unrelated directory").mkdir()
+    before = {path: path.read_bytes() for path in suite.rglob("*") if path.is_file()}
+
+    def unexpected_grader(context):
+        pytest.fail("Inspection must not execute current graders")
+
+    monkeypatch.setattr(quickstart, "eval_owner", unexpected_grader)
+    assert main(["inspect", str(suite), "--json"]) == int(malformed)
+    report = json.loads(capsys.readouterr().out)
+    assert report["kind"] == "eval_suite" and report["grading_source"] == "saved"
+    assert [case["id"] for case in report["cases"]] == ["owner", "wrong"]
+    assert report["cases"][0]["results"][0]["score"] == 1.0
+    assert report["cases"][0]["trace_dir"] == "owner"
+    if malformed:
+        assert "Invalid evals.json" in report["cases"][1]["error"]
+    else:
+        assert report["cases"][1]["completed"] is True
+        assert report["cases"][1]["results"][0]["score"] == 0.0
+    assert main(["inspect", str(suite)]) == int(malformed)
+    human = capsys.readouterr().out
+    assert "Capture-time grades" in human
+    for name in ("owner", "wrong"):
+        assert "looplet inspect " + shlex.quote(str(suite / name)) in human
+    assert {path: path.read_bytes() for path in suite.rglob("*") if path.is_file()} == before
+
+
 @pytest.mark.parametrize("passed", [False, True])
 @pytest.mark.parametrize("report_file", [False, True])
 def test_legacy_experiment_inspection_is_read_only(tmp_path, capsys, passed, report_file):
@@ -347,6 +389,70 @@ def test_legacy_experiment_inspection_is_read_only(tmp_path, capsys, passed, rep
     assert json.loads(report_path.read_text()) == report
     assert list(capture.iterdir()) == []
     assert not (tmp_path / "missing replay").exists()
+
+
+@pytest.mark.parametrize("passed", [False, True])
+@pytest.mark.parametrize("name", ["strict assessment.json", "experiment.json"])
+def test_saved_assessment_inspection_is_portable_and_read_only(tmp_path, capsys, passed, name):
+    from looplet import EvalContext, eval_assess
+
+    def eval_current(context):
+        return passed
+
+    original = tmp_path / "original"
+    capture = original / "capture"
+    capture.mkdir(parents=True)
+    report = eval_assess([eval_current], EvalContext(steps=[]))
+    report.save(original / name, evidence={"original run": capture})
+    copied = tmp_path / "shared assessment"
+    shutil.copytree(original, copied)
+    original.rename(tmp_path / "archived original")
+    target = copied / name
+    before = {path: path.read_bytes() for path in copied.rglob("*") if path.is_file()}
+    assert main(["inspect", str(target)]) == 0
+    human = capsys.readouterr().out
+    assert "Saved assessment:" in human
+    assert "passed" in human if passed else "failed" in human
+    assert "Separate from capture-time grades" in human
+    assert "looplet inspect " + shlex.quote(str(copied / "capture")) in human
+    assert "missing trace" not in human
+    assert main(["inspect", str(target), "--json"]) == 0
+    assert json.loads(capsys.readouterr().out) == json.loads(target.read_text())
+    (copied / "capture").rmdir()
+    assert main(["inspect", str(target)]) == 0
+    assert "missing trace" in capsys.readouterr().out
+    assert {path: path.read_bytes() for path in copied.rglob("*") if path.is_file()} == before
+
+
+@pytest.mark.parametrize(
+    "damage",
+    ["json", "version", "summary", "threshold", "cases", "results", "evidence"],
+)
+def test_saved_assessment_inspection_rejects_malformed_reports(tmp_path, capsys, damage):
+    from looplet import EvalContext, eval_assess
+
+    report_path = tmp_path / "assessment.json"
+    eval_assess([lambda context: True], EvalContext(steps=[])).save(report_path)
+    report = json.loads(report_path.read_text())
+    if damage == "version":
+        report["version"] = True
+    elif damage == "summary":
+        report["assessment"] = []
+    elif damage == "threshold":
+        report["assessment"]["threshold"] = float("nan")
+    elif damage == "cases":
+        report["assessment"]["cases"] = [None]
+    elif damage == "results":
+        report["assessment"]["cases"][0]["results"] = [None]
+    elif damage == "evidence":
+        report["evidence"] = {"run": []}
+    report_path.write_text("{\n" if damage == "json" else json.dumps(report))
+    before = report_path.read_bytes()
+    assert main(["inspect", str(report_path), "--json"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == "" and "invalid saved assessment" in captured.err
+    assert "Traceback" not in captured.err
+    assert report_path.read_bytes() == before
 
 
 @pytest.mark.parametrize(

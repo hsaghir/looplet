@@ -268,7 +268,7 @@ def _render_show(trace_dir: Path, *, json_output: bool = False) -> int:
             )
 
     if eval_record is not None:
-        print("\nsaved evals:")
+        print("\nsaved evals: (capture-time; current graders not rerun)")
         for result in eval_record.results:
             print(f"  {result.pretty()}")
         if not eval_record.results:
@@ -896,10 +896,89 @@ def _render_factory_inspect(
     return 0
 
 
+def _render_eval_assessment(report_path: Path, *, json_output: bool) -> int:
+    try:
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        if not isinstance(report, dict) or report.get("schema") != "looplet.eval-assessment":
+            raise ValueError("expected a looplet.eval-assessment object")
+        if type(report.get("version")) is not int or report["version"] != 1:
+            raise ValueError("unsupported saved assessment version")
+        if not isinstance(report.get("assessed_at"), str):
+            raise ValueError("assessed_at must be a timestamp string")
+        assessment = report.get("assessment")
+        if not isinstance(assessment, dict) or assessment.get("schema") != "looplet.eval-summary":
+            raise ValueError("assessment must contain a looplet.eval-summary")
+        if type(assessment.get("version")) is not int or assessment["version"] not in (1, 2):
+            raise ValueError("unsupported summary version")
+        if not isinstance(assessment.get("passed"), bool) or assessment.get("state") != (
+            "pass" if assessment["passed"] else "fail"
+        ):
+            raise ValueError("assessment requires consistent passed and state fields")
+        threshold = assessment.get("threshold")
+        if (
+            isinstance(threshold, bool)
+            or not isinstance(threshold, (int, float))
+            or not 0.0 <= threshold <= 1.0
+        ):
+            raise ValueError("threshold must be finite and between 0 and 1")
+        cases = assessment.get("cases")
+        if not isinstance(cases, list) or any(
+            not isinstance(case, dict)
+            or not isinstance(case.get("id"), str)
+            or not isinstance(case.get("results"), list)
+            or any(
+                not isinstance(result, dict)
+                or not isinstance(result.get("name"), str)
+                or not isinstance(result.get("state"), str)
+                for result in case["results"]
+            )
+            for case in cases
+        ):
+            raise ValueError("cases must contain named grader results")
+        failures = assessment.get("integrity_failures")
+        if not isinstance(failures, list) or any(not isinstance(error, str) for error in failures):
+            raise ValueError("integrity_failures must contain strings")
+        evidence = report.get("evidence")
+        if not isinstance(evidence, dict) or any(
+            not isinstance(name, str) or not isinstance(trace, str) or not trace
+            for name, trace in evidence.items()
+        ):
+            raise ValueError("evidence must map names to trace paths")
+    except (OSError, ValueError) as error:
+        print(f"error: invalid saved assessment {report_path}: {error}", file=sys.stderr)
+        return 1
+    if json_output:
+        print(json.dumps(report, indent=2))
+        return 0
+    print(f"Saved assessment: {report_path}")
+    print(f"  assessed at: {report['assessed_at']}")
+    print(
+        f"  {'passed' if assessment['passed'] else 'failed'}; threshold: {assessment.get('threshold')}"
+    )
+    print("  Separate from capture-time grades; inspection does not rerun graders.")
+    for case in cases:
+        print(f"\n  {case['id']}:")
+        for result in case["results"]:
+            print(f"    {result['name']}: {result['state']}")
+            if result.get("explanation"):
+                print(f"      {result['explanation']}")
+    for error in failures:
+        print(f"  integrity failure: {error}")
+    for name, trace in evidence.items():
+        trace_dir = report_path.parent / trace
+        if trace_dir.is_dir():
+            print(f"  {name}: looplet inspect {shlex.quote(str(trace_dir))}")
+        else:
+            print(f"  {name}: missing trace: {trace_dir}")
+    return 0
+
+
 def _render_experiment(report_path: Path, *, json_output: bool) -> int:
     stage_names = ("capture", "rescore", "replay")
     try:
         report = json.loads(report_path.read_text(encoding="utf-8"))
+        if isinstance(report, dict) and report.get("schema") == "looplet.eval-assessment":
+            return _render_eval_assessment(report_path, json_output=json_output)
         if not isinstance(report, dict) or not isinstance(report.get("passed"), bool):
             raise ValueError("expected an experiment object with a boolean passed field")
         for key in ("capture_dir", "replay_dir"):
@@ -938,6 +1017,59 @@ def _render_experiment(report_path: Path, *, json_output: bool) -> int:
     if report.get("error"):
         print(f"\nfailure: {report['error']}")
     return 0
+
+
+def _render_eval_suite(path: Path, *, json_output: bool) -> int | None:
+    from looplet.evals import load_eval_run  # noqa: PLC0415
+
+    try:
+        children = sorted(
+            child
+            for child in path.iterdir()
+            if child.is_dir()
+            and any((child / name).is_file() for name in ("evals.json", ".artifact.json.pending"))
+        )
+    except OSError as error:
+        print(f"error: could not list saved eval suite {path}: {error}", file=sys.stderr)
+        return 1
+    if not children:
+        return None
+    cases: list[dict[str, Any]] = []
+    for child in children:
+        case = {"id": child.name, "trace_dir": child.name, "results": [], "error": None}
+        try:
+            saved = load_eval_run(child)
+            case.update(
+                id=saved.case.id if saved.case is not None else child.name,
+                completed=saved.context.completed,
+                stop_reason=saved.context.stop_reason,
+                results=[result.to_dict() for result in saved.results],
+            )
+        except (OSError, ValueError) as error:
+            case["error"] = str(error)
+        cases.append(case)
+    report = {
+        "schema": "looplet.eval-suite",
+        "version": 1,
+        "kind": "eval_suite",
+        "grading_source": "saved",
+        "cases": cases,
+    }
+    if json_output:
+        print(json.dumps(report, indent=2))
+    else:
+        print(f"Saved eval suite: {path}")
+        print("  Capture-time grades; inspection does not run graders or apply a new threshold.")
+        for case in cases:
+            print(f"\n  {case['id']}:")
+            if case["error"] is not None:
+                print(f"    error: {case['error']}")
+            else:
+                print(f"    completed: {case['completed']}; stop reason: {case['stop_reason']}")
+                for result in case["results"]:
+                    print(f"    {result['name']}: score={result['score']} {result['label']}")
+            print(f"    inspect: looplet inspect {shlex.quote(str(path / case['trace_dir']))}")
+    return 1 if any(case["error"] is not None for case in cases) else 0
 
 
 def _render_inspect(
@@ -1017,6 +1149,8 @@ def _render_inspect(
     if mode == "runtime":
         print("error: runtime inspection requires a cartridge or bundle", file=sys.stderr)
         return 1
+    if path.is_file() and path.name != "experiment.json":
+        return _render_eval_assessment(path, json_output=json_output)
     report_path = (
         path if path.is_file() and path.name == "experiment.json" else path / "experiment.json"
     )
@@ -1024,6 +1158,12 @@ def _render_inspect(
         (path / name).is_file() for name in ("trajectory.json", "manifest.jsonl")
     ):
         return _render_experiment(report_path, json_output=json_output)
+    if path.is_dir() and not any(
+        (path / name).is_file() for name in ("trajectory.json", "manifest.jsonl")
+    ):
+        suite_status = _render_eval_suite(path, json_output=json_output)
+        if suite_status is not None:
+            return suite_status
     return _render_show(path, json_output=json_output)
 
 

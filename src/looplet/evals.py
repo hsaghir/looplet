@@ -66,6 +66,7 @@ import inspect
 import json
 import logging
 import math
+import os
 import shlex
 import shutil
 import sys
@@ -278,6 +279,29 @@ class EvalReport:
     def to_dict(self) -> dict[str, Any]:
         """Return an independent JSON-safe assessment snapshot."""
         return deepcopy(self._data)
+
+    def save(self, path: str | Path, *, evidence: dict[str, str | Path] | None = None) -> Path:
+        """Save a separate assessment without replacing reports or saved evidence."""
+        target = Path(path)
+        references = {}
+        for case_id, directory in (evidence or {}).items():
+            directory = Path(directory).resolve()
+            if target.resolve().is_relative_to(directory):
+                raise ValueError("Assessment output must be outside saved evidence directories")
+            references[case_id] = os.path.relpath(directory, target.parent.resolve())
+        payload = {
+            "schema": "looplet.eval-assessment",
+            "version": 1,
+            "assessed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "assessment": self.to_dict(),
+            "evidence": references,
+        }
+        text = json.dumps(payload, indent=2) + "\n"
+        target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        return target
 
     def assert_passed(self) -> None:
         """Raise with failed checks or invalid assessment inputs."""
@@ -3185,12 +3209,15 @@ def eval_cli(args: list[str] | None = None) -> int:
         description=(
             "Define, check, and run evals.\n\n"
             "Start with `looplet eval init evals/`, then `looplet eval check evals/`.\n"
+            "Run Python agents with `looplet eval run --factory my_agent:build "
+            "--evals my_agent.py --cases cases/`.\n"
             "Pass a traces directory below to grade saved agent trajectories."
         ),
         epilog=(
             "subcommands:\n"
             "  init [path]              create a plain Python eval starter\n"
             "  check [path]             validate trusted eval definitions\n"
+            "  run --factory REF       evaluate a Python factory with --evals and --cases\n"
             "  run <cartridge>          run a cartridge against its shipped eval cases\n"
             "  cases ls <path>          list eval cases (one line per case)\n"
             "  cases show <path>        show a single case in full\n"
@@ -3215,6 +3242,7 @@ def eval_cli(args: list[str] | None = None) -> int:
     parser.add_argument("--exclude", nargs="*", default=None, help="Skip evals with these marks")
     parser.add_argument("-v", "--verbose", action="store_true", help="Show per-run details")
     parser.add_argument("--json", action="store_true", help="Emit one machine-readable assessment")
+    parser.add_argument("--out", type=Path, help="Save a separate assessment to a new JSON file")
     parser.add_argument(
         "--assessment-version",
         "--summary-version",
@@ -3286,7 +3314,8 @@ def _run_saved_evaluation(parsed: Namespace, *, output: TextIO) -> int:
 
     if not records:
         print(f"No trajectories found in {traces_root}")
-        return 1
+        if parsed.out is None:
+            return 1
 
     if not parsed.json:
         print(f"Found {len(evaluators)} evals, {len(records)} trajectories\n")
@@ -3302,7 +3331,7 @@ def _run_saved_evaluation(parsed: Namespace, *, output: TextIO) -> int:
     )
     if not selected_names and not manifest:
         print("No evals selected after applying include/exclude filters")
-        if not parsed.json:
+        if not parsed.json and parsed.out is None:
             return 1
 
     assessment = EvalReport.from_records(
@@ -3314,10 +3343,24 @@ def _run_saved_evaluation(parsed: Namespace, *, output: TextIO) -> int:
         + ([] if manifest else ["No graders selected"]),
     )
     report = assessment.to_dict()
+    if parsed.out is not None:
+        try:
+            assessment.save(
+                parsed.out, evidence={directory.name: directory for directory in trace_dirs}
+            )
+        except (OSError, ValueError) as error:
+            print(f"error: could not save assessment to {parsed.out}: {error}", file=sys.stderr)
+            return 1
     if parsed.json:
         print(json.dumps(report, indent=2), file=output)
         return 0 if assessment.passed else 1
 
+    print("New assessment using current graders; capture-time grades are unchanged.", file=output)
+    if parsed.out is not None:
+        print(f"Assessment saved: {parsed.out}", file=output)
+        print(f"Inspect: looplet inspect {shlex.quote(str(parsed.out))}", file=output)
+    else:
+        print("Not saved; use --out NEW_REPORT.json to retain this assessment.", file=output)
     table = _eval_batch_table(records, selected_names)
     by_name: dict[str, list[dict[str, Any]]] = {}
     for case in report["cases"]:

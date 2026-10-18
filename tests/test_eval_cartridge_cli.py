@@ -2394,6 +2394,65 @@ def test_cli_run_fails_on_collector_error(tmp_path: Path, monkeypatch, capsys) -
 # ── CLI preflight / error paths (no live model needed) ───────────
 
 
+@pytest.mark.parametrize("passed", [False, True])
+@pytest.mark.parametrize("json_output", [False, True])
+@pytest.mark.parametrize("version", [1, 2])
+def test_cli_rescore_persists_separate_current_assessment(
+    tmp_path, monkeypatch, capsys, passed, json_output, version
+) -> None:
+    cart = _make_cartridge(tmp_path)
+    suite = tmp_path / "saved suite"
+    run_cartridge_evals(cart, llm=MockLLMBackend(responses=_scripted()), output_dir=suite)
+    before = {path: path.read_bytes() for path in suite.rglob("*") if path.is_file()}
+    (cart / "evals" / "eval_correctness.py").write_text(
+        "def eval_current(ctx):\n    print('grader diagnostic')\n" + f"    return {passed!r}\n"
+    )
+    target = tmp_path / "current assessment.json"
+    arguments = [
+        str(suite),
+        "--evals",
+        str(cart / "evals"),
+        "--out",
+        str(target),
+        "--assessment-version",
+        str(version),
+    ]
+    if json_output:
+        arguments.append("--json")
+    assert eval_cli(arguments) == int(not passed)
+    captured = capsys.readouterr()
+    saved = json.loads(target.read_text())
+    assert saved["assessment"]["passed"] is passed
+    assert saved["assessment"]["version"] == version
+    assert saved["evidence"] == {"make_greeting": "saved suite/make_greeting"}
+    if json_output:
+        assert json.loads(captured.out) == saved["assessment"]
+        assert "grader diagnostic" in captured.err
+    else:
+        assert "New assessment using current graders" in captured.out
+        assert str(target) in captured.out
+    report_before = target.read_bytes()
+    assert eval_cli(arguments) == 1
+    assert "could not save assessment" in capsys.readouterr().err
+    assert target.read_bytes() == report_before
+    assert {path: path.read_bytes() for path in suite.rglob("*") if path.is_file()} == before
+
+
+def test_cli_rescore_retains_all_failed_loads_in_named_assessment(tmp_path, capsys) -> None:
+    cart = _make_cartridge(tmp_path)
+    suite = tmp_path / "saved suite"
+    run_cartridge_evals(cart, llm=MockLLMBackend(responses=_scripted()), output_dir=suite)
+    (suite / "make_greeting" / "trajectory.json").write_text("{\n")
+    target = tmp_path / "invalid assessment.json"
+    assert (
+        eval_cli([str(suite), "--evals", str(cart / "evals"), "--out", str(target), "--json"]) == 1
+    )
+    summary = json.loads(capsys.readouterr().out)
+    assert summary == json.loads(target.read_text())["assessment"]
+    assert summary["passed"] is False and summary["valid"] is False
+    assert any("trajectory load failed" in error for error in summary["integrity_failures"])
+
+
 def test_cli_run_help_advertises_json(capsys) -> None:
     with pytest.raises(SystemExit) as exc:
         eval_cli(["run", "--help"])

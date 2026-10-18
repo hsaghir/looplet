@@ -30,11 +30,14 @@ Use this separate environment for the [factory commands](quickstart.md#use-the-s
 ```bash
 python -m venv .venv-looplet-preview
 source .venv-looplet-preview/bin/activate
-python -m pip install "looplet @ https://github.com/hsaghir/looplet/archive/03d5644095873366dd95620b1d0cc84bbd0ac838.zip"
+python -m pip install "looplet @ https://github.com/hsaghir/looplet/archive/255ac5da2a827373fbe63e31eed1e06dfb815546.zip"
 looplet doctor --no-backend --json
 ```
 
-This non-editable install pins reviewed commit `03d5644` with factory run, eval, and replay support.
+This non-editable install pins commit `255ac5d` with factory commands and the complete one-file starter.
+The starter selects providers, saves replay evidence, and runs repeat-safe experiments.
+Its cases keep tasks and expectations together.
+CLI replay preserves the captured protocol and saved expectations.
 Installation needs network access, but not Git or a model key.
 It does not install a new PyPI release.
 Both builds report version `0.4.1`; the doctor report records their different library source fingerprints.
@@ -121,7 +124,8 @@ dependencies = ["looplet>=0.4.1,<0.5"]
 
 Before version `1.0`, a minor release can change an API incompatibly.
 Read the [changelog](changelog.md) before you change the minor version.
-The examples and safety fixes in these guides are included in `0.4.1`.
+The published Python examples and safety fixes are included in `0.4.1`.
+Preview-only features are marked unreleased.
 
 ## Verify without a provider
 

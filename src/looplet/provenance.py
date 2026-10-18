@@ -47,7 +47,7 @@ import re
 import time
 from contextlib import aclosing, contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Iterator
 from uuid import uuid4
@@ -1291,6 +1291,8 @@ def replay_loop(
     hooks: list[Any] | None = None,
     config: Any | None = None,
     task: dict[str, Any] | None = None,
+    recording_sink: ProvenanceSink | None = None,
+    max_steps: int | None = None,
 ) -> Any:
     """Replay a captured trace through a fresh agent loop.
 
@@ -1316,6 +1318,10 @@ def replay_loop(
             Call-only captures count native tool calls or text responses.
         task: Optional task dict. Defaults to the saved trajectory task,
             or ``{}`` when none was saved. An explicit ``{}`` stays empty.
+        recording_sink: Optional sink for fresh replay prompts, responses,
+            and steps. Flush it after closing the replay.
+        max_steps: Optional positive step limit. Overrides the recorded
+            budget or a supplied configuration without mutating that configuration.
 
     Yields:
         :class:`Step` objects from the replay.
@@ -1338,7 +1344,14 @@ def replay_loop(
 
     yield from composable_loop(
         **_prepare_replay(
-            trace_dir, tools=tools, state=state, hooks=hooks, config=config, task=task
+            trace_dir,
+            tools=tools,
+            state=state,
+            hooks=hooks,
+            config=config,
+            task=task,
+            recording_sink=recording_sink,
+            max_steps=max_steps,
         )
     )
 
@@ -1351,6 +1364,8 @@ async def async_replay_loop(
     hooks: list[Any] | None = None,
     config: Any | None = None,
     task: dict[str, Any] | None = None,
+    recording_sink: ProvenanceSink | None = None,
+    max_steps: int | None = None,
 ) -> Any:
     """Replay captured model responses through the async agent loop.
 
@@ -1367,7 +1382,14 @@ async def async_replay_loop(
     from looplet.async_loop import async_composable_loop  # noqa: PLC0415
 
     arguments = _prepare_replay(
-        trace_dir, tools=tools, state=state, hooks=hooks, config=config, task=task
+        trace_dir,
+        tools=tools,
+        state=state,
+        hooks=hooks,
+        config=config,
+        task=task,
+        recording_sink=recording_sink,
+        max_steps=max_steps,
     )
     async with aclosing(async_composable_loop(**arguments)) as iterator:
         async for step in iterator:
@@ -1382,10 +1404,14 @@ def _prepare_replay(
     hooks: list[Any] | None,
     config: Any | None,
     task: dict[str, Any] | None,
+    recording_sink: ProvenanceSink | None = None,
+    max_steps: int | None = None,
 ) -> dict[str, Any]:
     from looplet.loop import LoopConfig  # noqa: PLC0415
     from looplet.types import DefaultState  # noqa: PLC0415
 
+    if max_steps is not None and (type(max_steps) is not int or max_steps < 1):
+        raise ValueError("max_steps must be a positive integer")
     trace_path = Path(trace_dir)
     if not trace_path.exists():
         raise FileNotFoundError(f"trace directory does not exist: {trace_path}")
@@ -1422,18 +1448,27 @@ def _prepare_replay(
             max_steps=recorded_steps or fallback_steps,
             use_native_tools=calls[0]["method"] == "generate_with_tools",
         )
+    replay_config: LoopConfig = config
+    if max_steps is not None:
+        replay_config = replace(replay_config, max_steps=max_steps)
     if task is None:
         recorded_task = trajectory.get("task")
         if recorded_task is not None and not isinstance(recorded_task, dict):
             raise ValueError("trajectory.task must be an object")
         task = recorded_task if recorded_task is not None else {}
     if state is None:
-        state = DefaultState(max_steps=config.max_steps)
+        state = DefaultState(max_steps=replay_config.max_steps)
+    effective_hooks = list(hooks or ())
+    if recording_sink is not None:
+        backend = recording_sink.wrap_llm(backend)
+        recorder = recording_sink.trajectory_hook()
+        if not any(hook is recorder for hook in effective_hooks):
+            effective_hooks.append(recorder)
     return {
         "llm": backend,
         "tools": tools,
         "task": task,
         "state": state,
-        "hooks": hooks or [],
-        "config": config,
+        "hooks": effective_hooks,
+        "config": replay_config,
     }

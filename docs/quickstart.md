@@ -73,6 +73,9 @@ Read the [complete Python source](https://github.com/hsaghir/looplet/blob/master
 
 ### Make the complete example your own
 
+**Unreleased:** install the [pinned preview](install.md#try-unreleased-factory-commands) in its separate environment before using this starter.
+Published `0.4.1` still supports the packaged companion commands above.
+
 Use one editable file for your tools, capture, rescoring, and replay.
 Export the installed companion once; an existing file is never replaced:
 
@@ -88,24 +91,90 @@ PY
 ```
 
 Edit the tools, `EXPECTED_OWNER`, grader, and fixed responses in that file.
+The default `owner_case()` derives the task from `EXPECTED_OWNER["service"]` and keeps the expected answer separate.
 No other authored Python files are needed.
 Run this complete workflow again whenever you change the agent:
 
 ```bash title="custom_agent_workflow.sh"
-python my_agent.py
-mkdir -p .looplet/experiments
-experiment_root="$(mktemp -d .looplet/experiments/owner.XXXXXXXX)"
-python my_agent.py --capture "$experiment_root/capture"
-looplet inspect "$experiment_root/capture"
-python my_agent.py --rescore "$experiment_root/capture"
-python my_agent.py --replay "$experiment_root/capture"
+python my_agent.py --experiment
 ```
 
-Each invocation creates a new experiment directory and preserves earlier evidence.
-The capture command prints its inspection path.
-Rescoring reads saved evidence; replay executes the current tools again.
-These commands work with released `0.4.1` and the pinned preview.
-Use the [real-model section](#use-the-same-agent-with-a-real-model) for adapter and protocol settings.
+Each invocation creates a new directory under `.looplet/experiments/` and preserves earlier evidence.
+It captures and grades the run, rescores saved evidence, then replays and grades fresh tool results.
+The command prints inspection commands for both records and an `experiment.json` report.
+Use `--out NEW_DIRECTORY` to choose a new experiment directory explicitly.
+Existing directories are refused.
+Experiment directories store evidence; they do not isolate tool effects.
+
+Use one case file when the task needs different wording or expectations:
+
+```json title="owner_case.json"
+{
+    "id": "payments-owner",
+    "task": {"goal": "Look up who owns the payments service."},
+    "expected": {"service": "payments", "owner": "fintech-platform"}
+}
+```
+
+```bash title="one_file_case.sh"
+python my_agent.py --case owner_case.json --experiment
+```
+
+The task goes to the agent; expectations stay with the grader.
+Capture and replay save the same case.
+`--case` applies only to fresh runs; replay and rescoring use their saved case.
+Fixed responses are fixtures; update them when changing the expected tool calls or answers.
+For multiple cases or seed files, use the [factory CLI](#use-the-same-factory-in-the-shell).
+The one-file command refuses seeded cases instead of writing their files into the current directory.
+
+Use the individual operations when diagnosing a run:
+
+```bash
+python my_agent.py --capture ./original-capture
+python my_agent.py --rescore ./original-capture
+python my_agent.py --replay ./original-capture --out ./replayed-capture --max-steps 2
+looplet inspect ./replayed-capture
+```
+
+Choose unused paths for new captures and replays.
+Replay saves fresh prompts, responses, steps, and grades without changing the original record.
+It reuses the saved task and expectations, then runs current tools and graders.
+Without `--max-steps`, replay uses the recorded tool-step count.
+An explicit replay limit is honored.
+A larger limit can exhaust the recorded responses.
+Replay does not call the original provider or restore historical workspace state.
+Use isolated workspaces when tools modify files or contact services.
+
+Use the same saved capture and exported factory from the CLI:
+
+```bash
+looplet replay ./original-capture --factory my_agent:build --evals my_agent.py --workspace ./cli-replay
+```
+
+Choose a new workspace path each time.
+CLI replay preserves the captured protocol, task, and expectations.
+It collects fresh evidence but does not run graders.
+Run its printed `Grade` command to assess the new record.
+Older eval captures without a case file retain their saved expectations too.
+
+#### Use the one-file agent with a real model
+
+Keep the exported file and install the provider extra from the same pinned preview:
+
+```bash title="one_file_live.sh"
+python -m pip install "looplet[openai] @ https://github.com/hsaghir/looplet/archive/255ac5da2a827373fbe63e31eed1e06dfb815546.zip"
+export OPENAI_API_KEY=...
+export OPENAI_MODEL=gpt-4o
+python my_agent.py --backend openai --max-steps 8 --experiment
+```
+
+This command makes real provider calls and may incur charges.
+The same file still owns the tools, factory, graders, and captured-response replay.
+For Anthropic, install the `anthropic` extra from that preview and use `--backend anthropic`.
+Configure its key with the [provider settings](install.md#configure-anthropic).
+Add `--json-text` only for an endpoint that needs JSON-text instead of native tools.
+Replay and rescoring reject provider options because neither calls that provider.
+The file also exports `build(runtime)` for the existing `my_agent:build` factory CLI interface.
 
 The remaining sections explain the pieces incrementally.
 They are optional; the one-file starter does not import their example files.
@@ -347,6 +416,10 @@ Create `cases/owner.json` for the same host-owned expectation:
 ```
 
 Run, evaluate, and replay the same factory without a provider:
+
+The one-file starter above handles routine experiments with `python my_agent.py --experiment`.
+The following manual CLI recipe is optional.
+It uses the incremental `first_loop` example and exposes each operation separately.
 
 ```bash title="python_factory_cli.sh"
 set -eu

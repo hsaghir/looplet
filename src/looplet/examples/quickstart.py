@@ -15,6 +15,7 @@ from looplet import (
     EvalCase,
     EvalContext,
     EvalHook,
+    EvalResult,
     MockLLMBackend,
     OpenAIBackend,
     ProvenanceSink,
@@ -79,12 +80,25 @@ def run_agent(llm, *, hooks=(), use_native_tools=False, max_steps=2, case: EvalC
         )
 
 
-def eval_owner(ctx: EvalContext) -> bool:
-    return (
-        ctx.completed
-        and isinstance(ctx.final_output, dict)
-        and ctx.final_output.get("service") == ctx.expected["service"]
-        and ctx.final_output.get("owner") == ctx.expected["owner"]
+def eval_owner(ctx: EvalContext) -> EvalResult:
+    details = []
+    if not ctx.completed:
+        details.append(f"Run did not complete; stop reason: {ctx.stop_reason}.")
+    if not isinstance(ctx.final_output, dict):
+        details.append("Expected an object result containing service and owner.")
+    else:
+        for field in ("service", "owner"):
+            if field not in ctx.expected:
+                details.append(f"Missing grader expectation: {field}.")
+            elif ctx.final_output.get(field) != ctx.expected[field]:
+                details.append(
+                    f"{field}: expected {ctx.expected[field]!r}, "
+                    f"observed {ctx.final_output.get(field)!r}."
+                )
+    return EvalResult(
+        score=0.0 if details else 1.0,
+        label="fail" if details else "pass",
+        explanation=" ".join(details),
     )
 
 
@@ -175,23 +189,47 @@ def experiment_agent(
     (output_dir / ".gitignore").write_text("*\n", encoding="utf-8")
     capture_dir = output_dir / "capture"
     replay_dir = output_dir / "replay"
-    report = {"capture_dir": str(capture_dir), "replay_dir": str(replay_dir), "passed": False}
+    stages = {"capture": "not_run", "rescore": "not_run", "replay": "not_run"}
+    report = {
+        "capture_dir": None,
+        "replay_dir": None,
+        "passed": False,
+        "stages": stages,
+        "error": None,
+    }
+    stage = "capture"
     try:
+        stages[stage] = "failed"
         capture_agent(
             llm, capture_dir, max_steps=max_steps, use_native_tools=use_native_tools, case=case
         )
+        stages[stage] = "passed"
         print(f"Capture: looplet inspect {quote(str(capture_dir))}")
+        stage = "rescore"
+        stages[stage] = "failed"
         saved = load_eval_run(capture_dir)
         eval_assess([eval_owner], saved.context).assert_passed()
+        stages[stage] = "passed"
+        stage = "replay"
+        stages[stage] = "failed"
         result, replay_trace = replay_agent(capture_dir, output_dir=replay_dir)
+        stages[stage] = "passed"
         print(f"Replay: looplet inspect {quote(str(replay_trace))}")
         report["passed"] = True
+        stage = "complete"
         return result
+    except Exception as error:
+        report["error"] = str(error)
+        raise
     finally:
+        report["stage"] = stage
+        report["capture_dir"] = str(capture_dir) if capture_dir.is_dir() else None
+        report["replay_dir"] = str(replay_dir) if replay_dir.is_dir() else None
         report_path = output_dir / "experiment.json"
         with report_path.open("x", encoding="utf-8") as output:
             json.dump(report, output, indent=2)
             output.write("\n")
+        print(f"Experiment: looplet inspect {quote(str(output_dir))}")
         print(f"Experiment report: {report_path}")
 
 

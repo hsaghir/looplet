@@ -829,7 +829,7 @@ def _render_factory_inspect(
     workspace: Path | None,
     max_steps: int,
 ) -> int:
-    report = {
+    report: dict[str, Any] = {
         "factory": reference,
         "mode": "declaration-only",
         "runtime_validated": False,
@@ -871,9 +871,70 @@ def _render_factory_inspect(
         print(f"Python factory: {reference}")
         if report["runtime_validated"]:
             print("  runtime wiring validated; behavior has not been graded")
+            print("  tools: " + (", ".join(tool["name"] for tool in report["tools"]) or "(none)"))
+            print(f"  completion tool: {report['config']['done_tool']}")
+            print(f"  step limit: {report['config']['max_steps']}")
+            protocol = "native" if report["config"]["use_native_tools"] else "JSON-text"
+            print(f"  tool protocol: {protocol}")
+            print(f"  hooks: {len(report['hooks'])}")
+            arguments = [
+                "looplet",
+                "inspect",
+                reference,
+                "--mode",
+                "runtime",
+                "--json",
+                "--max-steps",
+                str(max_steps),
+            ]
+            if workspace is not None:
+                arguments.extend(["--workspace", str(workspace)])
+            print(f"  full blueprint: {shlex.join(arguments)}")
         else:
             print("  declaration-only; executable wiring has not been validated")
             print(f"  check wiring: looplet inspect {reference} --mode runtime")
+    return 0
+
+
+def _render_experiment(report_path: Path, *, json_output: bool) -> int:
+    stage_names = ("capture", "rescore", "replay")
+    try:
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        if not isinstance(report, dict) or not isinstance(report.get("passed"), bool):
+            raise ValueError("expected an experiment object with a boolean passed field")
+        for key in ("capture_dir", "replay_dir"):
+            if key not in report or (report[key] is not None and not isinstance(report[key], str)):
+                raise ValueError(f"{key} must be a trace path or null")
+        stages = report.get("stages")
+        if stages is None:
+            stages = dict.fromkeys(stage_names, "passed" if report["passed"] else "unknown")
+        elif not isinstance(stages, dict) or any(
+            stages.get(name) not in ("passed", "failed", "not_run") for name in stage_names
+        ):
+            raise ValueError("stages must give capture, rescore and replay status")
+    except (OSError, ValueError) as error:
+        print(f"error: invalid experiment report {report_path}: {error}", file=sys.stderr)
+        return 1
+    if json_output:
+        print(json.dumps(report, indent=2))
+        return 0
+    print(f"Experiment: {report_path.parent}")
+    print(
+        f"  {'passed' if report['passed'] else 'failed'}; stage: {report.get('stage', 'unknown')}"
+    )
+    for name in stage_names:
+        print(f"  {name}: {stages[name]}")
+        trace = report.get(f"{name}_dir")
+        if trace:
+            trace_dir = Path(trace)
+            if not trace_dir.is_absolute():
+                trace_dir = report_path.parent / trace_dir
+            if trace_dir.is_dir():
+                print(f"    inspect: looplet inspect {shlex.quote(str(trace_dir))}")
+            else:
+                print(f"    missing trace: {trace_dir}")
+    if report.get("error"):
+        print(f"\nfailure: {report['error']}")
     return 0
 
 
@@ -954,6 +1015,13 @@ def _render_inspect(
     if mode == "runtime":
         print("error: runtime inspection requires a cartridge or bundle", file=sys.stderr)
         return 1
+    report_path = (
+        path if path.is_file() and path.name == "experiment.json" else path / "experiment.json"
+    )
+    if report_path.is_file() and not any(
+        (path / name).is_file() for name in ("trajectory.json", "manifest.jsonl")
+    ):
+        return _render_experiment(report_path, json_output=json_output)
     return _render_show(path, json_output=json_output)
 
 

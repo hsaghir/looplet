@@ -236,6 +236,21 @@ def test_python_factory_runtime_inspection_validates_once_and_closes(
             assert report["config"]["max_steps"] == 7
         else:
             assert "runtime wiring validated" in captured.out
+            assert "tools: done" in captured.out
+            assert "completion tool: done" in captured.out
+            assert "step limit: 7" in captured.out
+            assert "tool protocol: native" in captured.out
+            assert "hooks: 0" in captured.out
+            command = next(
+                line.split("full blueprint: ", 1)[1]
+                for line in captured.out.splitlines()
+                if "full blueprint: " in line
+            )
+            arguments = shlex.split(command)
+            assert arguments[:2] == ["looplet", "inspect"]
+            assert arguments[arguments.index("--max-steps") + 1] == "7"
+            assert arguments[arguments.index("--workspace") + 1] == str(tmp_path)
+            assert "--json" in arguments
     else:
         assert "missing" in captured.err
 
@@ -270,9 +285,62 @@ def test_python_suffixed_trace_directory_remains_inspectable(tmp_path, capsys):
     trace = tmp_path / "capture.py"
     assert quickstart.main(["--capture", str(trace)]) == 0
     capsys.readouterr()
+    (trace / "experiment.json").write_text("[]\n")
     assert main(["inspect", str(trace), "--json"]) == 0
     report = json.loads(capsys.readouterr().out)
     assert report["trajectory"]["termination_reason"] == "done"
+
+
+@pytest.mark.parametrize("passed", [False, True])
+@pytest.mark.parametrize("report_file", [False, True])
+def test_legacy_experiment_inspection_is_read_only(tmp_path, capsys, passed, report_file):
+    capture = tmp_path / "capture with spaces"
+    capture.mkdir()
+    report = {
+        "capture_dir": "capture with spaces",
+        "replay_dir": "missing replay",
+        "passed": passed,
+    }
+    report_path = tmp_path / "experiment.json"
+    report_path.write_text(json.dumps(report))
+    target = report_path if report_file else tmp_path
+    assert main(["inspect", str(target)]) == 0
+    human = capsys.readouterr().out
+    assert f"capture: {'passed' if passed else 'unknown'}" in human
+    assert "looplet inspect " + shlex.quote(str(capture)) in human
+    assert f"missing trace: {tmp_path / 'missing replay'}" in human
+    assert main(["inspect", str(target), "--json"]) == 0
+    assert json.loads(capsys.readouterr().out) == report
+    assert json.loads(report_path.read_text()) == report
+    assert list(capture.iterdir()) == []
+    assert not (tmp_path / "missing replay").exists()
+
+
+@pytest.mark.parametrize(
+    "report",
+    [
+        [],
+        {},
+        {"passed": "false", "capture_dir": None, "replay_dir": None},
+        {"passed": False, "capture_dir": [], "replay_dir": None},
+        {"passed": False, "capture_dir": None},
+        {"passed": False, "capture_dir": None, "replay_dir": None, "stages": []},
+        {
+            "passed": False,
+            "capture_dir": None,
+            "replay_dir": None,
+            "stages": {"capture": "wrong", "rescore": "not_run", "replay": "not_run"},
+        },
+    ],
+)
+def test_malformed_experiment_inspection_has_concise_error(tmp_path, capsys, report):
+    report_path = tmp_path / "experiment.json"
+    report_path.write_text(json.dumps(report))
+    assert main(["inspect", str(report_path), "--json"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "invalid experiment report" in captured.err
+    assert "Traceback" not in captured.err
 
 
 def test_python_file_inspection_explains_factory_reference(tmp_path, capsys):

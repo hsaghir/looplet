@@ -48,9 +48,7 @@ The example uses fixed model responses.
 It runs without a model service or an API key.
 
 ```python
-from contextlib import closing
-
-from looplet import DefaultState, LoopConfig, MockLLMBackend, RunResult, composable_loop, tools_from
+from looplet import MockLLMBackend, minimal_preset
 
 
 def lookup_owner(service: str) -> dict:
@@ -59,42 +57,35 @@ def lookup_owner(service: str) -> dict:
     return {"service": service, "owner": owners.get(service)}
 
 
+def done(service: str, owner: str, summary: str = "") -> dict:
+    """Finish with the service, its owner, and an optional explanation."""
+    return {"service": service, "owner": owner, "summary": summary}
+
+
 llm = MockLLMBackend([
     '{"tool":"lookup_owner","args":{"service":"payments"}}',
-    '{"tool":"done","args":{"summary":"The payments owner is fintech-platform."}}',
+    '{"tool":"done","args":{"service":"payments","owner":"fintech-platform","summary":"The payments owner is fintech-platform."}}',
 ], cycle=False)
-tools = tools_from([lookup_owner], include_done=True, validate=True)
-state = DefaultState(max_steps=2)
+with minimal_preset(tools=[lookup_owner, done], max_steps=2, validate=True) as run:
+    run.config.use_native_tools = False
+    result = run.run_result(llm, task={"goal": "Find the payments owner, then finish."})
 
-with closing(composable_loop(
-    llm=llm,
-    tools=tools,
-    state=state,
-    config=LoopConfig(max_steps=2, use_native_tools=False),
-    task={"goal": "Find the payments owner, then finish."},
-)) as steps:
-    for step in steps:
-        print(step.tool_call.tool, step.tool_result.data)
-
-print(RunResult.from_state(state).termination_reason)
+print(result.output)
+print(result.completed, result.termination_reason)
 ```
 
 The loop calls `lookup_owner`, then `done`.
 The lookup returns `fintech-platform` as the payments owner.
-The last line prints `done`, the stop reason.
+The last line prints `True done`: completion and its stop reason.
 `cycle=False` rejects unexpected extra model calls instead of repeating the script.
 
 The tool remains a normal Python function.
 You can also call `lookup_owner("payments")` directly.
 
-Each yielded step follows a tool call.
-The tool has already run when your code receives that step.
-Use `break` to stop iteration before requesting another step.
-For native batches, preventing later calls requires the [serial-dispatch fix in `0.4.1`](docs/install.md#unreleased-safety-fixes).
-Published `0.4.0` may execute the batch before yielding its first step.
-With `concurrent_dispatch=True`, the batch runs before its results are yielded.
-`closing` closes the loop and runs its end hooks.
-Your code must close resources that it creates.
+`run_result()` collects the answer and the completed steps.
+The `with` block closes this run and its owned resources.
+Create a fresh preset for each task; do not reuse its mutable state.
+Use [step-by-step iteration](docs/quickstart.md#inspect-steps-or-stop-early) when you need to inspect or stop between calls.
 
 `validate=True` checks top-level argument types, nullability, and enum choices before tools run.
 Nested data and other constraints remain the tool's responsibility.
@@ -104,7 +95,7 @@ This example selects the JSON-text protocol for its fixed responses.
 Real models use native tool calls by default.
 See [Install](docs/install.md) for provider adapters and configuration.
 
-The [Quickstart](docs/quickstart.md) adds a result helper, pytest checks, capture, and replay to this same agent.
+The [Quickstart](docs/quickstart.md) uses this same API and adds pytest checks, capture, and replay.
 For async code, use `async_composable_loop()` with `contextlib.aclosing`.
 
 ## Add only what you need

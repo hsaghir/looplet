@@ -12,33 +12,36 @@ looplet <command> --help
 
 ## Choose an agent format
 
-Python agents do not need packaging: use `python first_loop.py` and `python -m pytest test_first_loop.py`.
-See the [Quickstart](quickstart.md) for both files.
-The `run` command below loads packaged agents, not arbitrary Python scripts.
+Start with the [Quickstart](quickstart.md).
+Keep the agent in Python while you change and test it.
+You do not need to choose a packaging format first.
 
-There are two runnable file formats:
+Use a **cartridge** when you want to store and distribute the agent as a directory.
+A cartridge stores the agent's prompts, tools, hooks, and configuration in a reviewable directory.
+The loop stays the same.
 
-- a **cartridge** is a reviewable agent harness containing prompts, tools,
-  hooks, resources, and optional evals;
-- a **skill bundle** is an executable packaged skill with a Python entrypoint.
+| Workflow | Python, including unreleased factory commands | Optional cartridge |
+| --- | --- | --- |
+| Create | Write Python | `looplet new` or `preset_to_cartridge()` |
+| Run | `python first_loop.py` or `looplet run module:factory` | `looplet run` |
+| Inspect | Read Python and captured steps | `looplet inspect` |
+| Replay captured responses | `replay_loop()` or `replay --factory module:factory` | `looplet replay` |
+| Run behavioral tests | `python -m pytest` or `eval run --factory module:factory --evals evals/` | `looplet eval run` |
 
-Choose a cartridge when you need shell replay or shipped CLI eval cases.
-Choose a skill bundle when you need its Python packaging and entrypoint.
-Both use the same underlying loop, but their shell workflows differ:
+**Unreleased:** shell run, eval, and replay accept trusted Python factories without packaging.
+Published `0.4.1` still requires a cartridge or bundle for shell execution.
+The [copyable Python workflow](quickstart.md#use-the-same-factory-in-the-shell) uses the same factory across all three commands.
+`run` accepts `module:factory`, not arbitrary Python scripts.
+The callable accepts `SkillRuntime` and returns a fresh `AgentPreset`.
+Use `runtime.workspace` for working files; `--project-root` does not change the Python import directory.
+The CLI imports from the current directory and installed Python environment.
+Importing and running factories executes trusted Python, not a sandbox.
+Existing Python factory integrations can use [skill bundles](#work-with-skill-bundles).
+They are an advanced packaging option, not a required step after the Quickstart.
 
-| Workflow | Python agent | Cartridge | Skill bundle |
-| --- | --- | --- | --- |
-| Create | Write Python | `looplet new` | Write a bundle entrypoint |
-| Run | `python first_loop.py` | `looplet run` | `looplet run` |
-| Inspect declarations | Read Python | `looplet inspect` | `looplet inspect` |
-| Replay captured responses | `replay_loop()` in Python | `looplet replay` | [`replay_loop()` in Python](#replay-skill-bundles) |
-| Run behavioral tests | `python -m pytest` | `looplet eval run` | `python -m pytest` |
-
-Bundle replay requires Python; `eval run` requires cartridge cases.
-These are format limits, not extra flags to enable on a bundle.
-
-Use `new`, `run`, `inspect`, and `eval`; add `replay` when comparing captured responses. `run` detects either
-format; shell `replay` and `eval run` accept cartridges only.
+Use `new`, `run`, `inspect`, and `eval`; add `replay` when comparing captured responses.
+`run` detects packaged formats or a Python factory reference.
+Use `replay --factory` and `eval run --factory` for Python, or `--cartridge` and a cartridge path for packaged agents.
 `inspect` defaults to cartridge declarations, bundle metadata, or a saved
 trace without importing authored agent code. The formats remain distinct.
 Default help shows the main workflow. `--help-all` reveals advanced
@@ -198,7 +201,9 @@ looplet replay eval-runs/run-001/hello --cartridge ./agent.cartridge \
 ```
 
 Saved cases supply agent-visible task data and seed files; grader-only expectations are not forwarded to the agent.
-Replay reruns the selected cartridge's collectors against the new workspace.
+Cartridge replay reruns its collectors against the new workspace.
+Factory replay accepts `--evals <Python file or directory>` to collect fresh evidence for saved eval cases.
+Raw captures support factory replay without `--evals`; use `eval run --factory` to capture cases with grader expectations.
 It saves a new eval record with those fresh artifacts, the saved case, and grader-only expectations.
 It does not copy old collected artifacts or run graders automatically.
 Run the printed `Grade:` command to assess the new record with the cartridge's graders.
@@ -309,11 +314,19 @@ looplet run ./agent.cartridge \
   --require-completed
 ```
 
-Use `--require-completed` in automation so an incomplete task returns nonzero.
-Without this flag, exit code `0` means the loop ran, not that the task completed.
-Budget exhaustion and hook stops can return `0` with `completed: false`.
-Tool errors can also exhaust the budget without accepted completion.
-Accepted completion still does not prove correctness; use an outcome grader for that.
+**Unreleased source behavior:** `run` and `replay` return nonzero unless completion is accepted.
+This also applies to their explicit format aliases.
+Use `--allow-incomplete` only when a budget or hook stop is an acceptable result.
+The flag preserves the earlier command-success policy; fatal execution failures still return nonzero.
+`--require-completed` remains supported and cannot be combined with `--allow-incomplete`.
+Published `0.4.1` still needs `--require-completed` for this behavior.
+Accepted completion does not prove correctness; use an outcome grader for that.
+
+**Unreleased:** human output distinguishes `completed; not graded` from runs with recorded eval-hook assessments.
+JSON adds `grading_status`: `not_graded`, `passed`, or `failed`.
+The field reflects actual eval-hook results and never changes the completion exit policy.
+Use `eval run` or `eval <trace-dir>` to gate on correctness.
+Definition checks report `behavior_run: false` and `grading_status: not_graded`.
 
 Since `0.4.1`, `--max-steps` overrides the charged-step budget for `DefaultState`.
 Successful nonterminal free calls do not consume it; total tool and model calls can exceed this value.
@@ -362,6 +375,7 @@ looplet run ./agent.cartridge "Inspect the change" --require-completed --json > 
 It works in human and JSON modes, including the explicit cartridge and bundle commands.
 It checks completion, not correctness; use an outcome grader for that.
 The flag is included in Looplet `0.4.0`.
+Unreleased source builds use this policy by default; `--allow-incomplete` opts out.
 
 Since `0.4.1`, loops reject failed terminal dispatches, including invalid `done` arguments.
 Published `0.4.0` can falsely report those calls as completed, even with `--require-completed`.
@@ -388,12 +402,13 @@ Traces may
 contain full prompts, responses, and tool results; inspect them before sharing.
 `--parent-trace` reads the parent's `run_id` and records it as
 `metadata.parent_run_id`; it does not resume, replay, or orchestrate that run.
-`--json` suppresses human progress output and emits `completed`,
+`--json` suppresses human progress output and emits `completed`, `grading_status`,
 `termination_reason`, `steps`, `duration_ms`, the terminal `result`, and
 `trace_dir` (`null` with `--no-trace`). `completed` is true only when the agent
 reaches its configured terminal tool and the completion is accepted; budget
-and hook stops remain successful CLI executions but are
-reported as incomplete unless `--require-completed` is set.
+and hook stops are reported as incomplete.
+Unreleased source builds return nonzero for these stops unless `--allow-incomplete` is set.
+Published `0.4.1` requires `--require-completed` to make these stops return nonzero.
 Human output likewise prints `stopped (<reason>)`
 instead of `done` for incomplete runs. Fatal execution failures, including
 provider errors, return a non-zero exit code in both human and JSON modes.
@@ -440,7 +455,10 @@ python -m pytest test_first_loop.py
 Run the generated test with `python -m pytest evals/`.
 Omit `--python` to create definitions only.
 Use `load_evals("evals")` in your Python test to load those definitions.
-`eval run evals/` is not the next command: the runner below requires a cartridge.
+For unreleased builds, use `looplet eval run --factory module:factory --evals evals/` to execute those cases.
+Use `--cases <path>` when the definitions are a standalone file or cases live elsewhere.
+Both factory and cartridge eval runners accept repeatable `--scripted-response` flags for keyless checks.
+Published `0.4.1` uses Python tests or the cartridge runner below.
 
 ### Run shipped cartridge cases
 
@@ -542,6 +560,20 @@ protected expectations in the top-level `expected` object.
 
 ## Work with skill bundles
 
+Use this section only when an existing integration needs a packaged Python factory or skill entrypoint.
+Otherwise, keep the Python factory workflow above.
+
+| Workflow | Cartridge | Skill bundle |
+| --- | --- | --- |
+| Run | `looplet run` | `looplet run` |
+| Inspect | `looplet inspect` | `looplet inspect` |
+| Replay | `looplet replay` | [`replay_loop()` in Python](#replay-skill-bundles) |
+| Test behavior | `looplet eval run` | `python -m pytest` |
+
+Bundle replay requires Python.
+Factory-backed bundles can use their original factory with the unreleased shell workflow above.
+These are format limits, not extra flags to enable on a bundle.
+
 ### Bundle-specific execution
 
 Run a packaged skill bundle. Provenance capture is enabled by default:
@@ -564,11 +596,13 @@ Run help groups bundle-only `--scripted` and `--no-tests` separately from cartri
 For cartridges, use repeatable `--scripted-response` with explicit responses instead of `--scripted`.
 
 A bundle's custom `run(...) -> int` and renderers still own human execution
-when provided. With `--json` or `--require-completed`, the CLI instead executes the required
+when provided and completion is not required. With `--json` or `--require-completed`, the CLI executes the required
 `build(runtime) -> AgentPreset` contract and emits the shared completion
 result in the selected output format.
 This lets the CLI observe completion instead of trusting a custom callback's exit code.
-Without those flags, custom runners remain responsible for their own status and effects.
+Unreleased source builds use that shared runner by default.
+Use `--allow-incomplete` to opt into a custom runner's human presentation and exit policy.
+Custom runners remain responsible for their own status and effects.
 
 ### Bundle inspection and packaging
 
@@ -600,11 +634,16 @@ build, and resource cleanup go to stderr and are not redacted.
 
 Packaging requires `--name` and `--description`; repeat `--tag` to attach
 searchable tags. Validate and run the output before distributing it.
+Packaging writes a wrapper, not a copy of the factory module or its dependencies.
+Make the original module available on the receiving host.
+**Unreleased source behavior:** packaging logs that requirement and stores the module in the bundle's `python_imports` metadata.
+Use `looplet inspect <bundle>` to read the declarations before runtime validation.
 
 ## Automation conventions
 
-- Exit code 0 means command success, not agent completion or a correct answer.
-- Use `run --require-completed` to require accepted completion, or check `completed=true` in JSON output.
+- Unreleased `run` and `replay` return zero only after accepted completion, unless `--allow-incomplete` is set.
+- Published `0.4.1` needs `--require-completed`; other commands have their own success rules.
+- Accepted completion does not establish correctness; use a passing eval.
 - Use a passing eval to check correctness.
 - Use `--json` only on commands that advertise it; do not parse human output.
 - Pin the Looplet minor version when a script depends on output fields.

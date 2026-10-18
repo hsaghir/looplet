@@ -136,7 +136,7 @@ def test_export_bundle_to_library_code_documents_local_wrapper(tmp_path):
     assert "absolute path" in text
 
 
-def test_package_agent_factory_as_bundle_builds_equivalent_preset(tmp_path):
+def test_package_agent_factory_as_bundle_builds_equivalent_preset(tmp_path, caplog):
     runtime = SkillRuntime(workspace=tmp_path / "workspace", max_steps=8)
     packaged = tmp_path / "coder-packaged"
 
@@ -153,6 +153,12 @@ def test_package_agent_factory_as_bundle_builds_equivalent_preset(tmp_path):
 
     comparison = compare_blueprints(original, repackaged, ignore_metadata=True)
     assert comparison.ok, comparison.differences
+    assert load_skill_bundle(packaged).skill.metadata["python_imports"] == [
+        "tests.fixtures.coder_skill_bundle.looplet"
+    ]
+    assert "not self-contained" in caplog.text
+    assert "tests.fixtures.coder_skill_bundle.looplet" in caplog.text
+    assert "dependencies are not copied" in caplog.text
 
 
 def test_wrap_instruction_only_claude_skill_as_runnable_bundle(tmp_path):

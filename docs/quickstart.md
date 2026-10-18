@@ -4,7 +4,8 @@ Run one Python agent, get its answer, test it, and replay its saved model respon
 You need Python 3.11 or newer.
 You do not need a model key until the optional real-model section.
 Start with Python functions.
-Cartridges and bundles are optional packaging formats, not prerequisites.
+Keep the agent in Python while you change and test it.
+Use a Python factory for shell commands; package it only when you need a directory artifact.
 
 ## 1. Install Looplet
 
@@ -40,6 +41,11 @@ Use a new trace directory to capture the same run:
 python -m looplet.examples.quickstart --capture ./quickstart-trace
 looplet inspect ./quickstart-trace
 ```
+
+**Unreleased source behavior:** failed captures print their stop reason and an inspection command before returning nonzero.
+The saved trace remains available for inspection.
+For `budget_exhausted`, increase `--max-steps` and choose a new capture directory for the next run.
+Published `0.4.1` saves this evidence but may print only the failed grader name.
 
 Rescore saved evidence without running tools or calling a model:
 
@@ -198,6 +204,10 @@ from looplet import EvalContext, eval_assess
 EXPECTED_OWNER = {"service": "payments", "owner": "fintech-platform"}
 
 
+def build(runtime):
+    return minimal_preset(tools=[lookup_owner, done], max_steps=runtime.max_steps, validate=True)
+
+
 def eval_owner(ctx):
     return (
         ctx.completed
@@ -272,10 +282,57 @@ looplet eval check first_loop.py --json
 ```
 
 Run Python agents with `python first_loop.py`; run their tests with pytest.
-`looplet run` loads cartridges or bundles; `looplet eval run` executes cartridge eval cases.
 `eval init --python evals/` creates definitions and a runnable pytest example.
 Run it with `python -m pytest evals/`.
 Omit `--python` to create definitions only.
+
+### Use the same factory in the shell
+
+**Unreleased:** the following factory commands are not in published `0.4.1`.
+The Python and pytest commands above work with that release.
+
+`build(runtime)` returns a fresh preset with the same tools.
+The CLI supplies `SkillRuntime` and closes the preset after each run.
+Factories with file effects should use `runtime.workspace` for their working files.
+Factory imports use the current directory and installed Python environment.
+These commands execute trusted Python; they do not provide an operating-system sandbox.
+No cartridge or bundle is required.
+
+Create `cases/owner.json` for the same host-owned expectation:
+
+```json title="cases/owner.json"
+{
+    "id": "owner",
+    "task": {"goal": "Find the payments owner, then finish."},
+    "expected": {"service": "payments", "owner": "fintech-platform"}
+}
+```
+
+Run, evaluate, and replay the same factory without a provider:
+
+```bash title="python_factory_cli.sh"
+looplet run first_loop:build "Find the payments owner, then finish." \
+    --scripted-response '{"tool":"lookup_owner","args":{"service":"payments"}}' \
+    --scripted-response '{"tool":"done","args":{"service":"payments","owner":"fintech-platform"}}' \
+    --max-steps 2 --json
+
+looplet eval run --factory first_loop:build --evals first_loop.py \
+    --cases cases/owner.json --out shell-evals --max-steps 2 \
+    --scripted-response '{"tool":"lookup_owner","args":{"service":"payments"}}' \
+    --scripted-response '{"tool":"done","args":{"service":"payments","owner":"fintech-platform"}}' \
+    --json
+
+looplet replay shell-evals/owner --factory first_loop:build --evals first_loop.py \
+    --workspace replay-workspace --json
+```
+
+`run` reports accepted completion; without eval hooks, its `grading_status` is `not_graded`.
+`eval check` reports definition validity and `behavior_run: false`; it does not grade an answer.
+`eval run` executes the graders and gates on their assessment.
+Replay reuses model responses and reruns tools and collectors in the new workspace.
+It does not rerun graders; grade its new trace with `looplet eval <trace-dir> --evals first_loop.py`.
+Replay is not checkpoint restoration or deterministic execution.
+Keep the original module and dependencies available; these commands do not copy them.
 
 ## 4. Capture the same agent
 
@@ -284,6 +341,8 @@ Importing `first_loop` loads its functions without running its main block.
 Capture records model calls and tool steps; it does not change the agent's tools or task.
 
 ```python title="first_loop_capture.py"
+from shlex import quote
+
 from looplet import EvalHook, ProvenanceSink, save_eval_run
 
 from first_loop import EXPECTED_OWNER, eval_owner, run_agent, scripted_backend
@@ -301,7 +360,13 @@ def capture_agent(llm):
         trace_dir = sink.flush()
 
     save_eval_run(trace_dir, recorder=sink.trajectory_hook(), eval_hook=grading)
-    grading.assessment().assert_passed()
+    try:
+        grading.assessment().assert_passed()
+    except AssertionError as error:
+        raise AssertionError(
+            f"{error}\nStop reason: {captured_result.termination_reason}\n"
+            f"Inspect with: looplet inspect {quote(str(trace_dir))}"
+        ) from error
     return captured_result, trace_dir
 
 
@@ -309,7 +374,7 @@ if __name__ == "__main__":
     captured_backend = scripted_backend()
     captured_result, trace_dir = capture_agent(captured_backend)
     print(captured_result.output)
-    print(f"Inspect with: looplet inspect {trace_dir}")
+    print(f"Inspect with: looplet inspect {quote(str(trace_dir))}")
     print(f"Grade with: looplet eval {trace_dir} --evals first_loop.py --json")
     print(f"Rescore with: python first_loop_rescore.py {trace_dir}")
     print(f"Replay with: python first_loop_replay.py {trace_dir}")
@@ -453,7 +518,12 @@ See the [Python API](api.md#execution-core) for that form.
 
 ## Choose the next guide
 
-You do not need all of these features to use the loop.
+Keep running this agent with Python and testing it with pytest.
+Use the [same Python factory](#use-the-same-factory-in-the-shell) for shell run, eval, and replay.
+Choose [cartridges](cartridge.md) for a reviewable agent directory.
+You do not need a skill bundle for that transition.
+See the [CLI guide](cli.md#choose-an-agent-format) for the Python factory workflow.
+Add the other features below only when your agent needs them.
 
 | Goal | Guide |
 | --- | --- |

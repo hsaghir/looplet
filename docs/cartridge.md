@@ -24,7 +24,7 @@ system. For a supported preset, the conversion looks like this:
 from looplet import preset_to_cartridge, cartridge_to_preset
 
 # Looplet preset → editable directory on disk
-preset_to_cartridge(my_preset, "agent.cartridge")
+exported = preset_to_cartridge(my_preset, "agent.cartridge", strict=True)
 
 # … edit prompts/system.md, tools/*/tool.yaml, hooks/*/config.yaml, … …
 
@@ -33,6 +33,17 @@ with cartridge_to_preset("agent.cartridge") as preset:
   for step in preset.run(llm, task={"goal": "Complete the task"}):
     print(step.pretty())
 ```
+
+  An exported cartridge is not necessarily self-contained.
+  Importable functions keep imports of their original modules.
+  Make those modules and their dependencies available on the receiving host.
+
+  **Unreleased source behavior:** export logs detected external Python imports and stores them in `exported.metadata["python_imports"]`.
+  The inventory also appears in the saved manifest and declaration inspection.
+  It does not execute authored files or inspect external symlink targets.
+  It is a static import list, not a complete dependency lockfile.
+  Missing imports are not serialization loss, so this list is separate from `serialization_warnings`.
+  Run `looplet inspect agent.cartridge --mode runtime` on the receiving host before using the exported agent.
 
 `preset.run()` binds the run envelope and host model gateway before delegating
 to the core loop. The context closes preset-owned resources, even on failure.
@@ -383,6 +394,9 @@ If installation fails, the previous destination is restored.
 | Hooks with an opt-in `to_config(self) -> dict` method | `hooks/NN_<ClassName>/{hook.py, config.yaml}`; class source is preserved, kwargs come from `to_config()` |
 | Hooks whose constructor takes no kwargs | Same as above; `kwargs: {}` |
 | `StaticMemorySource` instances | One markdown file per source under `memory/` |
+
+`strict=True` rejects unsupported conversion; it does not promise a standalone distribution.
+Check required modules and run the exported agent's tests on its receiving host.
 
 ### What does not round-trip (and what happens)
 

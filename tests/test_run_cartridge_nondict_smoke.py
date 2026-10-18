@@ -267,7 +267,7 @@ def test_run_cartridge_json_reports_budget_exhaustion(monkeypatch, capsys):
 
     rc = factory_commands.cmd_run_workspace(_args(max_steps=1, no_trace=True, json_output=True))
 
-    assert rc == 0
+    assert rc == 1
     payload = json.loads(capsys.readouterr().out)
     assert payload["completed"] is False
     assert payload["termination_reason"] == "budget_exhausted"

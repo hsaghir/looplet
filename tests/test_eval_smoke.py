@@ -98,7 +98,8 @@ def test_eval_starter_refuses_existing_definitions_without_partial_writes(tmp_pa
     assert not (tmp_path / "collect_outcome.py").exists()
 
 
-def test_eval_check_never_calls_graders_collectors_or_models(tmp_path, capsys):
+@pytest.mark.parametrize("json_output", [False, True])
+def test_eval_check_never_calls_graders_collectors_or_models(tmp_path, capsys, json_output):
     assert eval_cli(["init", str(tmp_path)]) == 0
     source = tmp_path / "eval_outcome.py"
     source.write_text(
@@ -113,8 +114,19 @@ def test_eval_check_never_calls_graders_collectors_or_models(tmp_path, capsys):
         )
     )
     capsys.readouterr()
-    assert eval_cli(["check", str(tmp_path), "--json"]) == 0
-    assert json.loads(capsys.readouterr().out)["valid"]
+    arguments = ["check", str(tmp_path)]
+    if json_output:
+        arguments.append("--json")
+    assert eval_cli(arguments) == 0
+    output = capsys.readouterr().out
+    if json_output:
+        report = json.loads(output)
+        assert report["valid"]
+        assert report["behavior_run"] is False
+        assert report["grading_status"] == "not_graded"
+    else:
+        assert "VALID eval definitions" in output
+        assert "behavior not run" in output
 
 
 @pytest.mark.parametrize("filename", ["eval_outcome.py", "collect_outcome.py"])

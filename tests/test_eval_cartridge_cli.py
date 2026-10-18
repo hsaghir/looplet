@@ -13,7 +13,9 @@ from __future__ import annotations
 import json
 import os
 import stat
+import sys
 from pathlib import Path
+from types import ModuleType
 from unittest.mock import patch
 
 import pytest
@@ -165,6 +167,208 @@ def _make_cartridge(root: Path, *, with_evals: bool = True) -> Path:
     return cart
 
 
+@pytest.mark.parametrize("passed", [False, True])
+@pytest.mark.parametrize("save", [False, True])
+def test_python_factory_cli_evaluates_cases_without_packaging(
+    tmp_path, monkeypatch, capsys, passed, save
+):
+    from looplet import minimal_preset
+
+    builds = []
+    closed = []
+
+    class Resource:
+        def close(self):
+            closed.append(True)
+
+    def build(runtime):
+        workspace = Path(runtime.workspace)
+        assert (workspace / "input.txt").read_text() == "seeded"
+        builds.append(workspace)
+
+        def done(summary: str):
+            (workspace / "answer.txt").write_text(summary)
+            return {"summary": summary}
+
+        preset = minimal_preset(tools=[done], max_steps=runtime.max_steps, validate=True)
+        preset.owned_resources.append(Resource())
+        return preset
+
+    module = ModuleType("test_eval_python_factory")
+    module.build = build
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    definitions = tmp_path / "evals"
+    (definitions / "cases").mkdir(parents=True)
+    (definitions / "eval_answer.py").write_text(
+        "from pathlib import Path\n\n"
+        "def collect_answer(state, runtime):\n"
+        "    assert 'expected' not in state.task\n"
+        "    return {'written': (Path(runtime['project_root']) / 'answer.txt').exists()}\n\n"
+        "def eval_answer(ctx):\n"
+        "    return ctx.completed and ctx.artifacts['written'] == ctx.expected['written']\n"
+    )
+    for case_id in ("first", "second"):
+        (definitions / "cases" / f"{case_id}.json").write_text(
+            json.dumps(
+                {
+                    "id": case_id,
+                    "task": {"goal": "finish", "files": {"input.txt": "seeded"}},
+                    "expected": {"written": passed},
+                }
+            )
+        )
+    arguments = [
+        "run",
+        "--factory",
+        f"{module.__name__}:build",
+        "--evals",
+        str(definitions),
+        "--max-steps",
+        "1",
+        "--json",
+        "--scripted-response",
+        '{"tool":"done","args":{"summary":"finished"}}',
+        "--scripted-response",
+        '{"tool":"done","args":{"summary":"finished"}}',
+    ]
+    if save:
+        arguments.extend(["--out", str(tmp_path / "saved runs")])
+    else:
+        arguments.append("--no-save")
+
+    assert eval_cli(arguments) == int(not passed)
+    assert isinstance(json.loads(capsys.readouterr().out), dict)
+    assert len(builds) == 2 and len(set(builds)) == 2 and len(closed) == 2
+    if save:
+        for case_id in ("first", "second"):
+            record = load_eval_run(tmp_path / "saved runs" / case_id)
+            assert record.context.completed
+            assert record.context.expected == {"written": passed}
+            assert record.context.artifacts["written"] is True
+        from looplet.__main__ import main
+
+        source = tmp_path / "saved runs" / "first"
+        original = {
+            path.relative_to(source): path.read_bytes()
+            for path in source.rglob("*")
+            if path.is_file()
+        }
+        assert (
+            main(
+                [
+                    "replay",
+                    str(source),
+                    "--factory",
+                    f"{module.__name__}:build",
+                    "--evals",
+                    str(definitions),
+                    "--workspace",
+                    str(tmp_path / "replayed case"),
+                    "--json",
+                ]
+            )
+            == 0
+        )
+        replay = json.loads(capsys.readouterr().out)
+        assert replay["grading_status"] == "not_graded"
+        replayed = load_eval_run(replay["trace_dir"])
+        assert replayed.context.artifacts["written"] is True
+        assert replayed.context.expected == {"written": passed}
+        assert len(builds) == 3 and len(closed) == 3
+        assert eval_cli([replay["trace_dir"], "--evals", str(definitions), "--json"]) == int(
+            not passed
+        )
+        assert isinstance(json.loads(capsys.readouterr().out), dict)
+        assert {
+            path.relative_to(source): path.read_bytes()
+            for path in source.rglob("*")
+            if path.is_file()
+        } == original
+    else:
+        assert all(not workspace.exists() for workspace in builds)
+
+
+@pytest.mark.parametrize(
+    "problem, message",
+    [
+        ("bad-reference", "module:factory syntax"),
+        ("missing-definitions", "requires --evals"),
+        ("missing-cases", "--cases <JSON file or directory>"),
+        ("missing-cases-path", "No such case path"),
+    ],
+)
+def test_python_factory_eval_preflight_has_actionable_errors(
+    tmp_path, monkeypatch, capsys, problem, message
+):
+    definitions = tmp_path / "eval_answer.py"
+    definitions.write_text("def eval_answer(ctx):\n    return True\n")
+    arguments = ["run", "--factory", "example:build", "--evals", str(definitions)]
+    if problem == "bad-reference":
+        arguments[2] = "example.py"
+    elif problem == "missing-definitions":
+        arguments = arguments[:3]
+    elif problem == "missing-cases-path":
+        arguments.extend(["--cases", str(tmp_path / "missing cases")])
+    monkeypatch.setattr(
+        "looplet.cli.build_cli_backend",
+        lambda **kwargs: pytest.fail("preflight constructed a backend"),
+    )
+
+    assert eval_cli(arguments) == 1
+    output = capsys.readouterr()
+    assert message in output.err
+    assert "Traceback" not in output.err
+    assert not (tmp_path / ".looplet").exists()
+
+
+def test_python_factory_eval_build_failure_cleans_all_unsaved_cases(tmp_path, monkeypatch, capsys):
+    from looplet import minimal_preset
+
+    workspaces = []
+
+    def build(runtime):
+        workspaces.append(Path(runtime.workspace))
+        if len(workspaces) == 2:
+            raise RuntimeError("factory could not connect")
+
+        def done(summary: str):
+            return {"summary": summary}
+
+        return minimal_preset(tools=[done], max_steps=runtime.max_steps, validate=True)
+
+    module = ModuleType("test_eval_factory_failure")
+    module.build = build
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    definitions = tmp_path / "evals"
+    (definitions / "cases").mkdir(parents=True)
+    (definitions / "eval_done.py").write_text("def eval_done(ctx):\n    return ctx.completed\n")
+    for case_id in ("first", "second"):
+        (definitions / "cases" / f"{case_id}.json").write_text(
+            json.dumps({"id": case_id, "task": {"goal": "finish"}})
+        )
+
+    assert (
+        eval_cli(
+            [
+                "run",
+                "--factory",
+                f"{module.__name__}:build",
+                "--evals",
+                str(definitions),
+                "--no-save",
+                "--json",
+                "--scripted-response",
+                '{"tool":"done","args":{"summary":"finished"}}',
+            ]
+        )
+        == 1
+    )
+    output = capsys.readouterr()
+    assert "factory could not connect" in output.err
+    assert "Traceback" not in output.err
+    assert len(workspaces) == 2 and all(not workspace.exists() for workspace in workspaces)
+
+
 @pytest.mark.parametrize("path_kind", ["directory", "file"])
 def test_standalone_python_eval_has_actionable_run_guidance(
     tmp_path, monkeypatch, capsys, path_kind
@@ -183,7 +387,7 @@ def test_standalone_python_eval_has_actionable_run_guidance(
     output = capsys.readouterr()
     assert not output.out
     assert "standalone Python eval directory" in output.err
-    assert "pytest" in output.err and "load_evals()" in output.err
+    assert "pytest" in output.err and "--factory module:factory --evals" in output.err
     assert "eval check" in output.err
     assert "evals/evals/cases" not in output.err
 
@@ -1621,7 +1825,7 @@ def test_cli_replay_restores_task_and_bounds_default_budget(
         ]
         for response in responses:
             arguments.extend(["--scripted-response", response])
-        assert main(arguments) == 0
+        assert main(arguments) == int(original_budget == 1)
     snapshot = {
         path.relative_to(original): path.read_bytes()
         for path in original.rglob("*")

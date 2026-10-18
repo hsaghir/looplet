@@ -158,10 +158,10 @@ class TestSkillBundles:
         trajectory = json.loads((Path(payload["trace_dir"]) / "trajectory.json").read_text())
         assert trajectory["task"] == {"description": "exact task\nsecond line\n"}
 
-    @pytest.mark.parametrize("require_completed", [False, True])
+    @pytest.mark.parametrize("policy", [None, "--require-completed", "--allow-incomplete"])
     @pytest.mark.parametrize("json_output", [False, True])
     def test_cli_bundle_reports_budget_stop_without_trace(
-        self, tmp_path, monkeypatch, capsys, require_completed, json_output
+        self, tmp_path, monkeypatch, capsys, policy, json_output
     ):
         from types import ModuleType
 
@@ -182,7 +182,7 @@ class TestSkillBundles:
             build=lambda runtime: preset,
             module=ModuleType("build_only_bundle"),
         )
-        if require_completed:
+        if policy != "--allow-incomplete":
             bundle.module.run = lambda **kwargs: pytest.fail("completion requires observed state")
         monkeypatch.setattr("looplet.bundles.load_skill_bundle", lambda *_args: bundle)
         assert cli_main(
@@ -195,12 +195,12 @@ class TestSkillBundles:
                 "--max-steps",
                 "1",
                 *(["--json"] if json_output else []),
-                *(["--require-completed"] if require_completed else []),
+                *([policy] if policy is not None else []),
                 "--no-trace",
                 "--scripted-response",
                 '{"tool":"work","args":{}}',
             ]
-        ) == int(require_completed)
+        ) == int(policy != "--allow-incomplete")
         output = capsys.readouterr().out
         if json_output:
             payload = json.loads(output)
@@ -352,7 +352,7 @@ class TestSkillBundles:
                     '{"tool":"done","args":{"summary":"not accepted"}}',
                 ]
             )
-            == 0
+            == 1
         )
         payload = json.loads(capsys.readouterr().out)
         assert payload["completed"] is False
@@ -442,6 +442,7 @@ class TestSkillBundles:
             cli_main(
                 [
                     "run",
+                    "--allow-incomplete",
                     str(CODER_BUNDLE),
                     "finish",
                     "--workspace",
@@ -1276,7 +1277,7 @@ class TestSkillBundles:
                 "--max-steps",
                 "8",
                 "--scripted-response",
-                '{"tool": "done", "args": {"answer": "ok"}, "reasoning": "r"}',
+                '{"tool": "done", "args": {"summary": "ok"}, "reasoning": "r"}',
             ]
         )
 
@@ -1509,6 +1510,7 @@ class TestSkillBundles:
 
         args = [
             "run",
+            "--allow-incomplete",
             str(CODER_BUNDLE),
             "Create a tiny add function with tests",
             "--workspace",
@@ -1531,6 +1533,7 @@ class TestSkillBundles:
         rc = cli_main(
             [
                 "run",
+                "--allow-incomplete",
                 str(CODER_BUNDLE),
                 "Create a tiny add function with tests",
                 "--workspace",
@@ -1713,6 +1716,7 @@ class TestSkillBundles:
         rc = cli_main(
             [
                 "run",
+                "--allow-incomplete",
                 str(bundle_root),
                 "Task",
                 "--workspace",
@@ -1980,6 +1984,7 @@ class TestSkillBundles:
         rc = cli_main(
             [
                 "run",
+                "--allow-incomplete",
                 str(bundle_root),
                 "Task",
                 "--workspace",
@@ -2055,6 +2060,7 @@ class TestSkillBundles:
         rc = cli_main(
             [
                 "run",
+                "--allow-incomplete",
                 str(bundle_root),
                 "Task",
                 "--workspace",
@@ -2093,6 +2099,7 @@ class TestSkillBundles:
         rc = cli_main(
             [
                 "run",
+                "--allow-incomplete",
                 str(bundle_root),
                 "Task",
                 "--workspace",
@@ -2133,6 +2140,7 @@ class TestSkillBundles:
         rc = cli_main(
             [
                 "run",
+                "--allow-incomplete",
                 str(bundle_root),
                 "Task",
                 "--workspace",
@@ -2184,6 +2192,7 @@ class TestSkillBundles:
         rc = cli_main(
             [
                 "run",
+                "--allow-incomplete",
                 str(bundle_root),
                 "Task",
                 "--workspace",
@@ -2225,6 +2234,7 @@ class TestSkillBundles:
         rc = cli_main(
             [
                 "run",
+                "--allow-incomplete",
                 str(bundle_root),
                 "Task",
                 "--workspace",
@@ -2268,6 +2278,7 @@ class TestSkillBundles:
         rc = cli_main(
             [
                 "run",
+                "--allow-incomplete",
                 str(bundle_root),
                 "Task",
                 "--workspace",
@@ -2405,7 +2416,7 @@ class TestSkillBundles:
                 "--workspace",
                 str(tmp_path / "workspace"),
                 "--scripted-response",
-                '{"tool": "done", "args": {"answer": "ok"}}',
+                '{"tool": "done", "args": {"summary": "ok"}}',
                 "--no-trace",
             ]
         )

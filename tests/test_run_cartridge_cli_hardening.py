@@ -6,7 +6,9 @@ import argparse
 import json
 import os
 import shutil
+import sys
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
@@ -33,6 +35,7 @@ def _args(
         quiet=False,
         pretty=False,
         json=json_output,
+        require_completed=False,
     )
 
 
@@ -85,6 +88,200 @@ def test_missing_project_root_fails_before_backend(
     assert rc == 1
     assert not missing.exists()
     assert "project root is not a directory" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("json_output", [False, True])
+@pytest.mark.parametrize(
+    "completed, allow_incomplete", [(True, False), (False, False), (False, True)]
+)
+def test_cli_runs_python_factory_without_packaging(
+    tmp_path, monkeypatch, capsys, json_output, completed, allow_incomplete
+):
+    from looplet import minimal_preset
+
+    built = []
+    closed = []
+
+    class Resource:
+        def close(self):
+            closed.append(True)
+
+    def done(summary: str):
+        return {"summary": summary}
+
+    def build(runtime):
+        built.append(runtime)
+        preset = minimal_preset(tools=[done], max_steps=runtime.max_steps, validate=True)
+        preset.owned_resources.append(Resource())
+        return preset
+
+    module = ModuleType("test_cli_python_factory")
+    module.build = build
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    arguments = [
+        "run",
+        f"{module.__name__}:build",
+        "finish",
+        "--project-root",
+        str(tmp_path),
+        "--max-steps",
+        "1",
+        "--no-trace",
+        "--scripted-response",
+        json.dumps({"tool": "done", "args": {"summary": "finished"} if completed else {}}),
+    ]
+    if json_output:
+        arguments.append("--json")
+    if allow_incomplete:
+        arguments.append("--allow-incomplete")
+
+    assert main(arguments) == int(not completed and not allow_incomplete)
+    output = capsys.readouterr()
+    assert len(built) == 1 and len(closed) == 1
+    assert Path(built[0].workspace) == tmp_path
+    assert not list(tmp_path.iterdir())
+    if json_output:
+        assert json.loads(output.out)["completed"] is completed
+        assert json.loads(output.out)["grading_status"] == "not_graded"
+    else:
+        assert f"{module.__name__}:build" in output.out
+        if completed:
+            assert "completed; not graded" in output.out
+
+
+@pytest.mark.parametrize("json_output", [False, True])
+@pytest.mark.parametrize("passed", [False, True])
+def test_python_factory_reports_grading_separately_from_completion(
+    tmp_path, monkeypatch, capsys, json_output, passed
+):
+    from looplet import EvalHook, minimal_preset
+
+    def eval_summary(ctx):
+        return ctx.steps[-1].tool_result.data["summary"] == ctx.expected["summary"]
+
+    def build(runtime):
+        def done(summary: str):
+            return {"summary": summary}
+
+        preset = minimal_preset(tools=[done], max_steps=runtime.max_steps, validate=True)
+        preset.hooks.append(EvalHook(evaluators=[eval_summary], expected={"summary": "expected"}))
+        return preset
+
+    module = ModuleType("test_cli_python_grading")
+    module.build = build
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    arguments = [
+        "run",
+        f"{module.__name__}:build",
+        "finish",
+        "--project-root",
+        str(tmp_path),
+        "--no-trace",
+        "--scripted-response",
+        json.dumps({"tool": "done", "args": {"summary": "expected" if passed else "wrong"}}),
+    ]
+    if json_output:
+        arguments.append("--json")
+
+    assert main(arguments) == 0
+    output = capsys.readouterr()
+    expected = "passed" if passed else "failed"
+    if json_output:
+        payload = json.loads(output.out)
+        assert payload["completed"] is True
+        assert payload["grading_status"] == expected
+    else:
+        assert f"completed; grading {expected}" in output.out
+
+
+@pytest.mark.parametrize("json_output", [False, True])
+def test_cli_replays_python_factory_without_packaging(tmp_path, monkeypatch, capsys, json_output):
+    from looplet import minimal_preset
+
+    workspaces = []
+
+    def build(runtime):
+        workspace = Path(runtime.workspace)
+        workspaces.append(workspace)
+
+        def done(summary: str):
+            (workspace / "answer.txt").write_text(summary)
+            return {"summary": summary}
+
+        return minimal_preset(tools=[done], max_steps=runtime.max_steps, validate=True)
+
+    module = ModuleType("test_cli_python_replay")
+    module.build = build
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    trace = tmp_path / "captured run"
+    assert (
+        main(
+            [
+                "run",
+                f"{module.__name__}:build",
+                "finish",
+                "--project-root",
+                str(tmp_path),
+                "--trace-dir",
+                str(trace),
+                "--scripted-response",
+                '{"tool":"done","args":{"summary":"finished"}}',
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+    original = {
+        path.relative_to(trace): path.read_bytes() for path in trace.rglob("*") if path.is_file()
+    }
+    monkeypatch.setattr(
+        factory_commands,
+        "_build_backend",
+        lambda **kwargs: pytest.fail("replay constructed a backend"),
+    )
+    workspace = tmp_path / "fresh workspace"
+    arguments = [
+        "replay",
+        str(trace),
+        "--factory",
+        f"{module.__name__}:build",
+        "--workspace",
+        str(workspace),
+    ]
+    if json_output:
+        arguments.append("--json")
+
+    assert main(arguments) == 0
+    output = capsys.readouterr()
+    assert workspaces == [tmp_path, workspace]
+    assert (workspace / "answer.txt").read_text() == "finished"
+    assert {
+        path.relative_to(trace): path.read_bytes() for path in trace.rglob("*") if path.is_file()
+    } == original
+    if json_output:
+        assert json.loads(output.out)["completed"] is True
+    else:
+        assert f"{module.__name__}:build" in output.out
+
+    rejected_workspace = tmp_path / "rejected replay"
+    assert (
+        main(
+            [
+                "replay",
+                str(trace),
+                "--factory",
+                f"{module.__name__}:build",
+                "--evals",
+                str(tmp_path / "evals.py"),
+                "--workspace",
+                str(rejected_workspace),
+            ]
+        )
+        == 1
+    )
+    assert "--evals requires a saved eval case" in capsys.readouterr().err
+    assert not rejected_workspace.exists()
+    assert workspaces == [tmp_path, workspace]
 
 
 def test_python_script_has_an_actionable_command(tmp_path, monkeypatch, capsys):
@@ -293,8 +490,7 @@ def test_generic_bundle_failure_presentation_uses_shared_error(
     ]
     if json_output:
         arguments.append("--json")
-    if require_completed:
-        arguments.append("--require-completed")
+    arguments.append("--require-completed" if require_completed else "--allow-incomplete")
 
     assert main(arguments) == int(require_completed)
 
@@ -309,6 +505,116 @@ def test_generic_bundle_failure_presentation_uses_shared_error(
     else:
         assert "stopped (budget_exhausted)" in output.out
         assert expected in output.out
+
+
+@pytest.mark.parametrize("command", ["run", "run-cartridge", "run-workspace"])
+@pytest.mark.parametrize("policy", [None, "--require-completed", "--allow-incomplete"])
+@pytest.mark.parametrize("json_output", [False, True])
+def test_cli_requires_completion_by_default(tmp_path, capsys, command, policy, json_output):
+    cartridge = _custom_terminal_cartridge(tmp_path, name="done", return_expression="{}")
+    arguments = [
+        command,
+        str(cartridge),
+        "finish",
+        "--project-root",
+        str(tmp_path),
+        "--max-steps",
+        "1",
+        "--no-trace",
+        "--scripted-response",
+        '{"tool":"done","args":{}}',
+    ]
+    if policy is not None:
+        arguments.append(policy)
+    if json_output:
+        arguments.append("--json")
+
+    assert main(arguments) == int(policy != "--allow-incomplete")
+    output = capsys.readouterr()
+    if json_output:
+        payload = json.loads(output.out)
+        assert payload["completed"] is False
+        assert payload["termination_reason"] == "budget_exhausted"
+        assert "missing required argument" in payload["error"]["message"]
+    else:
+        assert "stopped (budget_exhausted)" in output.out
+        assert "missing required argument" in output.out
+
+
+@pytest.mark.parametrize("policy", [None, "--require-completed", "--allow-incomplete"])
+@pytest.mark.parametrize("json_output", [False, True])
+def test_replay_requires_completion_by_default(tmp_path, capsys, policy, json_output):
+    cartridge = _custom_terminal_cartridge(tmp_path, name="done", return_expression="{}")
+    trace = tmp_path / "original-trace"
+    assert (
+        main(
+            [
+                "run",
+                str(cartridge),
+                "finish",
+                "--project-root",
+                str(tmp_path),
+                "--trace-dir",
+                str(trace),
+                "--allow-incomplete",
+                "--max-steps",
+                "1",
+                "--scripted-response",
+                '{"tool":"done","args":{}}',
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+    original = {
+        str(path.relative_to(trace)): path.read_bytes()
+        for path in trace.rglob("*")
+        if path.is_file()
+    }
+    arguments = [
+        "replay",
+        str(trace),
+        "--cartridge",
+        str(cartridge),
+        "--workspace",
+        str(tmp_path / "replay-workspace"),
+    ]
+    if policy is not None:
+        arguments.append(policy)
+    if json_output:
+        arguments.append("--json")
+
+    assert main(arguments) == int(policy != "--allow-incomplete")
+    output = capsys.readouterr()
+    if json_output:
+        payload = json.loads(output.out)
+        assert payload["completed"] is False
+        assert payload["termination_reason"] == "budget_exhausted"
+        assert payload["error"]["tool"] == "done"
+    else:
+        assert "stopped (budget_exhausted)" in output.out
+    assert {
+        str(path.relative_to(trace)): path.read_bytes()
+        for path in trace.rglob("*")
+        if path.is_file()
+    } == original
+
+
+@pytest.mark.parametrize(
+    "command", ["run", "run-cartridge", "run-workspace", "run-bundle", "replay"]
+)
+def test_completion_flags_are_mutually_exclusive(tmp_path, capsys, command):
+    arguments = [command, str(tmp_path)]
+    if command == "replay":
+        arguments.extend(["--cartridge", str(tmp_path), "--workspace", str(tmp_path / "fresh")])
+    else:
+        arguments.append("finish")
+    arguments.extend(["--require-completed", "--allow-incomplete"])
+
+    with pytest.raises(SystemExit) as error:
+        main(arguments)
+    assert error.value.code == 2
+    assert "not allowed with argument" in capsys.readouterr().err
 
 
 def test_recovered_completion_does_not_report_an_old_error(tmp_path, monkeypatch, capsys):

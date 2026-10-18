@@ -102,9 +102,7 @@ This example uses fixed responses and does not contact a model service.
 Nested data and other constraints remain tool-owned.
 
 ```python title="first_loop.py"
-from contextlib import closing
-
-from looplet import DefaultState, LoopConfig, MockLLMBackend, RunResult, composable_loop, tools_from
+from looplet import MockLLMBackend, minimal_preset
 
 
 def lookup_owner(service: str) -> dict:
@@ -113,30 +111,27 @@ def lookup_owner(service: str) -> dict:
   return {"service": service, "owner": owners.get(service)}
 
 
+def done(service: str, owner: str, summary: str = "") -> dict:
+  """Finish with the service, its owner, and an optional explanation."""
+  return {"service": service, "owner": owner, "summary": summary}
+
+
 llm = MockLLMBackend([
-  '{"tool":"lookup_owner","args":{"service":"payments"}}',
-  '{"tool":"done","args":{"summary":"The payments owner is fintech-platform."}}',
+    '{"tool":"lookup_owner","args":{"service":"payments"}}',
+    '{"tool":"done","args":{"service":"payments","owner":"fintech-platform","summary":"The payments owner is fintech-platform."}}',
 ], cycle=False)
-tools = tools_from([lookup_owner], include_done=True, validate=True)
-state = DefaultState(max_steps=2)
+with minimal_preset(tools=[lookup_owner, done], max_steps=2, validate=True) as run:
+    run.config.use_native_tools = False
+    result = run.run_result(llm, task={"goal": "Find the payments owner, then finish."})
 
-with closing(composable_loop(
-  llm=llm,
-  tools=tools,
-  state=state,
-  config=LoopConfig(max_steps=2, use_native_tools=False),
-  task={"goal": "Find the payments owner, then finish."},
-)) as steps:
-  for step in steps:
-    print(step.tool_call.tool, step.tool_result.data)
-
-print(RunResult.from_state(state).termination_reason)
+print(result.output)
+print(result.completed, result.termination_reason)
 ```
 
-Each `Step` contains a tool call and its result.
-The tool has already run when you receive the step.
-Use `break` to stop before the next call.
-`closing` closes the loop and runs its end hooks.
+`result.output` contains the answer, and `result.steps` contains each tool call and result.
+The `with` block closes this run and its owned resources.
+Create a fresh preset for each task.
+Use [step-by-step iteration](quickstart.md#inspect-steps-or-stop-early) to inspect or stop between calls.
 
 The example selects the JSON-text protocol for its fixed responses.
 Real models use native tool calls by default.

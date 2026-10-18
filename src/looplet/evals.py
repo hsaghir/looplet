@@ -1642,6 +1642,44 @@ def run_cartridge_evals(
     cdir = Path(cartridge_dir)
     base_runtime = dict(runtime or {})
     overview = load_cartridge_evals(cdir, runtime=base_runtime, strict=True)
+    return _run_case_evals(
+        overview,
+        load_definitions=lambda case_runtime: load_cartridge_evals(
+            cdir, runtime=case_runtime, strict=True
+        ),
+        build_preset=lambda case_runtime: cartridge_to_preset(cdir, runtime=case_runtime),
+        llm=llm,
+        output_dir=output_dir,
+        runtime=base_runtime,
+        max_steps=max_steps,
+        judge_llm=judge_llm,
+        workspace_key=workspace_key,
+        cases=cases,
+        case_marks=case_marks,
+        capture=capture,
+        redact=redact,
+        redact_upstream=redact_upstream,
+    )
+
+
+def _run_case_evals(
+    overview: CartridgeEvals,
+    *,
+    load_definitions: Callable[[dict[str, Any]], CartridgeEvals],
+    build_preset: Callable[[dict[str, Any]], Any],
+    llm: Any,
+    output_dir: str | Path | None = None,
+    runtime: dict[str, Any] | None = None,
+    max_steps: int | None = None,
+    judge_llm: "LLMBackend | None" = None,
+    workspace_key: str = "project_root",
+    cases: list[str] | None = None,
+    case_marks: list[str] | None = None,
+    capture: bool = True,
+    redact: Callable[[str], str] | None = None,
+    redact_upstream: bool = True,
+) -> list["EvalRunRecord"]:
+    base_runtime = dict(runtime or {})
     selected = _select_eval_cases(overview.cases, cases, case_marks=case_marks)
     if not overview.graders:
         raise ValueError("No graders selected")
@@ -1677,13 +1715,18 @@ def run_cartridge_evals(
         else:
             run_dir = None
             sandbox = Path(tempfile.mkdtemp(prefix=f"evalcase_{case.id}_"))
-        seed_case_workspace(case, sandbox)
-
-        case_runtime = dict(base_runtime)
-        case_runtime[workspace_key] = str(sandbox)
-
-        bundle = load_cartridge_evals(cdir, runtime=case_runtime, strict=True)
-        preset = cartridge_to_preset(cdir, runtime=case_runtime)
+        try:
+            seed_case_workspace(case, sandbox)
+            case_runtime = dict(base_runtime)
+            case_runtime[workspace_key] = str(sandbox)
+            bundle = load_definitions(case_runtime)
+            preset = build_preset(case_runtime)
+        except BaseException:
+            if run_dir is None:
+                shutil.rmtree(sandbox, ignore_errors=True)
+                for previous in records:
+                    previous.cleanup()
+            raise
         if max_steps is not None:
             preset.config.max_steps = max_steps
             if hasattr(preset.state, "max_steps"):
@@ -3025,6 +3068,8 @@ def _check_eval_definitions(path: Path) -> dict[str, Any]:
         "schema": "looplet.eval-definitions",
         "version": 1,
         "valid": not errors,
+        "behavior_run": False,
+        "grading_status": "not_graded",
         "path": str(path),
         "cases": [case.id for case in bundle.cases],
         "graders": manifest,
@@ -3091,7 +3136,10 @@ def _eval_definitions_cli(args: list[str]) -> int:
     if parsed.json:
         print(json.dumps(report, indent=2), file=output)
     else:
-        print(f"{'VALID' if report['valid'] else 'INVALID'} eval definitions: {parsed.path}")
+        print(
+            f"{'VALID' if report['valid'] else 'INVALID'} eval definitions: {parsed.path}; "
+            "behavior not run"
+        )
         print(
             f"  {len(report['cases'])} cases, {len(report['graders'])} graders, {len(report['collectors'])} collectors"
         )
@@ -3346,9 +3394,13 @@ def _run_cartridge_cli(args: list[str]) -> int:
 
     parser = argparse.ArgumentParser(
         prog="looplet eval run",
-        description="Run a cartridge against its shipped eval cases.",
+        description="Run a Python factory or cartridge against eval cases.",
     )
-    parser.add_argument("cartridge", help="Cartridge directory (must contain evals/).")
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("cartridge", nargs="?", help="Cartridge directory (must contain evals/).")
+    source.add_argument("--factory", help="Trusted module:factory returning a fresh AgentPreset.")
+    parser.add_argument("--evals", help="Trusted Python eval file or directory for --factory.")
+    parser.add_argument("--cases", help="Case JSON file or directory (default: <evals>/cases/).")
     persistence = parser.add_mutually_exclusive_group()
     persistence.add_argument(
         "--out",
@@ -3361,6 +3413,11 @@ def _run_cartridge_cli(args: list[str]) -> int:
         help="Run without saving eval evidence or captured model calls.",
     )
     add_backend_options(parser)
+    parser.add_argument(
+        "--scripted-response",
+        action="append",
+        help="Use one captured model response; repeat in call order.",
+    )
     parser.add_argument("--max-steps", type=int, default=None, help="Override max_steps per case.")
     parser.add_argument(
         "--no-capture",
@@ -3415,39 +3472,80 @@ def _run_cartridge_cli(args: list[str]) -> int:
         print("error: --max-steps must be positive", file=sys.stderr)
         return 1
 
+    from looplet.cli.factory_commands import _factory_imports
+
     output = sys.stdout
-    with execution_output(parsed.json):
+    with execution_output(parsed.json), _factory_imports(parsed.factory):
         return _run_cartridge_evaluation(parsed, output=output)
 
 
 def _run_cartridge_evaluation(parsed: Namespace, *, output: TextIO) -> int:
     from looplet.cli import build_cli_backend
+    from looplet.cli.factory_commands import _build_factory_preset, _is_factory_reference
 
-    cdir = Path(parsed.cartridge)
-    if (cdir.is_file() and cdir.suffix == ".py") or (
-        not (cdir / "cartridge.json").is_file() and (cdir / "cases").is_dir()
+    factory_ref = parsed.factory
+    cdir = Path(factory_ref if factory_ref is not None else parsed.cartridge)
+    if factory_ref is not None and not _is_factory_reference(factory_ref):
+        print("error: --factory must use module:factory syntax", file=sys.stderr)
+        return 1
+    if factory_ref is not None and parsed.evals is None:
+        print("error: --factory requires --evals with trusted Python definitions", file=sys.stderr)
+        return 1
+    if factory_ref is None and (parsed.evals is not None or parsed.cases is not None):
+        print(
+            "error: --evals and --cases require --factory; cartridges supply evals/",
+            file=sys.stderr,
+        )
+        return 1
+    if factory_ref is None and (
+        (cdir.is_file() and cdir.suffix == ".py")
+        or (not (cdir / "cartridge.json").is_file() and (cdir / "cases").is_dir())
     ):
         print(
             "error: `eval run` expects a cartridge, not a standalone Python eval directory or file.\n"
-            "For Python agents, load definitions with load_evals() and run your pytest tests.\n"
+            "For Python agents, use --factory module:factory --evals <path>, or run your pytest tests.\n"
             "Use `looplet eval check <path>` to validate definitions without running them.",
             file=sys.stderr,
         )
         return 1
-    if not cdir.is_dir():
+    if factory_ref is None and not cdir.is_dir():
         print(f"error: cartridge not found: {cdir}", file=sys.stderr)
         return 1
 
+    def load_definitions(case_runtime: dict[str, Any]) -> CartridgeEvals:
+        definitions = load_evals(parsed.evals, runtime=case_runtime, strict=True)
+        return CartridgeEvals(
+            cases=load_cases(parsed.cases) if parsed.cases is not None else definitions.cases,
+            graders=definitions.graders,
+            collectors=definitions.collectors,
+        )
+
     try:
-        overview = load_cartridge_evals(cdir, strict=True)
-    except (RuntimeError, ValueError) as exc:
+        overview = (
+            load_definitions({})
+            if factory_ref is not None
+            else load_cartridge_evals(cdir, strict=True)
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     if not overview.cases:
-        print(f"error: no eval cases under {cdir / CARTRIDGE_CASES_SUBPATH}", file=sys.stderr)
+        case_source = (
+            Path(parsed.cases)
+            if parsed.cases is not None
+            else Path(parsed.evals) / "cases"
+            if parsed.evals is not None
+            else cdir / CARTRIDGE_CASES_SUBPATH
+        )
+        print(f"error: no eval cases under {case_source}", file=sys.stderr)
+        if factory_ref is not None:
+            print(
+                "Use --cases <JSON file or directory> with a standalone eval file.", file=sys.stderr
+            )
         return 1
     if not overview.graders:
-        print(f"error: no graders (evals/eval_*.py) under {cdir / 'evals'}", file=sys.stderr)
+        definitions_source = parsed.evals if factory_ref is not None else cdir / "evals"
+        print(f"error: no graders (evals/eval_*.py) under {definitions_source}", file=sys.stderr)
         return 1
     try:
         selected_cases = _select_eval_cases(
@@ -3459,7 +3557,14 @@ def _run_cartridge_evaluation(parsed: Namespace, *, output: TextIO) -> int:
     grader_manifest = _eval_grader_manifest(overview.graders)
 
     try:
-        llm = build_cli_backend(model=parsed.model, base_url=parsed.base_url)
+        if parsed.scripted_response:
+            from looplet.testing import MockLLMBackend
+
+            if any(not response.strip() for response in parsed.scripted_response):
+                raise ValueError("--scripted-response must not be empty")
+            llm = MockLLMBackend(responses=parsed.scripted_response)
+        else:
+            llm = build_cli_backend(model=parsed.model, base_url=parsed.base_url)
         judge_llm = None
         if parsed.judge_model:
             judge_llm = build_cli_backend(model=parsed.judge_model, base_url=parsed.base_url)
@@ -3487,8 +3592,7 @@ def _run_cartridge_evaluation(parsed: Namespace, *, output: TextIO) -> int:
             f"{'  [judge on]' if judge_llm is not None else ''}\n"
         )
     try:
-        records = run_cartridge_evals(
-            cdir,
+        run_options: dict[str, Any] = dict(
             llm=llm,
             output_dir=output_dir,
             max_steps=parsed.max_steps,
@@ -3497,6 +3601,17 @@ def _run_cartridge_evaluation(parsed: Namespace, *, output: TextIO) -> int:
             judge_llm=judge_llm,
             capture=not parsed.no_capture,
         )
+        if factory_ref is not None:
+            records = _run_case_evals(
+                overview,
+                load_definitions=load_definitions,
+                build_preset=lambda case_runtime: _build_factory_preset(
+                    factory_ref, Path(case_runtime["project_root"]), parsed.max_steps
+                ),
+                **run_options,
+            )
+        else:
+            records = run_cartridge_evals(cdir, **run_options)
     except (ValueError, FileExistsError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -3508,13 +3623,17 @@ def _run_cartridge_evaluation(parsed: Namespace, *, output: TextIO) -> int:
         )
         return 1
 
-    report = EvalReport.from_records(
-        records,
-        grader_manifest=grader_manifest,
-        threshold=parsed.threshold,
-        output_dir=str(output_dir) if output_dir is not None else None,
-        version=parsed.summary_version,
-    ).to_dict()
+    try:
+        report = EvalReport.from_records(
+            records,
+            grader_manifest=grader_manifest,
+            threshold=parsed.threshold,
+            output_dir=str(output_dir) if output_dir is not None else None,
+            version=parsed.summary_version,
+        ).to_dict()
+    finally:
+        for record in records:
+            record.cleanup()
     grader_names = [item["name"] for item in report["grader_manifest"]]
     if not parsed.json:
         rows = [["case", *grader_names]]

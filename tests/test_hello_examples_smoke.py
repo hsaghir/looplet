@@ -193,6 +193,69 @@ def test_packaged_quickstart_launcher_propagates_failure(tmp_path):
     assert "budget_exhausted" in result.stdout
 
 
+@pytest.mark.parametrize("max_steps, stop_reason", [(1, "budget_exhausted"), (2, "done")])
+def test_packaged_quickstart_failed_capture_reports_saved_evidence(
+    tmp_path, monkeypatch, capsys, max_steps, stop_reason
+):
+    import shlex
+
+    from looplet import load_eval_run
+    from looplet.__main__ import main
+    from looplet.examples import quickstart
+
+    if max_steps == 2:
+        monkeypatch.setattr(quickstart, "EXPECTED_OWNER", {"service": "payments", "owner": "wrong"})
+    trace = tmp_path / "saved run"
+
+    assert quickstart.main(["--capture", str(trace), "--max-steps", str(max_steps)]) == 1
+    output = capsys.readouterr()
+    assert "eval_owner: fail" in output.err
+    assert f"Stop reason: {stop_reason}" in output.err
+    command = next(
+        line.removeprefix("Inspect with: ")
+        for line in output.err.splitlines()
+        if line.startswith("Inspect with: ")
+    )
+    assert shlex.split(command) == ["looplet", "inspect", str(trace)]
+    assert load_eval_run(trace).context.stop_reason == stop_reason
+    before = {
+        str(path.relative_to(trace)): path.read_bytes()
+        for path in trace.rglob("*")
+        if path.is_file()
+    }
+    assert main(["inspect", str(trace)]) == 0
+    assert stop_reason in capsys.readouterr().out
+    assert {
+        str(path.relative_to(trace)): path.read_bytes()
+        for path in trace.rglob("*")
+        if path.is_file()
+    } == before
+
+
+def test_packaged_quickstart_capture_launcher_reports_recovery(tmp_path):
+    trace = tmp_path / "saved run"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "looplet.examples.quickstart",
+            "--capture",
+            str(trace),
+            "--max-steps",
+            "1",
+        ],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 1
+    assert "Stop reason: budget_exhausted" in result.stderr
+    assert "Inspect with: looplet inspect" in result.stderr
+    assert str(trace) in result.stderr
+    assert (trace / "trajectory.json").is_file()
+
+
 def test_packaged_quickstart_preserves_existing_capture(tmp_path):
     from looplet.examples import quickstart
 
@@ -227,6 +290,18 @@ def test_quickstart_offers_companion_before_file_assembly():
     assert companion < text.index('title="first_loop.py"')
     for mode in ("--capture", "--rescore", "--replay", "--stop-after-lookup"):
         assert f"python -m looplet.examples.quickstart {mode}" in text
+    assert "Keep running this agent with Python and testing it with pytest." in text
+    assert "You do not need a skill bundle for that transition." in text
+    cli = (guide.parent / "cli.md").read_text()
+    primary = cli.split("## Choose an agent format\n", 1)[1].split(
+        "## Diagnose and inspect runs\n", 1
+    )[0]
+    assert (
+        "| Workflow | Python, including unreleased factory commands | Optional cartridge |"
+        in primary
+    )
+    assert "replay --factory module:factory" in primary
+    assert "| Workflow | Python agent | Cartridge | Skill bundle |" not in primary
 
 
 def _interrupt_after_calls(backend, calls, async_driver, monkeypatch):
@@ -721,6 +796,7 @@ def test_documented_summary_omits_private_evidence(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("document", ["README.md", "docs/index.md"])
 def test_documented_first_loop(document: str, tmp_path, monkeypatch) -> None:
+    from looplet import minimal_preset
     from looplet.testing import LLMResponsesExhausted
 
     root = Path(__file__).resolve().parents[1]
@@ -729,27 +805,29 @@ def test_documented_first_loop(document: str, tmp_path, monkeypatch) -> None:
     assert blocks, f"No Python example in {document}"
     observations = []
 
-    def observed_loop(**kwargs):
-        backend = kwargs["llm"]
-        registry = kwargs["tools"]
+    def observed_preset(**kwargs):
+        preset = minimal_preset(**kwargs)
+        backend = namespace["llm"]
+        registry = preset.tools
         generate = Mock(wraps=backend.generate)
         dispatch = Mock(wraps=registry.dispatch)
         monkeypatch.setattr(backend, "generate", generate)
         monkeypatch.setattr(registry, "dispatch", dispatch)
         observations.append((generate, dispatch))
-        return composable_loop(**kwargs)
+        return preset
 
-    monkeypatch.setattr("looplet.composable_loop", observed_loop)
+    monkeypatch.setattr("looplet.minimal_preset", observed_preset)
     namespace = {"__name__": "__main__"}
     exec(compile(blocks[0], str(path), "exec"), namespace)
-    state = namespace["state"]
+    state = namespace["run"].state
     assert [step.tool_call.tool for step in state.steps] == ["lookup_owner", "done"]
     assert state.steps[0].tool_result.data == {
         "service": "payments",
         "owner": "fintech-platform",
     }
     assert state.termination_reason == "done"
-    assert RunResult.from_state(state).completed
+    assert namespace["result"].completed
+    assert namespace["result"].output["owner"] == "fintech-platform"
     assert observations[0][0].call_count == 2
     assert observations[0][1].call_count == 2
     with pytest.raises(LLMResponsesExhausted):
@@ -948,6 +1026,45 @@ def test_quickstart_real_model_handoff_precedes_advanced_workflows(tmp_path, mon
     assert backend.calls == 2
 
 
+def test_copied_quickstart_factory_cli_workflow(tmp_path):
+    guide = Path(__file__).resolve().parents[1] / "docs" / "quickstart.md"
+    source = guide.read_text()
+    (tmp_path / "first_loop.py").write_text(_quickstart_agent_source(guide))
+    case = re.search(r'^```json title="cases/owner\.json"\n(.*?)^```[ \t]*$', source, re.M | re.S)
+    assert case is not None
+    (tmp_path / "cases").mkdir()
+    (tmp_path / "cases" / "owner.json").write_text(case.group(1))
+    commands = re.search(
+        r'^```bash title="python_factory_cli\.sh"\n(.*?)^```[ \t]*$', source, re.M | re.S
+    )
+    assert commands is not None
+    arguments = [
+        shlex.split(line)
+        for line in commands.group(1).replace("\\\n", "").splitlines()
+        if line.strip()
+    ]
+    assert len(arguments) == 3
+    payloads = []
+    for command in arguments:
+        assert command[0] == "looplet"
+        completed = subprocess.run(
+            [sys.executable, "-m", "looplet", *command[1:]],
+            cwd=tmp_path,
+            text=True,
+            capture_output=True,
+            timeout=20,
+        )
+        assert completed.returncode == 0, completed.stdout + completed.stderr
+        payloads.append(json.loads(completed.stdout))
+    assert payloads[0]["completed"] and payloads[0]["grading_status"] == "not_graded"
+    assert payloads[1]["passed"]
+    assert payloads[2]["completed"] and payloads[2]["grading_status"] == "not_graded"
+    assert (tmp_path / "shell-evals" / "owner" / "case.json").is_file()
+    assert (tmp_path / "replay-workspace").is_dir()
+    assert not list(tmp_path.rglob("cartridge.json"))
+    assert not list(tmp_path.rglob("SKILL.md"))
+
+
 def test_quickstart_scripted_backend_rejects_extra_model_calls() -> None:
     from looplet.testing import LLMResponsesExhausted
 
@@ -959,6 +1076,54 @@ def test_quickstart_scripted_backend_rejects_extra_model_calls() -> None:
     backend.generate("Second scripted call")
     with pytest.raises(LLMResponsesExhausted):
         backend.generate("Unexpected extra model call")
+
+
+@pytest.mark.parametrize("max_steps, stop_reason", [(1, "budget_exhausted"), (2, "done")])
+def test_copied_quickstart_failed_capture_reports_saved_evidence(
+    tmp_path, monkeypatch, max_steps, stop_reason
+):
+    from looplet import ProvenanceSink, load_eval_run
+
+    guide = Path(__file__).resolve().parents[1] / "docs" / "quickstart.md"
+    module = ModuleType("first_loop")
+    monkeypatch.setitem(sys.modules, "first_loop", module)
+    exec(compile(_quickstart_agent_source(guide), str(guide), "exec"), module.__dict__)
+    original = module.run_agent
+    monkeypatch.setattr(
+        module, "run_agent", lambda llm, **kwargs: original(llm, max_steps=max_steps, **kwargs)
+    )
+    if max_steps == 2:
+        monkeypatch.setattr(module, "EXPECTED_OWNER", {"service": "payments", "owner": "wrong"})
+    trace = tmp_path / "saved run"
+    monkeypatch.setattr("looplet.ProvenanceSink", lambda: ProvenanceSink(dir=trace))
+    namespace = {"__name__": "first_loop_capture"}
+    exec(
+        compile(_named_python_blocks(guide)["first_loop_capture.py"], str(guide), "exec"),
+        namespace,
+    )
+    assert not trace.exists()
+
+    with pytest.raises(AssertionError, match="eval_owner: fail") as failure:
+        namespace["capture_agent"](module.scripted_backend())
+
+    message = str(failure.value)
+    assert f"Stop reason: {stop_reason}" in message
+    command = next(
+        line.removeprefix("Inspect with: ")
+        for line in message.splitlines()
+        if line.startswith("Inspect with: ")
+    )
+    assert shlex.split(command) == ["looplet", "inspect", str(trace)]
+    assert load_eval_run(trace).context.stop_reason == stop_reason
+    from looplet.__main__ import main
+
+    original = {
+        path.relative_to(trace): path.read_bytes() for path in trace.rglob("*") if path.is_file()
+    }
+    assert main(shlex.split(command)[1:]) == 0
+    assert {
+        path.relative_to(trace): path.read_bytes() for path in trace.rglob("*") if path.is_file()
+    } == original
 
 
 def test_quickstart_runs_grades_captures_and_replays(tmp_path: Path, monkeypatch) -> None:

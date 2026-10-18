@@ -87,6 +87,10 @@ def test_root_help_discloses_workflow_before_advanced_commands(capsys):
     assert "run-workspace" not in simple
     assert "--help-all" in simple
     assert "python your_agent.py" in simple
+    assert "Start here: python -m looplet.examples.quickstart" in simple
+    assert "Shell: run a Python module:factory" in simple
+    assert "eval and replay also accept --factory" in simple
+    assert "Skill bundles are advanced packaging" in simple
     with pytest.raises(SystemExit) as stopped:
         main(["--help-all"])
     assert stopped.value.code == 0
@@ -101,9 +105,11 @@ def test_run_help_groups_format_specific_options(capsys):
         main(["run", "--help"])
     assert stopped.value.code == 0
     output = capsys.readouterr().out
-    assert "Cartridge-only options:" in output
+    assert "Python factory and cartridge options:" in output
     assert "Skill-bundle-only options:" in output
     assert "--require-completed" in output
+    assert "--allow-incomplete" in output
+    assert "the default" in " ".join(output.split())
 
 
 def test_run_cartridge_help() -> None:

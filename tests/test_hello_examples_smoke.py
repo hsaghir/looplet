@@ -311,6 +311,102 @@ def test_copied_quickstart_exports_cli_factory(tmp_path):
     assert outcome["result"]["owner"] == "fintech-platform"
 
 
+@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize("saved_case", [False, True])
+@pytest.mark.parametrize("with_evals", [False, True])
+def test_copied_quickstart_factory_replays_captured_protocol(
+    tmp_path, native, saved_case, with_evals
+):
+    from looplet import EvalCase, EvalHook, ProvenanceSink, load_eval_run, save_eval_run
+    from looplet.examples import quickstart
+    from looplet.provenance import _load_trace_calls
+
+    (tmp_path / "my_agent.py").write_bytes(Path(quickstart.__file__).read_bytes())
+    source = tmp_path / "captured run"
+    sink = ProvenanceSink(dir=source)
+    grading = EvalHook(evaluators=[quickstart.eval_owner], expected=quickstart.EXPECTED_OWNER)
+    quickstart.run_agent(
+        sink.wrap_llm(quickstart.scripted_backend()),
+        hooks=[sink.trajectory_hook(), grading],
+        use_native_tools=native,
+    )
+    sink.flush()
+    case = (
+        EvalCase(
+            id="owner",
+            task={"goal": "Find the payments owner, then finish."},
+            expected=quickstart.EXPECTED_OWNER,
+        )
+        if saved_case
+        else None
+    )
+    save_eval_run(source, recorder=sink.trajectory_hook(), eval_hook=grading, case=case)
+    original = {path: path.read_bytes() for path in source.rglob("*") if path.is_file()}
+    arguments = [
+        sys.executable,
+        "-m",
+        "looplet",
+        "replay",
+        str(source),
+        "--factory",
+        "my_agent:build",
+        "--workspace",
+        str(tmp_path / "replay workspace"),
+        "--json",
+    ]
+    if with_evals:
+        arguments.extend(["--evals", "my_agent.py"])
+    if not saved_case and with_evals:
+        seed = tmp_path / "legacy seed inputs"
+        seed.mkdir()
+        (seed / "notes.txt").write_text("fresh replay input")
+        arguments.extend(["--seed-from", str(seed)])
+    result = subprocess.run(
+        arguments,
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        timeout=20,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    outcome = json.loads(result.stdout)
+    assert outcome["completed"]
+    assert outcome["grading_status"] == "not_graded"
+    assert outcome["result"]["owner"] == "fintech-platform"
+    if not saved_case and with_evals:
+        assert (tmp_path / "replay workspace" / "notes.txt").read_text() == "fresh replay input"
+    replayed = load_eval_run(outcome["trace_dir"])
+    assert replayed.case is not None
+    assert replayed.context.expected == quickstart.EXPECTED_OWNER
+    assert replayed.case.task == {"goal": "Find the payments owner, then finish."}
+    assert (
+        "expected"
+        not in json.loads((Path(outcome["trace_dir"]) / "trajectory.json").read_text())["task"]
+    )
+    assert [call["method"] for call in _load_trace_calls(Path(outcome["trace_dir"]))] == [
+        call["method"] for call in _load_trace_calls(source)
+    ]
+    assessed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "looplet",
+            "eval",
+            outcome["trace_dir"],
+            "--evals",
+            "my_agent.py",
+            "--json",
+        ],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        timeout=20,
+    )
+    assert assessed.returncode == 0, assessed.stdout + assessed.stderr
+    assert json.loads(assessed.stdout)["passed"]
+    assert {path: path.read_bytes() for path in original} == original
+
+
 def test_packaged_quickstart_runs_without_authored_files(tmp_path, monkeypatch, capsys):
     from looplet.examples import quickstart
 
@@ -413,6 +509,123 @@ def test_packaged_quickstart_experiments_are_repeat_safe(tmp_path, monkeypatch):
             assert record.results and all(result.passed for result in record.results)
 
 
+def test_quickstart_customized_service_keeps_task_and_expectations_together(tmp_path, monkeypatch):
+    from looplet import load_eval_run
+    from looplet.examples import quickstart
+
+    monkeypatch.chdir(tmp_path)
+    expected = {"service": "search", "owner": "discovery"}
+    monkeypatch.setattr(quickstart, "EXPECTED_OWNER", expected)
+    monkeypatch.setattr(
+        quickstart,
+        "scripted_backend",
+        lambda: MockLLMBackend(
+            [
+                '{"tool":"lookup_owner","args":{"service":"search"}}',
+                '{"tool":"done","args":{"service":"search","owner":"discovery"}}',
+            ],
+            cycle=False,
+        ),
+    )
+    trace = tmp_path / "search capture"
+    assert quickstart.main(["--capture", str(trace)]) == 0
+    saved = load_eval_run(trace)
+    assert saved.case is not None
+    assert saved.case.task == {"goal": "Find the search owner, then finish."}
+    assert saved.case.expected == saved.context.expected == expected
+    assert saved.context.final_output["service"] == "search"
+    assert all(result.passed for result in saved.results)
+    assert json.loads((trace / "trajectory.json").read_text())["task"] == saved.case.task
+
+
+def test_quickstart_explicit_case_survives_python_and_cli_replay(tmp_path, monkeypatch):
+    from looplet import load_eval_run
+    from looplet.examples import quickstart
+
+    monkeypatch.chdir(tmp_path)
+    case = {
+        "id": "search-case",
+        "task": {"goal": "Identify who owns the search service."},
+        "expected": {"service": "search", "owner": "discovery"},
+    }
+    case_path = tmp_path / "search case.json"
+    case_path.write_text(json.dumps(case))
+    monkeypatch.setattr(
+        quickstart,
+        "scripted_backend",
+        lambda: MockLLMBackend(
+            [
+                '{"tool":"lookup_owner","args":{"service":"search"}}',
+                '{"tool":"done","args":{"service":"search","owner":"discovery"}}',
+            ],
+            cycle=False,
+        ),
+    )
+    experiment = tmp_path / "search experiment"
+    assert (
+        quickstart.main(["--case", str(case_path), "--experiment", "--out", str(experiment)]) == 0
+    )
+    for directory in (experiment / "capture", experiment / "replay"):
+        saved = load_eval_run(directory)
+        assert saved.case is not None
+        assert saved.case.id == case["id"]
+        assert saved.case.task == case["task"]
+        assert saved.case.expected == saved.context.expected == case["expected"]
+        assert saved.results and all(result.passed for result in saved.results)
+        assert json.loads((directory / "trajectory.json").read_text())["task"] == case["task"]
+    (tmp_path / "my_agent.py").write_bytes(Path(quickstart.__file__).read_bytes())
+    replayed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "looplet",
+            "replay",
+            str(experiment / "capture"),
+            "--factory",
+            "my_agent:build",
+            "--evals",
+            "my_agent.py",
+            "--workspace",
+            str(tmp_path / "CLI replay"),
+            "--json",
+        ],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        timeout=20,
+    )
+    assert replayed.returncode == 0, replayed.stdout + replayed.stderr
+    trace = json.loads(replayed.stdout)["trace_dir"]
+    assert load_eval_run(trace).context.expected == case["expected"]
+    assessed = subprocess.run(
+        [sys.executable, "-m", "looplet", "eval", trace, "--evals", "my_agent.py", "--json"],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        timeout=20,
+    )
+    assert assessed.returncode == 0, assessed.stdout + assessed.stderr
+    assert json.loads(assessed.stdout)["passed"]
+
+
+@pytest.mark.parametrize("seeded", [False, True])
+def test_quickstart_case_rejects_ambiguous_or_seeded_input(tmp_path, seeded):
+    from looplet.examples import quickstart
+
+    case = {"id": "owner", "task": {}, "expected": quickstart.EXPECTED_OWNER}
+    if seeded:
+        case["task"] = {"files": {"input.txt": "private seed"}}
+        cases = case
+    else:
+        cases = [case, {**case, "id": "other"}]
+    case_path = tmp_path / "cases.json"
+    case_path.write_text(json.dumps(cases))
+    with pytest.raises(SystemExit) as error:
+        quickstart.main(["--case", str(case_path)])
+    assert error.value.code == 2
+    assert list(tmp_path.iterdir()) == [case_path]
+
+
 @pytest.mark.parametrize("provider", ["openai", "anthropic"])
 @pytest.mark.parametrize("json_text", [False, True])
 def test_packaged_quickstart_live_capture_uses_the_same_agent(
@@ -444,6 +657,8 @@ def test_packaged_quickstart_live_capture_uses_the_same_agent(
         ["--replay", "missing", "--backend", "openai"],
         ["--rescore", "missing", "--max-steps", "1"],
         ["--out", "unused"],
+        ["--replay", "missing", "--case", "unused"],
+        ["--rescore", "missing", "--case", "unused"],
     ],
 )
 def test_packaged_quickstart_rejects_ignored_options(arguments):

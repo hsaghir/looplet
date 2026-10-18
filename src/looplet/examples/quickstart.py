@@ -12,6 +12,7 @@ from shlex import quote
 
 from looplet import (
     AnthropicBackend,
+    EvalCase,
     EvalContext,
     EvalHook,
     MockLLMBackend,
@@ -19,6 +20,7 @@ from looplet import (
     ProvenanceSink,
     RunResult,
     eval_assess,
+    load_cases,
     load_eval_run,
     minimal_preset,
     replay_loop,
@@ -27,6 +29,15 @@ from looplet import (
 from looplet.bundles import SkillRuntime
 
 EXPECTED_OWNER = {"service": "payments", "owner": "fintech-platform"}
+
+
+def owner_case() -> EvalCase:
+    """Build the default task and grader expectations together."""
+    return EvalCase(
+        id="owner",
+        task={"goal": f"Find the {EXPECTED_OWNER['service']} owner, then finish."},
+        expected=dict(EXPECTED_OWNER),
+    )
 
 
 def lookup_owner(service: str) -> dict:
@@ -54,12 +65,18 @@ def build(runtime: SkillRuntime):
     return minimal_preset(tools=[lookup_owner, done], max_steps=runtime.max_steps, validate=True)
 
 
-def run_agent(llm, *, hooks=(), use_native_tools=False, max_steps=2):
+def run_agent(llm, *, hooks=(), use_native_tools=False, max_steps=2, case: EvalCase | None = None):
+    case = case or owner_case()
     runtime = SkillRuntime(workspace=Path.cwd(), max_steps=max_steps)
     with build(runtime) as run:
         run.config.use_native_tools = use_native_tools
         run.hooks.extend(hooks)
-        return run.run_result(llm, task={"goal": "Find the payments owner, then finish."})
+        return run.run_result(
+            llm,
+            task={
+                key: value for key, value in case.task.items() if key not in {"files", "expected"}
+            },
+        )
 
 
 def eval_owner(ctx: EvalContext) -> bool:
@@ -71,29 +88,34 @@ def eval_owner(ctx: EvalContext) -> bool:
     )
 
 
-def assess_result(result: RunResult):
+def assess_result(result: RunResult, *, case: EvalCase | None = None):
+    case = case or owner_case()
     observed = EvalContext(
         steps=list(result.steps),
         final_output=result.output if isinstance(result.output, dict) else {},
         stop_reason=result.termination_reason,
-        task={"expected": dict(EXPECTED_OWNER)},
+        task={**case.task, "expected": dict(case.expected)},
     )
     return eval_assess([eval_owner], observed)
 
 
-def capture_agent(llm, trace_dir: Path, *, max_steps=2, use_native_tools=False):
+def capture_agent(
+    llm, trace_dir: Path, *, max_steps=2, use_native_tools=False, case: EvalCase | None = None
+):
+    case = case or owner_case()
     sink = ProvenanceSink(dir=trace_dir)
-    grading = EvalHook(evaluators=[eval_owner], expected=EXPECTED_OWNER)
+    grading = EvalHook(evaluators=[eval_owner], expected=case.expected)
     try:
         result = run_agent(
             sink.wrap_llm(llm),
             hooks=[sink.trajectory_hook(), grading],
             max_steps=max_steps,
             use_native_tools=use_native_tools,
+            case=case,
         )
     finally:
         saved_trace = sink.flush()
-    save_eval_run(saved_trace, recorder=sink.trajectory_hook(), eval_hook=grading)
+    save_eval_run(saved_trace, recorder=sink.trajectory_hook(), eval_hook=grading, case=case)
     try:
         grading.assessment().assert_passed()
     except AssertionError as error:
@@ -140,7 +162,9 @@ def replay_agent(trace_dir: Path, *, output_dir: Path | None = None, max_steps=N
     return result, replay_trace
 
 
-def experiment_agent(llm, *, output_dir=None, max_steps=2, use_native_tools=False):
+def experiment_agent(
+    llm, *, output_dir=None, max_steps=2, use_native_tools=False, case: EvalCase | None = None
+):
     if output_dir is None:
         parent = Path(".looplet/experiments")
         parent.mkdir(parents=True, exist_ok=True)
@@ -153,7 +177,9 @@ def experiment_agent(llm, *, output_dir=None, max_steps=2, use_native_tools=Fals
     replay_dir = output_dir / "replay"
     report = {"capture_dir": str(capture_dir), "replay_dir": str(replay_dir), "passed": False}
     try:
-        capture_agent(llm, capture_dir, max_steps=max_steps, use_native_tools=use_native_tools)
+        capture_agent(
+            llm, capture_dir, max_steps=max_steps, use_native_tools=use_native_tools, case=case
+        )
         print(f"Capture: looplet inspect {quote(str(capture_dir))}")
         saved = load_eval_run(capture_dir)
         eval_assess([eval_owner], saved.context).assert_passed()
@@ -169,11 +195,21 @@ def experiment_agent(llm, *, output_dir=None, max_steps=2, use_native_tools=Fals
         print(f"Experiment report: {report_path}")
 
 
-def stop_after_lookup(llm, *, max_steps=2, use_native_tools=False):
+def stop_after_lookup(llm, *, max_steps=2, use_native_tools=False, case: EvalCase | None = None):
+    case = case or owner_case()
     runtime = SkillRuntime(workspace=Path.cwd(), max_steps=max_steps)
     with build(runtime) as run:
         run.config.use_native_tools = use_native_tools
-        with closing(run.run(llm, task={"goal": "Find the payments owner, then finish."})) as steps:
+        with closing(
+            run.run(
+                llm,
+                task={
+                    key: value
+                    for key, value in case.task.items()
+                    if key not in {"files", "expected"}
+                },
+            )
+        ) as steps:
             next(steps, None)
         return RunResult.from_state(run.state)
 
@@ -210,6 +246,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Step limit; defaults to two for fresh runs or the saved replay budget",
     )
     parser.add_argument("--out", type=Path, help="New replay or experiment directory")
+    parser.add_argument("--case", type=Path, help="One JSON eval case for a fresh run")
     parser.add_argument("--backend", choices=("scripted", "openai", "anthropic"))
     parser.add_argument(
         "--json-text", action="store_true", help="Use JSON-text instead of native tools"
@@ -223,6 +260,21 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--max-steps does not apply to --rescore")
     if (arguments.replay or arguments.rescore) and (arguments.backend or arguments.json_text):
         parser.error("--replay and --rescore do not use a provider; omit --backend and --json-text")
+    if (arguments.replay or arguments.rescore) and arguments.case is not None:
+        parser.error("--replay and --rescore use the saved case; omit --case")
+    case = None
+    if arguments.case is not None:
+        try:
+            cases = load_cases(arguments.case)
+            if len(cases) != 1:
+                raise ValueError("--case requires exactly one eval case")
+            case = cases[0]
+            if case.task.get("files"):
+                raise ValueError(
+                    "--case does not seed files; use looplet eval run --factory my_agent:build"
+                )
+        except (OSError, ValueError) as error:
+            parser.error(str(error))
     try:
         if arguments.rescore:
             saved = load_eval_run(arguments.rescore)
@@ -245,6 +297,7 @@ def main(argv: list[str] | None = None) -> int:
             options = {
                 "max_steps": arguments.max_steps or 2,
                 "use_native_tools": backend_name != "scripted" and not arguments.json_text,
+                "case": case,
             }
             if arguments.experiment:
                 result = experiment_agent(llm, output_dir=arguments.out, **options)
@@ -260,7 +313,7 @@ def main(argv: list[str] | None = None) -> int:
         if arguments.stop_after_lookup:
             return 0
         if not arguments.capture and not arguments.replay and not arguments.experiment:
-            assess_result(result).assert_passed()
+            assess_result(result, case=case).assert_passed()
         print(True)
         return 0 if result.completed else 1
     except (AssertionError, FileExistsError, FileNotFoundError) as error:

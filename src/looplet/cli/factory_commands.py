@@ -362,6 +362,7 @@ def _run_cartridge(
     backend_override: Any = None,
     task_override: dict[str, Any] | None = None,
     replay_case: Any = None,
+    replay_use_native_tools: bool | None = None,
 ) -> int:
     json_output = getattr(args, "json", False)
     if json_output and getattr(args, "pretty", False):
@@ -532,6 +533,8 @@ def _run_cartridge(
     if args.max_steps is not None:
         preset.config.max_steps = args.max_steps
         preset.state.max_steps = args.max_steps
+    if replay_use_native_tools is not None:
+        preset.config.use_native_tools = replay_use_native_tools
     state = preset.state
     if sink is not None:
         backend = sink.wrap_llm(backend)
@@ -715,7 +718,12 @@ def _replay_seed_paths(source: Path, *, excluded: tuple[Path, ...]) -> list[tupl
 
 def cmd_replay(args: argparse.Namespace) -> int:
     """Replay captured responses with a trusted agent in a fresh workspace."""
-    from looplet.evals import load_cases, seed_case_workspace  # noqa: PLC0415
+    from looplet.evals import (  # noqa: PLC0415
+        EvalCase,
+        load_cases,
+        load_eval_run,
+        seed_case_workspace,
+    )
     from looplet.provenance import _load_trace_calls, _ReplayLLMBackend  # noqa: PLC0415
 
     output = sys.stdout
@@ -771,7 +779,21 @@ def cmd_replay(args: argparse.Namespace) -> int:
                     and recorded_steps > 0
                     else len(calls)
                 )
-            cases = load_cases(trace / "case.json") if (trace / "case.json").is_file() else []
+            has_saved_case = (trace / "case.json").is_file()
+            cases = load_cases(trace / "case.json") if has_saved_case else []
+            if not cases and (trace / "expected.json").is_file():
+                saved = load_eval_run(trace)
+                cases = [
+                    EvalCase(
+                        id="run",
+                        task={
+                            key: value
+                            for key, value in saved.context.task.items()
+                            if key not in {"files", "expected"}
+                        },
+                        expected=dict(saved.context.expected),
+                    )
+                ]
             if getattr(args, "evals", None) is not None and not cases:
                 raise ValueError(
                     "--evals requires a saved eval case; capture one with "
@@ -803,7 +825,7 @@ def cmd_replay(args: argparse.Namespace) -> int:
             seed_paths: list[tuple[Path, Path]] = []
             seed_from = getattr(args, "seed_from", None)
             if seed_from is not None:
-                if cases:
+                if has_saved_case:
                     raise ValueError(
                         "--seed-from is for raw traces; saved cases supply their own seed files"
                     )
@@ -856,6 +878,7 @@ def cmd_replay(args: argparse.Namespace) -> int:
             backend_override=_ReplayLLMBackend(calls),
             task_override=task,
             replay_case=cases[0] if cases else None,
+            replay_use_native_tools=bool(calls and calls[0]["method"] == "generate_with_tools"),
         )
 
 

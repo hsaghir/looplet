@@ -112,6 +112,7 @@ looplet inspect my_agent:build --mode runtime --workspace . --json
 looplet inspect ./agent.cartridge --json
 looplet inspect ./skills/code-review --json
 looplet inspect traces/incident-42 --json
+looplet inspect .looplet/experiments
 looplet inspect ./saved-experiment
 looplet inspect ./saved-experiment/experiment.json --json
 looplet inspect ./agent.cartridge --mode runtime --json
@@ -149,6 +150,12 @@ Older reports remain readable but cannot identify a failed stage they did not re
 Readable failed reports exit zero; malformed reports return nonzero with an error.
 Trace directories keep their existing inspection behavior, even when they contain a file named `experiment.json`.
 Reports and grading explanations may contain expected answers or sensitive data; review them before sharing.
+
+**Unreleased:** inspect a history directory such as `.looplet/experiments` to list its direct child experiments.
+Each summary shows the saved verdict, last stage, and a quoted child inspection command without rerunning code.
+`--json` returns `looplet.experiment-history`, version 1, with report-relative child directories.
+Readable failed experiments do not make inspection fail; unreadable reports remain listed and return nonzero.
+Unrelated files and directories without `experiment.json` are ignored.
 
 `describe` also accepts `--mode declaration|runtime`, including explicit runtime
 JSON; legacy `--instantiate --json` remains mutually exclusive. `blueprint`
@@ -239,6 +246,9 @@ Choose unused paths when repeating this example; existing evidence and replay wo
 The final command uses recorded model responses and writes a separate trace under the new workspace's `.looplet/traces/` directory.
 Its JSON and `--require-completed` behavior match `run`.
 It does not grade correctness or modify the original capture.
+If the loop asks for more model responses than were recorded, it stops immediately with `replay_exhausted`.
+There is no retry backoff or provider call; the incomplete replay remains a failed run.
+Reduce the step limit or record a longer trace rather than retrying the exhausted capture.
 
 Raw captures do not contain a snapshot of the original workspace. Supply a reviewed starting input tree explicitly when tools need files:
 

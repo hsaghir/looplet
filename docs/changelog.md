@@ -19,6 +19,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `inspect` lists saved experiment history with status, stage, and shell-safe child inspection commands, retaining unreadable reports as errors.
 - `inspect` lists saved eval suite cases and opens separate assessment reports without rerunning graders or inventing a historical gate policy.
 - Saved-evidence rescoring supports `--out`, and `EvalReport.save()` writes private, exclusive assessment files with relative evidence links without replacing capture-time grades.
 - `inspect` accepts Quickstart experiment directories and reports without rerunning code, while preserving legacy reports and trace inspection.
@@ -37,6 +38,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Human saved-evidence rescoring shows each failing check's explanation when available, including with `--verbose`.
+- Exhausted captured-response replay stops without retry backoff and records `replay_exhausted` as a failed run rather than a generic `llm_error`.
 - Saved-evidence rescoring reports missing components as integrity failures instead of silently skipping known cases.
 - Assessment evidence links exclude colocated reports and unrelated files.
 - Human saved-assessment inspection shows stored scores and labels beside result states.

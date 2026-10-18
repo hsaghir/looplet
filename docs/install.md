@@ -34,11 +34,11 @@ This is the same environment used at the start of the [Quickstart](quickstart.md
 ```bash
 python -m venv .venv-looplet-preview
 source .venv-looplet-preview/bin/activate
-python -m pip install "looplet @ https://github.com/hsaghir/looplet/archive/270ebab43f0be9deea4b2a039ded2bbd3d94acfd.zip"
+python -m pip install "looplet @ https://github.com/hsaghir/looplet/archive/81d0ad13c74ae4e8365bed8da7ae739238fedfaa.zip"
 looplet doctor --no-backend --json
 ```
 
-This non-editable install pins commit `270ebab` with factory commands and the complete one-file starter.
+This non-editable install pins commit `81d0ad1` with factory commands and the complete one-file starter.
 The starter selects providers, saves replay evidence, and runs repeat-safe experiments.
 Failed grades explain mismatches; experiment inspection shows stage status, errors, and available traces.
 Factory inspection supports declaration-only reports and explicit runtime wiring checks.
@@ -54,6 +54,9 @@ Malformed saved starter input returns concise recovery guidance without changing
 Eval help introduces Python factories first.
 Inspection lists saved suite cases and opens separately saved assessments without rerunning graders.
 Rescoring supports a named assessment file while preserving capture-time grades.
+Human rescoring keeps result labels and includes available failure explanations.
+Exhausted replay fails immediately with `replay_exhausted`, without retry backoff.
+Inspection lists saved experiment history, including unreadable reports and child navigation.
 Keep the commit and source fingerprint with experiment results.
 The ordinary Python, pytest, capture, and replay examples work with released `0.4.1`.
 Do not install the published package over this environment midway through the Quickstart.

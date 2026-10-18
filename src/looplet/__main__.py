@@ -1026,7 +1026,9 @@ def main(argv: list[str] | None = None) -> int:
     if raw in (["--help"], ["-h"]):
         print(parser.format_usage().rstrip())
         print(f"\n{parser.description}\n\nWorkflow:")
+        print("  Start here: python -m looplet.examples.quickstart")
         print("  Python: run your agent with `python your_agent.py`; packaging is optional.\n")
+        print("  Use a cartridge when you need shell run, replay, or eval commands.\n")
         for command, description in (
             ("new", "Create an agent cartridge"),
             ("run", "Run a cartridge or skill bundle"),
@@ -1035,6 +1037,7 @@ def main(argv: list[str] | None = None) -> int:
             ("replay", "Replay captured responses in a fresh workspace"),
         ):
             print(f"  {command:10s} {description}")
+        print("\nSkill bundles are advanced packaging, not a Quickstart requirement.")
         print("\nUse COMMAND --help for options; --help-all lists every command and alias.")
         parser.exit()
 

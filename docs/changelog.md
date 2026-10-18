@@ -6,6 +6,21 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- CLI `run`, its format aliases, and `replay` require accepted completion by default. Use `--allow-incomplete` for the earlier command-success policy.
+- `--require-completed` remains supported. Strict bundle runs use the shared runner; custom human runners require `--allow-incomplete`.
+- Beginner help and guides start with Python, add cartridges for shell workflows, and defer skill bundles to advanced packaging.
+
+### Added
+
+- Cartridge exports report detected external Python imports in metadata and a warning. Factory bundles report their required factory module.
+- Export guidance explains host dependencies and distinguishes strict conversion from a self-contained distribution.
+
+### Fixed
+
+- Failed Quickstart captures report their actual stop reason and a shell-safe inspection command while preserving evidence and nonzero exits.
+
 ## [0.4.1] - 2026-10-17
 
 ### Added

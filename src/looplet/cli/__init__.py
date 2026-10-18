@@ -60,11 +60,24 @@ def add_run_options(parser: ArgumentParser) -> None:
     parser.add_argument(
         "--json", action="store_true", help="Emit one machine-readable completion object"
     )
-    parser.add_argument(
+    add_completion_options(parser)
+
+
+def add_completion_options(parser: ArgumentParser) -> None:
+    """Require accepted completion unless the caller explicitly permits a stop."""
+    completion = parser.add_mutually_exclusive_group()
+    completion.add_argument(
         "--require-completed",
         action="store_true",
-        help="Return nonzero unless the agent reaches accepted completion",
+        help="Return nonzero unless completion is accepted (the default)",
     )
+    completion.add_argument(
+        "--allow-incomplete",
+        dest="require_completed",
+        action="store_false",
+        help="Allow exit zero after a budget or hook stop without accepted completion",
+    )
+    parser.set_defaults(require_completed=True)
 
 
 def execution_output(json_output: bool) -> AbstractContextManager[Any]:
@@ -104,6 +117,6 @@ def completion_payload(
     }
 
 
-def completion_exit_code(result: RunResult, *, require_completed: bool = False) -> int:
-    """Keep command success distinct from an optional completion requirement."""
+def completion_exit_code(result: RunResult, *, require_completed: bool = True) -> int:
+    """Fail incomplete CLI runs unless the caller explicitly permits a stop."""
     return int(result.failed or (require_completed and not result.completed))

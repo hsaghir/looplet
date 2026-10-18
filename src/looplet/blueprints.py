@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import keyword
+import logging
 import shutil
 import uuid
 from collections.abc import Iterable, Mapping
@@ -365,6 +366,7 @@ def package_agent_factory_as_bundle(
     if ":" not in factory_ref:
         raise ValueError("factory_ref must use 'module:attribute' syntax")
     _resolve_factory(factory_ref)
+    factory_module = factory_ref.split(":", 1)[0]
     root = Path(out_dir)
     root.mkdir(parents=True, exist_ok=True)
     entrypoint_path = _entrypoint_path(root, entrypoint)
@@ -373,7 +375,7 @@ def package_agent_factory_as_bundle(
         description=description,
         tags=list(tags),
         entrypoint=entrypoint,
-        metadata={"factory": factory_ref},
+        metadata={"factory": factory_ref, "python_imports": [factory_module]},
         instructions=instructions,
     )
     (root / "SKILL.md").write_text(skill_text, encoding="utf-8")
@@ -399,6 +401,13 @@ def build(runtime: Any):
     return _factory()(runtime)
 ''',
         encoding="utf-8",
+    )
+    logging.getLogger(__name__).warning(
+        "Packaged bundle %s is not self-contained. "
+        "Make Python module %s available on the receiving host. "
+        "The factory module and its dependencies are not copied.",
+        root,
+        factory_module,
     )
     return root
 

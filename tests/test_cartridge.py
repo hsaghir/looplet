@@ -128,6 +128,69 @@ def _build_demo_preset() -> AgentPreset:
 # ── basic IO ────────────────────────────────────────────────────
 
 
+def test_strict_export_reports_external_python_imports(tmp_path, caplog):
+    written = preset_to_cartridge(_build_demo_preset(), tmp_path / "agent.cartridge", strict=True)
+
+    assert __name__ in written.metadata["python_imports"]
+    manifest = json.loads((written.path / "cartridge.json").read_text())
+    assert manifest["metadata"]["python_imports"] == written.metadata["python_imports"]
+    assert written.serialization_warnings == []
+    assert "not self-contained" in caplog.text
+    assert __name__ in caplog.text
+    assert "receiving host" in caplog.text
+    assert "not a dependency lockfile" in caplog.text
+
+
+def test_self_contained_export_has_no_external_import_warning(tmp_path, monkeypatch, caplog):
+    preset = _build_demo_preset()
+    preset.hooks.clear()
+    monkeypatch.setattr(lookup_execute, "__module__", "__main__")
+    monkeypatch.setattr(done_execute, "__module__", "__main__")
+
+    written = preset_to_cartridge(preset, tmp_path / "agent.cartridge", strict=True)
+
+    assert "python_imports" not in written.metadata
+    assert "not self-contained" not in caplog.text
+    assert (
+        cartridge_to_preset(written.path)
+        .tools.dispatch(ToolCall(tool="lookup", args={"key": "x"}))
+        .data["value"]
+        == 1
+    )
+
+
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-8-sig", "latin-1"])
+def test_export_import_inventory_is_static_and_excludes_shipped_modules(tmp_path, encoding):
+    from looplet.cartridge._serialise import _python_import_dependencies
+
+    (tmp_path / "execute.py").write_text(
+        f"# coding: {encoding}\n"
+        "import json\nimport looplet\nimport local_helper\n"
+        "from external_service.client import Client\nfrom .relative_helper import value\n"
+        "label = 'caf\u00e9'\n"
+        "raise AssertionError('inventory must not execute authored code')\n",
+        encoding=encoding,
+    )
+    (tmp_path / "local_helper.py").write_text("import another_dependency\n")
+
+    assert _python_import_dependencies(tmp_path) == [
+        "another_dependency",
+        "external_service.client",
+    ]
+
+
+def test_export_import_inventory_does_not_follow_external_symlinks(tmp_path):
+    from looplet.cartridge._serialise import _python_import_dependencies
+
+    root = tmp_path / "cartridge"
+    root.mkdir()
+    external = tmp_path / "external.py"
+    external.write_text("import private_host_module\n")
+    (root / "application.py").symlink_to(external)
+
+    assert _python_import_dependencies(root) == []
+
+
 def test_write_to_empty_directory(tmp_path: Path) -> None:
     workspace = preset_to_cartridge(_build_demo_preset(), tmp_path / "ws")
     assert (workspace.path / CartridgeLayout.CARTRIDGE_JSON).is_file()

@@ -30,6 +30,7 @@ from typing import Any, TextIO
 from looplet.bundled import bundled_cartridge_path
 from looplet.cli import (
     add_backend_options,
+    add_completion_options,
     add_run_options,
     completion_exit_code,
     completion_payload,
@@ -564,7 +565,7 @@ def _run_cartridge(
             file=output,
         )
         return completion_exit_code(
-            result, require_completed=getattr(args, "require_completed", False)
+            result, require_completed=getattr(args, "require_completed", True)
         )
 
     print()
@@ -600,7 +601,7 @@ def _run_cartridge(
                     ]
                 )
             )
-    return completion_exit_code(result, require_completed=getattr(args, "require_completed", False))
+    return completion_exit_code(result, require_completed=getattr(args, "require_completed", True))
 
 
 def _replay_seed_paths(source: Path, *, excluded: tuple[Path, ...]) -> list[tuple[Path, Path]]:
@@ -871,9 +872,7 @@ def add_subparsers(sub: "argparse._SubParsersAction") -> None:
     )
     replay_p.add_argument("--quiet", action="store_true", help="Suppress per-step output")
     replay_p.add_argument("--json", action="store_true", help="Emit the shared completion object")
-    replay_p.add_argument(
-        "--require-completed", action="store_true", help="Fail if completion is not accepted"
-    )
+    add_completion_options(replay_p)
     replay_p.set_defaults(_handler=cmd_replay)
 
     run_p = sub.add_parser(

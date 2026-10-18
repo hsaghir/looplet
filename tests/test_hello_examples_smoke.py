@@ -193,6 +193,69 @@ def test_packaged_quickstart_launcher_propagates_failure(tmp_path):
     assert "budget_exhausted" in result.stdout
 
 
+@pytest.mark.parametrize("max_steps, stop_reason", [(1, "budget_exhausted"), (2, "done")])
+def test_packaged_quickstart_failed_capture_reports_saved_evidence(
+    tmp_path, monkeypatch, capsys, max_steps, stop_reason
+):
+    import shlex
+
+    from looplet import load_eval_run
+    from looplet.__main__ import main
+    from looplet.examples import quickstart
+
+    if max_steps == 2:
+        monkeypatch.setattr(quickstart, "EXPECTED_OWNER", {"service": "payments", "owner": "wrong"})
+    trace = tmp_path / "saved run"
+
+    assert quickstart.main(["--capture", str(trace), "--max-steps", str(max_steps)]) == 1
+    output = capsys.readouterr()
+    assert "eval_owner: fail" in output.err
+    assert f"Stop reason: {stop_reason}" in output.err
+    command = next(
+        line.removeprefix("Inspect with: ")
+        for line in output.err.splitlines()
+        if line.startswith("Inspect with: ")
+    )
+    assert shlex.split(command) == ["looplet", "inspect", str(trace)]
+    assert load_eval_run(trace).context.stop_reason == stop_reason
+    before = {
+        str(path.relative_to(trace)): path.read_bytes()
+        for path in trace.rglob("*")
+        if path.is_file()
+    }
+    assert main(["inspect", str(trace)]) == 0
+    assert stop_reason in capsys.readouterr().out
+    assert {
+        str(path.relative_to(trace)): path.read_bytes()
+        for path in trace.rglob("*")
+        if path.is_file()
+    } == before
+
+
+def test_packaged_quickstart_capture_launcher_reports_recovery(tmp_path):
+    trace = tmp_path / "saved run"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "looplet.examples.quickstart",
+            "--capture",
+            str(trace),
+            "--max-steps",
+            "1",
+        ],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 1
+    assert "Stop reason: budget_exhausted" in result.stderr
+    assert "Inspect with: looplet inspect" in result.stderr
+    assert str(trace) in result.stderr
+    assert (trace / "trajectory.json").is_file()
+
+
 def test_packaged_quickstart_preserves_existing_capture(tmp_path):
     from looplet.examples import quickstart
 
@@ -227,6 +290,14 @@ def test_quickstart_offers_companion_before_file_assembly():
     assert companion < text.index('title="first_loop.py"')
     for mode in ("--capture", "--rescore", "--replay", "--stop-after-lookup"):
         assert f"python -m looplet.examples.quickstart {mode}" in text
+    assert "Keep running this agent with Python and testing it with pytest." in text
+    assert "You do not need a skill bundle for that transition." in text
+    cli = (guide.parent / "cli.md").read_text()
+    primary = cli.split("## Choose an agent format\n", 1)[1].split(
+        "## Diagnose and inspect runs\n", 1
+    )[0]
+    assert "| Workflow | Start in Python | Add a cartridge when needed |" in primary
+    assert "| Workflow | Python agent | Cartridge | Skill bundle |" not in primary
 
 
 def _interrupt_after_calls(backend, calls, async_driver, monkeypatch):

@@ -4,7 +4,8 @@ Run one Python agent, get its answer, test it, and replay its saved model respon
 You need Python 3.11 or newer.
 You do not need a model key until the optional real-model section.
 Start with Python functions.
-Cartridges and bundles are optional packaging formats, not prerequisites.
+Keep the agent in Python while you change and test it.
+Package it only when you need shell commands or want to share its files.
 
 ## 1. Install Looplet
 
@@ -40,6 +41,11 @@ Use a new trace directory to capture the same run:
 python -m looplet.examples.quickstart --capture ./quickstart-trace
 looplet inspect ./quickstart-trace
 ```
+
+**Unreleased source behavior:** failed captures print their stop reason and an inspection command before returning nonzero.
+The saved trace remains available for inspection.
+For `budget_exhausted`, increase `--max-steps` and choose a new capture directory for the next run.
+Published `0.4.1` saves this evidence but may print only the failed grader name.
 
 Rescore saved evidence without running tools or calling a model:
 
@@ -453,7 +459,11 @@ See the [Python API](api.md#execution-core) for that form.
 
 ## Choose the next guide
 
-You do not need all of these features to use the loop.
+Keep running this agent with Python and testing it with pytest.
+Use [cartridges](cartridge.md) when you need shell run, replay, or file-based eval commands.
+You do not need a skill bundle for that transition.
+See the [CLI guide](cli.md#choose-an-agent-format) for the Python-to-cartridge workflow.
+Add the other features below only when your agent needs them.
 
 | Goal | Guide |
 | --- | --- |

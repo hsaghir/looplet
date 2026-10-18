@@ -33,6 +33,7 @@ def _args(
         quiet=False,
         pretty=False,
         json=json_output,
+        require_completed=False,
     )
 
 
@@ -293,8 +294,7 @@ def test_generic_bundle_failure_presentation_uses_shared_error(
     ]
     if json_output:
         arguments.append("--json")
-    if require_completed:
-        arguments.append("--require-completed")
+    arguments.append("--require-completed" if require_completed else "--allow-incomplete")
 
     assert main(arguments) == int(require_completed)
 
@@ -309,6 +309,116 @@ def test_generic_bundle_failure_presentation_uses_shared_error(
     else:
         assert "stopped (budget_exhausted)" in output.out
         assert expected in output.out
+
+
+@pytest.mark.parametrize("command", ["run", "run-cartridge", "run-workspace"])
+@pytest.mark.parametrize("policy", [None, "--require-completed", "--allow-incomplete"])
+@pytest.mark.parametrize("json_output", [False, True])
+def test_cli_requires_completion_by_default(tmp_path, capsys, command, policy, json_output):
+    cartridge = _custom_terminal_cartridge(tmp_path, name="done", return_expression="{}")
+    arguments = [
+        command,
+        str(cartridge),
+        "finish",
+        "--project-root",
+        str(tmp_path),
+        "--max-steps",
+        "1",
+        "--no-trace",
+        "--scripted-response",
+        '{"tool":"done","args":{}}',
+    ]
+    if policy is not None:
+        arguments.append(policy)
+    if json_output:
+        arguments.append("--json")
+
+    assert main(arguments) == int(policy != "--allow-incomplete")
+    output = capsys.readouterr()
+    if json_output:
+        payload = json.loads(output.out)
+        assert payload["completed"] is False
+        assert payload["termination_reason"] == "budget_exhausted"
+        assert "missing required argument" in payload["error"]["message"]
+    else:
+        assert "stopped (budget_exhausted)" in output.out
+        assert "missing required argument" in output.out
+
+
+@pytest.mark.parametrize("policy", [None, "--require-completed", "--allow-incomplete"])
+@pytest.mark.parametrize("json_output", [False, True])
+def test_replay_requires_completion_by_default(tmp_path, capsys, policy, json_output):
+    cartridge = _custom_terminal_cartridge(tmp_path, name="done", return_expression="{}")
+    trace = tmp_path / "original-trace"
+    assert (
+        main(
+            [
+                "run",
+                str(cartridge),
+                "finish",
+                "--project-root",
+                str(tmp_path),
+                "--trace-dir",
+                str(trace),
+                "--allow-incomplete",
+                "--max-steps",
+                "1",
+                "--scripted-response",
+                '{"tool":"done","args":{}}',
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+    original = {
+        str(path.relative_to(trace)): path.read_bytes()
+        for path in trace.rglob("*")
+        if path.is_file()
+    }
+    arguments = [
+        "replay",
+        str(trace),
+        "--cartridge",
+        str(cartridge),
+        "--workspace",
+        str(tmp_path / "replay-workspace"),
+    ]
+    if policy is not None:
+        arguments.append(policy)
+    if json_output:
+        arguments.append("--json")
+
+    assert main(arguments) == int(policy != "--allow-incomplete")
+    output = capsys.readouterr()
+    if json_output:
+        payload = json.loads(output.out)
+        assert payload["completed"] is False
+        assert payload["termination_reason"] == "budget_exhausted"
+        assert payload["error"]["tool"] == "done"
+    else:
+        assert "stopped (budget_exhausted)" in output.out
+    assert {
+        str(path.relative_to(trace)): path.read_bytes()
+        for path in trace.rglob("*")
+        if path.is_file()
+    } == original
+
+
+@pytest.mark.parametrize(
+    "command", ["run", "run-cartridge", "run-workspace", "run-bundle", "replay"]
+)
+def test_completion_flags_are_mutually_exclusive(tmp_path, capsys, command):
+    arguments = [command, str(tmp_path)]
+    if command == "replay":
+        arguments.extend(["--cartridge", str(tmp_path), "--workspace", str(tmp_path / "fresh")])
+    else:
+        arguments.append("finish")
+    arguments.extend(["--require-completed", "--allow-incomplete"])
+
+    with pytest.raises(SystemExit) as error:
+        main(arguments)
+    assert error.value.code == 2
+    assert "not allowed with argument" in capsys.readouterr().err
 
 
 def test_recovered_completion_does_not_report_an_old_error(tmp_path, monkeypatch, capsys):

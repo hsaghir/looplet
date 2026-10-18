@@ -1621,7 +1621,7 @@ def test_cli_replay_restores_task_and_bounds_default_budget(
         ]
         for response in responses:
             arguments.extend(["--scripted-response", response])
-        assert main(arguments) == 0
+        assert main(arguments) == int(original_budget == 1)
     snapshot = {
         path.relative_to(original): path.read_bytes()
         for path in original.rglob("*")

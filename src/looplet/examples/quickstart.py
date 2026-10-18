@@ -6,6 +6,7 @@ import argparse
 import sys
 from contextlib import closing
 from pathlib import Path
+from shlex import quote
 
 from looplet import (
     DefaultState,
@@ -84,7 +85,13 @@ def capture_agent(llm, trace_dir: Path, *, max_steps=2):
     finally:
         saved_trace = sink.flush()
     save_eval_run(saved_trace, recorder=sink.trajectory_hook(), eval_hook=grading)
-    grading.assessment().assert_passed()
+    try:
+        grading.assessment().assert_passed()
+    except AssertionError as error:
+        raise AssertionError(
+            f"{error}\nStop reason: {result.termination_reason}\n"
+            f"Inspect with: looplet inspect {quote(str(saved_trace))}"
+        ) from error
     return result, saved_trace
 
 
@@ -153,7 +160,7 @@ def main(argv: list[str] | None = None) -> int:
             result, trace = capture_agent(
                 scripted_backend(), arguments.capture, max_steps=arguments.max_steps
             )
-            print(f"Inspect with: looplet inspect {trace}")
+            print(f"Inspect with: looplet inspect {quote(str(trace))}")
         elif arguments.stop_after_lookup:
             result = stop_after_lookup(scripted_backend())
         else:

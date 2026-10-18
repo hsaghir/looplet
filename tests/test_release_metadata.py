@@ -142,6 +142,23 @@ def test_lockfile_and_latest_published_release_match_metadata() -> None:
     assert release_date <= date.today()
 
 
+def test_unreleased_cli_migration_and_dependency_guidance_are_explicit() -> None:
+    cli = (ROOT / "docs" / "cli.md").read_text()
+    cartridge = (ROOT / "docs" / "cartridge.md").read_text()
+    quickstart = (ROOT / "docs" / "quickstart.md").read_text()
+    unreleased = (
+        (ROOT / "CHANGELOG.md").read_text().split("## [Unreleased]\n", 1)[1].split("\n## [", 1)[0]
+    )
+
+    assert "Published `0.4.1` still needs `--require-completed`" in cli
+    assert "--allow-incomplete" in cli and "--allow-incomplete" in unreleased
+    assert "factory module or its dependencies" in cli
+    assert "not necessarily self-contained" in cartridge
+    assert 'exported.metadata["python_imports"]' in cartridge
+    assert "not a complete dependency lockfile" in cartridge
+    assert "failed captures print their stop reason and an inspection command" in quickstart
+
+
 def test_site_changelog_matches_canonical_history() -> None:
     canonical = (ROOT / "CHANGELOG.md").read_text()
     expected_site = canonical.replace("](docs/provenance.md)", "](provenance.md)")

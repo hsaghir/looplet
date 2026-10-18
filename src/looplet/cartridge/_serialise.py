@@ -14,6 +14,7 @@ to an equivalent directory through this module.
 
 from __future__ import annotations
 
+import ast
 import builtins
 import importlib
 import inspect
@@ -22,6 +23,7 @@ import logging
 import re
 import shutil
 import symtable
+import sys
 import tempfile
 import textwrap
 from collections.abc import Iterable
@@ -114,6 +116,15 @@ def preset_to_cartridge(
                 backup.rename(destination)
             raise
     cartridge.path = root
+    imports = cartridge.metadata.get("python_imports", [])
+    if imports:
+        logger.warning(
+            "Exported cartridge %s is not self-contained. "
+            "Make these Python modules available on the receiving host: %s. "
+            "This static import list is not a dependency lockfile.",
+            root,
+            ", ".join(imports),
+        )
     return cartridge
 
 
@@ -424,9 +435,44 @@ def _write_preset_to_cartridge(
     # reload with ``ModuleNotFoundError``.
     _copy_workspace_helpers(preset, root, warnings)
 
+    imports = _python_import_dependencies(root)
+    if imports:
+        workspace.metadata["python_imports"] = imports
+    else:
+        workspace.metadata.pop("python_imports", None)
     workspace.serialization_warnings = warnings
     workspace.write_metadata()
     return workspace
+
+
+def _python_import_dependencies(root: Path) -> list[str]:
+    imports = set()
+    for source in root.rglob("*.py"):
+        if not source.resolve().is_relative_to(root.resolve()):
+            continue
+        try:
+            tree = ast.parse(source.read_bytes())
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                modules = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                modules = [node.module]
+            else:
+                continue
+            for module in modules:
+                package = module.split(".")[0]
+                if package == "looplet" or package in sys.stdlib_module_names:
+                    continue
+                if any(
+                    (directory / (package + ".py")).is_file()
+                    or (directory / package / "__init__.py").is_file()
+                    for directory in (root, source.parent)
+                ):
+                    continue
+                imports.add(module)
+    return sorted(imports)
 
 
 def _is_mcp_tool(spec: Any) -> bool:

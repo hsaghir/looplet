@@ -43,8 +43,8 @@ They are an advanced packaging option, not a required step after the Quickstart.
 Use `new`, `run`, `inspect`, and `eval`; add `replay` when comparing captured responses.
 `run` detects packaged formats or a Python factory reference.
 Use `replay --factory` and `eval run --factory` for Python, or `--cartridge` and a cartridge path for packaged agents.
-`inspect` defaults to a factory reference, cartridge declarations, bundle metadata, or a saved
-trace without importing authored agent code. The formats remain distinct.
+`inspect` defaults to a factory reference, cartridge declarations, bundle metadata, a saved trace, or an experiment report.
+Default inspection does not import authored agent code. The formats remain distinct.
 Default help shows the main workflow. `--help-all` reveals advanced
 commands and compatibility aliases; their individual help remains available.
 `run-cartridge` / `run-workspace`, `run-bundle`, `describe`, and `show` remain
@@ -101,7 +101,7 @@ This fingerprint is not an official release identifier or a security attestation
 
 ### `looplet inspect <path-or-module:factory>`
 
-Inspect a Python factory reference, cartridge, skill bundle, or saved trace:
+Inspect a Python factory reference, cartridge, skill bundle, saved trace, or Quickstart experiment:
 
 ```bash
 looplet inspect my_agent:build --json
@@ -109,6 +109,8 @@ looplet inspect my_agent:build --mode runtime --workspace . --json
 looplet inspect ./agent.cartridge --json
 looplet inspect ./skills/code-review --json
 looplet inspect traces/incident-42 --json
+looplet inspect ./saved-experiment
+looplet inspect ./saved-experiment/experiment.json --json
 looplet inspect ./agent.cartridge --mode runtime --json
 looplet inspect ./skills/code-review --mode runtime --workspace . --json
 ```
@@ -118,6 +120,8 @@ output contains metadata and metadata errors, not a loaded blueprint. Trace
 output preserves the `show` JSON contract, and rejects runtime mode.
 Factory declaration reports contain only the reference; they do not resolve or import it.
 Factory runtime reports include the preset blueprint and validated status without selecting a model.
+Human runtime output lists tools, the completion tool, step limit, protocol, and hook count.
+The printed full-blueprint command preserves the workspace and step limit.
 Use `module:factory`, not a Python file path; the callable receives `SkillRuntime` and returns `AgentPreset`.
 `--workspace` must name an existing directory; it does not change the import directory.
 `--max-steps` sets the factory's runtime step budget and must be positive.
@@ -129,6 +133,16 @@ Cartridge declaration content remains redacted unless `--include-sensitive`
 is passed. Runtime bundle and factory blueprints may include authored instructions/config;
 review them before sharing. Harness diagnostics go to stderr in JSON mode.
 Trusted factory imports and resource setup can have effects even though inspection calls no model.
+
+**Unreleased:** Quickstart experiment inspection reads `experiment.json` without rerunning tools, graders, or models.
+Pass the experiment directory or its report file; `--json` prints the saved report.
+New reports record the last stage, per-stage status, and any error.
+Stages are `passed`, `failed`, or `not_run`; uncreated trace directories have `null` paths.
+Human output links available traces and flags missing paths in older reports.
+Older reports remain readable but cannot identify a failed stage they did not record.
+Readable failed reports exit zero; malformed reports return nonzero with an error.
+Trace directories keep their existing inspection behavior, even when they contain a file named `experiment.json`.
+Reports and grading explanations may contain expected answers or sensitive data; review them before sharing.
 
 `describe` also accepts `--mode declaration|runtime`, including explicit runtime
 JSON; legacy `--instantiate --json` remains mutually exclusive. `blueprint`

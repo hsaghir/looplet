@@ -34,13 +34,15 @@ This is the same environment used at the start of the [Quickstart](quickstart.md
 ```bash
 python -m venv .venv-looplet-preview
 source .venv-looplet-preview/bin/activate
-python -m pip install "looplet @ https://github.com/hsaghir/looplet/archive/4ae69df2860c91ee22c6a5b777d7039a801d7dba.zip"
+python -m pip install "looplet @ https://github.com/hsaghir/looplet/archive/b5aa201e5f06d71fcf1a4b165addb80a3caebe0f.zip"
 looplet doctor --no-backend --json
 ```
 
-This non-editable install pins commit `4ae69df` with factory commands and the complete one-file starter.
+This non-editable install pins commit `b5aa201` with factory commands and the complete one-file starter.
 The starter selects providers, saves replay evidence, and runs repeat-safe experiments.
+Failed grades explain mismatches; experiment inspection shows stage status, errors, and available traces.
 Factory inspection supports declaration-only reports and explicit runtime wiring checks.
+Human runtime reports list tools and limits; `--json` includes the full blueprint.
 Its cases keep tasks and expectations together.
 CLI replay preserves the captured protocol and saved expectations.
 Installation needs network access, but not Git or a model key.

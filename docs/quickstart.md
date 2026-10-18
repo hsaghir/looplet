@@ -16,13 +16,13 @@ The install does not require Git or a repository checkout.
 ```bash
 python -m venv .venv-looplet-preview
 source .venv-looplet-preview/bin/activate
-python -m pip install "looplet @ https://github.com/hsaghir/looplet/archive/4ae69df2860c91ee22c6a5b777d7039a801d7dba.zip"
+python -m pip install "looplet @ https://github.com/hsaghir/looplet/archive/b5aa201e5f06d71fcf1a4b165addb80a3caebe0f.zip"
 looplet doctor --no-backend --json
 ```
 
 The core package has no third-party runtime dependencies.
 The install needs network access; the fixed-response runs do not.
-This is a non-editable install of commit `4ae69df`.
+This is a non-editable install of commit `b5aa201`.
 Keep this environment active for the complete guide; no second install is needed for the starter.
 Both the preview and published package report version `0.4.1`.
 Keep the commit and the doctor's library source fingerprint with your results.
@@ -49,6 +49,8 @@ looplet inspect ./quickstart-trace
 ```
 
 **Unreleased source behavior:** failed captures print their stop reason and an inspection command before returning nonzero.
+The starter's grader explains incomplete runs and shows expected and observed values for mismatched fields.
+Capture, rescoring, and inspection preserve that explanation without sending expectations to the model.
 The saved trace remains available for inspection.
 For `budget_exhausted`, increase `--max-steps` and choose a new capture directory for the next run.
 Published `0.4.1` saves this evidence but may print only the failed grader name.
@@ -107,7 +109,19 @@ python my_agent.py --experiment
 
 Each invocation creates a new directory under `.looplet/experiments/` and preserves earlier evidence.
 It captures and grades the run, rescores saved evidence, then replays and grades fresh tool results.
-The command prints inspection commands for both records and an `experiment.json` report.
+The command prints inspection commands for the experiment and available records.
+Inspect the printed experiment directory or its `experiment.json` file:
+
+```bash
+looplet inspect PATH_TO_EXPERIMENT
+looplet inspect PATH_TO_EXPERIMENT/experiment.json --json
+```
+
+The report records the last stage, each stage's status, and any error.
+Stage statuses are `passed`, `failed`, or `not_run`; the last stage is `complete` after success.
+Trace paths are `null` when their directories were not created.
+Failed runs keep their evidence; inspecting a readable failed report returns zero without rerunning anything.
+Use the printed trace commands for steps, results, and saved grades.
 Use `--out NEW_DIRECTORY` to choose a new experiment directory explicitly.
 Existing directories are refused.
 Experiment directories store evidence; they do not isolate tool effects.
@@ -115,6 +129,14 @@ The starter prints human-readable output; it does not support `--json`.
 Unknown flags are rejected rather than abbreviated.
 
 Inspect the same exported factory without calling a model:
+
+```bash
+looplet inspect my_agent:build --mode runtime
+```
+
+Human output lists tools, the completion tool, step limit, tool protocol, and hook count.
+Use its printed `--json` command for the full blueprint with the same workspace and step limit.
+The default workspace and step limit also support this JSON form:
 
 ```bash title="inspect_agent.sh"
 looplet inspect my_agent:build --mode runtime --json
@@ -181,7 +203,7 @@ Older eval captures without a case file retain their saved expectations too.
 Keep the exported file and install the provider extra from the same pinned preview:
 
 ```bash title="one_file_live.sh"
-python -m pip install "looplet[openai] @ https://github.com/hsaghir/looplet/archive/4ae69df2860c91ee22c6a5b777d7039a801d7dba.zip"
+python -m pip install "looplet[openai] @ https://github.com/hsaghir/looplet/archive/b5aa201e5f06d71fcf1a4b165addb80a3caebe0f.zip"
 export OPENAI_API_KEY=...
 export OPENAI_MODEL=gpt-4o
 python my_agent.py --backend openai --max-steps 8 --experiment
@@ -282,7 +304,7 @@ The remaining sections keep using the fixed-response backend.
 Keep `first_loop.py` unchanged and add the adapter from the same pinned preview in your active environment:
 
 ```bash
-python -m pip install "looplet[openai] @ https://github.com/hsaghir/looplet/archive/4ae69df2860c91ee22c6a5b777d7039a801d7dba.zip"
+python -m pip install "looplet[openai] @ https://github.com/hsaghir/looplet/archive/b5aa201e5f06d71fcf1a4b165addb80a3caebe0f.zip"
 export OPENAI_API_KEY=...
 export OPENAI_MODEL=gpt-4o
 ```

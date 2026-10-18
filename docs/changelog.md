@@ -8,6 +8,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Human Python-factory inspection lists tools, the completion tool, step limit, protocol, and hook count, with an equivalent full-blueprint command.
 - The complete Quickstart uses one commit-pinned preview environment from installation through editable experiments and optional provider setup.
 - CLI `run`, its format aliases, and `replay` require accepted completion by default. Use `--allow-incomplete` for the earlier command-success policy.
 - `--require-completed` remains supported. Strict bundle runs use the shared runner; custom human runners require `--allow-incomplete`.
@@ -15,6 +16,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `inspect` accepts Quickstart experiment directories and reports without rerunning code, while preserving legacy reports and trace inspection.
 - `inspect module:factory` supports safe reference-only declarations and explicit, resource-managed runtime wiring validation without selecting a model.
 - Factory CLI replay restores the captured tool protocol and carries saved expectations into fresh, regradable eval records.
 - The one-file starter shares tasks and expectations through eval cases, supports `--case`, and records cases for CLI replay.
@@ -30,6 +32,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Starter grades explain incomplete runs and expected-versus-observed mismatches in console errors, saved evidence, inspection, and rescoring.
+- Experiment reports record per-stage status and errors. Uncreated capture or replay directories use null paths instead of missing destinations.
 - The one-file starter rejects unsupported flags such as `--json` instead of silently abbreviating them to `--json-text` and changing the model protocol.
 - Expected provider setup failures print concise configuration guidance without a Python traceback or empty experiment directory.
 - Failed Quickstart captures, including the copyable recipe, report their stop reason and a shell-safe inspection command while preserving evidence and nonzero exits.

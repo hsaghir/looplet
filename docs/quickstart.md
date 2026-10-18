@@ -16,13 +16,13 @@ The install does not require Git or a repository checkout.
 ```bash
 python -m venv .venv-looplet-preview
 source .venv-looplet-preview/bin/activate
-python -m pip install "looplet @ https://github.com/hsaghir/looplet/archive/a2efcde34bd728dd1287eb6f3368ef1e57783c15.zip"
+python -m pip install "looplet @ https://github.com/hsaghir/looplet/archive/270ebab43f0be9deea4b2a039ded2bbd3d94acfd.zip"
 looplet doctor --no-backend --json
 ```
 
 The core package has no third-party runtime dependencies.
 The install needs network access; the fixed-response runs do not.
-This is a non-editable install of commit `a2efcde`.
+This is a non-editable install of commit `270ebab`.
 Keep this environment active for the complete guide; no second install is needed for the starter.
 Both the preview and published package report version `0.4.1`.
 The preview's `looplet --version` also prints the doctor's source fingerprint, distinguishing it from the published build.
@@ -217,7 +217,7 @@ Older eval captures without a case file retain their saved expectations too.
 Keep the exported file and install the provider extra from the same pinned preview:
 
 ```bash title="one_file_live.sh"
-python -m pip install "looplet[openai] @ https://github.com/hsaghir/looplet/archive/a2efcde34bd728dd1287eb6f3368ef1e57783c15.zip"
+python -m pip install "looplet[openai] @ https://github.com/hsaghir/looplet/archive/270ebab43f0be9deea4b2a039ded2bbd3d94acfd.zip"
 export OPENAI_API_KEY=...
 export OPENAI_MODEL=gpt-4o
 python my_agent.py --backend openai --max-steps 8 --experiment
@@ -318,7 +318,7 @@ The remaining sections keep using the fixed-response backend.
 Keep `first_loop.py` unchanged and add the adapter from the same pinned preview in your active environment:
 
 ```bash
-python -m pip install "looplet[openai] @ https://github.com/hsaghir/looplet/archive/a2efcde34bd728dd1287eb6f3368ef1e57783c15.zip"
+python -m pip install "looplet[openai] @ https://github.com/hsaghir/looplet/archive/270ebab43f0be9deea4b2a039ded2bbd3d94acfd.zip"
 export OPENAI_API_KEY=...
 export OPENAI_MODEL=gpt-4o
 ```

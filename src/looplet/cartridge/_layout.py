@@ -50,6 +50,9 @@ class CartridgeLayout:
         "done_tool",
         "done_tools",
         "allow_text_completion",
+        "requires_assistant_turn_policy",
+        "max_model_calls",
+        "max_assistant_turns",
         "max_turn_continuations",
         "use_native_tools",
         "concurrent_dispatch",
@@ -85,6 +88,7 @@ class CartridgeLayout:
         "render_messages_override",
         "context_planner",
         "execution_policy",
+        "assistant_turn_policy",
     )
 
     # ── Schema-v2 field tiering ─────────────────────────────────
@@ -104,6 +108,8 @@ class CartridgeLayout:
             "temperature",
             "recovery_temperature",
             "max_turn_continuations",
+            "max_model_calls",
+            "max_assistant_turns",
             # Backend kwargs passthrough - same family as the sampling
             # knobs above (``top_p``, ``frequency_penalty``, etc.); pure
             # "how to sample", not "what the agent does".
@@ -138,6 +144,7 @@ class CartridgeLayout:
             "cancel_token",
             "render_messages_override",
             "execution_policy",
+            "assistant_turn_policy",
         }
     )
 

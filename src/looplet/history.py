@@ -22,7 +22,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from looplet.conversation import Conversation, Message, MessageRole
+from looplet._backend_contract import json_snapshot
+from looplet.conversation import ContentBlock, Conversation, Message, MessageRole
 from looplet.session import SessionLog
 from looplet.types import Step
 
@@ -50,11 +51,13 @@ class HistoryRecorder:
         session_log: SessionLog | None = None,
         conversation: Conversation | None = None,
         max_message_chars: int = 5000,
+        typed_turns: bool = False,
     ) -> None:
         self._state = state
         self._session_log = session_log
         self._conversation = conversation
         self._max_chars = max_message_chars
+        self._typed_turns = typed_turns
 
     # ── Step recording ───────────────────────────────────────────
 
@@ -91,20 +94,61 @@ class HistoryRecorder:
             )
 
         if self._conversation is not None:
-            self._conversation.append(
-                Message(
-                    role=MessageRole.ASSISTANT,
-                    content="",
-                    tool_call=step.tool_call,
-                    metadata=dict(step.metadata),
+            if (
+                self._typed_turns
+                and step.tool_call.metadata.get("completion_source") == "assistant_message"
+            ):
+                result = step.tool_result
+                data = result.data if isinstance(result.data, dict) else {}
+                if result.error or data.get("rejected") is True or data.get("status") == "rejected":
+                    reason = str(
+                        data.get("reason")
+                        or data.get("error")
+                        or result.error
+                        or "Final answer was not accepted"
+                    )
+                    model_turn_id = next(
+                        (
+                            message.metadata.get("model_turn_id", "")
+                            for message in reversed(self._conversation.messages)
+                            if message.metadata.get("origin") == "model"
+                        ),
+                        "",
+                    )
+                    self.record_host_feedback(reason, model_turn_id=model_turn_id)
+                return
+            if not self._typed_turns:
+                self._conversation.append(
+                    Message(
+                        role=MessageRole.ASSISTANT,
+                        content="",
+                        tool_call=step.tool_call,
+                        metadata=dict(step.metadata),
+                    )
                 )
-            )
             self._conversation.append(
                 Message(
                     role=MessageRole.TOOL,
                     content="",
                     tool_result=step.tool_result,
-                    metadata=dict(step.metadata),
+                    metadata={
+                        **step.metadata,
+                        "tool_call_id": step.tool_call.call_id,
+                        **(
+                            {
+                                "model_turn_id": next(
+                                    (
+                                        message.metadata.get("model_turn_id")
+                                        for message in reversed(self._conversation.messages)
+                                        if message.metadata.get("origin") == "model"
+                                    ),
+                                    None,
+                                )
+                            }
+                            if self._typed_turns
+                            else {}
+                        ),
+                    },
                 )
             )
 
@@ -157,6 +201,29 @@ class HistoryRecorder:
         """
         if self._conversation is None:
             return
+        if self._typed_turns:
+            if response is not None:
+                snapshot = json_snapshot(response)
+                content = (
+                    [
+                        ContentBlock(
+                            kind=block.get("type", "unknown"),
+                            data={key: value for key, value in block.items() if key != "type"},
+                        )
+                        for block in snapshot
+                        if isinstance(block, dict)
+                    ]
+                    if isinstance(snapshot, list)
+                    else str(snapshot)
+                )
+                self._conversation.append(
+                    Message(
+                        role=MessageRole.ASSISTANT,
+                        content=content,
+                        metadata={**(metadata or {}), "origin": "model"},
+                    )
+                )
+            return
         self._conversation.append(
             Message(
                 role=MessageRole.USER,
@@ -173,3 +240,18 @@ class HistoryRecorder:
                 content=response_text[: self._max_chars],
             )
         )
+
+    def record_host_feedback(self, feedback: str, *, model_turn_id: str) -> None:
+        """Retain explicit host feedback without raising its instruction priority."""
+        if feedback and self._conversation is not None:
+            self._conversation.append(
+                Message(
+                    role=MessageRole.USER,
+                    content=feedback,
+                    metadata={
+                        "origin": "host",
+                        "kind": "assistant_feedback",
+                        "model_turn_id": model_turn_id,
+                    },
+                )
+            )

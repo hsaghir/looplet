@@ -188,6 +188,25 @@ cancellation tokens, message render overrides, API credentials, and live
 trajectory sinks. The caller supplies them through code, environment, or the
 `runtime` argument to its loader.
 
+### Assistant-turn capability
+
+**Unreleased:** Opt-in assistant-turn exports add `assistant_turns_v1` to `compatibility.requires`.
+Unsupported loaders must reject this capability before constructing runnable code.
+Strict exports without the feature retain their existing compatibility requirements.
+
+`max_model_calls` and `max_assistant_turns` are runtime-tier ceilings.
+Each value must be a positive integer or null; booleans are not integers here.
+The consecutive ceiling requires an explicit request ceiling.
+`requires_assistant_turn_policy` is a boolean contract-tier declaration.
+The callable `assistant_turn_policy` is host-owned and never serialized as executable code or a resource placeholder.
+Exports of bound policies retain the required declaration.
+Inspection and loading may defer binding, but execution rejects a missing required host policy before inference.
+
+`LoopConfig.validate_assistant_turns(require_binding=False)` validates portable configuration without executing its policy.
+The default validation requires the host binding.
+Checkpoint and capture formats separately declare their required assistant-turn semantics.
+Older readers must not reinterpret these artifacts as ordinary tool-step progress.
+
 ## Reference grammar
 
 String values in configuration and hook kwargs may use:

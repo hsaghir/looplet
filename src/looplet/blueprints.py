@@ -574,6 +574,9 @@ def _config_blueprint(preset: AgentPreset) -> dict[str, Any]:
         "recovery_temperature",
         "done_tool",
         "allow_text_completion",
+        "max_model_calls",
+        "max_assistant_turns",
+        "requires_assistant_turn_policy",
         "max_turn_continuations",
         "use_native_tools",
         "concurrent_dispatch",
@@ -586,6 +589,8 @@ def _config_blueprint(preset: AgentPreset) -> dict[str, Any]:
         "generate_kwargs",
     ):
         data[name] = _jsonable(getattr(config, name))
+    if config.assistant_turn_policy is not None:
+        data["requires_assistant_turn_policy"] = True
     for name in (
         "build_briefing",
         "extract_entities",

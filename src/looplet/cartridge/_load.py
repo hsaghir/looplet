@@ -174,7 +174,14 @@ class _LoadResourceTracker:
 
 
 _SUPPORTED_COMPATIBILITY_FEATURES = frozenset(
-    {"async_tool_dispatch", "run_store", "context_plan", "execution_session", "run_events"}
+    {
+        "async_tool_dispatch",
+        "run_store",
+        "context_plan",
+        "execution_session",
+        "run_events",
+        "assistant_turns_v1",
+    }
 )
 
 
@@ -1139,6 +1146,7 @@ def _workspace_to_preset_inner(
     }
 
     config = LoopConfig(**cfg_kwargs)
+    config.validate_assistant_turns(require_binding=False)
 
     # Tools
     registry = BaseToolRegistry()

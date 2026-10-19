@@ -62,6 +62,319 @@ def _make_checkpoint(step: int = 3, task_id: str = "task-1") -> Checkpoint:
 # ── Checkpoint dataclass ────────────────────────────────────────────
 
 
+def test_message_only_checkpoint_order_and_required_semantics(tmp_path):
+    from looplet.assistant_turns import TURN_STATE_KEY, TURN_STATE_SCHEMA
+
+    store = FileCheckpointStore(tmp_path)
+    older = _make_checkpoint(step=0)
+    older.metadata[TURN_STATE_KEY] = {
+        "schema": TURN_STATE_SCHEMA,
+        "turn_count": 1,
+        "model_calls": 1,
+    }
+    newer = _make_checkpoint(step=0)
+    newer.metadata[TURN_STATE_KEY] = {
+        "schema": TURN_STATE_SCHEMA,
+        "turn_count": 2,
+        "model_calls": 2,
+    }
+    newer.created_at = older.created_at - 1
+    store.save(older, "z_old")
+    store.save(newer, "a_new")
+    assert store.load_latest().metadata[TURN_STATE_KEY]["turn_count"] == 2
+    assert store.load_latest_for_resume().metadata[TURN_STATE_KEY]["turn_count"] == 2
+    payload = newer.to_dict()
+    assert payload["step_number"] == {
+        "tool_step": 0,
+        "required_semantics": TURN_STATE_SCHEMA,
+    }
+    assert Checkpoint.from_dict(payload).step_number == 0
+    payload["step_number"]["required_semantics"] = "unknown"
+    with pytest.raises(ValueError, match="required semantics"):
+        Checkpoint.from_dict(payload)
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("routed", [False, True])
+async def test_message_checkpoint_resume_preserves_context_and_terminal_output(
+    tmp_path,
+    monkeypatch,
+    asynchronous,
+    routed,
+):
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    from looplet import RunResult, tools_from
+    from looplet.assistant_turns import TURN_STATE_KEY, AssistantTurnDecision
+
+    class Crash(BaseException):
+        pass
+
+    calls = []
+    effects = []
+    candidate = "X" * 6000
+
+    class Backend:
+        last_stop_reason = "stop"
+
+        def __init__(self):
+            self.items = []
+
+        def checkpoint_state(self):
+            return {"items": self.items}
+
+        def restore_checkpoint_state(self, data):
+            self.items = data["items"]
+
+        def generate(self, prompt, **kwargs):
+            calls.append(prompt)
+            self.items.append(len(self.items) + 1)
+            return (
+                "Retained hypothesis"
+                if len(self.items) == 1
+                else json.dumps({"tool": "done", "args": {"answer": candidate}})
+            )
+
+    def make_backend():
+        backend = Backend()
+        if asynchronous:
+            original = backend.generate
+
+            async def generate(prompt, **kwargs):
+                return original(prompt, **kwargs)
+
+            backend.generate = generate
+        return backend
+
+    def done(answer: str):
+        effects.append(answer)
+        return {"answer": answer}
+
+    config = LoopConfig(
+        max_steps=3,
+        max_model_calls=3,
+        use_native_tools=False,
+        checkpoint_dir=tmp_path,
+        assistant_turn_policy=lambda context: AssistantTurnDecision(
+            "continue", feedback="Check the evidence"
+        ),
+    )
+    original_save = FileCheckpointStore.save
+    snapshots = []
+
+    def interrupt_after_commit(store, checkpoint, key):
+        original_save(store, checkpoint, key)
+        turns = checkpoint.metadata.get(TURN_STATE_KEY, {})
+        if turns.get("decisions") and not turns.get("pending_model_call"):
+            snapshots.append(checkpoint)
+            raise Crash()
+
+    monkeypatch.setattr(FileCheckpointStore, "save", interrupt_after_commit)
+    first = make_backend()
+
+    async def run(backend, state):
+        active_config = (
+            replace(config, router=SimpleNamespace(select=lambda **kwargs: backend))
+            if routed
+            else config
+        )
+        kwargs = dict(
+            llm=make_backend() if routed else backend,
+            state=state,
+            tools=tools_from([done]),
+            config=active_config,
+        )
+        return (
+            [step async for step in async_composable_loop(**kwargs)]
+            if asynchronous
+            else list(composable_loop(**kwargs))
+        )
+
+    with pytest.raises(Crash):
+        await run(first, DefaultState(max_steps=3))
+    assert len(calls) == 1
+    assert effects == []
+    assert snapshots[0].step_number == 0
+    assert "pending_calls" not in snapshots[0].metadata
+    first.items.append("later mutation")
+    assert snapshots[0].domain_state["llm"] == {"items": [1]}
+    monkeypatch.setattr(FileCheckpointStore, "save", original_save)
+    resumed = DefaultState(max_steps=3)
+    resumed_backend = make_backend()
+    steps = await run(resumed_backend, resumed)
+    assert len(steps) == 1
+    assert len(calls) == 2
+    assert effects == [candidate]
+    assert calls[-1].count("Retained hypothesis") == 1
+    assert calls[-1].count("Check the evidence") == 1
+    assert RunResult.from_state(resumed).output == {"answer": candidate}
+    terminal = FileCheckpointStore(tmp_path).load_latest_for_resume()
+    assert terminal.is_terminal
+    resumed_backend.items.append("after completion")
+    assert terminal.domain_state["llm"] == {"items": [1, 2]}
+    terminal_state = DefaultState(max_steps=3)
+    assert await run(make_backend(), terminal_state) == []
+    assert len(calls) == 2
+    assert effects == [candidate]
+    assert RunResult.from_state(terminal_state).completed
+    assert RunResult.from_state(terminal_state).output == {"answer": candidate}
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("boundary", ["step_1_pending", "step_1"])
+async def test_tool_checkpoints_copy_backend_and_domain_state(
+    tmp_path, monkeypatch, asynchronous, boundary
+):
+    from looplet import AssistantTurnDecision, RunResult, tools_from
+
+    class Crash(BaseException):
+        pass
+
+    requests = []
+    effects = []
+    host_state = {"observations": ["retained"]}
+    snapshots = []
+
+    class Backend:
+        def __init__(self):
+            self.items = []
+
+        def checkpoint_state(self):
+            return {"items": self.items}
+
+        def restore_checkpoint_state(self, snapshot):
+            self.items = snapshot["items"]
+
+        def generate(self, prompt, **kwargs):
+            requests.append(prompt)
+            self.items.append(len(self.items) + 1)
+            return (
+                '{"tool":"lookup","args":{}}'
+                if len(self.items) == 1
+                else '{"tool":"done","args":{"summary":"accepted"}}'
+            )
+
+    class AsyncBackend(Backend):
+        async def generate(self, prompt, **kwargs):
+            return super().generate(prompt, **kwargs)
+
+    def lookup():
+        effects.append("lookup")
+        return "X" * 6000
+
+    config = LoopConfig(
+        max_steps=3,
+        max_model_calls=3,
+        use_native_tools=False,
+        checkpoint_dir=tmp_path,
+        checkpoint_state=lambda context: host_state,
+        assistant_turn_policy=lambda context: AssistantTurnDecision("continue"),
+    )
+    original_save = FileCheckpointStore.save
+
+    def interrupt_after_commit(store, checkpoint, key):
+        original_save(store, checkpoint, key)
+        if key == boundary:
+            snapshots.append(checkpoint)
+            raise Crash()
+
+    monkeypatch.setattr(FileCheckpointStore, "save", interrupt_after_commit)
+
+    async def run(backend, state):
+        arguments = dict(
+            llm=backend,
+            state=state,
+            tools=tools_from([lookup], include_done=True),
+            config=config,
+        )
+        return (
+            [step async for step in async_composable_loop(**arguments)]
+            if asynchronous
+            else list(composable_loop(**arguments))
+        )
+
+    first = AsyncBackend() if asynchronous else Backend()
+    with pytest.raises(Crash):
+        await run(first, DefaultState(max_steps=3))
+    assert len(requests) == 1
+    assert effects == ([] if boundary.endswith("pending") else ["lookup"])
+    first.items.append("later mutation")
+    host_state["observations"].append("later mutation")
+    assert snapshots[0].domain_state == {
+        "observations": ["retained"],
+        "llm": {"items": [1]},
+    }
+    monkeypatch.setattr(FileCheckpointStore, "save", original_save)
+    if not boundary.endswith("pending"):
+        resumed = DefaultState(max_steps=3)
+        steps = await run(AsyncBackend() if asynchronous else Backend(), resumed)
+        assert [step.tool_call.tool for step in steps] == ["done"]
+        assert RunResult.from_state(resumed).completed
+        assert len(requests) == 2
+        assert effects == ["lookup"]
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_started_request_crash_is_not_implicitly_retried(tmp_path, asynchronous):
+    from looplet import tools_from
+    from looplet.assistant_turns import TURN_STATE_KEY, AssistantTurnDecision
+    from looplet.checkpoint import UncertainModelCall
+
+    class Crash(BaseException):
+        pass
+
+    calls = []
+
+    class Backend:
+        def generate(self, prompt, **kwargs):
+            calls.append(prompt)
+            raise Crash()
+
+    backend = Backend()
+    if asynchronous:
+        original = backend.generate
+
+        async def generate(prompt, **kwargs):
+            return original(prompt, **kwargs)
+
+        backend.generate = generate
+    config = LoopConfig(
+        max_steps=2,
+        max_model_calls=2,
+        use_native_tools=False,
+        checkpoint_dir=tmp_path,
+        assistant_turn_policy=lambda context: AssistantTurnDecision("continue"),
+    )
+
+    async def run():
+        kwargs = dict(llm=backend, tools=tools_from([], include_done=True), config=config)
+        return (
+            [step async for step in async_composable_loop(**kwargs)]
+            if asynchronous
+            else list(composable_loop(**kwargs))
+        )
+
+    with pytest.raises(Crash):
+        await run()
+    checkpoint = FileCheckpointStore(tmp_path).load_latest_for_resume()
+    assert checkpoint.metadata[TURN_STATE_KEY]["model_calls"] == 1
+    assert checkpoint.metadata[TURN_STATE_KEY]["pending_model_call"]
+    with pytest.raises(UncertainModelCall):
+        await run()
+    assert len(calls) == 1
+
+
+def test_unacknowledged_model_request_blocks_resume():
+    from looplet.assistant_turns import TURN_STATE_KEY
+    from looplet.checkpoint import UncertainModelCall
+
+    checkpoint = _make_checkpoint(step=0)
+    checkpoint.metadata[TURN_STATE_KEY] = {"pending_model_call": {"model_call_number": 1}}
+    with pytest.raises(UncertainModelCall, match="duplicate inference"):
+        resume_loop_state(checkpoint)
+
+
 class TestCheckpointDataclass:
     def test_fields_are_accessible(self) -> None:
         cp = _make_checkpoint()

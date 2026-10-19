@@ -75,6 +75,186 @@ def _log(n: int = 5) -> SessionLog:
 # ── Renames / aliases ────────────────────────────────────────────
 
 
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("acknowledged", [False, True])
+async def test_stateful_compaction_requires_acknowledged_reset_before_inference(
+    asynchronous, acknowledged
+):
+    from looplet.assistant_turns import _AssistantTurns
+    from looplet.compact import run_compact_async
+
+    requests = []
+    resets = []
+    state = DefaultState()
+    turns = _AssistantTurns(state, LoopConfig(max_model_calls=2))
+    turns.begin_turn()
+    conversation = Conversation()
+    for number in range(6):
+        conversation.append(
+            Message(
+                role=MessageRole.ASSISTANT,
+                content=f"Hypothesis {number}",
+                metadata={"origin": "model", "model_turn_id": f"r:{number}"},
+            )
+        )
+
+    class Backend:
+        conversation_mode = "stateful"
+
+        def set_conversation_input(self, snapshot):
+            self.snapshot = snapshot
+
+        def apply_context_compaction(self, snapshot):
+            resets.append(snapshot)
+            return acknowledged
+
+        def generate(self, prompt, **kwargs):
+            requests.append(prompt)
+            return "A response"
+
+    class AsyncBackend(Backend):
+        async def generate(self, prompt, **kwargs):
+            return super().generate(prompt, **kwargs)
+
+    backend = turns.wrap(AsyncBackend() if asynchronous else Backend())
+    arguments = dict(
+        service=TruncateCompact(keep_recent=2),
+        state=state,
+        session_log=SessionLog(),
+        llm=backend,
+        conversation=conversation,
+        step_num=1,
+        reason="test",
+        hooks=[],
+    )
+    if asynchronous:
+        await run_compact_async(**arguments)
+    else:
+        run_compact(**arguments)
+    assert turns.data["context_reset_required"]
+    backend.prepare_conversation(conversation, "Current task")
+    if acknowledged:
+        result = backend.generate("Current task")
+        assert (await result if asynchronous else result) == "A response"
+        assert requests == ["Current task"]
+        assert turns.data["model_calls"] == 1
+        assert turns.data["context_resets"] == [
+            {"model_turn_id": "run:turn-1", "acknowledged": True}
+        ]
+        assert turns.data["context"]["effective_context_tokens"] is None
+    else:
+        with pytest.raises(RuntimeError, match="unsupported_context"):
+            result = backend.generate("Current task")
+            if asynchronous:
+                await result
+        assert requests == []
+        assert turns.data["model_calls"] == 0
+    assert len(resets) == 1
+    assert resets[0]["conversation"] == conversation.serialize()
+
+
+async def test_async_summarizer_uses_shared_admission_and_measured_usage():
+    import asyncio
+
+    from looplet.assistant_turns import _AssistantTurns
+    from looplet.compact import run_compact_async
+
+    requests = []
+    original_loop = asyncio.get_running_loop()
+
+    class Backend:
+        last_usage = {"input": 17, "output": 3}
+
+        async def generate(self, prompt, **kwargs):
+            assert asyncio.get_running_loop() is original_loop
+            requests.append(prompt)
+            return "Unverified summary"
+
+    state = DefaultState()
+    turns = _AssistantTurns(state, LoopConfig(max_model_calls=1))
+    turns.begin_turn()
+    backend = turns.wrap(Backend())
+    first = await run_compact_async(
+        SummarizeCompact(),
+        hooks=[],
+        state=state,
+        session_log=_log(6),
+        llm=backend,
+        conversation=None,
+        step_num=6,
+        reason="test",
+    )
+    second = await run_compact_async(
+        SummarizeCompact(),
+        hooks=[],
+        state=state,
+        session_log=_log(6),
+        llm=backend,
+        conversation=None,
+        step_num=6,
+        reason="test",
+    )
+    assert first.llm_calls_spent == 1
+    assert first.extra["mode"] == "llm_summary"
+    assert second.llm_calls_spent == 0
+    assert len(requests) == 1
+    assert turns.data["model_calls"] == 1
+    assert state.metadata["usage_total"] == {"input": 17, "output": 3}
+    assert second.extra["mode"] == "llm_fallback"
+
+
+def test_summary_includes_message_only_work_beside_tool_log():
+    from looplet.compact import _render_transcript
+
+    conversation = Conversation()
+    conversation.append(
+        Message(
+            role=MessageRole.ASSISTANT,
+            content="An unverified hypothesis",
+            metadata={"origin": "model", "model_turn_id": "r:turn-1"},
+        )
+    )
+    conversation.append(
+        Message(
+            role=MessageRole.USER,
+            content="Check the primary source",
+            metadata={"origin": "host", "model_turn_id": "r:turn-1"},
+        )
+    )
+    transcript, source = _render_transcript(_log(), conversation)
+    assert source == "session_log+conversation"
+    assert "tool_1" in transcript
+    assert "An unverified hypothesis" in transcript
+    assert "Check the primary source" in transcript
+    assert "NOT VERIFIED FACTS" in transcript
+
+
+def test_typed_compaction_keeps_whole_turn_and_untrusted_summary():
+    conversation = Conversation()
+    for number in range(1, 4):
+        metadata = {"origin": "model", "model_turn_id": f"r:turn-{number}"}
+        conversation.append(
+            Message(role=MessageRole.ASSISTANT, content=f"Hypothesis {number}", metadata=metadata)
+        )
+        conversation.append(
+            Message(
+                role=MessageRole.USER,
+                content=f"Feedback {number}",
+                metadata={**metadata, "origin": "host"},
+            )
+        )
+    conversation.compact(keep_recent=1)
+    assert not any(message.role == MessageRole.SYSTEM for message in conversation.messages)
+    boundaries = conversation.find_compaction_boundaries()
+    assert boundaries[0].metadata["trust"] == "untrusted_summary"
+    retained = [
+        message
+        for message in conversation.messages
+        if message.metadata.get("model_turn_id") == "r:turn-3"
+    ]
+    assert len(retained) == 2
+
+
 class TestRenames:
     def test_truncate_compact_is_canonical(self):
         assert TruncateCompact is not None

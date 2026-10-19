@@ -109,6 +109,205 @@ class _MockAnthropicClient:
 # ── Tests ────────────────────────────────────────────────────────
 
 
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("provider", ["openai", "anthropic"])
+@pytest.mark.parametrize("capped", [False, True])
+async def test_capped_sdk_requests_disable_hidden_retries_without_mutating_client(
+    asynchronous, provider, capped
+):
+    from types import SimpleNamespace
+
+    from looplet import DefaultState, LoopConfig
+    from looplet.assistant_turns import _AssistantTurns
+
+    options = []
+    response = _MockResponse("returned") if provider == "openai" else _MockAnthropicResponse()
+
+    def create(**kwargs):
+        return response
+
+    async def create_async(**kwargs):
+        return response
+
+    def with_options(**kwargs):
+        options.append(kwargs)
+        return client
+
+    operation = create_async if asynchronous else create
+    client = SimpleNamespace(
+        messages=SimpleNamespace(create=operation),
+        chat=SimpleNamespace(completions=SimpleNamespace(create=operation)),
+        with_options=with_options,
+    )
+    backend_type = (
+        (AsyncOpenAIBackend if asynchronous else OpenAIBackend)
+        if provider == "openai"
+        else (AsyncAnthropicBackend if asynchronous else AnthropicBackend)
+    )
+    original = backend_type(client, model="test")
+    backend = (
+        _AssistantTurns(DefaultState(), LoopConfig(max_model_calls=1)).wrap(original)
+        if capped
+        else original
+    )
+    result = backend.generate("Task", max_tokens=10)
+    assert await result if asynchronous else result
+    assert options == ([{"max_retries": 0}] if capped else [])
+    assert original._client is client
+
+
+@pytest.mark.parametrize("async_mode", [False, True])
+@pytest.mark.parametrize("provider", ["openai", "anthropic"])
+async def test_assistant_conversation_preserves_selected_user_context(async_mode, provider):
+    import json
+
+    from looplet.conversation import Conversation, Message, MessageRole
+
+    client = _MockOpenAIClient() if provider == "openai" else _MockAnthropicClient()
+
+    async def create_async(**kwargs):
+        return client._create(**kwargs)
+
+    if async_mode:
+        if provider == "openai":
+            client.chat.completions.create = create_async
+        else:
+            client.messages.create = create_async
+    backend_type = (
+        (AsyncOpenAIBackend if async_mode else OpenAIBackend)
+        if provider == "openai"
+        else (AsyncAnthropicBackend if async_mode else AnthropicBackend)
+    )
+    backend = backend_type(client, model="test")
+    selected = Conversation(
+        [
+            Message(role=MessageRole.SYSTEM, content="UNTRUSTED_PRIOR_SUMMARY"),
+            Message(role=MessageRole.USER, content="CALLER_SUPPLIED_USER_CONSTRAINT"),
+        ]
+    )
+    backend.set_conversation_input({"conversation": selected.serialize(), "prompt": "Task"})
+    pending = backend.generate_with_tools("Task", tools=[])
+    if async_mode:
+        await pending
+    messages = client._last_kwargs["messages"]
+    assert json.dumps(messages).count("CALLER_SUPPLIED_USER_CONSTRAINT") == 1
+    assert json.dumps(messages).count("UNTRUSTED_PRIOR_SUMMARY") == 1
+    assert all(message["role"] == "user" for message in messages)
+    rendered = selected.continuation_context()
+    assert rendered.count("CALLER_SUPPLIED_USER_CONSTRAINT") == 1
+    assert "[PRIOR CONTEXT, NOT VERIFIED FACTS] UNTRUSTED_PRIOR_SUMMARY" in rendered
+
+
+@pytest.mark.parametrize("async_mode", [False, True])
+@pytest.mark.parametrize("provider", ["openai", "anthropic"])
+async def test_assistant_conversation_preserves_provider_roles_and_tool_pairs(async_mode, provider):
+    import json
+    from types import SimpleNamespace
+
+    from looplet import DefaultState, LoopConfig, async_composable_loop, composable_loop, tools_from
+    from looplet.assistant_turns import AssistantTurnDecision
+
+    requests = []
+    effects = []
+    responses = [
+        [{"type": "text", "text": "A retained hypothesis"}],
+        [
+            {"type": "text", "text": "Fetch evidence"},
+            {"type": "tool_use", "id": "real_lookup", "name": "lookup", "input": {"value": 7}},
+        ],
+        [{"type": "tool_use", "id": "real_done", "name": "done", "input": {"answer": "verified"}}],
+    ]
+    if provider == "anthropic":
+        responses[0].insert(
+            0, {"type": "thinking", "thinking": "opaque", "signature": "exact-signature"}
+        )
+
+    def create(**kwargs):
+        requests.append(kwargs)
+        blocks = responses[len(requests) - 1]
+        if provider == "anthropic":
+            return SimpleNamespace(
+                content=blocks, stop_reason="end_turn" if len(requests) == 1 else "tool_use"
+            )
+        calls = [
+            SimpleNamespace(
+                id=block["id"],
+                function=SimpleNamespace(name=block["name"], arguments=json.dumps(block["input"])),
+            )
+            for block in blocks
+            if block["type"] == "tool_use"
+        ]
+        text = "".join(block["text"] for block in blocks if block["type"] == "text")
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    finish_reason="stop" if not calls else "tool_calls",
+                    message=SimpleNamespace(content=text, tool_calls=calls),
+                )
+            ]
+        )
+
+    async def create_async(**kwargs):
+        return create(**kwargs)
+
+    operation = create_async if async_mode else create
+    client = SimpleNamespace(
+        messages=SimpleNamespace(create=operation),
+        chat=SimpleNamespace(completions=SimpleNamespace(create=operation)),
+    )
+    backend_type = (
+        (AsyncOpenAIBackend if async_mode else OpenAIBackend)
+        if provider == "openai"
+        else (AsyncAnthropicBackend if async_mode else AnthropicBackend)
+    )
+    backend = backend_type(client, model="test")
+
+    def lookup(value: int):
+        effects.append(value)
+        return {"observed": "UNIQUE_TOOL_OBSERVATION"}
+
+    def done(answer: str):
+        return {"answer": answer}
+
+    state = DefaultState(max_steps=3)
+    kwargs = dict(
+        llm=backend,
+        state=state,
+        tools=tools_from([lookup, done]),
+        task={"description": "Inspect this unique task"},
+        config=LoopConfig(
+            max_steps=3,
+            max_model_calls=4,
+            assistant_turn_policy=lambda context: AssistantTurnDecision(
+                "continue", "Use observed evidence"
+            ),
+        ),
+    )
+    steps = (
+        [step async for step in async_composable_loop(**kwargs)]
+        if async_mode
+        else list(composable_loop(**kwargs))
+    )
+    assert [step.tool_call.tool for step in steps] == ["lookup", "done"]
+    assert effects == [7]
+    assert len(requests) == 3
+    wire = json.dumps(requests[-1]["messages"])
+    assert wire.count("A retained hypothesis") == 1
+    assert wire.count("Inspect this unique task") == 1
+    assert wire.count("Use observed evidence") == 1
+    assert wire.count("UNIQUE_TOOL_OBSERVATION") == 1
+    assert "real_lookup" in wire
+    assert "observed" in wire
+    if provider == "anthropic":
+        assert wire.count("exact-signature") == 1
+        assert "tool_use_id" in wire
+    else:
+        assert any(
+            message["role"] == "tool" and message["tool_call_id"] == "real_lookup"
+            for message in requests[-1]["messages"]
+        )
+
+
 @pytest.mark.parametrize("async_mode", [False, True])
 @pytest.mark.parametrize("native_tools", [False, True])
 async def test_openai_multipart_content_keeps_visible_text(async_mode, native_tools):

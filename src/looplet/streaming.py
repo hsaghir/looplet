@@ -33,6 +33,7 @@ __all__ = [
     "StepStartEvent",
     "LLMCallStartEvent",
     "LLMCallEndEvent",
+    "AssistantTurnDecisionEvent",
     "LLMChunkEvent",
     "ToolDispatchEvent",
     "ToolResultEvent",
@@ -94,6 +95,7 @@ class LLMCallStartEvent(Event):
 
     step_num: int = 0
     prompt_tokens_est: int = 0
+    model_turn_id: str | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
         self.event_type = type(self).__name__
@@ -107,6 +109,7 @@ class LLMCallEndEvent(Event):
     response_length: int = 0
     duration_ms: float = 0.0
     usage: dict[str, int] = field(default_factory=dict)
+    model_turn_id: str | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
         self.event_type = type(self).__name__
@@ -116,6 +119,19 @@ class LLMCallEndEvent(Event):
             for name in ("input", "output", "cache_read", "cache_write")
             if type(value := usage.get(name)) is int and value >= 0
         }
+
+
+@dataclass
+class AssistantTurnDecisionEvent(Event):
+    """Metadata-only progress for a host-controlled assistant message."""
+
+    step_num: int = 0
+    model_turn_id: str = ""
+    action: str = ""
+    model_calls: int = 0
+
+    def __post_init__(self) -> None:
+        self.event_type = type(self).__name__
 
 
 @dataclass
@@ -314,7 +330,7 @@ class StreamingHook:
         self._emitter = emitter
         self._total_llm_calls: int = 0
         self._step_llm_calls: int = 0
-        self._llm_started_at: dict[int, float] = {}
+        self._llm_started_at: dict[str | int, float] = {}
 
     def to_config(self) -> dict:
         """Cartridge round-trip: emit ``emitter`` as an ``@ref``.
@@ -364,7 +380,10 @@ class StreamingHook:
     ) -> str | None:
         """Emit ``StepStartEvent`` before each LLM prompt and count the LLM call."""
         self._total_llm_calls += 1
-        self._emitter.emit(StepStartEvent(step_num=step_num))
+        from looplet.context_projection import model_turn_context
+
+        if not model_turn_context(state):
+            self._emitter.emit(StepStartEvent(step_num=step_num))
         return None
 
     def pre_dispatch(
@@ -375,8 +394,11 @@ class StreamingHook:
         step_num: int,
     ) -> ToolResult | None:
         """Emit ``ToolDispatchEvent``; never intercepts execution."""
+        from looplet.context_projection import model_turn_context
         from looplet.tools import _summarize_args_dict  # noqa: PLC0415
 
+        if model_turn_context(state):
+            self._emitter.emit(StepStartEvent(step_num=step_num))
         self._emitter.emit(
             ToolDispatchEvent(
                 step_num=step_num,
@@ -471,7 +493,9 @@ class StreamingHook:
         self._emitter.emit(
             LoopEndEvent(
                 total_steps=total_steps,
-                total_llm_calls=self._total_llm_calls,
+                total_llm_calls=getattr(state, "_looplet_run_stats", {}).get(
+                    "llm_calls", self._total_llm_calls
+                ),
                 reason=reason,
             )
         )
@@ -480,20 +504,24 @@ class StreamingHook:
     def on_event(self, payload: Any) -> None:
         """Emit metadata-only LLM call events from lifecycle callbacks."""
         if payload.event == LifecycleEvent.PRE_LLM_CALL:
-            self._llm_started_at[payload.step_num] = time.perf_counter()
+            key = payload.model_turn_id or payload.step_num
+            self._llm_started_at[key] = time.perf_counter()
             budget = payload.context_budget if isinstance(payload.context_budget, dict) else {}
             estimate = budget.get("estimated_tokens")
             self._emitter.emit(
                 LLMCallStartEvent(
                     step_num=payload.step_num,
+                    model_turn_id=payload.model_turn_id,
                     prompt_tokens_est=estimate if type(estimate) is int and estimate >= 0 else 0,
                 )
             )
         elif payload.event == LifecycleEvent.POST_LLM_RESPONSE:
-            started_at = self._llm_started_at.pop(payload.step_num, None)
+            key = payload.model_turn_id or payload.step_num
+            started_at = self._llm_started_at.pop(key, None)
             self._emitter.emit(
                 LLMCallEndEvent(
                     step_num=payload.step_num,
+                    model_turn_id=payload.model_turn_id,
                     response_length=len(payload.raw_response)
                     if isinstance(payload.raw_response, str)
                     else 0,
@@ -503,4 +531,15 @@ class StreamingHook:
                     usage=payload.usage if isinstance(payload.usage, dict) else {},
                 )
             )
+        elif payload.event == LifecycleEvent.ASSISTANT_TURN_DECISION:
+            self._emitter.emit(
+                AssistantTurnDecisionEvent(
+                    step_num=payload.step_num,
+                    model_turn_id=payload.model_turn_id or "",
+                    action=payload.extra.get("action", ""),
+                    model_calls=payload.extra.get("model_calls", 0),
+                )
+            )
+        elif payload.event == LifecycleEvent.DONE_ACCEPTED and payload.model_turn_id is not None:
+            self._emitter.emit(StepStartEvent(step_num=payload.step_num))
         return None

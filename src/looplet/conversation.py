@@ -194,6 +194,20 @@ class Conversation:
 
         # Keep the last `keep_recent` messages verbatim
         split_idx = len(self.messages) - keep_recent
+        typed = any(message.metadata.get("origin") == "model" for message in self.messages)
+        if typed and split_idx < len(self.messages):
+            retained_turns = {
+                message.metadata.get("model_turn_id") for message in self.messages[split_idx:]
+            }
+            retained_turns.discard(None)
+            split_idx = next(
+                (
+                    index
+                    for index, message in enumerate(self.messages)
+                    if message.metadata.get("model_turn_id") in retained_turns
+                ),
+                split_idx,
+            )
         to_compact = self.messages[:split_idx]
         to_keep = self.messages[split_idx:]
 
@@ -220,12 +234,13 @@ class Conversation:
         ]
         summary_text = fn(summary_input) if summary_input else ""
         summary_msg = Message(
-            role=MessageRole.SYSTEM,
+            role=MessageRole.USER if typed else MessageRole.SYSTEM,
             content=f"[Summary of prior context]\n{summary_text}",
             metadata={
                 "kind": "compaction_boundary",
                 "summary": summary_text,
                 "dropped_message_count": len(to_compact) - len(boundaries_to_keep),
+                **({"origin": "summary", "trust": "untrusted_summary"} if typed else {}),
             },
         )
 
@@ -242,6 +257,29 @@ class Conversation:
         return [m for m in self.messages if m.metadata.get("kind") == "compaction_boundary"]
 
     # ── Rendering ────────────────────────────────────────────────
+
+    def continuation_context(self) -> str:
+        """Render logical turns without repeating generated prompts."""
+        lines = []
+        for message in self.messages:
+            if message.tool_result is not None:
+                result = message.tool_result
+                payload = json.dumps({"data": result.data, "error": result.error}, default=str)
+                lines.append(f"[TOOL RESULT {result.tool}] {payload}")
+            elif (
+                message.metadata.get("kind") == "compaction_boundary"
+                or message.role == MessageRole.SYSTEM
+            ):
+                lines.append(f"[PRIOR CONTEXT, NOT VERIFIED FACTS] {message.text}")
+            elif message.metadata.get("origin") == "host":
+                lines.append(f"[HOST FEEDBACK] {message.text}")
+            elif message.metadata.get("origin") == "model":
+                text = "\n".join(block.text for block in message.text_blocks())
+                if text:
+                    lines.append(f"[ASSISTANT, NOT VERIFIED FACTS] {text}")
+            elif message.role == MessageRole.USER:
+                lines.append(f"[USER CONTEXT] {message.text}")
+        return "\n".join(lines)
 
     def render(self, max_tokens: int | None = None) -> str:
         """Produce a formatted text representation for LLM prompt inclusion.

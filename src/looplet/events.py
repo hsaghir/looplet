@@ -64,6 +64,7 @@ class LifecycleEvent(str, Enum):
     SESSION_START = "session_start"
     PRE_LLM_CALL = "pre_llm_call"
     POST_LLM_RESPONSE = "post_llm_response"
+    ASSISTANT_TURN_DECISION = "assistant_turn_decision"
     PRE_TOOL_USE = "pre_tool_use"
     TOOL_PROGRESS = "tool_progress"
     POST_TOOL_USE = "post_tool_use"
@@ -92,6 +93,8 @@ class EventPayload:
 
     event: LifecycleEvent
     step_num: int = 0
+    model_turn_id: str | None = field(default=None, kw_only=True)
+    model_turn_number: int | None = field(default=None, kw_only=True)
     state: Any = None
     session_log: Any = None
     context: Any = None
@@ -144,6 +147,8 @@ class EventPayload:
         for f in fields(self):
             name = f.name
             if name in _NON_SERIALISED_FIELDS:
+                continue
+            if self.model_turn_id is not None and name in {"prompt", "raw_response"}:
                 continue
             value = getattr(self, name)
             if value is None:

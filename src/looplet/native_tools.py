@@ -84,20 +84,8 @@ class NativeToolPolicy:
             calls = parse_multi_tool_calls(response)
         if calls or not allow_text_completion or stop_reason not in {None, "stop", "end_turn"}:
             return calls
-        if isinstance(response, list) and any(
-            isinstance(block, dict) and block.get("type") in {"tool_use", "refusal"}
-            for block in response
-        ):
-            return []
-        text = to_text(response)
-        if not text or not text.strip():
-            return []
-        try:
-            json.loads(text)
-        except json.JSONDecodeError:
-            if text.lstrip().startswith(("{", "[", "```")):
-                return []
-        else:
+        text = self.assistant_text(response, stop_reason=stop_reason)
+        if text is None:
             return []
         return [
             ToolCall(
@@ -107,6 +95,27 @@ class NativeToolPolicy:
                 metadata={"completion_source": "assistant_message"},
             )
         ]
+
+    def assistant_text(self, response: Any, *, stop_reason: str | None = None) -> str | None:
+        """Return valid assistant text without accepting it as completion."""
+        if stop_reason not in {None, "stop", "end_turn"}:
+            return None
+        if isinstance(response, list) and any(
+            isinstance(block, dict) and block.get("type") in {"tool_use", "refusal"}
+            for block in response
+        ):
+            return None
+        text = to_text(response)
+        if not text or not text.strip():
+            return None
+        try:
+            json.loads(text)
+        except json.JSONDecodeError:
+            if text.lstrip().startswith(("{", "[", "```")):
+                return None
+        else:
+            return None
+        return text
 
 
 def probe_native_tool_support(

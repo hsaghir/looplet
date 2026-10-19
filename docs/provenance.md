@@ -184,6 +184,44 @@ are snapshotted when observed, and assistant-message completion retains its orig
 Trajectory metadata includes native per-call accounting and the scalar completion/recovery settings.
 The cost hook counts each native request and its reported usage; missing usage is not invented.
 
+### Assistant-turn capture and replay
+
+**Unreleased:** Bounded assistant-turn runs use `looplet.model-call.v2` captures.
+Their execution metadata declares `looplet.assistant-turns.v1`, turn identity, request identity, and whether a host policy is required.
+Strict legacy runs retain `looplet.model-call.v1`.
+Readers reject unknown required semantics instead of silently applying legacy completion rules.
+
+Canonical capture remains separate from working history and bounded progress events.
+Recursive record redaction still applies; configured upstream redaction also covers typed context and compaction reset inputs.
+Upstream redaction that changes opaque signed blocks is rejected before inference.
+Review full captures before sharing them. Opaque provider data can contain sensitive material.
+Returned reasoning is provider evidence, not proof of private reasoning or answer quality.
+
+Rebind the host policy explicitly during Python replay:
+
+```python
+from contextlib import closing
+
+from looplet import replay_loop
+
+
+with closing(replay_loop(trace_dir, tools=tools, assistant_turn_policy=decide)) as steps:
+  for step in steps:
+    print(step.pretty())
+```
+
+The host supplies `trace_dir`, `tools`, and the reviewed `decide` callable.
+Replay checks recorded decisions in order, including the action and a SHA-256 feedback digest.
+Missing or mismatched bindings fail closed. Callable code is never reconstructed from a capture.
+To intentionally change policy, also provide a nonempty `policy_override_name` of at most 128 characters.
+The fresh trajectory records that override name. A `stop` decision still does not become success.
+The same contract applies to `async_replay_loop`, including async host policies.
+CLI replay cannot reconstruct a required callable; use the Python API to supply it.
+
+Fresh tools and effects still execute during replay. Captured responses do not restore a live provider session.
+Bounded runs disable supported SDK retries and admit cooperative wrapper attempts separately.
+Default strict captures still cannot identify hidden SDK-internal attempts or streaming chunks.
+
 ### Save a fresh replay record
 
 **Unreleased:** `recording_sink` and the direct `max_steps` replay option require the

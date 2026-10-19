@@ -86,6 +86,117 @@ def test_evidence_save_preserves_existing_ignore_policy(tmp_path):
     assert policy.read_text() == "*.txt\n"
 
 
+@pytest.mark.parametrize("operation", ["set_conversation_input", "apply_context_compaction"])
+@pytest.mark.parametrize(
+    "kind", ["thinking", "redacted_thinking", "reasoning", "provider_extension"]
+)
+def test_upstream_redaction_rejects_altered_opaque_blocks(operation, kind):
+    from types import SimpleNamespace
+
+    from looplet._backend_contract import TerminalLLMError
+    from looplet.conversation import ContentBlock, Conversation, Message, MessageRole
+
+    inputs = []
+    backend = SimpleNamespace(
+        set_conversation_input=inputs.append,
+        apply_context_compaction=inputs.append,
+    )
+    recorder = RecordingLLMBackend(backend, redact=lambda text: text.replace("SENSITIVE", "hidden"))
+    conversation = Conversation(
+        [
+            Message(
+                role=MessageRole.ASSISTANT,
+                content=[
+                    ContentBlock(
+                        kind=kind,
+                        data={"thinking": "SENSITIVE evidence", "signature": "opaque-signature"},
+                    )
+                ],
+            )
+        ]
+    )
+    payload = {"conversation": conversation.serialize(), "prompt": "Task"}
+    original = json.loads(json.dumps(payload))
+    with pytest.raises(TerminalLLMError, match="opaque provider state"):
+        getattr(recorder, operation)(payload)
+    assert payload == original
+    assert inputs == []
+    assert recorder.calls == []
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_nested_recorders_redact_typed_context_and_compaction_handshake(asynchronous):
+    from looplet import DefaultState, LoopConfig
+    from looplet.assistant_turns import _AssistantTurns
+    from looplet.conversation import ContentBlock, Conversation, Message, MessageRole
+
+    inputs = []
+    resets = []
+
+    class Backend:
+        conversation_mode = "stateful"
+
+        def set_conversation_input(self, snapshot):
+            inputs.append(snapshot)
+
+        def apply_context_compaction(self, snapshot):
+            resets.append(snapshot)
+            return True
+
+        def generate(self, prompt, **kwargs):
+            assert "SENSITIVE" not in prompt
+            return "SENSITIVE response"
+
+    class AsyncBackend(Backend):
+        async def generate(self, prompt, **kwargs):
+            return super().generate(prompt, **kwargs)
+
+    record = AsyncRecordingLLMBackend if asynchronous else RecordingLLMBackend
+    inner = record(
+        AsyncBackend() if asynchronous else Backend(),
+        redact=lambda text: text.replace("SENSITIVE", "hidden"),
+    )
+    outer = record(inner, redact=lambda text: text.replace("SENSITIVE", "hidden"))
+    turns = _AssistantTurns(DefaultState(), LoopConfig(max_model_calls=1))
+    turns.begin_turn()
+    turns.data["context_reset_required"] = True
+    conversation = Conversation()
+    conversation.append(
+        Message(
+            role=MessageRole.ASSISTANT,
+            content=[
+                ContentBlock(
+                    kind="tool_use",
+                    data={
+                        "id": "real-call",
+                        "name": "lookup",
+                        "input": {"nested": ["SENSITIVE value"]},
+                    },
+                )
+            ],
+            metadata={"origin": "model"},
+        )
+    )
+    conversation.append(
+        Message(
+            role=MessageRole.USER, content="SENSITIVE host feedback", metadata={"origin": "host"}
+        )
+    )
+    backend = turns.wrap(outer)
+    backend.prepare_conversation(conversation, "SENSITIVE task")
+    response = backend.generate("SENSITIVE task")
+    assert (await response if asynchronous else response) == "SENSITIVE response"
+    assert "SENSITIVE" not in json.dumps(inputs + resets)
+    assert "hidden value" in json.dumps(inputs + resets)
+    assert "SENSITIVE" not in json.dumps(
+        [call.to_dict() for recorder in (inner, outer) for call in recorder.calls]
+    )
+    assert "SENSITIVE" in json.dumps(conversation.serialize())
+    inputs[0]["conversation"]["messages"].clear()
+    assert resets[0]["conversation"]["messages"]
+    assert len(conversation.messages) == 2
+
+
 class TestRecordingLLMBackendSmoke:
     @pytest.mark.parametrize("asynchronous", [False, True])
     @pytest.mark.parametrize("native", [False, True])

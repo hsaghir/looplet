@@ -581,6 +581,12 @@ def llm_call_with_retry(
             )
         except Exception as e:
             last_error = e
+            if getattr(e, "request_started", None) is False:
+                if recovery is not None:
+                    recovery.calls -= 1
+                    recovery.model_calls.pop()
+                    return recovery.finish(LLMResult(None, e))
+                return LLMResult(None, e, calls=0)
             if recovery is not None and (
                 isinstance(e, (TerminalLLMError, NativeToolUnsupportedError))
                 or _is_prompt_too_long(e)

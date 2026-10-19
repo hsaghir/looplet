@@ -4,8 +4,26 @@ from __future__ import annotations
 
 import inspect
 import json
+from contextlib import contextmanager
+from contextvars import ContextVar
 from types import SimpleNamespace
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
+
+_SINGLE_MODEL_REQUEST: ContextVar[bool] = ContextVar("looplet_single_model_request", default=False)
+
+
+@contextmanager
+def single_model_request() -> Iterator[None]:
+    token = _SINGLE_MODEL_REQUEST.set(True)
+    try:
+        yield
+    finally:
+        _SINGLE_MODEL_REQUEST.reset(token)
+
+
+def single_model_request_active() -> bool:
+    return _SINGLE_MODEL_REQUEST.get()
+
 
 FORWARDED_CAPABILITIES = frozenset(
     {
@@ -17,6 +35,10 @@ FORWARDED_CAPABILITIES = frozenset(
         "checkpoint_state",
         "restore_checkpoint_state",
         "reset_conversation",
+        "conversation_mode",
+        "set_conversation_input",
+        "apply_context_compaction",
+        "set_model_turn_context",
         "record_tool_result",
         "set_run_envelope",
         "close",
@@ -24,6 +46,7 @@ FORWARDED_CAPABILITIES = frozenset(
         "_state_path",
         "_restore_local_state",
         "_looplet_manages_retries",
+        "_supports_single_model_request",
     }
 )
 MUTABLE_CAPABILITIES = frozenset({"last_usage", "_client", "_state_path"})

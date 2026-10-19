@@ -56,7 +56,7 @@ import logging
 import os
 from typing import Any, AsyncGenerator, Generator
 
-from looplet._backend_contract import json_snapshot
+from looplet._backend_contract import TerminalLLMError, json_snapshot, single_model_request_active
 
 logger = logging.getLogger(__name__)
 
@@ -295,20 +295,30 @@ def _apply_anthropic_cache(
     # memory -> split the user message so its persistent prefix is cached
     mem_bp = by_label.get("memory")
     mem_content = getattr(mem_bp, "content", "") if mem_bp is not None else ""
-    split_at = prompt.find(mem_content) if mem_content else -1
-    if split_at != -1:
-        end = split_at + len(mem_content)
-        head, tail = prompt[:end], prompt[end:]
-        content_blocks: list[dict[str, Any]] = [
-            {
-                "type": "text",
-                "text": head,
-                "cache_control": _anthropic_cache_control(_ttl("memory")),
-            }
-        ]
-        if tail:
-            content_blocks.append({"type": "text", "text": tail})
-        kwargs["messages"] = [{"role": "user", "content": content_blocks}]
+    messages = kwargs.get("messages", [])
+    if mem_content and messages and messages[0].get("role") == "user":
+        first = messages[0]["content"]
+        blocks = [{"type": "text", "text": first}] if isinstance(first, str) else list(first)
+        for index, block in enumerate(blocks):
+            text = block.get("text", "") if block.get("type") == "text" else ""
+            split_at = text.find(mem_content)
+            if split_at == -1:
+                continue
+            end = split_at + len(mem_content)
+            replacements = [
+                {
+                    "type": "text",
+                    "text": text[:end],
+                    "cache_control": _anthropic_cache_control(_ttl("memory")),
+                }
+            ]
+            if text[end:]:
+                replacements.append({"type": "text", "text": text[end:]})
+            kwargs["messages"] = [
+                {**messages[0], "content": blocks[:index] + replacements + blocks[index + 1 :]},
+                *messages[1:],
+            ]
+            break
 
 
 def _openai_prompt_cache_key(cache_breakpoints: list[Any]) -> str:
@@ -326,7 +336,139 @@ def _openai_prompt_cache_key(cache_breakpoints: list[Any]) -> str:
 # ── OpenAI Backend ───────────────────────────────────────────────
 
 
-class OpenAIBackend:
+def _conversation_messages(
+    backend: Any, prompt: str, *, native_blocks: bool
+) -> list[dict[str, Any]]:
+    snapshot = getattr(backend, "_conversation_input", None)
+    if snapshot is None:
+        return [{"role": "user", "content": prompt}]
+    messages: list[dict[str, Any]] = [{"role": "user", "content": snapshot["prompt"]}]
+    pending: set[str] = set()
+    for message in snapshot["conversation"].get("messages", []):
+        content = message.get("content", "")
+        metadata = message.get("metadata", {})
+        role = message["role"]
+        result = message.get("tool_result")
+        if result is not None:
+            call_id = result.get("call_id") or metadata.get("tool_call_id")
+            rendered = json.dumps({"data": result.get("data"), "error": result.get("error")})
+            if call_id in pending:
+                pending.remove(call_id)
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "tool_result", "tool_use_id": call_id, "content": rendered}
+                        ],
+                    }
+                    if native_blocks
+                    else {"role": "tool", "tool_call_id": call_id, "content": rendered}
+                )
+            else:
+                if pending:
+                    raise TerminalLLMError(
+                        "Unpaired provider tool result", termination_reason="unsupported_context"
+                    )
+                messages.append(
+                    {"role": "user", "content": f"[TOOL RESULT {result['tool']}] {rendered}"}
+                )
+            continue
+        if metadata.get("kind") == "compaction_boundary" or role == "system":
+            messages.append(
+                {"role": "user", "content": "[PRIOR CONTEXT, NOT VERIFIED FACTS] " + str(content)}
+            )
+            continue
+        if role != "user" and metadata.get("origin") not in {"model", "host"}:
+            continue
+        if isinstance(content, str):
+            messages.append({"role": role, "content": content})
+            continue
+        blocks = [{"type": block["kind"], **block["data"]} for block in content]
+        calls = [block for block in blocks if block.get("type") == "tool_use"]
+        for call in calls:
+            identifier = call.get("id")
+            if not isinstance(identifier, str) or not identifier or identifier in pending:
+                raise TerminalLLMError(
+                    "Invalid provider tool identifier", termination_reason="unsupported_context"
+                )
+            pending.add(identifier)
+        if native_blocks:
+            messages.append({"role": role, "content": blocks})
+        else:
+            if any(block.get("type") not in {"text", "tool_use"} for block in blocks):
+                raise TerminalLLMError(
+                    "Provider content cannot be replayed by this adapter",
+                    termination_reason="unsupported_context",
+                )
+            translated: dict[str, Any] = {
+                "role": role,
+                "content": "".join(
+                    block.get("text", "") for block in blocks if block.get("type") == "text"
+                )
+                or None,
+            }
+            if calls:
+                translated["tool_calls"] = [
+                    {
+                        "id": call["id"],
+                        "type": "function",
+                        "function": {"name": call["name"], "arguments": json.dumps(call["input"])},
+                    }
+                    for call in calls
+                ]
+            messages.append(translated)
+    if pending:
+        raise TerminalLLMError(
+            "Provider tool calls lack results", termination_reason="unsupported_context"
+        )
+    if messages[-1]["role"] != "user":
+        messages.append({"role": "user", "content": "Continue the task."})
+    if native_blocks:
+        merged: list[dict[str, Any]] = []
+        for message in messages:
+            if merged and message["role"] == merged[-1]["role"]:
+                previous = merged[-1]["content"]
+                following = message["content"]
+                merged[-1]["content"] = (
+                    previous if isinstance(previous, list) else [{"type": "text", "text": previous}]
+                ) + (
+                    following
+                    if isinstance(following, list)
+                    else [{"type": "text", "text": following}]
+                )
+            else:
+                merged.append(message)
+        return merged
+    return messages
+
+
+class _ConversationBackend:
+    _client: Any
+    conversation_mode = "messages"
+    _native_blocks = False
+
+    def _request_client(self) -> Any:
+        with_options = getattr(self._client, "with_options", None)
+        return (
+            with_options(max_retries=0)
+            if single_model_request_active() and callable(with_options)
+            else self._client
+        )
+
+    def set_conversation_input(self, snapshot: dict[str, Any] | None) -> None:
+        detached = json_snapshot(snapshot)
+        if detached is not None:
+            from types import SimpleNamespace
+
+            _conversation_messages(
+                SimpleNamespace(_conversation_input=detached),
+                detached["prompt"],
+                native_blocks=self._native_blocks,
+            )
+        self._conversation_input = detached
+
+
+class OpenAIBackend(_ConversationBackend):
     """Sync LLM backend for OpenAI-compatible APIs.
 
     Args:
@@ -438,7 +580,7 @@ class OpenAIBackend:
         messages: list[dict[str, str]] = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": prompt})
+        messages.extend(_conversation_messages(self, prompt, native_blocks=False))
 
         kwargs: dict[str, Any] = {
             "model": self._model,
@@ -452,7 +594,7 @@ class OpenAIBackend:
             kwargs["extra_body"] = {"prompt_cache_key": _openai_prompt_cache_key(cache_breakpoints)}
 
         _begin_request(self, kwargs)
-        response = self._client.chat.completions.create(**kwargs)
+        response = self._request_client().chat.completions.create(**kwargs)
         self._record_usage(response)
         return _openai_message_text(response.choices[0].message)
 
@@ -474,7 +616,7 @@ class OpenAIBackend:
         messages: list[dict[str, str]] = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": prompt})
+        messages.extend(_conversation_messages(self, prompt, native_blocks=False))
 
         kwargs: dict[str, Any] = {
             "model": self._model,
@@ -490,7 +632,7 @@ class OpenAIBackend:
             kwargs["extra_body"] = {"prompt_cache_key": _openai_prompt_cache_key(cache_breakpoints)}
 
         _begin_request(self, kwargs)
-        response = self._client.chat.completions.create(**kwargs)
+        response = self._request_client().chat.completions.create(**kwargs)
         self._record_usage(response)
         return _openai_message_to_blocks(response.choices[0].message)
 
@@ -556,7 +698,7 @@ class OpenAIStreamingBackend(OpenAIBackend):
 # ── Anthropic Backend ────────────────────────────────────────────
 
 
-class AnthropicBackend:
+class AnthropicBackend(_ConversationBackend):
     """Sync LLM backend for the Anthropic Messages API.
 
     Args:
@@ -576,6 +718,8 @@ class AnthropicBackend:
 
         llm = AnthropicBackend(api_key="sk-ant-...", model="claude-sonnet-4-20250514")
     """
+
+    _native_blocks = True
 
     def __init__(
         self,
@@ -644,7 +788,7 @@ class AnthropicBackend:
     ) -> str:
         kwargs: dict[str, Any] = {
             "model": self._model,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": _conversation_messages(self, prompt, native_blocks=True),
             "max_tokens": _resolve_max_tokens(max_tokens, self._default_max_tokens) or 4096,
             "temperature": temperature,
         }
@@ -655,7 +799,7 @@ class AnthropicBackend:
         )
 
         _begin_request(self, kwargs)
-        response = self._client.messages.create(**kwargs)
+        response = self._request_client().messages.create(**kwargs)
         self._record_usage(response)
         # Anthropic returns a list of content blocks
         parts = []
@@ -677,7 +821,7 @@ class AnthropicBackend:
         """Native tool calling via Anthropic ``tools`` parameter."""
         kwargs: dict[str, Any] = {
             "model": self._model,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": _conversation_messages(self, prompt, native_blocks=True),
             "max_tokens": _resolve_max_tokens(max_tokens, self._default_max_tokens) or 4096,
             "temperature": temperature,
             "tools": tools,
@@ -689,7 +833,7 @@ class AnthropicBackend:
         )
 
         _begin_request(self, kwargs)
-        response = self._client.messages.create(**kwargs)
+        response = self._request_client().messages.create(**kwargs)
         self._record_usage(response)
         return _anthropic_response_to_blocks(response)
 
@@ -730,7 +874,7 @@ class AnthropicStreamingBackend(AnthropicBackend):
 # ── Async OpenAI Backend ─────────────────────────────────────────
 
 
-class AsyncOpenAIBackend:
+class AsyncOpenAIBackend(_ConversationBackend):
     """Async LLM backend for OpenAI-compatible APIs.
 
     Args:
@@ -815,7 +959,7 @@ class AsyncOpenAIBackend:
         messages: list[dict[str, str]] = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": prompt})
+        messages.extend(_conversation_messages(self, prompt, native_blocks=False))
 
         kwargs: dict[str, Any] = {
             "model": self._model,
@@ -829,7 +973,7 @@ class AsyncOpenAIBackend:
             kwargs["extra_body"] = {"prompt_cache_key": _openai_prompt_cache_key(cache_breakpoints)}
 
         _begin_request(self, kwargs)
-        response = await self._client.chat.completions.create(**kwargs)
+        response = await self._request_client().chat.completions.create(**kwargs)
         self._record_usage(response)
         return _openai_message_text(response.choices[0].message)
 
@@ -847,7 +991,7 @@ class AsyncOpenAIBackend:
         messages: list[dict[str, str]] = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": prompt})
+        messages.extend(_conversation_messages(self, prompt, native_blocks=False))
 
         kwargs: dict[str, Any] = {
             "model": self._model,
@@ -863,7 +1007,7 @@ class AsyncOpenAIBackend:
             kwargs["extra_body"] = {"prompt_cache_key": _openai_prompt_cache_key(cache_breakpoints)}
 
         _begin_request(self, kwargs)
-        response = await self._client.chat.completions.create(**kwargs)
+        response = await self._request_client().chat.completions.create(**kwargs)
         self._record_usage(response)
         return _openai_message_to_blocks(response.choices[0].message)
 
@@ -901,13 +1045,15 @@ class AsyncOpenAIBackend:
 # ── Async Anthropic Backend ──────────────────────────────────────
 
 
-class AsyncAnthropicBackend:
+class AsyncAnthropicBackend(_ConversationBackend):
     """Async LLM backend for the Anthropic Messages API.
 
     Args:
         client: An ``anthropic.AsyncAnthropic`` client instance.
         model: Model name (e.g. ``"claude-sonnet-4-20250514"``).
     """
+
+    _native_blocks = True
 
     def __init__(
         self,
@@ -931,7 +1077,7 @@ class AsyncAnthropicBackend:
     ) -> str:
         kwargs: dict[str, Any] = {
             "model": self._model,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": _conversation_messages(self, prompt, native_blocks=True),
             "max_tokens": _resolve_max_tokens(max_tokens, self._default_max_tokens) or 4096,
             "temperature": temperature,
         }
@@ -942,7 +1088,7 @@ class AsyncAnthropicBackend:
         )
 
         _begin_request(self, kwargs)
-        response = await self._client.messages.create(**kwargs)
+        response = await self._request_client().messages.create(**kwargs)
         _capture_response(self, response)
         parts = []
         for block in response.content:
@@ -963,7 +1109,7 @@ class AsyncAnthropicBackend:
         """Async native tool calling via Anthropic ``tools`` parameter."""
         kwargs: dict[str, Any] = {
             "model": self._model,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": _conversation_messages(self, prompt, native_blocks=True),
             "max_tokens": _resolve_max_tokens(max_tokens, self._default_max_tokens) or 4096,
             "temperature": temperature,
             "tools": tools,
@@ -975,7 +1121,7 @@ class AsyncAnthropicBackend:
         )
 
         _begin_request(self, kwargs)
-        response = await self._client.messages.create(**kwargs)
+        response = await self._request_client().messages.create(**kwargs)
         _capture_response(self, response)
         return _anthropic_response_to_blocks(response)
 

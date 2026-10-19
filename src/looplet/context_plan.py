@@ -103,11 +103,13 @@ class ContextSourceSelector:
         chunks: list[str] = []
         included_ids: list[str] = []
         decisions: list[ContextSourceDecision] = []
+        from looplet.context_projection import invoke_context_callback
+
         for source in self._sources.values():
             if source.source_id in self._retained:
                 text = self._retained[source.source_id]
-            elif source.scope is not None and not source.scope(
-                task=task, state=state, step_num=step_num
+            elif source.scope is not None and not invoke_context_callback(
+                source.scope, dict(task=task, state=state, step_num=step_num), state
             ):
                 decisions.append(self._decision(source, 0, False, "out_of_scope"))
                 continue

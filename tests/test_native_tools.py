@@ -39,6 +39,210 @@ from looplet.scaffolding import llm_call_with_retry
 from looplet.testing import AsyncMockLLMBackend, MockLLMBackend
 from looplet.types import CancelToken, NativeToolBackend
 
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize("reject", [False, True])
+@pytest.mark.parametrize("invalid_schema", [False, True])
+async def test_text_completion_is_opt_in_gated_and_recorded(
+    tmp_path, asynchronous, native, reject, invalid_schema
+):
+    from looplet.provenance import ProvenanceSink, async_replay_loop, replay_loop
+    from looplet.validation import FieldSpec, OutputSchema
+
+    effects = []
+    gate_calls = []
+
+    def done(answer: str) -> dict:
+        effects.append(answer)
+        return {"answer": answer}
+
+    class Gate:
+        def check_done(self, state, session_log, context, step_num, tool_call=None):
+            gate_calls.append(dict(tool_call.metadata))
+            return HookDecision(block="Synthetic completion gate") if reject else None
+
+    class Backend:
+        last_stop_reason = "stop"
+
+        def generate(self, prompt, **kwargs):
+            return "Source-backed final answer"
+
+        def generate_with_tools(self, prompt, **kwargs):
+            return [{"type": "text", "text": "Source-backed final answer"}]
+
+    class AsyncBackend(Backend):
+        async def generate(self, prompt, **kwargs):
+            return super().generate(prompt, **kwargs)
+
+        async def generate_with_tools(self, prompt, **kwargs):
+            return super().generate_with_tools(prompt, **kwargs)
+
+    sink = ProvenanceSink(tmp_path)
+    state = DefaultState(max_steps=1)
+    arguments = dict(
+        llm=sink.wrap_llm(AsyncBackend() if asynchronous else Backend()),
+        tools=tools_from([done]),
+        state=state,
+        config=LoopConfig(
+            max_steps=1,
+            use_native_tools=native,
+            allow_text_completion=True,
+            output_schema=(
+                OutputSchema(fields={"answer": FieldSpec("answer", "int")})
+                if invalid_schema
+                else None
+            ),
+            checkpoint_dir=str(tmp_path / "checkpoints"),
+        ),
+        hooks=[Gate(), sink.trajectory_hook()],
+    )
+    steps = (
+        [step async for step in async_composable_loop(**arguments)]
+        if asynchronous
+        else list(composable_loop(**arguments))
+    )
+    assert effects == []
+    assert gate_calls == [{"completion_source": "assistant_message"}]
+    assert len(steps) == 1
+    assert steps[0].tool_call.call_id == ""
+    assert steps[0].tool_call.metadata["completion_source"] == "assistant_message"
+    rejected = reject or invalid_schema
+    assert state._stop_reason == ("budget_exhausted" if rejected else "done")
+    assert bool(steps[0].tool_result.error) is rejected
+    assert not list((tmp_path / "checkpoints").rglob("*pending*"))
+    document = __import__("json").loads((sink.flush() / "trajectory.json").read_text())
+    assert document["steps"][0]["llm_call_indices"] == [0]
+    assert document["steps"][0]["tool_call"]["metadata"]["completion_source"] == "assistant_message"
+    if not rejected:
+        replay_state = DefaultState(max_steps=1)
+        replay_arguments = dict(trace_dir=tmp_path, tools=tools_from([done]), state=replay_state)
+        replayed = (
+            [step async for step in async_replay_loop(**replay_arguments)]
+            if asynchronous
+            else list(replay_loop(**replay_arguments))
+        )
+        assert replay_state._stop_reason == "done"
+        assert replayed[-1].tool_result.data == steps[-1].tool_result.data
+        assert effects == []
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("exhausted", [False, True])
+@pytest.mark.parametrize("overflow", [False, True])
+async def test_native_recovery_preserves_attempts_and_dispatches_only_complete_turns(
+    tmp_path, asynchronous, exhausted, overflow
+):
+    from looplet.cost import CostHook, CostTracker
+    from looplet.provenance import ProvenanceSink, async_replay_loop, replay_loop
+
+    effects = []
+
+    def append(value: int) -> dict:
+        effects.append(value)
+        return {"value": value}
+
+    def done(answer: str) -> dict:
+        return {"answer": answer}
+
+    class Backend:
+        calls = 0
+
+        def generate(self, prompt, **kwargs):
+            raise AssertionError("No text fallback")
+
+        def generate_with_tools(self, prompt, **kwargs):
+            self.calls += 1
+            if overflow and self.calls == 1:
+                raise RuntimeError("context_length_exceeded")
+            native_turn = self.calls - int(overflow)
+            truncated = exhausted or native_turn == 1
+            self.last_stop_reason = "max_tokens" if truncated else "tool_use"
+            self.last_usage = {"input": 10, "output": 5}
+            return [
+                {"type": "thinking", "thinking": f"Attempt {self.calls}", "signature": "opaque"},
+                {
+                    "type": "tool_use",
+                    "id": f"call-{self.calls}",
+                    "name": "append" if native_turn < 3 else "done",
+                    "input": {"value": 99 if truncated else 7}
+                    if native_turn < 3
+                    else {"answer": "Saved"},
+                },
+            ]
+
+    backend = Backend()
+    if asynchronous:
+        original = backend.generate_with_tools
+
+        async def generate_with_tools(prompt, **kwargs):
+            return original(prompt, **kwargs)
+
+        backend.generate_with_tools = generate_with_tools
+    sink = ProvenanceSink(tmp_path)
+    wrapped = sink.wrap_llm(backend)
+    tracker = CostTracker()
+    state = DefaultState(max_steps=2)
+    arguments = dict(
+        llm=wrapped,
+        tools=tools_from([append, done]),
+        state=state,
+        config=LoopConfig(
+            max_steps=2, max_tokens=40, max_turn_continuations=1, reactive_recovery=True
+        ),
+        hooks=[CostHook(tracker, backend=wrapped), sink.trajectory_hook()],
+    )
+    steps = (
+        [step async for step in async_composable_loop(**arguments)]
+        if asynchronous
+        else list(composable_loop(**arguments))
+    )
+    count = (2 if exhausted else 3) + int(overflow)
+    assert state._stop_reason == ("output_truncated" if exhausted else "done")
+    assert effects == ([] if exhausted else [7])
+    assert tracker.calls == count
+    assert tracker.input_tokens == 10 * (count - int(overflow))
+    assert state._looplet_run_stats["llm_calls"] == count
+    document = __import__("json").loads((sink.flush() / "trajectory.json").read_text())
+    assert len(document["llm_calls"]) == count
+    assert document["steps"][0]["llm_call_indices"] == list(range(2 + int(overflow)))
+    assert document["llm_calls"][int(overflow)]["capture"]["response"][0]["thinking"] == (
+        f"Attempt {1 + int(overflow)}"
+    )
+    replay_state = DefaultState(max_steps=len(steps))
+    replay_arguments = dict(
+        trace_dir=tmp_path, tools=tools_from([append, done]), state=replay_state
+    )
+    replayed = (
+        [step async for step in async_replay_loop(**replay_arguments)]
+        if asynchronous
+        else list(replay_loop(**replay_arguments))
+    )
+    assert replay_state._stop_reason == state._stop_reason
+    assert effects == ([] if exhausted else [7, 7])
+    assert replayed[-1].tool_result.data == steps[-1].tool_result.data
+
+
+@pytest.mark.parametrize(
+    "response, reason",
+    [
+        ([], "stop"),
+        ([{"type": "thinking", "thinking": "Only reasoning"}], "stop"),
+        ([{"type": "text", "text": "Partial answer"}], "max_tokens"),
+        ([{"type": "text", "text": "Refused"}, {"type": "refusal"}], "stop"),
+        ([{"type": "text", "text": "Malformed"}, {"type": "tool_use", "name": ""}], "stop"),
+        ('{"tool":', "stop"),
+        ([{"type": "text", "text": '{"tool":'}], "stop"),
+        ([{"type": "text", "text": '{"answer": "Not a tool call"}'}], "stop"),
+    ],
+)
+def test_text_completion_does_not_promote_invalid_responses(response, reason):
+    assert (
+        NativeToolPolicy().parse_response(response, allow_text_completion=True, stop_reason=reason)
+        == []
+    )
+
+
 # ── Helpers ──────────────────────────────────────────────────────
 
 

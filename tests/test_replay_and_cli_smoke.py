@@ -78,6 +78,72 @@ def _captured_dir(tmp_path: Path, *, task: dict | None = None) -> Path:
 
 class TestReplayLoopSmoke:
     @pytest.mark.parametrize("native", [False, True])
+    def test_structured_capture_reconstructs_without_parsing_text_projections(
+        self, tmp_path, native
+    ):
+        from looplet.provenance import RecordingLLMBackend
+
+        content = "\n## RESPONSE\n" + "synthetic reasoning \u2028 " * 100
+        response = [{"type": "thinking", "thinking": content, "signature": "opaque"}]
+
+        class Backend:
+            last_stop_reason = "max_tokens"
+            last_usage = {"output_tokens": 12}
+            last_response = {"id": "saved-response", "content": response}
+
+            def generate(self, prompt, **kwargs):
+                return content
+
+            def generate_with_tools(self, prompt, **kwargs):
+                return response
+
+        recorder = RecordingLLMBackend(Backend(), max_chars_per_call=100)
+        if native:
+            recorder.generate_with_tools("full prompt " * 100, tools=[])
+        else:
+            recorder.generate("full prompt " * 100)
+        recorder.save(tmp_path)
+        (tmp_path / "call_00_prompt.txt").write_text("Bounded request projection")
+        (tmp_path / "call_00_response.txt").write_text("Bounded response projection")
+        calls = _load_trace_calls(tmp_path)
+        assert calls[0]["request"]["prompt"] == "full prompt " * 100
+        assert calls[0]["response"] == (response if native else content)
+        replay = _ReplayLLMBackend(calls)
+        actual = (
+            replay.generate_with_tools("ignored", tools=[])
+            if native
+            else replay.generate("ignored")
+        )
+        assert actual == (response if native else content)
+        assert replay.last_stop_reason == "max_tokens"
+        assert replay.last_usage == {"output_tokens": 12}
+        assert replay.last_response["id"] == "saved-response"
+
+    def test_native_batch_terminal_step_links_to_its_complete_model_call(self, tmp_path):
+        response = [
+            {"type": "thinking", "thinking": "Synthetic decision", "signature": "opaque"},
+            {"type": "text", "text": "Compute and finish"},
+            {"type": "tool_use", "id": "add-1", "name": "add", "input": {"a": 1, "b": 2}},
+            {"type": "tool_use", "id": "done-1", "name": "done", "input": {"answer": "3"}},
+        ]
+        backend = MockLLMBackend(["unused"])
+        backend.generate_with_tools = lambda prompt, **kwargs: response
+        sink = ProvenanceSink(tmp_path)
+        steps = list(
+            composable_loop(
+                llm=sink.wrap_llm(backend),
+                tools=_make_tools(),
+                config=LoopConfig(max_steps=2),
+                hooks=[sink.trajectory_hook()],
+            )
+        )
+        assert [step.tool_call.call_id for step in steps] == ["add-1", "done-1"]
+        document = json.loads((sink.flush() / "trajectory.json").read_text())
+        assert [step["llm_call_indices"] for step in document["steps"]] == [[0], [0]]
+        assert document["llm_calls"][0]["capture"]["response"] == response
+        assert document["steps"][0]["tool_result"]["data"] == {"sum": 3}
+
+    @pytest.mark.parametrize("native", [False, True])
     @pytest.mark.parametrize("slot", ["check_permission", "pre_dispatch"])
     async def test_async_replay_preserves_async_tool_denials(self, tmp_path, native, slot, recwarn):
         from looplet import async_replay_loop
@@ -356,6 +422,36 @@ class TestReplayLoopSmoke:
             ('{"step_count": true}', "step_count must be a non-negative integer"),
             ('{"step_count": -1}', "step_count must be a non-negative integer"),
             ('{"task": "wrong type"}', "task must be an object"),
+            ('{"metadata": null}', "metadata must be an object"),
+            ('{"metadata": {"run_stats": []}}', "run_stats must be an object"),
+            (
+                '{"metadata": {"run_stats": {"model_turn_config": []}}}',
+                "Invalid recorded model_turn_config",
+            ),
+            (
+                '{"metadata": {"run_stats": {"model_turn_config": {"unknown": 1}}}}',
+                "Invalid recorded model_turn_config",
+            ),
+            (
+                '{"metadata": {"run_stats": {"model_turn_config": {"allow_text_completion": 1}}}}',
+                "allow_text_completion must be boolean",
+            ),
+            (
+                '{"metadata": {"run_stats": {"model_turn_config": {"max_tokens": false}}}}',
+                "max_tokens must be an integer",
+            ),
+            (
+                '{"metadata": {"run_stats": {"model_turn_config": {"max_tokens": 0}}}}',
+                "max_tokens must be an integer",
+            ),
+            (
+                '{"metadata": {"run_stats": {"model_turn_config": {"max_turn_continuations": -1}}}}',
+                "max_turn_continuations must be an integer",
+            ),
+            (
+                '{"metadata": {"run_stats": {"model_turn_config": {"done_tool": ""}}}}',
+                "done_tool must be a nonempty string",
+            ),
         ],
     )
     @pytest.mark.parametrize("asynchronous", [False, True])

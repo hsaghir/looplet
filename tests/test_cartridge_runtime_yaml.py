@@ -61,6 +61,27 @@ def test_runtime_yaml_loads_runtime_keys(tmp_path: Path) -> None:
     assert preset.config.max_steps == 5
 
 
+def test_text_completion_policy_round_trips_as_contract(tmp_path: Path) -> None:
+    from looplet import preset_to_cartridge
+
+    original = tmp_path / "original"
+    original.mkdir()
+    _write_minimal_cartridge(
+        original,
+        config_text="max_steps: 5\ndone_tool: done\nallow_text_completion: true\n",
+        runtime_text="max_tokens: 100\nmax_turn_continuations: 1\n",
+    )
+    with cartridge_to_preset(original) as preset:
+        assert preset.config.allow_text_completion is True
+        exported = tmp_path / "exported"
+        preset_to_cartridge(preset, exported)
+    with cartridge_to_preset(exported) as restored:
+        assert restored.config.allow_text_completion is True
+        assert restored.config.max_turn_continuations == 1
+        assert "allow_text_completion" in (exported / "config.yaml").read_text()
+        assert "allow_text_completion" not in (exported / "runtime.yaml").read_text()
+
+
 def test_runtime_yaml_loads_parallelism_cap(tmp_path: Path) -> None:
     _write_minimal_cartridge(
         tmp_path,

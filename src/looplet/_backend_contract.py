@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import inspect
+import json
+from types import SimpleNamespace
 from typing import Any, Callable
 
 FORWARDED_CAPABILITIES = frozenset(
     {
         "last_usage",
         "last_model",
+        "last_request",
+        "last_response",
+        "last_stop_reason",
         "checkpoint_state",
         "restore_checkpoint_state",
         "reset_conversation",
@@ -22,6 +27,20 @@ FORWARDED_CAPABILITIES = frozenset(
     }
 )
 MUTABLE_CAPABILITIES = frozenset({"last_usage", "_client", "_state_path"})
+
+
+def json_snapshot(value: Any) -> Any:
+    """Copy JSON-compatible values and provider models without retaining live references."""
+
+    def serialize(item: Any) -> Any:
+        dump = getattr(item, "model_dump", None)
+        if callable(dump):
+            return dump(mode="json")
+        if isinstance(item, SimpleNamespace):
+            return vars(item)
+        return str(item)
+
+    return json.loads(json.dumps(value, default=serialize))
 
 
 class TerminalLLMError(RuntimeError):

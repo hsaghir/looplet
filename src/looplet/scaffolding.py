@@ -19,7 +19,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from looplet._backend_contract import TerminalLLMError
 from looplet._backend_contract import attempt_limit as _attempt_limit
@@ -171,6 +171,9 @@ class LLMResult:
         "native_attempted",
         "native_succeeded",
         "native_fallback_reason",
+        "calls",
+        "usage",
+        "model_calls",
     )
 
     def __init__(
@@ -184,6 +187,9 @@ class LLMResult:
         native_attempted: bool = False,
         native_succeeded: bool = False,
         native_fallback_reason: str | None = None,
+        calls: int = 1,
+        usage: dict[str, Any] | None = None,
+        model_calls: list[dict[str, Any]] | None = None,
     ) -> None:
         self.text = text
         self.error = error
@@ -197,11 +203,24 @@ class LLMResult:
         self.native_attempted = native_attempted
         self.native_succeeded = native_succeeded
         self.native_fallback_reason = native_fallback_reason
+        self.calls = calls
+        self.usage = usage
+        self.model_calls = model_calls or []
 
     @property
     def ok(self) -> bool:
         """True if the call succeeded and text is available."""
         return self.text is not None
+
+    def _include_previous(self, previous: LLMResult) -> None:
+        self.calls += previous.calls
+        self.continuations += previous.continuations
+        self.model_calls = previous.model_calls + self.model_calls
+        usage = dict(previous.usage or {})
+        for key, value in (self.usage or {}).items():
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                usage[key] = usage.get(key, 0) + value
+        self.usage = usage or None
 
     @property
     def failure_reason(self) -> str:
@@ -209,6 +228,124 @@ class LLMResult:
         if isinstance(self.error, TerminalLLMError):
             return self.error.termination_reason
         return "llm_error"
+
+
+class _NativeTurnRecovery:
+    """Restart a truncated native turn before any proposed tools are dispatched."""
+
+    def __init__(self, backend: Any, limit: int) -> None:
+        import inspect
+        from copy import deepcopy
+
+        self.continuations = 0
+        self.calls = 0
+        self.usage: dict[str, Any] = {}
+        self.model_calls: list[dict[str, Any]] = []
+        self._limit = limit
+        checkpoint = getattr(backend, "checkpoint_state", None)
+        restore = getattr(backend, "restore_checkpoint_state", None)
+        stateful = callable(checkpoint) or callable(getattr(backend, "record_tool_result", None))
+        self._restore = (
+            restore
+            if callable(checkpoint)
+            and callable(restore)
+            and not inspect.iscoroutinefunction(checkpoint)
+            and not inspect.iscoroutinefunction(restore)
+            else None
+        )
+        self._restartable = not stateful or self._restore is not None
+        self._checkpoint = None
+        if limit > 0 and self._restore is not None and callable(checkpoint):
+            snapshot = checkpoint()
+            if inspect.isawaitable(snapshot):
+                if inspect.iscoroutine(snapshot):
+                    snapshot.close()
+                self._restore = None
+                self._restartable = False
+            else:
+                self._checkpoint = deepcopy(snapshot)
+
+    def begin_call(self, prompt: str) -> None:
+        self.calls += 1
+        self.model_calls.append({"prompt_chars": len(prompt), "response_chars": 0, "usage": {}})
+
+    def observe_usage(self, backend: Any, response: Any) -> None:
+        import json
+
+        usage = getattr(backend, "last_usage", None)
+        self.model_calls[-1]["response_chars"] = (
+            len(response) if isinstance(response, str) else len(json.dumps(response, default=str))
+        )
+        if isinstance(usage, dict):
+            self.model_calls[-1]["usage"] = dict(usage)
+            for key, value in usage.items():
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    self.usage[key] = self.usage.get(key, 0) + value
+
+    def finish(self, result: LLMResult) -> LLMResult:
+        result.calls = self.calls
+        result.continuations = self.continuations
+        result.usage = dict(self.usage) or None
+        result.model_calls = self.model_calls
+        return result
+
+    def restart_options(self, options: dict[str, Any]) -> dict[str, Any] | None:
+        import inspect
+        from copy import deepcopy
+
+        maximum = options.get("max_tokens")
+        if (
+            self.continuations >= self._limit
+            or not self._restartable
+            or isinstance(maximum, bool)
+            or not isinstance(maximum, int)
+            or maximum <= 0
+        ):
+            return None
+        if self._restore is not None:
+            try:
+                restored = self._restore(deepcopy(self._checkpoint))
+                if inspect.isawaitable(restored):
+                    if inspect.iscoroutine(restored):
+                        restored.close()
+                    raise TypeError("Native recovery requires synchronous checkpoint restoration")
+            except Exception as error:
+                raise TerminalLLMError(
+                    "Cannot safely restore the truncated native turn",
+                    termination_reason="output_truncated",
+                ) from error
+        self.continuations += 1
+        return {**options, "max_tokens": maximum * 2}
+
+
+def _native_llm_result(response: Any, stop_reason: str | None, continuations: int) -> LLMResult:
+    if response is None:
+        raise NativeToolUnsupportedError("native tool call returned no response")
+    blocks = response if isinstance(response, list) else []
+    reason = None
+    if stop_reason == "max_tokens":
+        reason = "output_truncated"
+    elif stop_reason in {"refusal", "content_filter"} or any(
+        isinstance(block, dict) and block.get("type") == "refusal" for block in blocks
+    ):
+        reason = "model_refusal"
+    elif stop_reason in {"incomplete", "pause_turn"}:
+        reason = "model_incomplete"
+    return LLMResult(
+        response if reason is None else None,
+        (
+            TerminalLLMError(
+                f"Native model response ended with {reason}", termination_reason=reason
+            )
+            if reason is not None
+            else None
+        ),
+        stop_reason=stop_reason,
+        continuations=continuations,
+        native_requested=True,
+        native_attempted=True,
+        native_succeeded=reason is None,
+    )
 
 
 # ── Token Estimation ─────────────────────────────────────────────
@@ -283,6 +420,7 @@ def llm_call_with_retry(
     max_continuations: int = 0,
     cache_breakpoints: list[Any] | None = None,
     generate_kwargs: dict[str, Any] | None = None,
+    should_continue: Callable[[], bool] | None = None,
 ) -> LLMResult:
     """Call LLM with exponential backoff retry on failure.
 
@@ -330,6 +468,7 @@ def llm_call_with_retry(
     attempt_limit = _attempt_limit(llm, max_retries)
     last_error: Exception | None = None
     native_attempted = False
+    recovery: _NativeTurnRecovery | None = None
     for attempt in range(attempt_limit):
         # Re-check cancellation between retries - a long backoff could span it.
         if cancel_token is not None and getattr(cancel_token, "is_cancelled", False):
@@ -356,16 +495,28 @@ def llm_call_with_retry(
                     call_kwargs["cancel_token"] = cancel_token
                 if cache_breakpoints and _accepts_kwarg(call, "cache_breakpoints"):
                     call_kwargs["cache_breakpoints"] = cache_breakpoints
+                if recovery is None:
+                    recovery = _NativeTurnRecovery(llm, max_continuations)
+                recovery.begin_call(prompt)
                 blocks = call(prompt, **call_kwargs)
-                if blocks is None:
-                    raise NativeToolUnsupportedError("native tool call returned no response")
-                return LLMResult(
-                    blocks,
-                    stop_reason=getattr(llm, "last_stop_reason", None),
-                    native_requested=True,
-                    native_attempted=True,
-                    native_succeeded=True,
-                )
+                recovery.observe_usage(llm, blocks)
+                stop = getattr(llm, "last_stop_reason", None)
+                while stop == "max_tokens":
+                    if should_continue is not None and not should_continue():
+                        break
+                    if cancel_token is not None and getattr(cancel_token, "is_cancelled", False):
+                        raise TerminalLLMError(
+                            "Native recovery cancelled", termination_reason="cancelled"
+                        )
+                    next_options = recovery.restart_options(call_kwargs)
+                    if next_options is None:
+                        break
+                    call_kwargs = next_options
+                    recovery.begin_call(prompt)
+                    blocks = call(prompt, **call_kwargs)
+                    recovery.observe_usage(llm, blocks)
+                    stop = getattr(llm, "last_stop_reason", None)
+                return recovery.finish(_native_llm_result(blocks, stop, recovery.continuations))
             call = llm.generate
             call_kwargs = {
                 "max_tokens": max_tokens,
@@ -430,6 +581,15 @@ def llm_call_with_retry(
             )
         except Exception as e:
             last_error = e
+            if recovery is not None and (
+                isinstance(e, (TerminalLLMError, NativeToolUnsupportedError))
+                or _is_prompt_too_long(e)
+                or type(e).__name__ == "LLMResponsesExhausted"
+                or attempt >= attempt_limit - 1
+            ):
+                return recovery.finish(
+                    LLMResult(None, e, native_requested=True, native_attempted=True)
+                )
             if isinstance(e, TerminalLLMError):
                 logger.warning("Backend stopped (not retrying): %s", e)
                 return LLMResult(

@@ -128,6 +128,8 @@ class LLMCall:
     ``ctx.llm.generate()``.  Used by provenance consumers to group
     and filter calls by origin."""
     metadata: dict[str, Any] = field(default_factory=dict)
+    capture: dict[str, Any] = field(default_factory=dict)
+    """Untruncated, redacted request/response snapshot for structured reconstruction."""
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -145,6 +147,7 @@ class LLMCall:
             "error": self.error,
             "scope": self.scope,
             "metadata": dict(self.metadata),
+            "capture": self.capture,
         }
         return d
 
@@ -243,7 +246,10 @@ class _RecordingBase:
         tools: list[dict[str, Any]] | None,
         started_at: float,
         error: str | None = None,
+        options: dict[str, Any] | None = None,
     ) -> LLMCall:
+        from looplet._backend_contract import json_snapshot
+
         duration_ms = (time.time() - started_at) * 1000.0
         if isinstance(response, str):
             stored_response: Any = self._scrub(response)
@@ -265,6 +271,35 @@ class _RecordingBase:
             step_num=self.current_step_num,
             error=self._scrub(error) if error is not None else None,
             scope=self._call_scope.get(),
+            capture=_redact_value(
+                json_snapshot(
+                    {
+                        "schema": "looplet.model-call.v1",
+                        "request": {
+                            "method": method,
+                            "prompt": prompt,
+                            "system_prompt": system_prompt,
+                            "temperature": temperature,
+                            "max_tokens": max_tokens,
+                            "tools": tools,
+                            "options": options or {},
+                        },
+                        "response": response,
+                        "provider_request": getattr(self._backend, "last_request", None),
+                        "provider_response": (
+                            getattr(self._backend, "last_response", None) if error is None else None
+                        ),
+                        "stop_reason": (
+                            getattr(self._backend, "last_stop_reason", None)
+                            if error is None
+                            else None
+                        ),
+                        "usage": getattr(self._backend, "last_usage", {}) if error is None else {},
+                        "error": error,
+                    }
+                ),
+                self._redact,
+            ),
         )
         self.calls.append(call)
         return call
@@ -415,6 +450,7 @@ class RecordingLLMBackend(_RecordingBase):
                 tools=None,
                 started_at=started,
                 error=error,
+                options=options,
             )
 
     def _generate_with_tools_impl(
@@ -459,6 +495,7 @@ class RecordingLLMBackend(_RecordingBase):
                 tools=tools,
                 started_at=started,
                 error=error,
+                options=options,
             )
 
 
@@ -491,13 +528,15 @@ class AsyncRecordingLLMBackend(_RecordingBase):
         temperature: float = 0.2,
         **options: Any,
     ) -> str:
+        import inspect
+
         started = time.time()
         error: str | None = None
         response: str = ""
         upstream_prompt = self._upstream(prompt)
         upstream_system = self._upstream(system_prompt)
         try:
-            response = await invoke_backend(
+            pending = invoke_backend(
                 self._backend.generate,
                 upstream_prompt,
                 {
@@ -507,6 +546,7 @@ class AsyncRecordingLLMBackend(_RecordingBase):
                     "temperature": temperature,
                 },
             )
+            response = await pending if inspect.isawaitable(pending) else pending
             return response
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"
@@ -522,6 +562,7 @@ class AsyncRecordingLLMBackend(_RecordingBase):
                 tools=None,
                 started_at=started,
                 error=error,
+                options=options,
             )
 
     async def _generate_with_tools_impl(
@@ -534,13 +575,15 @@ class AsyncRecordingLLMBackend(_RecordingBase):
         temperature: float = 0.2,
         **options: Any,
     ) -> list[dict[str, Any]]:
+        import inspect
+
         started = time.time()
         error: str | None = None
         response: list[dict[str, Any]] = []
         upstream_prompt = self._upstream(prompt)
         upstream_system = self._upstream(system_prompt)
         try:
-            response = await invoke_backend(
+            pending = invoke_backend(
                 self._backend.generate_with_tools,
                 upstream_prompt,
                 {
@@ -551,6 +594,7 @@ class AsyncRecordingLLMBackend(_RecordingBase):
                     "temperature": temperature,
                 },
             )
+            response = await pending if inspect.isawaitable(pending) else pending
             return response
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"
@@ -566,6 +610,7 @@ class AsyncRecordingLLMBackend(_RecordingBase):
                 tools=tools,
                 started_at=started,
                 error=error,
+                options=options,
             )
 
 
@@ -718,6 +763,8 @@ class TrajectoryRecorder:
         tool_result: Any,
         step_num: int,
     ) -> str | None:
+        from looplet._backend_contract import json_snapshot
+
         duration_ms = (time.time() - self._step_start_time) * 1000.0
         pretty = ""
         if state is not None and hasattr(state, "steps") and state.steps:
@@ -749,8 +796,8 @@ class TrajectoryRecorder:
                 timestamp=self._step_start_time,
                 duration_ms=duration_ms,
                 pretty=pretty,
-                tool_call=tc_dict,
-                tool_result=tr_dict,
+                tool_call=json_snapshot(tc_dict),
+                tool_result=json_snapshot(tr_dict),
                 context_before=self._pending_context,
                 llm_call_indices=llm_indices,
             )
@@ -759,6 +806,8 @@ class TrajectoryRecorder:
         return None
 
     def on_loop_end(self, state: Any, session_log: Any, context: Any, llm: Any) -> int:
+        from looplet._backend_contract import json_snapshot
+
         self.trajectory.ended_at = time.time()
         if session_log is not None and hasattr(session_log, "render"):
             try:
@@ -810,6 +859,24 @@ class TrajectoryRecorder:
                 tc_dict = tc.to_dict() if tc is not None and hasattr(tc, "to_dict") else {}
                 tr_dict = tr.to_dict() if tr is not None and hasattr(tr, "to_dict") else {}
                 pretty = st.pretty() if hasattr(st, "pretty") else ""
+                llm_indices = []
+                if self._recording_llm is not None:
+                    call_id = getattr(tc, "call_id", None)
+                    for call in self._recording_llm.calls:
+                        native_match = (
+                            call_id
+                            and isinstance(call.response, list)
+                            and any(
+                                isinstance(block, dict) and block.get("id") == call_id
+                                for block in call.response
+                            )
+                        )
+                        if call.step_num == num or native_match:
+                            llm_indices.append(call.index)
+                    if not llm_indices and st is state.steps[-1]:
+                        llm_indices = list(
+                            range(self._pending_llm_start, len(self._recording_llm.calls))
+                        )
                 self.trajectory.steps.append(
                     StepRecord(
                         step_num=num,
@@ -819,7 +886,7 @@ class TrajectoryRecorder:
                         tool_call=tc_dict,
                         tool_result=tr_dict,
                         context_before="",
-                        llm_call_indices=[],
+                        llm_call_indices=llm_indices,
                         metadata=dict(getattr(st, "metadata", {}) or {}),
                     )
                 )
@@ -842,6 +909,9 @@ class TrajectoryRecorder:
             self.trajectory.termination_reason = "no_steps"
 
         if state is not None:
+            run_stats = getattr(state, "_looplet_run_stats", {})
+            if isinstance(run_stats, dict):
+                self.trajectory.metadata["run_stats"] = json_snapshot(run_stats)
             for key in ("run_status", "run_phase"):
                 value = getattr(state, key, None)
                 if value is not None:
@@ -1002,14 +1072,16 @@ class ProvenanceSink:
 
         A previously created trajectory hook is bound to this wrapper.
         Pass ``async_=True`` to force the async variant; otherwise the
-        sink inspects ``generate`` - if it is a coroutine function the
-        async wrapper is used.
+        sink inspects both generation methods. A coroutine function on
+        either method selects the async wrapper, including mixed backends.
         """
         import inspect
 
         if async_ is None:
-            gen = getattr(backend, "generate", None)
-            async_ = bool(gen) and inspect.iscoroutinefunction(gen)
+            async_ = any(
+                inspect.iscoroutinefunction(getattr(backend, method, None))
+                for method in ("generate", "generate_with_tools")
+            )
         cls: type[_RecordingBase] = AsyncRecordingLLMBackend if async_ else RecordingLLMBackend
         self._recording_llm = cls(
             backend,
@@ -1095,6 +1167,10 @@ class _ReplayLLMBackend:
                 f"have diverged from the recorded run."
             )
         self._index += 1
+        self.last_stop_reason = call.get("stop_reason")
+        self.last_usage = call.get("usage") or {}
+        self.last_request = call.get("provider_request")
+        self.last_response = call.get("provider_response")
         return call
 
     def generate(
@@ -1160,7 +1236,7 @@ def _load_trace_calls(trace_dir: Path) -> list[dict[str, Any]]:
     calls: list[dict[str, Any]] = []
     if manifest.exists():
         for line_number, line in enumerate(
-            manifest.read_text(encoding="utf-8").splitlines(), start=1
+            manifest.read_text(encoding="utf-8").split("\n"), start=1
         ):
             line = line.strip()
             if not line:
@@ -1183,6 +1259,29 @@ def _load_trace_calls(trace_dir: Path) -> list[dict[str, Any]]:
                 raise ValueError(
                     f"invalid {manifest} line {line_number}: unsupported method {method!r}"
                 )
+            capture = entry.get("capture")
+            if capture is not None and capture != {}:
+                if (
+                    not isinstance(capture, dict)
+                    or capture.get("schema") != "looplet.model-call.v1"
+                    or not isinstance(capture.get("request"), dict)
+                    or capture["request"].get("method") != method
+                    or "response" not in capture
+                ):
+                    raise ValueError(f"invalid structured capture in {manifest} line {line_number}")
+                response = capture["response"]
+                valid_response = (
+                    isinstance(response, str)
+                    if method == "generate"
+                    else isinstance(response, list)
+                    and all(isinstance(block, dict) for block in response)
+                )
+                if not valid_response:
+                    raise ValueError(
+                        f"invalid structured response in {manifest} line {line_number}"
+                    )
+                calls.append({**capture, "index": idx, "method": method})
+                continue
             response_txt = _read_call_body(trace_dir, idx)
             if response_txt is None:
                 raise FileNotFoundError(
@@ -1450,9 +1549,40 @@ def _prepare_replay(
             )
             for call in calls
         )
+        metadata = trajectory.get("metadata", {})
+        if not isinstance(metadata, dict):
+            raise ValueError("trajectory.metadata must be an object")
+        run_stats = metadata.get("run_stats", {})
+        if not isinstance(run_stats, dict):
+            raise ValueError("trajectory.metadata.run_stats must be an object")
+        turn_config = run_stats.get("model_turn_config", {})
+        if not isinstance(turn_config, dict) or set(turn_config) - {
+            "allow_text_completion",
+            "max_turn_continuations",
+            "max_tokens",
+            "done_tool",
+        }:
+            raise ValueError("Invalid recorded model_turn_config")
+        if (
+            "allow_text_completion" in turn_config
+            and type(turn_config["allow_text_completion"]) is not bool
+        ):
+            raise ValueError("Recorded allow_text_completion must be boolean")
+        for name, minimum in (("max_tokens", 1), ("max_turn_continuations", 0)):
+            if name == "max_tokens" and turn_config.get(name) is None:
+                continue
+            if name in turn_config and (
+                type(turn_config[name]) is not int or turn_config[name] < minimum
+            ):
+                raise ValueError(f"Recorded {name} must be an integer >= {minimum}")
+        if "done_tool" in turn_config and (
+            not isinstance(turn_config["done_tool"], str) or not turn_config["done_tool"]
+        ):
+            raise ValueError("Recorded done_tool must be a nonempty string")
         config = LoopConfig(
             max_steps=recorded_steps or fallback_steps,
             use_native_tools=calls[0]["method"] == "generate_with_tools",
+            **turn_config,
         )
     replay_config: LoopConfig = config
     if max_steps is not None:

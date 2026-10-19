@@ -49,6 +49,7 @@ class CartridgeLayout:
         "recovery_temperature",
         "done_tool",
         "done_tools",
+        "allow_text_completion",
         "max_turn_continuations",
         "use_native_tools",
         "concurrent_dispatch",

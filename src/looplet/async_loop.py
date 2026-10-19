@@ -37,7 +37,7 @@ import inspect
 import logging
 import time
 from dataclasses import replace as _dc_replace
-from typing import Any, AsyncGenerator
+from typing import Any, AsyncGenerator, Callable
 
 from looplet._backend_contract import TerminalLLMError
 from looplet._backend_contract import attempt_limit as _attempt_limit
@@ -95,6 +95,8 @@ from looplet.scaffolding import (
     LLMResult,
     NativeToolStats,
     _is_prompt_too_long,
+    _native_llm_result,
+    _NativeTurnRecovery,
     build_parse_recovery_prompt,
     truncate_tool_result,
 )
@@ -161,6 +163,7 @@ async def _recover_prompt(
         if prepared.budget.pressure:
             continue
         schemas = native_policy.tool_schemas(llm, tools)
+        previous = result
         result = await async_llm_call(
             llm,
             prepared.prompt,
@@ -172,9 +175,11 @@ async def _recover_prompt(
             cancel_token=config.cancel_token,
             max_continuations=config.max_turn_continuations,
             generate_kwargs=config.generate_kwargs or None,
+            should_continue=lambda: not _deadline_expired(loop_ctx),
         )
         loop_ctx.native_tool_stats.record(result)
-        calls += 1
+        calls += result.calls + (0 if result.native_attempted else result.continuations)
+        result._include_previous(previous)
         if result.ok or not result.is_prompt_too_long:
             break
     if result.ok:
@@ -259,6 +264,7 @@ async def async_llm_call(
     cancel_token: Any | None = None,
     cache_breakpoints: list[Any] | None = None,
     generate_kwargs: dict[str, Any] | None = None,
+    should_continue: Callable[[], bool] | None = None,
 ) -> LLMResult:
     """Async version of :func:`looplet.scaffolding.llm_call_with_retry`.
 
@@ -321,6 +327,7 @@ async def async_llm_call(
     last_error: Exception | None = None
     native_attempted = False
     attempt_limit = _attempt_limit(llm, max_retries)
+    recovery: _NativeTurnRecovery | None = None
 
     for attempt in range(attempt_limit):
         if cancel_token is not None and getattr(cancel_token, "is_cancelled", False):
@@ -343,18 +350,32 @@ async def async_llm_call(
                     "generate_with_tools", "cancel_token"
                 ):
                     call_kwargs["cancel_token"] = cancel_token
+                if recovery is None:
+                    recovery = _NativeTurnRecovery(llm, max_continuations)
+                recovery.begin_call(prompt)
                 result = llm.generate_with_tools(prompt, **call_kwargs)
                 if inspect.isawaitable(result):
                     result = await result
-                if result is None:
-                    raise NativeToolUnsupportedError("native tool call returned no response")
-                return LLMResult(
-                    result,
-                    stop_reason=getattr(llm, "last_stop_reason", None),
-                    native_requested=True,
-                    native_attempted=True,
-                    native_succeeded=True,
-                )
+                recovery.observe_usage(llm, result)
+                stop = getattr(llm, "last_stop_reason", None)
+                while stop == "max_tokens":
+                    if should_continue is not None and not should_continue():
+                        break
+                    if cancel_token is not None and getattr(cancel_token, "is_cancelled", False):
+                        raise TerminalLLMError(
+                            "Native recovery cancelled", termination_reason="cancelled"
+                        )
+                    next_options = recovery.restart_options(call_kwargs)
+                    if next_options is None:
+                        break
+                    call_kwargs = next_options
+                    recovery.begin_call(prompt)
+                    result = llm.generate_with_tools(prompt, **call_kwargs)
+                    if inspect.isawaitable(result):
+                        result = await result
+                    recovery.observe_usage(llm, result)
+                    stop = getattr(llm, "last_stop_reason", None)
+                return recovery.finish(_native_llm_result(result, stop, recovery.continuations))
 
             call_kwargs = {
                 "max_tokens": max_tokens,
@@ -407,6 +428,14 @@ async def async_llm_call(
 
         except Exception as e:
             last_error = e
+            if recovery is not None and (
+                isinstance(e, (TerminalLLMError, NativeToolUnsupportedError))
+                or _is_prompt_too_long(e)
+                or attempt >= attempt_limit - 1
+            ):
+                return recovery.finish(
+                    LLMResult(None, e, native_requested=True, native_attempted=True)
+                )
             if isinstance(e, TerminalLLMError):
                 logger.warning("Backend stopped (not retrying): %s", e)
                 return LLMResult(
@@ -1037,8 +1066,13 @@ async def _async_composable_loop_impl(
                 max_continuations=config.max_turn_continuations,
                 cache_breakpoints=_cache_bps,
                 generate_kwargs=config.generate_kwargs or None,
+                should_continue=lambda: not _deadline_expired(loop_ctx),
             )
         loop_ctx.native_tool_stats.record(llm_result)
+        llm_calls += llm_result.calls + (
+            0 if llm_result.native_attempted else llm_result.continuations
+        )
+        _record_run_stats(state, llm_calls=llm_calls, config=config)
         if _deadline_expired(loop_ctx):
             stop_reason = "deadline_exceeded"
             done = True
@@ -1047,17 +1081,16 @@ async def _async_composable_loop_impl(
         if isinstance(_state_metadata, dict) and loop_ctx.native_tool_stats.has_activity:
             _state_metadata["native_tool_stats"] = loop_ctx.native_tool_stats.to_dict()
         _llm_dur_ms = (time.perf_counter() - _llm_t0) * 1000.0
-        llm_calls += 1
-        _record_run_stats(state, llm_calls=llm_calls)
         if stream is not None and _LLMCallEndEvent is not None:
             stream.emit(
                 _LLMCallEndEvent(
                     step_num=step_num,
                     response_length=len(llm_result.text or ""),
                     duration_ms=_llm_dur_ms,
-                    usage=(getattr(effective_llm, "last_usage", None) or {})
-                    if llm_result.ok
-                    else {},
+                    usage=llm_result.usage
+                    or (
+                        (getattr(effective_llm, "last_usage", None) or {}) if llm_result.ok else {}
+                    ),
                 )
             )
 
@@ -1126,8 +1159,12 @@ async def _async_composable_loop_impl(
             context=context,
             prompt=prompt,
             raw_response=raw_response,
-            usage=getattr(effective_llm, "last_usage", None) if llm_result.ok else None,
-            extra={"native_tool_stats": loop_ctx.native_tool_stats.to_dict()},
+            usage=llm_result.usage
+            or (getattr(effective_llm, "last_usage", None) if llm_result.ok else None),
+            extra={
+                "native_tool_stats": loop_ctx.native_tool_stats.to_dict(),
+                "model_calls": llm_result.model_calls,
+            },
         )
         for decision in _post_llm_decisions:
             if decision.additional_context:
@@ -1165,7 +1202,12 @@ async def _async_composable_loop_impl(
             break
 
         # ── Parse response ──────────────────────────────────────
-        tool_calls = native_policy.parse_response(raw_response)
+        tool_calls = native_policy.parse_response(
+            raw_response,
+            allow_text_completion=config.allow_text_completion,
+            done_tool=config.done_tool,
+            stop_reason=llm_result.stop_reason,
+        )
 
         if not tool_calls:
             consecutive_parse_failures += 1
@@ -1667,7 +1709,10 @@ async def _async_composable_loop_impl(
                     llm=_sync_llm,
                     async_llm=_get_llm(),
                 )
-                if _ckpt_store is not None:
+                if (
+                    _ckpt_store is not None
+                    and tool_call.metadata.get("completion_source") != "assistant_message"
+                ):
                     _save_pending_dispatch(
                         _ckpt_store,
                         calls=tool_calls[done_idx:],
@@ -1693,7 +1738,14 @@ async def _async_composable_loop_impl(
                         run_status=loop_ctx.status.value,
                         run_phase=loop_ctx.phase.value,
                     )
-                tool_result = await tools.async_dispatch(tool_call, ctx=_ctx)
+                if tool_call.metadata.get("completion_source") == "assistant_message":
+                    tool_result = ToolResult(
+                        tool=tool_call.tool,
+                        args_summary="assistant message",
+                        data=dict(tool_call.args),
+                    )
+                else:
+                    tool_result = await tools.async_dispatch(tool_call, ctx=_ctx)
 
                 _pd_done = await _run_post_dispatch_hooks_async(
                     tool_call,

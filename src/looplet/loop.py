@@ -578,6 +578,16 @@ class LoopConfig:
     so long thoughts aren't truncated. Requires the backend to expose
     ``last_stop_reason`` after each call. Default ``0`` (off)."""
 
+    allow_text_completion: bool = False
+    """Accept a tool-free assistant message as the primary terminal payload.
+
+    The payload is ``{"answer": text}`` and still passes ``check_done``
+    hooks and the primary output schema. The recorded terminal step is
+    marked as an assistant message; no tool body or provider tool-result
+    callback is invoked. Empty, refused, truncated, and malformed tool
+    responses remain invalid. Default ``False`` requires a terminal tool.
+    """
+
     # Domain-specific callables - injected by the agent
 
     build_briefing: Callable[..., str] | None = None
@@ -1094,7 +1104,13 @@ def _set_run_lifecycle(
             metadata["termination_reason"] = loop_ctx.termination_reason
 
 
-def _record_run_stats(state: Any, *, llm_calls: int, duration_ms: float | None = None) -> None:
+def _record_run_stats(
+    state: Any,
+    *,
+    llm_calls: int,
+    duration_ms: float | None = None,
+    config: LoopConfig | None = None,
+) -> None:
     """Retain host-only measurements without changing model/tool metadata."""
     stats = getattr(state, "_looplet_run_stats", None)
     if not isinstance(stats, dict):
@@ -1104,6 +1120,16 @@ def _record_run_stats(state: Any, *, llm_calls: int, duration_ms: float | None =
         except AttributeError:
             return
     stats["llm_calls"] = llm_calls
+    if config is not None:
+        stats["model_turn_config"] = {
+            name: getattr(config, name)
+            for name in (
+                "allow_text_completion",
+                "max_turn_continuations",
+                "max_tokens",
+                "done_tool",
+            )
+        }
     if duration_ms is not None:
         stats["duration_ms"] = duration_ms
 
@@ -3124,8 +3150,13 @@ def _composable_loop_impl(
                 max_continuations=config.max_turn_continuations,
                 cache_breakpoints=_cache_bps,
                 generate_kwargs=config.generate_kwargs or None,
+                should_continue=lambda: not _deadline_expired(loop_ctx),
             )
             loop_ctx.native_tool_stats.record(llm_result)
+            llm_calls += llm_result.calls + (
+                0 if llm_result.native_attempted else llm_result.continuations
+            )
+            _record_run_stats(state, llm_calls=llm_calls, config=config)
             if _deadline_expired(loop_ctx):
                 stop_reason = "deadline_exceeded"
                 done = True
@@ -3136,18 +3167,19 @@ def _composable_loop_impl(
             _llm_dur_ms = (time.perf_counter() - _llm_t0) * 1000.0
             if _llm_span is not None and config.tracer is not None:
                 config.tracer.end_span(_llm_span)
-            llm_calls += 1
             # Emit LLMCallEndEvent
-            _record_run_stats(state, llm_calls=llm_calls)
             if stream is not None and _LLMCallEndEvent is not None:
                 stream.emit(
                     _LLMCallEndEvent(
                         step_num=step_num,
                         response_length=len(llm_result.text or ""),
                         duration_ms=_llm_dur_ms,
-                        usage=(getattr(effective_llm, "last_usage", None) or {})
-                        if llm_result.ok
-                        else {},
+                        usage=llm_result.usage
+                        or (
+                            (getattr(effective_llm, "last_usage", None) or {})
+                            if llm_result.ok
+                            else {}
+                        ),
                     )
                 )
 
@@ -3176,7 +3208,7 @@ def _composable_loop_impl(
                 loop_ctx.context_budget = prepared.budget
                 return prepared
 
-            raw_response = _recovery_chain(
+            llm_result = _recovery_chain(
                 llm_result,
                 recovery_state,
                 state,
@@ -3193,10 +3225,11 @@ def _composable_loop_impl(
                 conversation=_conv,
                 prepare_prompt_fn=_prepare_recovery_prompt,
                 native_policy=native_policy,
+                should_continue=lambda: not _deadline_expired(loop_ctx),
             )
             llm_calls += recovery_state.get("_last_recovery_llm_calls", 0)
             _record_run_stats(state, llm_calls=llm_calls)
-            llm_result = LLMResult(raw_response)
+            loop_ctx.native_tool_stats.record(llm_result)
 
         raw_response = llm_result.text
 
@@ -3217,7 +3250,9 @@ def _composable_loop_impl(
         # Surface provider token usage / cost onto state so budget hooks
         # read it from the declared view instead of a backend side-channel
         # (keeps cost/budget hooks portable across runtimes - §9 T9).
-        _step_usage = getattr(effective_llm, "last_usage", None) if llm_result.ok else None
+        _step_usage = llm_result.usage or (
+            getattr(effective_llm, "last_usage", None) if llm_result.ok else None
+        )
         if _step_usage:
             try:
                 _meta = getattr(state, "metadata", None)
@@ -3245,7 +3280,10 @@ def _composable_loop_impl(
             prompt=prompt,
             raw_response=raw_response,
             usage=_step_usage,
-            extra={"native_tool_stats": loop_ctx.native_tool_stats.to_dict()},
+            extra={
+                "native_tool_stats": loop_ctx.native_tool_stats.to_dict(),
+                "model_calls": llm_result.model_calls,
+            },
         )
         for _d in _post_llm_decisions:
             if _d.stop is not None:
@@ -3285,7 +3323,12 @@ def _composable_loop_impl(
             break
 
         # ── Parse response (native tool_use or JSON text) ────
-        tool_calls = native_policy.parse_response(raw_response)
+        tool_calls = native_policy.parse_response(
+            raw_response,
+            allow_text_completion=config.allow_text_completion,
+            done_tool=config.done_tool,
+            stop_reason=llm_result.stop_reason,
+        )
         if not tool_calls:
             consecutive_parse_failures += 1
             # Consult recovery_registry if set - use returned action
@@ -3819,7 +3862,10 @@ def _composable_loop_impl(
                     session_log=session_log,
                     llm=effective_llm,
                 )
-                if _ckpt_store is not None:
+                if (
+                    _ckpt_store is not None
+                    and tool_call.metadata.get("completion_source") != "assistant_message"
+                ):
                     _save_pending_dispatch(
                         _ckpt_store,
                         calls=tool_calls[done_idx:],
@@ -3845,7 +3891,14 @@ def _composable_loop_impl(
                         run_status=loop_ctx.status.value,
                         run_phase=loop_ctx.phase.value,
                     )
-                tool_result = tools.dispatch(tool_call, ctx=_ctx)
+                if tool_call.metadata.get("completion_source") == "assistant_message":
+                    tool_result = ToolResult(
+                        tool=tool_call.tool,
+                        args_summary="assistant message",
+                        data=dict(tool_call.args),
+                    )
+                else:
+                    tool_result = tools.dispatch(tool_call, ctx=_ctx)
                 # Run post_dispatch hooks for done() too - otherwise
                 # MetricsHook / TracingHook / AuditHook silently miss
                 # the final step of every run. Lifecycle events
@@ -4086,7 +4139,7 @@ def _composable_loop_impl(
 
 
 def _recovery_chain(
-    llm_result: Any,
+    llm_result: LLMResult,
     recovery_state: dict,
     state: Any,
     session_log: Any,
@@ -4103,7 +4156,8 @@ def _recovery_chain(
     conversation: Any | None = None,
     prepare_prompt_fn: Callable[[], PreparedPrompt] | None = None,
     native_policy: NativeToolPolicy | None = None,
-) -> Any:
+    should_continue: Callable[[], bool] | None = None,
+) -> LLMResult:
     """Multi-strategy recovery chain for prompt-too-long errors.
 
     Tries strategies in order, each at most once:
@@ -4115,7 +4169,7 @@ def _recovery_chain(
       3. Clear all old result data entirely
 
     After each strategy, rebuilds the prompt and retries the LLM call.
-    Returns the response text if recovery succeeds, None if all fail.
+    Returns the final result with observed request accounting preserved.
     """
     extra_llm_calls = 0
     hooks = hooks or []
@@ -4186,17 +4240,22 @@ def _recovery_chain(
             cancel_token=config.cancel_token,
             max_continuations=config.max_turn_continuations,
             generate_kwargs=config.generate_kwargs or None,
+            should_continue=should_continue,
         )
-        extra_llm_calls += 1
+        extra_llm_calls += retry_result.calls + (
+            0 if retry_result.native_attempted else retry_result.continuations
+        )
+        retry_result._include_previous(llm_result)
+        llm_result = retry_result
 
         if retry_result.ok:
             logger.info("Recovery strategy '%s' succeeded at step %d", name, step_num)
             recovery_state["_last_recovery_llm_calls"] = extra_llm_calls
-            return retry_result.text
+            return retry_result
 
         if not retry_result.is_prompt_too_long:
             break
 
     logger.error("All recovery strategies exhausted at step %d", step_num)
     recovery_state["_last_recovery_llm_calls"] = extra_llm_calls
-    return None
+    return llm_result

@@ -41,6 +41,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- The data-agent example preserves its CSV and scripted position when resuming incomplete checkpoints, and explicit terminal resumes no longer repeat tools or recreate data.
 - Human saved-evidence rescoring shows each failing check's explanation when available, including with `--verbose`.
 - Exhausted captured-response replay stops without retry backoff and records `replay_exhausted` as a failed run rather than a generic `llm_error`.
 - Saved-evidence rescoring reports missing components as integrity failures instead of silently skipping known cases.

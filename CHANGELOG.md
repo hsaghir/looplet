@@ -19,6 +19,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Opt-in host assistant-turn policies support bounded continuation without fake tool steps. Request ceilings cover admitted retries and helper inference.
+- Typed working history, correlated progress, copied message checkpoints, and explicit replay bindings preserve assistant-turn semantics without changing strict defaults.
+- The packaged hello example supports offline assistant continuation with an explicit model-call limit.
 - Structured model-call snapshots preserve returned content blocks, provider metadata, stop reasons, usage, and errors after redaction. Replay prefers canonical captures over bounded text projections.
 - Opt-in assistant-message completion uses the existing terminal gates and output schema without executing a terminal tool body. Native truncation recovery is bounded, checkpoint-safe, and records each request and its usage.
 - Trajectories retain completion/recovery settings for default Python replay and snapshot observed tool payloads against later mutation.

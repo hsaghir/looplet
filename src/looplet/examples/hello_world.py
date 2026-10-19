@@ -16,6 +16,7 @@ import sys
 from contextlib import closing
 
 from looplet import (
+    AssistantTurnDecision,
     DefaultState,
     EvalContext,
     EvalHook,
@@ -45,8 +46,8 @@ def _tool_call(tool_name: str, args: dict, reasoning: str) -> str:
     return json.dumps({"tool": tool_name, "args": args, "reasoning": reasoning})
 
 
-def scripted_responses() -> list[str]:
-    return [
+def scripted_responses(*, assistant_turns: bool = False) -> list[str]:
+    responses = [
         _tool_call("greet", {"name": "Alice"}, "greet Alice first"),
         _tool_call("greet", {"name": "Bob"}, "greet Bob next"),
         _tool_call(
@@ -55,6 +56,14 @@ def scripted_responses() -> list[str]:
             "finish after greeting everyone",
         ),
     ]
+    if assistant_turns:
+        return [
+            "First identify the requested people.",
+            responses[0],
+            "Alice was greeted. Bob remains.",
+            *responses[1:],
+        ]
+    return responses
 
 
 # ── Eval: did the agent greet everyone? ──────────────────────────
@@ -86,15 +95,25 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-steps", type=int, default=5)
     parser.add_argument("--base-url", default=None, help="OpenAI-compatible base URL")
     parser.add_argument("--model", default=None, help="Model name")
+    parser.add_argument("--max-model-calls", type=int, default=None)
+    parser.add_argument(
+        "--assistant-turns",
+        action="store_true",
+        help="Continue assistant-only messages within an explicit model-call limit.",
+    )
     parser.add_argument(
         "--scripted",
         action="store_true",
         help="Run a deterministic local demo with MockLLMBackend instead of a real model.",
     )
     args = parser.parse_args(argv)
+    if args.max_model_calls is not None and args.max_model_calls <= 0:
+        parser.error("--max-model-calls must be positive")
+    if args.assistant_turns and args.max_model_calls is None:
+        parser.error("--assistant-turns requires --max-model-calls")
 
     if args.scripted:
-        llm = MockLLMBackend(responses=scripted_responses())
+        llm = MockLLMBackend(responses=scripted_responses(assistant_turns=args.assistant_turns))
         model_label = "scripted MockLLMBackend"
     else:
         try:
@@ -122,7 +141,16 @@ def main(argv: list[str] | None = None) -> int:
             llm=llm,
             tools=build_tools(),
             state=state,
-            config=LoopConfig(max_steps=args.max_steps, use_native_tools=not args.scripted),
+            config=LoopConfig(
+                max_steps=args.max_steps,
+                max_model_calls=args.max_model_calls,
+                use_native_tools=not args.scripted,
+                assistant_turn_policy=(
+                    (lambda context: AssistantTurnDecision("continue"))
+                    if args.assistant_turns
+                    else None
+                ),
+            ),
             hooks=[EvalHook(evaluators=[eval_greeted_everyone, eval_completed], verbose=True)],
             task={"description": "Greet Alice and Bob, then finish."},
         )

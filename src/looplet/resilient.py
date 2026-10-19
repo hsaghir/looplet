@@ -37,7 +37,13 @@ import threading
 from contextvars import ContextVar, copy_context
 from typing import Any, Callable
 
-from looplet._backend_contract import MUTABLE_CAPABILITIES, backend_attribute, invoke_backend
+from looplet._backend_contract import (
+    MUTABLE_CAPABILITIES,
+    TerminalLLMError,
+    backend_attribute,
+    invoke_backend,
+    single_model_request_active,
+)
 from looplet.types import LLMBackend
 
 __all__ = ["ResilientBackend", "RetryExhausted"]
@@ -153,6 +159,7 @@ class ResilientBackend:
             self.generate_with_tools = self._generate_with_tools_impl
 
     _looplet_manages_retries = True
+    _supports_single_model_request = True
 
     def __getattr__(self, name: str) -> Any:
         return backend_attribute(self._inner, name)
@@ -216,6 +223,14 @@ class ResilientBackend:
     # ── internals ─────────────────────────────────────────────
 
     def _attempt(self, fn: Callable[[], Any], *, op: str) -> Any:
+        if single_model_request_active():
+            try:
+                return _run_with_timeout(fn, self._timeout_s)
+            except _LocalTimeout as error:
+                raise TerminalLLMError(
+                    "Model request timed out; provider completion is uncertain",
+                    termination_reason="llm_error",
+                ) from error
         if _RETRY_ACTIVE.get():
             return _run_with_timeout(fn, self._timeout_s)
         token = _RETRY_ACTIVE.set(True)

@@ -93,6 +93,71 @@ def test_runtime_yaml_loads_parallelism_cap(tmp_path: Path) -> None:
     assert preset.config.max_parallel_calls == 3
 
 
+def test_assistant_policy_export_requires_host_binding_and_versions_semantics(
+    tmp_path, monkeypatch
+):
+    import json
+    from dataclasses import replace
+
+    from looplet import AssistantTurnDecision, preset_to_cartridge
+    from looplet.blueprints import blueprint_from_preset
+    from looplet.cartridge import _load
+    from looplet.testing import MockLLMBackend
+
+    original = tmp_path / "original"
+    original.mkdir()
+    _write_minimal_cartridge(
+        original,
+        config_text="max_steps: 2\ndone_tool: done\n",
+        runtime_text="use_native_tools: false\n",
+    )
+    policy = lambda context: AssistantTurnDecision("continue")
+    with cartridge_to_preset(original) as preset:
+        preset.config = replace(
+            preset.config, assistant_turn_policy=policy, max_model_calls=3, max_assistant_turns=2
+        )
+        blueprint = blueprint_from_preset(preset, name="assistant-policy")
+        assert blueprint.config["requires_assistant_turn_policy"] is True
+        assert "assistant_turn_policy" not in blueprint.config
+        exported = tmp_path / "exported"
+        preset_to_cartridge(preset, exported)
+    manifest = json.loads((exported / "cartridge.json").read_text())
+    assert "assistant_turns_v1" in manifest["compatibility"]["requires"]
+    assert "requires_assistant_turn_policy: true" in (exported / "config.yaml").read_text()
+    assert "max_model_calls" not in (exported / "config.yaml").read_text()
+    assert "max_model_calls: 3" in (exported / "runtime.yaml").read_text()
+    assert not (exported / "resources" / "assistant_turn_policy.py").exists()
+    with cartridge_to_preset(exported) as restored:
+        assert restored.config.assistant_turn_policy is None
+        assert restored.config.max_assistant_turns == 2
+        with pytest.raises(ValueError, match="explicit host"):
+            list(restored.run(MockLLMBackend(["Do not call"])))
+        restored.config = replace(restored.config, assistant_turn_policy=policy)
+        steps = list(
+            restored.run(
+                MockLLMBackend(["Check evidence", '{"tool":"done","args":{"summary":"checked"}}'])
+            )
+        )
+        assert [step.tool_call.tool for step in steps] == ["done"]
+    monkeypatch.setattr(
+        _load,
+        "_SUPPORTED_COMPATIBILITY_FEATURES",
+        _load._SUPPORTED_COMPATIBILITY_FEATURES - {"assistant_turns_v1"},
+    )
+    with pytest.raises(Exception, match="unsupported Looplet capabilities: assistant_turns_v1"):
+        cartridge_to_preset(exported)
+
+
+@pytest.mark.parametrize("field", ["max_model_calls", "max_assistant_turns"])
+@pytest.mark.parametrize("value", ["true", "0", "-1", '"3"'])
+def test_assistant_runtime_rejects_malformed_ceilings_on_load(tmp_path, field, value):
+    _write_minimal_cartridge(
+        tmp_path, config_text="done_tool: done\n", runtime_text=f"{field}: {value}\n"
+    )
+    with pytest.raises(ValueError, match=field):
+        cartridge_to_preset(tmp_path)
+
+
 def test_runtime_yaml_does_not_mask_runtime_keys_in_config_yaml(tmp_path: Path) -> None:
     """A duplicate runtime key does not make an invalid config valid."""
     _write_minimal_cartridge(

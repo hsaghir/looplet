@@ -40,6 +40,1036 @@ from looplet.testing import AsyncMockLLMBackend, MockLLMBackend
 from looplet.types import CancelToken, NativeToolBackend
 
 
+@pytest.mark.parametrize(
+    "response, reason, expected",
+    [
+        (
+            "Compare the two sources before acting.",
+            "stop",
+            "Compare the two sources before acting.",
+        ),
+        ([{"type": "text", "text": "Check the evidence."}], "end_turn", "Check the evidence."),
+        ([{"type": "text", "text": "Legacy response"}], None, "Legacy response"),
+        ([{"type": "thinking", "thinking": "Opaque only"}], "stop", None),
+        ([{"type": "text", "text": "Partial"}], "max_tokens", None),
+        ([{"type": "text", "text": "No"}, {"type": "refusal"}], "stop", None),
+        ([{"type": "tool_use", "name": ""}, {"type": "text", "text": "Malformed"}], "stop", None),
+        ('{"tool":', "stop", None),
+        ('{"answer": "Not a tool call"}', "stop", None),
+        ("   ", "stop", None),
+    ],
+)
+def test_assistant_text_classification_is_separate_from_completion(response, reason, expected):
+    policy = NativeToolPolicy()
+    assert policy.assistant_text(response, stop_reason=reason) == expected
+    assert policy.parse_response(response, stop_reason=reason) == []
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_model_call_admission_charges_started_calls_once(asynchronous):
+    from looplet.assistant_turns import _AssistantTurns
+
+    effects = []
+
+    class Backend:
+        def generate(self, prompt):
+            effects.append(prompt)
+            return "Recorded"
+
+    class AsyncBackend:
+        async def generate(self, prompt):
+            effects.append(prompt)
+            return "Recorded"
+
+    turns = _AssistantTurns(DefaultState(), LoopConfig(max_model_calls=1))
+    turns.begin_turn()
+    backend = turns.wrap(AsyncBackend() if asynchronous else Backend())
+    first = backend.generate("first")
+    assert (await first if asynchronous else first) == "Recorded"
+    with pytest.raises(RuntimeError, match="model_call_budget"):
+        second = backend.generate("denied")
+        if asynchronous:
+            await second
+    assert effects == ["first"]
+    assert turns.data["model_calls"] == 1
+    assert turns.data["turn_count"] == 1
+
+
+async def test_hybrid_backend_keeps_pending_admission_until_response():
+    from looplet.assistant_turns import _AssistantTurns
+
+    class Backend:
+        last_usage = {"input": 2, "output": 3}
+
+        def generate(self, prompt):
+            async def response():
+                assert "pending_model_call" in turns.data
+                return "Acknowledged"
+
+            return response()
+
+    turns = _AssistantTurns(DefaultState(), LoopConfig(max_model_calls=1))
+    turns.begin_turn()
+    pending = turns.wrap(Backend()).generate("hello")
+    assert "pending_model_call" in turns.data
+    assert await pending == "Acknowledged"
+    assert "pending_model_call" not in turns.data
+    assert turns.metadata["usage_total"] == {"input": 2, "output": 3}
+
+
+@pytest.mark.parametrize("limit", [None, 0, -1, True])
+def test_assistant_policy_requires_bounded_configuration(limit):
+    from looplet.assistant_turns import validate_assistant_config
+
+    with pytest.raises(ValueError, match="max_model_calls"):
+        validate_assistant_config(
+            LoopConfig(assistant_turn_policy=lambda context: None, max_model_calls=limit)
+        )
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [
+        ("schema", "unknown"),
+        ("policy_required", "true"),
+        ("turn_count", -1),
+        ("model_calls", True),
+        ("assistant_turns", 1),
+        ("consecutive_assistant_turns", 1),
+        ("max_model_calls", True),
+        ("max_assistant_turns", 0),
+        ("decisions", [{}]),
+        ("requests", [{}]),
+    ],
+)
+def test_malformed_saved_assistant_state_rejects_without_mutating_input(field, value):
+    import copy
+
+    from looplet.assistant_turns import TURN_STATE_KEY, _AssistantTurns
+
+    state = DefaultState()
+    _AssistantTurns(state, LoopConfig(max_model_calls=5))
+    state.metadata[TURN_STATE_KEY][field] = value
+    before = copy.deepcopy(state.metadata)
+    with pytest.raises(ValueError):
+        _AssistantTurns(state, LoopConfig(max_model_calls=3))
+    assert state.metadata == before
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("failure", ["raises", "invalid", "feedback"])
+async def test_invalid_host_policy_stops_without_effects_or_private_error_details(
+    asynchronous, failure
+):
+    from looplet import AssistantTurnDecision, RunResult
+
+    requests = []
+
+    class Backend:
+        def generate(self, prompt, **kwargs):
+            requests.append(prompt)
+            return "Candidate"
+
+    class AsyncBackend(Backend):
+        async def generate(self, prompt, **kwargs):
+            return super().generate(prompt, **kwargs)
+
+    def policy(context):
+        if failure == "raises":
+            raise RuntimeError("PRIVATE_ERROR_DETAIL")
+        if failure == "feedback":
+            return AssistantTurnDecision("continue", "X" * 8193)
+        return {"action": "continue", "PRIVATE_POLICY_VALUE": True}
+
+    state = DefaultState(max_steps=2)
+    arguments = dict(
+        llm=AsyncBackend() if asynchronous else Backend(),
+        tools=tools_from([], include_done=True),
+        state=state,
+        config=LoopConfig(
+            max_steps=2,
+            max_model_calls=3,
+            use_native_tools=False,
+            assistant_turn_policy=policy,
+        ),
+    )
+    steps = (
+        [step async for step in async_composable_loop(**arguments)]
+        if asynchronous
+        else list(composable_loop(**arguments))
+    )
+    result = RunResult.from_state(state)
+    assert steps == []
+    assert len(requests) == 1
+    assert result.status.value == "failed"
+    assert result.termination_reason == "assistant_policy_error"
+    assert result.output is None
+    assert "PRIVATE_" not in str(state.metadata)
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("mode", ["messages", "stateful"])
+@pytest.mark.parametrize("keyword", [False, True])
+async def test_helper_inference_never_reuses_parent_native_task(asynchronous, mode, keyword):
+    from looplet.assistant_turns import _AssistantTurns
+    from looplet.conversation import Conversation
+
+    requests = []
+
+    class Backend:
+        conversation_mode = mode
+
+        def set_conversation_input(self, snapshot):
+            self.snapshot = snapshot
+
+        def generate(self, prompt, **kwargs):
+            requests.append((prompt, self.snapshot))
+            return "Returned"
+
+    class AsyncBackend(Backend):
+        async def generate(self, prompt, **kwargs):
+            return super().generate(prompt, **kwargs)
+
+    turns = _AssistantTurns(DefaultState(), LoopConfig(max_model_calls=3))
+    turns.begin_turn()
+    backend = turns.wrap(AsyncBackend() if asynchronous else Backend())
+    backend.prepare_conversation(
+        Conversation(), "Parent task", request_prompt="Parent task with history"
+    )
+    helper_args = () if keyword else ("Independent helper task",)
+    helper_kwargs = {"prompt": "Independent helper task"} if keyword else {}
+    if mode == "stateful":
+        with pytest.raises(RuntimeError, match="unsupported_context"):
+            response = backend.generate(*helper_args, **helper_kwargs)
+            if asynchronous:
+                await response
+        assert requests == []
+    else:
+        response = backend.generate(*helper_args, **helper_kwargs)
+        assert (await response if asynchronous else response) == "Returned"
+        assert requests == [("Independent helper task", None)]
+    response = backend.generate("Parent task with history")
+    assert (await response if asynchronous else response) == "Returned"
+    assert requests[-1][1]["prompt"] == "Parent task"
+    assert turns.data["model_calls"] == len(requests)
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_denied_request_preserves_backend_snapshot_owner(asynchronous):
+    from looplet.assistant_turns import _AssistantTurns
+
+    preparation = []
+
+    class Backend:
+        def __init__(self, name):
+            self.name = name
+
+        def set_conversation_input(self, snapshot):
+            preparation.append(self.name)
+
+        def checkpoint_state(self):
+            return {"owner": self.name}
+
+        def generate(self, prompt):
+            return "Recorded"
+
+    class AsyncBackend(Backend):
+        async def generate(self, prompt):
+            return super().generate(prompt)
+
+    backend_type = AsyncBackend if asynchronous else Backend
+    turns = _AssistantTurns(DefaultState(), LoopConfig(max_model_calls=1))
+    turns.begin_turn()
+    first = turns.wrap(backend_type("primary")).generate(prompt="first")
+    assert (await first if asynchronous else first) == "Recorded"
+    with pytest.raises(RuntimeError, match="model_call_budget"):
+        denied = turns.wrap(backend_type("unadmitted")).generate(prompt="denied")
+        if asynchronous:
+            await denied
+    assert turns.wrap_checkpoint(None)(None)["llm"] == {"owner": "primary"}
+    assert preparation == ["primary"]
+    assert turns.data["requests"][0]["prompt_chars"] == len("first")
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("limit", [1, 2])
+async def test_post_run_inference_cannot_bypass_cap_or_erase_completion(asynchronous, limit):
+    from looplet import AssistantTurnDecision, RunResult
+
+    requests = []
+
+    class Backend:
+        def generate(self, prompt, **kwargs):
+            requests.append(prompt)
+            return '{"tool":"done","args":{"summary":"accepted"}}'
+
+    class AsyncBackend(Backend):
+        async def generate(self, prompt, **kwargs):
+            return super().generate(prompt, **kwargs)
+
+    def finish(state, session_log, context, llm):
+        llm.generate("Optional post-run inference")
+        return 999
+
+    async def finish_async(state, session_log, context, llm):
+        await llm.generate("Optional post-run inference")
+        return 999
+
+    hook = SimpleNamespace(on_loop_end=finish_async if asynchronous else finish)
+    state = DefaultState(max_steps=1)
+    arguments = dict(
+        llm=AsyncBackend() if asynchronous else Backend(),
+        tools=tools_from([], include_done=True),
+        state=state,
+        hooks=[hook],
+        config=LoopConfig(
+            max_steps=1,
+            max_model_calls=limit,
+            use_native_tools=False,
+            assistant_turn_policy=lambda context: AssistantTurnDecision("continue"),
+        ),
+    )
+    steps = (
+        [step async for step in async_composable_loop(**arguments)]
+        if asynchronous
+        else list(composable_loop(**arguments))
+    )
+    assert len(steps) == 1
+    assert RunResult.from_state(state).completed
+    assert len(requests) == limit
+    assert state._looplet_run_stats["llm_calls"] == limit
+    assert state.metadata.get("post_run_model_denials", []) == (
+        ["model_call_budget"] if limit == 1 else []
+    )
+
+
+@pytest.mark.parametrize("limit", [1, 2])
+def test_trace_builder_inference_uses_same_admission(limit):
+    from looplet import AssistantTurnDecision, RunResult
+
+    requests = []
+
+    class Backend:
+        def generate(self, prompt, **kwargs):
+            requests.append(prompt)
+            return '{"tool":"done","args":{"summary":"accepted"}}'
+
+    def build_trace(**kwargs):
+        kwargs["llm"].generate("Optional trace inference")
+        return {"checked": True}
+
+    state = DefaultState(max_steps=1)
+    list(
+        composable_loop(
+            llm=Backend(),
+            tools=tools_from([], include_done=True),
+            state=state,
+            config=LoopConfig(
+                max_steps=1,
+                max_model_calls=limit,
+                use_native_tools=False,
+                build_trace=build_trace,
+                assistant_turn_policy=lambda context: AssistantTurnDecision("continue"),
+            ),
+        )
+    )
+    assert RunResult.from_state(state).completed
+    assert len(requests) == limit
+    assert state._looplet_run_stats["llm_calls"] == limit
+    assert state.metadata.get("post_run_model_denials", []) == (
+        ["model_call_budget"] if limit == 1 else []
+    )
+
+
+async def test_overlapping_model_admission_fails_before_second_invocation():
+    import asyncio
+
+    from looplet.assistant_turns import _AssistantTurns
+
+    started = asyncio.Event()
+    finish = asyncio.Event()
+    requests = []
+
+    class Backend:
+        async def generate(self, prompt):
+            requests.append(prompt)
+            started.set()
+            await finish.wait()
+            return "Recorded"
+
+    turns = _AssistantTurns(DefaultState(), LoopConfig(max_model_calls=3))
+    turns.begin_turn()
+    backend = turns.wrap(Backend())
+    first = asyncio.create_task(backend.generate("first"))
+    await started.wait()
+    with pytest.raises(RuntimeError, match="unsupported_context"):
+        await backend.generate("second")
+    assert "pending_model_call" in turns.data
+    finish.set()
+    assert await first == "Recorded"
+    assert requests == ["first"]
+    assert turns.data["model_calls"] == 1
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("limit", [1, 2])
+async def test_resilient_attempts_are_individually_admitted_and_captured(asynchronous, limit):
+    from looplet import RunResult
+    from looplet.provenance import RecordingLLMBackend
+    from looplet.resilient import ResilientBackend
+
+    requests = []
+
+    class Backend:
+        def generate(self, prompt, **kwargs):
+            requests.append(prompt)
+            if len(requests) == 1:
+                raise OSError("Transient failure")
+            return '{"tool":"done","args":{"summary":"accepted"}}'
+
+    backend = RecordingLLMBackend(
+        ResilientBackend(
+            Backend(),
+            retries=5,
+            sleep=lambda seconds: pytest.fail("wrapper must not own capped retries"),
+        )
+    )
+    state = DefaultState(max_steps=1)
+    arguments = dict(
+        llm=backend,
+        tools=tools_from([], include_done=True),
+        state=state,
+        config=LoopConfig(max_steps=1, max_model_calls=limit, use_native_tools=False),
+    )
+    steps = (
+        [step async for step in async_composable_loop(**arguments)]
+        if asynchronous
+        else list(composable_loop(**arguments))
+    )
+    assert len(requests) == limit
+    assert len(backend.calls) == limit
+    assert [call.capture["execution"]["model_call_id"] for call in backend.calls] == [
+        f"run:turn-1:call-{number}" for number in range(1, limit + 1)
+    ]
+    assert state._looplet_run_stats["llm_calls"] == limit
+    assert RunResult.from_state(state).completed is (limit == 2)
+    assert len(steps) == (1 if limit == 2 else 0)
+    if limit == 1:
+        assert state.termination_reason == "model_call_budget"
+
+
+def test_unaware_retry_owner_is_rejected_before_capped_inference():
+    class Backend:
+        _looplet_manages_retries = True
+
+        def generate(self, prompt, **kwargs):
+            pytest.fail("unsupported retry owner must not be invoked")
+
+    state = DefaultState(max_steps=1)
+    assert (
+        list(
+            composable_loop(
+                llm=Backend(),
+                tools=tools_from([], include_done=True),
+                state=state,
+                config=LoopConfig(max_steps=1, max_model_calls=2, use_native_tools=False),
+            )
+        )
+        == []
+    )
+    assert state.termination_reason == "unsupported_context"
+    assert state._looplet_run_stats["llm_calls"] == 0
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("native", [False, True])
+async def test_assistant_turns_continue_without_fake_steps(asynchronous, native):
+    import json
+
+    from looplet.assistant_turns import TURN_STATE_KEY, AssistantTurnDecision
+    from looplet.conversation import Conversation
+
+    prompts = []
+    decisions = []
+    effects = []
+    planned = []
+    selected = []
+
+    def planner(*, model_turn_id, model_turn_number, **kwargs):
+        planned.append((model_turn_id, model_turn_number, kwargs["step_number"]))
+
+    def selector(*, model_turn_id, model_turn_number, **kwargs):
+        selected.append((model_turn_id, model_turn_number, kwargs["step_num"]))
+
+    def done(answer: str):
+        effects.append(answer)
+        return {"answer": answer}
+
+    def policy(context):
+        decisions.append(context)
+        return AssistantTurnDecision("continue", feedback=f"Inspect source {len(decisions)}.")
+
+    class Backend:
+        def generate(self, prompt, **kwargs):
+            prompts.append(prompt)
+            self.last_stop_reason = "stop"
+            return [
+                "Compare source A.",
+                "Compare source B.",
+                json.dumps({"tool": "done", "args": {"answer": "Checked"}}),
+            ][len(prompts) - 1]
+
+        def generate_with_tools(self, prompt, **kwargs):
+            text = self.generate(prompt, **kwargs)
+            if len(prompts) == 3:
+                self.last_stop_reason = "tool_use"
+                return [
+                    {
+                        "type": "tool_use",
+                        "id": "final",
+                        "name": "done",
+                        "input": {"answer": "Checked"},
+                    }
+                ]
+            return [{"type": "text", "text": text}]
+
+    class AsyncBackend(Backend):
+        async def generate(self, prompt, **kwargs):
+            return Backend.generate(self, prompt, **kwargs)
+
+        async def generate_with_tools(self, prompt, **kwargs):
+            text = Backend.generate(self, prompt, **kwargs)
+            if len(prompts) == 3:
+                self.last_stop_reason = "tool_use"
+                return [
+                    {
+                        "type": "tool_use",
+                        "id": "final",
+                        "name": "done",
+                        "input": {"answer": "Checked"},
+                    }
+                ]
+            return [{"type": "text", "text": text}]
+
+    state = DefaultState(max_steps=1)
+    conversation = Conversation()
+    arguments = dict(
+        llm=AsyncBackend() if asynchronous else Backend(),
+        tools=tools_from([done]),
+        state=state,
+        conversation=conversation,
+        config=LoopConfig(
+            max_steps=1,
+            max_model_calls=3,
+            assistant_turn_policy=policy,
+            use_native_tools=native,
+            context_planner=planner,
+            tool_view_selector=selector,
+        ),
+    )
+    steps = (
+        [step async for step in async_composable_loop(**arguments)]
+        if asynchronous
+        else list(composable_loop(**arguments))
+    )
+    assert effects == ["Checked"]
+    assert len(steps) == 1
+    assert steps[0].tool_call.tool == "done"
+    assert state._stop_reason == "done"
+    assert state.metadata[TURN_STATE_KEY]["model_calls"] == 3
+    assert [context.model_turn_number for context in decisions] == [1, 2]
+    assert [cursor[1:] for cursor in planned] == [(1, 1), (2, 1), (3, 1)]
+    assert selected == planned
+    assert prompts[2].count("Compare source A.") == 1
+    assert prompts[2].count("Compare source B.") == 1
+    assert prompts[2].count("Inspect source 1.") == 1
+    assert all(not message.text.startswith("TASK:") for message in conversation.messages)
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_text_adapter_receives_each_tool_observation_once(asynchronous):
+    from looplet import AssistantTurnDecision, RunResult
+
+    prompts = []
+
+    class Backend:
+        def generate(self, prompt, **kwargs):
+            prompts.append(prompt)
+            return [
+                '{"tool":"lookup","args":{}}',
+                "Consider the observed result.",
+                '{"tool":"done","args":{"answer":"Accepted"}}',
+            ][len(prompts) - 1]
+
+    class AsyncBackend(Backend):
+        async def generate(self, prompt, **kwargs):
+            return super().generate(prompt, **kwargs)
+
+    def lookup():
+        return {"observed": "UNIQUE_TOOL_OBSERVATION"}
+
+    def done(answer: str):
+        return {"answer": answer}
+
+    state = DefaultState(max_steps=2)
+    arguments = dict(
+        llm=AsyncBackend() if asynchronous else Backend(),
+        tools=tools_from([lookup, done]),
+        state=state,
+        config=LoopConfig(
+            max_steps=2,
+            max_model_calls=3,
+            use_native_tools=False,
+            assistant_turn_policy=lambda context: AssistantTurnDecision("continue"),
+        ),
+    )
+    steps = (
+        [step async for step in async_composable_loop(**arguments)]
+        if asynchronous
+        else list(composable_loop(**arguments))
+    )
+    assert [step.tool_call.tool for step in steps] == ["lookup", "done"]
+    assert RunResult.from_state(state).completed
+    assert prompts[1].count("UNIQUE_TOOL_OBSERVATION") == 1
+    assert prompts[2].count("UNIQUE_TOOL_OBSERVATION") == 1
+    assert prompts[2].count("Consider the observed result.") == 1
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_assistant_only_turns_exhaust_calls_without_tool_steps(asynchronous):
+    from looplet.assistant_turns import TURN_STATE_KEY, AssistantTurnDecision
+
+    class Backend:
+        last_stop_reason = "stop"
+
+        def generate(self, prompt, **kwargs):
+            return "Compare again."
+
+    class AsyncBackend(Backend):
+        async def generate(self, prompt, **kwargs):
+            return super().generate(prompt, **kwargs)
+
+    state = DefaultState(max_steps=2)
+    arguments = dict(
+        llm=AsyncBackend() if asynchronous else Backend(),
+        tools=tools_from([], include_done=True),
+        state=state,
+        config=LoopConfig(
+            max_steps=2,
+            use_native_tools=False,
+            max_model_calls=3,
+            assistant_turn_policy=lambda context: AssistantTurnDecision("continue"),
+        ),
+    )
+    steps = (
+        [step async for step in async_composable_loop(**arguments)]
+        if asynchronous
+        else list(composable_loop(**arguments))
+    )
+    assert steps == []
+    assert state._stop_reason == "model_call_budget"
+    assert state.metadata[TURN_STATE_KEY]["model_calls"] == 3
+    assert state.metadata[TURN_STATE_KEY]["turn_count"] == 3
+    assert state.run_status == "stopped"
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize(
+    "action, allowed, reject, reason",
+    [
+        ("stop", False, False, "assistant_stop"),
+        ("complete", False, False, "assistant_policy_error"),
+        ("complete", True, False, "done"),
+        ("complete", True, True, "model_call_budget"),
+    ],
+)
+async def test_assistant_policy_completion_and_stop_contract(
+    asynchronous, native, action, allowed, reject, reason
+):
+    from looplet.assistant_turns import AssistantTurnDecision
+    from looplet.types import RunResult
+
+    effects = []
+
+    def done(answer: str):
+        effects.append(answer)
+        return {"answer": answer}
+
+    class Backend:
+        last_stop_reason = "stop"
+
+        def generate(self, prompt, **kwargs):
+            return "Candidate"
+
+        def generate_with_tools(self, prompt, **kwargs):
+            return [{"type": "text", "text": "Candidate"}]
+
+    backend = Backend()
+    if asynchronous:
+        original_generate = backend.generate
+        original_native = backend.generate_with_tools
+
+        async def generate(prompt, **kwargs):
+            return original_generate(prompt, **kwargs)
+
+        async def native_generate(prompt, **kwargs):
+            return original_native(prompt, **kwargs)
+
+        backend.generate = generate
+        backend.generate_with_tools = native_generate
+
+    class Gate:
+        def check_done(self, *args, **kwargs):
+            return HookDecision(block="Missing evidence") if reject else None
+
+    state = DefaultState(max_steps=2)
+    arguments = dict(
+        llm=backend,
+        tools=tools_from([done]),
+        state=state,
+        hooks=[Gate()],
+        config=LoopConfig(
+            max_steps=2,
+            max_model_calls=1,
+            use_native_tools=native,
+            allow_text_completion=allowed,
+            assistant_turn_policy=lambda context: AssistantTurnDecision(action),
+        ),
+    )
+    steps = (
+        [step async for step in async_composable_loop(**arguments)]
+        if asynchronous
+        else list(composable_loop(**arguments))
+    )
+    result = RunResult.from_state(state)
+    assert effects == []
+    assert result.termination_reason == reason
+    assert result.completed is (reason == "done")
+    if reason in {"assistant_stop", "assistant_policy_error"}:
+        assert steps == []
+        assert result.output is None
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("with_hook", [False, True])
+async def test_assistant_progress_is_correlated_without_content_or_fake_steps(
+    asynchronous, with_hook
+):
+    import json
+
+    from looplet import AssistantTurnDecision
+    from looplet.streaming import CallbackEmitter, StreamingHook
+
+    events = []
+    wire = []
+    effects = []
+    emitter = CallbackEmitter(events.append)
+    responses = iter(
+        [
+            "PRIVATE_INTERMEDIATE_A",
+            "PRIVATE_INTERMEDIATE_B",
+            '{"tool":"lookup","args":{"key":"evidence"}}',
+            '{"tool":"done","args":{"answer":"accepted"}}',
+        ]
+    )
+
+    class Backend:
+        def generate(self, prompt, **kwargs):
+            return next(responses)
+
+    class AsyncBackend(Backend):
+        async def generate(self, prompt, **kwargs):
+            return super().generate(prompt, **kwargs)
+
+    class Observer:
+        def on_event(self, payload):
+            wire.append(payload.to_jsonable())
+
+    def lookup(key: str):
+        effects.append(key)
+        return {"observed": True}
+
+    def done(answer: str):
+        return {"answer": answer}
+
+    state = DefaultState(max_steps=2)
+    arguments = dict(
+        llm=AsyncBackend() if asynchronous else Backend(),
+        tools=tools_from([lookup, done]),
+        state=state,
+        stream=emitter,
+        hooks=[Observer(), *([StreamingHook(emitter)] if with_hook else [])],
+        config=LoopConfig(
+            max_steps=2,
+            max_model_calls=4,
+            use_native_tools=False,
+            assistant_turn_policy=lambda context: AssistantTurnDecision(
+                "continue", "PRIVATE_HOST_FEEDBACK"
+            ),
+        ),
+    )
+    steps = (
+        [step async for step in async_composable_loop(**arguments)]
+        if asynchronous
+        else list(composable_loop(**arguments))
+    )
+    assert [step.tool_call.tool for step in steps] == ["lookup", "done"]
+    assert effects == ["evidence"]
+    starts = [event for event in events if event.event_type == "LLMCallStartEvent"]
+    ends = [event for event in events if event.event_type == "LLMCallEndEvent"]
+    assert [event.model_turn_id for event in starts] == [
+        f"run:turn-{number}" for number in range(1, 5)
+    ]
+    assert [event.model_turn_id for event in ends] == [event.model_turn_id for event in starts]
+    assert len([event for event in events if event.event_type == "AssistantTurnDecisionEvent"]) == 2
+    assert [event.step_num for event in events if event.event_type == "StepStartEvent"] == [1, 2]
+    assert [event.total_llm_calls for event in events if event.event_type == "LoopEndEvent"] == [4]
+    assert "PRIVATE_" not in json.dumps(wire)
+    assert "PRIVATE_" not in str(events)
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_consecutive_assistant_limit_is_independent_of_tool_budget(asynchronous):
+    from looplet import AssistantTurnDecision
+
+    state = DefaultState(max_steps=2)
+    backend = (AsyncMockLLMBackend if asynchronous else MockLLMBackend)(["Continue."] * 5)
+    arguments = dict(
+        llm=backend,
+        tools=tools_from([], include_done=True),
+        state=state,
+        config=LoopConfig(
+            max_steps=2,
+            max_model_calls=5,
+            max_assistant_turns=2,
+            use_native_tools=False,
+            assistant_turn_policy=lambda context: AssistantTurnDecision("continue"),
+        ),
+    )
+    steps = (
+        [step async for step in async_composable_loop(**arguments)]
+        if asynchronous
+        else list(composable_loop(**arguments))
+    )
+    assert steps == []
+    assert state.budget_remaining == 2
+    assert state._stop_reason == "assistant_turn_limit"
+    assert state.metadata["looplet_assistant_turns"]["model_calls"] == 2
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_rejected_text_completion_retains_logical_host_feedback(asynchronous):
+    from copy import deepcopy
+
+    from looplet import AssistantTurnDecision, RunResult
+
+    snapshots = []
+
+    class Backend:
+        conversation_mode = "stateful"
+
+        def set_conversation_input(self, snapshot):
+            snapshots.append(deepcopy(snapshot))
+
+        def generate(self, prompt, **kwargs):
+            return "Candidate answer"
+
+    class AsyncBackend(Backend):
+        async def generate(self, prompt, **kwargs):
+            return super().generate(prompt, **kwargs)
+
+    class Gate:
+        def check_done(self, *args, **kwargs):
+            return HookDecision(block="Missing evidence") if len(snapshots) == 1 else None
+
+    state = DefaultState(max_steps=2)
+    arguments = dict(
+        llm=AsyncBackend() if asynchronous else Backend(),
+        tools=tools_from([], include_done=True),
+        state=state,
+        hooks=[Gate()],
+        config=LoopConfig(
+            max_steps=2,
+            max_model_calls=2,
+            use_native_tools=False,
+            allow_text_completion=True,
+            assistant_turn_policy=lambda context: AssistantTurnDecision("complete"),
+        ),
+    )
+    steps = (
+        [step async for step in async_composable_loop(**arguments)]
+        if asynchronous
+        else list(composable_loop(**arguments))
+    )
+    assert len(steps) == 2
+    assert RunResult.from_state(state).completed
+    feedback = [
+        message
+        for message in snapshots[1]["conversation"]["messages"]
+        if message["metadata"].get("origin") == "host"
+    ]
+    assert len(feedback) == 1
+    assert feedback[0]["role"] == "user"
+    assert feedback[0]["content"] == "Missing evidence"
+    assert "Missing evidence" not in snapshots[1]["prompt"]
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_rejected_text_completion_does_not_reset_consecutive_limit(asynchronous):
+    from looplet import AssistantTurnDecision, RunResult
+
+    class Gate:
+        def check_done(self, *args, **kwargs):
+            return HookDecision(block="Missing evidence")
+
+    state = DefaultState(max_steps=4)
+    backend = (AsyncMockLLMBackend if asynchronous else MockLLMBackend)(["Candidate"] * 5)
+    arguments = dict(
+        llm=backend,
+        tools=tools_from([], include_done=True),
+        state=state,
+        hooks=[Gate()],
+        config=LoopConfig(
+            max_steps=4,
+            max_model_calls=5,
+            max_assistant_turns=1,
+            use_native_tools=False,
+            allow_text_completion=True,
+            assistant_turn_policy=lambda context: AssistantTurnDecision("complete"),
+        ),
+    )
+    steps = (
+        [step async for step in async_composable_loop(**arguments)]
+        if asynchronous
+        else list(composable_loop(**arguments))
+    )
+    result = RunResult.from_state(state)
+    assert len(steps) == 1
+    assert not result.completed
+    assert result.output is None
+    assert result.termination_reason == "assistant_turn_limit"
+    assert state.metadata["looplet_assistant_turns"]["model_calls"] == 1
+    assert state.metadata["looplet_assistant_turns"]["consecutive_assistant_turns"] == 1
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("when", ["pre_llm_call", "post_llm_response"])
+async def test_assistant_mode_honors_model_hook_stop_before_effects(asynchronous, when):
+    from looplet.assistant_turns import AssistantTurnDecision
+
+    calls = []
+    effects = []
+
+    def mutate(value: int):
+        effects.append(value)
+
+    class Backend:
+        def generate(self, prompt, **kwargs):
+            calls.append(prompt)
+            return "Unused"
+
+        def generate_with_tools(self, prompt, **kwargs):
+            calls.append(prompt)
+            return [
+                {"type": "tool_use", "id": "mutation", "name": "mutate", "input": {"value": 99}}
+            ]
+
+    backend = Backend()
+    if asynchronous:
+        original = backend.generate_with_tools
+
+        async def generate_with_tools(prompt, **kwargs):
+            return original(prompt, **kwargs)
+
+        backend.generate_with_tools = generate_with_tools
+
+    class StopHook:
+        def on_event(self, payload):
+            if payload.event.value == when:
+                return HookDecision(stop="host_stop")
+
+    state = DefaultState(max_steps=2)
+    arguments = dict(
+        llm=backend,
+        tools=tools_from([mutate], include_done=True),
+        state=state,
+        hooks=[StopHook()],
+        config=LoopConfig(
+            max_steps=2,
+            max_model_calls=3,
+            assistant_turn_policy=lambda context: AssistantTurnDecision("continue"),
+        ),
+    )
+    steps = (
+        [step async for step in async_composable_loop(**arguments)]
+        if asynchronous
+        else list(composable_loop(**arguments))
+    )
+    assert steps == []
+    assert effects == []
+    assert len(calls) == int(when == "post_llm_response")
+    assert state._stop_reason == "host_stop"
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_native_recovery_cannot_exceed_admitted_calls(tmp_path, asynchronous):
+    from looplet.assistant_turns import TURN_STATE_KEY, AssistantTurnDecision
+    from looplet.provenance import ProvenanceSink
+
+    effects = []
+
+    def mutate(value: int):
+        effects.append(value)
+
+    class Backend:
+        last_stop_reason = "max_tokens"
+        last_usage = {"input": 5, "output": 2}
+
+        def generate(self, prompt, **kwargs):
+            raise AssertionError("No text fallback")
+
+        def generate_with_tools(self, prompt, **kwargs):
+            return [{"type": "tool_use", "id": "partial", "name": "mutate", "input": {"value": 99}}]
+
+    backend = Backend()
+    if asynchronous:
+        original = backend.generate_with_tools
+
+        async def generate_with_tools(prompt, **kwargs):
+            return original(prompt, **kwargs)
+
+        backend.generate_with_tools = generate_with_tools
+    sink = ProvenanceSink(tmp_path)
+    state = DefaultState(max_steps=2)
+    arguments = dict(
+        llm=sink.wrap_llm(backend),
+        tools=tools_from([mutate], include_done=True),
+        state=state,
+        hooks=[sink.trajectory_hook()],
+        config=LoopConfig(
+            max_steps=2,
+            max_model_calls=2,
+            max_tokens=10,
+            max_turn_continuations=3,
+            assistant_turn_policy=lambda context: AssistantTurnDecision("continue"),
+        ),
+    )
+    steps = (
+        [step async for step in async_composable_loop(**arguments)]
+        if asynchronous
+        else list(composable_loop(**arguments))
+    )
+    assert steps == []
+    assert effects == []
+    assert state._stop_reason == "model_call_budget"
+    assert state.metadata[TURN_STATE_KEY]["model_calls"] == 2
+    assert state._looplet_run_stats["llm_calls"] == 2
+    assert state.metadata["usage_total"] == {"input": 10, "output": 4}
+    document = __import__("json").loads((sink.flush() / "trajectory.json").read_text())
+    assert len(document["llm_calls"]) == 2
+
+
 @pytest.mark.parametrize("asynchronous", [False, True])
 @pytest.mark.parametrize("native", [False, True])
 @pytest.mark.parametrize("reject", [False, True])

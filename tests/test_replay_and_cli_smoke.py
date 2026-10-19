@@ -76,6 +76,111 @@ def _captured_dir(tmp_path: Path, *, task: dict | None = None) -> Path:
     return sink.flush()
 
 
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize("scenario", ["missing", "matching", "mismatch", "override"])
+async def test_assistant_replay_requires_binding_and_checks_decisions(
+    tmp_path, asynchronous, native, scenario
+):
+    from looplet import AssistantTurnDecision, RunResult
+    from looplet.provenance import async_replay_loop
+
+    effects = []
+    responses = [
+        "A retained intermediate message",
+        '{"tool":"add","args":{"a":1,"b":2}}',
+        '{"tool":"done","args":{"answer":"checked"}}',
+    ]
+    backend = MockLLMBackend(responses)
+    original_generate = backend.generate
+
+    def generate_with_tools(prompt, **kwargs):
+        text = original_generate(prompt)
+        if text.startswith("{"):
+            call = json.loads(text)
+            return [
+                {
+                    "type": "tool_use",
+                    "id": call["tool"],
+                    "name": call["tool"],
+                    "input": call["args"],
+                }
+            ]
+        return [{"type": "text", "text": text}]
+
+    backend.generate_with_tools = generate_with_tools
+    sink = ProvenanceSink(tmp_path / "source")
+    source_policy = lambda context: AssistantTurnDecision("continue", "Check the observation")
+    list(
+        composable_loop(
+            llm=sink.wrap_llm(backend),
+            tools=_make_tools(),
+            hooks=[sink.trajectory_hook()],
+            config=LoopConfig(
+                max_steps=2,
+                max_model_calls=3,
+                use_native_tools=native,
+                assistant_turn_policy=source_policy,
+            ),
+        )
+    )
+    source = sink.flush()
+    assert sink.trajectory_hook().trajectory.termination_reason == "done"
+    calls = _load_trace_calls(source)
+    assert all(call["schema"] == "looplet.model-call.v2" for call in calls)
+    assert calls[0]["execution"]["model_turn_id"] == "run:turn-1"
+    assert calls[0]["execution"]["model_call_id"] == "run:turn-1:call-1"
+
+    def add(a: int, b: int):
+        effects.append((a, b))
+        return {"sum": a + b + 100}
+
+    def done(answer: str):
+        return {"answer": answer}
+
+    state = DefaultState(max_steps=2)
+    kwargs = dict(trace_dir=source, state=state, tools=tools_from([add, done]))
+    if scenario != "missing":
+        kwargs["assistant_turn_policy"] = (
+            (lambda context: AssistantTurnDecision("stop"))
+            if scenario == "override"
+            else (lambda context: AssistantTurnDecision("continue", "Changed feedback"))
+            if scenario == "mismatch"
+            else source_policy
+        )
+    if scenario == "override":
+        kwargs["policy_override_name"] = "counterfactual-stop"
+
+    async def replay():
+        return (
+            [step async for step in async_replay_loop(**kwargs)]
+            if asynchronous
+            else list(replay_loop(**kwargs))
+        )
+
+    if scenario == "missing":
+        with pytest.raises(ValueError, match="explicit host policy binding"):
+            await replay()
+        assert effects == []
+        return
+    steps = await replay()
+    result = RunResult.from_state(state)
+    if scenario == "matching":
+        assert result.completed
+        assert effects == [(1, 2)]
+        assert steps[0].tool_result.data == {"sum": 103}
+        assert state.metadata["looplet_assistant_turns"]["model_calls"] == 3
+    else:
+        assert effects == []
+        assert steps == []
+        assert not result.completed
+        assert result.termination_reason == (
+            "assistant_stop" if scenario == "override" else "assistant_policy_error"
+        )
+        if scenario == "override":
+            assert state.metadata["replay_policy_override"] == "counterfactual-stop"
+
+
 class TestReplayLoopSmoke:
     @pytest.mark.parametrize("native", [False, True])
     def test_structured_capture_reconstructs_without_parsing_text_projections(

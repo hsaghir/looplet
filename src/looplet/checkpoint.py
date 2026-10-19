@@ -30,6 +30,10 @@ class CheckpointIdentityError(ValueError):
     """A checkpoint belongs to a different logical run."""
 
 
+class UncertainModelCall(RuntimeError):
+    """A started model request lacks an acknowledged durable response."""
+
+
 class UncertainToolEffect(RuntimeError):
     """A pending dispatch must be reconciled before this run can resume."""
 
@@ -116,8 +120,13 @@ class Checkpoint:
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to a JSON-safe dictionary."""
+        from looplet.assistant_turns import TURN_STATE_KEY, TURN_STATE_SCHEMA
+
+        step_number: Any = self.step_number
+        if TURN_STATE_KEY in self.metadata:
+            step_number = {"tool_step": self.step_number, "required_semantics": TURN_STATE_SCHEMA}
         payload = {
-            "step_number": self.step_number,
+            "step_number": step_number,
             "session_log_data": self.session_log_data,
             "conversation_data": self.conversation_data,
             "config_snapshot": self.config_snapshot,
@@ -157,6 +166,15 @@ class Checkpoint:
             raise ValueError("checkpoint run_envelope must be an object or null")
         if "step_number" not in data:
             raise ValueError("checkpoint is missing step_number")
+        if isinstance(data["step_number"], dict):
+            from looplet.assistant_turns import TURN_STATE_KEY, TURN_STATE_SCHEMA
+
+            marker = data["step_number"]
+            if marker.get(
+                "required_semantics"
+            ) != TURN_STATE_SCHEMA or TURN_STATE_KEY not in data.get("metadata", {}):
+                raise ValueError("unsupported checkpoint required semantics")
+            data = {**data, "step_number": marker.get("tool_step")}
         if isinstance(data["step_number"], bool) or not isinstance(data["step_number"], int):
             raise ValueError("checkpoint step_number must be an integer")
         if isinstance(data.get("created_at", time.time()), bool) or not isinstance(
@@ -289,7 +307,7 @@ class FileCheckpointStore:
                 cp = Checkpoint.from_dict(data)
                 if run_id is not None and cp.run_id != run_id:
                     continue
-                if best is None or cp.step_number > best.step_number:
+                if best is None or _checkpoint_order(cp) > _checkpoint_order(best):
                     best = cp
             except Exception:  # noqa: BLE001
                 logger.warning("Skipping corrupt checkpoint: %s", path)
@@ -306,7 +324,7 @@ class FileCheckpointStore:
         Other run namespaces remain isolated.
         """
         best: Checkpoint | None = None
-        terminal_found = False
+        terminal: Checkpoint | None = None
         for path in sorted(self._dir.glob("*.json")):
             try:
                 data = json.loads(path.read_text())
@@ -316,9 +334,10 @@ class FileCheckpointStore:
                 ):
                     continue
                 if cp.is_terminal:
-                    terminal_found = True
+                    if terminal is None or _checkpoint_order(cp) > _checkpoint_order(terminal):
+                        terminal = cp
                     continue
-                if best is None or cp.step_number > best.step_number:
+                if best is None or _checkpoint_order(cp) > _checkpoint_order(best):
                     best = cp
             except (OSError, ValueError, TypeError) as error:
                 if "__" in path.stem and (
@@ -329,7 +348,23 @@ class FileCheckpointStore:
                     f"Cannot safely resume from checkpoint {path}. "
                     "Preserve the file and reconcile recovery state before retrying."
                 ) from error
-        return None if terminal_found else best
+        if terminal is not None:
+            from looplet.assistant_turns import TURN_STATE_KEY
+
+            return terminal if TURN_STATE_KEY in terminal.metadata else None
+        return best
+
+
+def _checkpoint_order(checkpoint: Checkpoint) -> tuple[int, int, int, float]:
+    from looplet.assistant_turns import TURN_STATE_KEY
+
+    turns = checkpoint.metadata.get(TURN_STATE_KEY, {})
+    if not isinstance(turns, dict):
+        raise ValueError("invalid checkpoint assistant-turn state")
+    counters = (turns.get("turn_count", 0), turns.get("model_calls", 0))
+    if any(type(value) is not int or value < 0 for value in counters):
+        raise ValueError("invalid checkpoint model-turn cursor")
+    return (*counters, checkpoint.step_number, checkpoint.created_at)
 
 
 def save_pending_dispatch(
@@ -516,6 +551,15 @@ def resume_loop_state(checkpoint: Checkpoint, *, max_steps: int | None = None) -
 
     if checkpoint.metadata.get("pending_calls"):
         raise UncertainToolEffect(checkpoint.metadata["pending_calls"])
+
+    from looplet.assistant_turns import TURN_STATE_KEY
+
+    turns = checkpoint.metadata.get(TURN_STATE_KEY, {})
+    if isinstance(turns, dict) and turns.get("pending_model_call"):
+        raise UncertainModelCall(
+            "A model request may have started. Preserve this checkpoint and reconcile "
+            "the request before resuming; retrying can duplicate inference and billing."
+        )
 
     log = SessionLog()
     entries = checkpoint.session_log_data.get("entries", [])

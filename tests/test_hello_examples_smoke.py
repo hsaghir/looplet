@@ -2418,6 +2418,34 @@ class TestHelloWorldExample:
         output = capsys.readouterr().out
         assert "Result: stopped (" in output
 
+    @pytest.mark.parametrize("limit, completed", [(1, False), (5, True)])
+    def test_scripted_assistant_turns_are_opt_in_and_bounded(
+        self, monkeypatch, capsys, limit, completed
+    ) -> None:
+        observed = []
+
+        def execute(**kwargs):
+            observed.append(kwargs["state"])
+            yield from composable_loop(**kwargs)
+
+        monkeypatch.setattr(hello_world, "composable_loop", execute)
+        assert hello_world.main(
+            ["--scripted", "--assistant-turns", "--max-model-calls", str(limit)]
+        ) == (0 if completed else 1)
+        state = observed[0]
+        assert RunResult.from_state(state).completed is completed
+        assert state._looplet_run_stats["llm_calls"] == limit
+        assert len(state.steps) == (3 if completed else 0)
+        assert state.metadata["looplet_assistant_turns"]["assistant_turns"] == (
+            2 if completed else 1
+        )
+        assert "First identify" not in capsys.readouterr().out
+
+    def test_assistant_example_requires_explicit_positive_model_limit(self) -> None:
+        with pytest.raises(SystemExit) as status:
+            hello_world.main(["--scripted", "--assistant-turns"])
+        assert status.value.code == 2
+
 
 def test_coding_example_uses_shared_provider_defaults(monkeypatch) -> None:
     from looplet import backends

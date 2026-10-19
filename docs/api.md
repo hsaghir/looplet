@@ -104,6 +104,80 @@ Refusal and incomplete provider turns stop with `model_refusal` and `model_incom
 Neither is accepted completion. The sync and async loops apply the same policy.
 See [structured capture](provenance.md#structured-model-call-capture) for per-request evidence and replay.
 
+### Host-controlled assistant turns
+
+**Unreleased:** `assistant_turn_policy=None` preserves strict tool-calling behavior.
+A host can opt into valid assistant-only messages without inventing a tool call:
+
+```python
+from looplet import AssistantTurnContext, AssistantTurnDecision, LoopConfig
+
+
+def decide(turn: AssistantTurnContext) -> AssistantTurnDecision:
+    return AssistantTurnDecision("continue")
+
+
+config = LoopConfig(
+    max_steps=8,
+    max_model_calls=12,
+    max_assistant_turns=4,
+    assistant_turn_policy=decide,
+)
+```
+
+These limits are illustrative, not recommended defaults.
+The policy receives detached text, turn identity, request counts, consecutive assistant count, and the next tool-step number.
+The async loop also accepts an async policy. The sync loop rejects awaitable policy returns.
+
+- `continue` retains the message and requests another model response within the remaining limits.
+- `complete` proposes assistant-message completion. It requires `allow_text_completion=True`, existing completion hooks, and the primary output schema.
+- `stop` ends without accepted completion or successful output.
+
+Feedback is optional text, limited to 8,192 characters. It becomes one host message in working history.
+Keep protected references, evaluator details, and unrelated private data out of feedback.
+Invalid decisions and policy exceptions fail closed with `assistant_policy_error`; diagnostics retain only the exception type.
+Cancellation, deadlines, and hook stops take precedence over a returned decision.
+Host policies remain trusted code. Limits do not preempt a blocked synchronous callback.
+
+The policy requires a positive integer `max_model_calls`.
+This ceiling includes admitted retries, recovery, compaction summaries, and helpers using the supplied backend.
+Custom backends must expose each underlying request rather than hide retries.
+Built-in adapters disable SDK retries for bounded calls; cooperative retry wrappers return control between attempts.
+An optional positive `max_assistant_turns` limits consecutive assistant-only turns.
+Only a genuine tool proposal resets that counter. Rejected text completion does not reset it.
+Tool-step budgets and `max_turn_continuations` retain their separate meanings.
+Host aggregate budgets, child restrictions, and the original deadline remain authoritative.
+Use an isolated backend for stateful helper or child inference, together with the host's shared budget.
+
+Assistant continuation yields no `Step` and emits no tool-progress event.
+Turn-aware context callbacks receive `model_turn_id` and `model_turn_number` when their signatures accept them.
+LLM lifecycle events identify logical turns; request records and captures identify individual attempts.
+Default wire progress omits prompts and intermediate response content. Trusted in-process hooks still receive their existing payloads.
+
+Working conversation, selected prompt context, provider-held state, and immutable capture are different objects.
+Built-in native adapters translate typed history without repeating rebuilt task prompts.
+Custom adapters declare `conversation_mode` as `text`, `messages`, or `stateful`.
+The latter two require `set_conversation_input(snapshot)`.
+Stateful compaction also requires synchronous `apply_context_compaction(snapshot)` returning exactly `True`.
+Missing capability or acknowledgement stops before inference with `unsupported_context`.
+Provider-held context size remains unknown unless measured; local compaction alone does not prove that it shrank.
+Overlapping requests through one bounded backend are rejected before a second invocation.
+
+Checkpoints save message-only progress, copied backend state, counters, full tool receipts, and terminal output.
+An uncertain admitted request is not retried implicitly after restart. Reconciliation remains the host's responsibility.
+Required policy bindings must be supplied again, and saved ceilings cannot be removed or increased.
+Completed checkpoint resume makes no model calls or tool effects.
+This is not exactly-once inference or whole-process application recovery.
+See [policy-aware replay](provenance.md#assistant-turn-capture-and-replay) for explicit replay binding.
+
+Run the packaged offline example:
+
+```bash
+python -m looplet.examples.hello_world --scripted --assistant-turns --max-model-calls 5
+```
+
+### Step budgets
+
 Since `0.4.1`, `DefaultState.max_steps` limits charged steps.
 A successful nonterminal `ToolSpec(free=True)` call does not reduce `budget_remaining`.
 Failed calls, intercepted calls, and terminal attempts still consume one step.

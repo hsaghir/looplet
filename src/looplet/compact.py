@@ -202,6 +202,13 @@ def _render_transcript(session_log: Any | None, conversation: Any | None) -> tup
         except Exception:  # noqa: BLE001
             rendered = ""
         if rendered.strip():
+            messages = getattr(conversation, "messages", ())
+            if conversation is not None and any(
+                message.metadata.get("origin") in {"model", "host"} for message in messages
+            ):
+                continuation = conversation.continuation_context()
+                if continuation:
+                    return rendered + "\n\n" + continuation, "session_log+conversation"
             return rendered, "session_log"
     if conversation is not None and hasattr(conversation, "render"):
         try:
@@ -369,6 +376,7 @@ def run_compact(
     """
     from looplet.events import LifecycleEvent  # noqa: PLC0415
 
+    before_projection = _compaction_projection(state, conversation)
     # Pre-compact: observers can block.
     pre_decisions = _emit_compact_event(
         hooks,
@@ -381,6 +389,7 @@ def run_compact(
     )
     for d in pre_decisions:
         if d.stop is not None:
+            _mark_provider_compaction(state, conversation, before_projection)
             return CompactOutcome(reason=f"aborted: {d.stop}")
 
     outcome = service.compact(
@@ -391,7 +400,6 @@ def run_compact(
         step_num=step_num,
         reason=reason,
     )
-
     post_decisions = _emit_compact_event(
         hooks,
         LifecycleEvent.POST_COMPACT,
@@ -423,6 +431,7 @@ def run_compact(
                 "CompactOutcome.cleanup raised; continuing",
             )
 
+    _mark_provider_compaction(state, conversation, before_projection)
     return outcome
 
 
@@ -441,6 +450,7 @@ async def run_compact_async(
     from looplet.events import LifecycleEvent  # noqa: PLC0415
     from looplet.loop import emit_event_async  # noqa: PLC0415
 
+    before_projection = _compaction_projection(state, conversation)
     before = len(conversation.messages) if conversation is not None else None
     pre = await emit_event_async(
         hooks,
@@ -453,16 +463,29 @@ async def run_compact_async(
     )
     for decision in pre:
         if decision.stop is not None:
+            _mark_provider_compaction(state, conversation, before_projection)
             return CompactOutcome(reason=f"aborted: {decision.stop}")
 
-    outcome = service.compact(
-        state=state,
-        session_log=session_log,
-        llm=llm,
-        conversation=conversation,
-        step_num=step_num,
-        reason=reason,
+    import asyncio
+
+    from looplet.async_loop import _SyncBridgeLLM
+
+    compact_task = asyncio.create_task(
+        asyncio.to_thread(
+            service.compact,
+            state=state,
+            session_log=session_log,
+            llm=_SyncBridgeLLM(llm, loop=asyncio.get_running_loop()),
+            conversation=conversation,
+            step_num=step_num,
+            reason=reason,
+        )
     )
+    try:
+        outcome = await asyncio.shield(compact_task)
+    except asyncio.CancelledError:
+        await compact_task
+        raise
     post = await emit_event_async(
         hooks,
         LifecycleEvent.POST_COMPACT,
@@ -486,7 +509,25 @@ async def run_compact_async(
             logging.getLogger(__name__).exception(
                 "CompactOutcome.cleanup raised; continuing",
             )
+    _mark_provider_compaction(state, conversation, before_projection)
     return outcome
+
+
+def _compaction_projection(state: Any, conversation: Any) -> Any:
+    from looplet.assistant_turns import TURN_STATE_KEY
+
+    metadata = getattr(state, "metadata", {})
+    turns = metadata.get(TURN_STATE_KEY) if isinstance(metadata, dict) else None
+    return (
+        conversation.serialize() if isinstance(turns, dict) and conversation is not None else None
+    )
+
+
+def _mark_provider_compaction(state: Any, conversation: Any, before: Any) -> None:
+    if before is not None and before != _compaction_projection(state, conversation):
+        from looplet.assistant_turns import TURN_STATE_KEY
+
+        state.metadata[TURN_STATE_KEY]["context_reset_required"] = True
 
 
 def apply_thread_rewrite(state: Any, spec: "dict[str, Any] | None") -> None:
@@ -700,7 +741,7 @@ class SummarizeCompact:
                 temperature=self.summary_temperature,
                 max_retries=0,
             )
-            llm_calls_spent = 1
+            llm_calls_spent = result.calls + result.continuations
             if result.ok and isinstance(result.text, str):
                 summary_text = result.text.strip()[: self.summary_max_chars]
         except Exception:  # noqa: BLE001

@@ -27,6 +27,7 @@ import sys
 import tempfile
 import textwrap
 from collections.abc import Iterable
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -179,6 +180,17 @@ def _write_preset_to_cartridge(
 
     # 1. config - write JSON-able subset; emit warnings for the rest.
     cfg = preset.config
+    cfg.validate_assistant_turns(require_binding=False)
+    if (
+        cfg.max_model_calls is not None
+        or cfg.requires_assistant_turn_policy
+        or cfg.assistant_turn_policy is not None
+    ):
+        required = workspace.compatibility.requires
+        if "assistant_turns_v1" not in required:
+            workspace.compatibility = replace(
+                workspace.compatibility, requires=(*required, "assistant_turns_v1")
+            )
     serialized_cfg: dict[str, Any] = {}
     for fname in CartridgeLayout.SERIALIZABLE_CONFIG_FIELDS:
         if fname == "system_prompt":
@@ -186,6 +198,12 @@ def _write_preset_to_cartridge(
         if not hasattr(cfg, fname):
             continue
         value = getattr(cfg, fname)
+        if fname in {
+            "max_model_calls",
+            "max_assistant_turns",
+            "requires_assistant_turn_policy",
+        } and value in (None, False):
+            continue
         if fname == "done_tools":
             if value:
                 msg = (
@@ -220,6 +238,9 @@ def _write_preset_to_cartridge(
         if value is None:
             continue
         if fname in CartridgeLayout.HOST_TIER_FIELDS:
+            if fname == "assistant_turn_policy":
+                serialized_cfg["requires_assistant_turn_policy"] = True
+                continue
             msg = f"config.{fname} is host-only and cannot be serialized into a cartridge"
             if strict:
                 raise CartridgeSerializationError(msg)

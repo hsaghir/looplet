@@ -544,6 +544,12 @@ class LoopConfig:
     ``LoopConfig`` for hand-built loops.
     """
 
+    def validate_assistant_turns(self, *, require_binding: bool = True) -> None:
+        """Validate assistant-turn limits and required host policy binding."""
+        from looplet.assistant_turns import validate_assistant_config
+
+        validate_assistant_config(self, require_binding=require_binding)
+
     def resolve_terminal_outcomes(self) -> dict[str, OutputSchema | None]:
         """Return the effective terminal name-to-schema table.
 
@@ -587,6 +593,16 @@ class LoopConfig:
     callback is invoked. Empty, refused, truncated, and malformed tool
     responses remain invalid. Default ``False`` requires a terminal tool.
     """
+
+    assistant_turn_policy: Callable[..., Any] | None = field(default=None, kw_only=True)
+    requires_assistant_turn_policy: bool = field(default=False, kw_only=True)
+    """Host policy for valid assistant text. Requires an explicit model-call limit."""
+
+    max_model_calls: int | None = field(default=None, kw_only=True)
+    """Maximum backend invocations, including recovery. None preserves legacy limits."""
+
+    max_assistant_turns: int | None = field(default=None, kw_only=True)
+    """Optional limit on consecutive assistant-only turns. No implicit default applies."""
 
     # Domain-specific callables - injected by the agent
 
@@ -1112,6 +1128,12 @@ def _record_run_stats(
     config: LoopConfig | None = None,
 ) -> None:
     """Retain host-only measurements without changing model/tool metadata."""
+    from looplet.assistant_turns import TURN_STATE_KEY
+
+    metadata = getattr(state, "metadata", {})
+    turns = metadata.get(TURN_STATE_KEY) if isinstance(metadata, dict) else None
+    if isinstance(turns, dict) and type(turns.get("model_calls")) is int:
+        llm_calls = turns["model_calls"]
     stats = getattr(state, "_looplet_run_stats", None)
     if not isinstance(stats, dict):
         stats = {}
@@ -1130,6 +1152,11 @@ def _record_run_stats(
                 "done_tool",
             )
         }
+        for name in ("max_model_calls", "max_assistant_turns"):
+            if getattr(config, name) is not None:
+                stats["model_turn_config"][name] = getattr(config, name)
+        if config.assistant_turn_policy is not None or config.requires_assistant_turn_policy:
+            stats["model_turn_config"]["requires_assistant_turn_policy"] = True
     if duration_ms is not None:
         stats["duration_ms"] = duration_ms
 
@@ -1153,9 +1180,14 @@ def _record_policy_decision(state: Any, decision: Any) -> None:
 
 
 def _policy_checkpoint_metadata(state: Any) -> dict[str, Any]:
+    from looplet.assistant_turns import assistant_checkpoint_metadata
+
     metadata = getattr(state, "metadata", None)
     decisions = metadata.get("policy_decisions") if isinstance(metadata, dict) else None
-    return {"policy_decisions": list(decisions)} if isinstance(decisions, list) else {}
+    return {
+        **({"policy_decisions": list(decisions)} if isinstance(decisions, list) else {}),
+        **assistant_checkpoint_metadata(state),
+    }
 
 
 def _deadline_expired(loop_ctx: LoopContext) -> bool:
@@ -1394,6 +1426,10 @@ def emit_event(
     decisions: list[Any] = []
     state = payload_kwargs.get("state")
     if state is not None:
+        from looplet.context_projection import model_turn_context
+
+        for name, value in model_turn_context(state).items():
+            payload_kwargs.setdefault(name, value)
         payload_kwargs.setdefault("run_status", getattr(state, "run_status", None))
         payload_kwargs.setdefault("run_phase", getattr(state, "run_phase", None))
         envelope = getattr(state, "run_envelope", None)
@@ -1447,6 +1483,10 @@ async def emit_event_async(
     decisions: list[Any] = []
     state = payload_kwargs.get("state")
     if state is not None:
+        from looplet.context_projection import model_turn_context
+
+        for name, value in model_turn_context(state).items():
+            payload_kwargs.setdefault(name, value)
         payload_kwargs.setdefault("run_status", getattr(state, "run_status", None))
         payload_kwargs.setdefault("run_phase", getattr(state, "run_phase", None))
         envelope = getattr(state, "run_envelope", None)
@@ -1990,6 +2030,9 @@ def _validate_hooks(hooks: list[Any]) -> None:
 
 def _validate_loop_inputs(task: Any, tools: BaseToolRegistry, config: LoopConfig) -> None:
     """Reject impossible loop wiring before prompt assembly begins."""
+    from looplet.assistant_turns import validate_assistant_config
+
+    validate_assistant_config(config)
     if isinstance(config.max_steps, bool) or not isinstance(config.max_steps, int):
         raise ValueError("config.max_steps must be a positive integer")
     if config.max_steps <= 0:
@@ -2428,6 +2471,8 @@ class _LoopFinalizer:
         return [hook for hook in hooks if hasattr(hook, "on_loop_end")]
 
     def finish(self, *, suppress_errors: bool = False) -> int:
+        from looplet.assistant_turns import _AdmissionDenied
+
         calls = 0
         failure: BaseException | None = None
         for hook in self._take_hooks():
@@ -2435,6 +2480,10 @@ class _LoopFinalizer:
                 extra = hook.on_loop_end(*self._args)
                 if isinstance(extra, int):
                     calls += extra
+            except _AdmissionDenied as exc:
+                self.state.metadata.setdefault("post_run_model_denials", []).append(
+                    exc.termination_reason
+                )
             except BaseException as exc:
                 failure = failure or exc
                 if suppress_errors:
@@ -2446,6 +2495,8 @@ class _LoopFinalizer:
     async def finish_async(self, *, suppress_errors: bool = False) -> int:
         import inspect
 
+        from looplet.assistant_turns import _AdmissionDenied
+
         calls = 0
         failure: BaseException | None = None
         for hook in self._take_hooks():
@@ -2455,6 +2506,10 @@ class _LoopFinalizer:
                     extra = await extra
                 if isinstance(extra, int):
                     calls += extra
+            except _AdmissionDenied as exc:
+                self.state.metadata.setdefault("post_run_model_denials", []).append(
+                    exc.termination_reason
+                )
             except BaseException as exc:
                 failure = failure or exc
                 if suppress_errors:
@@ -2706,8 +2761,10 @@ def _composable_loop_impl(
     # ── Resolve effective LLM (router overrides direct llm) ────
     def _get_llm() -> Any:
         if config is not None and config.router is not None:  # pyright: ignore[reportOptionalMemberAccess]
-            return config.router.select(purpose="reasoning")  # pyright: ignore[reportOptionalMemberAccess]
-        return llm
+            selected = config.router.select(purpose="reasoning")  # pyright: ignore[reportOptionalMemberAccess]
+        else:
+            selected = llm
+        return _turns.wrap(selected) if _turns is not None else selected
 
     _context_sources = (
         ContextSourceSelector(
@@ -2740,7 +2797,7 @@ def _composable_loop_impl(
 
     # ── Crash-resume from initial checkpoint ───────────────────
     _step_offset = 0
-    if config.initial_checkpoint is not None:
+    if (saved_checkpoint := config.initial_checkpoint) is not None:
         _validate_checkpoint_identity(
             config.initial_checkpoint,
             config.run_envelope.run_id if config.run_envelope is not None else None,
@@ -2751,7 +2808,9 @@ def _composable_loop_impl(
         )
         restore_backend_state = getattr(restore_backend, "restore_checkpoint_state", None)
         if callable(restore_backend_state):
-            restore_backend_state((resumed.get("domain_state") or {}).get("llm", {}))
+            from copy import deepcopy
+
+            restore_backend_state(deepcopy((resumed.get("domain_state") or {}).get("llm", {})))
         if config.run_envelope is None and isinstance(resumed.get("run_envelope"), dict):
             config = _dc_replace(
                 config,
@@ -2776,11 +2835,18 @@ def _composable_loop_impl(
             except AttributeError:
                 pass
 
+        from looplet.assistant_turns import TURN_STATE_KEY, restore_assistant_checkpoint
+
+        config = restore_assistant_checkpoint(state, config, saved_checkpoint)
+        if TURN_STATE_KEY in saved_checkpoint.metadata:
+            _step_offset = saved_checkpoint.step_number - state.step_count
+
     # ── Unified history recorder - single write path for step/turn events ──
     _history = HistoryRecorder(
         state=state,
         session_log=session_log,
         conversation=_conv,
+        typed_turns=config.assistant_turn_policy is not None,
     )
 
     # Domain adapter seeding: when ``config.domain`` is set, fall back
@@ -2880,6 +2946,30 @@ def _composable_loop_impl(
     if config.initial_checkpoint is not None:
         tools.restore_results(resumed.get("tool_results_store") or {})
 
+    from looplet.assistant_turns import _AssistantTurns
+
+    if config.initial_checkpoint is not None and config.initial_checkpoint.is_terminal:
+        from looplet.assistant_turns import TURN_STATE_KEY
+
+        if TURN_STATE_KEY in config.initial_checkpoint.metadata:
+            saved = config.initial_checkpoint
+            if saved.run_status != "completed":
+                raise ValueError("stopped assistant runs require an explicit new run identity")
+            _set_run_lifecycle(
+                loop_ctx,
+                status=RunStatus.COMPLETED,
+                phase=RunPhase.TERMINAL,
+                termination_reason=saved.termination_reason,
+                terminal_tool=saved.metadata.get("accepted_terminal_tool"),
+            )
+            finalizer.bind([], state, session_log, context, llm)
+            return
+    _turns = _AssistantTurns(state, config) if config.max_model_calls is not None else None
+    if _turns is not None:
+        checkpoint_state = _turns.wrap_checkpoint(checkpoint_state)
+        _turns.checkpoint = lambda: _turns.save(_ckpt_store, loop_ctx, checkpoint_state)
+        finalizer.bind(hooks, state, session_log, context, _turns.wrap(llm))
+
     for hook in hooks:
         if hasattr(hook, "pre_loop"):
             _invoke_hook(
@@ -2935,6 +3025,12 @@ def _composable_loop_impl(
         if config.cancel_token is not None and getattr(config.cancel_token, "is_cancelled", False):
             stop_reason = "cancelled"
             break
+
+        if _turns is not None:
+            if _turns.stop_reason is not None:
+                stop_reason = _turns.stop_reason
+                break
+            _turns.begin_turn()
 
         # ── Proactive compaction ────────────────────────────
         # If any hook votes yes, run the configured compact service
@@ -3016,7 +3112,8 @@ def _composable_loop_impl(
         # ── Build prompt ────────────────────────────────────
         context_history = state.context_summary()
         if quality_gate_message:
-            context_history += "\n" + quality_gate_message
+            if _turns is None or not _turns.enabled:
+                context_history += "\n" + quality_gate_message
             quality_gate_message = ""
 
         _prepared = prepare_prompt(
@@ -3045,12 +3142,16 @@ def _composable_loop_impl(
             _state_metadata["context_budget"] = loop_ctx.context_budget.to_dict()
 
         # Emit StepStartEvent
-        if stream is not None and _StepStartEvent is not None:
+        if stream is not None and _StepStartEvent is not None and _turns is None:
             stream.emit(_StepStartEvent(step_num=step_num))
 
         # Resolve effective LLM once per step - used by both the main call and
         # parse-recovery below, regardless of whether pre-flight fires.
         effective_llm = _get_llm()
+        if _turns is not None and _turns.enabled and config.render_messages_override is None:
+            effective_llm.prepare_conversation(
+                _conv, _prepared.conversation_prompt, request_prompt=prompt
+            )
 
         # Fire PRE_LLM_CALL - observers only; return decisions are
         # collected but only ``additional_context`` is honored (the
@@ -3073,6 +3174,9 @@ def _composable_loop_impl(
                 stop_reason = _d.stop
                 _hook_requested_stop = True
 
+        if _turns is not None and _hook_requested_stop:
+            break
+
         if preflight_too_long:
             logger.warning(
                 "Pre-flight block: prompt ~%d tokens exceeds safe limit - %s",
@@ -3091,8 +3195,17 @@ def _composable_loop_impl(
         else:
             # ── LLM call with retry + reactive recovery ───────────
             # Emit LLMCallStartEvent
-            if stream is not None and _LLMCallStartEvent is not None:
-                stream.emit(_LLMCallStartEvent(step_num=step_num))
+            if (
+                stream is not None
+                and _LLMCallStartEvent is not None
+                and (_turns is None or not _has_streaming_hook)
+            ):
+                stream.emit(
+                    _LLMCallStartEvent(
+                        step_num=step_num,
+                        model_turn_id=_turns.turn_id if _turns is not None else None,
+                    )
+                )
             # Tracer: start span for LLM call
             _llm_span = None
             if config.tracer is not None:
@@ -3157,7 +3270,7 @@ def _composable_loop_impl(
                 0 if llm_result.native_attempted else llm_result.continuations
             )
             _record_run_stats(state, llm_calls=llm_calls, config=config)
-            if _deadline_expired(loop_ctx):
+            if _deadline_expired(loop_ctx) and _turns is None:
                 stop_reason = "deadline_exceeded"
                 done = True
                 break
@@ -3168,10 +3281,15 @@ def _composable_loop_impl(
             if _llm_span is not None and config.tracer is not None:
                 config.tracer.end_span(_llm_span)
             # Emit LLMCallEndEvent
-            if stream is not None and _LLMCallEndEvent is not None:
+            if (
+                stream is not None
+                and _LLMCallEndEvent is not None
+                and (_turns is None or not _has_streaming_hook)
+            ):
                 stream.emit(
                     _LLMCallEndEvent(
                         step_num=step_num,
+                        model_turn_id=_turns.turn_id if _turns is not None else None,
                         response_length=len(llm_result.text or ""),
                         duration_ms=_llm_dur_ms,
                         usage=llm_result.usage
@@ -3206,6 +3324,14 @@ def _composable_loop_impl(
                 _rendered_memory = prepared.rendered_memory
                 _scoped_plan = prepared.scoped_context_plan
                 loop_ctx.context_budget = prepared.budget
+                if (
+                    _turns is not None
+                    and _turns.enabled
+                    and config.render_messages_override is None
+                ):
+                    effective_llm.prepare_conversation(
+                        _conv, prepared.conversation_prompt, request_prompt=prompt
+                    )
                 return prepared
 
             llm_result = _recovery_chain(
@@ -3232,6 +3358,16 @@ def _composable_loop_impl(
             loop_ctx.native_tool_stats.record(llm_result)
 
         raw_response = llm_result.text
+        if _turns is not None:
+            llm_calls = _turns.data["model_calls"]
+            llm_result.model_calls = effective_llm.request_records
+            measured_usage: dict[str, Any] = {}
+            for record in llm_result.model_calls:
+                for name, value in record["usage"].items():
+                    if isinstance(value, (int, float)) and not isinstance(value, bool):
+                        measured_usage[name] = measured_usage.get(name, 0) + value
+            llm_result.usage = measured_usage or None
+            _record_run_stats(state, llm_calls=llm_calls)
 
         # ── Record LLM turn in conversation thread via unified recorder ──
         _history.record_llm_turn(
@@ -3239,6 +3375,7 @@ def _composable_loop_impl(
             response=raw_response,
             metadata={
                 "tool_view": {"names": list(_tool_view.names), "version": _tool_view.version},
+                **({"model_turn_id": _turns.turn_id} if _turns is not None else {}),
                 **(
                     {"scoped_context_plan": _scoped_plan.to_dict()}
                     if _scoped_plan is not None
@@ -3253,7 +3390,7 @@ def _composable_loop_impl(
         _step_usage = llm_result.usage or (
             getattr(effective_llm, "last_usage", None) if llm_result.ok else None
         )
-        if _step_usage:
+        if _step_usage and _turns is None:
             try:
                 _meta = getattr(state, "metadata", None)
                 if isinstance(_meta, dict):
@@ -3292,6 +3429,26 @@ def _composable_loop_impl(
             if _d.additional_context:
                 post_dispatch_parts.append(_d.additional_context)
 
+        if _turns is not None and (
+            _hook_requested_stop
+            or _deadline_expired(loop_ctx)
+            or (config.cancel_token is not None and config.cancel_token.is_cancelled)
+        ):
+            if _deadline_expired(loop_ctx):
+                stop_reason = "deadline_exceeded"
+            elif config.cancel_token is not None and config.cancel_token.is_cancelled:
+                stop_reason = "cancelled"
+            break
+        if _turns is not None and llm_result.failure_reason in {
+            "model_call_budget",
+            "context_limit",
+            "cancelled",
+            "deadline_exceeded",
+            "unsupported_context",
+        }:
+            stop_reason = llm_result.failure_reason
+            break
+
         if raw_response is None:
             # If cancellation caused the failure, exit cleanly - no error step.
             if config.cancel_token is not None and getattr(
@@ -3325,10 +3482,87 @@ def _composable_loop_impl(
         # ── Parse response (native tool_use or JSON text) ────
         tool_calls = native_policy.parse_response(
             raw_response,
-            allow_text_completion=config.allow_text_completion,
+            allow_text_completion=config.allow_text_completion
+            and config.assistant_turn_policy is None,
             done_tool=config.done_tool,
             stop_reason=llm_result.stop_reason,
         )
+        assistant_text = native_policy.assistant_text(
+            raw_response, stop_reason=llm_result.stop_reason
+        )
+        if not tool_calls and assistant_text is not None and _turns is not None and _turns.enabled:
+            try:
+                decision = _turns.propose(assistant_text, step_num)
+                if _inspect.isawaitable(decision):
+                    if _inspect.iscoroutine(decision):
+                        decision.close()
+                    raise TypeError("synchronous assistant policy cannot return an awaitable")
+                decision = _turns.record_decision(decision)
+            except Exception as error:
+                _turns.metadata["assistant_policy_error"] = type(error).__name__
+                stop_reason = "assistant_policy_error"
+                llm_failed = True
+                break
+            _assistant_decisions = emit_event(
+                hooks,
+                _LE.ASSISTANT_TURN_DECISION,
+                step_num=step_num,
+                state=state,
+                session_log=session_log,
+                context=context,
+                extra={
+                    "model_turn_id": _turns.turn_id,
+                    "action": decision.action,
+                    "model_calls": _turns.data["model_calls"],
+                },
+            )
+            if stream is not None and not _has_streaming_hook:
+                from looplet.streaming import AssistantTurnDecisionEvent
+
+                stream.emit(
+                    AssistantTurnDecisionEvent(
+                        step_num=step_num,
+                        model_turn_id=_turns.turn_id,
+                        action=decision.action,
+                        model_calls=_turns.data["model_calls"],
+                    )
+                )
+            _history.record_host_feedback(decision.feedback, model_turn_id=_turns.turn_id)
+            if _turns.checkpoint is not None:
+                _turns.checkpoint()
+            consecutive_parse_failures = 0
+            interruption = _turns.interruption_reason(_assistant_decisions)
+            if interruption is not None:
+                stop_reason = interruption
+                break
+            if decision.action == "stop":
+                stop_reason = "assistant_stop"
+                break
+            if decision.action == "continue":
+                reason = _post_step_stop_reason(
+                    hooks,
+                    state=state,
+                    session_log=session_log,
+                    context=context,
+                    step_num=step_num,
+                    new_entities=0,
+                    requested_reason=None,
+                )
+                if reason is not None:
+                    stop_reason = reason
+                    break
+                continue
+            tool_calls = native_policy.parse_response(
+                raw_response,
+                allow_text_completion=True,
+                done_tool=config.done_tool,
+                stop_reason=llm_result.stop_reason,
+            )
+        if _turns is not None and any(
+            tool_call.metadata.get("completion_source") != "assistant_message"
+            for tool_call in tool_calls
+        ):
+            _turns.data["consecutive_assistant_turns"] = 0
         if not tool_calls:
             consecutive_parse_failures += 1
             # Consult recovery_registry if set - use returned action
@@ -3440,6 +3674,13 @@ def _composable_loop_impl(
 
         # ── Dispatch tool calls ──────────────────────────────
         all_step_entities: list[str] = []
+        if (
+            _turns is not None
+            and stream is not None
+            and _StepStartEvent is not None
+            and not _has_streaming_hook
+        ):
+            stream.emit(_StepStartEvent(step_num=step_num))
 
         # A provider response is one model turn even when it contains many
         # calls. Bound the number of calls consumed by the remaining step
@@ -4065,6 +4306,10 @@ def _composable_loop_impl(
         except AttributeError:
             pass
 
+    if _turns is not None:
+        llm_calls = _turns.data["model_calls"]
+        if _turns.checkpoint is not None:
+            _turns.checkpoint()
     _record_run_stats(state, llm_calls=llm_calls)
 
     # Fire STOP - event-style hooks see termination reason before
@@ -4081,10 +4326,19 @@ def _composable_loop_impl(
     )
 
     llm_calls += finalizer.finish()
+    if _turns is not None:
+        llm_calls = _turns.data["model_calls"]
+        if _turns.checkpoint is not None:
+            _turns.checkpoint()
     _record_run_stats(state, llm_calls=llm_calls)
 
     # Emit LoopEndEvent - skip if StreamingHook already emits it
-    if stream is not None and _LoopEndEvent is not None and not _has_streaming_hook:
+    if (
+        _turns is None
+        and stream is not None
+        and _LoopEndEvent is not None
+        and not _has_streaming_hook
+    ):
         stream.emit(
             _LoopEndEvent(
                 total_steps=state.step_count,
@@ -4117,13 +4371,27 @@ def _composable_loop_impl(
             state=state,
             session_log=session_log,
             done=stop_reason == "done",
-            llm=llm,
+            llm=_turns.wrap(llm) if _turns is not None else llm,
             llm_calls=llm_calls,
             elapsed_ms=elapsed,
         )
         if _bt_takes_context:
             _bt_kwargs["context"] = context
-        trace = _build_trace_fn(**_bt_kwargs)
+        from looplet.assistant_turns import _AdmissionDenied
+
+        try:
+            trace = _build_trace_fn(**_bt_kwargs)
+        except _AdmissionDenied as exc:
+            getattr(state, "metadata", {}).setdefault("post_run_model_denials", []).append(
+                exc.termination_reason
+            )
+            trace = {
+                "task": task,
+                "steps": [step.to_dict() for step in state.steps],
+                "llm_calls": _turns.data["model_calls"] if _turns is not None else llm_calls,
+                "total_time_ms": elapsed,
+                "conversation": _conv,
+            }
     else:
         trace = {
             "task": task,
@@ -4132,6 +4400,17 @@ def _composable_loop_impl(
             "total_time_ms": elapsed,
             "conversation": _conv,
         }
+    if _turns is not None:
+        llm_calls = _turns.data["model_calls"]
+        _record_run_stats(state, llm_calls=llm_calls, duration_ms=(time.time() - t0) * 1000)
+        if _turns.checkpoint is not None:
+            _turns.checkpoint()
+        if stream is not None and _LoopEndEvent is not None and not _has_streaming_hook:
+            stream.emit(
+                _LoopEndEvent(
+                    total_steps=state.step_count, total_llm_calls=llm_calls, reason=stop_reason
+                )
+            )
     return trace
 
 

@@ -41,6 +41,8 @@ Design notes:
 
 from __future__ import annotations
 
+import hashlib
+import inspect
 import json
 import logging
 import re
@@ -57,6 +59,7 @@ from looplet._backend_contract import (
     TerminalLLMError,
     backend_attribute,
     invoke_backend,
+    json_snapshot,
 )
 from looplet.artifact_compat import (
     begin_artifact_write,
@@ -159,15 +162,33 @@ def _truncate(s: str, limit: int) -> str:
     return s[:keep] + f"\n... [truncated {len(s) - keep} chars] ..."
 
 
-def _redact_value(value: Any, redact: Callable[[str], str] | None) -> Any:
+def _redact_value(
+    value: Any, redact: Callable[[str], str] | None, *, preserve_opaque: bool = False
+) -> Any:
     if isinstance(value, str):
         return redact(value) if redact is not None else value
     if isinstance(value, (list, tuple)):
-        return [_redact_value(item, redact) for item in value]
+        return [_redact_value(item, redact, preserve_opaque=preserve_opaque) for item in value]
     if isinstance(value, dict):
-        return {
-            _redact_value(key, redact): _redact_value(item, redact) for key, item in value.items()
+        redacted = {
+            _redact_value(key, redact): _redact_value(item, redact, preserve_opaque=preserve_opaque)
+            for key, item in value.items()
         }
+        kind = value.get("kind", value.get("type"))
+        if (
+            preserve_opaque
+            and redacted != value
+            and (
+                (isinstance(kind, str) and kind in {"thinking", "redacted_thinking", "reasoning"})
+                or "signature" in value
+                or "encrypted_content" in value
+            )
+        ):
+            raise TerminalLLMError(
+                "Upstream redaction cannot alter opaque provider state",
+                termination_reason="unsupported_context",
+            )
+        return redacted
     if redact is not None and value is not None and not isinstance(value, (bool, int, float)):
         return redact(str(value))
     return value
@@ -200,6 +221,9 @@ class _RecordingBase:
         self._redact_upstream = redact_upstream
         self.calls: list[LLMCall] = []
         self._call_scope: ContextVar[str | None] = ContextVar("looplet_call_scope", default=None)
+        self._model_call_context: ContextVar[dict[str, Any] | None] = ContextVar(
+            "looplet_model_call_context", default=None
+        )
         # Set by a TrajectoryRecorder hook so captured calls link back to
         # the step they happened in; optional.
         self.current_step_num: int | None = None
@@ -227,6 +251,35 @@ class _RecordingBase:
             return self._redact(s)
         return s
 
+    def set_model_turn_context(self, context: dict[str, Any]) -> None:
+        self._model_call_context.set(json_snapshot(context))
+        method = getattr(self._backend, "set_model_turn_context", None)
+        if callable(method):
+            method(context)
+
+    def set_conversation_input(self, snapshot: dict[str, Any] | None) -> Any:
+        method = getattr(self._backend, "set_conversation_input", None)
+        if not callable(method):
+            if snapshot is not None:
+                raise TerminalLLMError(
+                    "Backend lacks conversation input support",
+                    termination_reason="unsupported_context",
+                )
+            return None
+        detached = json_snapshot(snapshot)
+        if self._redact_upstream:
+            detached = _redact_value(detached, self._redact, preserve_opaque=True)
+        return method(detached)
+
+    def apply_context_compaction(self, snapshot: dict[str, Any]) -> Any:
+        method = getattr(self._backend, "apply_context_compaction", None)
+        if not callable(method):
+            return False
+        detached = json_snapshot(snapshot)
+        if self._redact_upstream:
+            detached = _redact_value(detached, self._redact, preserve_opaque=True)
+        return method(detached)
+
     def _scrub(self, s: str) -> str:
         out = self._redact(s) if self._redact is not None else s
         return _truncate(out, self._max_chars)
@@ -248,9 +301,9 @@ class _RecordingBase:
         error: str | None = None,
         options: dict[str, Any] | None = None,
     ) -> LLMCall:
-        from looplet._backend_contract import json_snapshot
-
         duration_ms = (time.time() - started_at) * 1000.0
+        execution = self._model_call_context.get()
+        self._model_call_context.set(None)
         if isinstance(response, str):
             stored_response: Any = self._scrub(response)
         elif isinstance(response, list):
@@ -274,7 +327,8 @@ class _RecordingBase:
             capture=_redact_value(
                 json_snapshot(
                     {
-                        "schema": "looplet.model-call.v1",
+                        "schema": "looplet.model-call.v2" if execution else "looplet.model-call.v1",
+                        **({"execution": execution} if execution else {}),
                         "request": {
                             "method": method,
                             "prompt": prompt,
@@ -917,7 +971,12 @@ class TrajectoryRecorder:
                 if value is not None:
                     self.trajectory.metadata[key] = getattr(value, "value", str(value))
             self.trajectory.metadata["termination_reason"] = self.trajectory.termination_reason
-            for key in ("run_envelope", "policy_decisions"):
+            for key in (
+                "run_envelope",
+                "policy_decisions",
+                "looplet_assistant_turns",
+                "replay_policy_override",
+            ):
                 value = getattr(state, key, None)
                 if value is None:
                     state_metadata = getattr(state, "metadata", None)
@@ -1263,12 +1322,22 @@ def _load_trace_calls(trace_dir: Path) -> list[dict[str, Any]]:
             if capture is not None and capture != {}:
                 if (
                     not isinstance(capture, dict)
-                    or capture.get("schema") != "looplet.model-call.v1"
+                    or capture.get("schema")
+                    not in {"looplet.model-call.v1", "looplet.model-call.v2"}
                     or not isinstance(capture.get("request"), dict)
                     or capture["request"].get("method") != method
                     or "response" not in capture
                 ):
                     raise ValueError(f"invalid structured capture in {manifest} line {line_number}")
+                if capture.get("schema") == "looplet.model-call.v2":
+                    from looplet.assistant_turns import TURN_STATE_SCHEMA
+
+                    execution = capture.get("execution")
+                    if (
+                        not isinstance(execution, dict)
+                        or execution.get("required_semantics") != TURN_STATE_SCHEMA
+                    ):
+                        raise ValueError("unsupported required model-call semantics")
                 response = capture["response"]
                 valid_response = (
                     isinstance(response, str)
@@ -1398,6 +1467,8 @@ def replay_loop(
     task: dict[str, Any] | None = None,
     recording_sink: ProvenanceSink | None = None,
     max_steps: int | None = None,
+    assistant_turn_policy: Callable[..., Any] | None = None,
+    policy_override_name: str | None = None,
 ) -> Any:
     """Replay a captured trace through a fresh agent loop.
 
@@ -1457,6 +1528,8 @@ def replay_loop(
             task=task,
             recording_sink=recording_sink,
             max_steps=max_steps,
+            assistant_turn_policy=assistant_turn_policy,
+            policy_override_name=policy_override_name,
         )
     )
 
@@ -1471,6 +1544,8 @@ async def async_replay_loop(
     task: dict[str, Any] | None = None,
     recording_sink: ProvenanceSink | None = None,
     max_steps: int | None = None,
+    assistant_turn_policy: Callable[..., Any] | None = None,
+    policy_override_name: str | None = None,
 ) -> Any:
     """Replay captured model responses through the async agent loop.
 
@@ -1495,6 +1570,8 @@ async def async_replay_loop(
         task=task,
         recording_sink=recording_sink,
         max_steps=max_steps,
+        assistant_turn_policy=assistant_turn_policy,
+        policy_override_name=policy_override_name,
     )
     async with aclosing(async_composable_loop(**arguments)) as iterator:
         async for step in iterator:
@@ -1511,6 +1588,8 @@ def _prepare_replay(
     task: dict[str, Any] | None,
     recording_sink: ProvenanceSink | None = None,
     max_steps: int | None = None,
+    assistant_turn_policy: Callable[..., Any] | None = None,
+    policy_override_name: str | None = None,
 ) -> dict[str, Any]:
     from looplet.loop import LoopConfig  # noqa: PLC0415
     from looplet.types import DefaultState  # noqa: PLC0415
@@ -1521,8 +1600,11 @@ def _prepare_replay(
     if not trace_path.exists():
         raise FileNotFoundError(f"trace directory does not exist: {trace_path}")
     calls = _load_trace_calls(trace_path)
+    requires_policy = any(
+        call.get("execution", {}).get("assistant_policy_required") is True for call in calls
+    )
     trajectory: dict[str, Any] = {}
-    if config is None or task is None:
+    if config is None or task is None or requires_policy:
         descriptor = read_artifact_descriptor(trace_path, expected_kinds=("eval_run", "provenance"))
         trajectory_path = trace_path / "trajectory.json"
         if trajectory_path.is_file() and (
@@ -1561,6 +1643,9 @@ def _prepare_replay(
             "max_turn_continuations",
             "max_tokens",
             "done_tool",
+            "max_model_calls",
+            "max_assistant_turns",
+            "requires_assistant_turn_policy",
         }:
             raise ValueError("Invalid recorded model_turn_config")
         if (
@@ -1568,8 +1653,18 @@ def _prepare_replay(
             and type(turn_config["allow_text_completion"]) is not bool
         ):
             raise ValueError("Recorded allow_text_completion must be boolean")
-        for name, minimum in (("max_tokens", 1), ("max_turn_continuations", 0)):
-            if name == "max_tokens" and turn_config.get(name) is None:
+        if (
+            "requires_assistant_turn_policy" in turn_config
+            and type(turn_config["requires_assistant_turn_policy"]) is not bool
+        ):
+            raise ValueError("Recorded requires_assistant_turn_policy must be boolean")
+        for name, minimum in (
+            ("max_tokens", 1),
+            ("max_turn_continuations", 0),
+            ("max_model_calls", 1),
+            ("max_assistant_turns", 1),
+        ):
+            if name != "max_turn_continuations" and turn_config.get(name) is None:
                 continue
             if name in turn_config and (
                 type(turn_config[name]) is not int or turn_config[name] < minimum
@@ -1594,6 +1689,26 @@ def _prepare_replay(
         task = recorded_task if recorded_task is not None else {}
     if state is None:
         state = DefaultState(max_steps=replay_config.max_steps)
+    binding = assistant_turn_policy or replay_config.assistant_turn_policy
+    if requires_policy or replay_config.requires_assistant_turn_policy:
+        if binding is None:
+            raise ValueError("assistant-turn replay requires an explicit host policy binding")
+        from looplet.assistant_turns import TURN_STATE_KEY
+
+        metadata = trajectory.get("metadata", {})
+        turns = metadata.get(TURN_STATE_KEY, {}) if isinstance(metadata, dict) else {}
+        recorded_decisions = turns.get("decisions") if isinstance(turns, dict) else None
+        if not isinstance(recorded_decisions, list):
+            raise ValueError("assistant-turn replay requires recorded decisions")
+        binding = _checked_replay_policy(binding, recorded_decisions, policy_override_name)
+    elif policy_override_name is not None:
+        if binding is None:
+            raise ValueError("a named replay override requires a host policy binding")
+        binding = _checked_replay_policy(binding, [], policy_override_name)
+    if binding is not None:
+        replay_config = replace(replay_config, assistant_turn_policy=binding)
+    if policy_override_name is not None:
+        state.metadata["replay_policy_override"] = policy_override_name
     effective_hooks = list(hooks or ())
     if recording_sink is not None:
         backend = recording_sink.wrap_llm(backend)
@@ -1608,3 +1723,46 @@ def _prepare_replay(
         "hooks": effective_hooks,
         "config": replay_config,
     }
+
+
+def _checked_replay_policy(
+    binding: Callable[..., Any], decisions: list[Any], override_name: str | None
+) -> Callable[..., Any]:
+    from looplet.assistant_turns import AssistantTurnDecision
+
+    if override_name is not None and (
+        not isinstance(override_name, str) or not override_name.strip() or len(override_name) > 128
+    ):
+        raise ValueError("policy_override_name must contain at most 128 nonempty characters")
+    cursor = 0
+
+    def check(decision: Any) -> AssistantTurnDecision:
+        nonlocal cursor
+        if not isinstance(decision, AssistantTurnDecision):
+            raise TypeError("replay policy must return AssistantTurnDecision")
+        if override_name is None:
+            if cursor >= len(decisions):
+                raise ValueError("recorded assistant decisions exhausted")
+            expected = decisions[cursor]
+            digest = hashlib.sha256(decision.feedback.encode("utf-8")).hexdigest()
+            if not isinstance(expected, dict) or (
+                expected.get("action"),
+                expected.get("feedback_hash"),
+            ) != (decision.action, digest):
+                raise ValueError(
+                    "assistant replay decision differs; supply an explicit named policy override"
+                )
+        cursor += 1
+        return decision
+
+    def policy(context: Any) -> Any:
+        decision = binding(context)
+        if inspect.isawaitable(decision):
+
+            async def resolve() -> AssistantTurnDecision:
+                return check(await decision)
+
+            return resolve()
+        return check(decision)
+
+    return policy

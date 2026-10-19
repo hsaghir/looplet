@@ -215,8 +215,9 @@ class _SyncBridgeLLM:
     and await directly (future feature).
     """
 
-    def __init__(self, backend: Any) -> None:
+    def __init__(self, backend: Any, *, loop: asyncio.AbstractEventLoop | None = None) -> None:
         self._backend = backend
+        self._loop = loop
 
     def generate(
         self,
@@ -233,6 +234,12 @@ class _SyncBridgeLLM:
             temperature=temperature,
         )
         if inspect.isawaitable(result):
+            if self._loop is not None:
+
+                async def resolve() -> str:
+                    return await result
+
+                return asyncio.run_coroutine_threadsafe(resolve(), self._loop).result()
             # We're inside an event loop (async context). Use a thread
             # to run the coroutine without blocking the loop.
             import concurrent.futures  # noqa: PLC0415
@@ -428,6 +435,12 @@ async def async_llm_call(
 
         except Exception as e:
             last_error = e
+            if getattr(e, "request_started", None) is False:
+                if recovery is not None:
+                    recovery.calls -= 1
+                    recovery.model_calls.pop()
+                    return recovery.finish(LLMResult(None, e))
+                return LLMResult(None, e, calls=0)
             if recovery is not None and (
                 isinstance(e, (TerminalLLMError, NativeToolUnsupportedError))
                 or _is_prompt_too_long(e)
@@ -664,7 +677,7 @@ async def _async_composable_loop_impl(
                 )
 
     _step_offset = 0
-    if config.initial_checkpoint is not None:
+    if (saved_checkpoint := config.initial_checkpoint) is not None:
         _validate_checkpoint_identity(
             config.initial_checkpoint,
             config.run_envelope.run_id if config.run_envelope is not None else None,
@@ -675,7 +688,9 @@ async def _async_composable_loop_impl(
         )
         restore_backend_state = getattr(restore_backend, "restore_checkpoint_state", None)
         if callable(restore_backend_state):
-            restore_backend_state((resumed.get("domain_state") or {}).get("llm", {}))
+            from copy import deepcopy
+
+            restore_backend_state(deepcopy((resumed.get("domain_state") or {}).get("llm", {})))
         if config.run_envelope is None and isinstance(resumed.get("run_envelope"), dict):
             config = _dc_replace(
                 config,
@@ -695,6 +710,12 @@ async def _async_composable_loop_impl(
             except AttributeError:
                 pass
 
+        from looplet.assistant_turns import TURN_STATE_KEY, restore_assistant_checkpoint
+
+        config = restore_assistant_checkpoint(state, config, saved_checkpoint)
+        if TURN_STATE_KEY in saved_checkpoint.metadata:
+            _step_offset = saved_checkpoint.step_number - state.step_count
+
     # Stash task + conversation on state (same as sync loop)
     try:
         setattr(state, "task", task)  # noqa: B010
@@ -713,6 +734,7 @@ async def _async_composable_loop_impl(
         state=state,
         session_log=session_log,
         conversation=_conv,
+        typed_turns=config.assistant_turn_policy is not None,
     )
 
     loop_ctx = LoopContext(
@@ -757,6 +779,30 @@ async def _async_composable_loop_impl(
         restore_checkpoint_state(loop_ctx, resumed.get("domain_state", {}))
     if config.initial_checkpoint is not None:
         tools.restore_results(resumed.get("tool_results_store") or {})
+
+    from looplet.assistant_turns import _AssistantTurns
+
+    if config.initial_checkpoint is not None and config.initial_checkpoint.is_terminal:
+        from looplet.assistant_turns import TURN_STATE_KEY
+
+        if TURN_STATE_KEY in config.initial_checkpoint.metadata:
+            saved = config.initial_checkpoint
+            if saved.run_status != "completed":
+                raise ValueError("stopped assistant runs require an explicit new run identity")
+            _set_run_lifecycle(
+                loop_ctx,
+                status=RunStatus.COMPLETED,
+                phase=RunPhase.TERMINAL,
+                termination_reason=saved.termination_reason,
+                terminal_tool=saved.metadata.get("accepted_terminal_tool"),
+            )
+            finalizer.bind([], state, session_log, context, llm)
+            return
+    _turns = _AssistantTurns(state, config) if config.max_model_calls is not None else None
+    if _turns is not None:
+        checkpoint_state = _turns.wrap_checkpoint(checkpoint_state)
+        _turns.checkpoint = lambda: _turns.save(_ckpt_store, loop_ctx, checkpoint_state)
+        finalizer.bind(hooks, state, session_log, context, _turns.wrap(llm))
 
     # ── Pre-loop hooks ──────────────────────────────────────────
     try:
@@ -812,8 +858,10 @@ async def _async_composable_loop_impl(
 
     def _get_llm() -> Any:
         if config.router is not None:
-            return config.router.select(purpose="reasoning")
-        return llm
+            selected = config.router.select(purpose="reasoning")
+        else:
+            selected = llm
+        return _turns.wrap(selected) if _turns is not None else selected
 
     def _save_checkpoint(step_number: int, *, status: str | None = None) -> None:
         if _ckpt_store is None:
@@ -860,7 +908,7 @@ async def _async_composable_loop_impl(
         _set_run_lifecycle(loop_ctx, phase=RunPhase.PROMPTING)
         _hook_requested_stop = False
 
-        if stream is not None and _StepStartEvent is not None:
+        if stream is not None and _StepStartEvent is not None and _turns is None:
             stream.emit(_StepStartEvent(step_num=step_num))
 
         # Clear step_context
@@ -873,6 +921,12 @@ async def _async_composable_loop_impl(
         if config.cancel_token is not None and getattr(config.cancel_token, "is_cancelled", False):
             stop_reason = "cancelled"
             break
+
+        if _turns is not None:
+            if _turns.stop_reason is not None:
+                stop_reason = _turns.stop_reason
+                break
+            _turns.begin_turn()
 
         _want_compact = False
         for hook in hooks:
@@ -998,12 +1052,19 @@ async def _async_composable_loop_impl(
                 stop_reason = decision.stop
                 _hook_requested_stop = True
 
+        if _turns is not None and _hook_requested_stop:
+            break
+
         if _deadline_expired(loop_ctx):
             stop_reason = "deadline_exceeded"
             done = True
             break
 
         effective_llm = _get_llm()
+        if _turns is not None and _turns.enabled and config.render_messages_override is None:
+            effective_llm.prepare_conversation(
+                _conv, _prepared.conversation_prompt, request_prompt=prompt
+            )
         _sync_llm = _SyncBridgeLLM(effective_llm)
 
         # ── Native tool schemas ─────────────────────────────────
@@ -1036,8 +1097,16 @@ async def _async_composable_loop_impl(
         # ── AWAIT: LLM call ─────────────────────────────────────
         _llm_t0 = time.perf_counter()
         _set_run_lifecycle(loop_ctx, phase=RunPhase.LLM)
-        if stream is not None and _LLMCallStartEvent is not None:
-            stream.emit(_LLMCallStartEvent(step_num=step_num))
+        if (
+            stream is not None
+            and _LLMCallStartEvent is not None
+            and (_turns is None or not _has_streaming_hook)
+        ):
+            stream.emit(
+                _LLMCallStartEvent(
+                    step_num=step_num, model_turn_id=_turns.turn_id if _turns is not None else None
+                )
+            )
         if loop_ctx.context_budget.pressure:
             logger.warning(
                 "Async pre-flight block: prompt ~%d tokens exceeds safe limit - %s",
@@ -1073,7 +1142,7 @@ async def _async_composable_loop_impl(
             0 if llm_result.native_attempted else llm_result.continuations
         )
         _record_run_stats(state, llm_calls=llm_calls, config=config)
-        if _deadline_expired(loop_ctx):
+        if _deadline_expired(loop_ctx) and _turns is None:
             stop_reason = "deadline_exceeded"
             done = True
             break
@@ -1081,10 +1150,15 @@ async def _async_composable_loop_impl(
         if isinstance(_state_metadata, dict) and loop_ctx.native_tool_stats.has_activity:
             _state_metadata["native_tool_stats"] = loop_ctx.native_tool_stats.to_dict()
         _llm_dur_ms = (time.perf_counter() - _llm_t0) * 1000.0
-        if stream is not None and _LLMCallEndEvent is not None:
+        if (
+            stream is not None
+            and _LLMCallEndEvent is not None
+            and (_turns is None or not _has_streaming_hook)
+        ):
             stream.emit(
                 _LLMCallEndEvent(
                     step_num=step_num,
+                    model_turn_id=_turns.turn_id if _turns is not None else None,
                     response_length=len(llm_result.text or ""),
                     duration_ms=_llm_dur_ms,
                     usage=llm_result.usage
@@ -1117,6 +1191,14 @@ async def _async_composable_loop_impl(
                 _rendered_memory = prepared.rendered_memory
                 _scoped_plan = prepared.scoped_context_plan
                 loop_ctx.context_budget = prepared.budget
+                if (
+                    _turns is not None
+                    and _turns.enabled
+                    and config.render_messages_override is None
+                ):
+                    effective_llm.prepare_conversation(
+                        _conv, prepared.conversation_prompt, request_prompt=prompt
+                    )
                 return prepared
 
             llm_result, recovery_calls = await _recover_prompt(
@@ -1137,11 +1219,22 @@ async def _async_composable_loop_impl(
             llm_calls += recovery_calls
             _record_run_stats(state, llm_calls=llm_calls)
             raw_response = llm_result.text
+        if _turns is not None:
+            llm_calls = _turns.data["model_calls"]
+            llm_result.model_calls = effective_llm.request_records
+            measured_usage: dict[str, Any] = {}
+            for record in llm_result.model_calls:
+                for name, value in record["usage"].items():
+                    if isinstance(value, (int, float)) and not isinstance(value, bool):
+                        measured_usage[name] = measured_usage.get(name, 0) + value
+            llm_result.usage = measured_usage or None
+            _record_run_stats(state, llm_calls=llm_calls)
         _history.record_llm_turn(
             prompt=prompt,
             response=raw_response,
             metadata={
                 "tool_view": {"names": list(_tool_view.names), "version": _tool_view.version},
+                **({"model_turn_id": _turns.turn_id} if _turns is not None else {}),
                 **(
                     {"scoped_context_plan": _scoped_plan.to_dict()}
                     if _scoped_plan is not None
@@ -1172,6 +1265,26 @@ async def _async_composable_loop_impl(
             if decision.stop is not None:
                 stop_reason = decision.stop
                 _hook_requested_stop = True
+
+        if _turns is not None and (
+            _hook_requested_stop
+            or _deadline_expired(loop_ctx)
+            or (config.cancel_token is not None and config.cancel_token.is_cancelled)
+        ):
+            if _deadline_expired(loop_ctx):
+                stop_reason = "deadline_exceeded"
+            elif config.cancel_token is not None and config.cancel_token.is_cancelled:
+                stop_reason = "cancelled"
+            break
+        if _turns is not None and llm_result.failure_reason in {
+            "model_call_budget",
+            "context_limit",
+            "cancelled",
+            "deadline_exceeded",
+            "unsupported_context",
+        }:
+            stop_reason = llm_result.failure_reason
+            break
 
         if raw_response is None:
             if config.cancel_token is not None and getattr(
@@ -1204,11 +1317,84 @@ async def _async_composable_loop_impl(
         # ── Parse response ──────────────────────────────────────
         tool_calls = native_policy.parse_response(
             raw_response,
-            allow_text_completion=config.allow_text_completion,
+            allow_text_completion=config.allow_text_completion
+            and config.assistant_turn_policy is None,
             done_tool=config.done_tool,
             stop_reason=llm_result.stop_reason,
         )
 
+        assistant_text = native_policy.assistant_text(
+            raw_response, stop_reason=llm_result.stop_reason
+        )
+        if not tool_calls and assistant_text is not None and _turns is not None and _turns.enabled:
+            try:
+                decision = await _maybe_await(_turns.propose(assistant_text, step_num))
+                decision = _turns.record_decision(decision)
+            except Exception as error:
+                _turns.metadata["assistant_policy_error"] = type(error).__name__
+                stop_reason = "assistant_policy_error"
+                llm_failed = True
+                break
+            _assistant_decisions = await emit_event_async(
+                hooks,
+                _LE.ASSISTANT_TURN_DECISION,
+                step_num=step_num,
+                state=state,
+                session_log=session_log,
+                context=context,
+                extra={
+                    "model_turn_id": _turns.turn_id,
+                    "action": decision.action,
+                    "model_calls": _turns.data["model_calls"],
+                },
+            )
+            if stream is not None and not _has_streaming_hook:
+                from looplet.streaming import AssistantTurnDecisionEvent
+
+                stream.emit(
+                    AssistantTurnDecisionEvent(
+                        step_num=step_num,
+                        model_turn_id=_turns.turn_id,
+                        action=decision.action,
+                        model_calls=_turns.data["model_calls"],
+                    )
+                )
+            _history.record_host_feedback(decision.feedback, model_turn_id=_turns.turn_id)
+            if _turns.checkpoint is not None:
+                _turns.checkpoint()
+            consecutive_parse_failures = 0
+            interruption = _turns.interruption_reason(_assistant_decisions)
+            if interruption is not None:
+                stop_reason = interruption
+                break
+            if decision.action == "stop":
+                stop_reason = "assistant_stop"
+                break
+            if decision.action == "continue":
+                reason = await _post_step_stop_reason_async(
+                    hooks,
+                    state=state,
+                    session_log=session_log,
+                    context=context,
+                    step_num=step_num,
+                    new_entities=0,
+                    requested_reason=None,
+                )
+                if reason is not None:
+                    stop_reason = reason
+                    break
+                continue
+            tool_calls = native_policy.parse_response(
+                raw_response,
+                allow_text_completion=True,
+                done_tool=config.done_tool,
+                stop_reason=llm_result.stop_reason,
+            )
+        if _turns is not None and any(
+            tool_call.metadata.get("completion_source") != "assistant_message"
+            for tool_call in tool_calls
+        ):
+            _turns.data["consecutive_assistant_turns"] = 0
         if not tool_calls:
             consecutive_parse_failures += 1
             if config.recovery_registry is not None:
@@ -1315,6 +1501,13 @@ async def _async_composable_loop_impl(
             consecutive_parse_failures = 0
 
         # ── Dispatch tool calls ─────────────────────────────────
+        if (
+            _turns is not None
+            and stream is not None
+            and _StepStartEvent is not None
+            and not _has_streaming_hook
+        ):
+            stream.emit(_StepStartEvent(step_num=step_num))
         available_steps = max(0, int(getattr(state, "budget_remaining", 0)))
         if available_steps <= 0:
             stop_reason = "budget_exhausted"
@@ -1852,6 +2045,10 @@ async def _async_composable_loop_impl(
         except AttributeError:
             pass
 
+    if _turns is not None:
+        llm_calls = _turns.data["model_calls"]
+        if _turns.checkpoint is not None:
+            _turns.checkpoint()
     _record_run_stats(state, llm_calls=llm_calls)
 
     await emit_event_async(
@@ -1865,6 +2062,10 @@ async def _async_composable_loop_impl(
 
     # ── on_loop_end ─────────────────────────────────────────────
     llm_calls += await finalizer.finish_async()
+    if _turns is not None:
+        llm_calls = _turns.data["model_calls"]
+        if _turns.checkpoint is not None:
+            _turns.checkpoint()
     _record_run_stats(state, llm_calls=llm_calls)
 
     _record_run_stats(

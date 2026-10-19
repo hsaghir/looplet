@@ -16,6 +16,7 @@ __version__ = "0.4.1"
 # ruff: noqa: F401 - __init__.py intentionally re-exports for `from looplet import X`
 
 from looplet.approval import ApprovalHook
+from looplet.assistant_turns import AssistantTurnContext, AssistantTurnDecision
 from looplet.async_loop import async_composable_loop, async_llm_call
 from looplet.backends import AnthropicBackend, OpenAIBackend
 from looplet.blueprints import (
@@ -240,6 +241,8 @@ from looplet.types import (
 )
 
 __all__ = [
+    "AssistantTurnContext",
+    "AssistantTurnDecision",
     # ── ESSENTIALS (what you need for your first agent) ──────────
     "__version__",
     "composable_loop",

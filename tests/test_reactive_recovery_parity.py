@@ -55,6 +55,119 @@ def _registry() -> BaseToolRegistry:
     return reg
 
 
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("mode", ["messages", "stateful"])
+async def test_reactive_compaction_refreshes_typed_input(asynchronous, mode):
+    import copy
+
+    from looplet import AssistantTurnDecision, RunResult, async_composable_loop
+    from looplet.compact import CompactOutcome
+    from looplet.conversation import Message, MessageRole
+
+    requests = []
+    resets = []
+
+    class Backend:
+        conversation_mode = mode
+
+        def set_conversation_input(self, snapshot):
+            self.snapshot = snapshot
+
+        def apply_context_compaction(self, snapshot):
+            resets.append(copy.deepcopy(snapshot))
+            return True
+
+        def generate(self, prompt, **kwargs):
+            requests.append(copy.deepcopy(self.snapshot))
+            if len(requests) == 1:
+                return "Retained hypothesis"
+            if len(requests) < 4:
+                raise _PromptTooLongError()
+            return '{"tool":"done","args":{"summary":"accepted"}}'
+
+    class AsyncBackend(Backend):
+        async def generate(self, prompt, **kwargs):
+            return super().generate(prompt, **kwargs)
+
+    class Compact:
+        def compact(self, **kwargs):
+            kwargs["conversation"].messages[:] = [
+                Message(role=MessageRole.USER, content="Reduced evidence")
+            ]
+            return CompactOutcome(reason=kwargs["reason"])
+
+    state = DefaultState(max_steps=1)
+    arguments = dict(
+        llm=AsyncBackend() if asynchronous else Backend(),
+        tools=_registry(),
+        state=state,
+        config=LoopConfig(
+            max_steps=1,
+            max_model_calls=4,
+            use_native_tools=False,
+            compact_service=Compact(),
+            assistant_turn_policy=lambda context: AssistantTurnDecision("continue"),
+        ),
+    )
+    steps = (
+        [step async for step in async_composable_loop(**arguments)]
+        if asynchronous
+        else list(composable_loop(**arguments))
+    )
+    assert [step.tool_call.tool for step in steps] == ["done"]
+    assert RunResult.from_state(state).completed
+    assert len(requests) == 4
+    assert requests[-1] is not None
+    assert "Reduced evidence" in str(requests[-1]["conversation"])
+    assert "Retained hypothesis" not in str(requests[-1]["conversation"])
+    assert len(resets) == (1 if mode == "stateful" else 0)
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("phase", ["pre_compact", "post_compact", "cleanup"])
+async def test_compaction_detects_hook_and_cleanup_projection_changes(asynchronous, phase):
+    from looplet.assistant_turns import TURN_STATE_KEY, _AssistantTurns
+    from looplet.compact import CompactOutcome, run_compact, run_compact_async
+    from looplet.conversation import Conversation, Message, MessageRole
+    from looplet.session import SessionLog
+
+    state = DefaultState()
+    turns = _AssistantTurns(state, LoopConfig(max_model_calls=2))
+    conversation = Conversation()
+    conversation.append(Message(role=MessageRole.USER, content="Original evidence"))
+
+    def change_projection():
+        conversation.messages[0].content = "Reduced evidence"
+
+    class Hook:
+        def on_event(self, payload):
+            if payload.event.value == phase:
+                change_projection()
+
+    class Compact:
+        def compact(self, **kwargs):
+            return CompactOutcome(
+                reason=kwargs["reason"],
+                cleanup=change_projection if phase == "cleanup" else None,
+            )
+
+    arguments = dict(
+        service=Compact(),
+        hooks=[Hook()],
+        state=state,
+        session_log=SessionLog(),
+        llm=turns.wrap(_FlakyLLM([])),
+        conversation=conversation,
+        step_num=1,
+        reason="proactive",
+    )
+    if asynchronous:
+        await run_compact_async(**arguments)
+    else:
+        run_compact(**arguments)
+    assert state.metadata[TURN_STATE_KEY]["context_reset_required"]
+
+
 # ── Sync: reset-on-success ────────────────────────────────────────
 
 

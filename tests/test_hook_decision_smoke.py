@@ -33,6 +33,32 @@ from looplet.tools import ToolSpec
 from looplet.types import ToolResult
 
 
+def test_event_payload_preserves_legacy_positional_arguments():
+    from looplet.events import EventPayload
+
+    state = object()
+    session_log = object()
+    context = object()
+    payload = EventPayload(
+        LifecycleEvent.PRE_LLM_CALL,
+        3,
+        state,
+        session_log,
+        context,
+        "legacy prompt",
+        "legacy response",
+        model_turn_id="run:turn-1",
+        model_turn_number=1,
+    )
+    assert payload.state is state
+    assert payload.session_log is session_log
+    assert payload.context is context
+    assert payload.prompt == "legacy prompt"
+    assert payload.raw_response == "legacy response"
+    assert payload.model_turn_id == "run:turn-1"
+    assert payload.model_turn_number == 1
+
+
 @pytest.mark.parametrize("is_async", [False, True])
 async def test_event_dispatch_preserves_deduplication_errors_and_live_order(is_async: bool, caplog):
     from looplet.loop import emit_event, emit_event_async
@@ -566,6 +592,7 @@ class TestLifecycleEventEnum:
             "session_start",
             "pre_llm_call",
             "post_llm_response",
+            "assistant_turn_decision",
             "pre_tool_use",
             "tool_progress",
             "post_tool_use",

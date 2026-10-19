@@ -27,6 +27,163 @@ from looplet.types import Step, ToolCall, ToolResult
 pytestmark = pytest.mark.smoke
 
 
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize(
+    "mode", ["stateless", "checkpoint", "unsafe", "awaitable_checkpoint", "awaitable_restore"]
+)
+@pytest.mark.parametrize("limit", [0, 1])
+async def test_native_turn_recovery_is_bounded_and_restores_live_checkpoints(
+    asynchronous, mode, limit
+):
+    from looplet.async_loop import async_llm_call
+    from looplet.provenance import AsyncRecordingLLMBackend, RecordingLLMBackend
+
+    class Backend:
+        def __init__(self):
+            self.calls = 0
+            self.history = []
+            self.limits = []
+
+        def generate(self, prompt, **kwargs):
+            raise AssertionError("No text fallback")
+
+        def generate_with_tools(self, prompt, **kwargs):
+            self.calls += 1
+            self.history.append(self.calls)
+            self.limits.append(kwargs["max_tokens"])
+            self.last_stop_reason = "max_tokens" if self.calls == 1 else "tool_use"
+            self.last_usage = {"input_tokens": 10, "output_tokens": 5}
+            return [{"type": "tool_use", "id": "finish", "name": "done", "input": {}}]
+
+    class CheckpointBackend(Backend):
+        def checkpoint_state(self):
+            return {"history": self.history}
+
+        def restore_checkpoint_state(self, state):
+            self.history = state["history"]
+
+    class UnsafeBackend(Backend):
+        def record_tool_result(self, *args, **kwargs):
+            raise AssertionError("No tool has been dispatched")
+
+    class AwaitableCheckpointBackend(CheckpointBackend):
+        def checkpoint_state(self):
+            async def snapshot():
+                return {"history": self.history}
+
+            return snapshot()
+
+    class AwaitableRestoreBackend(CheckpointBackend):
+        def restore_checkpoint_state(self, state):
+            async def restore():
+                self.history = state["history"]
+
+            return restore()
+
+    backend = {
+        "stateless": Backend,
+        "checkpoint": CheckpointBackend,
+        "unsafe": UnsafeBackend,
+        "awaitable_checkpoint": AwaitableCheckpointBackend,
+        "awaitable_restore": AwaitableRestoreBackend,
+    }[mode]()
+    if asynchronous:
+        synchronous = backend.generate_with_tools
+
+        async def generate_with_tools(prompt, **kwargs):
+            return synchronous(prompt, **kwargs)
+
+        backend.generate_with_tools = generate_with_tools
+    recorder = (AsyncRecordingLLMBackend if asynchronous else RecordingLLMBackend)(backend)
+    arguments = dict(tools=[], max_tokens=40, max_continuations=limit)
+    result = (
+        await async_llm_call(recorder, "original", **arguments)
+        if asynchronous
+        else llm_call_with_retry(recorder, "original", **arguments)
+    )
+    recovered = limit > 0 and mode in {"stateless", "checkpoint"}
+    assert result.ok is recovered
+    assert backend.calls == (2 if recovered else 1)
+    assert backend.limits == ([40, 80] if recovered else [40])
+    assert result.continuations == (1 if recovered else 0)
+    assert result.calls == backend.calls
+    assert result.usage == {"input_tokens": 10 * backend.calls, "output_tokens": 5 * backend.calls}
+    assert [call.capture["stop_reason"] for call in recorder.calls] == (
+        ["max_tokens", "tool_use"] if recovered else ["max_tokens"]
+    )
+    if recovered and mode == "checkpoint":
+        assert backend.history == [2]
+    if not recovered:
+        assert result.failure_reason == "output_truncated"
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize(
+    "stop, expected", [("refusal", "model_refusal"), ("pause_turn", "model_incomplete")]
+)
+async def test_native_response_failure_is_not_completion(asynchronous, stop, expected):
+    from looplet.async_loop import async_llm_call
+
+    class Backend:
+        last_stop_reason = stop
+
+        def generate_with_tools(self, prompt, **kwargs):
+            return [{"type": "text", "text": "Not a successful completion"}]
+
+    backend = Backend()
+    if asynchronous:
+        original = backend.generate_with_tools
+
+        async def generate_with_tools(prompt, **kwargs):
+            return original(prompt, **kwargs)
+
+        backend.generate_with_tools = generate_with_tools
+    result = (
+        await async_llm_call(backend, "request", tools=[])
+        if asynchronous
+        else llm_call_with_retry(backend, "request", tools=[])
+    )
+    assert not result.ok
+    assert result.failure_reason == expected
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("mode", ["cancel", "deadline"])
+async def test_native_turn_recovery_checks_cancellation_and_deadline(asynchronous, mode):
+    from looplet.async_loop import async_llm_call
+    from looplet.types import CancelToken
+
+    token = CancelToken()
+
+    class Backend:
+        last_stop_reason = "max_tokens"
+        calls = 0
+
+        def generate_with_tools(self, prompt, **kwargs):
+            self.calls += 1
+            if mode == "cancel":
+                token.cancel()
+            return [{"type": "text", "text": "Partial answer"}]
+
+    backend = Backend()
+    arguments = dict(
+        tools=[],
+        max_tokens=40,
+        max_continuations=3,
+        cancel_token=token,
+        should_continue=lambda: mode != "deadline",
+    )
+    result = (
+        await async_llm_call(backend, "request", **arguments)
+        if asynchronous
+        else llm_call_with_retry(backend, "request", **arguments)
+    )
+    assert not result.ok
+    assert backend.calls == result.calls == 1
+    assert result.continuations == 0
+    assert result.failure_reason == ("cancelled" if mode == "cancel" else "output_truncated")
+
+
 # ── Helpers ──────────────────────────────────────────────────────
 
 

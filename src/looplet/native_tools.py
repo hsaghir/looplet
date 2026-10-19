@@ -8,10 +8,12 @@ These helpers probe the actual behavior so agents can choose native
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any
 
-from looplet.parse import parse_multi_tool_calls, parse_native_tool_use
+from looplet.parse import parse_multi_tool_calls, parse_native_tool_use, to_text
+from looplet.types import ToolCall
 
 
 class NativeToolUnsupportedError(RuntimeError):
@@ -67,11 +69,44 @@ class NativeToolPolicy:
         """Use the regular text protocol for the rest of this run."""
         self.demoted = True
 
-    def parse_response(self, response: Any) -> list[Any]:
+    def parse_response(
+        self,
+        response: Any,
+        *,
+        allow_text_completion: bool = False,
+        done_tool: str = "done",
+        stop_reason: str | None = None,
+    ) -> list[Any]:
         """Parse a response according to the protocol used by this run."""
         if self.enabled and not self.demoted:
-            return parse_native_tool_use(response) if isinstance(response, list) else []
-        return parse_multi_tool_calls(response)
+            calls = parse_native_tool_use(response) if isinstance(response, list) else []
+        else:
+            calls = parse_multi_tool_calls(response)
+        if calls or not allow_text_completion or stop_reason not in {None, "stop", "end_turn"}:
+            return calls
+        if isinstance(response, list) and any(
+            isinstance(block, dict) and block.get("type") in {"tool_use", "refusal"}
+            for block in response
+        ):
+            return []
+        text = to_text(response)
+        if not text or not text.strip():
+            return []
+        try:
+            json.loads(text)
+        except json.JSONDecodeError:
+            if text.lstrip().startswith(("{", "[", "```")):
+                return []
+        else:
+            return []
+        return [
+            ToolCall(
+                tool=done_tool,
+                args={"answer": text},
+                call_id="",
+                metadata={"completion_source": "assistant_message"},
+            )
+        ]
 
 
 def probe_native_tool_support(

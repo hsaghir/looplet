@@ -152,6 +152,90 @@ async def test_openai_multipart_content_keeps_visible_text(async_mode, native_to
         assert result == "Hello world"
 
 
+@pytest.mark.parametrize("async_mode", [False, True])
+async def test_openai_native_keeps_reasoning_and_refusal(async_mode):
+    from types import SimpleNamespace
+
+    response = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(
+                    content="Decision summary",
+                    reasoning_content="Synthetic provider reasoning",
+                    refusal="Provider refusal detail",
+                    tool_calls=[],
+                )
+            )
+        ]
+    )
+
+    def create(**kwargs):
+        return response
+
+    async def create_async(**kwargs):
+        return response
+
+    client = SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(create=create_async if async_mode else create)
+        )
+    )
+    backend = (AsyncOpenAIBackend if async_mode else OpenAIBackend)(client, model="test")
+    result = (
+        await backend.generate_with_tools("hello", tools=[])
+        if async_mode
+        else backend.generate_with_tools("hello", tools=[])
+    )
+    assert result == [
+        {"type": "reasoning", "text": "Synthetic provider reasoning"},
+        {"type": "refusal", "refusal": "Provider refusal detail"},
+        {"type": "text", "text": "Decision summary"},
+    ]
+
+
+@pytest.mark.parametrize("async_mode", [False, True])
+async def test_anthropic_native_keeps_provider_blocks_and_snapshots(async_mode):
+    import copy
+    from types import SimpleNamespace
+
+    expected = [
+        {"type": "thinking", "thinking": "Synthetic reasoning", "signature": "signed-state"},
+        {"type": "redacted_thinking", "data": "opaque-state"},
+        {"type": "text", "text": "Decision summary"},
+        {"type": "tool_use", "id": "finish", "name": "done", "input": {"summary": "ok"}},
+        {"type": "provider_extension", "payload": {"value": 0}},
+    ]
+
+    class ProviderBlock:
+        def __init__(self, value):
+            self.value = copy.deepcopy(value)
+
+        def model_dump(self, *, mode):
+            assert mode == "json"
+            return self.value
+
+    response = SimpleNamespace(content=[ProviderBlock(value) for value in expected])
+
+    def create(**kwargs):
+        return response
+
+    async def create_async(**kwargs):
+        return response
+
+    client = SimpleNamespace(
+        messages=SimpleNamespace(create=create_async if async_mode else create)
+    )
+    backend = (AsyncAnthropicBackend if async_mode else AnthropicBackend)(client, model="test")
+    result = (
+        await backend.generate_with_tools("hello", tools=[])
+        if async_mode
+        else backend.generate_with_tools("hello", tools=[])
+    )
+    assert result == expected
+    response.content[0].value["thinking"] = "Mutated after return"
+    assert result == expected
+
+
 class TestOpenAIBackend:
     def test_generate(self):
         client = _MockOpenAIClient()

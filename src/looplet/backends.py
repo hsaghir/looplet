@@ -50,10 +50,13 @@ Typical usage::
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import os
 from typing import Any, AsyncGenerator, Generator
+
+from looplet._backend_contract import json_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +126,12 @@ def _openai_message_to_blocks(message: Any) -> list[dict[str, Any]]:
     keeps the raw string under ``_raw_arguments`` for debugging.
     """
     blocks: list[dict[str, Any]] = []
+    reasoning = getattr(message, "reasoning_content", None)
+    if isinstance(reasoning, str) and reasoning:
+        blocks.append({"type": "reasoning", "text": reasoning})
+    refusal = getattr(message, "refusal", None)
+    if isinstance(refusal, str) and refusal:
+        blocks.append({"type": "refusal", "refusal": refusal})
     text = _openai_message_text(message)
     if text:
         blocks.append({"type": "text", "text": text})
@@ -153,6 +162,15 @@ def _anthropic_response_to_blocks(response: Any) -> list[dict[str, Any]]:
     """Normalise an Anthropic messages.create response to plain-dict blocks."""
     blocks: list[dict[str, Any]] = []
     for block in getattr(response, "content", []) or []:
+        if isinstance(block, dict):
+            blocks.append(copy.deepcopy(block))
+            continue
+        dump = getattr(block, "model_dump", None)
+        if callable(dump):
+            serialized = dump(mode="json")
+            if isinstance(serialized, dict):
+                blocks.append(copy.deepcopy(serialized))
+                continue
         btype = getattr(block, "type", None)
         if btype == "text":
             blocks.append({"type": "text", "text": getattr(block, "text", "")})
@@ -165,7 +183,48 @@ def _anthropic_response_to_blocks(response: Any) -> list[dict[str, Any]]:
                     "input": dict(getattr(block, "input", {}) or {}),
                 }
             )
+        elif btype == "thinking":
+            blocks.append(
+                {
+                    "type": "thinking",
+                    "thinking": getattr(block, "thinking", ""),
+                    "signature": getattr(block, "signature", ""),
+                }
+            )
+        elif btype == "redacted_thinking":
+            blocks.append({"type": "redacted_thinking", "data": getattr(block, "data", "")})
     return blocks
+
+
+def _begin_request(backend: Any, request: dict[str, Any]) -> None:
+    backend.last_request = json_snapshot(request)
+    backend.last_response = None
+    backend.last_stop_reason = None
+    backend.last_usage = {}
+
+
+def _capture_response(backend: Any, response: Any) -> None:
+    backend.last_response = json_snapshot(response)
+    choices = getattr(response, "choices", None) or []
+    reason = getattr(response, "stop_reason", None)
+    if reason is None and choices:
+        reason = getattr(choices[0], "finish_reason", None)
+    backend.last_stop_reason = (
+        {
+            "length": "max_tokens",
+            "end_turn": "stop",
+            "tool_calls": "tool_use",
+            "content_filter": "refusal",
+        }.get(reason, reason)
+        if isinstance(reason, str)
+        else None
+    )
+    try:
+        from looplet.cost import extract_usage
+
+        backend.last_usage = extract_usage(response)
+    except Exception:
+        backend.last_usage = {}
 
 
 # ── Prompt-cache translation ─────────────────────────────────────
@@ -392,6 +451,7 @@ class OpenAIBackend:
         if self._use_prompt_cache_key and cache_breakpoints:
             kwargs["extra_body"] = {"prompt_cache_key": _openai_prompt_cache_key(cache_breakpoints)}
 
+        _begin_request(self, kwargs)
         response = self._client.chat.completions.create(**kwargs)
         self._record_usage(response)
         return _openai_message_text(response.choices[0].message)
@@ -429,6 +489,7 @@ class OpenAIBackend:
         if self._use_prompt_cache_key and cache_breakpoints:
             kwargs["extra_body"] = {"prompt_cache_key": _openai_prompt_cache_key(cache_breakpoints)}
 
+        _begin_request(self, kwargs)
         response = self._client.chat.completions.create(**kwargs)
         self._record_usage(response)
         return _openai_message_to_blocks(response.choices[0].message)
@@ -439,12 +500,7 @@ class OpenAIBackend:
         Imports ``looplet.cost.extract_usage`` lazily to avoid a hard
         dependency from backends ↔ cost.
         """
-        try:
-            from looplet.cost import extract_usage  # noqa: PLC0415
-
-            self.last_usage = extract_usage(response)
-        except Exception:  # noqa: BLE001 - usage tracking is best-effort
-            self.last_usage = {}
+        _capture_response(self, response)
 
 
 class OpenAIStreamingBackend(OpenAIBackend):
@@ -547,12 +603,7 @@ class AnthropicBackend:
         self.last_usage: dict[str, int] = {}
 
     def _record_usage(self, response: Any) -> None:
-        try:
-            from looplet.cost import extract_usage  # noqa: PLC0415
-
-            self.last_usage = extract_usage(response)
-        except Exception:  # noqa: BLE001
-            self.last_usage = {}
+        _capture_response(self, response)
 
     @classmethod
     def from_env(
@@ -603,6 +654,7 @@ class AnthropicBackend:
             kwargs, prompt=prompt, tools=None, cache_breakpoints=cache_breakpoints
         )
 
+        _begin_request(self, kwargs)
         response = self._client.messages.create(**kwargs)
         self._record_usage(response)
         # Anthropic returns a list of content blocks
@@ -636,6 +688,7 @@ class AnthropicBackend:
             kwargs, prompt=prompt, tools=tools, cache_breakpoints=cache_breakpoints
         )
 
+        _begin_request(self, kwargs)
         response = self._client.messages.create(**kwargs)
         self._record_usage(response)
         return _anthropic_response_to_blocks(response)
@@ -717,12 +770,7 @@ class AsyncOpenAIBackend:
         self.last_usage: dict[str, int] = {}
 
     def _record_usage(self, response: Any) -> None:
-        try:
-            from looplet.cost import extract_usage  # noqa: PLC0415
-
-            self.last_usage = extract_usage(response)
-        except Exception:  # noqa: BLE001
-            self.last_usage = {}
+        _capture_response(self, response)
 
     @classmethod
     def from_env(
@@ -780,6 +828,7 @@ class AsyncOpenAIBackend:
         if self._use_prompt_cache_key and cache_breakpoints:
             kwargs["extra_body"] = {"prompt_cache_key": _openai_prompt_cache_key(cache_breakpoints)}
 
+        _begin_request(self, kwargs)
         response = await self._client.chat.completions.create(**kwargs)
         self._record_usage(response)
         return _openai_message_text(response.choices[0].message)
@@ -813,6 +862,7 @@ class AsyncOpenAIBackend:
         if self._use_prompt_cache_key and cache_breakpoints:
             kwargs["extra_body"] = {"prompt_cache_key": _openai_prompt_cache_key(cache_breakpoints)}
 
+        _begin_request(self, kwargs)
         response = await self._client.chat.completions.create(**kwargs)
         self._record_usage(response)
         return _openai_message_to_blocks(response.choices[0].message)
@@ -891,7 +941,9 @@ class AsyncAnthropicBackend:
             kwargs, prompt=prompt, tools=None, cache_breakpoints=cache_breakpoints
         )
 
+        _begin_request(self, kwargs)
         response = await self._client.messages.create(**kwargs)
+        _capture_response(self, response)
         parts = []
         for block in response.content:
             if hasattr(block, "text"):
@@ -922,7 +974,9 @@ class AsyncAnthropicBackend:
             kwargs, prompt=prompt, tools=tools, cache_breakpoints=cache_breakpoints
         )
 
+        _begin_request(self, kwargs)
         response = await self._client.messages.create(**kwargs)
+        _capture_response(self, response)
         return _anthropic_response_to_blocks(response)
 
     async def stream(

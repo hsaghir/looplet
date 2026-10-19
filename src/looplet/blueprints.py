@@ -573,6 +573,7 @@ def _config_blueprint(preset: AgentPreset) -> dict[str, Any]:
         "temperature",
         "recovery_temperature",
         "done_tool",
+        "allow_text_completion",
         "max_turn_continuations",
         "use_native_tools",
         "concurrent_dispatch",

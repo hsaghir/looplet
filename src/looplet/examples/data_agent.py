@@ -164,28 +164,27 @@ def _tool_call(tool_name: str, args: dict, reasoning: str) -> str:
     return json.dumps({"tool": tool_name, "args": args, "reasoning": reasoning})
 
 
-def scripted_llm(csv_path: str) -> MockLLMBackend:
-    return MockLLMBackend(
-        responses=[
-            _tool_call("describe_csv", {"path": csv_path}, "inspect columns and row count"),
-            _tool_call("head_csv", {"path": csv_path, "n": 3}, "sample the data"),
-            _tool_call(
-                "groupby_count",
-                {"path": csv_path, "column": "status"},
-                "find status distribution",
-            ),
-            _tool_call(
-                "delete_rows",
-                {"path": csv_path, "where_status": "cancelled"},
-                "clean cancelled orders after approval",
-            ),
-            _tool_call(
-                "done",
-                {"summary": "inspected orders.csv and removed cancellations"},
-                "finish after cleanup",
-            ),
-        ]
-    )
+def scripted_llm(csv_path: str, *, completed_steps: int = 0) -> MockLLMBackend:
+    responses = [
+        _tool_call("describe_csv", {"path": csv_path}, "inspect columns and row count"),
+        _tool_call("head_csv", {"path": csv_path, "n": 3}, "sample the data"),
+        _tool_call(
+            "groupby_count",
+            {"path": csv_path, "column": "status"},
+            "find status distribution",
+        ),
+        _tool_call(
+            "delete_rows",
+            {"path": csv_path, "where_status": "cancelled"},
+            "clean cancelled orders after approval",
+        ),
+        _tool_call(
+            "done",
+            {"summary": "inspected orders.csv and removed cancellations"},
+            "finish after cleanup",
+        ),
+    ]
+    return MockLLMBackend(responses=responses[completed_steps:] or responses[-1:], cycle=False)
 
 
 # ── 3. Sync approval handler - blocks on stdin ──────────────────
@@ -216,8 +215,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="use scripted MockLLMBackend (no API key needed; CI / offline)",
     )
-    ap.add_argument("--resume", action="store_true", help="resume from latest checkpoint")
-    ap.add_argument("--clean", action="store_true", help="wipe checkpoints first")
+    checkpoint_action = ap.add_mutually_exclusive_group()
+    checkpoint_action.add_argument(
+        "--resume", action="store_true", help="resume from latest checkpoint"
+    )
+    checkpoint_action.add_argument("--clean", action="store_true", help="wipe checkpoints first")
     ap.add_argument(
         "--auto-approve",
         action="store_true",
@@ -229,7 +231,27 @@ def main(argv: list[str] | None = None) -> int:
         shutil.rmtree(CHECKPOINT_DIR)
         print(f"# wiped {CHECKPOINT_DIR}")
 
-    csv_path = _make_sample_csv()
+    from looplet.checkpoint import FileCheckpointStore
+
+    CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
+    store = FileCheckpointStore(str(CHECKPOINT_DIR))
+    latest = store.load_latest_for_resume()
+    if args.resume:
+        if latest is None:
+            terminal = store.load_latest()
+            if terminal is not None and terminal.is_terminal:
+                print(f"# resuming from step {terminal.step_number}")
+                print(f"# run already ended: {terminal.termination_reason}")
+                return 0 if terminal.run_status == "completed" else 1
+            ap.error("--resume requires an existing checkpoint; omit it for a fresh run")
+    if latest is not None:
+        print(f"# resuming from step {latest.step_number}")
+        saved_path = latest.domain_state.get("csv_path")
+        if not isinstance(saved_path, str) or not Path(saved_path).is_file():
+            ap.error("checkpoint CSV is missing; preserve the checkpoint or use --clean to restart")
+        csv_path = Path(saved_path)
+    else:
+        csv_path = _make_sample_csv()
     print(f"# sample csv: {csv_path}")
 
     tools = build_tools()
@@ -247,24 +269,13 @@ def main(argv: list[str] | None = None) -> int:
         compact_buffer=500,
     )
 
-    # ── Checkpoint: setting LoopConfig.checkpoint_dir auto-saves after
-    # every step and auto-resumes on the next run if checkpoints exist.
-    CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
-    if args.resume:
-        from looplet.checkpoint import FileCheckpointStore
-
-        store = FileCheckpointStore(str(CHECKPOINT_DIR))
-        latest = store.load_latest()
-        if latest is not None:
-            print(f"# resuming from step {latest.step_number}")
-
     # ── Approval: sync stdin handler (or auto-yes for CI).
     approval = (lambda _prompt, _opts: "yes") if args.auto_approve else cli_approval_handler
 
     # ── LLM.
     use_scripted = args.scripted or args.mock
     if use_scripted:
-        llm = scripted_llm(str(csv_path))
+        llm = scripted_llm(str(csv_path), completed_steps=latest.step_number if latest else 0)
         model_label = "scripted MockLLMBackend"
     else:
         try:
@@ -289,6 +300,8 @@ def main(argv: list[str] | None = None) -> int:
         ),
         compact_service=compact_service,
         checkpoint_dir=str(CHECKPOINT_DIR),
+        initial_checkpoint=latest,
+        checkpoint_state=lambda _context: {"csv_path": str(csv_path)},
         approval_handler=approval,
         context_window=4_000,
         use_native_tools=not use_scripted,

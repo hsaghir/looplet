@@ -111,8 +111,8 @@ After `flush()`, the directory contains:
 ├── steps/
 │   ├── step_01.json        # tool_call, tool_result, context_before, linked LLM indices
 │   └── step_02.json
-├── call_00_prompt.txt      # exact prompt sent (system + user + tools)
-├── call_00_response.txt    # raw response
+├── call_00_prompt.txt      # bounded human-readable request projection
+├── call_00_response.txt    # bounded human-readable response projection
 ├── call_01_prompt.txt
 ├── call_01_response.txt
 └── manifest.jsonl          # one LLMCall summary per line
@@ -133,6 +133,56 @@ Do not use one explicit trace directory for concurrent writers.
 A trace alone does not preserve grader expectations or collected artifacts.
 Use `save_eval_run()` for a grading record that you can reload and reassess.
 See the [Quickstart](quickstart.md#4-capture-the-same-agent) for the complete handoff.
+
+### Structured model-call capture
+
+**Unreleased:** New captures include a `capture` object on each model-call record in
+`manifest.jsonl` and `trajectory.json`. Its schema is `looplet.model-call.v1`:
+
+```json
+{
+  "schema": "looplet.model-call.v1",
+  "request": {
+    "method": "generate_with_tools",
+    "prompt": "Finish the task.",
+    "system_prompt": "Use the supplied tools.",
+    "temperature": 0.2,
+    "max_tokens": 4096,
+    "tools": [],
+    "options": {}
+  },
+  "response": [{"type": "text", "text": "Observed assistant output"}],
+  "provider_request": null,
+  "provider_response": null,
+  "stop_reason": "stop",
+  "usage": {},
+  "error": null
+}
+```
+
+The request, normalized response, and available provider metadata are independent JSON snapshots.
+Built-in non-streaming adapters expose their full request and response objects. Custom backends
+can expose `last_request`, `last_response`, `last_stop_reason`, and `last_usage`; absent metadata
+remains unavailable. Failed calls retain their error without borrowing a previous response or usage.
+Each recording-wrapper invocation has its own record, including native recovery attempts.
+SDK-internal retries and streaming chunks are not captured by this interface.
+
+Returned reasoning, thinking, signature, redacted-thinking, and provider extension fields are retained
+when supplied by the adapter. These are observed provider data, not proof of private or causal reasoning.
+Unreturned reasoning cannot be reconstructed. Opaque signed fields are evidence, not a guarantee
+that the saved record can resume a live provider session.
+
+`max_chars_per_call` bounds the readable projections, not the canonical `capture` object.
+Configured redaction applies recursively before retaining the structured values.
+Full snapshots can be large and contain sensitive data, including provider fields absent from the
+readable projection. Review the entire structured capture before sharing it; a bounded text file
+is not a privacy or storage limit.
+
+Step records link to every model call that contributed to their turn, including discarded truncated
+responses. A native batch's tool steps can share one model-call index. Tool arguments and results
+are snapshotted when observed, and assistant-message completion retains its origin marker.
+Trajectory metadata includes native per-call accounting and the scalar completion/recovery settings.
+The cost hook counts each native request and its reported usage; missing usage is not invented.
 
 ### Save a fresh replay record
 
@@ -510,8 +560,10 @@ for step in replay_loop("traces/run_1/", tools=my_tools):
     print(step.pretty())
 ```
 
-`replay_loop` reads `manifest.jsonl` + `call_NN_response.txt` from the
-trace directory and feeds them back into `composable_loop` in order.
+`replay_loop` reads `manifest.jsonl` from the trace directory and feeds captured responses
+back into `composable_loop` in order. New captures use the validated structured snapshot;
+legacy captures fall back to `call_NN_response.txt`. Required readable artifact files are
+still validated, even when replay does not parse their contents.
 The LLM is **not** called again. Your tools, hooks, permission
 engine, and state are fresh. This is useful when a tool, hook, permission,
 or loop-runtime change is the variable under review. It is not an A/B test of
@@ -522,8 +574,11 @@ Published `0.4.0` uses captured model-call count as the budget and defaults to a
 Set `config` and `task` explicitly when using that release.
 
 Without `config`, replay uses the saved tool-step count and the first captured call's protocol.
-Call-only captures count native tool calls or text responses instead.
-An explicit `LoopConfig` controls the budget and protocol.
+New trajectories also restore the recorded `allow_text_completion`, `done_tool`, `max_tokens`,
+and `max_turn_continuations` settings. Call-only captures count native tool calls or text
+responses instead. An explicit `LoopConfig` overrides these defaults.
+Your host still supplies trusted tools, hooks, output schemas, and application state.
+Saved scalar settings do not reconstruct executable policy or grader expectations.
 
 Without `task`, replay reuses the saved trajectory task, or `{}` when no task was saved.
 Pass `task={}` to request an empty task, or another dictionary to replace the saved task.
@@ -679,12 +734,11 @@ except Exception:
 
 ## Performance
 
-- Capture overhead is one dict append + one `str()` per LLM call; per
-  step: one `StepRecord` append.
-- Memory is bounded by `max_chars_per_call` (default 200,000 chars) on
-  each `prompt`/`response`/`system_prompt`. Tool schemas and response
-  blocks are stored as-is. If you pass giant tool schemas, consider
-  redacting or truncating before the call.
+- Capture snapshots and redacts the request, response, and available provider objects on each
+  model call, plus one `StepRecord` per tool step.
+- `max_chars_per_call` (default 200,000 chars) bounds readable prompt and response projections.
+  Full structured snapshots remain in memory and are written to both the manifest and trajectory.
+  Set host storage limits and review/redact provider data for large or sensitive workloads.
 - `save()` is the only disk I/O. Call it once at loop end (or inside
   an `except` handler), not inside the loop.
 - Both sync and async variants are correct under

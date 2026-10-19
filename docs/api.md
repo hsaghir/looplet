@@ -68,6 +68,42 @@ Since `0.4.1`, loops reject terminal calls whose dispatch fails.
 Invalid completion arguments do not produce accepted output.
 The agent can correct the call while budget remains.
 
+### Model-turn controls
+
+**Unreleased:** Use a source checkout that includes these changes.
+Explicit terminal-tool completion remains the default. To accept final assistant text instead:
+
+```python
+config = LoopConfig(
+    allow_text_completion=True,
+    max_tokens=4096,
+    max_turn_continuations=1,
+)
+```
+
+Assistant text becomes a primary terminal attempt with arguments `{"answer": text}`.
+The existing `check_done` hooks and primary `output_schema` must still accept it.
+Its call has an empty provider ID and `metadata["completion_source"] = "assistant_message"`.
+The terminal tool's body is not executed, and no pending tool dispatch is checkpointed.
+Ordinary terminal calls retain their existing execution path. Native tools take precedence over text.
+Empty, refused, truncated, or structured-looking malformed responses are not promoted to completion.
+
+For native responses, `max_turn_continuations` also bounds truncation recovery; its default is zero.
+An extra request restarts the same undispatched turn with twice the previous positive `max_tokens`.
+Recovery requires an explicit token limit, remaining deadline, and no cancellation.
+It does not concatenate content blocks or execute tools proposed by a truncated response.
+Only the complete replacement response can dispatch tools.
+A stateful backend must expose synchronous `checkpoint_state` and `restore_checkpoint_state`
+methods; the pre-request snapshot is deep-copied before reuse.
+Backends exposing state without safe restoration do not restart. Custom stateful backends
+must disclose their state through these capabilities rather than masquerading as stateless.
+Existing JSON-text continuation behavior is unchanged.
+
+Native truncation without safe recovery stops with `output_truncated`.
+Refusal and incomplete provider turns stop with `model_refusal` and `model_incomplete`.
+Neither is accepted completion. The sync and async loops apply the same policy.
+See [structured capture](provenance.md#structured-model-call-capture) for per-request evidence and replay.
+
 Since `0.4.1`, `DefaultState.max_steps` limits charged steps.
 A successful nonterminal `ToolSpec(free=True)` call does not reduce `budget_remaining`.
 Failed calls, intercepted calls, and terminal attempts still consume one step.

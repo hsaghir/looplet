@@ -87,6 +87,65 @@ def test_evidence_save_preserves_existing_ignore_policy(tmp_path):
 
 
 class TestRecordingLLMBackendSmoke:
+    @pytest.mark.parametrize("asynchronous", [False, True])
+    @pytest.mark.parametrize("native", [False, True])
+    async def test_structured_capture_is_complete_redacted_and_snapshotted(
+        self, tmp_path, asynchronous, native
+    ):
+        response = [
+            {"type": "thinking", "thinking": "private " * 100, "signature": "opaque"},
+            {"type": "text", "text": "private " * 100},
+        ]
+
+        class Backend:
+            last_stop_reason = "stop"
+            last_usage = {"input_tokens": 0, "output_tokens": 5}
+            last_response = {"id": "response-id", "content": response}
+
+            def generate(self, prompt, **kwargs):
+                return "private " * 100
+
+            def generate_with_tools(self, prompt, **kwargs):
+                return response
+
+        class AsyncBackend(Backend):
+            async def generate(self, prompt, **kwargs):
+                return super().generate(prompt, **kwargs)
+
+            async def generate_with_tools(self, prompt, **kwargs):
+                return super().generate_with_tools(prompt, **kwargs)
+
+        backend = AsyncBackend() if asynchronous else Backend()
+        recorder_type = AsyncRecordingLLMBackend if asynchronous else RecordingLLMBackend
+        recorder = recorder_type(
+            backend, max_chars_per_call=100, redact=lambda text: text.replace("private", "scrubbed")
+        )
+        prompt = "private " * 100
+        options = {"thinking": {"budget": 0, "enabled": False}}
+        result = (
+            recorder.generate_with_tools(prompt, tools=[], **options)
+            if native
+            else recorder.generate(prompt, **options)
+        )
+        if asynchronous:
+            await result
+        capture = recorder.calls[0].capture
+        assert capture["schema"] == "looplet.model-call.v1"
+        assert capture["request"]["prompt"] == prompt.replace("private", "scrubbed")
+        assert capture["request"]["options"] == options
+        assert len(recorder.calls[0].prompt) <= 100
+        assert recorder.last_stop_reason == "stop"
+        assert capture["usage"] == {"input_tokens": 0, "output_tokens": 5}
+        assert capture["provider_response"]["content"][0]["signature"] == "opaque"
+        response[0]["signature"] = "changed after capture"
+        options["thinking"]["budget"] = 999
+        assert capture["provider_response"]["content"][0]["signature"] == "opaque"
+        assert capture["request"]["options"]["thinking"]["budget"] == 0
+        recorder.save(tmp_path)
+        saved = json.loads((tmp_path / "manifest.jsonl").read_text())
+        assert saved["capture"] == capture
+        assert "private" not in json.dumps(saved)
+
     def test_satisfies_llm_backend_protocol(self):
         rec = RecordingLLMBackend(MockLLMBackend(responses=["ok"]))
         assert isinstance(rec, LLMBackend)
@@ -358,6 +417,23 @@ class TestRecordingLLMBackendSmoke:
 
 
 class TestTrajectoryRecorderSmoke:
+    def test_recorded_tool_payloads_do_not_alias_live_values(self):
+        from looplet import DefaultState, Step, ToolCall, ToolResult
+
+        payload = {"rows": [1]}
+        call = ToolCall(tool="append", args={"payload": {"value": 1}})
+        result = ToolResult(tool="append", args_summary="one row", data=payload)
+        state = DefaultState()
+        state.steps.append(Step(number=1, tool_call=call, tool_result=result))
+        recorder = TrajectoryRecorder()
+        recorder.post_dispatch(state, None, call, result, 1)
+        payload["rows"].append(2)
+        call.args["payload"]["value"] = 2
+        recorder.on_loop_end(state, None, None, None)
+        recorded = recorder.trajectory.steps[0]
+        assert recorded.tool_call["args"] == {"payload": {"value": 1}}
+        assert recorded.tool_result["data"] == {"rows": [1]}
+
     def _make_step(self, n: int, tool: str = "search", data=None) -> Step:
         tc = ToolCall(tool=tool)
         tr = ToolResult(tool=tool, args_summary=f"n={n}", data=data or [], duration_ms=10.0)

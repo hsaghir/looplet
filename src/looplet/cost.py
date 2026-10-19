@@ -327,6 +327,15 @@ class CostHook:
     def on_event(self, payload: EventPayload) -> None:
         if payload.event != LifecycleEvent.POST_LLM_RESPONSE:
             return
+        model_calls = payload.extra.get("model_calls")
+        if isinstance(model_calls, list) and model_calls:
+            for call in model_calls:
+                self.tracker.record(call.get("usage") or {})
+                self.tracker.record_chars(
+                    prompt_chars=call.get("prompt_chars", 0),
+                    response_chars=call.get("response_chars", 0),
+                )
+            return
         usage = extract_usage(payload.raw_response)
         if not any(usage.values()) and self.backend is not None:
             backend_usage = getattr(self.backend, "last_usage", None)

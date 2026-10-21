@@ -375,6 +375,65 @@ Each fallback backend can have its own attempt limit.
 Provider retries and socket timeouts remain separate.
 Set them explicitly if you need an exact HTTP attempt limit.
 
+### Optional backend contracts
+
+Import capability protocols and wrapper helpers from `looplet.backend_contract`.
+Existing simple backends remain valid. Capabilities do not require inheritance.
+
+`ConversationInputBackend` accepts selected context. `CompactionAwareBackend` acknowledges compaction.
+`ToolResultBackend` receives actual tool receipts. `CheckpointableLLMBackend` carries provider state.
+`RequestAttemptBackend` reports individual provider attempts to host accounting callbacks.
+`IsolatedBackend` creates fresh provider conversation state for a helper.
+
+`BackendWrapper` forwards supported capabilities without copying live attributes.
+It preserves generation signatures and sync or async methods.
+Use callable attribute discovery for dynamic wrappers.
+Python 3.12 and later use static inspection for runtime protocol checks.
+An isolated factory returns a fresh backend. The host chooses that child's wrappers.
+
+```python
+from looplet.backend_contract import BackendRequestPolicy, BackendWrapper
+
+wrapped = BackendWrapper(llm)
+# A custom adapter can declare these fields without private flags.
+request_policy = BackendRequestPolicy(
+    manages_retries=True,
+    supports_single_model_request=True,
+)
+```
+
+An adapter's `request_policy` declares retry ownership and single-request support.
+`single_model_request_active()` tells retry-capable adapters when the host owns each attempt.
+Legacy retry flags remain supported. Conservative legacy declarations take precedence over permissive inherited defaults.
+`TerminalLLMError` stops retries when repeating a request cannot recover safely.
+The old private module retains identity-preserving aliases for existing integrations.
+
+### Explicit provider options
+
+```python
+from looplet.backends import make_backend
+
+llm = make_backend(
+    provider="openai",
+    model="your-model",
+    request_options={"reasoning_effort": "high", "top_p": 0.9},
+)
+configuration = llm.request_configuration
+```
+
+`request_options` applies adapter-owned fields to text, native-tool and streaming requests.
+`supported_request_options` lists supported adapter fields, not model or endpoint guarantees.
+Unsupported fields fail explicitly. Options cannot replace prompts, tools, token limits or credentials.
+Anthropic uses its own `thinking` and `output_config` objects. Effort names remain provider-specific.
+
+`request_configuration` returns detached `requested`, `applied` and `reported` fields.
+`applied` is `None` before submission. It then records fields submitted to the SDK.
+`reported` remains `None`: sending a setting does not prove that a provider honored it.
+The provider still validates model-specific constraints.
+
+Cartridge model metadata remains a hint unless the host explicitly binds it to an adapter.
+An explicit host backend remains authoritative. Core does not choose a reasoning policy.
+
 ## Hook decisions
 
 Both loops permit a stop after normal steps, rejected completion, and parse errors.

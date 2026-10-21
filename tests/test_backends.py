@@ -14,6 +14,319 @@ from looplet.backends import (
 )
 from looplet.cache import CacheControl, CachePolicy, compute_breakpoints
 
+
+def test_public_backend_wrapper_preserves_optional_capabilities():
+    from looplet.backend_contract import BackendWrapper, ConversationInputBackend
+
+    class StatefulBackend:
+        conversation_mode = "stateful"
+        last_usage = {"input_tokens": 1}
+        private_secret = "not a supported capability"
+
+        def generate(self, prompt):
+            return prompt
+
+        def set_conversation_input(self, snapshot):
+            self.selected = snapshot
+
+    backend = StatefulBackend()
+    wrapped = BackendWrapper(BackendWrapper(backend))
+    assert isinstance(backend, ConversationInputBackend)
+    assert wrapped.conversation_mode == "stateful"
+    assert callable(getattr(wrapped, "set_conversation_input", None))
+    wrapped.set_conversation_input({"prompt": "selected"})
+    assert backend.selected == {"prompt": "selected"}
+    assert wrapped.generate("hello") == "hello"
+    wrapped.last_usage = {"input_tokens": 2}
+    assert backend.last_usage == {"input_tokens": 2}
+    assert not hasattr(wrapped, "private_secret")
+    assert not hasattr(wrapped, "generate_with_tools")
+    assert not hasattr(wrapped, "checkpoint_state")
+
+
+async def test_public_backend_wrapper_preserves_async_generation():
+    import inspect
+
+    from looplet.backend_contract import BackendWrapper, invoke_backend
+
+    class AsyncBackend:
+        async def generate(self, prompt):
+            return prompt
+
+    wrapped = BackendWrapper(AsyncBackend())
+    assert inspect.iscoroutinefunction(wrapped.generate)
+    assert await invoke_backend(wrapped.generate, "legacy", {"temperature": 0.2}) == "legacy"
+
+
+@pytest.mark.parametrize("provider", ["openai", "anthropic"])
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("native", [False, True])
+async def test_explicit_provider_options_reach_requests(provider, asynchronous, native):
+    from types import SimpleNamespace
+
+    requests = []
+    response = _MockResponse("response") if provider == "openai" else _MockAnthropicResponse()
+
+    def create(**kwargs):
+        requests.append(kwargs)
+        return response
+
+    async def create_async(**kwargs):
+        return create(**kwargs)
+
+    operation = create_async if asynchronous else create
+    client = SimpleNamespace(
+        messages=SimpleNamespace(create=operation),
+        chat=SimpleNamespace(completions=SimpleNamespace(create=operation)),
+    )
+    backend_type = (
+        (AsyncOpenAIBackend if asynchronous else OpenAIBackend)
+        if provider == "openai"
+        else (AsyncAnthropicBackend if asynchronous else AnthropicBackend)
+    )
+    options = (
+        {"reasoning_effort": "high", "top_p": 0.5}
+        if provider == "openai"
+        else {"thinking": {"type": "enabled", "budget_tokens": 1024}, "top_p": 0.5}
+    )
+    backend = backend_type(client=client, request_options=options)
+    assert backend.request_configuration["applied"] is None
+    expected = backend.request_configuration["requested"]
+    options["top_p"] = 0.9
+    if provider == "anthropic":
+        options["thinking"]["budget_tokens"] = 2048
+    kwargs = {"max_tokens": 4096, "temperature": 1.0}
+    if native:
+        kwargs["tools"] = []
+    method = backend.generate_with_tools if native else backend.generate
+    if asynchronous:
+        await method("request", **kwargs)
+    else:
+        method("request", **kwargs)
+    assert {key: requests[0][key] for key in expected} == expected
+    configuration = backend.request_configuration
+    assert configuration["requested"] == configuration["applied"] == expected
+    assert configuration["reported"] is None
+    configuration["requested"]["top_p"] = 0.1
+    assert backend.request_configuration["requested"]["top_p"] == 0.5
+
+
+@pytest.mark.parametrize(
+    "backend_type, options",
+    [
+        (OpenAIBackend, {"thinking": {"type": "enabled", "budget_tokens": 1024}}),
+        (AnthropicBackend, {"reasoning_effort": "high"}),
+        (OpenAIBackend, {"max_tokens": 10}),
+        (OpenAIBackend, {"reasoning_effort": []}),
+        (OpenAIBackend, {"top_p": float("nan")}),
+        (OpenAIBackend, {"top_p": True}),
+        (OpenAIBackend, {"seed": True}),
+        (AnthropicBackend, {"thinking": {"type": "enabled", "budget_tokens": 1}}),
+        (AnthropicBackend, {"thinking": {"type": []}}),
+        (OpenAIBackend, {1: "invalid field"}),
+    ],
+)
+def test_explicit_provider_options_reject_unsupported_values(backend_type, options):
+    with pytest.raises(ValueError):
+        backend_type(client=object(), request_options=options)
+
+
+@pytest.mark.parametrize("provider", ["openai", "anthropic"])
+def test_explicit_provider_options_reach_streams(provider):
+    client = _MockOpenAIClient() if provider == "openai" else _MockAnthropicClient()
+    backend_type = OpenAIStreamingBackend if provider == "openai" else AnthropicStreamingBackend
+    backend = backend_type(client, request_options={"top_p": 0.3})
+    assert "".join(backend.stream("request"))
+    assert client._last_kwargs["top_p"] == 0.3
+    assert backend.request_configuration["applied"] == {"top_p": 0.3}
+
+
+def test_public_retry_policy_replaces_private_backend_flags():
+    from types import SimpleNamespace
+
+    from looplet.backend_contract import BackendRequestPolicy, BackendWrapper, attempt_limit
+    from looplet.subagent import SharedModelBudget
+
+    backend = SimpleNamespace(
+        generate=lambda prompt: prompt,
+        request_policy=BackendRequestPolicy(manages_retries=True),
+    )
+    wrapped = BackendWrapper(backend)
+    assert attempt_limit(wrapped, 3) == 1
+    budget = SharedModelBudget(2)
+    with pytest.raises(RuntimeError, match="single-request"):
+        budget.wrap(wrapped).generate("not admitted")
+    assert budget.remaining == 2
+
+
+def test_legacy_retry_overrides_remain_effective_on_sdk_subclasses():
+    from looplet.backend_contract import backend_request_policy
+
+    class LegacyAdapter(OpenAIBackend):
+        _looplet_manages_retries = True
+        _supports_single_model_request = False
+
+    policy = backend_request_policy(LegacyAdapter(client=object()))
+    assert policy.manages_retries
+    assert not policy.supports_single_model_request
+
+
+@pytest.mark.parametrize("provider", ["openai", "anthropic"])
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize("failure", [False, True])
+async def test_public_contract_with_real_sdk_transport(provider, asynchronous, native, failure):
+    import json
+
+    httpx = pytest.importorskip("httpx")
+    sdk = pytest.importorskip(provider)
+    from looplet.backend_contract import BackendWrapper
+    from looplet.subagent import SharedModelBudget
+
+    requests = []
+
+    def handle(request):
+        requests.append(json.loads(request.content))
+        if failure:
+            return httpx.Response(500, json={"error": {"type": "api_error", "message": "offline"}})
+        payload = (
+            {
+                "id": "chatcmpl-offline",
+                "object": "chat.completion",
+                "created": 0,
+                "model": "offline-fixture",
+                "usage": {"prompt_tokens": 2, "completion_tokens": 1, "total_tokens": 3},
+                "choices": [
+                    {
+                        "index": 0,
+                        "finish_reason": "stop",
+                        "message": {"role": "assistant", "content": "observed"},
+                    }
+                ],
+            }
+            if provider == "openai"
+            else {
+                "id": "msg_offline",
+                "type": "message",
+                "role": "assistant",
+                "model": "offline-fixture",
+                "content": [{"type": "text", "text": "observed"}],
+                "stop_reason": "end_turn",
+                "stop_sequence": None,
+                "usage": {"input_tokens": 2, "output_tokens": 1},
+            }
+        )
+        return httpx.Response(200, json=payload)
+
+    transport = httpx.MockTransport(handle)
+    http_client = (
+        httpx.AsyncClient(transport=transport)
+        if asynchronous
+        else httpx.Client(transport=transport)
+    )
+    client_type = (
+        (sdk.AsyncOpenAI if asynchronous else sdk.OpenAI)
+        if provider == "openai"
+        else (sdk.AsyncAnthropic if asynchronous else sdk.Anthropic)
+    )
+    client = client_type(
+        api_key="offline-fixture",
+        base_url="https://looplet.invalid/v1",
+        http_client=http_client,
+        max_retries=2,
+    )
+    backend_type = (
+        (AsyncOpenAIBackend if asynchronous else OpenAIBackend)
+        if provider == "openai"
+        else (AsyncAnthropicBackend if asynchronous else AnthropicBackend)
+    )
+    options = (
+        {"reasoning_effort": "high"}
+        if provider == "openai"
+        else {"thinking": {"type": "enabled", "budget_tokens": 1024}}
+    )
+    backend = backend_type(client, model="offline-fixture", request_options=options)
+    budget = SharedModelBudget(3)
+    wrapped = BackendWrapper(budget.wrap(BackendWrapper(backend)))
+    method = wrapped.generate_with_tools if native else wrapped.generate
+    kwargs = {"max_tokens": 4096, "temperature": 1.0}
+    if native:
+        kwargs["tools"] = []
+    try:
+        if failure:
+            with pytest.raises(sdk.APIStatusError):
+                if asynchronous:
+                    await method("request", **kwargs)
+                else:
+                    method("request", **kwargs)
+        else:
+            response = (
+                await method("request", **kwargs) if asynchronous else method("request", **kwargs)
+            )
+            assert response
+            assert wrapped.last_usage["input"] == 2
+            assert wrapped.last_stop_reason == "stop"
+        assert len(requests) == 1
+        assert budget.remaining == 2
+        assert {key: requests[0][key] for key in options} == options
+        assert wrapped.request_configuration["applied"] == options
+    finally:
+        if asynchronous:
+            await client.close()
+        else:
+            client.close()
+
+
+def test_request_attempt_callbacks_remain_live_through_nested_budget_wrappers():
+    from types import SimpleNamespace
+
+    from looplet.backend_contract import BackendWrapper
+    from looplet.subagent import SharedModelBudget
+
+    observed = []
+    raw = SimpleNamespace(request_attempt_callback=None, generate=lambda prompt: prompt)
+    raw.set_request_attempt_callback = lambda callback: setattr(
+        raw, "request_attempt_callback", callback
+    )
+    wrapped = BackendWrapper(SharedModelBudget(2).wrap(BackendWrapper(raw)))
+    wrapped.set_request_attempt_callback(lambda: observed.append("attempt"))
+    wrapped.request_attempt_callback()
+    assert observed == ["attempt"]
+    wrapped.request_attempt_callback = None
+    assert raw.request_attempt_callback is None
+
+
+def test_public_backend_contract_keeps_legacy_error_and_request_scope_identity():
+    from looplet import _backend_contract, backend_contract
+    from looplet.backend_contract import (
+        TerminalLLMError,
+        single_model_request,
+        single_model_request_active,
+    )
+
+    assert set(_backend_contract.__all__) == {
+        "FORWARDED_CAPABILITIES",
+        "MUTABLE_CAPABILITIES",
+        "TerminalLLMError",
+        "attempt_limit",
+        "backend_attribute",
+        "invoke_backend",
+        "json_snapshot",
+        "single_model_request",
+        "single_model_request_active",
+    }
+    for name in _backend_contract.__all__:
+        assert getattr(_backend_contract, name) is getattr(backend_contract, name)
+    assert TerminalLLMError is _backend_contract.TerminalLLMError
+    assert not single_model_request_active()
+    with single_model_request():
+        assert _backend_contract.single_model_request_active()
+        with _backend_contract.single_model_request():
+            assert single_model_request_active()
+        assert single_model_request_active()
+    assert not single_model_request_active()
+
+
 # ── Mock API objects ────────────────────────────────────────────
 
 
@@ -103,6 +416,7 @@ class _MockAnthropicClient:
         return _MockAnthropicResponse()
 
     def _stream(self, **kwargs):
+        self._last_kwargs = kwargs
         return _MockAnthropicStreamCtx()
 
 

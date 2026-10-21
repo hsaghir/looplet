@@ -22,11 +22,15 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
-from looplet._backend_contract import (
+from looplet.backend_contract import (
     FORWARDED_CAPABILITIES,
     MUTABLE_CAPABILITIES,
+    BackendRequestPolicy,
+    TerminalLLMError,
     backend_attribute,
+    backend_request_policy,
     invoke_backend,
+    single_model_request_active,
 )
 from looplet.types import LLMBackend
 
@@ -115,15 +119,32 @@ class _FallbackLLM:
         if hasattr(primary, "generate_with_tools") and hasattr(fallback, "generate_with_tools"):
             self.generate_with_tools = self._generate_with_tools_impl
 
+    _looplet_manages_retries = True
+
     @property
-    def _looplet_manages_retries(self) -> bool:
-        return any(
-            getattr(backend, "_looplet_manages_retries", False) is True
-            for backend in (self._primary, self._fallback)
+    def request_policy(self) -> BackendRequestPolicy:
+        primary_policy = backend_request_policy(self._primary)
+        return BackendRequestPolicy(
+            manages_retries=True,
+            supports_single_model_request=(
+                not primary_policy.manages_retries or primary_policy.supports_single_model_request
+            ),
         )
 
+    @property
+    def _supports_single_model_request(self) -> bool:
+        return self.request_policy.supports_single_model_request
+
+    def _check_admission(self) -> None:
+        if single_model_request_active() and not self.request_policy.supports_single_model_request:
+            raise TerminalLLMError(
+                "Retry-owning backend does not support single-request admission",
+                termination_reason="unsupported_context",
+            )
+
     def __getattr__(self, name: str) -> Any:
-        return backend_attribute(self._active, name)
+        backend = self._primary if name == "request_budgets" else self._active
+        return backend_attribute(backend, name)
 
     def __setattr__(self, name: str, value: Any) -> None:
         if name in MUTABLE_CAPABILITIES and "_active" in self.__dict__:
@@ -146,10 +167,13 @@ class _FallbackLLM:
             "system_prompt": system_prompt,
             "temperature": temperature,
         }
+        self._check_admission()
         self._active = self._primary
         try:
             return invoke_backend(self._primary.generate, prompt, options)
         except Exception as exc:
+            if single_model_request_active():
+                raise
             logger.warning("Primary LLM failed (%s); switching to fallback", exc)
             self._active = self._fallback
             return invoke_backend(self._fallback.generate, prompt, options)
@@ -171,11 +195,14 @@ class _FallbackLLM:
             "system_prompt": system_prompt,
             "temperature": temperature,
         }
+        self._check_admission()
         self._active = self._primary
         try:
             if hasattr(self._primary, "generate_with_tools"):
                 return invoke_backend(self._primary.generate_with_tools, prompt, options)  # pyright: ignore[reportAttributeAccessIssue]
         except Exception as exc:
+            if single_model_request_active():
+                raise
             logger.warning(
                 "Primary LLM generate_with_tools failed (%s); switching to fallback", exc
             )
@@ -462,7 +489,14 @@ class RoutingLLMBackend:
             raise AttributeError(name)
         backend = (
             self._router.select(self._purpose)
-            if name == "_looplet_manages_retries" or self._active is None
+            if name
+            in {
+                "request_policy",
+                "request_budgets",
+                "_looplet_manages_retries",
+                "_supports_single_model_request",
+            }
+            or self._active is None
             else self._active
         )
         return backend_attribute(backend, name)

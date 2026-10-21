@@ -20,6 +20,102 @@ from looplet.tools import ToolSpec
 pytestmark = pytest.mark.smoke
 
 
+@pytest.mark.parametrize("async_mode", [False, True])
+async def test_shared_admission_nested_wrappers_charge_each_allowance_once(async_mode):
+    from types import SimpleNamespace
+
+    from looplet.backend_contract import BackendWrapper, single_model_request_active
+    from looplet.subagent import SharedModelBudget
+
+    observed = []
+
+    def generate(prompt):
+        observed.append(single_model_request_active())
+        return prompt
+
+    async def generate_async(prompt):
+        await asyncio.sleep(0)
+        return generate(prompt)
+
+    budget = SharedModelBudget(3)
+    other = SharedModelBudget(3)
+    backend = SimpleNamespace(generate=generate_async if async_mode else generate)
+    wrapped = budget.wrap(BackendWrapper(other.wrap(budget.wrap(backend))))
+    if async_mode:
+        assert await asyncio.gather(wrapped.generate("first"), wrapped.generate("second")) == [
+            "first",
+            "second",
+        ]
+    else:
+        assert wrapped.generate("first") == "first"
+        assert wrapped.generate("second") == "second"
+    assert observed == [True, True]
+    assert budget.remaining == other.remaining == 1
+
+
+async def test_shared_admission_preserves_scope_for_deferred_awaitable():
+    from types import SimpleNamespace
+
+    from looplet.backend_contract import single_model_request_active
+    from looplet.subagent import SharedModelBudget
+
+    observed = []
+
+    async def generate_async(prompt):
+        await asyncio.sleep(0)
+        observed.append(single_model_request_active())
+        return prompt
+
+    budget = SharedModelBudget(2)
+    wrapped = budget.wrap(SimpleNamespace(generate=lambda prompt: generate_async(prompt)))
+    assert await wrapped.generate("deferred") == "deferred"
+    assert observed == [True]
+    assert budget.remaining == 1
+    assert not single_model_request_active()
+
+
+def test_shared_admission_owns_one_provider_attempt():
+    from types import SimpleNamespace
+
+    from looplet.resilient import ResilientBackend
+    from looplet.subagent import SharedModelBudget
+
+    calls = []
+
+    def generate(prompt):
+        calls.append(prompt)
+        if len(calls) == 1:
+            raise ConnectionError("transient")
+        return "unexpected hidden retry"
+
+    budget = SharedModelBudget(2)
+    wrapped = budget.wrap(
+        ResilientBackend(SimpleNamespace(generate=generate), sleep=lambda delay: None)
+    )
+    with pytest.raises(ConnectionError, match="transient"):
+        wrapped.generate("one admitted attempt")
+    assert calls == ["one admitted attempt"]
+    assert budget.remaining == 1
+
+
+def test_shared_admission_checkpoint_cannot_increase_allowance():
+    from looplet.subagent import SharedModelBudget
+
+    budget = SharedModelBudget(5)
+    with budget.admit():
+        pass
+    saved = budget.checkpoint_state()
+    restored = SharedModelBudget(5)
+    restored.restore_checkpoint_state(saved)
+    assert restored.remaining == 4
+    restored.charge()
+    restored.restore_checkpoint_state(saved)
+    assert restored.remaining == 3
+    with pytest.raises(ValueError, match="increase"):
+        SharedModelBudget(6).restore_checkpoint_state(saved)
+    assert saved["remaining"] == 4
+
+
 async def test_async_child_uses_async_loop_and_shared_budget():
     from looplet import run_sub_loop_async
     from looplet.subagent import ChildRunPolicy, SharedModelBudget

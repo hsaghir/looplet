@@ -10,6 +10,7 @@ Provides:
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import os
@@ -17,7 +18,7 @@ import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Protocol, cast, runtime_checkable
 
 if TYPE_CHECKING:
     from looplet.session import SessionLog
@@ -28,6 +29,168 @@ logger = logging.getLogger(__name__)
 
 class CheckpointIdentityError(ValueError):
     """A checkpoint belongs to a different logical run."""
+
+
+class CheckpointRestoreError(RuntimeError):
+    """Participant restoration failed; discard the possibly partial host state."""
+
+
+@dataclass(frozen=True)
+class CheckpointParticipant:
+    """One named, versioned host component with synchronous state callbacks.
+
+    Validation must be side-effect free. Capture must describe a host-owned
+    consistent snapshot; this helper does not make external systems atomic.
+    """
+
+    name: str
+    version: str
+    capture: Callable[[Any], dict[str, Any]]
+    validate: Callable[[Any, dict[str, Any]], None]
+    restore: Callable[[Any, dict[str, Any]], None]
+
+    @classmethod
+    def from_object(cls, name: str, version: str, component: Any) -> "CheckpointParticipant":
+        """Bind context-free checkpoint/validate/restore methods, such as a budget."""
+        capture = getattr(component, "checkpoint_state", None)
+        validate = getattr(component, "validate_checkpoint_state", None)
+        restore = getattr(component, "restore_checkpoint_state", None)
+        if not callable(capture) or not callable(validate) or not callable(restore):
+            raise ValueError("checkpoint participant requires capture, validation and restore")
+        capture = cast(Callable[[], dict[str, Any]], capture)
+        validate = cast(Callable[[dict[str, Any]], None], validate)
+        restore = cast(Callable[[dict[str, Any]], None], restore)
+        return cls(
+            name,
+            version,
+            lambda ctx: capture(),
+            lambda ctx, state: validate(state),
+            lambda ctx, state: restore(state),
+        )
+
+
+class CheckpointParticipants:
+    """Compose host state through existing LoopConfig checkpoint callbacks.
+
+    Bind ``capture`` and ``restore`` to the corresponding config callbacks.
+    Exact participant names, versions, host identity and every component state
+    are validated before any restoration. A restore failure blocks this helper
+    from reuse, but cannot roll back effects already performed by a callback.
+    """
+
+    _schema = "looplet.checkpoint-participants.v1"
+
+    def __init__(self, participants: Iterable[CheckpointParticipant], *, identity: str) -> None:
+        self.participants = tuple(participants)
+        if not isinstance(identity, str) or not identity.strip():
+            raise ValueError("checkpoint participant identity must be a nonempty string")
+        self.identity = identity
+        names = set()
+        for participant in self.participants:
+            if (
+                not isinstance(participant.name, str)
+                or not participant.name.strip()
+                or not isinstance(participant.version, str)
+                or not participant.version.strip()
+                or not all(
+                    callable(callback)
+                    for callback in (participant.capture, participant.validate, participant.restore)
+                )
+            ):
+                raise ValueError("checkpoint participants require names, versions and callbacks")
+            if participant.name in names:
+                raise ValueError(f"duplicate checkpoint participant: {participant.name}")
+            names.add(participant.name)
+        self._failed_restore = False
+
+    def _check_usable(self) -> None:
+        if self._failed_restore:
+            raise CheckpointRestoreError(
+                "Previous restore failed; discard this helper and host state"
+            )
+
+    @staticmethod
+    def _snapshot(value: Any) -> dict[str, Any]:
+        if not isinstance(value, dict):
+            raise ValueError("checkpoint participant state must be an object")
+        try:
+            detached = json.loads(json.dumps(value, allow_nan=False))
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                "checkpoint participant state must contain finite JSON values"
+            ) from error
+        if detached != value:
+            raise ValueError("checkpoint participant state must contain lossless JSON values")
+        return detached
+
+    @staticmethod
+    def _call(callback: Callable[..., Any], *args: Any) -> Any:
+        result = callback(*args)
+        if inspect.isawaitable(result):
+            if inspect.iscoroutine(result):
+                result.close()
+            raise ValueError("checkpoint participant callbacks must be synchronous")
+        return result
+
+    def capture(self, context: Any) -> dict[str, Any]:
+        """Detach each component immediately; the host supplies a quiescent boundary."""
+        self._check_usable()
+        states = {}
+        for participant in self.participants:
+            state = self._snapshot(self._call(participant.capture, context))
+            self._call(participant.validate, context, self._snapshot(state))
+            states[participant.name] = {"version": participant.version, "state": state}
+        return {"schema": self._schema, "identity": self.identity, "participants": states}
+
+    def _prepare(self, context: Any, state: dict[str, Any]) -> dict[str, Any]:
+        self._check_usable()
+        saved = self._snapshot(state)
+        if (
+            set(saved) != {"schema", "identity", "participants"}
+            or saved["schema"] != self._schema
+            or saved["identity"] != self.identity
+            or not isinstance(saved["participants"], dict)
+            or set(saved["participants"]) != {item.name for item in self.participants}
+        ):
+            raise ValueError("incompatible checkpoint participant manifest or identity")
+        for participant in self.participants:
+            entry = saved["participants"][participant.name]
+            if (
+                not isinstance(entry, dict)
+                or set(entry) != {"version", "state"}
+                or entry["version"] != participant.version
+                or not isinstance(entry["state"], dict)
+            ):
+                raise ValueError(f"incompatible checkpoint participant: {participant.name}")
+        for participant in self.participants:
+            self._call(
+                participant.validate,
+                context,
+                self._snapshot(saved["participants"][participant.name]["state"]),
+            )
+        return saved
+
+    def validate(self, context: Any, state: dict[str, Any]) -> None:
+        """Preflight the entire detached manifest without restoring any component."""
+        self._prepare(context, state)
+
+    def restore(self, context: Any, state: dict[str, Any]) -> None:
+        """Restore only after prevalidation; block reuse if any restoration fails."""
+        saved = self._prepare(context, state)
+        try:
+            for participant in self.participants:
+                self._call(
+                    participant.restore,
+                    context,
+                    self._snapshot(saved["participants"][participant.name]["state"]),
+                )
+        except BaseException as error:
+            self._failed_restore = True
+            if not isinstance(error, Exception):
+                raise
+            raise CheckpointRestoreError(
+                f"Restoring participant {participant.name!r} failed; discard this helper and host state"
+            ) from error
 
 
 class UncertainModelCall(RuntimeError):

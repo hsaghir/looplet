@@ -8,5 +8,10 @@
 # Or simply: make install-hooks
 set -euo pipefail
 
+git_local_variables=$(git rev-parse --local-env-vars)
+while IFS= read -r variable; do
+	unset "$variable"
+done <<< "$git_local_variables"
+
 echo "→ Running CI checks locally before push..."
 make check

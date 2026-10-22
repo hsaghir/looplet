@@ -379,6 +379,7 @@ def test_checkpoint_file_is_valid_json():
 
 
 def test_checkpoint_records_run_lifecycle() -> None:
+    from looplet.checkpoint import FileCheckpointStore
     from looplet.loop import LoopConfig, composable_loop
 
     llm = _make_scripted_llm(['{"tool": "done", "args": {"summary": "ok"}}'])
@@ -391,12 +392,11 @@ def test_checkpoint_records_run_lifecycle() -> None:
                 state=SimpleState(),
             )
         )
-        files = [f for f in os.listdir(tmpdir) if f.endswith(".json")]
-        with open(os.path.join(tmpdir, files[-1])) as handle:
-            data = json.load(handle)
-        assert data["run_status"] == "completed"
-        assert data["run_phase"] == "terminal"
-        assert data["termination_reason"] == "done"
+        checkpoint = FileCheckpointStore(tmpdir).load_latest()
+        assert checkpoint is not None
+        assert checkpoint.run_status == "completed"
+        assert checkpoint.run_phase == "terminal"
+        assert checkpoint.termination_reason == "done"
 
 
 def test_load_latest_returns_highest_step():

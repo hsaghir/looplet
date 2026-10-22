@@ -784,8 +784,9 @@ class OpenAIStreamingBackend(OpenAIBackend):
         response = self._request_client().chat.completions.create(**kwargs)
         for chunk in response:
             delta = chunk.choices[0].delta if chunk.choices else None
-            if delta and delta.content:
-                yield delta.content
+            text = _openai_message_text(delta)
+            if text:
+                yield text
 
 
 # ── Anthropic Backend ────────────────────────────────────────────
@@ -1140,8 +1141,9 @@ class AsyncOpenAIBackend(_ConversationBackend):
         response = await self._request_client().chat.completions.create(**kwargs)
         async for chunk in response:
             delta = chunk.choices[0].delta if chunk.choices else None
-            if delta and delta.content:
-                yield delta.content
+            text = _openai_message_text(delta)
+            if text:
+                yield text
 
 
 # ── Async Anthropic Backend ──────────────────────────────────────

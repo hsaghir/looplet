@@ -794,6 +794,49 @@ class TestOpenAIStreamingBackend:
         chunks = list(llm.stream("hello"))
         assert chunks == ["Hello", " world"]
 
+    @pytest.mark.parametrize("async_mode", [False, True])
+    def test_stream_filters_non_text_content(self, async_mode):
+        import asyncio
+        from types import SimpleNamespace
+
+        from looplet.backends import AsyncOpenAIBackend
+
+        contents = [
+            "Hello",
+            [{"type": "input_file", "mime_type": "stateful_marker", "file_data": "opaque"}],
+            [
+                {"type": "text", "text": " world"},
+                {"type": "input_file", "mime_type": "usage", "file_data": "opaque"},
+            ],
+            None,
+            {"type": "metadata"},
+        ]
+        chunks = [
+            SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content=content))])
+            for content in contents
+        ]
+        chunks.append(SimpleNamespace(choices=[]))
+
+        async def asynchronous_chunks():
+            for chunk in chunks:
+                yield chunk
+
+        async def create_async(**kwargs):
+            return asynchronous_chunks()
+
+        create = create_async if async_mode else lambda **kwargs: iter(chunks)
+        client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+        if async_mode:
+            backend = AsyncOpenAIBackend(client, model="test")
+
+            async def consume():
+                return [chunk async for chunk in backend.stream("hello")]
+
+            actual = asyncio.run(consume())
+        else:
+            actual = list(OpenAIStreamingBackend(client, model="test").stream("hello"))
+        assert actual == ["Hello", " world"]
+
     def test_generate_still_works(self):
         client = _MockOpenAIClient()
         llm = OpenAIStreamingBackend(client, model="test")

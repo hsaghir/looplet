@@ -1,63 +1,84 @@
-# Launch issue roadmap
+# Contributor issue roadmap
 
-The public backlog is now curated into independent work units. Every open task
-has a concrete deliverable, explicit non-goals, and a verification path. The
-`launch-ready` label means the scope is accepted and ready to claim; it does not
-promise that the work belongs in core.
+Last reviewed: 2026-10-22 against published `master`.
 
-## Priority 0: release and feedback
+There are six open contribution tasks and one feedback thread. Each task has
+an outcome, explicit non-goals, and a verification path. The `launch-ready`
+label means its scope is accepted; follow any proposal or review checkpoint in
+the issue before coding. It does not promise that the work belongs in core.
 
-- [#18](https://github.com/hsaghir/looplet/issues/18): pinned launch feedback
-  focused on one concrete harness failure and an independently observable
-  outcome. This is an operational thread, not claimable work.
-- Release `0.3.0` only after the repository, docs, distribution, and public
-  metadata gates in `launch-checklist.md` pass.
+## Start here
 
-## Priority 1: teach the integrity boundary
+- [#101](https://github.com/hsaghir/looplet/issues/101): the focused first
+  contribution. Extend the existing [experiment guide](../experiments.md)
+  with an explicit fixed/fresh/isolated variable matrix and a network-free,
+  isolated hook or permission example. Reuse the tested
+  [failure-to-regression proof](../regression-demo.md) for the tool-change
+  pattern instead of creating another replay guide.
+- [#6](https://github.com/hsaghir/looplet/issues/6): a verified
+  `llama-cpp-python` local-model recipe. This is documentation-only and
+  available for a fresh contribution: PR #91 closed without the required
+  end-to-end verification. A contributor needs suitable local-model hardware
+  and must record the exact model, quantization, hardware, and verification
+  date. It is not a network-free verification task.
 
-- [#100](https://github.com/hsaghir/looplet/issues/100): runnable holdout recipe
-  that keeps oracle capabilities out of candidate task, runtime, resources,
-  tools, and writable files, with explicit OS-isolation limits.
-- [#101](https://github.com/hsaghir/looplet/issues/101): replay experiment guide
-  that distinguishes tool, hook, prompt, and model changes.
-- [#105](https://github.com/hsaghir/looplet/issues/105): network-free migration
-  from a private tool loop to one outcome-grounded regression contract.
+## Substantial engineering contribution
 
-These are small documentation/example contributions. They must not add a
-sandbox product, deterministic replay claim, framework comparison benchmark,
-or generated-agent promise.
+- [#104](https://github.com/hsaghir/looplet/issues/104): a redaction-preserving
+  diff of persisted eval-run outcomes, separate from cartridge source diff.
+  The former #103 dependency is complete. Current runs retain a frozen grader
+  inventory in trajectory metadata, and `EvalReport.from_records()` reads it.
+  Propose the command or helper, exit codes, and legacy-record handling before
+  implementation; do not guess required marks from grader names or treat
+  missing inventory as a passing comparison.
 
-Only #101 is currently a first-contributor, `launch-ready` chunk. #100 requires
-a reviewed trust-boundary design, and #105 spans example, provenance, eval,
-tests, and docs despite remaining useful launch work.
+This is no longer blocked on an artifact-format project, but still needs an
+API and compatibility proposal. It is not a good first issue.
 
-## Priority 2: make evidence portable and reviewable
+## Maintainer-reviewed example
 
-- [#103](https://github.com/hsaghir/looplet/issues/103): provenance and eval
-  artifact compatibility policy before any new schema fields land.
-- [#102](https://github.com/hsaghir/looplet/issues/102): versioned JSON eval
-  summary whose fail-closed states match the CLI exit code, blocked by #103.
-- [#104](https://github.com/hsaghir/looplet/issues/104): redaction-preserving
-  diff for persisted eval-run outcomes, separate from cartridge source diff
-  and blocked by #103.
+- [#100](https://github.com/hsaghir/looplet/issues/100): a runnable holdout
+  recipe that keeps oracle capabilities out of candidate task, runtime,
+  resources, tools, prompts, and writable files. Existing explanatory docs do
+  not replace the requested red/green example and traversal/symlink tests
+  through a real candidate tool boundary. Review the data-flow and isolation
+  design before coding; separate directories alone are not a sandbox.
 
-Dependency order: #103 establishes compatibility rules before #102 or #104
-freezes a public representation. Only #103 carries `launch-ready` today;
-#102 and #104 become claimable after that contract lands.
+This trust-boundary contribution must not add a managed sandbox product,
+automatic promotion, or a claim of protection against arbitrary same-user
+code without OS or process isolation.
 
 ## Optional provider work
 
-- [#4](https://github.com/hsaghir/looplet/issues/4): optional Gemini adapter
-  using the current `google-genai` SDK.
+- [#4](https://github.com/hsaghir/looplet/issues/4): optional sync and async
+  Gemini adapters using `google-genai`. Follow the current public backend
+  contracts for request admission, retry ownership, and observed metadata.
+  Propose signatures and a representative response fixture before coding.
 - [#5](https://github.com/hsaghir/looplet/issues/5): optional Bedrock Converse
-  adapter, pending a reviewed async/dependency design before it becomes
-  launch-ready.
-- [#6](https://github.com/hsaghir/looplet/issues/6): verified
-  `llama-cpp-python` recipe; PR #91 is the active contribution path, so it is
-  not advertised as unclaimed work.
+  adapters, pending a reviewed async strategy and dependency choice. It is
+  not launch-ready until that design is accepted.
 
-Provider work stays in optional extras or documentation. It does not change the
-core loop, and compatibility claims must name the model and verification date.
+These adapters remain missing, but provider expansion is optional rather than
+a prerequisite for the documentation and evidence work above. Keep SDKs in
+optional extras, preserve lazy imports and sync/async parity, and name the
+verified model and date. Do not change the core loop or advertise unsupported
+conversation or retry capabilities.
+
+## Feedback, not claimable work
+
+- [#18](https://github.com/hsaghir/looplet/issues/18): the pinned feedback
+  thread for one concrete harness failure and an independently observable
+  outcome. Keep implementation proposals in their own issues.
+
+## Completed prerequisites
+
+- [#103](https://github.com/hsaghir/looplet/issues/103): the saved-artifact
+  compatibility policy is documented in the [artifact reference](../artifacts.md).
+- [#102](https://github.com/hsaghir/looplet/issues/102): versioned eval summaries
+  and fail-closed assessment semantics are available; they are not pending
+  contribution tasks.
+- [#105](https://github.com/hsaghir/looplet/issues/105): the network-free
+  private-loop migration example is delivered, not an open task.
 
 ## Closed during launch cleanup
 

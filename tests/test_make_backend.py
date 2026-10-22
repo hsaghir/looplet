@@ -14,6 +14,24 @@ from looplet import backends
 from looplet.backends import make_backend
 
 
+def test_make_backend_binds_explicit_request_options(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        backends.OpenAIBackend,
+        "from_env",
+        classmethod(lambda cls, *, model=None: cls(client=object(), model=model or "chosen")),
+    )
+    backend = make_backend(
+        provider="openai", model="explicit", request_options={"reasoning_effort": "high"}
+    )
+    assert backend.request_configuration == {
+        "provider": "openai",
+        "model": "explicit",
+        "requested": {"reasoning_effort": "high"},
+        "applied": None,
+        "reported": None,
+    }
+
+
 def test_make_backend_explicit_provider(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         backends.AnthropicBackend,

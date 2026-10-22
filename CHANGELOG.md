@@ -8,6 +8,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- OpenAI text streams yield visible text from multipart responses and exclude structured provider metadata in sync and async paths.
 - Eval root help introduces Python factories before cartridge execution.
 - Saved trace inspection labels grades as capture-time observations rather than current assessments.
 - `--version` includes the doctor's Git-independent source fingerprint, distinguishing same-version preview builds without selecting a provider.
@@ -19,6 +20,10 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Public optional backend contracts preserve transparent wrappers, retry ownership, typed context and provider state without required inheritance.
+- Shared model budgets admit individual requests, avoid duplicate nested charges and restore consumed allowances without replenishment.
+- Built-in adapters accept explicit provider request options and expose detached requested and submitted settings without claiming provider confirmation.
+- Named checkpoint participants validate complete versioned snapshots before restoration and block reuse after partial restoration failure.
 - Opt-in host assistant-turn policies support bounded continuation without fake tool steps. Request ceilings cover admitted retries and helper inference.
 - Typed working history, correlated progress, copied message checkpoints, and explicit replay bindings preserve assistant-turn semantics without changing strict defaults.
 - The packaged hello example supports offline assistant continuation with an explicit model-call limit.

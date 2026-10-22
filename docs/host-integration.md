@@ -34,6 +34,64 @@ The host should pass a fresh `RunEnvelope` and runtime configuration for each
 run. Looplet carries that identity into hooks, checkpoints, policy records, and
 provenance metadata.
 
+## Shared request admission
+
+`SharedModelBudget` shares one allowance across parent, child and helper backends.
+It remains separate from each loop's tool-step and model-call limits.
+
+```python
+from looplet.subagent import SharedModelBudget
+
+budget = SharedModelBudget(40)
+llm = budget.wrap(llm, deadline=original_deadline, cancel_token=cancel_token)
+```
+
+Each generation call admits one attempt. Failed attempts stay charged.
+Nested transparent wrappers do not charge the same allowance twice.
+Independent allowances still apply. Earlier deadlines and cancellation constraints remain effective.
+Retry-owning adapters must support single-request scope. SDK retries cannot consume unrecorded attempts inside that scope.
+Resilience and fallback wrappers preserve their inner adapter's retry constraints.
+Inside this scope, a fallback backend invokes only its primary. Fallback remains available outside single-request admission.
+The loop can retry through a new admission. Host reservations and finalization rules remain application policy.
+
+For direct helper inference, keep the actual SDK call inside `with budget.admit(...)`.
+Disable raw SDK retries with `max_retries=0`, or admit each transport attempt separately.
+The context manager cannot configure an arbitrary SDK client. Built-in Looplet adapters read the scope and disable their SDK retries.
+Budget checkpoints preserve consumed calls. Restoration cannot increase the original allowance or replenish already consumed calls.
+Hosts must preserve original deadlines separately. A saved counter is not permission to restart a timed-out run.
+
+## Checkpoint participants
+
+Compose existing checkpoint callbacks without teaching core about domain storage:
+
+```python
+from looplet.checkpoint import CheckpointParticipant, CheckpointParticipants
+
+participants = CheckpointParticipants(
+    [CheckpointParticipant.from_object("budget", "1", budget)],
+    identity=f"{envelope.run_id}:policy-4",
+)
+config = LoopConfig(
+    run_envelope=envelope,
+    checkpoint_dir="./checkpoints",
+    checkpoint_state=participants.capture,
+    restore_checkpoint_state=participants.restore,
+)
+```
+
+`from_object` requires synchronous `checkpoint_state`, `validate_checkpoint_state` and `restore_checkpoint_state` methods.
+For other host components, supply `capture(context)`, `validate(context, state)` and `restore(context, state)` callbacks directly.
+Each participant has a unique name and explicit version. The host supplies the run and configuration identity.
+Rebuild participants when restoring a host process. Their live callbacks are not serialized into a cartridge.
+
+Capture detaches each component immediately. The host must arrange a consistent, quiescent snapshot boundary.
+Restore validates the complete manifest and every component before invoking any restoration callback.
+Validators must be side-effect free. State must survive a lossless finite JSON round trip.
+
+A restore failure blocks further use of that helper. Discard its possibly partial host state before retrying.
+This cannot roll back external effects or guarantee exactly-once execution.
+Existing uncertain-model-call and uncertain-tool-effect guards remain unchanged.
+
 ## Inspect configuration
 
 Sync and async entry points share configuration resolution. Explicit loop

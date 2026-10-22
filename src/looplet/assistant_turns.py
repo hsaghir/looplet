@@ -12,7 +12,13 @@ from dataclasses import asdict, dataclass, replace
 from functools import wraps
 from typing import TYPE_CHECKING, Any, Callable, Literal
 
-from looplet._backend_contract import TerminalLLMError, backend_attribute, single_model_request
+from looplet.backend_contract import (
+    BackendRequestPolicy,
+    TerminalLLMError,
+    backend_attribute,
+    backend_request_policy,
+    single_model_request,
+)
 
 if TYPE_CHECKING:
     from looplet.checkpoint import Checkpoint
@@ -436,9 +442,8 @@ class _AdmissionBackend:
         self.turns.check_admission()
         if self.context_error:
             raise _AdmissionDenied("unsupported_context")
-        if getattr(self.backend, "_looplet_manages_retries", False) and not getattr(
-            self.backend, "_supports_single_model_request", False
-        ):
+        policy = backend_request_policy(self.backend)
+        if policy.manages_retries and not policy.supports_single_model_request:
             raise _AdmissionDenied("unsupported_context")
         if "pending_model_call" in self.turns.data:
             raise _AdmissionDenied("unsupported_context")
@@ -516,10 +521,16 @@ class _AdmissionBackend:
         self.turns.surface_usage()
 
     def __getattr__(self, name: str) -> Any:
-        if name == "_looplet_manages_retries" and getattr(
-            self.backend, "_supports_single_model_request", False
-        ):
-            return False
+        if name in {"request_policy", "_looplet_manages_retries"}:
+            policy = backend_request_policy(self.backend)
+            if name == "request_policy":
+                return BackendRequestPolicy(
+                    manages_retries=policy.manages_retries
+                    and not policy.supports_single_model_request,
+                    supports_single_model_request=True,
+                )
+            if policy.supports_single_model_request:
+                return False
         if name not in {"generate", "generate_with_tools"}:
             return backend_attribute(self.backend, name)
         method = getattr(self.backend, name)

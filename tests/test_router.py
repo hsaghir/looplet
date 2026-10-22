@@ -154,6 +154,25 @@ def test_retry_ownership_follows_next_route_but_usage_follows_last_call():
     assert wrapped.last_usage == {"total_tokens": 9}
 
 
+@pytest.mark.parametrize("first_budgeted", [False, True])
+def test_request_budgets_follow_next_route(first_budgeted):
+    from looplet.subagent import SharedModelBudget
+
+    budget = SharedModelBudget(2)
+    first, second = MockLLM("first"), MockLLM("second")
+    routed = RoutingLLMBackend(
+        SimpleRouter(
+            {"next": ModelProfile("second", second if first_budgeted else budget.wrap(second))},
+            default_profile=ModelProfile("first", budget.wrap(first) if first_budgeted else first),
+        )
+    )
+    wrapped = budget.wrap(routed)
+    assert wrapped.generate("first") == "first"
+    routed.set_purpose("next")
+    assert wrapped.generate("second") == "second"
+    assert budget.remaining == 0
+
+
 # ── ModelProfile ─────────────────────────────────────────────────
 
 
@@ -273,6 +292,118 @@ def test_fallback_router_switches_to_fallback_on_error():
     backend = router.select("reasoning")
     result = backend.generate("test prompt")
     assert result == "fallback response"
+
+
+@pytest.mark.parametrize("native", [False, True])
+def test_fallback_router_honors_single_request_admission(native):
+    from looplet.backend_contract import backend_request_policy
+    from looplet.subagent import SharedModelBudget
+
+    observed = []
+
+    class Backend(MockLLM):
+        def generate(self, prompt, **kwargs):
+            observed.append(self.response)
+            if self.response == "primary":
+                raise RuntimeError("primary failed")
+            return self.response
+
+        def generate_with_tools(self, prompt, *, tools, **kwargs):
+            return self.generate(prompt, **kwargs)
+
+    routed = FallbackRouter(primary=Backend("primary"), fallback=Backend("fallback")).select(
+        "reasoning"
+    )
+    budget = SharedModelBudget(1)
+    wrapped = budget.wrap(routed)
+    method = wrapped.generate_with_tools if native else wrapped.generate
+    with pytest.raises(RuntimeError, match="primary failed"):
+        method("prompt", **({"tools": []} if native else {}))
+
+    assert observed == ["primary"]
+    assert budget.remaining == 0
+    assert backend_request_policy(routed).manages_retries
+    assert routed.generate("prompt") == "fallback"
+    assert observed == ["primary", "primary", "fallback"]
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize("wrapper", ["fallback", "resilient"])
+def test_wrappers_reject_unsupported_retry_owner_before_admission(legacy, wrapper):
+    from looplet.backend_contract import BackendRequestPolicy, TerminalLLMError
+    from looplet.resilient import ResilientBackend
+    from looplet.subagent import SharedModelBudget
+
+    primary = MockLLM("primary")
+    if legacy:
+        primary._looplet_manages_retries = True
+    else:
+        primary.request_policy = BackendRequestPolicy(manages_retries=True)
+    routed = (
+        FallbackRouter(primary=primary, fallback=MockLLM()).select("reasoning")
+        if wrapper == "fallback"
+        else ResilientBackend(primary, retries=3)
+    )
+    budget = SharedModelBudget(1)
+
+    with pytest.raises(TerminalLLMError, match="single-request admission"):
+        budget.wrap(routed).generate("prompt")
+
+    assert primary.calls == []
+    assert budget.remaining == 1
+
+
+@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize("wrapper", ["fallback", "resilient"])
+def test_manual_admission_rejects_unsupported_nested_retry_owner(native, wrapper):
+    from looplet.backend_contract import BackendRequestPolicy, TerminalLLMError
+    from looplet.resilient import ResilientBackend
+    from looplet.subagent import SharedModelBudget
+
+    class Backend(MockLLM):
+        request_policy = BackendRequestPolicy(manages_retries=True)
+
+        def generate_with_tools(self, prompt, *, tools, **kwargs):
+            return self.generate(prompt)
+
+    primary = Backend()
+    routed = (
+        FallbackRouter(primary=primary, fallback=Backend()).select("reasoning")
+        if wrapper == "fallback"
+        else ResilientBackend(primary, retries=3)
+    )
+    budget = SharedModelBudget(1)
+    method = routed.generate_with_tools if native else routed.generate
+    with pytest.raises(TerminalLLMError, match="single-request admission"):
+        with budget.admit():
+            method("prompt", **({"tools": []} if native else {}))
+
+    assert primary.calls == []
+    assert budget.remaining == 0
+
+
+@pytest.mark.parametrize("primary_budgeted", [False, True])
+def test_fallback_budget_metadata_follows_next_primary(primary_budgeted):
+    from looplet.subagent import SharedModelBudget
+
+    class Backend(MockLLM):
+        def generate(self, prompt, **kwargs):
+            if self.response == "fail":
+                raise RuntimeError("primary failed")
+            return self.response
+
+    budget = SharedModelBudget(2)
+    primary, fallback = Backend("fail"), MockLLM("fallback")
+    routed = FallbackRouter(
+        primary=budget.wrap(primary) if primary_budgeted else primary,
+        fallback=fallback if primary_budgeted else budget.wrap(fallback),
+    ).select("reasoning")
+    assert routed.generate("first") == "fallback"
+    assert budget.remaining == 1
+    primary.response = "primary"
+
+    assert budget.wrap(routed).generate("second") == "primary"
+    assert budget.remaining == 0
 
 
 def test_fallback_router_always_returns_same_backend():

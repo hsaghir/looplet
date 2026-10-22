@@ -23,11 +23,19 @@ import json
 import logging
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from functools import wraps
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
+from looplet.backend_contract import (
+    BackendRequestPolicy,
+    BackendWrapper,
+    TerminalLLMError,
+    backend_request_policy,
+    single_model_request,
+)
 from looplet.capabilities import ExecutionPolicy
 from looplet.permissions import PermissionEngine, PermissionHook
 from looplet.types import CancelToken, RunEnvelope
@@ -66,22 +74,77 @@ class ChildRecoveryError(ValueError):
 
 @dataclass
 class SharedModelBudget:
-    """Atomic model-call allowance shared by host-owned parent and child backends."""
+    """Atomic request admission shared by host-owned parent and child backends.
+
+    An admitted attempt stays charged if the provider fails. Reservations and
+    finalization remain host policy. Wrapping establishes single-request scope,
+    so retry-capable adapters must honor separately admitted attempts.
+    """
 
     remaining: int
     _lock: Any = field(default_factory=threading.Lock, repr=False)
+    _limit: int = field(init=False, repr=False)
 
-    def charge(
-        self, *, deadline: float | None = None, cancel_token: CancelToken | None = None
-    ) -> None:
+    def __post_init__(self) -> None:
+        if type(self.remaining) is not int or self.remaining < 0:
+            raise ValueError("model call allowance must be a nonnegative integer")
+        self._limit = self.remaining
+
+    @staticmethod
+    def _check_constraints(*, deadline: float | None, cancel_token: CancelToken | None) -> None:
         if cancel_token is not None and cancel_token.is_cancelled:
             raise ChildRunLimitExceeded("child run cancelled")
         if deadline is not None and time.monotonic() >= deadline:
             raise ChildRunLimitExceeded("child run deadline exceeded")
+
+    def charge(
+        self, *, deadline: float | None = None, cancel_token: CancelToken | None = None
+    ) -> None:
+        self._check_constraints(deadline=deadline, cancel_token=cancel_token)
         with self._lock:
             if self.remaining <= 0:
                 raise ChildRunLimitExceeded("model call budget exhausted")
             self.remaining -= 1
+
+    @contextmanager
+    def admit(
+        self, *, deadline: float | None = None, cancel_token: CancelToken | None = None
+    ) -> Iterator[None]:
+        """Admit one provider attempt, including direct host/helper SDK calls."""
+        self.charge(deadline=deadline, cancel_token=cancel_token)
+        with single_model_request():
+            yield
+
+    def checkpoint_state(self) -> dict[str, Any]:
+        """Snapshot accounting; hosts must separately retain the original deadline."""
+        with self._lock:
+            return {
+                "schema": "looplet.model-budget.v1",
+                "limit": self._limit,
+                "remaining": self.remaining,
+            }
+
+    def validate_checkpoint_state(self, state: dict[str, Any]) -> None:
+        """Reject malformed snapshots or restoration with a larger allowance."""
+        if not isinstance(state, dict) or set(state) != {"schema", "limit", "remaining"}:
+            raise ValueError("invalid model budget checkpoint")
+        limit, remaining = state["limit"], state["remaining"]
+        if (
+            state["schema"] != "looplet.model-budget.v1"
+            or type(limit) is not int
+            or type(remaining) is not int
+            or not 0 <= remaining <= limit
+        ):
+            raise ValueError("invalid model budget checkpoint")
+        if self._limit > limit:
+            raise ValueError("restoration cannot increase the model call allowance")
+
+    def restore_checkpoint_state(self, state: dict[str, Any]) -> None:
+        """Restore without replenishing either saved or already consumed calls."""
+        self.validate_checkpoint_state(state)
+        used = state["limit"] - state["remaining"]
+        with self._lock:
+            self.remaining = min(self.remaining, max(0, self._limit - used))
 
     def wrap(
         self,
@@ -128,7 +191,11 @@ class ChildRunPolicy:
     recovery_version: str | None = None
 
 
-class _BudgetedBackend:
+class _BudgetedBackend(BackendWrapper):
+    _looplet_manages_retries = False
+    _supports_single_model_request = True
+    request_policy = BackendRequestPolicy(supports_single_model_request=True)
+
     def __init__(
         self,
         backend: Any,
@@ -141,6 +208,27 @@ class _BudgetedBackend:
         self.deadline = deadline
         self.cancel_token = cancel_token
 
+    @property
+    def request_budgets(self) -> tuple[SharedModelBudget, ...]:
+        inherited = getattr(self.backend, "request_budgets", ())
+        return (self.budget, *(budget for budget in inherited if budget is not self.budget))
+
+    @contextmanager
+    def _admit(self) -> Iterator[None]:
+        self.budget._check_constraints(deadline=self.deadline, cancel_token=self.cancel_token)
+        policy = backend_request_policy(self.backend)
+        if policy.manages_retries and not policy.supports_single_model_request:
+            raise TerminalLLMError(
+                "Retry-owning backend does not support single-request admission",
+                termination_reason="unsupported_context",
+            )
+        if any(budget is self.budget for budget in getattr(self.backend, "request_budgets", ())):
+            with single_model_request():
+                yield
+        else:
+            with self.budget.admit(deadline=self.deadline, cancel_token=self.cancel_token):
+                yield
+
     def __getattr__(self, name: str) -> Any:
         attribute = getattr(self.backend, name)
         if name not in ("generate", "generate_with_tools"):
@@ -150,15 +238,31 @@ class _BudgetedBackend:
 
             @wraps(attribute)
             async def async_guarded(*args: Any, **kwargs: Any) -> Any:
-                self.budget.charge(deadline=self.deadline, cancel_token=self.cancel_token)
-                return await attribute(*args, **kwargs)
+                with self._admit():
+                    return await attribute(*args, **kwargs)
 
             return async_guarded
 
         @wraps(attribute)
         def guarded(*args: Any, **kwargs: Any) -> Any:
-            self.budget.charge(deadline=self.deadline, cancel_token=self.cancel_token)
-            return attribute(*args, **kwargs)
+            with self._admit():
+                response = attribute(*args, **kwargs)
+            if inspect.isawaitable(response):
+
+                async def finish_response() -> Any:
+                    try:
+                        self.budget._check_constraints(
+                            deadline=self.deadline, cancel_token=self.cancel_token
+                        )
+                        with single_model_request():
+                            return await response
+                    except BaseException:
+                        if inspect.iscoroutine(response):
+                            response.close()
+                        raise
+
+                return finish_response()
+            return response
 
         return guarded
 

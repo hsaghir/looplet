@@ -32,6 +32,132 @@ from looplet.checkpoint import (
 )
 from looplet.session import SessionLog
 
+
+def test_checkpoint_participants_capture_detached_state_and_budget():
+    from looplet.checkpoint import CheckpointParticipant, CheckpointParticipants
+    from looplet.subagent import SharedModelBudget
+
+    state = {"items": [1]}
+    budget = SharedModelBudget(3)
+    budget.charge()
+    restored = []
+    participants = CheckpointParticipants(
+        [
+            CheckpointParticipant(
+                "cache",
+                "1",
+                lambda ctx: state,
+                lambda ctx, value: None,
+                lambda ctx, value: restored.append(value),
+            ),
+            CheckpointParticipant.from_object("budget", "1", budget),
+        ],
+        identity="run-a/config-a",
+    )
+    saved = participants.capture(None)
+    state["items"].append(2)
+    assert saved["participants"]["cache"]["state"] == {"items": [1]}
+    budget.charge()
+    participants.restore(None, saved)
+    assert restored == [{"items": [1]}]
+    assert budget.remaining == 1
+    restored[0]["items"].append(3)
+    assert saved["participants"]["cache"]["state"] == {"items": [1]}
+
+
+@pytest.mark.parametrize("invalid", ["identity", "version", "missing", "state"])
+def test_checkpoint_participants_validate_all_before_any_restore(invalid):
+    from looplet.checkpoint import CheckpointParticipant, CheckpointParticipants
+
+    effects = []
+
+    def validate(ctx, state):
+        if state != {"count": 1}:
+            raise ValueError("invalid component state")
+
+    participants = CheckpointParticipants(
+        [
+            CheckpointParticipant(
+                name,
+                "1",
+                lambda ctx: {"count": 1},
+                validate,
+                lambda ctx, state: effects.append(state),
+            )
+            for name in ("first", "second")
+        ],
+        identity="run-a",
+    )
+    saved = participants.capture(None)
+    if invalid == "identity":
+        saved["identity"] = "another-run"
+    elif invalid == "version":
+        saved["participants"]["second"]["version"] = "unknown"
+    elif invalid == "missing":
+        del saved["participants"]["second"]
+    else:
+        saved["participants"]["second"]["state"] = {"count": 2}
+    with pytest.raises(ValueError):
+        participants.restore(None, saved)
+    assert effects == []
+
+
+@pytest.mark.parametrize("invalid_state", [{"value": float("nan")}, {"nested": {1: "lossy key"}}])
+def test_checkpoint_participants_reject_non_json_state(invalid_state):
+    from looplet.checkpoint import CheckpointParticipant, CheckpointParticipants
+
+    participants = CheckpointParticipants(
+        [
+            CheckpointParticipant(
+                "state",
+                "1",
+                lambda ctx: invalid_state,
+                lambda ctx, state: None,
+                lambda ctx, state: None,
+            )
+        ],
+        identity="run-a",
+    )
+    with pytest.raises(ValueError, match="JSON"):
+        participants.capture(None)
+
+
+def test_checkpoint_participants_failed_restore_cannot_be_reused():
+    from looplet.checkpoint import (
+        CheckpointParticipant,
+        CheckpointParticipants,
+        CheckpointRestoreError,
+    )
+
+    effects = []
+
+    def fail(ctx, state):
+        raise RuntimeError("external component unavailable")
+
+    participants = CheckpointParticipants(
+        [
+            CheckpointParticipant(
+                "first",
+                "1",
+                lambda ctx: {},
+                lambda ctx, state: None,
+                lambda ctx, state: effects.append("restored"),
+            ),
+            CheckpointParticipant("second", "1", lambda ctx: {}, lambda ctx, state: None, fail),
+        ],
+        identity="run-a",
+    )
+    saved = participants.capture(None)
+    with pytest.raises(CheckpointRestoreError, match="discard"):
+        participants.restore(None, saved)
+    assert effects == ["restored"]
+    with pytest.raises(CheckpointRestoreError):
+        participants.restore(None, saved)
+    with pytest.raises(CheckpointRestoreError):
+        participants.capture(None)
+    assert effects == ["restored"]
+
+
 # ── Helpers ────────────────────────────────────────────────────────
 
 

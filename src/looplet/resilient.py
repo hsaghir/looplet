@@ -37,10 +37,12 @@ import threading
 from contextvars import ContextVar, copy_context
 from typing import Any, Callable
 
-from looplet._backend_contract import (
+from looplet.backend_contract import (
     MUTABLE_CAPABILITIES,
+    BackendRequestPolicy,
     TerminalLLMError,
     backend_attribute,
+    backend_request_policy,
     invoke_backend,
     single_model_request_active,
 )
@@ -159,7 +161,20 @@ class ResilientBackend:
             self.generate_with_tools = self._generate_with_tools_impl
 
     _looplet_manages_retries = True
-    _supports_single_model_request = True
+
+    @property
+    def request_policy(self) -> BackendRequestPolicy:
+        policy = backend_request_policy(self._inner)
+        return BackendRequestPolicy(
+            manages_retries=True,
+            supports_single_model_request=(
+                not policy.manages_retries or policy.supports_single_model_request
+            ),
+        )
+
+    @property
+    def _supports_single_model_request(self) -> bool:
+        return self.request_policy.supports_single_model_request
 
     def __getattr__(self, name: str) -> Any:
         return backend_attribute(self._inner, name)
@@ -224,6 +239,11 @@ class ResilientBackend:
 
     def _attempt(self, fn: Callable[[], Any], *, op: str) -> Any:
         if single_model_request_active():
+            if not self.request_policy.supports_single_model_request:
+                raise TerminalLLMError(
+                    "Retry-owning backend does not support single-request admission",
+                    termination_reason="unsupported_context",
+                )
             try:
                 return _run_with_timeout(fn, self._timeout_s)
             except _LocalTimeout as error:

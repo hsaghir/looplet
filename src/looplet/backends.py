@@ -56,7 +56,12 @@ import logging
 import os
 from typing import Any, AsyncGenerator, Generator
 
-from looplet._backend_contract import TerminalLLMError, json_snapshot, single_model_request_active
+from looplet.backend_contract import (
+    BackendRequestPolicy,
+    TerminalLLMError,
+    json_snapshot,
+    single_model_request_active,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -197,6 +202,9 @@ def _anthropic_response_to_blocks(response: Any) -> list[dict[str, Any]]:
 
 
 def _begin_request(backend: Any, request: dict[str, Any]) -> None:
+    options = json_snapshot(getattr(backend, "_request_options", {}))
+    request.update(options)
+    backend._applied_request_options = options
     backend.last_request = json_snapshot(request)
     backend.last_response = None
     backend.last_stop_reason = None
@@ -444,8 +452,88 @@ def _conversation_messages(
 
 class _ConversationBackend:
     _client: Any
+    _model: str
+    _provider: str
     conversation_mode = "messages"
     _native_blocks = False
+    request_policy = BackendRequestPolicy(supports_single_model_request=True)
+
+    @property
+    def supported_request_options(self) -> frozenset[str]:
+        """Adapter fields, not a claim of support by every model or endpoint."""
+        if self._provider == "openai":
+            return frozenset(
+                {
+                    "reasoning_effort",
+                    "top_p",
+                    "seed",
+                    "service_tier",
+                    "verbosity",
+                    "response_format",
+                }
+            )
+        return frozenset({"thinking", "top_p", "top_k", "output_config"})
+
+    def configure_request_options(self, options: dict[str, Any] | None) -> None:
+        """Explicitly bind provider-specific fields without overriding loop controls."""
+        if options is None:
+            options = {}
+        if not isinstance(options, dict):
+            raise ValueError("request_options must be an object")
+        if any(not isinstance(name, str) for name in options):
+            raise ValueError("request_options must use string field names")
+        unsupported = set(options) - self.supported_request_options
+        if unsupported:
+            raise ValueError(f"Unsupported {self._provider} request options: {sorted(unsupported)}")
+        try:
+            detached = json.loads(json.dumps(options, allow_nan=False))
+        except (TypeError, ValueError) as error:
+            raise ValueError("request_options must contain finite JSON values") from error
+        if detached != options:
+            raise ValueError("request_options must contain lossless JSON values")
+        for name in ("reasoning_effort", "service_tier", "verbosity"):
+            if name in detached and (
+                not isinstance(detached[name], str) or not detached[name].strip()
+            ):
+                raise ValueError(f"{name} must be a nonempty provider-specific string")
+        if "top_p" in detached and (
+            type(detached["top_p"]) not in (int, float) or not 0 <= detached["top_p"] <= 1
+        ):
+            raise ValueError("top_p must be a number between 0 and 1")
+        for name in ("seed", "top_k"):
+            if name in detached and (
+                type(detached[name]) is not int or (name == "top_k" and detached[name] < 1)
+            ):
+                raise ValueError(
+                    f"{name} must be an integer" + (" greater than 0" if name == "top_k" else "")
+                )
+        for name in ("response_format", "output_config", "thinking"):
+            if name in detached and not isinstance(detached[name], dict):
+                raise ValueError(f"{name} must be an object")
+        thinking = detached.get("thinking")
+        if thinking is not None:
+            mode = thinking.get("type")
+            if not isinstance(mode, str) or mode not in {"enabled", "disabled", "adaptive"}:
+                raise ValueError("thinking.type must be enabled, disabled, or adaptive")
+            if mode == "enabled" and (
+                type(thinking.get("budget_tokens")) is not int or thinking["budget_tokens"] < 1024
+            ):
+                raise ValueError("enabled thinking requires an integer budget_tokens >= 1024")
+        self._request_options = detached
+        self._applied_request_options = None
+
+    @property
+    def request_configuration(self) -> dict[str, Any]:
+        """Detached requested/submitted fields; provider-confirmed settings are unknown."""
+        return json_snapshot(
+            {
+                "provider": self._provider,
+                "model": self._model,
+                "requested": self._request_options,
+                "applied": self._applied_request_options,
+                "reported": None,
+            }
+        )
 
     def _request_client(self) -> Any:
         with_options = getattr(self._client, "with_options", None)
@@ -496,6 +584,8 @@ class OpenAIBackend(_ConversationBackend):
                             api_key="x", model="gpt-4o")
     """
 
+    _provider = "openai"
+
     def __init__(
         self,
         client: Any = None,
@@ -506,7 +596,9 @@ class OpenAIBackend(_ConversationBackend):
         api_key: str | None = None,
         tool_choice: str = "auto",
         use_prompt_cache_key: bool = False,
+        request_options: dict[str, Any] | None = None,
     ) -> None:
+        self.configure_request_options(request_options)
         if client is None:
             from openai import OpenAI  # noqa: PLC0415
 
@@ -688,11 +780,13 @@ class OpenAIStreamingBackend(OpenAIBackend):
         if _mt is not None:
             kwargs["max_tokens"] = _mt
 
-        response = self._client.chat.completions.create(**kwargs)
+        _begin_request(self, kwargs)
+        response = self._request_client().chat.completions.create(**kwargs)
         for chunk in response:
             delta = chunk.choices[0].delta if chunk.choices else None
-            if delta and delta.content:
-                yield delta.content
+            text = _openai_message_text(delta)
+            if text:
+                yield text
 
 
 # ── Anthropic Backend ────────────────────────────────────────────
@@ -720,6 +814,7 @@ class AnthropicBackend(_ConversationBackend):
     """
 
     _native_blocks = True
+    _provider = "anthropic"
 
     def __init__(
         self,
@@ -728,7 +823,9 @@ class AnthropicBackend(_ConversationBackend):
         model: str = "claude-sonnet-4-20250514",
         default_max_tokens: int | None = None,
         api_key: str | None = None,
+        request_options: dict[str, Any] | None = None,
     ) -> None:
+        self.configure_request_options(request_options)
         if client is None:
             if api_key is None:
                 raise TypeError(
@@ -866,7 +963,8 @@ class AnthropicStreamingBackend(AnthropicBackend):
         if system_prompt:
             kwargs["system"] = system_prompt
 
-        with self._client.messages.stream(**kwargs) as stream:
+        _begin_request(self, kwargs)
+        with self._request_client().messages.stream(**kwargs) as stream:
             for text in stream.text_stream:
                 yield text
 
@@ -885,6 +983,8 @@ class AsyncOpenAIBackend(_ConversationBackend):
         api_key: API key for the auto-created client.
     """
 
+    _provider = "openai"
+
     def __init__(
         self,
         client: Any = None,
@@ -895,7 +995,9 @@ class AsyncOpenAIBackend(_ConversationBackend):
         api_key: str | None = None,
         tool_choice: str = "auto",
         use_prompt_cache_key: bool = False,
+        request_options: dict[str, Any] | None = None,
     ) -> None:
+        self.configure_request_options(request_options)
         if client is None:
             from openai import AsyncOpenAI  # noqa: PLC0415
 
@@ -1035,11 +1137,13 @@ class AsyncOpenAIBackend(_ConversationBackend):
         if _mt is not None:
             kwargs["max_tokens"] = _mt
 
-        response = await self._client.chat.completions.create(**kwargs)
+        _begin_request(self, kwargs)
+        response = await self._request_client().chat.completions.create(**kwargs)
         async for chunk in response:
             delta = chunk.choices[0].delta if chunk.choices else None
-            if delta and delta.content:
-                yield delta.content
+            text = _openai_message_text(delta)
+            if text:
+                yield text
 
 
 # ── Async Anthropic Backend ──────────────────────────────────────
@@ -1054,6 +1158,7 @@ class AsyncAnthropicBackend(_ConversationBackend):
     """
 
     _native_blocks = True
+    _provider = "anthropic"
 
     def __init__(
         self,
@@ -1061,7 +1166,9 @@ class AsyncAnthropicBackend(_ConversationBackend):
         *,
         model: str = "claude-sonnet-4-20250514",
         default_max_tokens: int | None = None,
+        request_options: dict[str, Any] | None = None,
     ) -> None:
+        self.configure_request_options(request_options)
         self._client = client
         self._model = model
         self._default_max_tokens = default_max_tokens
@@ -1143,7 +1250,8 @@ class AsyncAnthropicBackend(_ConversationBackend):
         if system_prompt:
             kwargs["system"] = system_prompt
 
-        async with self._client.messages.stream(**kwargs) as stream:
+        _begin_request(self, kwargs)
+        async with self._request_client().messages.stream(**kwargs) as stream:
             async for text in stream.text_stream:
                 yield text
 
@@ -1155,7 +1263,12 @@ class ProviderSelectionWarning(UserWarning):
     """Multiple configured providers need an explicit selection."""
 
 
-def make_backend(*, provider: str | None = None, model: str | None = None) -> Any:
+def make_backend(
+    *,
+    provider: str | None = None,
+    model: str | None = None,
+    request_options: dict[str, Any] | None = None,
+) -> Any:
     """Build an :class:`LLMBackend` from the environment.
 
     A module-level factory so a non-Python orchestrator can wire a real
@@ -1168,12 +1281,22 @@ def make_backend(*, provider: str | None = None, model: str | None = None) -> An
     ``LOOPLET_PROVIDER`` and finally auto-detected from whichever API key is
     present (``ANTHROPIC_API_KEY`` → anthropic, ``OPENAI_API_KEY`` → openai).
     ``model`` overrides the provider's env/default model.
+    ``request_options`` explicitly binds adapter-specific SDK fields. Cartridge
+    model metadata remains nonbinding unless the host supplies these options.
 
     Raises ``ValueError`` with an actionable message when no provider can be
     resolved, so the orchestrator gets a clear ``error`` frame instead of an
     opaque import failure.
     """
     import os
+
+    def configured(backend: Any) -> Any:
+        if request_options is not None:
+            configure = getattr(backend, "configure_request_options", None)
+            if not callable(configure):
+                raise ValueError("Selected backend does not support explicit request_options")
+            configure(request_options)
+        return backend
 
     if (
         not (provider or os.environ.get("LOOPLET_PROVIDER"))
@@ -1200,19 +1323,21 @@ def make_backend(*, provider: str | None = None, model: str | None = None) -> An
         )
     ).lower()
     if prov in ("anthropic", "claude"):
-        return AnthropicBackend.from_env(model=model)
+        return configured(AnthropicBackend.from_env(model=model))
     if prov in ("openai", "oai"):
-        return OpenAIBackend.from_env(model=model)
+        return configured(OpenAIBackend.from_env(model=model))
     # OpenAI-compatible proxy (Copilot proxy / local endpoint)
     # Any host with these set drives over RPC
     # with no glue, no provider= needed.
     base = os.environ.get("COPILOT_PROXY_URL") or os.environ.get("LOOPLET_TAX_LLM_BASE_URL")
     key = os.environ.get("COPILOT_PROXY_KEY") or os.environ.get("LOOPLET_TAX_LLM_API_KEY")
     if prov in ("copilot", "proxy") or base or key:
-        return OpenAIBackend(
-            base_url=base,
-            api_key=key,
-            model=model or os.environ.get("LOOPLET_TAX_LLM_MODEL") or "gpt-4o",
+        return configured(
+            OpenAIBackend(
+                base_url=base,
+                api_key=key,
+                model=model or os.environ.get("LOOPLET_TAX_LLM_MODEL") or "gpt-4o",
+            )
         )
     # Keyless fallback (opt-in): a deterministic mock so the RPC path is runnable
     # on ANY repo/CI without secrets. Off by default so prod fails loud.
@@ -1221,13 +1346,15 @@ def make_backend(*, provider: str | None = None, model: str | None = None) -> An
 
         from looplet.testing import MockLLMBackend  # noqa: PLC0415
 
-        return MockLLMBackend(
-            responses=[
-                json.dumps(
-                    {"tool": "done", "args": {"summary": "keyless mock"}, "reasoning": "mock"}
-                )
-            ],
-            cycle=True,
+        return configured(
+            MockLLMBackend(
+                responses=[
+                    json.dumps(
+                        {"tool": "done", "args": {"summary": "keyless mock"}, "reasoning": "mock"}
+                    )
+                ],
+                cycle=True,
+            )
         )
     raise ValueError(
         "make_backend(): could not resolve a provider. Pass provider='anthropic'|'openai' "

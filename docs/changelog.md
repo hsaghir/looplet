@@ -8,6 +8,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Security
 
+- Checkpoint auto-resume without an explicit run ID rejects every corrupt file, including legacy keys containing `__`, before model calls or tool effects. Explicit run IDs still isolate unrelated run namespaces.
 - Saved eval and replay readers reject component links outside the selected artifact directory, including legacy layouts and optional files.
 - Contained component links remain supported. Broken metadata links fail closed instead of selecting legacy fallback.
 - Optional provider extras require `certifi>=2026.10.19` for the corrected CA bundle described in GHSA-6q48-6c7w-9gw2.

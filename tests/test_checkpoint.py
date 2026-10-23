@@ -1350,8 +1350,15 @@ def test_completed_dispatch_does_not_block_resume(tmp_path: Path) -> None:
 @pytest.mark.parametrize("native", [False, True])
 @pytest.mark.parametrize("identified", [False, True])
 @pytest.mark.parametrize("damage", ["json", "schema", "unreadable"])
+@pytest.mark.parametrize("pending_key", ["step_2_pending", "step__2_pending", "other-run__pending"])
 def test_corrupt_pending_checkpoint_blocks_resume(
-    tmp_path: Path, monkeypatch, async_driver: bool, native: bool, identified: bool, damage: str
+    tmp_path: Path,
+    monkeypatch,
+    async_driver: bool,
+    native: bool,
+    identified: bool,
+    damage: str,
+    pending_key: str,
 ) -> None:
     envelope = RunEnvelope(run_id="effect-run") if identified else None
     store = FileCheckpointStore(tmp_path)
@@ -1369,8 +1376,8 @@ def test_corrupt_pending_checkpoint_blocks_resume(
             "execution_status": "effect_unknown",
         }
     ]
-    key = FileCheckpointStore.key_for(pending, "step_2_pending")
-    store.save(pending, "step_2_pending")
+    key = FileCheckpointStore.key_for(pending, pending_key)
+    store.save(pending, pending_key)
     path = tmp_path / f"{key}.json"
     if damage == "unreadable":
         read_text = Path.read_text
@@ -1386,10 +1393,16 @@ def test_corrupt_pending_checkpoint_blocks_resume(
             '{"step_number":' if damage == "json" else json.dumps({"step_number": "bad"})
         )
     damaged_bytes = path.read_bytes()
-    effects = ["original-effect"]
+    effects = tmp_path / "effect.txt"
+    effects.write_text("original-effect", encoding="utf-8")
     tools = BaseToolRegistry()
     tools.register(
-        ToolSpec("effect", "Record a synthetic effect", {}, lambda: effects.append("repeated"))
+        ToolSpec(
+            "effect",
+            "Record a synthetic effect",
+            {},
+            lambda: effects.write_text("repeated", encoding="utf-8"),
+        )
     )
     register_done_tool(tools)
     backend_class = AsyncMockLLMBackend if async_driver else MockLLMBackend
@@ -1418,14 +1431,15 @@ def test_corrupt_pending_checkpoint_blocks_resume(
             list(composable_loop(**arguments))
     assert str(path) in str(error.value)
     assert backend.calls == 0
-    assert effects == ["original-effect"]
+    assert effects.read_text(encoding="utf-8") == "original-effect"
     assert path.read_bytes() == damaged_bytes
 
 
 @pytest.mark.parametrize("identified", [False, True])
 @pytest.mark.parametrize("terminal", [False, True])
+@pytest.mark.parametrize("key", ["step_3", "step__3", "other-run__step_3", "nested__run__step_3"])
 def test_corrupt_only_checkpoint_never_starts_fresh(
-    tmp_path: Path, identified: bool, terminal: bool
+    tmp_path: Path, identified: bool, terminal: bool, key: str
 ) -> None:
     checkpoint = _make_checkpoint()
     checkpoint.run_envelope = RunEnvelope(run_id="broken-run").to_dict() if identified else None
@@ -1433,15 +1447,17 @@ def test_corrupt_only_checkpoint_never_starts_fresh(
         checkpoint.run_status = "completed"
         checkpoint.run_phase = "terminal"
     store = FileCheckpointStore(tmp_path)
-    store.save(checkpoint, "step_3")
-    path = tmp_path / f"{FileCheckpointStore.key_for(checkpoint, 'step_3')}.json"
+    store.save(checkpoint, key)
+    path = tmp_path / f"{FileCheckpointStore.key_for(checkpoint, key)}.json"
     path.write_text('{"step_number":')
     with pytest.raises(ValueError, match="Cannot safely resume"):
         store.load_latest_for_resume(run_id=checkpoint.run_id)
 
 
 @pytest.mark.parametrize("identified", [False, True])
-def test_corrupt_other_run_does_not_block_resume(tmp_path: Path, identified: bool) -> None:
+def test_corrupt_other_run_requires_explicit_identity_to_resume(
+    tmp_path: Path, identified: bool
+) -> None:
     checkpoint = _make_checkpoint()
     checkpoint.run_envelope = RunEnvelope(run_id="selected-run").to_dict() if identified else None
     store = FileCheckpointStore(tmp_path)
@@ -1451,6 +1467,10 @@ def test_corrupt_other_run_does_not_block_resume(tmp_path: Path, identified: boo
     store.save(other, "step_9_pending")
     path = tmp_path / f"{FileCheckpointStore.key_for(other, 'step_9_pending')}.json"
     path.write_text('{"step_number":')
+    if not identified:
+        with pytest.raises(ValueError, match="Cannot safely resume"):
+            store.load_latest_for_resume()
+        return
     selected = store.load_latest_for_resume(run_id=checkpoint.run_id)
     assert selected is not None and selected.run_id == checkpoint.run_id
     assert selected.step_number == checkpoint.step_number

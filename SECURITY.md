@@ -108,6 +108,11 @@ The filesystem must support hard links and atomic replacement. Unsupported
 operations fail without falling back to an unsafe overwrite. Cooperating writers
 can update their own run; arbitrary directory mutation remains outside this control.
 
+Implicit recovery without a run ID stops if any checkpoint is unreadable or malformed.
+Legacy keys can contain `__`, so filenames cannot establish a corrupt record's run identity.
+Configure an explicit run ID to keep unrelated run namespaces isolated.
+Preserve damaged records and reconcile possible effects before retrying.
+
 Saved eval and replay readers resolve selected files inside the artifact directory.
 This includes legacy payloads, optional case data, manifests, and indexed model-call files.
 Links to files inside that directory remain supported.

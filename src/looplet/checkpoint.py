@@ -505,8 +505,8 @@ class FileCheckpointStore:
         snapshots are not eligible for implicit auto-resume. ``run_id``
         scopes selection to one logical run; leaving it unset preserves the
         legacy identity-less checkpoint-directory behavior.
-        Corrupt selected-run or legacy files block recovery.
-        Other run namespaces remain isolated.
+        Without a selected identity, every corrupt file blocks recovery.
+        With an identity, other run namespaces remain isolated.
         """
         self._validate_run_id(run_id)
         best: Checkpoint | None = None
@@ -526,8 +526,10 @@ class FileCheckpointStore:
                 if best is None or _checkpoint_order(cp) > _checkpoint_order(best):
                     best = cp
             except (OSError, ValueError, TypeError) as error:
-                if "__" in path.stem and (
-                    run_id is None or not path.stem.startswith(f"{run_id}__")
+                if (
+                    run_id is not None
+                    and "__" in path.stem
+                    and not path.stem.startswith(f"{run_id}__")
                 ):
                     continue
                 raise ValueError(

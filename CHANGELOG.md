@@ -8,6 +8,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Security
 
+- Saved eval and replay readers reject component links outside the selected artifact directory, including legacy layouts and optional files.
+- Contained component links remain supported. Broken metadata links fail closed instead of selecting legacy fallback.
 - Optional provider extras require `certifi>=2026.10.19` for the corrected CA bundle described in GHSA-6q48-6c7w-9gw2.
 - Matching `DEFAULT` permission rules resolve through the configured engine default instead of permitting an unresolved decision.
 - Approval checks preserve nested argument types when comparing the approved action with the action submitted for execution.

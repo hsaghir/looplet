@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from looplet import EvalContext, __version__, load_eval_run, save_eval_run
+from looplet import EvalContext, __version__, load_eval_run, save_eval_run, tool, tools_from
 from looplet.artifact_compat import (
     ARTIFACT_DESCRIPTOR,
     ARTIFACT_PENDING,
@@ -17,9 +17,224 @@ from looplet.artifact_compat import (
     begin_artifact_write,
     read_artifact_descriptor,
 )
-from looplet.provenance import ProvenanceSink, replay_loop
+from looplet.provenance import ProvenanceSink, _load_trace_calls, async_replay_loop, replay_loop
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "artifact_compat"
+
+
+@pytest.mark.parametrize("absolute", [False, True])
+@pytest.mark.parametrize(
+    ("filename", "legacy"),
+    [
+        (filename, legacy)
+        for legacy in (False, True)
+        for filename in (
+            "artifact.json",
+            "artifacts.json",
+            "evals.json",
+            "trajectory.json",
+            "case.json",
+            "expected.json",
+            "metrics.json",
+        )
+        if not (legacy and filename == ARTIFACT_DESCRIPTOR)
+    ],
+)
+def test_saved_eval_components_cannot_link_outside(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, filename: str, legacy: bool, absolute: bool
+) -> None:
+    run = tmp_path / "run"
+    shutil.copytree(_FIXTURES / "v1_eval_run", run)
+    if legacy:
+        (run / ARTIFACT_DESCRIPTOR).unlink()
+    component = run / filename
+    if not component.exists():
+        case = json.loads((run / "case.json").read_text())
+        component.write_text(
+            json.dumps(case.get("expected", {}) if filename == "expected.json" else {})
+        )
+    private = tmp_path / "run-private"
+    private.mkdir()
+    outside = private / filename
+    outside.write_bytes(component.read_bytes())
+    component.unlink()
+    component.symlink_to(outside if absolute else Path("..") / private.name / filename)
+    open_file = Path.open
+    outside_reads = []
+
+    def observe_open(path: Path, *args, **kwargs):
+        if path.resolve() == outside:
+            outside_reads.append(path)
+        return open_file(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", observe_open)
+
+    with pytest.raises(ValueError, match="outside|escape"):
+        load_eval_run(run)
+
+    assert outside_reads == []
+
+
+@pytest.mark.parametrize("absolute", [False, True])
+@pytest.mark.parametrize(
+    ("filename", "legacy"),
+    [
+        (filename, legacy)
+        for legacy in (False, True)
+        for filename in (
+            "artifact.json",
+            "artifacts.json",
+            "evals.json",
+            "trajectory.json",
+            "case.json",
+        )
+        if not (legacy and filename == ARTIFACT_DESCRIPTOR)
+    ],
+)
+def test_saved_eval_links_inside_artifact_remain_supported(
+    tmp_path: Path, filename: str, legacy: bool, absolute: bool
+) -> None:
+    run = tmp_path / "run"
+    shutil.copytree(_FIXTURES / "v1_eval_run", run)
+    if legacy:
+        (run / ARTIFACT_DESCRIPTOR).unlink()
+    payload = run / "payload"
+    payload.mkdir()
+    component = run / filename
+    target = payload / filename
+    component.rename(target)
+    component.symlink_to(target if absolute else Path("payload") / filename)
+
+    record = load_eval_run(run)
+
+    assert record.context.final_output == {"summary": "fixture complete"}
+    assert record.context.artifacts == {"tests_passing": True}
+    assert record.case is not None
+    assert record.case.id == "fixture-v1"
+
+
+@pytest.mark.parametrize("absolute", [False, True])
+@pytest.mark.parametrize(
+    ("layout", "filename"),
+    [
+        ("v1", "manifest.jsonl"),
+        ("v1", "call_00_prompt.txt"),
+        ("v1", "call_00_response.txt"),
+        ("legacy_manifest", "manifest.jsonl"),
+        ("legacy_manifest", "call_00_response.txt"),
+        ("legacy_fallback", "call_00_response.txt"),
+    ],
+)
+def test_replay_call_files_cannot_link_outside(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, layout: str, filename: str, absolute: bool
+) -> None:
+    sink = ProvenanceSink(tmp_path / "trace")
+    llm = sink.wrap_llm(type("Backend", (), {"generate": lambda self, prompt, **kw: "ok"})())
+    llm.generate("hello")
+    sink.trajectory_hook()
+    trace = sink.flush()
+    manifest = trace / "manifest.jsonl"
+    entries = [json.loads(line) for line in manifest.read_text().splitlines() if line.strip()]
+    for entry in entries:
+        entry.pop("capture", None)
+    manifest.write_text("\n".join(json.dumps(entry) for entry in entries) + "\n")
+    if layout != "v1":
+        (trace / ARTIFACT_DESCRIPTOR).unlink()
+    if layout == "legacy_fallback":
+        manifest.unlink()
+    component = trace / filename
+    private = tmp_path / "trace-private"
+    private.mkdir()
+    outside = private / filename
+    outside.write_bytes(component.read_bytes())
+    component.unlink()
+    component.symlink_to(outside if absolute else Path("..") / private.name / filename)
+    open_file = Path.open
+    outside_reads = []
+
+    def observe_open(path: Path, *args, **kwargs):
+        if path.resolve() == outside:
+            outside_reads.append(path)
+        return open_file(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", observe_open)
+
+    with pytest.raises(ValueError, match="outside|escape"):
+        _load_trace_calls(trace)
+
+    assert outside_reads == []
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("contained", [False, True])
+@pytest.mark.parametrize("filename", ["trajectory.json", "call_00_response.txt"])
+async def test_replay_link_boundaries_control_real_tool_effects(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    asynchronous: bool,
+    contained: bool,
+    filename: str,
+) -> None:
+    trace = tmp_path / "trace"
+    trace.mkdir()
+    (trace / "call_00_response.txt").write_text(json.dumps({"tool": "record_effect", "args": {}}))
+    (trace / "trajectory.json").write_text(json.dumps({"task": {}, "step_count": 1}))
+    payload = trace / "payload" if contained else tmp_path / "trace-private"
+    payload.mkdir()
+    component = trace / filename
+    target = payload / filename
+    component.rename(target)
+    component.symlink_to(target)
+    effect = tmp_path / "effect.txt"
+    open_file = Path.open
+    outside_reads = []
+
+    def observe_open(path: Path, *args, **kwargs):
+        if not contained and path.resolve() == target:
+            outside_reads.append(path)
+        return open_file(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", observe_open)
+
+    @tool
+    def record_effect() -> str:
+        effect.write_text("executed")
+        return "written"
+
+    tools = tools_from([record_effect], include_done=True)
+
+    async def replay():
+        if asynchronous:
+            return [step async for step in async_replay_loop(trace, tools=tools, max_steps=1)]
+        return list(replay_loop(trace, tools=tools, max_steps=1))
+
+    if contained:
+        steps = await replay()
+        assert len(steps) == 1
+        assert steps[0].tool_result.data == "written"
+        assert effect.read_text() == "executed"
+    else:
+        with pytest.raises(ValueError, match="outside|escape"):
+            await replay()
+        assert outside_reads == []
+        assert not effect.exists()
+
+
+@pytest.mark.parametrize("filename", [ARTIFACT_DESCRIPTOR, ARTIFACT_PENDING, "manifest.jsonl"])
+def test_dangling_artifact_markers_do_not_enable_legacy_fallback(
+    tmp_path: Path, filename: str
+) -> None:
+    sink = ProvenanceSink(tmp_path / "trace")
+    llm = sink.wrap_llm(type("Backend", (), {"generate": lambda self, prompt, **kw: "ok"})())
+    llm.generate("hello")
+    trace = sink.flush()
+    (trace / ARTIFACT_DESCRIPTOR).unlink()
+    marker = trace / filename
+    marker.unlink(missing_ok=True)
+    marker.symlink_to("missing-target")
+
+    with pytest.raises(ValueError, match="missing target"):
+        _load_trace_calls(trace)
 
 
 def test_v1_eval_run_fixture_loads_and_ignores_unknown_fields() -> None:

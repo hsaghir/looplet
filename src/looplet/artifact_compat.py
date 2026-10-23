@@ -84,6 +84,21 @@ def _atomic_write(path: Path, text: str) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def _artifact_path(root: Path, filename: str) -> Path:
+    """Resolve a saved file inside the selected artifact directory."""
+    path = root / filename
+    try:
+        resolved = path.resolve()
+        contained = resolved.is_relative_to(root.resolve())
+    except (OSError, RuntimeError) as exc:
+        raise ValueError(f"Invalid saved artifact file {filename!r} in {root}") from exc
+    if not contained:
+        raise ValueError(f"Saved artifact file {filename!r} is outside {root}")
+    if path.is_symlink() and not resolved.exists():
+        raise ValueError(f"Invalid saved artifact link {filename!r} in {root}: missing target")
+    return resolved
+
+
 def read_artifact_descriptor(
     directory: str | Path,
     *,
@@ -91,9 +106,9 @@ def read_artifact_descriptor(
 ) -> dict[str, Any] | None:
     """Read and validate a v1 descriptor; return ``None`` for legacy v0."""
     root = Path(directory)
-    if (root / ARTIFACT_PENDING).exists():
+    if _artifact_path(root, ARTIFACT_PENDING).exists():
         raise ValueError(f"Incomplete saved artifact in {root}: write is still pending")
-    descriptor = root / ARTIFACT_DESCRIPTOR
+    descriptor = _artifact_path(root, ARTIFACT_DESCRIPTOR)
     if not descriptor.exists():
         return None
     try:
@@ -172,7 +187,7 @@ def _validate_kind_and_components(
 
 def _validate_component_files(root: Path, components: Iterable[str]) -> None:
     for component in components:
-        path = root / _COMPONENT_FILES[component]
+        path = _artifact_path(root, _COMPONENT_FILES[component])
         if not path.is_file():
             raise ValueError(
                 f"Incomplete saved artifact in {root}: component {component!r} "
@@ -214,7 +229,7 @@ def _validate_model_call_files(root: Path, manifest: Path) -> None:
                 f"{line_number} has unsupported method {entry.get('method')!r}"
             )
         for suffix in ("prompt", "response"):
-            call_path = root / f"call_{index:02d}_{suffix}.txt"
+            call_path = _artifact_path(root, f"call_{index:02d}_{suffix}.txt")
             if not call_path.is_file():
                 raise ValueError(
                     f"Incomplete saved artifact in {root}: model_calls index {index} "

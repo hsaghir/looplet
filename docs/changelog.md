@@ -8,6 +8,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Security
 
+- Saved-evidence readers reject selected FIFOs, sockets, devices, and directories before opening them. Missing optional files and contained links to regular files remain supported.
 - Human `show` and saved-trace `inspect` escape terminal controls in displayed evidence and errors. JSON values and saved files remain unchanged.
 - Trace inspection rejects escaping and broken selected component links, including legacy trajectory, manifest, and optional eval files. Contained links remain supported.
 - Checkpoint auto-resume without an explicit run ID rejects every corrupt file, including legacy keys containing `__`, before model calls or tool effects. Explicit run IDs still isolate unrelated run namespaces.

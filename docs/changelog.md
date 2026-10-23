@@ -13,6 +13,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - Approval checks preserve nested argument types when comparing the approved action with the action submitted for execution.
 - Permission failures retain diagnostic categories without logging raw exception text, approval tracebacks, or invalid approval payloads.
 - File checkpoint stores reject unsafe run IDs before access and treat lookup-key metacharacters literally.
+- File checkpoint stores reject cross-run filename collisions and preserve corrupt existing records. Atomic publication requires filesystem hard-link support.
 - The security policy documents trust boundaries, secure deployment requirements, residual risks, and controlled regression checks.
 
 ### Changed

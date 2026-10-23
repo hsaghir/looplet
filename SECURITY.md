@@ -81,7 +81,7 @@ code before tool permissions apply.
 | --- | --- | --- | --- |
 | Unauthorized tool execution | Model request to host tool | Restricted registry, argument validation, explicit default-deny | An allowed tool must not expose broader authority |
 | Changed approved actions | Approval to dispatch | Bind approval to the exact action and policy | Trust the approval service and policy callbacks |
-| Checkpoint path confusion | Run identity or key to filesystem | Reject path-bearing run IDs; treat lookup keys literally | Keep the store private and host-owned |
+| Checkpoint path confusion | Run identity or key to filesystem | Validate IDs and literal keys; reject cross-run write collisions | Keep the store private and host-owned |
 | Forged recovery state | Saved JSON to live state | Validate identity, structure, and recovery semantics | Authenticate records crossing a trust boundary |
 | Secret disclosure | Arguments to logs and saved evidence | Bounded diagnostics and configured redaction | Protect raw state, denial records, and application logs |
 | Host code execution | Extension loading to process | Review code and isolate execution | Dependency metadata does not establish code safety |
@@ -100,6 +100,12 @@ A fresh Git worktree isolates edits, not credentials, processes, networking,
 or filesystem permissions. Separate directories do not contain arbitrary code
 running as the same OS user. Path validation cannot secure a checkpoint directory
 that an attacker can rewrite or replace with symlinks.
+
+File checkpoint stores reject a write when the destination already belongs to
+another run. They preserve corrupt existing records rather than replacing them.
+The filesystem must support hard links and atomic replacement. Unsupported
+operations fail without falling back to an unsafe overwrite. Cooperating writers
+can update their own run; arbitrary directory mutation remains outside this control.
 
 Permission rules use first-match order. The default remains `ALLOW` for
 compatibility; secure deployments must select `DENY` explicitly.
@@ -173,9 +179,10 @@ uv run pytest -q \
 ```
 
 The tests cover denied effects across sync/async and native/text execution,
-approval integrity, diagnostic privacy, checkpoint lookup boundaries, bundle
+approval integrity, diagnostic privacy, checkpoint lookup and write boundaries, bundle
 entrypoint containment, recovery safety, redaction, and cooperative cancellation.
 Approval tests include fixed-seed nested mutations and unchanged-action controls.
+Checkpoint tests include synchronized writers and preservation on storage failures.
 Run `make check` before publishing changes.
 
 For deployment review, also use OWASP's

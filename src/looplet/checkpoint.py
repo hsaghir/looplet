@@ -439,7 +439,13 @@ class FileCheckpointStore:
                 handle.write(json.dumps(checkpoint.to_dict(), indent=2))
                 handle.flush()
                 os.fsync(handle.fileno())
-            os.replace(temporary, path)
+            try:
+                os.link(temporary, path)
+            except FileExistsError:
+                existing = Checkpoint.from_dict(json.loads(path.read_text(encoding="utf-8")))
+                if existing.run_id != checkpoint.run_id:
+                    raise ValueError("checkpoint path already belongs to a different run")
+                os.replace(temporary, path)
         finally:
             temporary.unlink(missing_ok=True)
         logger.debug("checkpoint saved: %s", path)

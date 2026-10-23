@@ -82,7 +82,7 @@ code before tool permissions apply.
 | Unauthorized tool execution | Model request to host tool | Restricted registry, argument validation, explicit default-deny | An allowed tool must not expose broader authority |
 | Changed approved actions | Approval to dispatch | Bind approval to the exact action and policy | Trust the approval service and policy callbacks |
 | Checkpoint path confusion | Run identity or key to filesystem | Validate IDs and literal keys; reject cross-run write collisions | Keep the store private and host-owned |
-| Saved artifact path escape | Evidence directory to component reads | Resolve selected files inside the artifact root; reject escaping or broken links | Use stable host-owned storage and authenticate shared evidence |
+| Saved artifact or report path escape | Selected evidence directory to file reads | Resolve selected files inside the selected root; reject escaping or broken links | Use stable host-owned storage and authenticate shared evidence |
 | Saved-file stalls | Evidence file type to reader | Reject selected non-regular files before opening them | Bound file size, filesystem latency, and host execution time |
 | Terminal control injection | Saved trace, assessment, or experiment to human display | Escape C0/C1 controls except tabs and newlines | Review remaining layout and Unicode; other views are not covered |
 | Forged recovery state | Saved JSON to live state | Validate identity, structure, and recovery semantics | Authenticate records crossing a trust boundary |
@@ -127,6 +127,12 @@ These checks do not authenticate records or detect hard-link aliases.
 They do not protect directories that change during validation or reads.
 Use a private, stable copy when inspecting evidence from an untrusted source.
 Replay still executes fresh tools and effects under the host's policy and isolation controls.
+
+Saved assessment and experiment report reads stay within the report's parent directory.
+History inspection resolves report and child-directory links inside the selected history root.
+Contained links and explicitly selected root-directory links remain supported.
+Other history views are outside this report-boundary check.
+These checks share the storage and concurrency limits above.
 
 Human `show` and saved-trace, saved-assessment, or saved-experiment `inspect` display C0/C1 controls as visible escapes.
 This includes saved experiment histories and their diagnostics.
@@ -215,6 +221,8 @@ containment, recovery safety, redaction, and cooperative cancellation.
 Trace inspection tests check inert display controls, link containment, and unchanged JSON and saved evidence.
 Saved-assessment checks cover fields, report diagnostics, Unicode, JSON, and unchanged evidence.
 Saved-file tests reject non-regular targets before opening them, including legacy payloads and contained links.
+Report inspection checks record attempted reads and reject outside targets before opening them.
+Tests preserve contained links, explicit roots, JSON values, and evidence bytes.
 Approval tests include fixed-seed nested mutations and unchanged-action controls.
 Checkpoint tests include synchronized writers and preservation on storage failures.
 Run `make check` before publishing changes.

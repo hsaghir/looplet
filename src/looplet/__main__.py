@@ -919,7 +919,9 @@ def _render_factory_inspect(
 
 def _render_eval_assessment(report_path: Path, *, json_output: bool) -> int:
     try:
-        report = json.loads(report_path.read_text(encoding="utf-8"))
+        report = json.loads(
+            _artifact_path(report_path.parent, report_path.name).read_text(encoding="utf-8")
+        )
         if not isinstance(report, dict) or report.get("schema") != "looplet.eval-assessment":
             raise ValueError("expected a looplet.eval-assessment object")
         if type(report.get("version")) is not int or report["version"] != 1:
@@ -1002,9 +1004,13 @@ def _render_eval_assessment(report_path: Path, *, json_output: bool) -> int:
 
 def _read_experiment_report(
     report_path: Path,
+    *,
+    root: Path | None = None,
 ) -> tuple[dict[str, Any], dict[str, str] | None]:
     stage_names: tuple[str, ...] = ("capture", "rescore", "replay")
-    report = json.loads(report_path.read_text(encoding="utf-8"))
+    root = report_path.parent if root is None else root
+    report_file = _artifact_path(root, report_path.relative_to(root).as_posix())
+    report = json.loads(report_file.read_text(encoding="utf-8"))
     if isinstance(report, dict) and report.get("schema") == "looplet.eval-assessment":
         return report, None
     if not isinstance(report, dict) or not isinstance(report.get("passed"), bool):
@@ -1080,7 +1086,7 @@ def _render_experiment_history(path: Path, *, json_output: bool) -> int | None:
             "error": None,
         }
         try:
-            report, stages = _read_experiment_report(child / "experiment.json")
+            report, stages = _read_experiment_report(child / "experiment.json", root=path)
             if stages is None:
                 raise ValueError("expected an experiment report, not a saved assessment")
             entry.update(

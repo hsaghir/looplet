@@ -8,6 +8,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Security
 
+- Saved assessment and experiment report inspection reject links outside the selected report directory. Experiment histories reject report and child-directory links outside the selected history root. Contained links, JSON values, and saved evidence remain unchanged.
 - Saved-experiment and history inspection escape terminal controls in report fields, trace links, and diagnostics. JSON values, Unicode, and saved evidence remain unchanged.
 - Saved-assessment inspection escapes terminal controls in report fields, evidence links, and diagnostics. JSON values, Unicode, and saved evidence remain unchanged.
 - Saved-evidence readers reject selected FIFOs, sockets, devices, and directories before opening them. Missing optional files and contained links to regular files remain supported.

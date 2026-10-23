@@ -29,8 +29,16 @@ from pathlib import Path
 from typing import Any, TextIO, cast
 
 from looplet import __version__
-from looplet.artifact_compat import read_artifact_descriptor
+from looplet.artifact_compat import _artifact_path, read_artifact_descriptor
 from looplet.cli import add_run_options, completion_exit_code, completion_payload, execution_output
+
+_TERMINAL_CONTROL_ESCAPES = {
+    code: ascii(chr(code))[1:-1] for code in (*range(32), *range(127, 160)) if code not in (9, 10)
+}
+
+
+def _print_terminal(*values: object, file: TextIO | None = None) -> None:
+    print(*(str(value).translate(_TERMINAL_CONTROL_ESCAPES) for value in values), file=file)
 
 
 def _fmt_ms(ms: float | int | None) -> str:
@@ -91,40 +99,48 @@ def _trace_shape_error(
 
 def _render_show(trace_dir: Path, *, json_output: bool = False) -> int:
     if not trace_dir.exists():
-        print(f"error: {trace_dir} does not exist", file=sys.stderr)
+        _print_terminal(f"error: {trace_dir} does not exist", file=sys.stderr)
         return 1
     try:
         descriptor = read_artifact_descriptor(
             trace_dir,
             expected_kinds=("eval_run", "provenance"),
         )
+        declared = set(descriptor["components"]) if descriptor is not None else None
+        traj_path = (
+            _artifact_path(trace_dir, "trajectory.json")
+            if declared is None or "trajectory" in declared
+            else None
+        )
+        manifest_path = (
+            _artifact_path(trace_dir, "manifest.jsonl")
+            if declared is None or "model_calls" in declared
+            else None
+        )
     except ValueError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        _print_terminal(f"error: {exc}", file=sys.stderr)
         return 1
 
     # ── trajectory.json (optional; short-circuit if missing) ─────
-    traj_path = trace_dir / "trajectory.json"
-    manifest_path = trace_dir / "manifest.jsonl"
-    declared = set(descriptor["components"]) if descriptor is not None else None
     traj: dict[str, Any] = {}
-    if (declared is None or "trajectory" in declared) and traj_path.exists():
+    if traj_path is not None and traj_path.exists():
         try:
             parsed_traj = json.loads(traj_path.read_text(encoding="utf-8"))
         except Exception as exc:
-            print(f"error: could not parse {traj_path}: {exc}", file=sys.stderr)
+            _print_terminal(f"error: could not parse {traj_path}: {exc}", file=sys.stderr)
             return 1
         if not isinstance(parsed_traj, dict):
-            print(f"error: expected a JSON object in {traj_path}", file=sys.stderr)
+            _print_terminal(f"error: expected a JSON object in {traj_path}", file=sys.stderr)
             return 1
         traj = parsed_traj
 
     # ── manifest.jsonl (optional) ────────────────────────────────
     calls: list[dict[str, Any]] = []
-    if (declared is None or "model_calls" in declared) and manifest_path.exists():
+    if manifest_path is not None and manifest_path.exists():
         try:
             manifest_lines = manifest_path.read_text(encoding="utf-8").splitlines()
         except Exception as exc:
-            print(f"error: could not read {manifest_path}: {exc}", file=sys.stderr)
+            _print_terminal(f"error: could not read {manifest_path}: {exc}", file=sys.stderr)
             return 1
         for line_number, line in enumerate(manifest_lines, start=1):
             line = line.strip()
@@ -133,13 +149,13 @@ def _render_show(trace_dir: Path, *, json_output: bool = False) -> int:
             try:
                 call = json.loads(line)
             except Exception as exc:
-                print(
+                _print_terminal(
                     f"error: could not parse {manifest_path} line {line_number}: {exc}",
                     file=sys.stderr,
                 )
                 return 1
             if not isinstance(call, dict):
-                print(
+                _print_terminal(
                     f"error: expected a JSON object in {manifest_path} line {line_number}",
                     file=sys.stderr,
                 )
@@ -147,7 +163,7 @@ def _render_show(trace_dir: Path, *, json_output: bool = False) -> int:
             calls.append(call)
 
     if not traj and not calls:
-        print(
+        _print_terminal(
             f"error: {trace_dir} contains no trajectory.json or "
             "manifest.jsonl - not a trace directory",
             file=sys.stderr,
@@ -156,28 +172,31 @@ def _render_show(trace_dir: Path, *, json_output: bool = False) -> int:
 
     shape_error = _trace_shape_error(traj, calls)
     if shape_error is not None:
-        print(f"error: invalid trace shape: {shape_error}", file=sys.stderr)
+        _print_terminal(f"error: invalid trace shape: {shape_error}", file=sys.stderr)
         return 1
 
     eval_record = None
     saved_evals = None
-    if (descriptor is not None and descriptor["kind"] == "eval_run") or (
-        descriptor is None
-        and any((trace_dir / name).exists() for name in ("evals.json", "artifacts.json"))
-    ):
-        from looplet.evals import load_eval_run
+    try:
+        if (descriptor is not None and descriptor["kind"] == "eval_run") or (
+            descriptor is None
+            and any(
+                _artifact_path(trace_dir, name).exists()
+                for name in ("evals.json", "artifacts.json")
+            )
+        ):
+            from looplet.evals import load_eval_run
 
-        try:
             eval_record = load_eval_run(trace_dir)
-            evals_path = trace_dir / "evals.json"
+            evals_path = _artifact_path(trace_dir, "evals.json")
             saved_evals = (
                 json.loads(evals_path.read_text(encoding="utf-8")) if evals_path.exists() else []
             )
-        except Exception as exc:
-            print(
-                f"error: could not read saved eval evidence in {trace_dir}: {exc}", file=sys.stderr
-            )
-            return 1
+    except Exception as exc:
+        _print_terminal(
+            f"error: could not read saved eval evidence in {trace_dir}: {exc}", file=sys.stderr
+        )
+        return 1
 
     if json_output:
         payload = {"trajectory": traj or None, "manifest": calls}
@@ -198,7 +217,7 @@ def _render_show(trace_dir: Path, *, json_output: bool = False) -> int:
     if total_ms == 0 and calls:
         total_ms = sum(c.get("duration_ms") or 0 for c in calls)
 
-    print(
+    _print_terminal(
         f"{run_id}  {term_glyph} {term}  "
         f"{step_count} steps  {llm_count} LLM calls  {int(total_ms)}ms"
     )
@@ -228,7 +247,9 @@ def _render_show(trace_dir: Path, *, json_output: bool = False) -> int:
         dur = _fmt_ms(s.get("duration_ms"))
         linked = s.get("llm_call_indices") or []
         link_str = f"call {linked[0]}" if linked else ""
-        print(f"#{num}  {ok} {tool}({str(args)[:30]:<30}) → {tail:<20} [{dur}] {link_str}")
+        _print_terminal(
+            f"#{num}  {ok} {tool}({str(args)[:30]:<30}) → {tail:<20} [{dur}] {link_str}"
+        )
 
     # ── LLM summary ─────────────────────────────────────────────
     if calls:
@@ -247,7 +268,7 @@ def _render_show(trace_dir: Path, *, json_output: bool = False) -> int:
     if modes:
         print()
         for fm in modes:
-            print(f"!! {fm}")
+            _print_terminal(f"!! {fm}")
 
     if term == "done" and traj.get("steps"):
         terminal_step = traj["steps"][-1]
@@ -261,7 +282,7 @@ def _render_show(trace_dir: Path, *, json_output: bool = False) -> int:
             and not rejected
         ):
             print("\nresult:")
-            print(
+            _print_terminal(
                 final_output
                 if isinstance(final_output, str)
                 else json.dumps(final_output, indent=2)
@@ -270,7 +291,7 @@ def _render_show(trace_dir: Path, *, json_output: bool = False) -> int:
     if eval_record is not None:
         print("\nsaved evals: (capture-time; current graders not rerun)")
         for result in eval_record.results:
-            print(f"  {result.pretty()}")
+            _print_terminal(f"  {result.pretty()}")
         if not eval_record.results:
             print("  (none)")
         print("\nartifacts:")

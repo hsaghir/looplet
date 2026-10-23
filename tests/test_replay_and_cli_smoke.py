@@ -792,6 +792,248 @@ class TestReplayLoopSmoke:
 
 class TestShowCLISmoke:
     @pytest.mark.parametrize("command", ["show", "inspect"])
+    @pytest.mark.parametrize("json_output", [False, True])
+    @pytest.mark.parametrize(
+        "field",
+        [
+            "run_id",
+            "termination_reason",
+            "tool",
+            "args_summary",
+            "error",
+            "result",
+            "failure_mode",
+            "call_index",
+            "step_number",
+            "total_items",
+            "step_error",
+            "result_args",
+        ],
+    )
+    def test_saved_result_controls_are_inert_without_changing_evidence(
+        self, tmp_path, capsys, command, json_output, field
+    ):
+        trace_dir = _captured_dir(tmp_path)
+        payload = "probe\x1b[2K\r\b\a\x9b2K\x7f\x00\u03bb\n\tok"
+        visible = "probe\\x1b[2K\\r\\x08\\x07\\x9b2K\\x7f\\x00\u03bb\n\tok"
+        trajectory_path = trace_dir / "trajectory.json"
+        trajectory = json.loads(trajectory_path.read_text())
+        terminal = trajectory["steps"][-1]
+        if field in {"run_id", "termination_reason"}:
+            trajectory[field] = payload
+        elif field == "tool":
+            terminal["tool_call"]["tool"] = payload
+        elif field == "args_summary":
+            terminal["args_summary"] = payload
+        elif field == "error":
+            terminal["tool_result"]["error"] = payload
+        elif field == "result":
+            terminal["tool_result"]["data"] = payload
+        elif field == "failure_mode":
+            trajectory["failure_modes"] = [payload]
+        elif field == "step_number":
+            terminal["step_num"] = payload
+        elif field == "total_items":
+            terminal["tool_result"]["data"] = {"observed": "marker"}
+            terminal["tool_result"]["total_items"] = payload
+        elif field == "step_error":
+            terminal["error"] = payload
+        elif field == "result_args":
+            terminal.pop("args_summary", None)
+            terminal["tool_result"]["args"] = payload
+        else:
+            terminal["llm_call_indices"] = [payload]
+        trajectory_path.write_text(json.dumps(trajectory), encoding="utf-8")
+        before = {path.name: path.read_bytes() for path in trace_dir.iterdir() if path.is_file()}
+
+        assert cli_main([command, str(trace_dir), *(["--json"] if json_output else [])]) == 0
+        output = capsys.readouterr().out
+        assert not any(
+            (ord(character) < 32 and character not in "\n\t") or 127 <= ord(character) < 160
+            for character in output
+        )
+        if json_output:
+            assert json.loads(output)["trajectory"] == trajectory
+        else:
+            assert visible in output
+        assert {
+            path.name: path.read_bytes() for path in trace_dir.iterdir() if path.is_file()
+        } == before
+
+    @pytest.mark.parametrize("command", ["show", "inspect"])
+    @pytest.mark.parametrize("json_output", [False, True])
+    @pytest.mark.parametrize("legacy", [False, True])
+    @pytest.mark.parametrize("relative", [False, True])
+    @pytest.mark.parametrize(
+        "filename", ["trajectory.json", "manifest.jsonl", "evals.json", "artifacts.json"]
+    )
+    @pytest.mark.parametrize("destination", ["outside", "inside", "broken"])
+    def test_trace_component_links_are_contained_before_open(
+        self,
+        tmp_path,
+        capsys,
+        monkeypatch,
+        command,
+        json_output,
+        legacy,
+        relative,
+        filename,
+        destination,
+    ):
+        trace_dir = _captured_dir(tmp_path)
+        if legacy:
+            (trace_dir / ARTIFACT_DESCRIPTOR).unlink()
+        selected = trace_dir / filename
+        if filename in {"evals.json", "artifacts.json"}:
+            selected.write_text("[]" if filename == "evals.json" else "{}", encoding="utf-8")
+        content = selected.read_bytes()
+        parent = (
+            tmp_path / f"{trace_dir.name}-private"
+            if destination == "outside"
+            else trace_dir / "payloads"
+        )
+        parent.mkdir()
+        target = parent / filename
+        if destination != "broken":
+            target.write_bytes(content)
+        selected.unlink()
+        link = (
+            Path("..") / parent.name / filename
+            if destination == "outside"
+            else Path("payloads") / filename
+        )
+        selected.symlink_to(link if relative else target)
+        before = {
+            path.relative_to(trace_dir).as_posix(): path.read_bytes()
+            for path in trace_dir.rglob("*")
+            if path.is_file() and not path.is_symlink()
+        }
+        opened = []
+        open_path = Path.open
+
+        def record_open(path, *arguments, **keywords):
+            if path.resolve() == target.resolve():
+                opened.append(str(path))
+            return open_path(path, *arguments, **keywords)
+
+        with monkeypatch.context() as patcher:
+            patcher.setattr(Path, "open", record_open)
+            status = cli_main([command, str(trace_dir), *(["--json"] if json_output else [])])
+        captured = capsys.readouterr()
+        if not legacy and filename in {"evals.json", "artifacts.json"}:
+            assert status == 0
+            assert opened == []
+            if json_output:
+                assert set(json.loads(captured.out)) == {"trajectory", "manifest"}
+            else:
+                assert "saved evals:" not in captured.out
+        elif destination == "inside":
+            assert status == 0
+            assert opened
+            if json_output:
+                assert json.loads(captured.out)["trajectory"]["termination_reason"] == "done"
+        else:
+            assert status == 1, {"opened": opened}
+            assert opened == []
+            assert captured.out == ""
+            assert captured.err
+        assert selected.readlink() == (link if relative else target)
+        assert {
+            path.relative_to(trace_dir).as_posix(): path.read_bytes()
+            for path in trace_dir.rglob("*")
+            if path.is_file() and not path.is_symlink()
+        } == before
+        if destination != "broken":
+            assert target.read_bytes() == content
+
+    @pytest.mark.parametrize("command", ["show", "inspect"])
+    @pytest.mark.parametrize("json_output", [False, True])
+    def test_all_terminal_controls_keep_json_and_layout_lossless(
+        self, tmp_path, capsys, command, json_output
+    ):
+        payload = "unicode \u03bb\n\t" + "".join(
+            chr(number) for number in (*range(32), *range(127, 160))
+        )
+        trajectory = {
+            "termination_reason": "done",
+            "steps": [{"tool_result": {"data": payload}}],
+        }
+        selected = tmp_path / "trajectory.json"
+        selected.write_text(json.dumps(trajectory), encoding="utf-8")
+        before = selected.read_bytes()
+
+        assert cli_main([command, str(tmp_path), *(["--json"] if json_output else [])]) == 0
+        output = capsys.readouterr().out
+        assert not any(
+            (ord(character) < 32 and character not in "\n\t") or 127 <= ord(character) < 160
+            for character in output
+        )
+        if json_output:
+            assert json.loads(output)["trajectory"] == trajectory
+        else:
+            assert "result:\nunicode \u03bb\n\t" in output
+            for escaped in ("\\x00", "\\x1b", "\\x7f", "\\x9b", "\\x9f", "\\r"):
+                assert escaped in output
+        assert selected.read_bytes() == before
+
+    @pytest.mark.parametrize("command", ["show", "inspect"])
+    @pytest.mark.parametrize("json_output", [False, True])
+    @pytest.mark.parametrize(
+        "fault",
+        [
+            "missing",
+            "empty",
+            "trajectory_parse",
+            "trajectory_shape",
+            "manifest_parse",
+            "manifest_shape",
+            "manifest_read",
+            "descriptor",
+            "eval_parse",
+        ],
+    )
+    def test_trace_diagnostic_controls_are_inert(
+        self, tmp_path, capsys, command, json_output, fault
+    ):
+        trace_dir = tmp_path / "trace\x1b[2K\r\a"
+        if fault != "missing":
+            trace_dir.mkdir()
+        if fault == "trajectory_parse":
+            (trace_dir / "trajectory.json").write_text("not JSON", encoding="utf-8")
+        elif fault == "trajectory_shape":
+            (trace_dir / "trajectory.json").write_text("[]", encoding="utf-8")
+        elif fault == "manifest_parse":
+            (trace_dir / "manifest.jsonl").write_text("not JSON", encoding="utf-8")
+        elif fault == "manifest_shape":
+            (trace_dir / "manifest.jsonl").write_text("[]", encoding="utf-8")
+        elif fault == "manifest_read":
+            (trace_dir / "manifest.jsonl").mkdir()
+        elif fault == "descriptor":
+            (trace_dir / ARTIFACT_DESCRIPTOR).write_text("{}", encoding="utf-8")
+        elif fault == "eval_parse":
+            (trace_dir / "trajectory.json").write_text('{"steps":[]}', encoding="utf-8")
+            (trace_dir / "evals.json").write_text("not JSON", encoding="utf-8")
+        before = {
+            path.relative_to(trace_dir).as_posix(): path.read_bytes()
+            for path in trace_dir.rglob("*")
+            if path.is_file()
+        }
+
+        assert cli_main([command, str(trace_dir), *(["--json"] if json_output else [])]) == 1
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert captured.err
+        assert not any(
+            (ord(character) < 32 and character not in "\n\t") or 127 <= ord(character) < 160
+            for character in captured.err
+        )
+        assert {
+            path.relative_to(trace_dir).as_posix(): path.read_bytes()
+            for path in trace_dir.rglob("*")
+            if path.is_file()
+        } == before
+
+    @pytest.mark.parametrize("command", ["show", "inspect"])
     @pytest.mark.parametrize(
         "step_durations,call_durations,total_ms",
         [([None, 4], [8, None], 4), ([None], [None, 8], 8), ([None], [None], 0)],
@@ -835,20 +1077,23 @@ class TestShowCLISmoke:
     @pytest.mark.parametrize("command", ["show", "inspect"])
     @pytest.mark.parametrize("json_output", [False, True])
     @pytest.mark.parametrize("legacy", [False, True])
+    @pytest.mark.parametrize("controls", [False, True])
     def test_saved_eval_evidence_is_visible_without_execution(
-        self, tmp_path, capsys, command, json_output, legacy
+        self, tmp_path, capsys, command, json_output, legacy, controls
     ):
         calls = {"grader": 0, "collector": 0}
+        suffix = " \x1b[2K\r\a\x9b2K\u03bb" if controls else ""
 
         @eval_mark("required")
         def eval_content(ctx):
             calls["grader"] += 1
             return EvalResult(
-                name="eval_content",
+                name="eval_content" + suffix,
                 score=0.0,
-                label="fail",
-                explanation="The output file is missing.",
-                details=["Expected hello in result.txt."],
+                label="fail" + suffix,
+                explanation="The output file is missing." + suffix,
+                details=["Expected hello in result.txt." + suffix],
+                metrics={"observed" + suffix: 0.0},
             )
 
         def collect_content(state):
@@ -876,6 +1121,10 @@ class TestShowCLISmoke:
 
         assert cli_main(arguments) == 0
         rendered = capsys.readouterr().out
+        assert not any(
+            (ord(character) < 32 and character not in "\n\t") or 127 <= ord(character) < 160
+            for character in rendered
+        )
         if json_output:
             payload = json.loads(rendered)
             assert payload["evals"] == json.loads((trace_dir / "evals.json").read_text())
@@ -888,6 +1137,8 @@ class TestShowCLISmoke:
             assert "The output file is missing." in rendered
             assert "Expected hello in result.txt." in rendered
             assert '"content": null' in rendered
+            if controls:
+                assert "\\x1b[2K\\r\\x07\\x9b2K\u03bb" in rendered
         assert calls == {"grader": 1, "collector": 1}
         assert {
             path.name: path.read_bytes() for path in trace_dir.iterdir() if path.is_file()

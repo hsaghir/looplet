@@ -62,6 +62,7 @@ from looplet._backend_contract import (
     json_snapshot,
 )
 from looplet.artifact_compat import (
+    _artifact_path,
     begin_artifact_write,
     read_artifact_descriptor,
     write_artifact_descriptor,
@@ -1291,7 +1292,7 @@ def _load_trace_calls(trace_dir: Path) -> list[dict[str, Any]]:
     )
     if descriptor is not None and "model_calls" not in descriptor["components"]:
         raise ValueError(f"Saved artifact in {trace_dir} does not declare a model_calls component")
-    manifest = trace_dir / "manifest.jsonl"
+    manifest = _artifact_path(trace_dir, "manifest.jsonl")
     calls: list[dict[str, Any]] = []
     if manifest.exists():
         for line_number, line in enumerate(
@@ -1379,12 +1380,12 @@ def _load_trace_calls(trace_dir: Path) -> list[dict[str, Any]]:
     else:
         # Fallback: scan call_NN_response.txt files.
         response_files: list[tuple[int, Path]] = []
-        for path in trace_dir.iterdir():
-            if not path.is_file():
-                continue
-            match = _CALL_RESPONSE_ARTIFACT.fullmatch(path.name)
+        for candidate in trace_dir.iterdir():
+            match = _CALL_RESPONSE_ARTIFACT.fullmatch(candidate.name)
             if match is not None:
-                response_files.append((int(match.group(1)), path))
+                path = _artifact_path(trace_dir, candidate.name)
+                if path.is_file():
+                    response_files.append((int(match.group(1)), path))
         response_files.sort(key=lambda item: item[0])
         for expected_index, (index, path) in enumerate(response_files):
             if index != expected_index:
@@ -1412,7 +1413,7 @@ def _load_trace_calls(trace_dir: Path) -> list[dict[str, Any]]:
 def _read_call_body(trace_dir: Path, idx: int | None) -> str | None:
     if idx is None:
         return None
-    path = trace_dir / f"call_{idx:02d}_response.txt"
+    path = _artifact_path(trace_dir, f"call_{idx:02d}_response.txt")
     if not path.exists():
         return None
     return path.read_text(encoding="utf-8")
@@ -1606,7 +1607,7 @@ def _prepare_replay(
     trajectory: dict[str, Any] = {}
     if config is None or task is None or requires_policy:
         descriptor = read_artifact_descriptor(trace_path, expected_kinds=("eval_run", "provenance"))
-        trajectory_path = trace_path / "trajectory.json"
+        trajectory_path = _artifact_path(trace_path, "trajectory.json")
         if trajectory_path.is_file() and (
             descriptor is None or "trajectory" in descriptor["components"]
         ):

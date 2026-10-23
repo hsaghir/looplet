@@ -82,6 +82,7 @@ code before tool permissions apply.
 | Unauthorized tool execution | Model request to host tool | Restricted registry, argument validation, explicit default-deny | An allowed tool must not expose broader authority |
 | Changed approved actions | Approval to dispatch | Bind approval to the exact action and policy | Trust the approval service and policy callbacks |
 | Checkpoint path confusion | Run identity or key to filesystem | Validate IDs and literal keys; reject cross-run write collisions | Keep the store private and host-owned |
+| Saved artifact path escape | Evidence directory to component reads | Resolve selected files inside the artifact root; reject escaping or broken links | Use stable host-owned storage and authenticate shared evidence |
 | Forged recovery state | Saved JSON to live state | Validate identity, structure, and recovery semantics | Authenticate records crossing a trust boundary |
 | Secret disclosure | Arguments to logs and saved evidence | Bounded diagnostics and configured redaction | Protect raw state, denial records, and application logs |
 | Host code execution | Extension loading to process | Review code and isolate execution | Dependency metadata does not establish code safety |
@@ -106,6 +107,16 @@ another run. They preserve corrupt existing records rather than replacing them.
 The filesystem must support hard links and atomic replacement. Unsupported
 operations fail without falling back to an unsafe overwrite. Cooperating writers
 can update their own run; arbitrary directory mutation remains outside this control.
+
+Saved eval and replay readers resolve selected files inside the artifact directory.
+This includes legacy payloads, optional case data, manifests, and indexed model-call files.
+Links to files inside that directory remain supported.
+Readers reject escaping or broken selected links before opening their targets.
+Broken metadata links cannot enable legacy fallback.
+These checks do not authenticate records or detect hard-link aliases.
+They do not protect directories that change during validation or reads.
+Use a private, stable copy when inspecting evidence from an untrusted source.
+Replay still executes fresh tools and effects under the host's policy and isolation controls.
 
 Permission rules use first-match order. The default remains `ALLOW` for
 compatibility; secure deployments must select `DENY` explicitly.
@@ -179,8 +190,9 @@ uv run pytest -q \
 ```
 
 The tests cover denied effects across sync/async and native/text execution,
-approval integrity, diagnostic privacy, checkpoint lookup and write boundaries, bundle
-entrypoint containment, recovery safety, redaction, and cooperative cancellation.
+approval integrity, diagnostic privacy, and checkpoint lookup and write boundaries.
+They also cover saved-artifact containment, replay effect boundaries, bundle entrypoint
+containment, recovery safety, redaction, and cooperative cancellation.
 Approval tests include fixed-seed nested mutations and unchanged-action controls.
 Checkpoint tests include synchronized writers and preservation on storage failures.
 Run `make check` before publishing changes.

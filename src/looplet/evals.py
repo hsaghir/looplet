@@ -83,6 +83,7 @@ from typing import TYPE_CHECKING, Any, Callable, NamedTuple, TextIO, cast
 from looplet.artifact_compat import (
     ARTIFACT_DESCRIPTOR,
     ARTIFACT_PENDING,
+    _artifact_path,
     begin_artifact_write,
     read_artifact_descriptor,
     write_artifact_descriptor,
@@ -457,7 +458,7 @@ class EvalContext:
             root,
             expected_kinds=("eval_run", "provenance"),
         )
-        traj_path = root / "trajectory.json"
+        traj_path = _artifact_path(root, "trajectory.json")
         if not traj_path.exists():
             raise FileNotFoundError(f"No trajectory.json in {root}")
 
@@ -479,7 +480,7 @@ class EvalContext:
         else:
             task = dict(raw_task)
         expected = data.get("expected")
-        expected_path = root / "expected.json"
+        expected_path = _artifact_path(root, "expected.json")
         if expected_path.exists():
             try:
                 persisted_expected = json.loads(expected_path.read_text())
@@ -542,7 +543,7 @@ class EvalContext:
                 final_output = raw_output
 
         # Also load from metrics.json if available (ground-truth data)
-        metrics_path = root / "metrics.json"
+        metrics_path = _artifact_path(root, "metrics.json")
         if metrics_path.exists():
             try:
                 metrics_data = json.loads(metrics_path.read_text())
@@ -566,7 +567,7 @@ class EvalContext:
         # outside the trajectory (test results, file diffs, repo
         # state, etc.). See EvalHook(collectors=...).
         artifacts: dict[str, Any] = {}
-        artifacts_path = root / "artifacts.json"
+        artifacts_path = _artifact_path(root, "artifacts.json")
         if artifacts_path.exists():
             try:
                 loaded = json.loads(artifacts_path.read_text())
@@ -1512,7 +1513,7 @@ def load_eval_run(directory: str | Path) -> "EvalRunRecord":
     context = EvalContext.from_trajectory_dir(root)
 
     results: list[EvalResult] = []
-    evals_path = root / "evals.json"
+    evals_path = _artifact_path(root, "evals.json")
     if evals_path.exists():
         try:
             raw = json.loads(evals_path.read_text())
@@ -1542,7 +1543,7 @@ def load_eval_run(directory: str | Path) -> "EvalRunRecord":
         context.metadata["eval_collector_errors"] = collector_errors
 
     case: EvalCase | None = None
-    case_path = root / "case.json"
+    case_path = _artifact_path(root, "case.json")
     if case_path.exists():
         try:
             cd = json.loads(case_path.read_text())

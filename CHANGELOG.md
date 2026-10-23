@@ -8,6 +8,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Security
 
+- Saved-assessment inspection escapes terminal controls in report fields, evidence links, and diagnostics. JSON values, Unicode, and saved evidence remain unchanged.
 - Saved-evidence readers reject selected FIFOs, sockets, devices, and directories before opening them. Missing optional files and contained links to regular files remain supported.
 - Human `show` and saved-trace `inspect` escape terminal controls in displayed evidence and errors. JSON values and saved files remain unchanged.
 - Trace inspection rejects escaping and broken selected component links, including legacy trajectory, manifest, and optional eval files. Contained links remain supported.

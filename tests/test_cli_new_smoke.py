@@ -366,6 +366,168 @@ def test_saved_eval_suite_inspection_preserves_case_grades(
     assert {path: path.read_bytes() for path in suite.rglob("*") if path.is_file()} == before
 
 
+_EXPERIMENT_TERMINAL_PAYLOADS = [
+    "\x1b[2J\x1b]0;untrusted\x07",
+    "\x9b31m\x9d0;untrusted\x9c",
+    "ordinary-\u03bb\u6587\u5b57\n\t",
+    "".join(chr(codepoint) for codepoint in (*range(32), *range(127, 160))),
+]
+
+
+def _assert_experiment_terminal_inert(text):
+    assert all(
+        ord(character) in (9, 10) or not (ord(character) < 32 or 127 <= ord(character) < 160)
+        for character in text
+    ), "active terminal controls"
+
+
+@pytest.mark.parametrize(
+    "field", ["report_path", "stage", "error", "capture_dir", "rescore_dir", "replay_dir"]
+)
+@pytest.mark.parametrize(
+    "payload", _EXPERIMENT_TERMINAL_PAYLOADS, ids=["c0", "c1", "unicode-layout", "all-controls"]
+)
+@pytest.mark.parametrize("json_output", [False, True])
+@pytest.mark.parametrize("trace_present", [False, True])
+def test_experiment_terminal_fields_are_inert_and_json_is_lossless(
+    tmp_path, capsys, field, payload, json_output, trace_present
+):
+    filename_payload = payload.replace("\x00", "").replace("/", "_")
+    folder = tmp_path / (
+        "experiment-" + filename_payload if field == "report_path" else "experiment"
+    )
+    folder.mkdir()
+    report = {
+        "passed": True,
+        "stage": "complete",
+        "error": None,
+        "capture_dir": "capture",
+        "rescore_dir": "rescore",
+        "replay_dir": "replay",
+        "stages": dict.fromkeys(("capture", "rescore", "replay"), "passed"),
+        "extension": {"raw": payload},
+    }
+    if field != "report_path":
+        report[field] = filename_payload if field.endswith("_dir") else payload
+    if trace_present:
+        for name in ("capture", "rescore", "replay"):
+            trace = folder / report[name + "_dir"]
+            trace.mkdir()
+            (trace / "marker.txt").write_text("saved evidence\n")
+    report_path = folder / "experiment.json"
+    report_path.write_text(json.dumps(report))
+    before = {path: path.read_bytes() for path in folder.rglob("*") if path.is_file()}
+    arguments = ["inspect", str(report_path)] + (["--json"] if json_output else [])
+    assert main(arguments) == 0
+    captured = capsys.readouterr()
+    assert not captured.err
+    _assert_experiment_terminal_inert(captured.out)
+    if json_output:
+        assert json.loads(captured.out) == report
+    else:
+        assert ("missing trace:" in captured.out) != trace_present
+        if "ordinary-" in payload:
+            assert payload in captured.out
+    assert {path: path.read_bytes() for path in folder.rglob("*") if path.is_file()} == before
+
+
+@pytest.mark.parametrize("field", ["history_path", "entry_id", "stage"])
+@pytest.mark.parametrize(
+    "payload", _EXPERIMENT_TERMINAL_PAYLOADS, ids=["c0", "c1", "unicode-layout", "all-controls"]
+)
+@pytest.mark.parametrize("json_output", [False, True])
+def test_experiment_terminal_history_is_inert_and_json_is_lossless(
+    tmp_path, capsys, field, payload, json_output
+):
+    filename_payload = payload.replace("\x00", "").replace("/", "_")
+    history = tmp_path / ("history-" + filename_payload if field == "history_path" else "history")
+    child = history / ("entry-" + filename_payload if field == "entry_id" else "entry")
+    child.mkdir(parents=True)
+    report = {
+        "passed": False,
+        "stage": payload if field == "stage" else "capture",
+        "capture_dir": None,
+        "replay_dir": None,
+        "stages": {"capture": "failed", "rescore": "not_run", "replay": "not_run"},
+    }
+    report_path = child / "experiment.json"
+    report_path.write_text(json.dumps(report))
+    before = {path: path.read_bytes() for path in history.rglob("*") if path.is_file()}
+    assert main(["inspect", str(history)] + (["--json"] if json_output else [])) == 0
+    captured = capsys.readouterr()
+    assert not captured.err
+    _assert_experiment_terminal_inert(captured.out)
+    if json_output:
+        assert json.loads(captured.out) == {
+            "schema": "looplet.experiment-history",
+            "version": 1,
+            "kind": "experiment_history",
+            "experiments": [
+                {
+                    "id": child.name,
+                    "experiment_dir": child.name,
+                    "passed": False,
+                    "stage": report["stage"],
+                    "stages": report["stages"],
+                    "error": None,
+                }
+            ],
+        }
+    elif "ordinary-" in payload:
+        assert payload in captured.out
+    assert {path: path.read_bytes() for path in history.rglob("*") if path.is_file()} == before
+
+
+@pytest.mark.parametrize("kind", ["experiment", "history"])
+@pytest.mark.parametrize(
+    "payload", _EXPERIMENT_TERMINAL_PAYLOADS, ids=["c0", "c1", "unicode-layout", "all-controls"]
+)
+@pytest.mark.parametrize("json_output", [False, True])
+@pytest.mark.parametrize("malformed", [False, True])
+def test_experiment_terminal_diagnostics_are_inert(
+    tmp_path, capsys, kind, payload, json_output, malformed
+):
+    folder = tmp_path / ("saved-" + payload.replace("\x00", "").replace("/", "_"))
+    report_path = folder / "experiment.json"
+    folder.mkdir()
+    report_path.write_text("{" if malformed else json.dumps({"passed": True}))
+    before = report_path.read_bytes()
+    target = report_path if kind == "experiment" else tmp_path
+    assert main(["inspect", str(target)] + (["--json"] if json_output else [])) == 1
+    captured = capsys.readouterr()
+    _assert_experiment_terminal_inert(captured.out + captured.err)
+    if kind == "experiment":
+        assert not captured.out and "invalid experiment report" in captured.err
+    else:
+        assert not captured.err and captured.out
+        if json_output:
+            assert json.loads(captured.out)["experiments"][0]["error"] is not None
+    assert report_path.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "payload", _EXPERIMENT_TERMINAL_PAYLOADS, ids=["c0", "c1", "unicode-layout", "all-controls"]
+)
+@pytest.mark.parametrize("json_output", [False, True])
+def test_experiment_terminal_history_listing_error_is_inert(
+    tmp_path, capsys, monkeypatch, payload, json_output
+):
+    from looplet.__main__ import _render_experiment_history
+
+    original_iterdir = Path.iterdir
+
+    def controlled_iterdir(path):
+        if path == tmp_path:
+            raise OSError(payload)
+        return original_iterdir(path)
+
+    monkeypatch.setattr(Path, "iterdir", controlled_iterdir)
+    assert _render_experiment_history(tmp_path, json_output=json_output) == 1
+    captured = capsys.readouterr()
+    assert not captured.out and captured.err
+    _assert_experiment_terminal_inert(captured.err)
+
+
 @pytest.mark.parametrize("json_output", [False, True])
 @pytest.mark.parametrize("legacy", [False, True])
 def test_experiment_history_inspection_is_read_only(

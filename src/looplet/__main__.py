@@ -1026,15 +1026,15 @@ def _render_experiment(report_path: Path, *, json_output: bool) -> int:
     try:
         report, stages = _read_experiment_report(report_path)
     except (OSError, ValueError) as error:
-        print(f"error: invalid experiment report {report_path}: {error}", file=sys.stderr)
+        _print_terminal(f"error: invalid experiment report {report_path}: {error}", file=sys.stderr)
         return 1
     if stages is None:
         return _render_eval_assessment(report_path, json_output=json_output)
     if json_output:
         print(json.dumps(report, indent=2))
         return 0
-    print(f"Experiment: {report_path.parent}")
-    print(
+    _print_terminal(f"Experiment: {report_path.parent}")
+    _print_terminal(
         f"  {'passed' if report['passed'] else 'failed'}; stage: {report.get('stage', 'unknown')}"
     )
     for name in ("capture", "rescore", "replay"):
@@ -1047,11 +1047,11 @@ def _render_experiment(report_path: Path, *, json_output: bool) -> int:
             elif trace_dir.name == name and (report_path.parent / name).is_dir():
                 trace_dir = report_path.parent / name
             if trace_dir.is_dir():
-                print(f"    inspect: looplet inspect {shlex.quote(str(trace_dir))}")
+                _print_terminal(f"    inspect: looplet inspect {shlex.quote(str(trace_dir))}")
             else:
-                print(f"    missing trace: {trace_dir}")
+                _print_terminal(f"    missing trace: {trace_dir}")
     if report.get("error"):
-        print(f"\nfailure: {report['error']}")
+        _print_terminal(f"\nfailure: {report['error']}")
     return 0
 
 
@@ -1063,7 +1063,9 @@ def _render_experiment_history(path: Path, *, json_output: bool) -> int | None:
             if child.is_dir() and (child / "experiment.json").is_file()
         )
     except OSError as error:
-        print(f"error: could not list experiment history {path}: {error}", file=sys.stderr)
+        _print_terminal(
+            f"error: could not list experiment history {path}: {error}", file=sys.stderr
+        )
         return 1
     if not children:
         return None
@@ -1096,7 +1098,7 @@ def _render_experiment_history(path: Path, *, json_output: bool) -> int | None:
     if json_output:
         print(json.dumps(report, indent=2))
     else:
-        print(f"Saved experiment history: {path}")
+        _print_terminal(f"Saved experiment history: {path}")
         print("  Read-only summaries; inspection does not rerun agents, tools, or graders.")
         for entry in experiments:
             status = (
@@ -1104,10 +1106,10 @@ def _render_experiment_history(path: Path, *, json_output: bool) -> int | None:
                 if entry["error"] is not None
                 else ("passed" if entry["passed"] else "failed")
             )
-            print(f"\n  {entry['id']}: {status}; stage: {entry['stage']}")
+            _print_terminal(f"\n  {entry['id']}: {status}; stage: {entry['stage']}")
             if entry["error"] is not None:
-                print(f"    error: {entry['error']}")
-            print(
+                _print_terminal(f"    error: {entry['error']}")
+            _print_terminal(
                 f"    inspect: looplet inspect {shlex.quote(str(path / entry['experiment_dir']))}"
             )
     return 1 if any(entry["error"] is not None for entry in experiments) else 0

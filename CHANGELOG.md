@@ -6,6 +6,16 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Security
+
+- Optional provider extras require `certifi>=2026.10.19` for the corrected CA bundle described in GHSA-6q48-6c7w-9gw2.
+- Matching `DEFAULT` permission rules resolve through the configured engine default instead of permitting an unresolved decision.
+- Approval checks preserve nested argument types when comparing the approved action with the action submitted for execution.
+- Permission failures retain diagnostic categories without logging raw exception text, approval tracebacks, or invalid approval payloads.
+- File checkpoint stores reject unsafe run IDs before access and treat lookup-key metacharacters literally.
+- File checkpoint stores reject cross-run filename collisions and preserve corrupt existing records. Atomic publication requires filesystem hard-link support.
+- The security policy documents trust boundaries, secure deployment requirements, residual risks, and controlled regression checks.
+
 ### Changed
 
 - OpenAI text streams yield visible text from multipart responses and exclude structured provider metadata in sync and async paths.

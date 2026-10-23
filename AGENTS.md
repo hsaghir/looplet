@@ -93,22 +93,24 @@ deliberate. The reasoning:
 
 1. Approval popups create alarm fatigue - users either rubber-stamp or
    disable them, so they degrade into security theater.
-2. The right boundary for an autonomous coding agent is the **process
-   sandbox**: a container, a VM, a chroot, an unprivileged user, a
-   firewalled VPC. These bound *all* tool effects, including ones the
-   approval list forgot to enumerate.
+2. Autonomous coding agents need **process isolation** with restricted
+    filesystem access, privileges, network access, and resource budgets.
+    A container or VM must be configured to enforce these limits.
+    A worktree, chroot, or network boundary alone is not sufficient isolation.
 3. Any project that needs human-in-the-loop approval can opt in
    explicitly with `PermissionHook(engine)` or `ApprovalHook(...)`,
    composed like any other hook.
 
 Recommended deployment patterns:
 
-- **Local development:** run inside a Docker container or a fresh git
-    worktree (`git worktree add`).
-- **CI / automated runs:** ephemeral container with the repo mounted
-    read-write and the network restricted to the LLM provider.
-- **Human-supervised:** `PermissionHook` + `ApprovalHook`; treat the
-    user as the sandbox.
+- **Local development:** use an unprivileged, restricted container or VM.
+    A fresh git worktree separates edits, not process privileges or secrets.
+- **CI / automated runs:** use an ephemeral, unprivileged worker with minimal
+    mounts, restricted network access, and external resource limits.
+- **Human-supervised:** add `PermissionHook` or `ApprovalHook` within the same
+    isolated worker. Approval is an authorization control, not a sandbox.
+
+Follow the [threat model and deployment controls](SECURITY.md#threat-model).
 
 Do not rely on prompt-level guidance ("don't run `rm -rf`") as a
 security control. Models will, eventually, ignore it.

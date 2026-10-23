@@ -38,9 +38,9 @@ classifiers = [
 dependencies = []
 
 [project.optional-dependencies]
-anthropic = ["anthropic>=0.34"]
-openai = ["openai>=1.30"]
-all = ["anthropic>=0.34", "openai>=1.30"]
+anthropic = ["anthropic>=0.34", "certifi>=2026.10.19"]
+openai = ["openai>=1.30", "certifi>=2026.10.19"]
+all = ["anthropic>=0.34", "openai>=1.30", "certifi>=2026.10.19"]
 
 [project.urls]
 Homepage = "https://hsaghir.com/looplet/"

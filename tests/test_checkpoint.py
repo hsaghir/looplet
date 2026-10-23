@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Barrier
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -610,6 +612,150 @@ class TestCheckpointStoreProtocol:
 
 
 class TestFileCheckpointStore:
+    @pytest.mark.parametrize("legacy", [False, True])
+    @pytest.mark.parametrize("reverse", [False, True])
+    def test_conflicting_run_names_cannot_overwrite_checkpoint(
+        self, tmp_path: Path, legacy: bool, reverse: bool
+    ) -> None:
+        store = FileCheckpointStore(tmp_path)
+        identities = [("run__nested", "step"), ("run", "nested__step")]
+        if legacy:
+            identities = [(None, "run__step"), ("run", "step")]
+        if reverse:
+            identities.reverse()
+        original = _make_checkpoint(step=7)
+        original.run_envelope = {"run_id": identities[0][0]} if identities[0][0] else None
+        replacement = _make_checkpoint(step=99)
+        replacement.run_envelope = {"run_id": identities[1][0]} if identities[1][0] else None
+        store.save(original, identities[0][1])
+        before = {entry.name: entry.read_bytes() for entry in tmp_path.iterdir()}
+
+        with pytest.raises(ValueError, match="run"):
+            store.save(replacement, identities[1][1])
+
+        assert {entry.name: entry.read_bytes() for entry in tmp_path.iterdir()} == before
+        restored = store.load(identities[0][1], run_id=identities[0][0])
+        assert restored is not None
+        assert restored.step_number == 7
+
+    @pytest.mark.parametrize("same_run", [False, True])
+    def test_concurrent_checkpoint_publication_preserves_run_identity(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, same_run: bool
+    ) -> None:
+        from os import link
+
+        identities = [("run__nested", "step"), ("run", "nested__step")]
+        if same_run:
+            identities = [("run", "step"), ("run", "step")]
+        barrier = Barrier(2)
+
+        def synchronized_link(source: Path, destination: Path) -> None:
+            barrier.wait(timeout=5)
+            link(source, destination)
+
+        monkeypatch.setattr("looplet.checkpoint.os.link", synchronized_link)
+
+        def persist(index: int) -> str:
+            run_id, key = identities[index]
+            checkpoint = _make_checkpoint(step=index + 1)
+            checkpoint.run_envelope = {"run_id": run_id}
+            try:
+                FileCheckpointStore(tmp_path).save(checkpoint, key)
+            except ValueError as exc:
+                assert not same_run
+                assert "run" in str(exc)
+                return "denied"
+            return "saved"
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            outcomes = list(executor.map(persist, range(2)))
+
+        assert sorted(outcomes) == (["saved", "saved"] if same_run else ["denied", "saved"])
+        files = list(tmp_path.iterdir())
+        assert len(files) == 1
+        saved = Checkpoint.from_dict(json.loads(files[0].read_text(encoding="utf-8")))
+        assert saved.run_id == identities[saved.step_number - 1][0]
+
+    def test_save_does_not_replace_corrupt_existing_checkpoint(self, tmp_path: Path) -> None:
+        path = tmp_path / "run__step.json"
+        path.write_text("{", encoding="utf-8")
+        checkpoint = _make_checkpoint()
+        checkpoint.run_envelope = {"run_id": "run"}
+
+        with pytest.raises(json.JSONDecodeError):
+            FileCheckpointStore(tmp_path).save(checkpoint, "step")
+
+        assert path.read_bytes() == b"{"
+        assert list(tmp_path.iterdir()) == [path]
+
+    def test_unsupported_atomic_publication_fails_closed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def unsupported_link(source: Path, destination: Path) -> None:
+            raise OSError("hard links unavailable")
+
+        monkeypatch.setattr("looplet.checkpoint.os.link", unsupported_link)
+
+        with pytest.raises(OSError, match="hard links unavailable"):
+            FileCheckpointStore(tmp_path).save(_make_checkpoint(), "step")
+
+        assert list(tmp_path.iterdir()) == []
+
+    @pytest.mark.parametrize("absolute", [False, True])
+    def test_run_id_cannot_read_outside_store(self, tmp_path: Path, absolute: bool) -> None:
+        store = FileCheckpointStore(tmp_path / "store")
+        checkpoint = _make_checkpoint()
+        run_id = str(tmp_path / "outside") if absolute else "../outside"
+        checkpoint.run_envelope = {"run_id": run_id}
+        outside = tmp_path / "outside__step.json"
+        outside.write_text(json.dumps(checkpoint.to_dict()), encoding="utf-8")
+
+        with pytest.raises(ValueError, match="run_id"):
+            store.load("step", run_id=run_id)
+
+    @pytest.mark.parametrize("operation", ["save", "load", "load_latest", "load_latest_for_resume"])
+    @pytest.mark.parametrize(
+        "run_id", ["../outside", "..\\outside", "C:outside", "D:outside", "", ".", "..", "bad\0id"]
+    )
+    def test_unsafe_run_id_is_rejected_before_access(
+        self, tmp_path: Path, operation: str, run_id: str
+    ) -> None:
+        store = FileCheckpointStore(tmp_path / "store")
+        checkpoint = _make_checkpoint()
+        checkpoint.run_envelope = {"run_id": run_id}
+
+        with pytest.raises(ValueError, match="run_id"):
+            if operation == "save":
+                store.save(checkpoint, "step")
+            elif operation == "load":
+                store.load("step", run_id=run_id)
+            else:
+                getattr(store, operation)(run_id=run_id)
+
+        assert list((tmp_path / "store").iterdir()) == []
+
+    @pytest.mark.parametrize("key", ["*", "secre?", "[s]ecret"])
+    def test_lookup_key_is_not_a_glob(self, tmp_path: Path, key: str) -> None:
+        store = FileCheckpointStore(tmp_path)
+        checkpoint = _make_checkpoint()
+        checkpoint.run_envelope = {"run_id": "run-a"}
+        store.save(checkpoint, "secret")
+
+        assert store.load(key) is None
+
+    @pytest.mark.parametrize("key", ["[pending]", "step?", "literal*"])
+    def test_namespaced_lookup_preserves_literal_key(self, tmp_path: Path, key: str) -> None:
+        store = FileCheckpointStore(tmp_path)
+        checkpoint = _make_checkpoint(step=7)
+        checkpoint.run_envelope = {"run_id": "run-a"}
+        store.save(checkpoint, key)
+
+        loaded = store.load(key)
+
+        assert loaded is not None
+        assert loaded.step_number == 7
+        assert loaded.run_id == "run-a"
+
     def test_save_creates_json_file(self, tmp_path: Path) -> None:
         store = FileCheckpointStore(tmp_path)
         cp = _make_checkpoint()

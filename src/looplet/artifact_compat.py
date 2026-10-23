@@ -96,6 +96,10 @@ def _artifact_path(root: Path, filename: str) -> Path:
         raise ValueError(f"Saved artifact file {filename!r} is outside {root}")
     if path.is_symlink() and not resolved.exists():
         raise ValueError(f"Invalid saved artifact link {filename!r} in {root}: missing target")
+    if resolved.exists() and not resolved.is_file():
+        raise ValueError(
+            f"could not read saved artifact file {filename!r} in {root}: expected a regular file"
+        )
     return resolved
 
 

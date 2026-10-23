@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import socket
 from pathlib import Path
 
 import pytest
@@ -20,6 +22,76 @@ from looplet.artifact_compat import (
 from looplet.provenance import ProvenanceSink, _load_trace_calls, async_replay_loop, replay_loop
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "artifact_compat"
+
+
+@pytest.mark.parametrize("file_type", ["fifo", "socket", "directory"])
+@pytest.mark.parametrize("link_form", ["direct", "relative", "absolute", "chain"])
+@pytest.mark.parametrize(
+    ("filename", "legacy"),
+    [
+        (filename, legacy)
+        for legacy in (False, True)
+        for filename in (
+            ARTIFACT_DESCRIPTOR,
+            "artifacts.json",
+            "evals.json",
+            "trajectory.json",
+            "case.json",
+            "expected.json",
+            "metrics.json",
+        )
+        if not (legacy and filename == ARTIFACT_DESCRIPTOR)
+    ],
+)
+def test_special_saved_file_is_rejected_before_open(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    filename: str,
+    legacy: bool,
+    link_form: str,
+    file_type: str,
+) -> None:
+    run = tmp_path / "run"
+    shutil.copytree(_FIXTURES / "v1_eval_run", run)
+    if legacy:
+        (run / ARTIFACT_DESCRIPTOR).unlink()
+    component = run / filename
+    component.unlink(missing_ok=True)
+    target = component if link_form == "direct" else run / "payload"
+    if file_type == "fifo":
+        if not hasattr(os, "mkfifo"):
+            pytest.skip("Named pipes require POSIX")
+        os.mkfifo(target)
+    elif file_type == "socket":
+        if not hasattr(socket, "AF_UNIX"):
+            pytest.skip("Unix sockets are unavailable")
+        monkeypatch.chdir(run)
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as channel:
+            channel.bind(target.name)
+    else:
+        target.mkdir()
+    if link_form == "relative":
+        component.symlink_to(target.name)
+    elif link_form == "absolute":
+        component.symlink_to(target)
+    elif link_form == "chain":
+        (run / "hop").symlink_to(target.name)
+        component.symlink_to("hop")
+    open_file = Path.open
+    special_reads = []
+
+    def observe_open(path: Path, *args, **kwargs):
+        if path.resolve() == target:
+            special_reads.append(path)
+            pytest.fail("special saved file opened before validation")
+        return open_file(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", observe_open)
+
+    with pytest.raises(ValueError, match="regular file|requires"):
+        load_eval_run(run)
+
+    assert special_reads == []
 
 
 @pytest.mark.parametrize("absolute", [False, True])

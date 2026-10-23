@@ -366,6 +366,256 @@ def test_saved_eval_suite_inspection_preserves_case_grades(
     assert {path: path.read_bytes() for path in suite.rglob("*") if path.is_file()} == before
 
 
+def _experiment_report_boundary_payload(kind, passed=True):
+    marker = "report-boundary-private-marker"
+    if kind == "assessment":
+        return {
+            "schema": "looplet.eval-assessment",
+            "version": 1,
+            "assessed_at": "2026-10-23T00:00:00Z",
+            "assessment": {
+                "schema": "looplet.eval-summary",
+                "version": 2,
+                "passed": passed,
+                "state": "pass" if passed else "fail",
+                "threshold": 1.0,
+                "cases": [{"id": marker, "results": []}],
+                "integrity_failures": [],
+            },
+            "evidence": {},
+        }
+    return {"passed": passed, "stage": marker, "capture_dir": None, "replay_dir": None}
+
+
+def _inspect_experiment_report_boundary(arguments, target, monkeypatch, capsys):
+    target = target.resolve()
+    opened = []
+    original_open = Path.open
+
+    def observed_open(path, *args, **kwargs):
+        if path.resolve() == target:
+            opened.append(path)
+        return original_open(path, *args, **kwargs)
+
+    def unexpected_execution(*args, **kwargs):
+        pytest.fail("Saved report inspection must not execute providers or graders")
+
+    with monkeypatch.context() as observer:
+        observer.setattr(Path, "open", observed_open)
+        observer.setattr("looplet.evals.eval_run", unexpected_execution)
+        observer.setattr("looplet.backends.make_backend", unexpected_execution)
+        status = main(arguments)
+    return status, capsys.readouterr(), opened
+
+
+@pytest.mark.parametrize("view", ["directory", "file", "history"])
+@pytest.mark.parametrize("kind", ["experiment", "assessment"])
+@pytest.mark.parametrize("json_output", [False, True])
+@pytest.mark.parametrize(
+    "topology",
+    [
+        "plain",
+        "contained-relative",
+        "contained-absolute",
+        "contained-chain",
+        "outside-relative",
+        "outside-absolute",
+        "outside-chain",
+    ],
+)
+def test_experiment_report_boundary_file_links(
+    tmp_path, monkeypatch, capsys, view, kind, json_output, topology
+):
+    root = tmp_path / "selected evidence"
+    record = root / "entry" if view == "history" else root
+    record.mkdir(parents=True)
+    filename = "assessment.json" if view == "file" and kind == "assessment" else "experiment.json"
+    report_path = record / filename
+    outside = topology.startswith("outside")
+    target = (
+        tmp_path / "private evidence.json"
+        if outside
+        else report_path
+        if topology == "plain"
+        else record / "report data.json"
+    )
+    report = _experiment_report_boundary_payload(kind)
+    raw = json.dumps(report).encode()
+    target.write_bytes(raw)
+    links = []
+    if topology != "plain":
+        destination = target
+        if topology.endswith("chain"):
+            relay = record / "report relay.json"
+            relay.symlink_to(os.path.relpath(target, relay.parent))
+            links.append(relay)
+            destination = relay
+        report_path.symlink_to(
+            destination
+            if topology.endswith("absolute")
+            else os.path.relpath(destination, report_path.parent)
+        )
+        links.append(report_path)
+    link_targets = {link: os.readlink(link) for link in links}
+    arguments = ["inspect", str(report_path if view == "file" else root)]
+    if json_output:
+        arguments.append("--json")
+    status, captured, opened = _inspect_experiment_report_boundary(
+        arguments, target, monkeypatch, capsys
+    )
+    assert target.read_bytes() == raw
+    assert {link: os.readlink(link) for link in links} == link_targets
+    assert "Traceback" not in captured.err
+    if outside:
+        assert not opened, "saved report escaped selected directory"
+        assert status == 1
+        assert "report-boundary-private-marker" not in captured.out + captured.err
+    else:
+        assert opened
+        assert status == int(view == "history" and kind == "assessment")
+    if view == "history" and json_output:
+        history = json.loads(captured.out)
+        assert history["schema"] == "looplet.experiment-history"
+        assert len(history["experiments"]) == 1
+        entry = history["experiments"][0]
+        assert entry["id"] == entry["experiment_dir"] == "entry"
+        if outside or kind == "assessment":
+            assert entry["passed"] is None and entry["error"]
+        else:
+            assert entry["passed"] is True and entry["error"] is None
+            assert entry["stage"] == report["stage"]
+    elif not outside and json_output:
+        assert json.loads(captured.out) == report
+    elif not outside and not (view == "history" and kind == "assessment"):
+        assert "report-boundary-private-marker" in captured.out
+
+
+@pytest.mark.parametrize("json_output", [False, True])
+@pytest.mark.parametrize("passed", [False, True])
+@pytest.mark.parametrize(
+    "topology",
+    [
+        "contained-relative",
+        "contained-absolute",
+        "contained-chain",
+        "outside-relative",
+        "outside-absolute",
+        "outside-chain",
+    ],
+)
+def test_experiment_report_boundary_history_directory_links(
+    tmp_path, monkeypatch, capsys, json_output, passed, topology
+):
+    root = tmp_path / "selected history"
+    root.mkdir()
+    outside = topology.startswith("outside")
+    destination = tmp_path / "private experiment" if outside else root / "storage" / "record"
+    destination.mkdir(parents=True)
+    target = destination / "experiment.json"
+    report = _experiment_report_boundary_payload("experiment", passed=passed)
+    raw = json.dumps(report).encode()
+    target.write_bytes(raw)
+    linked = root / "entry"
+    links = []
+    if topology.endswith("chain"):
+        support = root / "link support"
+        support.mkdir()
+        relay = support / "relay"
+        relay.symlink_to(os.path.relpath(destination, support), target_is_directory=True)
+        links.append(relay)
+        destination = relay
+    linked.symlink_to(
+        destination if topology.endswith("absolute") else os.path.relpath(destination, root),
+        target_is_directory=True,
+    )
+    links.append(linked)
+    link_targets = {link: os.readlink(link) for link in links}
+    arguments = ["inspect", str(root)]
+    if json_output:
+        arguments.append("--json")
+    status, captured, opened = _inspect_experiment_report_boundary(
+        arguments, target, monkeypatch, capsys
+    )
+    assert target.read_bytes() == raw
+    assert {link: os.readlink(link) for link in links} == link_targets
+    assert "Traceback" not in captured.err
+    if outside:
+        assert not opened, "saved report escaped selected directory"
+        assert status == 1 and "report-boundary-private-marker" not in captured.out
+    else:
+        assert opened and status == 0
+    if json_output:
+        history = json.loads(captured.out)
+        assert len(history["experiments"]) == 1
+        entry = history["experiments"][0]
+        assert entry["id"] == "entry"
+        assert entry["passed"] is (None if outside else passed)
+        assert bool(entry["error"]) is outside
+
+
+@pytest.mark.parametrize("view", ["directory", "file", "history"])
+@pytest.mark.parametrize("json_output", [False, True])
+def test_experiment_report_boundary_explicit_root_link(
+    tmp_path, monkeypatch, capsys, view, json_output
+):
+    real_root = tmp_path / "explicitly selected data"
+    record = real_root / "entry" if view == "history" else real_root
+    record.mkdir(parents=True)
+    target = record / "experiment.json"
+    report = _experiment_report_boundary_payload("experiment")
+    raw = json.dumps(report).encode()
+    target.write_bytes(raw)
+    selected = tmp_path / "chosen root"
+    selected.symlink_to(real_root, target_is_directory=True)
+    arguments = ["inspect", str(selected / "experiment.json" if view == "file" else selected)]
+    if json_output:
+        arguments.append("--json")
+    status, captured, opened = _inspect_experiment_report_boundary(
+        arguments, target, monkeypatch, capsys
+    )
+    assert status == 0 and opened and target.read_bytes() == raw
+    assert selected.is_symlink() and selected.resolve() == real_root
+    if json_output and view != "history":
+        assert json.loads(captured.out) == report
+    elif json_output:
+        entry = json.loads(captured.out)["experiments"][0]
+        assert entry["passed"] is True and entry["error"] is None
+    else:
+        assert "report-boundary-private-marker" in captured.out
+
+
+@pytest.mark.parametrize("view", ["directory", "file", "history"])
+@pytest.mark.parametrize("json_output", [False, True])
+def test_experiment_report_boundary_history_scope(tmp_path, monkeypatch, capsys, view, json_output):
+    root = tmp_path / "selected history"
+    record = root / "entry"
+    record.mkdir(parents=True)
+    storage = root / "report storage"
+    storage.mkdir()
+    target = storage / "saved report.json"
+    report = _experiment_report_boundary_payload("experiment")
+    raw = json.dumps(report).encode()
+    target.write_bytes(raw)
+    report_path = record / "experiment.json"
+    report_path.symlink_to(os.path.relpath(target, record))
+    selected = root if view == "history" else report_path if view == "file" else record
+    arguments = ["inspect", str(selected)]
+    if json_output:
+        arguments.append("--json")
+    status, captured, opened = _inspect_experiment_report_boundary(
+        arguments, target, monkeypatch, capsys
+    )
+    assert target.read_bytes() == raw and report_path.is_symlink()
+    if view == "history":
+        assert status == 0 and opened
+        if json_output:
+            entry = json.loads(captured.out)["experiments"][0]
+            assert entry["passed"] is True and entry["error"] is None
+    else:
+        assert not opened, "saved report escaped selected directory"
+        assert status == 1 and "report-boundary-private-marker" not in captured.out
+
+
 _EXPERIMENT_TERMINAL_PAYLOADS = [
     "\x1b[2J\x1b]0;untrusted\x07",
     "\x9b31m\x9d0;untrusted\x9c",

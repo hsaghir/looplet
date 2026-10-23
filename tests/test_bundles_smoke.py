@@ -35,6 +35,35 @@ class TestSkillBundles:
     def existing_cli_workspace(self, tmp_path):
         (tmp_path / "workspace").mkdir()
 
+    @pytest.mark.parametrize("entrypoint_kind", ["parent", "absolute", "symlink"])
+    def test_rejects_outside_entrypoint_before_import(self, tmp_path, entrypoint_kind):
+        bundle = tmp_path / "bundle"
+        bundle.mkdir()
+        marker = tmp_path / "unexpected-import"
+        outside = tmp_path / "outside.py"
+        outside.write_text(
+            f"from pathlib import Path\nPath({str(marker)!r}).write_text('executed')\n",
+            encoding="utf-8",
+        )
+        if entrypoint_kind == "symlink":
+            entrypoint = bundle / "entrypoint.py"
+            entrypoint.symlink_to(outside)
+            entrypoint_name = entrypoint.name
+        elif entrypoint_kind == "absolute":
+            entrypoint_name = str(outside)
+        else:
+            entrypoint_name = "../outside.py"
+        (bundle / "SKILL.md").write_text(
+            "---\nname: boundary-test\ndescription: Entry point containment.\n"
+            f"entrypoint: {entrypoint_name}\n---\n",
+            encoding="utf-8",
+        )
+
+        with pytest.raises(ValueError):
+            load_skill_bundle(bundle)
+
+        assert not marker.exists()
+
     def test_cli_blueprint_redirects_authored_output_and_closes_resources(self, tmp_path, capsys):
         bundle = tmp_path / "noisy_bundle"
         bundle.mkdir()

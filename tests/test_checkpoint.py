@@ -610,6 +610,61 @@ class TestCheckpointStoreProtocol:
 
 
 class TestFileCheckpointStore:
+    @pytest.mark.parametrize("absolute", [False, True])
+    def test_run_id_cannot_read_outside_store(self, tmp_path: Path, absolute: bool) -> None:
+        store = FileCheckpointStore(tmp_path / "store")
+        checkpoint = _make_checkpoint()
+        run_id = str(tmp_path / "outside") if absolute else "../outside"
+        checkpoint.run_envelope = {"run_id": run_id}
+        outside = tmp_path / "outside__step.json"
+        outside.write_text(json.dumps(checkpoint.to_dict()), encoding="utf-8")
+
+        with pytest.raises(ValueError, match="run_id"):
+            store.load("step", run_id=run_id)
+
+    @pytest.mark.parametrize("operation", ["save", "load", "load_latest", "load_latest_for_resume"])
+    @pytest.mark.parametrize(
+        "run_id", ["../outside", "..\\outside", "C:outside", "D:outside", "", ".", "..", "bad\0id"]
+    )
+    def test_unsafe_run_id_is_rejected_before_access(
+        self, tmp_path: Path, operation: str, run_id: str
+    ) -> None:
+        store = FileCheckpointStore(tmp_path / "store")
+        checkpoint = _make_checkpoint()
+        checkpoint.run_envelope = {"run_id": run_id}
+
+        with pytest.raises(ValueError, match="run_id"):
+            if operation == "save":
+                store.save(checkpoint, "step")
+            elif operation == "load":
+                store.load("step", run_id=run_id)
+            else:
+                getattr(store, operation)(run_id=run_id)
+
+        assert list((tmp_path / "store").iterdir()) == []
+
+    @pytest.mark.parametrize("key", ["*", "secre?", "[s]ecret"])
+    def test_lookup_key_is_not_a_glob(self, tmp_path: Path, key: str) -> None:
+        store = FileCheckpointStore(tmp_path)
+        checkpoint = _make_checkpoint()
+        checkpoint.run_envelope = {"run_id": "run-a"}
+        store.save(checkpoint, "secret")
+
+        assert store.load(key) is None
+
+    @pytest.mark.parametrize("key", ["[pending]", "step?", "literal*"])
+    def test_namespaced_lookup_preserves_literal_key(self, tmp_path: Path, key: str) -> None:
+        store = FileCheckpointStore(tmp_path)
+        checkpoint = _make_checkpoint(step=7)
+        checkpoint.run_envelope = {"run_id": "run-a"}
+        store.save(checkpoint, key)
+
+        loaded = store.load(key)
+
+        assert loaded is not None
+        assert loaded.step_number == 7
+        assert loaded.run_id == "run-a"
+
     def test_save_creates_json_file(self, tmp_path: Path) -> None:
         store = FileCheckpointStore(tmp_path)
         cp = _make_checkpoint()

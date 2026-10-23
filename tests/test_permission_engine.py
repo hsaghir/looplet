@@ -2,6 +2,14 @@
 
 from __future__ import annotations
 
+import json
+import random
+from copy import deepcopy
+from unittest.mock import patch
+
+import pytest
+
+from looplet.async_loop import async_composable_loop
 from looplet.loop import LoopConfig, composable_loop
 from looplet.permissions import (
     PermissionDecision,
@@ -10,6 +18,7 @@ from looplet.permissions import (
     PermissionOutcome,
     PermissionRule,
 )
+from looplet.testing import AsyncMockLLMBackend, MockLLMBackend
 from looplet.tools import BaseToolRegistry, ToolSpec
 from looplet.types import DefaultState, ErrorKind, LLMBackend, ToolCall
 
@@ -55,6 +64,49 @@ class TestRuleMatching:
 
 
 class TestEngineEvaluate:
+    @pytest.mark.parametrize(
+        "default, expected",
+        [
+            (PermissionDecision.ALLOW, PermissionDecision.ALLOW),
+            (PermissionDecision.DENY, PermissionDecision.DENY),
+            (PermissionDecision.ASK, PermissionDecision.DENY),
+            (PermissionDecision.DEFAULT, PermissionDecision.DENY),
+        ],
+    )
+    def test_matching_default_rule_returns_concrete_decision(self, default, expected):
+        engine = PermissionEngine(
+            default=default,
+            rules=[PermissionRule(tool="danger", decision=PermissionDecision.DEFAULT)],
+        )
+
+        outcome = engine.evaluate(ToolCall(tool="danger", args={}))
+
+        assert outcome.decision == expected
+        assert outcome.allowed != outcome.denied
+
+    @pytest.mark.parametrize("source", ["matcher", "approval", "invalid_approval"])
+    def test_permission_failure_logs_do_not_expose_argument_values(self, caplog, source):
+        sentinel = "permission-secret-sentinel"
+
+        def unavailable(*args):
+            raise ValueError(f"invalid credential: {sentinel}")
+
+        engine = PermissionEngine(default=PermissionDecision.DENY)
+        if source == "matcher":
+            engine.deny("danger", arg_matcher=unavailable)
+        else:
+            engine.ask("danger")
+            if source == "approval":
+                engine.ask_handler = unavailable
+            else:
+                engine.ask_handler = lambda call, rule: {"credential": sentinel}
+
+        outcome = engine.evaluate(ToolCall(tool="danger", args={"credential": sentinel}))
+
+        assert outcome.denied
+        assert caplog.records
+        assert sentinel not in caplog.text
+
     def test_first_match_wins(self):
         eng = PermissionEngine()
         eng.deny("bash", arg_matcher=lambda a: "rm" in a.get("cmd", ""), reason="danger")
@@ -106,6 +158,50 @@ class TestEngineEvaluate:
 
         eng.ask_handler = change_policy
         assert eng.evaluate(ToolCall(tool="bash", args={"cmd": "original"})).denied
+
+    @pytest.mark.parametrize(
+        "original, changed",
+        [(True, 1), (False, 0), (1, 1.0), ([True], [1]), ({"value": False}, {"value": 0})],
+    )
+    def test_approval_rejects_argument_type_changes(self, original, changed):
+        engine = PermissionEngine(default=PermissionDecision.DENY)
+        engine.ask("danger")
+
+        def approve(call, rule):
+            call.args["value"] = changed
+            return PermissionDecision.ALLOW
+
+        engine.ask_handler = approve
+
+        assert engine.evaluate(ToolCall(tool="danger", args={"value": original})).denied
+
+    @pytest.mark.parametrize("change_action", [False, True])
+    def test_seeded_nested_approval_mutations(self, change_action):
+        generator = random.Random(0x5EC0)
+        for case_index in range(128):
+            original, changed = generator.choice(
+                [(True, 1), (False, 0), (1, 1.0), (0, False), (1.0, 1)]
+            )
+            for depth in range(generator.randrange(1, 6)):
+                if generator.choice([False, True]):
+                    original = [None, original, "unchanged"]
+                    changed = [None, changed, "unchanged"]
+                else:
+                    key = f"field-{depth}"
+                    original = {key: original, "unchanged": "value"}
+                    changed = {key: changed, "unchanged": "value"}
+            replacement = changed if change_action else deepcopy(original)
+
+            def approve(call, rule):
+                call.args["value"] = replacement
+                return PermissionDecision.ALLOW
+
+            engine = PermissionEngine(ask_handler=approve, default=PermissionDecision.DENY)
+            engine.ask("danger")
+            outcome = engine.evaluate(ToolCall(tool="danger", args={"value": original}))
+
+            assert outcome.denied is change_action, f"seed=0x5EC0 case={case_index}"
+            assert outcome.allowed is not change_action, f"seed=0x5EC0 case={case_index}"
 
     def test_ask_handler_failure_denies(self):
         def unavailable(call, rule):
@@ -166,6 +262,84 @@ class TestLoopIntegration:
             )
         )
         return reg
+
+    @pytest.mark.parametrize("async_mode", [False, True])
+    @pytest.mark.parametrize("native", [False, True])
+    async def test_matching_default_rule_cannot_bypass_default_deny(self, async_mode, native):
+        ran: list[str] = []
+        engine = PermissionEngine(default=PermissionDecision.DENY)
+        engine.rules.append(PermissionRule(tool="danger", decision=PermissionDecision.DEFAULT))
+        response = '{"tool":"danger","args":{"cmd":"controlled-effect"}}'
+        backend = (
+            AsyncMockLLMBackend(responses=[response], cycle=False)
+            if async_mode
+            else MockLLMBackend(responses=[response], cycle=False)
+        )
+        arguments = {
+            "tools": self._reg(ran),
+            "config": LoopConfig(max_steps=1, use_native_tools=native),
+            "state": DefaultState(max_steps=1),
+            "hooks": [PermissionHook(engine)],
+        }
+        with patch.object(
+            backend, "generate_with_tools", wraps=backend.generate_with_tools
+        ) as native_generate:
+            if async_mode:
+                steps = [step async for step in async_composable_loop(llm=backend, **arguments)]
+            else:
+                steps = list(composable_loop(llm=backend, **arguments))
+
+        assert native_generate.call_count == int(native)
+        assert backend.calls == 1
+
+        assert ran == []
+        assert steps[0].tool_result.error_kind == ErrorKind.PERMISSION_DENIED
+        assert len(engine.denials) == 1
+
+    @pytest.mark.parametrize("async_mode", [False, True])
+    @pytest.mark.parametrize("native", [False, True])
+    @pytest.mark.parametrize(
+        "original, changed",
+        [(True, 1), (False, 0), (1, 1.0), ([True], [1]), ({"value": False}, {"value": 0})],
+    )
+    async def test_changed_approved_argument_types_never_execute(
+        self, async_mode, native, original, changed
+    ):
+        ran: list[str] = []
+        approvals = []
+        engine = PermissionEngine(default=PermissionDecision.DENY)
+        engine.ask("danger")
+
+        def approve(call, rule):
+            approvals.append(call.args["cmd"])
+            return PermissionDecision.ALLOW
+
+        class ChangeArgs:
+            def pre_dispatch(self, state, session_log, tool_call, step_num):
+                tool_call.args["cmd"] = changed
+
+        engine.ask_handler = approve
+        response = json.dumps({"tool": "danger", "args": {"cmd": original}})
+        backend = (
+            AsyncMockLLMBackend(responses=[response], cycle=False)
+            if async_mode
+            else MockLLMBackend(responses=[response], cycle=False)
+        )
+        arguments = {
+            "tools": self._reg(ran),
+            "config": LoopConfig(max_steps=1, use_native_tools=native),
+            "state": DefaultState(max_steps=1),
+            "hooks": [PermissionHook(engine), ChangeArgs()],
+        }
+
+        if async_mode:
+            steps = [step async for step in async_composable_loop(llm=backend, **arguments)]
+        else:
+            steps = list(composable_loop(llm=backend, **arguments))
+
+        assert approvals == [original]
+        assert ran == []
+        assert steps[0].tool_result.error_kind == ErrorKind.PERMISSION_DENIED
 
     def test_engine_blocks_dispatch(self):
         ran: list[str] = []

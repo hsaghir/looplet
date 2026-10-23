@@ -10,9 +10,11 @@ Provides:
 
 from __future__ import annotations
 
+import glob
 import inspect
 import json
 import logging
+import ntpath
 import os
 import tempfile
 import time
@@ -405,8 +407,20 @@ class FileCheckpointStore:
         self._dir.mkdir(parents=True, exist_ok=True)
 
     @staticmethod
+    def _validate_run_id(run_id: str | None) -> None:
+        if run_id is not None and (
+            not isinstance(run_id, str)
+            or not run_id
+            or run_id in {".", ".."}
+            or ntpath.splitdrive(run_id)[0]
+            or any(separator in run_id for separator in ("/", "\\", "\0"))
+        ):
+            raise ValueError("checkpoint run_id must be a nonempty path component")
+
+    @staticmethod
     def key_for(checkpoint: Checkpoint, key: str) -> str:
         """Return a run-scoped checkpoint key, preserving legacy keys."""
+        FileCheckpointStore._validate_run_id(checkpoint.run_id)
         safe_key = Path(key).name
         return f"{checkpoint.run_id}__{safe_key}" if checkpoint.run_id else safe_key
 
@@ -432,6 +446,7 @@ class FileCheckpointStore:
 
     def load(self, key: str, *, run_id: str | None = None) -> Checkpoint | None:
         """Read checkpoint from ``{directory}/{key}.json``; None if missing."""
+        self._validate_run_id(run_id)
         safe_key = Path(key).name  # strip any directory separators to prevent traversal
         path = (
             self._dir / f"{run_id}__{safe_key}.json"
@@ -441,7 +456,7 @@ class FileCheckpointStore:
         if run_id is not None and not path.exists():
             path = self._dir / f"{safe_key}.json"
         if not path.exists():
-            namespaced = sorted(self._dir.glob(f"*__{safe_key}.json"))
+            namespaced = sorted(self._dir.glob(f"*__{glob.escape(safe_key)}.json"))
             if len(namespaced) == 1:
                 path = namespaced[0]
             elif len(namespaced) > 1:
@@ -463,6 +478,7 @@ class FileCheckpointStore:
         callers that want crash-resume semantics must use
         :meth:`load_latest_for_resume`.
         """
+        self._validate_run_id(run_id)
         best: Checkpoint | None = None
         for path in sorted(self._dir.glob("*.json")):
             try:
@@ -486,6 +502,7 @@ class FileCheckpointStore:
         Corrupt selected-run or legacy files block recovery.
         Other run namespaces remain isolated.
         """
+        self._validate_run_id(run_id)
         best: Checkpoint | None = None
         terminal: Checkpoint | None = None
         for path in sorted(self._dir.glob("*.json")):

@@ -31,6 +31,20 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _same_action_value(before: Any, after: Any) -> bool:
+    if type(before) is not type(after):
+        return False
+    if isinstance(before, dict):
+        return {(type(key), key) for key in before} == {(type(key), key) for key in after} and all(
+            _same_action_value(value, after[key]) for key, value in before.items()
+        )
+    if isinstance(before, (list, tuple)):
+        return len(before) == len(after) and all(
+            _same_action_value(original, current) for original, current in zip(before, after)
+        )
+    return before == after
+
+
 class PermissionDecision(str, Enum):
     """Four-way decision produced by a rule or the engine as a whole."""
 
@@ -83,7 +97,7 @@ class PermissionRule:
                 "failing closed (matches=%s)",
                 self.tool,
                 self.decision.value,
-                exc,
+                type(exc).__name__,
                 fail_closed_match,
             )
             return fail_closed_match, True
@@ -180,6 +194,8 @@ class PermissionEngine:
     def evaluate(self, call: ToolCall) -> PermissionOutcome:
         """Run the call through all rules; first match wins.
 
+        A matching ``DEFAULT`` rule resolves through the engine default.
+
         When a rule's decision is ``ASK``:
         - If an ``ask_handler`` is set, it is called and must return
           ``ALLOW`` or ``DENY``. Any other value (including ``ASK`` or
@@ -190,6 +206,8 @@ class PermissionEngine:
             matched, matcher_failed = rule._match(call)
             if matched:
                 decision = rule.decision
+                if decision == PermissionDecision.DEFAULT:
+                    decision = self._resolve_default(call)
                 if matcher_failed and decision == PermissionDecision.ASK:
                     decision = PermissionDecision.DENY
                 elif decision == PermissionDecision.ASK:
@@ -199,22 +217,26 @@ class PermissionEngine:
                             policy = self._policy_snapshot()
                             decision = self.ask_handler(call, rule)
                             if decision == PermissionDecision.ALLOW and (
-                                (call.call_id, call.tool, call.args) != original
-                                or self._policy_snapshot() != policy
+                                not _same_action_value(
+                                    original, (call.call_id, call.tool, call.args)
+                                )
+                                or not _same_action_value(policy, self._policy_snapshot())
                             ):
                                 logger.warning(
                                     "Approval changed the action or policy for '%s'", call.tool
                                 )
                                 decision = PermissionDecision.DENY
-                        except Exception:
-                            logger.exception("Approval failed for '%s'", call.tool)
+                        except Exception as exc:
+                            logger.error(
+                                "Approval failed for '%s' (%s)", call.tool, type(exc).__name__
+                            )
                             decision = PermissionDecision.DENY
                         # Guard: handler must return ALLOW or DENY.
                         if decision not in (PermissionDecision.ALLOW, PermissionDecision.DENY):
                             logger.warning(
-                                "ask_handler returned %r for tool '%s' - "
+                                "ask_handler returned invalid type %s for tool '%s' - "
                                 "treating as DENY (must return ALLOW or DENY)",
-                                decision,
+                                type(decision).__name__,
                                 call.tool,
                             )
                             decision = PermissionDecision.DENY
@@ -355,12 +377,15 @@ class PermissionHook:
         approved = self._approved
         self._approved = None
         if approved is not None:
-            if approved == (
-                id(tool_call),
-                tool_call.call_id,
-                tool_call.tool,
-                tool_call.args,
-                self.engine._policy_snapshot(),
+            if _same_action_value(
+                approved,
+                (
+                    id(tool_call),
+                    tool_call.call_id,
+                    tool_call.tool,
+                    tool_call.args,
+                    self.engine._policy_snapshot(),
+                ),
             ):
                 return True
             self.engine._record_denial(tool_call, None, "Approved action or policy changed")

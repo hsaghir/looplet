@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from looplet import EvalCase, EvalContext, EvalResult, EvalRunRecord, eval_assess, eval_mark
+from looplet.__main__ import main as cli_main
 from looplet.evals import (
     _EVAL_RESULT_STATES,
     _EVAL_SUMMARY_SCHEMA,
@@ -18,6 +19,144 @@ from looplet.evals import (
     _eval_grader_manifest,
     _eval_summary_result,
 )
+
+
+@pytest.mark.parametrize("trace_present", [False, True])
+@pytest.mark.parametrize("summary_version", [1, 2])
+@pytest.mark.parametrize("json_output", [False, True])
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "audit\x1b[2J\x1b[H\x1b]52;c;YXVkaXQ=\x07end",
+        "audit\x9b31m\x9d0;observed\x9cend",
+        "audit\u03bb\u6587\u5b57\n\tend",
+        "audit" + "".join(chr(number) for number in (*range(32), *range(127, 160))) + "end",
+    ],
+    ids=["c0", "c1", "unicode-layout", "all-controls"],
+)
+@pytest.mark.parametrize(
+    "field",
+    [
+        "report_path",
+        "assessed_at",
+        "case_id",
+        "grader_name",
+        "result_state",
+        "score",
+        "label",
+        "explanation",
+        "integrity_failure",
+        "evidence_name",
+        "evidence_path",
+    ],
+)
+def test_assessment_terminal_fields_are_inert_and_json_is_lossless(
+    tmp_path, capsys, field, payload, json_output, summary_version, trace_present
+) -> None:
+    if field in {"report_path", "evidence_path"}:
+        payload = payload.replace("\x00", "")
+    result = {
+        "name": "grader",
+        "state": "pass",
+        "score": 1.0,
+        "label": "passed",
+        "explanation": "retained",
+    }
+    case = {"id": "case", "results": [result]}
+    assessment = {
+        "schema": "looplet.eval-summary",
+        "version": summary_version,
+        "passed": True,
+        "state": "pass",
+        "threshold": 0.5,
+        "cases": [case],
+        "integrity_failures": [],
+    }
+    report = {
+        "schema": "looplet.eval-assessment",
+        "version": 1,
+        "assessed_at": "2026-10-23T00:00:00Z",
+        "assessment": assessment,
+        "evidence": {"run": "trace"},
+    }
+    path = tmp_path / "assessment.json"
+    if field == "report_path":
+        path = tmp_path / f"assessment-{payload}.json"
+    elif field == "assessed_at":
+        report["assessed_at"] = payload
+    elif field == "case_id":
+        case["id"] = payload
+    elif field == "grader_name":
+        result["name"] = payload
+    elif field == "result_state":
+        result["state"] = payload
+    elif field in {"score", "label", "explanation"}:
+        result[field] = payload
+    elif field == "integrity_failure":
+        assessment["integrity_failures"] = [payload]
+    elif field == "evidence_name":
+        report["evidence"] = {payload: "trace"}
+    else:
+        report["evidence"] = {"run": f"trace-{payload}"}
+    trace = tmp_path / next(iter(report["evidence"].values()))
+    if trace_present:
+        trace.mkdir()
+        (trace / "marker.txt").write_text("unchanged evidence\n")
+    path.write_text(json.dumps(report))
+    before = path.read_bytes()
+    arguments = ["inspect", str(path)]
+    if json_output:
+        arguments.append("--json")
+
+    assert cli_main(arguments) == 0
+
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    if json_output:
+        assert json.loads(captured.out) == report
+    else:
+        assert all(
+            ord(character) in (9, 10) or not (ord(character) < 32 or 127 <= ord(character) < 160)
+            for character in captured.out
+        ), "active terminal controls in human saved assessment"
+        expected = "".join(
+            character.encode("unicode_escape").decode()
+            if ord(character) not in (9, 10)
+            and (ord(character) < 32 or 127 <= ord(character) < 160)
+            else character
+            for character in payload
+        )
+        assert expected in captured.out
+    assert path.read_bytes() == before
+    if trace_present:
+        assert (trace / "marker.txt").read_text() == "unchanged evidence\n"
+
+
+@pytest.mark.parametrize("json_output", [False, True])
+@pytest.mark.parametrize("malformed", [False, True])
+@pytest.mark.parametrize("payload", ["\x1b[2J\x1b[H", "\x9b31m\x9d0;observed\x9c"])
+def test_assessment_terminal_diagnostics_are_inert(
+    tmp_path, capsys, json_output, malformed, payload
+) -> None:
+    path = tmp_path / f"assessment-{payload}.json"
+    path.write_text(
+        "{" if malformed else json.dumps({"schema": "looplet.eval-assessment", "version": 0})
+    )
+    before = path.read_bytes()
+    arguments = ["inspect", str(path)]
+    if json_output:
+        arguments.append("--json")
+
+    assert cli_main(arguments) == 1
+
+    captured = capsys.readouterr()
+    assert captured.err and not captured.out
+    assert all(
+        ord(character) in (9, 10) or not (ord(character) < 32 or 127 <= ord(character) < 160)
+        for character in captured.err
+    ), "active terminal controls in assessment diagnostic"
+    assert payload.encode("unicode_escape").decode() in captured.err
+    assert path.read_bytes() == before
 
 
 def _result(state: str) -> tuple[EvalResult | None, dict[str, object]]:

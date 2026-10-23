@@ -84,7 +84,7 @@ code before tool permissions apply.
 | Checkpoint path confusion | Run identity or key to filesystem | Validate IDs and literal keys; reject cross-run write collisions | Keep the store private and host-owned |
 | Saved artifact path escape | Evidence directory to component reads | Resolve selected files inside the artifact root; reject escaping or broken links | Use stable host-owned storage and authenticate shared evidence |
 | Saved-file stalls | Evidence file type to reader | Reject selected non-regular files before opening them | Bound file size, filesystem latency, and host execution time |
-| Terminal control injection | Saved trace to human display | Escape C0/C1 controls except tabs and newlines | Review remaining layout and Unicode; other commands are not covered |
+| Terminal control injection | Saved trace or assessment to human display | Escape C0/C1 controls except tabs and newlines | Review remaining layout and Unicode; other views are not covered |
 | Forged recovery state | Saved JSON to live state | Validate identity, structure, and recovery semantics | Authenticate records crossing a trust boundary |
 | Secret disclosure | Arguments to logs and saved evidence | Bounded diagnostics and configured redaction | Protect raw state, denial records, and application logs |
 | Host code execution | Extension loading to process | Review code and isolate execution | Dependency metadata does not establish code safety |
@@ -128,10 +128,11 @@ They do not protect directories that change during validation or reads.
 Use a private, stable copy when inspecting evidence from an untrusted source.
 Replay still executes fresh tools and effects under the host's policy and isolation controls.
 
-Human `show` and saved-trace `inspect` display C0/C1 controls as visible escapes.
+Human `show` and saved-trace or saved-assessment `inspect` display C0/C1 controls as visible escapes.
 Tabs and newlines remain layout characters.
 Ordinary Unicode, JSON values, and saved evidence remain unchanged.
-This is not a general defense against misleading text, Unicode formatting, or terminal output from other commands.
+This is not a general defense against misleading text or Unicode formatting.
+Other inspection views and commands are not covered.
 
 Permission rules use first-match order. The default remains `ALLOW` for
 compatibility; secure deployments must select `DENY` explicitly.
@@ -200,7 +201,7 @@ uv run pytest -q \
   tests/test_permission_engine.py tests/test_permission_hook_smoke.py \
   tests/test_checkpoint.py tests/test_bundles_smoke.py \
   tests/test_conversation.py tests/test_artifact_compatibility.py \
-  tests/test_replay_and_cli_smoke.py \
+  tests/test_replay_and_cli_smoke.py tests/test_eval_summary_schema.py \
   tests/test_provenance_smoke.py tests/test_native_tools.py \
   tests/test_llm_cancel_token.py tests/test_rpc_cancel.py
 ```
@@ -210,6 +211,7 @@ approval integrity, diagnostic privacy, and checkpoint lookup and write boundari
 They also cover saved-artifact containment, replay effect boundaries, bundle entrypoint
 containment, recovery safety, redaction, and cooperative cancellation.
 Trace inspection tests check inert display controls, link containment, and unchanged JSON and saved evidence.
+Saved-assessment checks cover fields, report diagnostics, Unicode, JSON, and unchanged evidence.
 Saved-file tests reject non-regular targets before opening them, including legacy payloads and contained links.
 Approval tests include fixed-seed nested mutations and unchanged-action controls.
 Checkpoint tests include synchronized writers and preservation on storage failures.

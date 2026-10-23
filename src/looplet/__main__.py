@@ -966,19 +966,19 @@ def _render_eval_assessment(report_path: Path, *, json_output: bool) -> int:
         ):
             raise ValueError("evidence must map names to trace paths")
     except (OSError, ValueError) as error:
-        print(f"error: invalid saved assessment {report_path}: {error}", file=sys.stderr)
+        _print_terminal(f"error: invalid saved assessment {report_path}: {error}", file=sys.stderr)
         return 1
     if json_output:
         print(json.dumps(report, indent=2))
         return 0
-    print(f"Saved assessment: {report_path}")
-    print(f"  assessed at: {report['assessed_at']}")
+    _print_terminal(f"Saved assessment: {report_path}")
+    _print_terminal(f"  assessed at: {report['assessed_at']}")
     print(
         f"  {'passed' if assessment['passed'] else 'failed'}; threshold: {assessment.get('threshold')}"
     )
     print("  Separate from capture-time grades; inspection does not rerun graders.")
     for case in cases:
-        print(f"\n  {case['id']}:")
+        _print_terminal(f"\n  {case['id']}:")
         for result in case["results"]:
             details = []
             if result.get("score") is not None:
@@ -986,17 +986,17 @@ def _render_eval_assessment(report_path: Path, *, json_output: bool) -> int:
             if result.get("label"):
                 details.append(f"label={result['label']}")
             suffix = f" ({', '.join(details)})" if details else ""
-            print(f"    {result['name']}: {result['state']}{suffix}")
+            _print_terminal(f"    {result['name']}: {result['state']}{suffix}")
             if result.get("explanation"):
-                print(f"      {result['explanation']}")
+                _print_terminal(f"      {result['explanation']}")
     for error in failures:
-        print(f"  integrity failure: {error}")
+        _print_terminal(f"  integrity failure: {error}")
     for name, trace in evidence.items():
         trace_dir = report_path.parent / trace
         if trace_dir.is_dir():
-            print(f"  {name}: looplet inspect {shlex.quote(str(trace_dir))}")
+            _print_terminal(f"  {name}: looplet inspect {shlex.quote(str(trace_dir))}")
         else:
-            print(f"  {name}: missing trace: {trace_dir}")
+            _print_terminal(f"  {name}: missing trace: {trace_dir}")
     return 0
 
 

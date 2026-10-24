@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from looplet import CartridgeLayout, cartridge_to_preset
+from looplet import CartridgeLayout, CartridgeSerializationError, cartridge_to_preset
 
 
 def _write_minimal_cartridge(
@@ -156,6 +156,40 @@ def test_assistant_runtime_rejects_malformed_ceilings_on_load(tmp_path, field, v
     )
     with pytest.raises(ValueError, match=field):
         cartridge_to_preset(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("config_text", "runtime_text", "strict", "error"),
+    [
+        ("max_tokens: 100\n", None, False, "runtime-tier"),
+        ("max_tokens: 100\n", None, True, "runtime-tier"),
+        ("approval_handler: unsafe\n", None, False, "host-only"),
+        ("approval_handler: unsafe\n", None, True, "host-only"),
+        ("max_steps: 5\n", "max_steps: 99\n", True, "non-runtime"),
+        ("max_steps: 5\n", "approval_handler: unsafe\n", True, "non-runtime"),
+        ("not a mapping entry\n", None, True, "config.yaml"),
+        ("max_steps: 5\n", "not a mapping entry\n", True, "runtime.yaml"),
+    ],
+)
+def test_invalid_declarations_fail_before_resource_import_or_build(
+    tmp_path: Path, config_text: str, runtime_text: str | None, strict: bool, error: str
+) -> None:
+    _write_minimal_cartridge(tmp_path, config_text=config_text, runtime_text=runtime_text)
+    marker = tmp_path / "resource-activity.txt"
+    resources = tmp_path / "resources"
+    resources.mkdir()
+    (resources / "probe.py").write_text(
+        "from pathlib import Path\n"
+        f"Path({str(marker)!r}).write_text('imported')\n\n"
+        "def build():\n"
+        f"    Path({str(marker)!r}).write_text('built')\n"
+        "    return object()\n"
+    )
+
+    with pytest.raises(CartridgeSerializationError, match=error):
+        cartridge_to_preset(tmp_path, strict=strict)
+
+    assert not marker.exists()
 
 
 def test_runtime_yaml_does_not_mask_runtime_keys_in_config_yaml(tmp_path: Path) -> None:

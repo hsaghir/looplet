@@ -33,6 +33,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 ### Changed
 
 - OpenAI text streams yield visible text from multipart responses and exclude structured provider metadata in sync and async paths.
+- Cartridge loading reads and validates config and runtime declarations before importing or building shared resources. Reference resolution and resource cleanup retain their existing ownership rules.
 - Eval root help introduces Python factories before cartridge execution.
 - Saved trace inspection labels grades as capture-time observations rather than current assessments.
 - `--version` includes the doctor's Git-independent source fingerprint, distinguishing same-version preview builds without selecting a provider.

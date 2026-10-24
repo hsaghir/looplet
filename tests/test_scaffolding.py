@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -25,6 +25,46 @@ from looplet.scaffolding import (
 from looplet.types import Step, ToolCall, ToolResult
 
 pytestmark = pytest.mark.smoke
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("native", [False, True])
+async def test_exhausted_scripted_responses_are_never_retried(asynchronous, native):
+    from looplet.async_loop import async_llm_call
+    from looplet.testing import LLMResponsesExhausted
+
+    class Backend:
+        attempts = 0
+
+        def generate(self, prompt, **kwargs):
+            self.attempts += 1
+            raise LLMResponsesExhausted("script exhausted")
+
+        generate_with_tools = generate
+
+    backend = Backend()
+    if asynchronous:
+        synchronous = backend.generate
+
+        async def generate(prompt, **kwargs):
+            return synchronous(prompt, **kwargs)
+
+        backend.generate = generate
+        backend.generate_with_tools = generate
+
+    kwargs = {"max_retries": 2, "tools": [{"name": "done"}] if native else None}
+    with (
+        patch("looplet.scaffolding.time.sleep") as sync_backoff,
+        patch("looplet.async_loop.asyncio.sleep", new_callable=AsyncMock) as async_backoff,
+    ):
+        if asynchronous:
+            result = await async_llm_call(backend, "finish", **kwargs)
+        else:
+            result = llm_call_with_retry(backend, "finish", **kwargs)
+
+    assert isinstance(result.error, LLMResponsesExhausted)
+    assert backend.attempts == 1
+    assert sync_backoff.call_count == async_backoff.call_count == 0
 
 
 @pytest.mark.parametrize("asynchronous", [False, True])

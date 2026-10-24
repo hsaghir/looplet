@@ -32,6 +32,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Loop API documentation states the existing live-config ownership contract. Explicit loop argument overrides update the supplied config without replacing cancellation tokens or other host controls.
 - OpenAI text streams yield visible text from multipart responses and exclude structured provider metadata in sync and async paths.
 - Eval root help introduces Python factories before cartridge execution.
 - Saved trace inspection labels grades as capture-time observations rather than current assessments.
@@ -45,6 +46,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `is_loop_hook()` recognizes partial, duck-typed hooks without mandatory inheritance. `LoopHook` remains the complete interface for protocol checks.
 - Public optional backend contracts preserve transparent wrappers, retry ownership, typed context and provider state without required inheritance.
 - Shared model budgets admit individual requests, avoid duplicate nested charges and restore consumed allowances without replenishment.
 - Built-in adapters accept explicit provider request options and expose detached requested and submitted settings without claiming provider confirmation.
@@ -74,6 +76,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Sync and async loops share default-state budget resolution and terminal retry classification. Async loops synchronize mismatched default-state limits and stop on exhausted scripted responses without retry backoff.
 - Pre-push checks clear Git-local repository variables so test fixtures cannot overwrite the caller's Git configuration or identity.
 - The data-agent example preserves its CSV and scripted position when resuming incomplete checkpoints, and explicit terminal resumes no longer repeat tools or recreate data.
 - Human saved-evidence rescoring shows each failing check's explanation when available, including with `--verbose`.

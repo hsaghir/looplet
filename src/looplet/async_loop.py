@@ -75,10 +75,12 @@ from looplet.loop import (
     _record_run_stats,
     _reset_context_overrides,
     _resolve_loop_config,
+    _resolve_loop_state,
     _run_post_dispatch_hooks_async,
     _set_context_overrides,
     _set_run_lifecycle,
     _step_metadata,
+    _validate_hooks,
     _validate_loop_inputs,
     emit_event_async,
 )
@@ -95,6 +97,7 @@ from looplet.scaffolding import (
     LLMResult,
     NativeToolStats,
     _is_prompt_too_long,
+    _is_terminal_llm_error,
     _native_llm_result,
     _NativeTurnRecovery,
     build_parse_recovery_prompt,
@@ -106,7 +109,7 @@ from looplet.scaffolding import (
 )
 from looplet.session import SessionLog
 from looplet.tools import BaseToolRegistry, _summarize_args_dict
-from looplet.types import AgentState, DefaultState, Step, ToolCall, ToolResult
+from looplet.types import AgentState, Step, ToolCall, ToolResult
 from looplet.validation import validate_args as _validate_args
 
 logger = logging.getLogger(__name__)
@@ -441,11 +444,7 @@ async def async_llm_call(
                     recovery.model_calls.pop()
                     return recovery.finish(LLMResult(None, e))
                 return LLMResult(None, e, calls=0)
-            if recovery is not None and (
-                isinstance(e, (TerminalLLMError, NativeToolUnsupportedError))
-                or _is_prompt_too_long(e)
-                or attempt >= attempt_limit - 1
-            ):
+            if recovery is not None and (_is_terminal_llm_error(e) or attempt >= attempt_limit - 1):
                 return recovery.finish(
                     LLMResult(None, e, native_requested=True, native_attempted=True)
                 )
@@ -462,6 +461,9 @@ async def async_llm_call(
             if use_native and isinstance(e, NativeToolUnsupportedError):
                 logger.error("Native tool call unsupported; set use_native_tools=False: %s", e)
                 return LLMResult(None, e, native_requested=True, native_attempted=True)
+            if type(e).__name__ == "LLMResponsesExhausted":
+                logger.warning("Mock LLM exhausted (not retrying): %s", e)
+                return LLMResult(None, e)
             if use_native:
                 if attempt < max_retries:
                     wait = RETRY_BACKOFF_BASE * (2**attempt)
@@ -532,9 +534,9 @@ async def async_composable_loop(
         stream: Optional event emitter for structured loop lifecycle events.
         conversation: Optional conversation that records prompts, responses, and tool messages.
         max_steps: Optional override for ``config.max_steps``.
-            An omitted state also receives this limit. The supplied config is not mutated.
+            An omitted state also receives this limit. A supplied config is updated in place.
         system_prompt: Optional override for ``config.system_prompt``.
-            The supplied config is not mutated.
+            A supplied config is updated in place; live host controls retain their identity.
 
     Yields:
         A ``Step`` for each recorded loop step, including failed tool calls.
@@ -631,8 +633,8 @@ async def _async_composable_loop_impl(
             "Use AsyncOpenAIBackend(base_url=...) or similar."
         )
 
-    if state is None:
-        state = DefaultState(max_steps=config.max_steps)
+    state = _resolve_loop_state(state, config)
+    _validate_hooks(hooks)
     if session_log is None:
         session_log = SessionLog()
     from looplet.loop import _LoopFinalizer

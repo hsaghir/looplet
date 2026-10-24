@@ -406,6 +406,15 @@ def _backend_accepts_cancel_token(backend: Any, method_name: str) -> bool:
     return hit
 
 
+def _is_terminal_llm_error(error: Exception) -> bool:
+    """Identify failures that repeating the same request cannot repair."""
+    return (
+        isinstance(error, (TerminalLLMError, NativeToolUnsupportedError))
+        or _is_prompt_too_long(error)
+        or type(error).__name__ == "LLMResponsesExhausted"
+    )
+
+
 def llm_call_with_retry(
     llm: Any,
     prompt: str,
@@ -587,12 +596,7 @@ def llm_call_with_retry(
                     recovery.model_calls.pop()
                     return recovery.finish(LLMResult(None, e))
                 return LLMResult(None, e, calls=0)
-            if recovery is not None and (
-                isinstance(e, (TerminalLLMError, NativeToolUnsupportedError))
-                or _is_prompt_too_long(e)
-                or type(e).__name__ == "LLMResponsesExhausted"
-                or attempt >= attempt_limit - 1
-            ):
+            if recovery is not None and (_is_terminal_llm_error(e) or attempt >= attempt_limit - 1):
                 return recovery.finish(
                     LLMResult(None, e, native_requested=True, native_attempted=True)
                 )

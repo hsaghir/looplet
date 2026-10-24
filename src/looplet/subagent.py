@@ -24,6 +24,7 @@ import logging
 import threading
 import time
 from contextlib import contextmanager
+from copy import copy
 from dataclasses import dataclass, field, replace
 from functools import wraps
 from pathlib import Path
@@ -1231,13 +1232,10 @@ def clone_tools_excluding(parent_tools: Any, exclude: list[str]) -> Any:
     for name, spec in parent_tools._tools.items():
         if name in exclude:
             continue
-        sub.register(
-            replace(
-                spec,
-                requires=list(getattr(spec, "requires", ())),
-                tags=list(getattr(spec, "tags", ())),
-                render=dict(getattr(spec, "render", {})),
-                capabilities=list(getattr(spec, "capabilities", ())),
-            )
-        )
+        cloned = copy(spec)
+        cloned.requires = list(getattr(spec, "requires", ()))
+        cloned.tags = list(getattr(spec, "tags", ()))
+        cloned.render = dict(getattr(spec, "render", {}))
+        cloned.capabilities = list(getattr(spec, "capabilities", ()))
+        sub.register(cloned)
     return sub

@@ -8,6 +8,11 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Security
 
+- MCP structured arguments are prepared before sync/async permission hooks and sent without later type conversion. Direct registry dispatch retains JSON-string repair; raw tool executors reject structured arguments that still need repair.
+- MCP adapter and cartridge imports reject duplicate tool names before registering any tool from that server. Rejected cartridge servers are closed, including in permissive loading mode.
+- MCP protocol requests have configurable message, queued-response, and skipped-message limits, with one deadline spanning writes and reads. Closing an adapter discards prior-session messages and tool definitions.
+- MCP supports argv commands without a shell and exact child environments with `inherit_env=False`. Existing shell-string and inherited-environment defaults remain supported.
+- CI and package builds use read-only workflow permissions and non-persisted checkout credentials. Direct action dependencies are commit-pinned, Pages privileges are deployment-only, and Dependabot maintains action references.
 - Saved assessment and experiment report inspection reject links outside the selected report directory. Experiment histories reject report and child-directory links outside the selected history root. Contained links, JSON values, and saved evidence remain unchanged.
 - Saved-experiment and history inspection escape terminal controls in report fields, trace links, and diagnostics. JSON values, Unicode, and saved evidence remain unchanged.
 - Saved-assessment inspection escapes terminal controls in report fields, evidence links, and diagnostics. JSON values, Unicode, and saved evidence remain unchanged.

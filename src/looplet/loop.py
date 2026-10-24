@@ -3693,6 +3693,8 @@ def _composable_loop_impl(
         original_tool_calls = tool_calls
         budget_skipped = original_tool_calls[available_steps:]
         tool_calls = original_tool_calls[:available_steps]
+        for call in tool_calls:
+            tools.prepare_call(call)
         if len(original_tool_calls) > 1:
             _annotate_tool_turn(
                 tool_calls,

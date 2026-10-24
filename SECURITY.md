@@ -149,6 +149,50 @@ Do not use shell-command substring filters as a sandbox.
 Approval binds to argument values and types, including nested values.
 Changing an approved action or policy requires a new authorization decision.
 
+### MCP tools
+
+MCP servers are executable extensions, not a sandboxed trust domain.
+Review server packages, startup configuration, descriptions, and required authority.
+Tool descriptions are cached for one adapter session, not authenticated across restarts.
+
+Structured MCP arguments are prepared before permission hooks in both execution modes.
+`ToolSpec.prepare_args()` is an opt-in, pure, idempotent normalization method.
+Ordinary tools preserve argument values by default.
+Use registry dispatch for preparation and validation; raw MCP executors reject values that still need repair.
+Hooks must not introduce another type-changing repair after authorization.
+
+Adapter and cartridge imports reject collisions with local tools or other discovered names.
+To combine servers with overlapping names, explicitly alias reviewed specs with
+`dataclasses.replace(spec, name="server__tool")` before registering them.
+The MCP executor retains the original server-side name.
+Generic host-owned registry replacement remains available.
+
+String commands retain shell execution and inherited host environments for compatibility.
+Prefer an absolute executable with an argv sequence and `inherit_env=False`:
+
+```python
+from looplet.mcp import MCPToolAdapter
+
+adapter = MCPToolAdapter(
+  ["/usr/bin/python3", "/reviewed/server.py"],
+  inherit_env=False,
+  env={"LANG": "C.UTF-8"},
+)
+```
+
+With `inherit_env=False`, only supplied environment values reach the child.
+The default `env` mapping is an overlay, not an environment allowlist.
+Cartridge `mcp_servers` entries accept argv lists and the same environment option.
+
+Default protocol limits are 8 MiB per message, 64 queued responses, and 256 skipped messages.
+Configure `max_message_bytes`, `max_pending_messages`, and `max_skipped_messages` on the adapter
+or cartridge entry when reviewed workloads need larger limits.
+`timeout` on the adapter, or cartridge `timeout_s`, bounds the complete request write/read cycle.
+A host run deadline can shorten that limit.
+Malformed UTF-8, oversized messages, or exhausted protocol limits fail the request.
+These controls do not bound server CPU, all Python allocations, stderr volume, or all effects.
+Enforce process, memory, filesystem, credential, and network restrictions independently.
+
 Cancellation is cooperative. It cannot undo completed effects or reliably kill
 arbitrary Python threads. Provider timeouts and process supervision remain
 host responsibilities. A step limit alone does not bound retries or helper
@@ -210,6 +254,7 @@ uv run pytest -q \
   tests/test_conversation.py tests/test_artifact_compatibility.py \
   tests/test_replay_and_cli_smoke.py tests/test_eval_summary_schema.py \
   tests/test_cli_new_smoke.py \
+  tests/test_mcp_adapter_smoke.py tests/test_cartridge_mcp_servers.py \
   tests/test_provenance_smoke.py tests/test_native_tools.py \
   tests/test_llm_cancel_token.py tests/test_rpc_cancel.py
 ```

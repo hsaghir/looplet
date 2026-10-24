@@ -24,6 +24,7 @@ import logging
 import threading
 import time
 from contextlib import contextmanager
+from copy import copy
 from dataclasses import dataclass, field, replace
 from functools import wraps
 from pathlib import Path
@@ -1215,7 +1216,7 @@ def clone_tools_excluding(parent_tools: Any, exclude: list[str]) -> Any:
     ``"finalize"`` would otherwise ship the state-mutating tool into
     the sub-agent without any signal.
     """
-    from looplet.tools import BaseToolRegistry, ToolSpec
+    from looplet.tools import BaseToolRegistry
 
     parent_names = set(parent_tools._tools.keys())
     missing = [name for name in exclude if name not in parent_names]
@@ -1231,22 +1232,10 @@ def clone_tools_excluding(parent_tools: Any, exclude: list[str]) -> Any:
     for name, spec in parent_tools._tools.items():
         if name in exclude:
             continue
-        sub.register(
-            ToolSpec(
-                name=spec.name,
-                description=spec.description,
-                parameters=spec.parameters,
-                execute=spec.execute,
-                concurrent_safe=spec.concurrent_safe,
-                free=spec.free,
-                timeout_s=getattr(spec, "timeout_s", None),
-                infer_optional_from_signature=getattr(spec, "infer_optional_from_signature", False),
-                idempotency=getattr(spec, "idempotency", "unknown"),
-                retryable=getattr(spec, "retryable", False),
-                requires=list(getattr(spec, "requires", ())),
-                tags=list(getattr(spec, "tags", ())),
-                render=dict(getattr(spec, "render", {})),
-                capabilities=list(getattr(spec, "capabilities", ())),
-            )
-        )
+        cloned = copy(spec)
+        cloned.requires = list(getattr(spec, "requires", ()))
+        cloned.tags = list(getattr(spec, "tags", ()))
+        cloned.render = dict(getattr(spec, "render", {}))
+        cloned.capabilities = list(getattr(spec, "capabilities", ()))
+        sub.register(cloned)
     return sub

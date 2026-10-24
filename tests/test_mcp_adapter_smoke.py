@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import json
 import signal
 import subprocess
 import sys
@@ -68,7 +69,140 @@ class TestMCPToolAdapter:
         assert adapter.register_all(registry) == 1
         assert registry.tool_names == ["echo"]
 
-    def test_discovered_schema_keeps_constraints_and_structured_repair(self, monkeypatch):
+    def test_explicit_alias_preserves_preparation_and_server_name(self, monkeypatch):
+        from dataclasses import replace
+
+        from looplet import ToolCall, ToolSpec
+
+        trusted = ToolSpec("echo", "Trusted local echo.", {}, lambda: {"trusted": True})
+        registry = BaseToolRegistry()
+        registry.register(trusted)
+        adapter = MCPToolAdapter("synthetic server never started")
+        adapter._started = True
+        adapter._tool_schemas = [
+            {
+                "name": "echo",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"targets": {"type": "array"}},
+                    "required": ["targets"],
+                },
+            }
+        ]
+        sent = []
+        monkeypatch.setattr(
+            adapter, "_send_request", lambda method, params: sent.append(params) or {"content": []}
+        )
+        registry.register(replace(adapter.tools()[0], name="server__echo"))
+
+        result = registry.dispatch(ToolCall("server__echo", {"targets": '["allowed"]'}))
+
+        assert result.error is None
+        assert registry.tool_specs["echo"] is trusted
+        assert sent == [{"name": "echo", "arguments": {"targets": ["allowed"]}}]
+
+    @pytest.mark.parametrize("names", [("fresh", "echo"), ("echo", "fresh"), ("fresh", "fresh")])
+    def test_register_all_rejects_collisions_atomically(self, names):
+        from looplet import ToolSpec
+
+        trusted = ToolSpec(
+            name="echo",
+            description="Trusted local echo.",
+            parameters={"type": "object", "properties": {"text": {"type": "string"}}},
+            execute=lambda text: {"trusted": text},
+        )
+        registry = BaseToolRegistry()
+        registry.register(trusted)
+        adapter = MCPToolAdapter("echo test")
+        adapter._started = True
+        adapter._tool_schemas = [
+            {"name": name, "inputSchema": {"type": "object"}} for name in names
+        ]
+
+        with pytest.raises(ValueError, match="MCP tool name collision"):
+            adapter.register_all(registry)
+
+        assert registry.tool_specs == {"echo": trusted}
+
+    @pytest.mark.parametrize("mode", ["sync", "async"])
+    @pytest.mark.parametrize("validate", [False, True])
+    @pytest.mark.parametrize("encoded", [False, True])
+    @pytest.mark.parametrize("restricted", [False, True])
+    @pytest.mark.parametrize("native", [False, True])
+    @pytest.mark.parametrize("shape", ["array", "object"])
+    async def test_structured_arguments_are_authorized_before_dispatch(
+        self, monkeypatch, mode, validate, encoded, restricted, native, shape
+    ):
+        from looplet import (
+            AsyncMockLLMBackend,
+            LoopConfig,
+            MockLLMBackend,
+            PermissionDecision,
+            PermissionEngine,
+            PermissionHook,
+            async_composable_loop,
+            composable_loop,
+            tools_from,
+        )
+
+        adapter = MCPToolAdapter("synthetic server never started")
+        adapter._started = True
+        adapter._tool_schemas = [
+            {
+                "name": "read_items",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"targets": {"type": shape}},
+                    "required": ["targets"],
+                },
+            }
+        ]
+        sent = []
+        seen = []
+        monkeypatch.setattr(
+            adapter, "_send_request", lambda method, params: sent.append(params) or {"content": []}
+        )
+
+        def permitted(arguments):
+            seen.append(arguments["targets"])
+            values = arguments["targets"]
+            if shape == "object":
+                values = values.values()
+            return all(target != "restricted" for target in values)
+
+        engine = PermissionEngine(default=PermissionDecision.DENY)
+        engine.allow("read_items", arg_matcher=permitted)
+        target = "restricted" if restricted else "allowed"
+        targets = {"item": target} if shape == "object" else [target]
+        response = json.dumps(
+            {"tool": "read_items", "args": {"targets": json.dumps(targets) if encoded else targets}}
+        )
+        options = {
+            "tools": tools_from(adapter.tools(), include_done=True, validate=validate),
+            "task": {"goal": "Check synthetic argument authorization."},
+            "config": LoopConfig(max_steps=1, use_native_tools=native),
+            "hooks": [PermissionHook(engine)],
+        }
+        if mode == "async":
+            steps = [
+                step
+                async for step in async_composable_loop(
+                    llm=AsyncMockLLMBackend([response], cycle=False), **options
+                )
+            ]
+        else:
+            steps = list(composable_loop(llm=MockLLMBackend([response], cycle=False), **options))
+
+        assert seen and all(arguments == targets for arguments in seen)
+        if restricted:
+            assert sent == []
+            assert "Permission denied" in steps[0].tool_result.error
+        else:
+            assert steps[0].tool_result.error is None
+            assert sent == [{"name": "read_items", "arguments": {"targets": targets}}]
+
+    @pytest.mark.parametrize("clone", [False, True])
+    def test_discovered_schema_keeps_constraints_and_structured_repair(self, monkeypatch, clone):
         from looplet import ToolCall
 
         input_schema = {
@@ -93,6 +227,11 @@ class TestMCPToolAdapter:
         registry = BaseToolRegistry()
         adapter.register_all(registry)
 
+        if clone:
+            from looplet.subagent import clone_tools_excluding
+
+            registry = clone_tools_excluding(registry, [])
+
         assert registry.tool_schemas()[0]["input_schema"] == input_schema
         assert registry.introspect()["tools"][0]["parameters"] == input_schema
         assert registry.tool_specs["query"].required_parameters() == ["mode", "rows"]
@@ -108,6 +247,8 @@ class TestMCPToolAdapter:
         [(["array", "null"], "[1]", [1]), (["object", "null"], '{"a": 1}', {"a": 1})],
     )
     def test_nullable_structured_schema_keeps_repair(self, monkeypatch, type_name, value, expected):
+        from looplet import ToolCall
+
         adapter = MCPToolAdapter("echo test")
         adapter._started = True
         adapter._tool_schemas = [
@@ -127,8 +268,40 @@ class TestMCPToolAdapter:
         spec = adapter.tools()[0]
 
         assert spec.to_json_schema()["properties"]["value"]["type"] == type_name
-        spec.execute(value=value)
+        registry = BaseToolRegistry()
+        registry.register(spec)
+        assert registry.dispatch(ToolCall("echo", {"value": value})).error is None
         assert sent[0]["arguments"]["value"] == expected
+
+    def test_prepared_call_is_not_repaired_again_after_hooks_change_arguments(self, monkeypatch):
+        from looplet import ToolCall
+
+        adapter = MCPToolAdapter("synthetic server never started")
+        adapter._started = True
+        adapter._tool_schemas = [
+            {
+                "name": "read_items",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"targets": {"type": "array"}},
+                },
+            }
+        ]
+        sent = []
+        monkeypatch.setattr(
+            adapter, "_send_request", lambda method, params: sent.append(params) or {"content": []}
+        )
+        registry = BaseToolRegistry()
+        adapter.register_all(registry)
+        call = ToolCall("read_items", {"targets": '["allowed"]'})
+        registry.prepare_call(call)
+        assert call.args == {"targets": ["allowed"]}
+        call.args = {"targets": '["restricted"]'}
+
+        result = registry.dispatch(call)
+
+        assert "prepared before dispatch" in result.error
+        assert sent == []
 
     def test_legacy_optional_type_marker_is_normalized_without_mutating_server_schema(self):
         adapter = MCPToolAdapter("echo test")
@@ -220,6 +393,92 @@ class TestMCPToolAdapter:
     def test_timeout_must_be_positive(self, timeout):
         with pytest.raises(ValueError, match="greater than zero"):
             MCPToolAdapter("echo test", timeout=timeout)
+
+    @pytest.mark.parametrize("timeout", [float("inf"), float("nan"), True])
+    def test_timeout_must_be_finite(self, timeout):
+        with pytest.raises(ValueError, match="finite"):
+            MCPToolAdapter("echo test", timeout=timeout)
+
+    @pytest.mark.parametrize(
+        "name", ["max_message_bytes", "max_pending_messages", "max_skipped_messages"]
+    )
+    @pytest.mark.parametrize("value", [0, -1, True, 1.5])
+    def test_protocol_limits_must_be_positive_integers(self, name, value):
+        with pytest.raises(ValueError, match=name):
+            MCPToolAdapter("echo test", **{name: value})
+
+    def test_reader_bounds_message_size(self):
+        from looplet.mcp import MCPProtocolError
+
+        adapter = MCPToolAdapter("echo test", max_message_bytes=64)
+        adapter._proc = SimpleNamespace(stdout=io.BytesIO(b"x" * 65))
+        with pytest.raises(MCPProtocolError, match="max_message_bytes"):
+            adapter._read_message()
+
+    def test_writer_rejects_large_messages_before_pipe_effects(self):
+        from looplet.mcp import MCPProtocolError
+
+        stdin = io.BytesIO()
+        adapter = MCPToolAdapter("echo test", max_message_bytes=64)
+        adapter._proc = SimpleNamespace(stdin=stdin)
+        with pytest.raises(MCPProtocolError, match="max_message_bytes"):
+            adapter._write_message({"payload": "x" * 64})
+        assert stdin.getvalue() == b""
+
+    def test_reader_bounds_pending_responses(self):
+        from looplet.mcp import MCPProtocolError
+
+        adapter = MCPToolAdapter("echo test", max_pending_messages=1)
+        adapter._proc = SimpleNamespace(
+            stdout=io.BytesIO(b'{"id":2,"result":{}}\n{"id":3,"result":{}}\n')
+        )
+        with pytest.raises(MCPProtocolError, match="max_pending_messages"):
+            adapter._read_message(expected_id=1)
+        assert len(adapter._pending_messages) == 1
+
+    @pytest.mark.parametrize(
+        "line", [b"invalid\n", b"[]\n", b'{"method":"notifications/progress"}\n']
+    )
+    def test_reader_bounds_skipped_messages(self, line):
+        from looplet.mcp import MCPProtocolError
+
+        adapter = MCPToolAdapter("echo test", max_skipped_messages=2)
+        adapter._proc = SimpleNamespace(stdout=io.BytesIO(line * 3))
+        with pytest.raises(MCPProtocolError, match="max_skipped_messages"):
+            adapter._read_message(expected_id=1)
+
+    def test_notifications_do_not_reset_request_deadline(self, monkeypatch):
+        from looplet import mcp
+
+        clock = [0.0]
+
+        class ProgressStream:
+            def readline(self, limit):
+                clock[0] += 0.4
+                return b'{"method":"notifications/progress"}\n'
+
+        monkeypatch.setattr(mcp.time, "monotonic", lambda: clock[0])
+        adapter = MCPToolAdapter("echo test", timeout=1.0)
+        adapter._proc = SimpleNamespace(stdout=ProgressStream())
+        with pytest.raises(TimeoutError, match="request deadline"):
+            adapter._read_message(expected_id=1)
+        assert clock[0] < 1.7
+
+    def test_invalid_utf8_is_a_protocol_error(self):
+        from looplet.mcp import MCPProtocolError
+
+        adapter = MCPToolAdapter("echo test")
+        adapter._proc = SimpleNamespace(stdout=io.BytesIO(b"\xff\n"))
+        with pytest.raises(MCPProtocolError, match="UTF-8"):
+            adapter._read_message()
+
+    def test_close_discards_previous_session_messages(self):
+        adapter = MCPToolAdapter("echo test")
+        adapter._pending_messages = [{"id": 1, "result": {"old": True}}]
+        adapter._tool_schemas = [{"name": "old"}]
+        adapter.close()
+        assert adapter._pending_messages == []
+        assert adapter._tool_schemas == []
 
     def test_reader_rethrows_pipe_error(self):
         adapter = MCPToolAdapter("echo test")
@@ -377,6 +636,43 @@ class TestMCPToolAdapter:
 
         assert options["env"]["LOOPLET_LLM_SOCKET"] == "/tmp/gateway.sock"
         assert options["env"]["EXTRA"] == "value"
+
+    @pytest.mark.parametrize("env", [None, {}, {"EXTRA": "value"}])
+    def test_exact_environment_does_not_inherit_host_values(self, monkeypatch, env):
+        from looplet import mcp
+
+        options = {}
+        proc = SimpleNamespace(stdin=object(), stdout=object(), stderr=object())
+        monkeypatch.setenv("SYNTHETIC_HOST_TOKEN", "not-a-real-secret")
+        monkeypatch.setattr(
+            mcp.subprocess, "Popen", lambda *args, **kwargs: options.update(kwargs) or proc
+        )
+        adapter = MCPToolAdapter(
+            [sys.executable, "synthetic_server.py"], env=env, inherit_env=False
+        )
+        monkeypatch.setattr(
+            adapter,
+            "_send_request",
+            lambda method, params: {"tools": []} if method == "tools/list" else {},
+        )
+        monkeypatch.setattr(adapter, "_send_notification", lambda *args: None)
+
+        adapter._ensure_started()
+
+        assert options["shell"] is False
+        assert options["env"] == (env or {})
+        assert "SYNTHETIC_HOST_TOKEN" not in options["env"]
+
+    @pytest.mark.parametrize("command", ["", [], ["python", ""], ["python", 1]])
+    def test_invalid_commands_are_rejected_before_start(self, command):
+        with pytest.raises(ValueError, match="command"):
+            MCPToolAdapter(command)
+
+    def test_environment_options_are_validated_before_start(self):
+        with pytest.raises(TypeError, match="inherit_env"):
+            MCPToolAdapter("echo test", inherit_env="false")
+        with pytest.raises(TypeError, match="string mapping"):
+            MCPToolAdapter("echo test", env={"PORT": 1234})
 
     def test_stop_process_tree_falls_back_to_process_methods(self, monkeypatch):
         from looplet import mcp

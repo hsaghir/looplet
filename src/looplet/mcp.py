@@ -36,11 +36,13 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import signal
 import subprocess
 import threading
-from collections.abc import Callable, Iterable
+import time
+from collections.abc import Callable, Iterable, Sequence
 from copy import deepcopy
 from typing import Any
 
@@ -53,6 +55,17 @@ __all__ = ["MCPProtocolError", "MCPToolError", "MCPToolAdapter"]
 logger = logging.getLogger(__name__)
 
 
+def _register_mcp_tools(registry: BaseToolRegistry, specs: list[ToolSpec]) -> int:
+    names = set(registry.tool_names)
+    for spec in specs:
+        if spec.name in names:
+            raise ValueError(f"MCP tool name collision: {spec.name!r}")
+        names.add(spec.name)
+    for spec in specs:
+        registry.register(spec)
+    return len(specs)
+
+
 class MCPProtocolError(RuntimeError):
     """The MCP server emitted an invalid JSON-RPC response envelope."""
 
@@ -61,14 +74,27 @@ class MCPToolError(RuntimeError):
     """An MCP server reported failure while executing a tool."""
 
 
+class _MCPToolSpec(ToolSpec):
+    def prepare_args(self, args: dict[str, Any]) -> dict[str, Any]:
+        return MCPToolAdapter._coerce_structured_args(
+            args,
+            MCPToolAdapter._extract_params({"inputSchema": self.to_json_schema()}),
+        )
+
+
 class MCPToolAdapter:
     """Adapt an MCP server's tools into looplet ToolSpecs.
 
     Args:
-        command: Shell command to start the MCP server
-            (e.g. ``"npx @modelcontextprotocol/server-filesystem /tmp"``).
+        command: Shell command or argument sequence to start the MCP server.
+            Argument sequences execute without a shell.
         env: Optional environment variables for the subprocess.
+        inherit_env: Merge ``env`` into the host environment by default.
+            Set false to pass only ``env``, or an empty environment.
         timeout: Seconds to wait for server responses (default 30).
+        max_message_bytes: Maximum encoded size of one protocol message.
+        max_pending_messages: Maximum queued responses with other request IDs.
+        max_skipped_messages: Maximum notifications or invalid lines per response.
 
     The adapter starts the server on first use and keeps it running
     until :meth:`close` is called. Use as a context manager::
@@ -80,18 +106,51 @@ class MCPToolAdapter:
 
     def __init__(
         self,
-        command: str,
+        command: str | Sequence[str],
         *,
         env: dict[str, str] | None = None,
+        inherit_env: bool = True,
         timeout: float = 30.0,
         run_envelope: RunEnvelope | None = None,
         capabilities: Iterable[str] | None = None,
+        max_message_bytes: int = 8 * 1024 * 1024,
+        max_pending_messages: int = 64,
+        max_skipped_messages: int = 256,
     ) -> None:
-        if timeout <= 0:
-            raise ValueError("timeout must be greater than zero")
-        self._command = command
-        self._env = env
+        if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("timeout must be finite and greater than zero")
+        for name, limit in (
+            ("max_message_bytes", max_message_bytes),
+            ("max_pending_messages", max_pending_messages),
+            ("max_skipped_messages", max_skipped_messages),
+        ):
+            if type(limit) is not int or limit <= 0:
+                raise ValueError(f"{name} must be a positive integer")
+        if isinstance(command, str):
+            if not command.strip():
+                raise ValueError("command must not be empty")
+            self._command: str | tuple[str, ...] = command
+        elif isinstance(command, Sequence) and not isinstance(command, bytes):
+            if not command or any(not isinstance(part, str) or not part for part in command):
+                raise ValueError("command must be a nonempty sequence of strings")
+            self._command = tuple(command)
+        else:
+            raise TypeError("command must be a string or argument sequence")
+        if not isinstance(inherit_env, bool):
+            raise TypeError("inherit_env must be a boolean")
+        if env is not None and (
+            not isinstance(env, dict)
+            or any(
+                not isinstance(key, str) or not isinstance(value, str) for key, value in env.items()
+            )
+        ):
+            raise TypeError("env must be a string mapping")
+        self._env = dict(env) if env is not None else None
+        self._inherit_env = inherit_env
         self._timeout = timeout
+        self._max_message_bytes = max_message_bytes
+        self._max_pending_messages = max_pending_messages
+        self._max_skipped_messages = max_skipped_messages
         self._run_envelope = run_envelope
         self._capabilities = list(dict.fromkeys(capabilities or ()))
         self._proc: subprocess.Popen | None = None
@@ -130,7 +189,7 @@ class MCPToolAdapter:
                         key for key in params.get("required", []) if key != name_key
                     ]
             specs.append(
-                ToolSpec(
+                _MCPToolSpec(
                     name=name,
                     description=desc,
                     parameters=params,
@@ -143,12 +202,10 @@ class MCPToolAdapter:
     def register_all(self, registry: BaseToolRegistry) -> int:
         """Register all MCP tools into the given registry.
 
+        Reject name collisions before registering any discovered tool.
         Returns the number of tools registered.
         """
-        specs = self.tools()
-        for spec in specs:
-            registry.register(spec)
-        return len(specs)
+        return _register_mcp_tools(registry, self.tools())
 
     def set_run_envelope(self, envelope: RunEnvelope | None) -> None:
         """Bind host correlation context for subsequent protocol requests."""
@@ -159,6 +216,8 @@ class MCPToolAdapter:
         proc = self._proc
         self._proc = None
         self._started = False
+        self._pending_messages.clear()
+        self._tool_schemas.clear()
         if proc is not None:
             wait_timeout = min(5.0, max(0.1, self._timeout))
             self._stop_process_tree(proc, wait_timeout=wait_timeout)
@@ -191,13 +250,15 @@ class MCPToolAdapter:
             process_options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
 
         child_env = None
-        if self._env is not None:
+        if not self._inherit_env:
+            child_env = dict(self._env or {})
+        elif self._env is not None:
             child_env = dict(os.environ)
             child_env.update(self._env)
 
         self._proc = subprocess.Popen(
             self._command,
-            shell=True,
+            shell=isinstance(self._command, str),
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -278,14 +339,15 @@ class MCPToolAdapter:
         """Write a message and read the response."""
         if self._proc is None or self._proc.stdin is None or self._proc.stdout is None:
             return None
+        deadline = time.monotonic() + self._timeout
         try:
-            self._write_message(msg)
-            return self._read_message(expected_id=msg.get("id"))
+            self._write_message(msg, deadline=deadline)
+            return self._read_message(expected_id=msg.get("id"), deadline=deadline)
         except (OSError, MCPProtocolError):
             self.close()
             raise
 
-    def _write_message(self, msg: dict) -> None:
+    def _write_message(self, msg: dict, *, deadline: float | None = None) -> None:
         """Write a JSON-RPC message as a single newline-delimited line.
 
         MCP stdio transport uses newline-delimited JSON (NDJSON), per the
@@ -295,10 +357,24 @@ class MCPToolAdapter:
         if self._proc is None or self._proc.stdin is None:
             return
         line = (json.dumps(msg, separators=(",", ":")) + "\n").encode("utf-8")
-        self._proc.stdin.write(line)
-        self._proc.stdin.flush()
+        if len(line) > self._max_message_bytes:
+            raise MCPProtocolError("MCP request exceeded max_message_bytes")
+        stdin = self._proc.stdin
 
-    def _read_message(self, expected_id: int | None = None) -> dict | None:
+        def write() -> bytes:
+            stdin.write(line)
+            stdin.flush()
+            return b""
+
+        self._run_io_with_timeout(
+            write,
+            operation="request",
+            timeout=None if deadline is None else deadline - time.monotonic(),
+        )
+
+    def _read_message(
+        self, expected_id: int | None = None, *, deadline: float | None = None
+    ) -> dict | None:
         """Read one newline-delimited JSON-RPC message from the server.
 
         Returns the parsed ``result`` payload, or ``None`` on EOF. JSON-RPC
@@ -306,20 +382,31 @@ class MCPToolAdapter:
         """
         if self._proc is None or self._proc.stdout is None:
             return None
-        while True:
+        if deadline is None:
+            deadline = time.monotonic() + self._timeout
+        stdout = self._proc.stdout
+        for _ in range(self._max_skipped_messages + 1):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("MCP response exceeded request deadline")
             data = self._pop_pending_message(expected_id)
             if data is None:
                 line = self._run_io_with_timeout(
-                    self._proc.stdout.readline,
+                    lambda: stdout.readline(self._max_message_bytes + 1),
                     operation="response",
+                    timeout=remaining,
                 )
                 if not line:
                     return None
+                if len(line) > self._max_message_bytes:
+                    raise MCPProtocolError("MCP response exceeded max_message_bytes")
                 try:
                     data = json.loads(line.decode("utf-8"))
                 except json.JSONDecodeError as exc:
                     logger.warning("MCP non-JSON line on stdout (%s): %r", exc, line[:200])
                     continue
+                except (UnicodeError, ValueError, RecursionError) as exc:
+                    raise MCPProtocolError("MCP response must be bounded UTF-8 JSON") from exc
                 if not isinstance(data, dict):
                     logger.warning("MCP response must be a JSON object: %r", data)
                     continue
@@ -330,6 +417,8 @@ class MCPToolAdapter:
                 )
                 continue
             if expected_id is not None and data.get("id") != expected_id:
+                if len(self._pending_messages) >= self._max_pending_messages:
+                    raise MCPProtocolError("MCP response exceeded max_pending_messages")
                 self._pending_messages.append(data)
                 logger.debug(
                     "Queued MCP response id %s while awaiting %s", data.get("id"), expected_id
@@ -342,6 +431,7 @@ class MCPToolAdapter:
             if "result" not in data:
                 raise MCPProtocolError("MCP response must contain either result or error")
             return data["result"]
+        raise MCPProtocolError("MCP response exceeded max_skipped_messages")
 
     def _pop_pending_message(self, expected_id: int | None) -> dict[str, Any] | None:
         """Remove a queued response matching ``expected_id``, if available."""
@@ -375,6 +465,12 @@ class MCPToolAdapter:
         timeout: float | None = None,
     ) -> bytes:
         """Run one blocking pipe read with a portable wall-clock bound."""
+        limit = self._timeout if timeout is None else timeout
+        remaining = remaining_deadline(self._run_envelope)
+        if remaining is not None:
+            limit = min(limit, remaining)
+        if limit <= 0:
+            raise TimeoutError(f"MCP server {operation} exceeded run deadline")
         done = threading.Event()
         values: list[bytes] = []
         errors: list[BaseException] = []
@@ -393,14 +489,8 @@ class MCPToolAdapter:
         with self._reader_lock:
             self._reader_threads.add(reader)
         reader.start()
-        limit = self._timeout if timeout is None else timeout
-        remaining = remaining_deadline(self._run_envelope)
-        if remaining is not None:
-            limit = min(limit, remaining)
-        if limit <= 0:
-            raise TimeoutError(f"MCP server {operation} exceeded run deadline")
         if not done.wait(limit):
-            if operation == "response" and self._proc is not None:
+            if operation in {"request", "response"} and self._proc is not None:
                 self._stop_process_tree(self._proc, wait_timeout=min(5.0, max(0.1, limit)))
                 done.wait(min(5.0, max(0.1, limit)))
             raise TimeoutError(f"MCP server {operation} timed out after {limit:g}s")
@@ -441,22 +531,17 @@ class MCPToolAdapter:
             pass
 
     def _make_executor(self, tool_name: str, param_types: dict[str, str] | None = None) -> Any:
-        """Create an execute function that calls the MCP server.
-
-        ``param_types`` maps each declared parameter to its flattened
-        JSON-Schema type string (e.g. ``"array"``, ``"object"``,
-        ``"(optional) array"``). It is used to coerce structured
-        arguments that arrive double-encoded as JSON strings.
-        """
+        """Create an execute function that sends already-prepared arguments."""
         param_types = param_types or {}
 
         def execute(**kwargs: Any) -> dict:
-            arguments = self._coerce_structured_args(kwargs, param_types)
+            if self._coerce_structured_args(kwargs, param_types) != kwargs:
+                raise MCPToolError("MCP structured arguments must be prepared before dispatch")
             resp = self._send_request(
                 "tools/call",
                 {
                     "name": tool_name,
-                    "arguments": arguments,
+                    "arguments": kwargs,
                 },
             )
             if resp is None:
@@ -523,7 +608,7 @@ class MCPToolAdapter:
                 continue
             try:
                 parsed = json.loads(stripped)
-            except (json.JSONDecodeError, ValueError):
+            except (ValueError, RecursionError):
                 continue
             if wants_array and isinstance(parsed, list):
                 coerced[key] = parsed

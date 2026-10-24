@@ -1418,7 +1418,7 @@ def _workspace_to_preset_inner(
     # cleanup (``preset.close()`` or ``with preset: ...``).
     _mcp_adapters = load_resources.mcp_adapters
     if _mcp_servers_block:
-        from looplet.mcp import MCPToolAdapter  # noqa: PLC0415
+        from looplet.mcp import MCPToolAdapter, _register_mcp_tools  # noqa: PLC0415
 
         for _srv_name, _srv_cfg in _mcp_servers_block.items():
             if not isinstance(_srv_cfg, dict):
@@ -1432,8 +1432,15 @@ def _workspace_to_preset_inner(
                 logger.warning("%s; skipping", msg)
                 continue
             _cmd = _srv_cfg.get("command")
-            if not _cmd or not isinstance(_cmd, str):
-                msg = f"mcp_servers.{_srv_name}: ``command:`` is required and must be a string"
+            if (
+                not _cmd
+                or not isinstance(_cmd, (str, list))
+                or (
+                    isinstance(_cmd, list)
+                    and any(not isinstance(part, str) or not part for part in _cmd)
+                )
+            ):
+                msg = f"mcp_servers.{_srv_name}: ``command:`` must be a string or nonempty argument list"
                 if strict:
                     raise CartridgeSerializationError(msg)
                 logger.warning("%s; skipping", msg)
@@ -1477,11 +1484,27 @@ def _workspace_to_preset_inner(
                 }
                 if _srv_capabilities is not None:
                     _adapter_kwargs["capabilities"] = _srv_capabilities
+                for _option in (
+                    "inherit_env",
+                    "max_message_bytes",
+                    "max_pending_messages",
+                    "max_skipped_messages",
+                ):
+                    if _option in _srv_cfg:
+                        _adapter_kwargs[_option] = _srv_cfg[_option]
                 _adapter = MCPToolAdapter(_cmd, **_adapter_kwargs)
-                for _spec in _adapter.tools():
-                    if _allow_set is not None and _spec.name not in _allow_set:
-                        continue
-                    registry.register(_spec)
+                try:
+                    _register_mcp_tools(
+                        registry,
+                        [
+                            _spec
+                            for _spec in _adapter.tools()
+                            if _allow_set is None or _spec.name in _allow_set
+                        ],
+                    )
+                except BaseException:
+                    _adapter.close()
+                    raise
                 _mcp_adapters.append(_adapter)
             except Exception as exc:
                 msg = f"mcp_servers.{_srv_name}: failed to start MCP server ({_cmd!r}): {exc}"

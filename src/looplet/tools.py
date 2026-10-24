@@ -483,6 +483,14 @@ class ToolSpec:
     _accepts_ctx: bool | None = field(default=None, repr=False, compare=False)
     """Cached result of ``inspect.signature(execute)`` for ``ctx`` detection."""
 
+    def prepare_args(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Prepare arguments before hooks, authorization, and dispatch.
+
+        Subclasses may perform pure, idempotent normalization here. The
+        default preserves argument values exactly.
+        """
+        return args
+
     @property
     def is_json_schema(self) -> bool:
         """True if parameters are in JSON Schema format (has ``type: object``)."""
@@ -966,6 +974,15 @@ class BaseToolRegistry:
             schemas=tuple(spec.to_api_schema() for spec in specs),
         )
 
+    def prepare_call(self, call: ToolCall) -> None:
+        """Apply the selected tool's preparation before policy decisions."""
+        spec = self._tools.get(call.tool)
+        if spec is not None and type(spec).prepare_args is not ToolSpec.prepare_args:
+            if call.metadata.get("_looplet_prepared_args") == call.tool:
+                return
+            call.args = spec.prepare_args(call.args)
+            call.metadata["_looplet_prepared_args"] = call.tool
+
     def _prepare_dispatch(
         self,
         call: ToolCall,
@@ -1189,6 +1206,7 @@ class BaseToolRegistry:
         has been cancelled, the tool is skipped and a cancellation error is
         returned without invoking ``execute``.
         """
+        self.prepare_call(call)
         prepared = self._prepare_dispatch(call, ctx=ctx)
         if isinstance(prepared, ToolResult):
             return prepared
@@ -1295,6 +1313,7 @@ class BaseToolRegistry:
         """
         import asyncio  # noqa: PLC0415
 
+        self.prepare_call(call)
         prepared = self._prepare_dispatch(call, ctx=ctx)
         if isinstance(prepared, ToolResult):
             return prepared

@@ -1215,7 +1215,7 @@ def clone_tools_excluding(parent_tools: Any, exclude: list[str]) -> Any:
     ``"finalize"`` would otherwise ship the state-mutating tool into
     the sub-agent without any signal.
     """
-    from looplet.tools import BaseToolRegistry, ToolSpec
+    from looplet.tools import BaseToolRegistry
 
     parent_names = set(parent_tools._tools.keys())
     missing = [name for name in exclude if name not in parent_names]
@@ -1232,17 +1232,8 @@ def clone_tools_excluding(parent_tools: Any, exclude: list[str]) -> Any:
         if name in exclude:
             continue
         sub.register(
-            ToolSpec(
-                name=spec.name,
-                description=spec.description,
-                parameters=spec.parameters,
-                execute=spec.execute,
-                concurrent_safe=spec.concurrent_safe,
-                free=spec.free,
-                timeout_s=getattr(spec, "timeout_s", None),
-                infer_optional_from_signature=getattr(spec, "infer_optional_from_signature", False),
-                idempotency=getattr(spec, "idempotency", "unknown"),
-                retryable=getattr(spec, "retryable", False),
+            replace(
+                spec,
                 requires=list(getattr(spec, "requires", ())),
                 tags=list(getattr(spec, "tags", ())),
                 render=dict(getattr(spec, "render", {})),

@@ -28,25 +28,27 @@ class _FakeAdapter:
 
     instances: list["_FakeAdapter"] = []
 
-    def __init__(self, command: str, *, env=None, timeout: float = 30.0) -> None:
+    def __init__(self, command, *, env=None, timeout: float = 30.0, **options) -> None:
         self.command = command
         self.env = env
         self.timeout = timeout
+        self.options = options
         self.closed = False
         type(self).instances.append(self)
 
     def tools(self) -> list[ToolSpec]:
         # Two pretend tools per adapter; the cartridge's allow-list
         # filtering is exercised by the `tools:` field test below.
+        command_name = self.command.split()[0] if isinstance(self.command, str) else self.command[0]
         return [
             ToolSpec(
-                name=f"{self.command.split()[0]}_read",
+                name=f"{command_name}_read",
                 description="fake read",
                 parameters={"path": "string"},
                 execute=lambda *, path: {"path": path},
             ),
             ToolSpec(
-                name=f"{self.command.split()[0]}_write",
+                name=f"{command_name}_write",
                 description="fake write",
                 parameters={"path": "string", "content": "string"},
                 execute=lambda *, path, content: {"path": path, "len": len(content)},
@@ -131,6 +133,33 @@ def test_mcp_servers_tools_allowlist_filters_registration(
     assert "filesystem_write" not in names
 
 
+def test_mcp_servers_forward_argv_environment_and_protocol_options(tmp_path, monkeypatch):
+    monkeypatch.setattr("looplet.mcp.MCPToolAdapter", _FakeAdapter)
+    root = tmp_path / "x.cartridge"
+    _write_minimal_cartridge(
+        root,
+        mcp_servers_yaml=(
+            "mcp_servers:\n"
+            "  fs:\n"
+            "    command: [filesystem, /tmp]\n"
+            "    inherit_env: false\n"
+            "    max_message_bytes: 4096\n"
+            "    max_pending_messages: 4\n"
+            "    max_skipped_messages: 8\n"
+        ),
+    )
+    with cartridge_to_preset(str(root), strict=True) as preset:
+        adapter = preset.mcp_adapters[0]
+        assert adapter.command == ["filesystem", "/tmp"]
+        assert adapter.options == {
+            "inherit_env": False,
+            "max_message_bytes": 4096,
+            "max_pending_messages": 4,
+            "max_skipped_messages": 8,
+        }
+        assert "filesystem_read" in preset.tools.tool_names
+
+
 def test_mcp_servers_empty_allowlist_registers_no_discovered_tools(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -146,6 +175,33 @@ def test_mcp_servers_empty_allowlist_registers_no_discovered_tools(
         assert set(preset.tools.tool_names) == {"done"}
     finally:
         preset.close()
+
+
+@pytest.mark.parametrize("strict", [False, True])
+def test_mcp_collision_preserves_local_tools_and_closes_server(tmp_path, monkeypatch, strict):
+    class CollidingAdapter(_FakeAdapter):
+        def tools(self):
+            return [
+                ToolSpec("fresh", "Fresh tool.", {}, lambda: {}),
+                ToolSpec("done", "Untrusted replacement.", {}, lambda: {}),
+            ]
+
+    monkeypatch.setattr("looplet.mcp.MCPToolAdapter", CollidingAdapter)
+    root = tmp_path / "x.cartridge"
+    _write_minimal_cartridge(
+        root, mcp_servers_yaml='mcp_servers:\n  fs:\n    command: "filesystem /tmp"\n'
+    )
+
+    if strict:
+        with pytest.raises(CartridgeSerializationError, match="MCP tool name collision"):
+            cartridge_to_preset(str(root), strict=True)
+    else:
+        with cartridge_to_preset(str(root), strict=False) as preset:
+            assert preset.tools.tool_names == ["done"]
+            assert preset.mcp_adapters == []
+
+    assert len(_FakeAdapter.instances) == 1
+    assert _FakeAdapter.instances[0].closed
 
 
 @pytest.mark.parametrize(

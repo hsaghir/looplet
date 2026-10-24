@@ -98,6 +98,15 @@ Release `0.4.1` includes the safety fixes missing from `0.4.0`.
 Pin the version and artifact hashes in your dependency lockfile for deployment.
 See the [Quickstart](quickstart.md) for environment setup and the same agent's tests.
 This example uses fixed responses and does not contact a model service.
+
+Run the included example without creating a file:
+
+```bash
+python -m looplet.examples.quickstart
+```
+
+It runs the tools and checks the resulting answer.
+To own the code, use the same loop below.
 `validate=True` checks top-level argument types, nullability, and enum choices before tools run.
 Nested data and other constraints remain tool-owned.
 

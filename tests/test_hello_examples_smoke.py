@@ -46,7 +46,7 @@ def test_frontdoor_install_uses_fixed_release_without_checkout(guide_name):
     assert "-e" not in arguments
 
 
-def test_quickstart_uses_one_pinned_preview_environment():
+def test_quickstart_starts_with_the_release_and_defers_preview_setup():
     docs = Path(__file__).resolve().parents[1] / "docs"
     guide = (docs / "quickstart.md").read_text()
     install = (docs / "install.md").read_text()
@@ -56,27 +56,33 @@ def test_quickstart_uses_one_pinned_preview_environment():
     assert pin is not None
     commands = re.findall(r"^```bash[^\n]*\n(.*?)^```[ \t]*$", guide, re.M | re.S)
     first = shlex.split(commands[0])
-    assert f"looplet @ {pin.group(1)}" in first
-    assert ".venv-looplet-preview" in first
-    assert guide.count("python -m venv ") == 1
-    assert "separate environment before using this starter" not in guide
-    assert "Keep using the environment from step 1." in guide
+    assert "looplet==0.4.1" in first
+    assert ".venv" in first
+    optional = guide.index("## Optional experiment starter\n")
+    for name in ("first_loop.py", "test_first_loop.py", "first_loop_replay.py"):
+        assert guide.index(f'title="{name}"') < optional
+    assert guide.index(pin.group(1)) > optional
+    preview = shlex.split(next(command for command in commands if pin.group(1) in command))
+    assert f"looplet @ {pin.group(1)}" in preview
+    assert ".venv-looplet-preview" in preview
+    assert "Keep this preview environment active" in guide[optional:]
     installs = re.findall(r'python -m pip install "([^"]+)"', guide)
-    assert set(installs) == {f"looplet @ {pin.group(1)}", f"looplet[openai] @ {pin.group(1)}"}
+    assert set(installs) == {
+        "looplet==0.4.1",
+        "looplet[openai]==0.4.1",
+        f"looplet @ {pin.group(1)}",
+        f"looplet[openai] @ {pin.group(1)}",
+    }
 
 
-def test_quickstart_provider_extra_keeps_pinned_preview():
+def test_quickstart_provider_extra_keeps_the_released_version():
     guide = Path(__file__).resolve().parents[1] / "docs" / "quickstart.md"
     section = guide.read_text().split("## Use the same agent with a real model", 1)[1]
     command = re.findall(r"^```bash[^\n]*\n(.*?)^```[ \t]*$", section, re.M | re.S)[0]
     arguments = shlex.split(command.replace("\\\n", " "))
-    pin = re.search(
-        r"looplet @ (https://github.com/hsaghir/looplet/archive/[a-f0-9]{40}\.zip)",
-        guide.read_text(),
-    )
-    assert pin is not None and f"looplet[openai] @ {pin.group(1)}" in arguments
+    assert "looplet[openai]==0.4.1" in arguments
     assert "-e" not in arguments
-    assert not any("refs/heads/master" in argument for argument in arguments)
+    assert not any("github.com" in argument for argument in arguments)
 
 
 def test_factory_shell_workflow_has_a_pinned_preview_install():
@@ -185,7 +191,8 @@ def _quickstart_agent_source(guide: Path) -> str:
     assert isinstance(main, ast.If)
     declarations = "".join(first_loop.splitlines(keepends=True)[: main.lineno - 1])
     grading = next(block for block in _python_blocks(guide) if "def assess_result(" in block)
-    return declarations + "\n\n" + grading
+    factory = next(block for block in _python_blocks(guide) if "def build(runtime):" in block)
+    return declarations + "\n\n" + factory + "\n\n" + grading
 
 
 def _run_documented_shell(guide: Path, name: str, project: Path):
@@ -478,7 +485,9 @@ def test_packaged_quickstart_runs_without_authored_files(tmp_path, monkeypatch, 
     assert first.steps[0] is not second.steps[0]
     assert quickstart.assess_result(first).passed
     assert quickstart.main([]) == 0
-    assert "True done" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "Completed: True (done)" in output
+    assert "Grade: passed" in output
     assert list(tmp_path.iterdir()) == []
 
 
@@ -942,7 +951,9 @@ def test_packaged_quickstart_stop_is_explicit(tmp_path, monkeypatch, capsys):
     assert not stopped.completed
     assert [step.tool_call.tool for step in stopped.steps] == ["lookup_owner"]
     assert quickstart.main(["--stop-after-lookup"]) == 0
-    assert "False stream_closed" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "Completed: False (stream_closed)" in output
+    assert "Grade: passed" not in output
 
 
 def test_packaged_quickstart_launcher_propagates_failure(tmp_path):
@@ -1967,7 +1978,9 @@ def test_quickstart_runs_grades_captures_and_replays(tmp_path: Path, monkeypatch
     assert len(list(tmp_path.rglob("trajectory.json"))) == 1
     monkeypatch.setattr(sys, "argv", ["first_loop_rescore.py", str(trace_dir)])
     rescored = {"__name__": "__main__"}
-    exec(compile(examples["first_loop_rescore.py"], str(guide), "exec"), rescored)
+    with monkeypatch.context() as released_api:
+        released_api.delattr("looplet.EvalReport.save")
+        exec(compile(examples["first_loop_rescore.py"], str(guide), "exec"), rescored)
     assert rescored["saved_report"].passed
     replayed = {"__name__": "__main__"}
     monkeypatch.setattr(sys, "argv", ["first_loop_replay.py", str(trace_dir)])

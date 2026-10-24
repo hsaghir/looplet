@@ -383,13 +383,13 @@ def main(argv: list[str] | None = None) -> int:
                 result = stop_after_lookup(llm, **options)
             else:
                 result = run_agent(llm, **options)
-        print(result.output)
-        print(result.completed, result.termination_reason)
+        print(f"Output: {result.output}")
+        print(f"Completed: {result.completed} ({result.termination_reason})")
         if arguments.stop_after_lookup:
             return 0
         if not arguments.capture and not arguments.replay and not arguments.experiment:
             assess_result(result, case=case).assert_passed()
-        print(True)
+        print("Grade: passed")
         return 0 if result.completed else 1
     except (AssertionError, FileExistsError, FileNotFoundError, _SavedEvidenceError) as error:
         print(f"error: {error}", file=sys.stderr)

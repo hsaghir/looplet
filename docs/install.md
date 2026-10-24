@@ -6,9 +6,8 @@ Model provider adapters are optional extras.
 
 ## Install the current build
 
-The complete [Quickstart](quickstart.md) uses the pinned preview below from its first step.
-Choose that environment before starting if you need the editable starter or factory commands.
-Keep it active throughout the guide, including optional provider setup.
+The [Quickstart](quickstart.md) starts with the published package below.
+Use its pinned preview only for the optional complete experiment starter or factory commands.
 
 Use release `0.4.1` for new integrations.
 It includes the [safety fixes](#unreleased-safety-fixes) missing from `0.4.0`.
@@ -29,7 +28,7 @@ Use `looplet doctor --no-backend --json` when you also need the library source f
 ## Try unreleased factory commands
 
 The editable starter and factory shell workflow require unreleased source, not the PyPI `0.4.1` package.
-This is the same environment used at the start of the [Quickstart](quickstart.md):
+This is the separate environment used in the [optional Quickstart section](quickstart.md#optional-experiment-starter):
 
 ```bash
 python -m venv .venv-looplet-preview
@@ -59,7 +58,7 @@ Exhausted replay fails immediately with `replay_exhausted`, without retry backof
 Inspection lists saved experiment history, including unreadable reports and child navigation.
 Keep the commit and source fingerprint with experiment results.
 The ordinary Python, pytest, capture, and replay examples work with released `0.4.1`.
-Do not install the published package over this environment midway through the Quickstart.
+Keep the published environment unchanged when trying this separate preview.
 Add provider extras from the same pinned archive, as shown in the guide.
 
 ## Install the published package

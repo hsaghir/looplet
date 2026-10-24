@@ -47,6 +47,15 @@ Pin the version and artifact hashes in your dependency lockfile for deployment.
 The example uses fixed model responses.
 It runs without a model service or an API key.
 
+Start with the included example:
+
+```bash
+python -m looplet.examples.quickstart
+```
+
+It runs the tools and checks the resulting answer.
+To own the code, use the same two-tool loop below:
+
 ```python
 from looplet import MockLLMBackend, minimal_preset
 
@@ -96,9 +105,8 @@ Real models use native tool calls by default.
 See [Install](docs/install.md) for provider adapters and configuration.
 
 The [Quickstart](docs/quickstart.md) uses this same API and adds pytest checks, capture, and replay.
-Its complete editable starter and factory commands are unreleased.
-Start that guide with its pinned preview environment and keep using it throughout.
-The published package remains available for the Python APIs shown here.
+The Python walkthrough works with the published package installed above.
+Its optional complete experiment starter and factory commands use a separately marked pinned preview.
 For async code, use `async_composable_loop()` with `contextlib.aclosing`.
 
 ## Add only what you need

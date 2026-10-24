@@ -37,7 +37,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - Saved trace inspection labels grades as capture-time observations rather than current assessments.
 - `--version` includes the doctor's Git-independent source fingerprint, distinguishing same-version preview builds without selecting a provider.
 - Human Python-factory inspection lists tools, the completion tool, step limit, protocol, and hook count, with an equivalent full-blueprint command.
-- The complete Quickstart uses one commit-pinned preview environment from installation through editable experiments and optional provider setup.
+- The Quickstart starts with the released package and ordinary Python tests. The complete experiment starter and factory CLI are optional, with a separate commit-pinned preview environment and matching provider extras.
+- The packaged Quickstart labels its output, completion state, and successful grade instead of printing unexplained booleans. Intentionally stopped and failed runs do not claim a passing grade.
 - CLI `run`, its format aliases, and `replay` require accepted completion by default. Use `--allow-incomplete` for the earlier command-success policy.
 - `--require-completed` remains supported. Strict bundle runs use the shared runner; custom human runners require `--allow-incomplete`.
 - README, docs home, and Quickstart introduce `minimal_preset` and `run_result` consistently. Cartridge and skill-bundle packaging remain optional.

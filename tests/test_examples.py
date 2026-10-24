@@ -177,6 +177,27 @@ def test_scripted_demo_executes_four_steps_without_waiting(monkeypatch, capsys):
     assert "1 approval prompt, 4 tools" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize(
+    ("arguments", "completed", "exit_code"),
+    [([], True, 0), (["--stop-after-lookup"], False, 0), (["--max-steps", "1"], False, 1)],
+)
+def test_quickstart_labels_results_without_implying_an_unchecked_pass(
+    arguments, completed, exit_code, monkeypatch, capsys
+):
+    from looplet.examples import quickstart
+
+    def unexpected_provider(*args, **kwargs):
+        raise AssertionError("The default Quickstart must not construct a provider backend")
+
+    monkeypatch.setattr(quickstart.OpenAIBackend, "from_env", unexpected_provider)
+    monkeypatch.setattr(quickstart.AnthropicBackend, "from_env", unexpected_provider)
+    assert quickstart.main(arguments) == exit_code
+    output = capsys.readouterr().out
+    assert "Output: " in output
+    assert f"Completed: {completed} (" in output
+    assert ("Grade: passed" in output) is completed
+
+
 def _snippet(relative):
     path = EXAMPLES / "snippets" / relative
     spec = importlib.util.spec_from_file_location(path.stem, path)

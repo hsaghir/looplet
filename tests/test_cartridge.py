@@ -3012,6 +3012,39 @@ class TestHookEnabledDirective:
 
 
 class TestYamlParseErrorContext:
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "builtin_tools:\n- scaffold_cartridge\nmax_steps: 2\npermissions:\n  default: deny\n",
+            "- first\nlater: value\n",
+        ],
+    )
+    def test_load_yaml_rejects_unconsumed_lines(self, text: str) -> None:
+        from looplet.cartridge import _load_yaml
+
+        with pytest.raises(CartridgeSerializationError, match="unconsumed.*line") as exc:
+            _load_yaml(text, source_path="agent/config.yaml")
+        assert "agent/config.yaml" in str(exc.value)
+
+    def test_strict_cartridge_rejects_partial_configuration(self, tmp_path: Path) -> None:
+        from looplet import scaffold_cartridge
+
+        root = scaffold_cartridge(tmp_path / "agent.cartridge", name="agent", tools=[])
+        (root / "config.yaml").write_text(
+            "builtin_tools:\n- scaffold_cartridge\nmax_steps: 2\npermissions:\n  default: deny\n"
+        )
+
+        with pytest.raises(CartridgeSerializationError, match="config.yaml"):
+            cartridge_to_preset(root, strict=True)
+
+    def test_load_yaml_skips_comments_before_nested_lists(self) -> None:
+        from looplet.cartridge import _load_yaml
+
+        assert _load_yaml("tools:\n  # selected tools\n  - read\nmax_steps: 2\n") == {
+            "tools": ["read"],
+            "max_steps": 2,
+        }
+
     def test_load_yaml_includes_source_path(self) -> None:
         from looplet.cartridge import CartridgeSerializationError, _load_yaml
 

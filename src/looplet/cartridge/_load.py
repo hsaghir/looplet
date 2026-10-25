@@ -629,6 +629,60 @@ def _check_v2_host_tier_keys(cfg_kwargs: dict[str, Any], source_path: Path) -> N
         )
 
 
+def _load_config_declarations(
+    root: Path,
+    render_runtime: dict[str, Any],
+    *,
+    strict: bool,
+) -> tuple[dict[str, Any], dict[str, str]]:
+    """Read and validate declarations before constructing cartridge resources."""
+    cfg_kwargs: dict[str, Any] = {}
+    config_sources: dict[str, str] = {}
+    cfg_path = root / CartridgeLayout.CONFIG_YAML
+    if cfg_path.is_file():
+        raw_cfg_text = cfg_path.read_text(encoding="utf-8")
+        raw_cfg_text = _apply_runtime_substitutions(raw_cfg_text, render_runtime)
+        cfg_kwargs.update(_load_yaml(raw_cfg_text, source_path=cfg_path) or {})
+        config_sources.update({name: "config.yaml" for name in cfg_kwargs})
+
+    runtime_yaml_path = root / "runtime.yaml"
+    _check_v2_runtime_tier_keys(cfg_kwargs, cfg_path, runtime_yaml_path)
+    _check_v2_host_tier_keys(cfg_kwargs, cfg_path)
+
+    if runtime_yaml_path.is_file():
+        raw_runtime_text = runtime_yaml_path.read_text(encoding="utf-8")
+        raw_runtime_text = _apply_runtime_substitutions(raw_runtime_text, render_runtime)
+        runtime_yaml_kwargs = _load_yaml(raw_runtime_text, source_path=runtime_yaml_path) or {}
+        invalid_keys = sorted(
+            name
+            for name in runtime_yaml_kwargs
+            if name not in CartridgeLayout.RUNTIME_TIER_FIELDS
+            and name not in CartridgeLayout.RUNTIME_TIER_OVERRIDES
+        )
+        if invalid_keys:
+            msg = (
+                f"runtime.yaml at {runtime_yaml_path} contains non-runtime "
+                f"key(s): {invalid_keys}. runtime.yaml may only declare runtime-tier "
+                f"fields (sampling, context windows, compaction, caching, "
+                f"telemetry); contract-tier keys (max_steps, system_prompt, "
+                f"done_tool, model, permissions, memory) belong in "
+                f"config.yaml. See SPEC.md 'Runtime configuration'."
+            )
+            if strict:
+                raise CartridgeSerializationError(msg)
+            logger.warning("%s; dropping the non-runtime keys", msg)
+            for name in invalid_keys:
+                runtime_yaml_kwargs.pop(name, None)
+        cfg_kwargs.update(runtime_yaml_kwargs)
+        config_sources.update({name: "runtime.yaml" for name in runtime_yaml_kwargs})
+
+    sys_prompt_path = root / CartridgeLayout.SYSTEM_PROMPT_MD
+    if sys_prompt_path.is_file():
+        cfg_kwargs["system_prompt"] = sys_prompt_path.read_text(encoding="utf-8")
+        config_sources["system_prompt"] = "prompts/system.md"
+    return cfg_kwargs, config_sources
+
+
 def _load_file_memory_sources(
     root: Path,
     *,
@@ -751,6 +805,9 @@ def _workspace_to_preset_inner(
             f"in config.yaml."
         )
 
+    cfg_path = root / CartridgeLayout.CONFIG_YAML
+    cfg_kwargs, config_sources = _load_config_declarations(root, render_runtime, strict=strict)
+
     resources = _load_resources(
         root,
         runtime_dict,
@@ -761,63 +818,6 @@ def _workspace_to_preset_inner(
     # via ``resources["cartridge_root"]``. Used by ``static_briefing``
     # / ``recovery_hint`` to load ``path:`` kwargs declaratively.
     resources.setdefault("cartridge_root", root)
-
-    # Config
-    cfg_kwargs: dict[str, Any] = {}
-    config_sources: dict[str, str] = {}
-    cfg_path = root / CartridgeLayout.CONFIG_YAML
-    if cfg_path.is_file():
-        raw_cfg_text = cfg_path.read_text(encoding="utf-8")
-        # Apply ``${runtime.<key>}`` substitution before YAML parsing so
-        # cartridge authors can parameterise config.yaml declaratively.
-        raw_cfg_text = _apply_runtime_substitutions(raw_cfg_text, render_runtime)
-        cfg_kwargs.update(_load_yaml(raw_cfg_text, source_path=cfg_path) or {})
-        config_sources.update({name: "config.yaml" for name in cfg_kwargs})
-
-    runtime_yaml_path = root / "runtime.yaml"
-
-    # Validate the contract file before runtime values are merged into the
-    # effective LoopConfig mapping.
-    _check_v2_runtime_tier_keys(cfg_kwargs, cfg_path, runtime_yaml_path)
-    _check_v2_host_tier_keys(cfg_kwargs, cfg_path)
-
-    # ── Schema-v2 sibling ``runtime.yaml`` ──────────────────────
-    # ``runtime.yaml`` is the home for runtime-tier knobs
-    # (sampling, context window sizing, compaction strategy,
-    # caching, telemetry). Schema v2 requires those keys to live there.
-    #
-    if runtime_yaml_path.is_file():
-        raw_runtime_text = runtime_yaml_path.read_text(encoding="utf-8")
-        raw_runtime_text = _apply_runtime_substitutions(raw_runtime_text, render_runtime)
-        runtime_yaml_kwargs = _load_yaml(raw_runtime_text, source_path=runtime_yaml_path) or {}
-        # Validate: only RUNTIME-tier keys are allowed in runtime.yaml.
-        _bad = sorted(
-            k
-            for k in runtime_yaml_kwargs
-            if k not in CartridgeLayout.RUNTIME_TIER_FIELDS
-            and k not in CartridgeLayout.RUNTIME_TIER_OVERRIDES
-        )
-        if _bad:
-            msg = (
-                f"runtime.yaml at {runtime_yaml_path} contains non-runtime "
-                f"key(s): {_bad}. runtime.yaml may only declare runtime-tier "
-                f"fields (sampling, context windows, compaction, caching, "
-                f"telemetry); contract-tier keys (max_steps, system_prompt, "
-                f"done_tool, model, permissions, memory) belong in "
-                f"config.yaml. See SPEC.md 'Runtime configuration'."
-            )
-            if strict:
-                raise CartridgeSerializationError(msg)
-            logger.warning("%s; dropping the non-runtime keys", msg)
-            for k in _bad:
-                runtime_yaml_kwargs.pop(k, None)
-        cfg_kwargs.update(runtime_yaml_kwargs)
-        config_sources.update({name: "runtime.yaml" for name in runtime_yaml_kwargs})
-
-    sys_prompt_path = root / CartridgeLayout.SYSTEM_PROMPT_MD
-    if sys_prompt_path.is_file():
-        cfg_kwargs["system_prompt"] = sys_prompt_path.read_text(encoding="utf-8")
-        config_sources["system_prompt"] = "prompts/system.md"
 
     # Memory sources - file-based (``memory/*.md`` + ``memory/*.py``)
     # come first; yaml-declared ``memory_sources: ['${ref:...}']``

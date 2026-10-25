@@ -104,7 +104,7 @@ def _load_yaml(text: str, *, source_path: str | Path | None = None) -> Any:
         nonlocal pos
         # Detect whether the block is a list (lines starting with "- ")
         # or a dict (lines with "key: value"). Empty block → empty dict.
-        while pos < len(lines) and not lines[pos].strip():
+        while pos < len(lines) and (not lines[pos].strip() or lines[pos].lstrip().startswith("#")):
             pos += 1
         if pos >= len(lines):
             return {}
@@ -439,4 +439,9 @@ def _load_yaml(text: str, *, source_path: str | Path | None = None) -> Any:
         text = s[start:i]
         return text, i + 1
 
-    return parse_block(0)
+    value = parse_block(0)
+    if pos < len(lines):
+        raise CartridgeSerializationError(
+            f"unconsumed workspace YAML line {pos + 1}{src}: {lines[pos]!r}"
+        )
+    return value

@@ -146,6 +146,7 @@ from looplet.loop import (
     LoopHook,
     composable_loop,
     emit_event,
+    is_loop_hook,
 )
 from looplet.mcp import MCPToolAdapter
 from looplet.memory import (
@@ -253,6 +254,7 @@ __all__ = [
     "LoopConfig",
     "LoopContext",
     "LoopHook",
+    "is_loop_hook",
     "Step",
     "ToolCall",
     "ToolResult",

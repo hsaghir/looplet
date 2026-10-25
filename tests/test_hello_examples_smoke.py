@@ -1696,6 +1696,7 @@ async def test_provenance_async_replay_documented_example(tmp_path):
             tools=tools,
             state=state,
             hooks=[Gate(), sink.trajectory_hook()],
+            max_steps=2,
         )
     ]
     trace = sink.flush()

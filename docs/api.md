@@ -22,6 +22,7 @@ Some provider and advanced APIs need a submodule import.
 | `async_composable_loop(...)` | Use the same loop with async iteration. |
 | `LoopConfig` | Set limits, prompts, tool protocols, context reduction, checkpoints, and cancellation. |
 | `LoopContext` | Provide host context to the loop and tools. |
+| `is_loop_hook(...)` | Recognize a partial, duck-typed hook. **Unreleased.** |
 | `DefaultState` | Record steps and stop state. Use a compatible custom state if you need more fields. |
 | `Step` | Read one tool call, its result, times, and metadata. |
 | `ToolCall` / `ToolResult` | Represent a call and its result as typed records. |
@@ -63,6 +64,15 @@ Early closure has status `stopped` and reason `stream_closed`.
 The caller owns the tools, clients, and resources that it supplies.
 `RunResult.from_state(state)` returns accepted output, steps, and stop status.
 Completion does not prove that an answer is correct.
+
+Current source builds keep a supplied `LoopConfig` live.
+The `max_steps=` and `system_prompt=` loop arguments update that config in place.
+Cancellation tokens and other host controls retain their identity.
+Use separate configs for runs that need independent settings.
+
+Hooks can implement only the methods they need; inheritance is not required.
+**Unreleased:** `is_loop_hook(value)` recognizes objects with at least one supported, callable hook method.
+`isinstance(value, LoopHook)` checks the complete protocol, not a partial hook.
 
 Since `0.4.1`, loops reject terminal calls whose dispatch fails.
 Invalid completion arguments do not produce accepted output.

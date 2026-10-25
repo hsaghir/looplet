@@ -218,6 +218,22 @@ class TestLoopConfig:
 
 
 class TestLoopHookProtocol:
+    def test_partial_hook_capability_check_preserves_the_full_protocol(self):
+        from looplet import LoopHook, is_loop_hook
+
+        class PartialHook:
+            def post_dispatch(self, state, session_log, tool_call, tool_result, step_num):
+                return None
+
+        class InvalidHook:
+            post_dispatch = None
+
+        hook = PartialHook()
+        assert is_loop_hook(hook)
+        assert not isinstance(hook, LoopHook)
+        assert not is_loop_hook(InvalidHook())
+        assert not is_loop_hook(object())
+
     def test_protocol_runtime_checkable(self):
         from looplet.loop import LoopHook
 

@@ -130,6 +130,53 @@ def test_shared_configuration_resolution_preserves_live_config_and_budget(asynch
     assert config.cancel_token is token
 
 
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_shared_default_state_budget_uses_the_effective_config(asynchronous):
+    from looplet import DefaultState, LoopConfig, async_composable_loop, composable_loop
+    from looplet.testing import AsyncMockLLMBackend, MockLLMBackend
+
+    state = DefaultState(max_steps=9)
+    responses = ['{"tool":"noop","args":{}}'] * 3
+    backend = AsyncMockLLMBackend(responses) if asynchronous else MockLLMBackend(responses)
+    kwargs = dict(
+        llm=backend,
+        tools=_make_registry([("noop", lambda: {"ok": True})]),
+        config=LoopConfig(max_steps=1, use_native_tools=False),
+        state=state,
+    )
+    with pytest.warns(UserWarning, match="using the config value"):
+        if asynchronous:
+            steps = [step async for step in async_composable_loop(**kwargs)]
+        else:
+            steps = list(composable_loop(**kwargs))
+
+    assert len(steps) == 1
+    assert state.max_steps == 1
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_shared_state_resolution_preserves_custom_budget_rules(asynchronous):
+    from looplet import LoopConfig, async_composable_loop, composable_loop
+    from looplet.testing import AsyncMockLLMBackend, MockLLMBackend
+
+    state = SimpleState(_max_steps=3)
+    responses = ['{"tool":"noop","args":{}}'] * 3
+    backend = AsyncMockLLMBackend(responses) if asynchronous else MockLLMBackend(responses)
+    kwargs = dict(
+        llm=backend,
+        tools=_make_registry([("noop", lambda: {"ok": True})]),
+        config=LoopConfig(max_steps=1, use_native_tools=False),
+        state=state,
+    )
+    if asynchronous:
+        steps = [step async for step in async_composable_loop(**kwargs)]
+    else:
+        steps = list(composable_loop(**kwargs))
+
+    assert len(steps) == 3
+    assert state._max_steps == 3
+
+
 def test_explicit_callback_does_not_read_unselected_domain():
     from looplet.loop import DomainAdapter, LoopConfig
 

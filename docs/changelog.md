@@ -8,6 +8,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Security
 
+- Cartridge YAML loading rejects unconsumed lines instead of silently dropping later budgets or permissions. Comments before nested lists remain supported.
 - MCP structured arguments are prepared before sync/async permission hooks and sent without later type conversion. Direct registry dispatch retains JSON-string repair; raw tool executors reject structured arguments that still need repair.
 - MCP adapter and cartridge imports reject duplicate tool names before registering any tool from that server. Rejected cartridge servers are closed, including in permissive loading mode.
 - MCP protocol requests have configurable message, queued-response, and skipped-message limits, with one deadline spanning writes and reads. Closing an adapter discards prior-session messages and tool definitions.
@@ -32,6 +33,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Loop API documentation states the existing live-config ownership contract. Explicit loop argument overrides update the supplied config without replacing cancellation tokens or other host controls.
 - OpenAI text streams yield visible text from multipart responses and exclude structured provider metadata in sync and async paths.
 - Cartridge loading reads and validates config and runtime declarations before importing or building shared resources. Reference resolution and resource cleanup retain their existing ownership rules.
 - Eval root help introduces Python factories before cartridge execution.
@@ -46,6 +48,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `is_loop_hook()` recognizes partial, duck-typed hooks without mandatory inheritance. `LoopHook` remains the complete interface for protocol checks.
 - Public optional backend contracts preserve transparent wrappers, retry ownership, typed context and provider state without required inheritance.
 - Shared model budgets admit individual requests, avoid duplicate nested charges and restore consumed allowances without replenishment.
 - Built-in adapters accept explicit provider request options and expose detached requested and submitted settings without claiming provider confirmation.
@@ -75,6 +78,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Sync and async loops share default-state budget resolution and terminal retry classification. Async loops synchronize mismatched default-state limits and stop on exhausted scripted responses without retry backoff.
 - Pre-push checks clear Git-local repository variables so test fixtures cannot overwrite the caller's Git configuration or identity.
 - The data-agent example preserves its CSV and scripted position when resuming incomplete checkpoints, and explicit terminal resumes no longer repeat tools or recreate data.
 - Human saved-evidence rescoring shows each failing check's explanation when available, including with `--verbose`.

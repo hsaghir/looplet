@@ -170,10 +170,13 @@ class LoopContext:
 
 @runtime_checkable
 class LoopHook(Protocol):
-    """Protocol for composable loop hooks.
+    """Complete interface for composable loop hooks.
 
     Hooks inject domain-specific behavior into the generic agent loop.
-    All methods are optional - implement only what you need.
+    The loop accepts partial, duck-typed implementations of this interface.
+    Implement only the methods you need; inheritance is not required.
+    ``isinstance(hook, LoopHook)`` checks the complete interface.
+    Use :func:`is_loop_hook` to recognize partial hooks.
 
     Minimal example::
 
@@ -225,9 +228,8 @@ class LoopHook(Protocol):
         forever after - replacing the closures-over-loop-state
         anti-pattern that broke ``to_config()`` workspace round-trip.
 
-        ``bind`` is intentionally NOT part of the Protocol body so
-        the ``runtime_checkable`` ``isinstance(h, LoopHook)`` check
-        keeps working for hooks that don't need long-lived ctx.
+        ``bind`` is not part of the Protocol body, so complete adapters
+        need not implement it for ``isinstance(h, LoopHook)`` checks.
     """
 
     def pre_loop(
@@ -505,6 +507,10 @@ class LoopConfig:
 
     Everything else is optional and can be added later as your agent
     matures. See the tutorial in README.md for a progressive walkthrough.
+
+    Config objects are live host configuration, not immutable snapshots.
+    Loop argument overrides update a supplied config in place.
+    Use separate configs when runs need independent settings.
     """
 
     max_steps: int = 15
@@ -1008,6 +1014,24 @@ def _resolve_loop_config(
         sources["system_prompt"] = "loop argument"
     effective.record_sources(sources)
     return effective
+
+
+def _resolve_loop_state(state: AgentState | None, config: LoopConfig) -> AgentState:
+    """Apply the configured budget to default state without replacing custom rules."""
+    from looplet.types import DefaultState
+
+    if state is None:
+        return DefaultState(max_steps=config.max_steps)
+    if isinstance(state, DefaultState) and state.max_steps != config.max_steps:
+        warnings.warn(
+            f"DefaultState(max_steps={state.max_steps}) differs from "
+            f"LoopConfig(max_steps={config.max_steps}); using the config "
+            f"value. Pass the same max_steps to both to silence this.",
+            UserWarning,
+            stacklevel=3,
+        )
+        state.max_steps = config.max_steps
+    return state
 
 
 def _default_extract_entities(data: Any, state: Any = None) -> list[str]:
@@ -2007,6 +2031,11 @@ _KNOWN_HOOK_METHODS = frozenset(
 )
 
 
+def is_loop_hook(value: Any) -> bool:
+    """Return whether an object provides any supported, callable hook slot."""
+    return any(callable(getattr(value, name, None)) for name in _KNOWN_HOOK_METHODS)
+
+
 def _validate_hooks(hooks: list[Any]) -> None:
     """Warn when a hook object has no recognized hook methods.
 
@@ -2017,8 +2046,7 @@ def _validate_hooks(hooks: list[Any]) -> None:
     import warnings  # noqa: PLC0415
 
     for hook in hooks:
-        has_any = any(hasattr(hook, m) for m in _KNOWN_HOOK_METHODS)
-        if not has_any:
+        if not is_loop_hook(hook):
             warnings.warn(
                 f"Hook {type(hook).__name__} has no recognized hook methods "
                 f"({', '.join(sorted(_KNOWN_HOOK_METHODS)[:5])}, ...). "
@@ -2552,9 +2580,9 @@ def composable_loop(
         stream: Optional event emitter for structured loop lifecycle events.
         conversation: Optional conversation that records prompts, responses, and tool messages.
         max_steps: Optional override for ``config.max_steps``.
-            An omitted state also receives this limit. The supplied config is not mutated.
+            An omitted state also receives this limit. A supplied config is updated in place.
         system_prompt: Optional override for ``config.system_prompt``.
-            The supplied config is not mutated.
+            A supplied config is updated in place; live host controls retain their identity.
 
     Yields:
         A ``Step`` for each recorded loop step, including failed tool calls.
@@ -2687,26 +2715,7 @@ def _composable_loop_impl(
             "Use OpenAIBackend(client, model=...) or AnthropicBackend(client, model=...)."
         )
 
-    # Default state when none provided.
-    from looplet.types import DefaultState as _DefaultState  # noqa: PLC0415
-
-    if state is None:
-        state = _DefaultState(max_steps=config.max_steps)
-
-    # Sync max_steps: config is the source of truth.  Warn once when the
-    # two disagree - a common footgun for agents assembling a loop for
-    # the first time.
-    if isinstance(state, _DefaultState) and state.max_steps != config.max_steps:
-        import warnings  # noqa: PLC0415
-
-        warnings.warn(
-            f"DefaultState(max_steps={state.max_steps}) differs from "
-            f"LoopConfig(max_steps={config.max_steps}); using the config "
-            f"value. Pass the same max_steps to both to silence this.",
-            UserWarning,
-            stacklevel=2,
-        )
-        state.max_steps = config.max_steps
+    state = _resolve_loop_state(state, config)
 
     # Warn when a hook object has no recognized hook methods - likely a typo.
     _validate_hooks(hooks)

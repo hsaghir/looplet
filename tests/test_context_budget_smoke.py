@@ -361,6 +361,60 @@ async def test_prompt_projection_preserves_original_run_evidence(tmp_path, async
         assert original in Path(projected.data["persisted_output_path"]).read_text()
 
 
+@pytest.mark.parametrize("native_blocks", [False, True])
+def test_provider_tool_results_preserve_retrieval_refs_and_warnings(native_blocks):
+    import json
+    from types import SimpleNamespace
+
+    from looplet.backends import _conversation_messages
+
+    snapshot = {
+        "prompt": "Task",
+        "conversation": {
+            "messages": [
+                {
+                    "role": "assistant",
+                    "metadata": {"origin": "model"},
+                    "content": [
+                        {
+                            "kind": "tool_use",
+                            "data": {
+                                "id": "call-1",
+                                "name": "source",
+                                "input": {},
+                            },
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_result": {
+                        "tool": "source",
+                        "call_id": "call-1",
+                        "data": "bounded preview",
+                        "result_key": "sha256:retained",
+                        "warnings": ["incomplete preview"],
+                    },
+                },
+            ]
+        },
+    }
+    messages = _conversation_messages(
+        SimpleNamespace(_conversation_input=snapshot), "Task", native_blocks=native_blocks
+    )
+    if native_blocks:
+        block = messages[-1]["content"][0]
+        assert block["tool_use_id"] == "call-1"
+        payload = json.loads(block["content"])
+    else:
+        tool_message = next(message for message in messages if message["role"] == "tool")
+        assert tool_message["tool_call_id"] == "call-1"
+        payload = json.loads(tool_message["content"])
+    assert payload["data"] == "bounded preview"
+    assert payload["result_key"] == "sha256:retained"
+    assert payload["warnings"] == ["incomplete preview"]
+
+
 def retained_evidence_source() -> str:
     return "ordinary evidence\n" * 4000 + "needle=405\n"
 

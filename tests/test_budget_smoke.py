@@ -21,12 +21,40 @@ pytestmark = pytest.mark.smoke
 
 
 class TestDefaultHarness:
+    @pytest.mark.parametrize("context_window", [4, 4096, 32768, 262144])
+    def test_execution_defaults_do_not_prescribe_strategy(self, context_window):
+        from looplet import DefaultCompactService, ToolCallBudgetHook, resolve_harness
+        from looplet.stagnation import StagnationHook
+
+        resolved = resolve_harness(LoopConfig(context_window=context_window))
+
+        assert resolved.describe()["profile"] == "execution-v1"
+        assert isinstance(resolved.config.compact_service, DefaultCompactService)
+        assert sum(isinstance(hook, ThresholdCompactHook) for hook in resolved.hooks) == 1
+        assert not any(
+            isinstance(hook, (StagnationHook, ToolCallBudgetHook)) for hook in resolved.hooks
+        )
+        assert resolved.describe()["max_tool_calls"] is None
+
+    def test_execution_profile_preserves_explicit_policies(self):
+        from looplet import ToolCallBudgetHook, resolve_harness
+        from looplet.stagnation import StagnationHook
+
+        supplied = [StagnationHook(), ToolCallBudgetHook(max_calls=7)]
+        resolved = resolve_harness(LoopConfig(max_model_calls=12), supplied)
+
+        assert resolved.hooks[:2] == supplied
+        assert resolved.describe()["max_model_calls"] == 12
+        assert resolved.describe()["max_tool_calls"] == 7
+
     def test_standard_defaults_are_composed_without_mutating_hooks(self):
         from looplet import DefaultCompactService, resolve_harness
         from looplet.stagnation import StagnationHook
 
         supplied_hooks = []
-        resolved = resolve_harness(config=LoopConfig(), hooks=supplied_hooks)
+        resolved = resolve_harness(
+            config=LoopConfig(harness_profile="standard-v1"), hooks=supplied_hooks
+        )
 
         assert isinstance(resolved.config.compact_service, DefaultCompactService)
         assert sum(isinstance(hook, ThresholdCompactHook) for hook in resolved.hooks) == 1
@@ -168,12 +196,8 @@ class TestDefaultHarness:
         root = scaffold_cartridge(tmp_path / "original", name="defaults_agent", tools=[])
         with cartridge_to_preset(root) as preset:
             standard = preset.resolve_harness().describe()
-            assert standard["profile"] == "standard-v1"
-            assert standard["hooks"] == [
-                "ThresholdCompactHook",
-                "StagnationHook",
-                "ToolCallBudgetHook",
-            ]
+            assert standard["profile"] == "execution-v1"
+            assert standard["hooks"] == ["ThresholdCompactHook"]
             preset.config.harness_profile = "minimal"
             preset.config.disabled_defaults = ["stagnation"]
             preset_to_cartridge(preset, tmp_path / "exported")
@@ -195,7 +219,11 @@ class TestDefaultHarness:
         register_done_tool(registry)
         responses = ['{"tool":"poll","args":{}}'] * 40
         state = DefaultState(max_steps=1)
-        arguments = {"tools": registry, "state": state, "config": LoopConfig(max_steps=1)}
+        arguments = {
+            "tools": registry,
+            "state": state,
+            "config": LoopConfig(max_steps=1, harness_profile="standard-v1"),
+        }
         if is_async:
             steps = [
                 step

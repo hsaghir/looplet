@@ -20,6 +20,27 @@ from looplet.tools import ToolSpec
 pytestmark = pytest.mark.smoke
 
 
+def test_shared_admission_rechecks_deadline_after_lock_acquisition(monkeypatch):
+    from looplet.subagent import ChildRunLimitExceeded, SharedModelBudget
+
+    clock = [0.0]
+
+    class AdvancingLock:
+        def __enter__(self):
+            clock[0] = 2.0
+
+        def __exit__(self, *args):
+            return None
+
+    monkeypatch.setattr("looplet.subagent.time.monotonic", lambda: clock[0])
+    budget = SharedModelBudget(2, _lock=AdvancingLock())
+
+    with pytest.raises(ChildRunLimitExceeded, match="deadline"):
+        budget.charge(deadline=1.0)
+
+    assert budget.remaining == 2
+
+
 @pytest.mark.parametrize("async_mode", [False, True])
 async def test_shared_admission_nested_wrappers_charge_each_allowance_once(async_mode):
     from types import SimpleNamespace

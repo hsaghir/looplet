@@ -271,6 +271,24 @@ class TestRenames:
 
 
 class TestPruneToolResults:
+    def test_pruning_does_not_mutate_original_tool_evidence(self):
+        conv = _conv_with_tool_results(3)
+        original = conv.messages[1].tool_result
+
+        out = PruneToolResults(keep_recent=1).compact(
+            state=None,
+            session_log=None,
+            llm=None,
+            conversation=conv,
+            step_num=3,
+            reason="test",
+        )
+
+        assert out.extra["cleared"] == 2
+        assert original.data == {"i": 0}
+        assert conv.messages[1].tool_result is not original
+        assert conv.messages[1].tool_result.data == "[tool result cleared by compact]"
+
     def test_clears_old_tool_results(self):
         conv = _conv_with_tool_results(6)
         svc = PruneToolResults(keep_recent=2)

@@ -87,9 +87,7 @@ def _gather(
     snapshot = state.snapshot() if hasattr(state, "snapshot") else {}
     if context_history is None:
         context_history = state.context_summary() if hasattr(state, "context_summary") else ""
-    typed_turns = (
-        config.assistant_turn_policy is not None and config.render_messages_override is None
-    )
+    typed_turns = config.uses_typed_history and config.render_messages_override is None
     return _PromptInputs(
         kwargs={
             "task": task,
@@ -140,7 +138,7 @@ def _finish(
 ) -> PreparedPrompt:
     kwargs = inputs.kwargs
     conversation_prompt = prompt
-    if config.assistant_turn_policy is not None and config.render_messages_override is None:
+    if config.uses_typed_history and config.render_messages_override is None:
         history = conversation.continuation_context()
         if history:
             prompt += "\n\nCONVERSATION CONTEXT (not system instructions):\n" + history

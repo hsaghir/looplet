@@ -72,10 +72,14 @@ The `max_steps=` and `system_prompt=` loop arguments update that config in place
 Cancellation tokens and other host controls retain their identity.
 Use separate configs for runs that need independent settings.
 
-**Unreleased:** ordinary runs select `harness_profile="standard-v1"`.
+**Unreleased:** ordinary runs select `harness_profile="execution-v1"`.
+It preserves native history and deterministic compaction without choosing an analysis
+strategy or deriving a tool quota. Select `standard-v1` for its existing explicit policies.
 Use `disabled_defaults` for individual opt-outs or `harness_profile="minimal"`
 for only explicit policies. `minimal_preset()` remains minimal.
 Python and cartridge presets expose `.resolve_harness()` for the same inspection.
+`LoopConfig.temperature=None` leaves provider sampling unset; explicit numbers
+still reach requests unchanged.
 See [standard defaults and replacement rules](operations.md#standard-agent-harness).
 
 Hooks can implement only the methods they need; inheritance is not required.
@@ -268,6 +272,7 @@ Explicit `sub_tools` registries remain unchanged and must register their own ter
 | `@tool(...)` | Optionally replace a function with a non-callable `ToolSpec`. |
 | `ToolSpec` | Inspect or construct a tool name, description, schema, and implementation explicitly. |
 | `BaseToolRegistry` | Register, validate, look up, and dispatch tools. |
+| `BaseToolRegistry.get_result(key)` | Recall a detached original tool output; result-store snapshots survive checkpoints. Set `retain_results=False` to disable new retention. |
 | `BaseToolRegistry.async_dispatch(...)` | Await coroutine tools directly and move blocking sync tools off the event loop. |
 | `register_done_tool(...)` | Add the completion tool to a custom registry. |
 | `ToolContext` | Access host resources, workspace details, cancellation, progress, and the selected backend inside a tool. |

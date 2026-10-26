@@ -24,6 +24,72 @@ from looplet import context_budget
 from looplet.types import DefaultState, Step, ToolCall, ToolResult
 
 
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("persist", [False, True])
+async def test_prompt_projection_preserves_original_run_evidence(tmp_path, asynchronous, persist):
+    from looplet import LoopConfig, async_composable_loop, composable_loop, tools_from
+    from looplet.checkpoint import Checkpoint
+    from looplet.conversation import MessageRole
+    from looplet.tools import BaseToolRegistry
+
+    original = "evidence" * 10_000
+
+    def source() -> str:
+        return original
+
+    class Backend:
+        def __init__(self):
+            self.calls = 0
+
+        def generate(self, prompt, **kwargs):
+            self.calls += 1
+            name = "source" if self.calls == 1 else "done"
+            return '{"tool": "' + name + '", "args": {}}'
+
+    class AsyncBackend(Backend):
+        async def generate(self, prompt, **kwargs):
+            return super().generate(prompt, **kwargs)
+
+    state = DefaultState(max_steps=3)
+    arguments = dict(
+        llm=AsyncBackend() if asynchronous else Backend(),
+        tools=tools_from([source], include_done=True),
+        state=state,
+        config=LoopConfig(
+            max_steps=3,
+            use_native_tools=False,
+            tool_result_persist_dir=str(tmp_path) if persist else None,
+        ),
+    )
+    if asynchronous:
+        async for _ in async_composable_loop(**arguments):
+            pass
+    else:
+        list(composable_loop(**arguments))
+
+    assert state.steps[0].tool_result.data == original
+    checkpoint = Checkpoint(
+        step_number=state.step_count,
+        session_log_data={},
+        conversation_data=state.conversation.serialize(),
+        config_snapshot={},
+        tool_results_store=arguments["tools"].snapshot_results(),
+        metadata={},
+    )
+    restored = BaseToolRegistry()
+    restored.restore_results(Checkpoint.from_dict(checkpoint.to_dict()).tool_results_store)
+    assert restored.get_result(state.steps[0].tool_result.result_key) == original
+    projected = next(
+        message.tool_result
+        for message in state.conversation.messages
+        if message.role == MessageRole.TOOL
+    )
+    assert projected is not state.steps[0].tool_result
+    assert projected.data != original
+    if persist:
+        assert original in Path(projected.data["persisted_output_path"]).read_text()
+
+
 def _make_step(number: int, tool: str, data: Any) -> Step:
     return Step(
         number=number,

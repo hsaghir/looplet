@@ -83,7 +83,8 @@ class _AssistantTurns:
         validate_assistant_config(config)
         self.config = config
         self.enabled = config.assistant_turn_policy is not None
-        metadata = getattr(state, "metadata", None)
+        self.persistent_admission = config.max_model_calls is not None
+        metadata = getattr(state, "metadata", None) if self.persistent_admission else {}
         if not isinstance(metadata, dict):
             raise ValueError("model-call admission requires mutable state.metadata")
         self.metadata = metadata
@@ -184,7 +185,7 @@ class _AssistantTurns:
         return snapshot
 
     def save(self, store: Any, loop_ctx: Any, domain_checkpoint: Any) -> None:
-        if store is None:
+        if store is None or not self.persistent_admission:
             return
         from looplet.checkpoint import Checkpoint
 
@@ -233,7 +234,10 @@ class _AssistantTurns:
 
     @property
     def stop_reason(self) -> str | None:
-        if self.data["model_calls"] >= self.config.max_model_calls:
+        if (
+            self.config.max_model_calls is not None
+            and self.data["model_calls"] >= self.config.max_model_calls
+        ):
             return "model_call_budget"
         limit = self.config.max_assistant_turns
         if limit is not None and self.data["consecutive_assistant_turns"] >= limit:
@@ -296,7 +300,10 @@ class _AssistantTurns:
         if envelope is not None and envelope.deadline_at is not None:
             if time.time() >= envelope.deadline_at:
                 raise _AdmissionDenied("deadline_exceeded")
-        if self.data["model_calls"] >= self.config.max_model_calls:
+        if (
+            self.config.max_model_calls is not None
+            and self.data["model_calls"] >= self.config.max_model_calls
+        ):
             raise _AdmissionDenied("model_call_budget")
 
     def admit(self, backend: Any = None) -> None:
@@ -317,6 +324,11 @@ class _AssistantTurns:
     def wrap(self, backend: Any) -> Any:
         return _AdmissionBackend(backend, self)
 
+    def call_total(self, reported: int) -> int:
+        """Keep capped admission authoritative without dropping legacy reports."""
+        observed = self.data["model_calls"]
+        return observed if self.persistent_admission else max(reported, observed)
+
     def surface_usage(self) -> None:
         totals: dict[str, Any] = {}
         for record in self.data["requests"]:
@@ -324,8 +336,10 @@ class _AssistantTurns:
                 if isinstance(value, (int, float)) and not isinstance(value, bool):
                     totals[name] = totals.get(name, 0) + value
         if totals:
-            self.metadata["usage_total"] = totals
-            self.metadata["last_usage"] = copy.deepcopy(self.data["requests"][-1]["usage"])
+            metadata = getattr(self.state, "metadata", self.metadata)
+            if isinstance(metadata, dict):
+                metadata["usage_total"] = totals
+                metadata["last_usage"] = copy.deepcopy(self.data["requests"][-1]["usage"])
 
 
 def assistant_checkpoint_metadata(state: Any) -> dict[str, Any]:
@@ -405,6 +419,7 @@ class _AdmissionDenied(TerminalLLMError):
 class _AdmissionBackend:
     def __init__(self, backend: Any, turns: _AssistantTurns) -> None:
         self.backend = backend
+        self._backend = backend
         self.turns = turns
         self.request_records: list[dict[str, Any]] = []
         self.conversation_input: dict[str, Any] | None = None

@@ -20,7 +20,7 @@ deterministic truncation when the summariser cannot help.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Callable, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
@@ -825,7 +825,8 @@ class PruneToolResults:
     than the last ``keep_recent`` tool results, and replaces their
     ``content`` with a short marker string. Zero LLM calls, zero
     structure changes - the message count stays the same, only the
-    payload shrinks.
+    payload shrinks. Result objects shared with state or evidence observers
+    are preserved; only the conversation projection is replaced.
 
     Use as the cheapest first stage in a :func:`compact_chain`::
 
@@ -904,7 +905,7 @@ class PruneToolResults:
         for idx in to_clear:
             msgs[idx].content = self.cleared_marker
             if msgs[idx].tool_result is not None:
-                msgs[idx].tool_result.data = self.cleared_marker
+                msgs[idx].tool_result = replace(msgs[idx].tool_result, data=self.cleared_marker)
             cleared += 1
 
         return CompactOutcome(

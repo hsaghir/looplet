@@ -119,8 +119,10 @@ The base registry retains its lighter argument-name checks when this option is o
 The released-package walkthrough above deliberately uses `minimal_preset`.
 In current source builds it remains minimal; it does not install automatic policies.
 Ordinary `composable_loop()`, `async_composable_loop()`, and cartridge runs instead
-use the versioned `standard-v1` defaults: deterministic compaction, advisory
-stagnation detection, and a bounded tool-dispatch budget.
+use the versioned `execution-v1` defaults: deterministic compaction, faithful native
+history, and original-result retention, without behavioral steering or derived quotas.
+The explicitly selected `standard-v1` profile retains advisory stagnation detection
+and its step-derived tool-dispatch budget.
 
 Inspect the effective policies without running a model:
 
@@ -132,7 +134,7 @@ print(resolve_harness(LoopConfig(max_steps=8)).describe())
 ```
 
 To use those defaults with this tutorial's factory, set
-`run.config.harness_profile = "standard-v1"` inside its `with` block.
+`run.config.harness_profile = "execution-v1"` inside its `with` block.
 No additional hooks are required. Explicit hooks still take precedence for
 the supported replacement points. See [runtime controls](operations.md#standard-agent-harness)
 for individual opt-outs and custom policies.

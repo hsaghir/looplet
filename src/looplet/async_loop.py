@@ -228,7 +228,7 @@ class _SyncBridgeLLM:
         *,
         max_tokens: int | None = None,
         system_prompt: str = "",
-        temperature: float = 0.2,
+        temperature: float | None = 0.2,
     ) -> str:
         result = self._backend.generate(
             prompt,
@@ -266,7 +266,7 @@ async def async_llm_call(
     *,
     max_tokens: int | None = None,
     system_prompt: str = "",
-    temperature: float = 0.2,
+    temperature: float | None = 0.2,
     max_retries: int = MAX_LLM_RETRIES,
     max_continuations: int = 0,
     tools: list[dict[str, Any]] | None = None,
@@ -740,11 +740,21 @@ async def _async_composable_loop_impl(
     except AttributeError:
         pass
 
+    from looplet.loop import _get_persist_threshold
+
     _history = HistoryRecorder(
         state=state,
         session_log=session_log,
         conversation=_conv,
-        typed_turns=config.assistant_turn_policy is not None,
+        typed_turns=config.uses_typed_history,
+        project_tool_result=lambda result: _dc_replace(
+            result,
+            data=truncate_tool_result(
+                result.data,
+                persist_dir=config.tool_result_persist_dir,
+                persist_threshold=_get_persist_threshold(),
+            ),
+        ),
     )
 
     loop_ctx = LoopContext(
@@ -808,7 +818,11 @@ async def _async_composable_loop_impl(
             )
             finalizer.bind([], state, session_log, context, llm)
             return
-    _turns = _AssistantTurns(state, config) if config.max_model_calls is not None else None
+    _turns = (
+        _AssistantTurns(state, config)
+        if config.max_model_calls is not None or config.uses_typed_history
+        else None
+    )
     if _turns is not None:
         checkpoint_state = _turns.wrap_checkpoint(checkpoint_state)
         _turns.checkpoint = lambda: _turns.save(_ckpt_store, loop_ctx, checkpoint_state)
@@ -1062,7 +1076,7 @@ async def _async_composable_loop_impl(
                 stop_reason = decision.stop
                 _hook_requested_stop = True
 
-        if _turns is not None and _hook_requested_stop:
+        if _turns is not None and _turns.persistent_admission and _hook_requested_stop:
             break
 
         if _deadline_expired(loop_ctx):
@@ -1071,7 +1085,11 @@ async def _async_composable_loop_impl(
             break
 
         effective_llm = _get_llm()
-        if _turns is not None and _turns.enabled and config.render_messages_override is None:
+        if (
+            _turns is not None
+            and config.uses_typed_history
+            and config.render_messages_override is None
+        ):
             effective_llm.prepare_conversation(
                 _conv, _prepared.conversation_prompt, request_prompt=prompt
             )
@@ -1203,7 +1221,7 @@ async def _async_composable_loop_impl(
                 loop_ctx.context_budget = prepared.budget
                 if (
                     _turns is not None
-                    and _turns.enabled
+                    and config.uses_typed_history
                     and config.render_messages_override is None
                 ):
                     effective_llm.prepare_conversation(
@@ -1277,7 +1295,7 @@ async def _async_composable_loop_impl(
                 _hook_requested_stop = True
 
         if _turns is not None and (
-            _hook_requested_stop
+            (_hook_requested_stop and _turns.persistent_admission)
             or _deadline_expired(loop_ctx)
             or (config.cancel_token is not None and config.cancel_token.is_cancelled)
         ):
@@ -1657,13 +1675,6 @@ async def _async_composable_loop_impl(
                 if not (tool_spec and tool_spec.free) and not was_intercepted:
                     state.queries_used += 1
 
-                from looplet.loop import _get_persist_threshold  # noqa: PLC0415
-
-                tool_result.data = truncate_tool_result(
-                    tool_result.data,
-                    persist_dir=config.tool_result_persist_dir,
-                    persist_threshold=_get_persist_threshold(),
-                )
                 dispatch_mode = (
                     "parallel"
                     if config.concurrent_dispatch
@@ -2075,7 +2086,7 @@ async def _async_composable_loop_impl(
     # ── on_loop_end ─────────────────────────────────────────────
     llm_calls += await finalizer.finish_async()
     if _turns is not None:
-        llm_calls = _turns.data["model_calls"]
+        llm_calls = _turns.call_total(llm_calls)
         if _turns.checkpoint is not None:
             _turns.checkpoint()
     _record_run_stats(state, llm_calls=llm_calls)

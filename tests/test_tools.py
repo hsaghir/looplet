@@ -7,6 +7,23 @@ import pytest
 pytestmark = pytest.mark.smoke
 
 
+def test_original_results_are_detached_and_retention_is_host_controlled():
+    from looplet import ToolCall, tools_from
+    from looplet.tools import BaseToolRegistry
+
+    data = {"rows": [{"value": "original"}]}
+    registry = tools_from([lambda: data])
+    result = registry.dispatch(ToolCall(tool="<lambda>", args={}))
+    data["rows"][0]["value"] = "changed"
+    assert registry.get_result(result.result_key) == {"rows": [{"value": "original"}]}
+    recalled = registry.get_result(result.result_key)
+    recalled["rows"].clear()
+    assert registry.get_result(result.result_key)["rows"]
+    unretained = BaseToolRegistry(retain_results=False)
+    assert unretained._store_result(ToolCall(tool="source"), data) is None
+    assert unretained.snapshot_results() == {}
+
+
 # ── ToolSpec tests ────────────────────────────────────────────────
 
 
@@ -311,19 +328,25 @@ class TestBaseToolRegistry:
 
         assert [step.tool_call.tool for step in steps] == ["echo", "done"]
         assert selected == [1, 2]
-        prompt_records = [m for m in conversation.serialize()["messages"] if m["role"] == "user"]
+        recorded_role = "assistant" if config.uses_typed_history else "user"
+        prompt_records = [
+            message
+            for message in conversation.serialize()["messages"]
+            if message["role"] == recorded_role and "tool_view" in message["metadata"]
+        ]
         for call, names, record in zip(
             backend.calls, (("echo", "done"), ("done",)), prompt_records, strict=True
         ):
             prompt, schemas, breakpoints = call
-            assert prompt == tools.tool_view(names).catalog_text
+            catalog = tools.tool_view(names).catalog_text
+            assert prompt.startswith(catalog)
             assert [schema["name"] for schema in schemas] == list(names)
             assert record["metadata"]["tool_view"] == {
                 "names": list(names),
                 "version": tools.tool_view(names).version,
             }
             assert breakpoints[0].label == "tool_schemas"
-            assert breakpoints[0].content == prompt
+            assert breakpoints[0].content == catalog
             assert "hidden" not in prompt
 
     def test_to_api_schema(self):

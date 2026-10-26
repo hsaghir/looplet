@@ -15,6 +15,26 @@ from looplet.backends import (
 from looplet.cache import CacheControl, CachePolicy, compute_breakpoints
 
 
+@pytest.mark.parametrize(
+    "backend_type",
+    [
+        OpenAIBackend,
+        OpenAIStreamingBackend,
+        AsyncOpenAIBackend,
+        AnthropicBackend,
+        AnthropicStreamingBackend,
+        AsyncAnthropicBackend,
+    ],
+)
+def test_public_backend_sampling_defaults_are_unset(backend_type):
+    import inspect
+
+    for method_name in ("generate", "generate_with_tools", "stream"):
+        method = getattr(backend_type, method_name, None)
+        if method is not None:
+            assert inspect.signature(method).parameters["temperature"].default is None
+
+
 @pytest.mark.parametrize("provider", ["openai", "anthropic"])
 @pytest.mark.parametrize("asynchronous", [False, True])
 @pytest.mark.parametrize("temperature", [None, 0.3])

@@ -668,7 +668,7 @@ class OpenAIBackend(_ConversationBackend):
         *,
         max_tokens: int = 2000,
         system_prompt: str = "",
-        temperature: float | None = 0.2,
+        temperature: float | None = None,
         cache_breakpoints: list[Any] | None = None,
     ) -> str:
         messages: list[dict[str, str]] = []
@@ -699,7 +699,7 @@ class OpenAIBackend(_ConversationBackend):
         tools: list[dict[str, Any]],
         max_tokens: int = 2000,
         system_prompt: str = "",
-        temperature: float | None = 0.2,
+        temperature: float | None = None,
         cache_breakpoints: list[Any] | None = None,
     ) -> list[dict[str, Any]]:
         """Native tool calling via OpenAI ``tools`` parameter.
@@ -764,7 +764,7 @@ class OpenAIStreamingBackend(OpenAIBackend):
         *,
         max_tokens: int = 2000,
         system_prompt: str = "",
-        temperature: float | None = 0.2,
+        temperature: float | None = None,
     ) -> Generator[str, None, None]:
         """Yield text chunks as they arrive from the API."""
         messages: list[dict[str, str]] = []
@@ -882,7 +882,7 @@ class AnthropicBackend(_ConversationBackend):
         *,
         max_tokens: int = 2000,
         system_prompt: str = "",
-        temperature: float | None = 0.2,
+        temperature: float | None = None,
         cache_breakpoints: list[Any] | None = None,
     ) -> str:
         kwargs: dict[str, Any] = {
@@ -914,7 +914,7 @@ class AnthropicBackend(_ConversationBackend):
         tools: list[dict[str, Any]],
         max_tokens: int = 2000,
         system_prompt: str = "",
-        temperature: float | None = 0.2,
+        temperature: float | None = None,
         cache_breakpoints: list[Any] | None = None,
     ) -> list[dict[str, Any]]:
         """Native tool calling via Anthropic ``tools`` parameter."""
@@ -953,7 +953,7 @@ class AnthropicStreamingBackend(AnthropicBackend):
         *,
         max_tokens: int = 2000,
         system_prompt: str = "",
-        temperature: float | None = 0.2,
+        temperature: float | None = None,
     ) -> Generator[str, None, None]:
         """Yield text chunks as they arrive from the API."""
         kwargs: dict[str, Any] = {
@@ -1057,7 +1057,7 @@ class AsyncOpenAIBackend(_ConversationBackend):
         *,
         max_tokens: int = 2000,
         system_prompt: str = "",
-        temperature: float | None = 0.2,
+        temperature: float | None = None,
         cache_breakpoints: list[Any] | None = None,
     ) -> str:
         messages: list[dict[str, str]] = []
@@ -1088,7 +1088,7 @@ class AsyncOpenAIBackend(_ConversationBackend):
         tools: list[dict[str, Any]],
         max_tokens: int = 2000,
         system_prompt: str = "",
-        temperature: float | None = 0.2,
+        temperature: float | None = None,
         cache_breakpoints: list[Any] | None = None,
     ) -> list[dict[str, Any]]:
         """Async native tool calling via OpenAI ``tools`` parameter."""
@@ -1121,7 +1121,7 @@ class AsyncOpenAIBackend(_ConversationBackend):
         *,
         max_tokens: int = 2000,
         system_prompt: str = "",
-        temperature: float | None = 0.2,
+        temperature: float | None = None,
     ) -> AsyncGenerator[str, None]:
         """Yield text chunks asynchronously."""
         messages: list[dict[str, str]] = []
@@ -1181,7 +1181,7 @@ class AsyncAnthropicBackend(_ConversationBackend):
         *,
         max_tokens: int = 2000,
         system_prompt: str = "",
-        temperature: float | None = 0.2,
+        temperature: float | None = None,
         cache_breakpoints: list[Any] | None = None,
     ) -> str:
         kwargs: dict[str, Any] = {
@@ -1212,7 +1212,7 @@ class AsyncAnthropicBackend(_ConversationBackend):
         tools: list[dict[str, Any]],
         max_tokens: int = 2000,
         system_prompt: str = "",
-        temperature: float | None = 0.2,
+        temperature: float | None = None,
         cache_breakpoints: list[Any] | None = None,
     ) -> list[dict[str, Any]]:
         """Async native tool calling via Anthropic ``tools`` parameter."""
@@ -1240,7 +1240,7 @@ class AsyncAnthropicBackend(_ConversationBackend):
         *,
         max_tokens: int = 2000,
         system_prompt: str = "",
-        temperature: float | None = 0.2,
+        temperature: float | None = None,
     ) -> AsyncGenerator[str, None]:
         """Yield text chunks asynchronously."""
         kwargs: dict[str, Any] = {

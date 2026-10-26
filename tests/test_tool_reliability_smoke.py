@@ -314,7 +314,8 @@ class TestPersistLargeOutput:
         with tempfile.TemporaryDirectory() as tmp:
             r = truncate_tool_result("x" * 20000, persist_dir=tmp, persist_threshold=5000)
             assert "note" in r
-            assert "read_file" in r["note"] or "bash" in r["note"]
+            assert "host-enabled result or file retrieval tool" in r["note"]
+            assert "Use read_file or bash" not in r["note"]
 
     def test_truncated_output_in_result(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -124,8 +124,8 @@ Native gateway replies preserve content blocks and call identifiers. Unsupported
 
 `LoopConfig.temperature` defaults to `None`, leaving sampling to the provider.
 The built-in SDK adapters omit that wire field when unset; an explicit numeric
-temperature is forwarded unchanged. Standalone adapter method defaults remain
-backward compatible.
+temperature is forwarded unchanged. Standalone adapter methods and recovery calls
+also default to `None`.
 
 The following policies remain available by explicitly selecting `standard-v1`:
 

@@ -14,6 +14,53 @@ EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
 CARTRIDGES = sorted(path.parent for path in EXAMPLES.rglob("cartridge.json"))
 
 
+def test_default_harness_example_grades_both_agents_and_entry_paths(tmp_path):
+    from looplet.examples.default_harness import grade_deliverable, main
+
+    assert main(["--scripted", "--output", str(tmp_path)]) == 0
+    summary = json.loads((tmp_path / "summary.json").read_text())
+    assert len(summary["trials"]) == 4
+    assert all(trial["passed"] for trial in summary["trials"])
+    assert all(trial["compactions"] > 0 for trial in summary["trials"])
+    assert not any(trial["tool_errors"] for trial in summary["trials"])
+    deliverable = tmp_path / "scripted-invoices-cartridge" / "deliverable"
+    (deliverable / "batch-0.json").write_text('{"batch":0,"paid_total":-1}')
+    assert not grade_deliverable("invoices", deliverable)["passed"]
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "first_args", "second_args", "expected"),
+    [
+        (
+            "record_invoice_total",
+            {"batch": 0, "paid_total": 1136},
+            {"batch": 1, "paid_total": 1936},
+            ["batch-0.json", "batch-1.json"],
+        ),
+        (
+            "record_control",
+            {"section": "accounts", "requirement": "saved accounts requirement"},
+            {"section": "privileges", "requirement": "saved privileges requirement"},
+            ["accounts.json", "privileges.json"],
+        ),
+    ],
+)
+def test_default_harness_writes_report_durable_progress(
+    tool_name, first_args, second_args, expected, tmp_path
+):
+    from looplet import ToolContext
+    from looplet.examples import default_harness
+
+    write = getattr(default_harness, tool_name)
+    context = ToolContext(metadata={"deliverable_dir": str(tmp_path)})
+    assert write(**first_args, ctx=context)["completed_records"] == expected[:1]
+    assert write(**second_args, ctx=context)["completed_records"] == expected
+    assert write(**first_args, ctx=context)["completed_records"] == expected
+    assert all(
+        "completed_records" not in json.loads(path.read_text()) for path in tmp_path.glob("*.json")
+    )
+
+
 @pytest.mark.parametrize("cartridge", CARTRIDGES, ids=lambda path: str(path.relative_to(EXAMPLES)))
 def test_every_example_cartridge_has_a_valid_owned_preset(cartridge, tmp_path):
     from looplet import cartridge_to_preset, validate_preset_contract

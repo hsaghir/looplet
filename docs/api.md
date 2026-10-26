@@ -21,6 +21,8 @@ Some provider and advanced APIs need a submodule import.
 | `composable_loop(...)` | Yield a `Step` after each tool call. |
 | `async_composable_loop(...)` | Use the same loop with async iteration. |
 | `LoopConfig` | Set limits, prompts, tool protocols, context reduction, checkpoints, and cancellation. |
+| `resolve_harness(config, hooks)` | Inspect shared versioned defaults without executing a run. **Unreleased.** |
+| `ResolvedHarness` | Access the effective config and hook list, or call `.describe()`. **Unreleased.** |
 | `LoopContext` | Provide host context to the loop and tools. |
 | `is_loop_hook(...)` | Recognize a partial, duck-typed hook. **Unreleased.** |
 | `DefaultState` | Record steps and stop state. Use a compatible custom state if you need more fields. |
@@ -69,6 +71,12 @@ Current source builds keep a supplied `LoopConfig` live.
 The `max_steps=` and `system_prompt=` loop arguments update that config in place.
 Cancellation tokens and other host controls retain their identity.
 Use separate configs for runs that need independent settings.
+
+**Unreleased:** ordinary runs select `harness_profile="standard-v1"`.
+Use `disabled_defaults` for individual opt-outs or `harness_profile="minimal"`
+for only explicit policies. `minimal_preset()` remains minimal.
+Python and cartridge presets expose `.resolve_harness()` for the same inspection.
+See [standard defaults and replacement rules](operations.md#standard-agent-harness).
 
 Hooks can implement only the methods they need; inheritance is not required.
 **Unreleased:** `is_loop_hook(value)` recognizes objects with at least one supported, callable hook method.

@@ -50,6 +50,27 @@ to the core loop. The context closes preset-owned resources, even on failure.
 A preset is single-use; load a fresh one for each run. Direct
 `composable_loop()` remains available for hosts that own their wiring themselves.
 
+## Shared defaults (unreleased)
+
+Loaded cartridges use the same `standard-v1` compaction, stagnation, and tool-budget
+resolver as Python loops. They do not need generated hook files for those defaults.
+Inspect a loaded preset with `preset.resolve_harness().describe()`; loading authored
+cartridge code can execute Python, even though resolving defaults itself performs no I/O.
+
+The contract-tier settings are explicit and round-trip through `preset_to_cartridge()`:
+
+```yaml
+# config.yaml
+harness_profile: standard-v1
+disabled_defaults: [stagnation]
+```
+
+Use `harness_profile: minimal` for only the policies declared by the cartridge or host.
+Explicit services and replacement hooks remain authoritative; see
+[runtime controls](operations.md#standard-agent-harness).
+Importable stock completion and thinking tools can be exported with `strict=True`
+without placeholder implementations. Exported domain imports still require their modules.
+
 ## Inspect before instantiating
 
 `looplet describe agent.cartridge` reads declarations without importing tool,

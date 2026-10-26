@@ -114,6 +114,38 @@ Reuse the function for repeated or concurrent tasks, not the instance inside it.
 Nested schemas and other constraints remain tool-owned.
 The base registry retains its lighter argument-name checks when this option is omitted.
 
+## Standard harness in source builds
+
+The released-package walkthrough above deliberately uses `minimal_preset`.
+In current source builds it remains minimal; it does not install automatic policies.
+Ordinary `composable_loop()`, `async_composable_loop()`, and cartridge runs instead
+use the versioned `standard-v1` defaults: deterministic compaction, advisory
+stagnation detection, and a bounded tool-dispatch budget.
+
+Inspect the effective policies without running a model:
+
+```python
+from looplet import LoopConfig, resolve_harness
+
+
+print(resolve_harness(LoopConfig(max_steps=8)).describe())
+```
+
+To use those defaults with this tutorial's factory, set
+`run.config.harness_profile = "standard-v1"` inside its `with` block.
+No additional hooks are required. Explicit hooks still take precedence for
+the supported replacement points. See [runtime controls](operations.md#standard-agent-harness)
+for individual opt-outs and custom policies.
+
+The source build also includes a complete offline pressure test:
+
+```bash
+python -m looplet.examples.default_harness --scripted --output ./harness-run-001
+```
+
+It builds two agents, exports and reloads their cartridges, and grades their
+files independently after compaction. Use a fresh output directory for each run.
+
 ## Use the same agent with a real model
 
 This step is optional.

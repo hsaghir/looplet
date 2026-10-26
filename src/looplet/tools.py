@@ -657,8 +657,17 @@ class ToolSpec:
         }
         for name, descriptor in self.parameters.items():
             if isinstance(descriptor, dict):
-                properties[name] = deepcopy(descriptor)
-                if "default" not in descriptor:
+                property_schema = deepcopy(descriptor)
+                declared_type = property_schema.get("type")
+                optional = False
+                if isinstance(declared_type, str):
+                    type_text = declared_type.strip()
+                    optional = type_text.lower().startswith("(optional)")
+                    if optional:
+                        type_text = type_text[len("(optional)") :].strip()
+                    property_schema["type"] = aliases.get(type_text.lower(), type_text)
+                properties[name] = property_schema
+                if "default" not in descriptor and not optional:
                     required.append(name)
             else:
                 text = str(descriptor).strip()
@@ -1610,6 +1619,14 @@ def _summarize_args_dict(args: dict[str, Any]) -> str:
     return ", ".join(parts)
 
 
+def _think_tool_execute(analysis: str = "") -> dict[str, Any]:
+    return {"acknowledged": True, "analysis": analysis}
+
+
+def _done_tool_execute(**kwargs: Any) -> dict[str, Any]:
+    return {"status": "completed", **kwargs}
+
+
 def register_think_tool(registry: BaseToolRegistry) -> None:
     """Register the think() reasoning tool on a tool registry.
 
@@ -1638,7 +1655,7 @@ def register_think_tool(registry: BaseToolRegistry) -> None:
             parameters={
                 "analysis": "Your reasoning, analysis, or plan (free text)",
             },
-            execute=lambda analysis="": {"acknowledged": True, "analysis": analysis},
+            execute=_think_tool_execute,
             concurrent_safe=True,
             free=True,
         )
@@ -1682,6 +1699,6 @@ def register_done_tool(
                 "a brief summary of what was accomplished."
             ),
             parameters=params,
-            execute=lambda **kwargs: {"status": "completed", **kwargs},
+            execute=_done_tool_execute,
         )
     )

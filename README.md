@@ -14,7 +14,7 @@ It yields a `Step` after each call.
 Your code can inspect each step and stop iteration.
 
 Looplet also provides context management for longer runs and hooks to control each stage of the loop.
-Add only the features that your agent needs.
+The source build supplies a versioned standard harness; replace or disable its policies as needed.
 Start in Python; use a cartridge when you need an agent stored and shared as files.
 The [Quickstart](docs/quickstart.md) runs one agent, checks its answer, saves its calls, and replays them.
 
@@ -109,7 +109,50 @@ The Python walkthrough works with the published package installed above.
 Its optional complete experiment starter and factory commands use a separately marked pinned preview.
 For async code, use `async_composable_loop()` with `contextlib.aclosing`.
 
-## Add only what you need
+## Standard defaults (unreleased)
+
+Source builds use `standard-v1` in both `composable_loop()` and loaded cartridges.
+No manual hook assembly is needed for these defaults:
+
+- Deterministic context compaction, without summary-model calls or filesystem writes.
+- An advisory nudge after six identical tool-and-result observations.
+- A tool-dispatch guard, including successful free calls and concurrent batches.
+
+The published `0.4.1` walkthrough above intentionally uses `minimal_preset`.
+That helper remains an explicit minimal escape hatch in source builds.
+For the standard library path, supply your tools directly to the loop:
+
+```python
+from looplet import LoopConfig, composable_loop, resolve_harness, tools_from
+
+
+config = LoopConfig(max_steps=8, context_window=32_000)
+print(resolve_harness(config).describe())
+for step in composable_loop(
+    llm=llm, tools=tools_from([lookup_owner, done]), config=config,
+    task={"goal": "Find the payments owner, then finish."},
+):
+    print(step.pretty())
+```
+
+Use `preset.resolve_harness().describe()` for the equivalent cartridge inspection.
+Set `harness_profile="minimal"` to omit all automatic additions, or set
+`disabled_defaults=["compaction", "stagnation", "tool_budget"]` selectively.
+Explicit services and hooks remain in place.
+
+Context estimates are approximate and compaction can discard details.
+The dispatch guard is not a provider-request or billing ceiling; set
+`max_model_calls` explicitly when the host needs request admission.
+Security isolation, permissions, persistence, tracing, and grading remain host choices.
+See [runtime controls](docs/operations.md#standard-agent-harness) for replacement rules.
+
+The independently graded example exercises both entry paths and compaction:
+
+```bash
+python -m looplet.examples.default_harness --scripted --output ./harness-run-001
+```
+
+## Customize what you need
 
 The same loop supports these optional features.
 You do not need a new execution engine to use them.

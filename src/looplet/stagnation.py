@@ -44,11 +44,14 @@ The module has zero third-party dependencies.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any, Callable, Hashable, Protocol
 
 __all__ = [
     "StagnationHook",
     "tool_call_fingerprint",
+    "result_fingerprint",
     "result_size_fingerprint",
 ]
 
@@ -109,6 +112,21 @@ def result_size_fingerprint(
     return (base, sig)
 
 
+def result_fingerprint(state: Any, tool_call: Any, tool_result: Any) -> str:
+    """Compare actual call/result values, ignoring call IDs and timing."""
+    payload = {
+        "tool": getattr(tool_call, "tool", ""),
+        "args": getattr(tool_call, "args", None),
+        "data": getattr(tool_result, "data", None),
+        "error": getattr(tool_result, "error", None),
+    }
+    try:
+        encoded = json.dumps(payload, sort_keys=True, default=repr, ensure_ascii=False)
+    except (TypeError, ValueError):
+        encoded = repr(payload)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
 class StagnationHook:
     """LoopHook that nudges the agent when progress stalls.
 
@@ -149,15 +167,18 @@ class StagnationHook:
     ) -> None:
         if threshold < 2:
             raise ValueError("threshold must be >= 2")
+        self._fingerprint_fn: Callable[[Any, Any, Any], Hashable | None]
         if isinstance(fingerprint, str):
-            fingerprints = {
+            fingerprints: dict[str, Callable[[Any, Any, Any], Hashable | None]] = {
                 "tool_call": tool_call_fingerprint,
+                "result": result_fingerprint,
                 "result_size": result_size_fingerprint,
             }
             if fingerprint not in fingerprints:
                 raise ValueError(f"Unknown stagnation fingerprint: {fingerprint!r}")
-            fingerprint = fingerprints[fingerprint]
-        self._fingerprint_fn = fingerprint
+            self._fingerprint_fn = fingerprints[fingerprint]
+        else:
+            self._fingerprint_fn = fingerprint
         self._threshold = threshold
         self._nudge = nudge
         self._progress_fn = progress
@@ -193,6 +214,7 @@ class StagnationHook:
                 name
                 for name, fingerprint in (
                     ("tool_call", tool_call_fingerprint),
+                    ("result", result_fingerprint),
                     ("result_size", result_size_fingerprint),
                 )
                 if self._fingerprint_fn is fingerprint

@@ -33,6 +33,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Sync, async, and cartridge runs resolve the shared `standard-v1` harness by default. Explicit policies take precedence; `minimal` and per-capability opt-outs retain host control without changing existing positional config arguments.
 - Loop API documentation states the existing live-config ownership contract. Explicit loop argument overrides update the supplied config without replacing cancellation tokens or other host controls.
 - OpenAI text streams yield visible text from multipart responses and exclude structured provider metadata in sync and async paths.
 - Cartridge loading reads and validates config and runtime declarations before importing or building shared resources. Reference resolution and resource cleanup retain their existing ownership rules.
@@ -48,6 +49,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Inspectable `resolve_harness()` and preset-level resolution compose deterministic context compaction, actual-result stagnation nudges, and a bounded dispatch budget without implicit I/O or summary-model calls.
+- `ToolCallBudgetHook` reserves before concurrent dispatch and counts successful free calls. It is a per-invocation tool guard, not a provider-request or billing limit.
+- Independently graded default-harness examples exercise fresh Python and strict-exported cartridge agents; a downstream qualification script covers Analytics profiles and both proxy transports.
 - `is_loop_hook()` recognizes partial, duck-typed hooks without mandatory inheritance. `LoopHook` remains the complete interface for protocol checks.
 - Public optional backend contracts preserve transparent wrappers, retry ownership, typed context and provider state without required inheritance.
 - Shared model budgets admit individual requests, avoid duplicate nested charges and restore consumed allowances without replenishment.
@@ -78,6 +82,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Context-pressure estimates include structured tool arguments, result values, and errors instead of counting only text messages.
+- Stock completion and thinking tools use equivalent importable implementations so strict cartridge exports remain runnable.
+- Native tool schemas normalize optional markers and type aliases in cartridge dictionary descriptors without mutating authored declarations or dropping constraints.
 - Sync and async loops share default-state budget resolution and terminal retry classification. Async loops synchronize mismatched default-state limits and stop on exhausted scripted responses without retry backoff.
 - Pre-push checks clear Git-local repository variables so test fixtures cannot overwrite the caller's Git configuration or identity.
 - The data-agent example preserves its CSV and scripted position when resuming incomplete checkpoints, and explicit terminal resumes no longer repeat tools or recreate data.

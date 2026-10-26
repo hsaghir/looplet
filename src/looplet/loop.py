@@ -502,7 +502,7 @@ class LoopConfig:
         different limit is synchronized with a warning. The loop's explicit
         ``max_steps=`` convenience argument overrides the config value.
       - ``system_prompt`` - who the agent is
-      - ``compact_service`` - how to manage growing context
+    - ``compact_service`` - optionally replace standard context management
       - ``checkpoint_dir`` - crash-safe auto-resume (one directory path)
 
     Everything else is optional and can be added later as your agent
@@ -520,6 +520,15 @@ class LoopConfig:
     recovery_temperature: float = 0.1
     # Name of the tool that signals task completion.
     done_tool: str = "done"
+
+    harness_profile: str = field(default="standard-v1", kw_only=True)
+    """Versioned shared defaults; ``minimal`` disables automatic composition."""
+
+    disabled_defaults: list[str] = field(default_factory=list, kw_only=True)
+    """Default capabilities to omit: compaction, stagnation, tool_budget.
+
+    Explicitly supplied services and hooks are never removed by this setting.
+    """
 
     done_tools: list[str] = field(default_factory=list)
     """Additional terminal sentinel tools for host-side configuration.
@@ -745,10 +754,11 @@ class LoopConfig:
     """
 
     compact_service: CompactService | None = None
-    """When set, replaces the default reactive-compact strategy in the
-    prompt-too-long recovery chain.  The service is invoked via
-    :func:`run_compact`, which fires ``PRE_COMPACT`` / ``POST_COMPACT``
-    events.  ``None`` keeps the default :class:`TruncateCompact`.
+    """Explicit context strategy for proactive and reactive compaction.
+    The standard harness fills ``None`` with deterministic
+    :class:`DefaultCompactService` for the invocation; the minimal profile
+    retains reactive :class:`TruncateCompact`. :func:`run_compact` emits
+    ``PRE_COMPACT`` / ``POST_COMPACT`` events.
     """
 
     output_schema: OutputSchema | None = None
@@ -824,8 +834,8 @@ class LoopConfig:
     * The **pre-flight** prompt-size check - if the estimated prompt exceeds
       ``context_window - 3000`` tokens, reactive recovery fires *before*
       the LLM call (avoiding a wasted API call).
-    * ``ThresholdCompactHook`` - when you also set ``compact_service``,
-      proactive compaction triggers based on this value.
+        * ``ThresholdCompactHook`` - the standard harness supplies a proactive
+            trigger and compact service based on this value.
 
     Override to match your actual backend's window:
     200 000 for Claude, 128 000 for GPT-4o, 32 000 for GPT-4, etc.
@@ -2571,7 +2581,7 @@ def composable_loop(
         tools: Required tool registry, usually built with ``tools_from(...)``.
             Do not pass a list of functions directly.
         context: Optional application object passed unchanged to hook methods.
-        hooks: Hook instances that observe or steer the loop. Defaults to an empty list.
+        hooks: Explicit policies composed with the configured harness defaults.
         config: ``LoopConfig`` with budgets, prompt builders, and runtime options.
             Defaults to a new ``LoopConfig``.
         state: Mutable ``AgentState`` for this run. If omitted, creates ``DefaultState``
@@ -2594,9 +2604,15 @@ def composable_loop(
     or use ``contextlib.closing``. Cleanup runs on exhaustion, closure, and exceptions.
     Early closure marks an unfinished run as stopped, not completed.
     """
+    from looplet.harness import resolve_harness
+
     effective_config = _resolve_loop_config(
         config, max_steps=max_steps, system_prompt=system_prompt
     )
+    harness = resolve_harness(effective_config, hooks)
+    original_compact_service = effective_config.compact_service
+    effective_config.compact_service = harness.config.compact_service
+    hooks = harness.hooks
     tokens = _set_context_overrides(effective_config)
     finalizer = _LoopFinalizer()
     try:
@@ -2625,6 +2641,8 @@ def composable_loop(
             finalizer.finish(suppress_errors=True)
         finally:
             _reset_context_overrides(tokens)
+            if effective_config.compact_service is harness.config.compact_service:
+                effective_config.compact_service = original_compact_service
 
 
 def _composable_loop_impl(

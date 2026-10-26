@@ -127,6 +127,7 @@ from looplet.evals import (
 )
 from looplet.events import EventPayload, LifecycleEvent
 from looplet.execution_session import ExecutionSession
+from looplet.harness import ResolvedHarness, resolve_harness
 from looplet.harness_snapshot import serialize_harness
 from looplet.hook_decision import (
     Allow,
@@ -138,7 +139,7 @@ from looplet.hook_decision import (
     RewriteThread,
     Stop,
 )
-from looplet.limits import BudgetWarningHook, PerToolLimitHook
+from looplet.limits import BudgetWarningHook, PerToolLimitHook, ToolCallBudgetHook
 from looplet.loop import (
     DomainAdapter,
     LoopConfig,
@@ -197,6 +198,7 @@ from looplet.skills import (
 )
 from looplet.stagnation import (
     StagnationHook,
+    result_fingerprint,
     result_size_fingerprint,
     tool_call_fingerprint,
 )
@@ -242,6 +244,9 @@ from looplet.types import (
 )
 
 __all__ = [
+    "ToolCallBudgetHook",
+    "ResolvedHarness",
+    "resolve_harness",
     "AssistantTurnContext",
     "AssistantTurnDecision",
     # ── ESSENTIALS (what you need for your first agent) ──────────
@@ -417,6 +422,7 @@ __all__ = [
     "RetryExhausted",
     "StagnationHook",
     "tool_call_fingerprint",
+    "result_fingerprint",
     "result_size_fingerprint",
     "PerToolLimitHook",
     "BudgetWarningHook",

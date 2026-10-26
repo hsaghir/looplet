@@ -525,7 +525,7 @@ async def async_composable_loop(
         tools: Required tool registry, usually built with ``tools_from(...)``.
             Do not pass a list of functions directly.
         context: Optional application object passed unchanged to hook methods.
-        hooks: Hook instances that observe or steer the loop. Defaults to an empty list.
+        hooks: Explicit policies composed with the configured harness defaults.
         config: ``LoopConfig`` with budgets, prompt builders, and runtime options.
             Defaults to a new ``LoopConfig``.
         state: Mutable ``AgentState`` for this run. If omitted, creates ``DefaultState``
@@ -545,9 +545,15 @@ async def async_composable_loop(
     or use ``contextlib.aclosing``. Cleanup runs on exhaustion, closure, and exceptions.
     Early closure marks an unfinished run as stopped, not completed.
     """
+    from looplet.harness import resolve_harness
+
     effective_config = _resolve_loop_config(
         config, max_steps=max_steps, system_prompt=system_prompt
     )
+    harness = resolve_harness(effective_config, hooks)
+    original_compact_service = effective_config.compact_service
+    effective_config.compact_service = harness.config.compact_service
+    hooks = harness.hooks
     tokens = _set_context_overrides(effective_config)
     from looplet.loop import _LoopFinalizer, _mark_terminal_state
 
@@ -582,6 +588,8 @@ async def async_composable_loop(
                 await finalizer.finish_async(suppress_errors=True)
         finally:
             _reset_context_overrides(tokens)
+            if effective_config.compact_service is harness.config.compact_service:
+                effective_config.compact_service = original_compact_service
 
 
 async def _async_composable_loop_impl(

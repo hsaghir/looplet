@@ -76,6 +76,42 @@ def test_generate_round_trip_with_backend():
         handle.close()
 
 
+def test_close_wakes_idle_listener(monkeypatch):
+    import threading
+
+    original_accept = socket.socket.accept
+    idle = threading.Event()
+    accepts = 0
+
+    def accept(listener):
+        nonlocal accepts
+        accepts += 1
+        listener.settimeout(60)
+        if accepts >= 3:
+            idle.set()
+        return original_accept(listener)
+
+    monkeypatch.setattr(socket.socket, "accept", accept)
+    handle = ModelGatewayHandle.start(backend=_ScriptedLLM(["ok"]), export_env=False)
+    duplicate = handle.server._srv.dup()
+    try:
+        client = ModelGatewayClient(handle.socket_path)
+        try:
+            assert client.generate("probe") == "ok"
+            assert idle.wait(2)
+        finally:
+            client.close()
+        handle.close()
+        assert not handle._thread.is_alive()
+    finally:
+        try:
+            duplicate.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        duplicate.close()
+        handle.close()
+
+
 @pytest.mark.parametrize("asynchronous", [False, True])
 async def test_native_tool_generation_preserves_blocks_and_arguments(asynchronous):
     import asyncio

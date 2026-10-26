@@ -76,6 +76,38 @@ def test_generate_round_trip_with_backend():
         handle.close()
 
 
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_native_tool_generation_preserves_blocks_and_arguments(asynchronous):
+    import asyncio
+
+    content = [{"type": "tool_use", "id": "native-1", "name": "done", "input": {"summary": "ok"}}]
+    tools = [{"name": "done", "input_schema": {"type": "object"}}]
+    requests = []
+
+    class Backend(_ScriptedLLM):
+        def generate_with_tools(self, prompt, **kwargs):
+            requests.append((prompt, kwargs))
+            return content
+
+    class AsyncBackend(Backend):
+        async def generate_with_tools(self, prompt, **kwargs):
+            return super().generate_with_tools(prompt, **kwargs)
+
+    handle = ModelGatewayHandle.start(backend=AsyncBackend([]) if asynchronous else Backend([]))
+    try:
+        client = ModelGatewayClient(handle.socket_path)
+        try:
+            actual = await asyncio.to_thread(
+                client.generate_with_tools, "dispatch", tools=tools, max_tokens=2000
+            )
+            assert actual == content
+            assert requests == [("dispatch", {"tools": tools, "max_tokens": 2000})]
+        finally:
+            client.close()
+    finally:
+        handle.close()
+
+
 def test_no_backend_raises_so_callers_degrade():
     # Started without a backend (the load-time default): generate must
     # surface an error so out-of-process tools fall back to ctx.llm-None.
@@ -88,6 +120,76 @@ def test_no_backend_raises_so_callers_degrade():
         client.close()
     finally:
         handle.close()
+
+
+@pytest.mark.parametrize("max_model_calls", [None, 2])
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_portable_tool_calls_share_admission_and_isolate_conversation(
+    max_model_calls, asynchronous
+):
+    import copy
+    from pathlib import Path
+
+    from looplet import cartridge_to_preset
+
+    class Backend(_ScriptedLLM):
+        conversation_mode = "messages"
+
+        def __init__(self):
+            super().__init__(["[]"])
+            self.conversation = None
+            self.requests = []
+            self.helper_conversations = []
+            self.native_calls = 0
+
+        def set_conversation_input(self, snapshot):
+            self.conversation = copy.deepcopy(snapshot)
+
+        def generate(self, prompt, **kwargs):
+            self.requests.append("helper")
+            self.helper_conversations.append(copy.deepcopy(self.conversation))
+            return super().generate(prompt, **kwargs)
+
+        def generate_with_tools(self, prompt, **kwargs):
+            self.requests.append("parent")
+            self.native_calls += 1
+            name = "find_alternatives" if self.native_calls == 1 else "done"
+            arguments = (
+                {"package_name": "requests"}
+                if name == "find_alternatives"
+                else {"summary": "checked"}
+            )
+            return [
+                {
+                    "type": "tool_use",
+                    "id": f"call-{self.native_calls}",
+                    "name": name,
+                    "input": arguments,
+                }
+            ]
+
+    class AsyncBackend(Backend):
+        async def generate(self, prompt, **kwargs):
+            return super().generate(prompt, **kwargs)
+
+        async def generate_with_tools(self, prompt, **kwargs):
+            return super().generate_with_tools(prompt, **kwargs)
+
+    cartridge = Path(__file__).resolve().parents[1] / "examples/dep_doctor_portable.cartridge"
+    backend = AsyncBackend() if asynchronous else Backend()
+    with cartridge_to_preset(cartridge) as preset:
+        preset.config.max_model_calls = max_model_calls
+        task = {"description": "Check alternatives and finish"}
+        result = (
+            await preset.run_result_async(backend, task=task)
+            if asynchronous
+            else preset.run_result(backend, task=task)
+        )
+        expected_calls = 3 if max_model_calls is None else 2
+        assert len(backend.requests) == expected_calls
+        assert getattr(preset.state, "_looplet_run_stats")["llm_calls"] == expected_calls
+        assert backend.helper_conversations == [None]
+        assert result.completed is (max_model_calls is None)
 
 
 def test_late_binding_backend():

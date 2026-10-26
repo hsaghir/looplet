@@ -236,7 +236,7 @@ def make_tools(repo_path: str):
                     + f"\n\nStats: {conventional}% conventional, avg length {avg_len:.0f} chars, "
                     f"{wip_commits} WIP, {fixup} fixup\n\n"
                     f"Respond with: SCORE: N/10 followed by 2-3 sentence assessment.",
-                    max_tokens=150,
+                    max_tokens=2000,
                 )
                 stats["commit_quality_assessment"] = assessment.strip()
                 ctx.warn("Used LLM to assess commit quality")

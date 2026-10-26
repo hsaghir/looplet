@@ -449,11 +449,15 @@ class _AdmissionBackend:
             "provider_held": mode == "stateful",
         }
 
-    def _begin(self, args: Any, kwargs: dict[str, Any]) -> dict[str, Any]:
+    def _begin(
+        self, args: Any, kwargs: dict[str, Any], *, native_tools: bool = False
+    ) -> dict[str, Any]:
         with self.turns.admission_lock:
-            return self._begin_locked(args, kwargs)
+            return self._begin_locked(args, kwargs, native_tools=native_tools)
 
-    def _begin_locked(self, args: Any, kwargs: dict[str, Any]) -> dict[str, Any]:
+    def _begin_locked(
+        self, args: Any, kwargs: dict[str, Any], *, native_tools: bool = False
+    ) -> dict[str, Any]:
         self.turns.check_admission()
         if self.context_error:
             raise _AdmissionDenied("unsupported_context")
@@ -467,7 +471,14 @@ class _AdmissionBackend:
         mode = getattr(self.backend, "conversation_mode", "text")
         if mode == "stateful" and self.turns.enabled and self.conversation_input is None:
             raise _AdmissionDenied("unsupported_context")
-        if is_helper and mode == "stateful":
+        if (
+            is_helper
+            and mode == "stateful"
+            and (
+                native_tools
+                or getattr(self.backend, "supports_stateless_text_generation", False) is not True
+            )
+        ):
             raise _AdmissionDenied("unsupported_context")
         if not is_helper and self.turns.data.get("context_reset_required"):
             if getattr(self.backend, "conversation_mode", "text") == "stateful":
@@ -498,10 +509,13 @@ class _AdmissionBackend:
             except TerminalLLMError as error:
                 raise _AdmissionDenied(error.termination_reason) from error
         context = self.turns.data.get("context", {})
+        output_tokens = self.turns.config.max_tokens
+        reserved_output = output_tokens if output_tokens is not None else 3000
         if (
             not is_helper
             and self.conversation_input is not None
-            and context.get("local_estimated_tokens", 0) > self.turns.config.context_window - 3000
+            and context.get("local_estimated_tokens", 0)
+            > self.turns.config.context_window - reserved_output
         ):
             raise _AdmissionDenied("context_limit")
         correlation = getattr(self.backend, "set_model_turn_context", None)
@@ -553,7 +567,7 @@ class _AdmissionBackend:
 
             @wraps(method)
             async def invoke_async(*args: Any, **kwargs: Any) -> Any:
-                record = self._begin(args, kwargs)
+                record = self._begin(args, kwargs, native_tools=name == "generate_with_tools")
                 try:
                     with single_model_request():
                         response = await method(*args, **kwargs)
@@ -566,7 +580,7 @@ class _AdmissionBackend:
 
         @wraps(method)
         def invoke(*args: Any, **kwargs: Any) -> Any:
-            record = self._begin(args, kwargs)
+            record = self._begin(args, kwargs, native_tools=name == "generate_with_tools")
             response: Any = None
             try:
                 with single_model_request():

@@ -170,6 +170,10 @@ Only a genuine tool proposal resets that counter. Rejected text completion does 
 Tool-step budgets and `max_turn_continuations` retain their separate meanings.
 Host aggregate budgets, child restrictions, and the original deadline remain authoritative.
 Use an isolated backend for stateful helper or child inference, together with the host's shared budget.
+An adapter may expose `supports_stateless_text_generation=True` for an isolated text helper request.
+This guarantee must hold for the current provider state.
+The helper must preserve parent continuation IDs and queued tool outputs.
+Native helper calls still require an isolated backend.
 
 Assistant continuation yields no `Step` and emits no tool-progress event.
 Turn-aware context callbacks receive `model_turn_id` and `model_turn_number` when their signatures accept them.

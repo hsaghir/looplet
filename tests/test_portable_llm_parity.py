@@ -52,14 +52,54 @@ class _ScriptedLLM:
     def __init__(self, replies):
         self._replies = list(replies)
         self.prompts: list[str] = []
+        self.kwargs: list[dict] = []
 
     def generate(self, prompt, **kwargs):
         self.prompts.append(prompt)
+        self.kwargs.append(kwargs)
         return self._replies.pop(0) if self._replies else "DONE"
 
 
 def _original_ctx(backend):
     return ToolContext(llm=backend)
+
+
+@pytest.mark.parametrize(
+    ("family", "tool", "arguments", "reply", "field", "expected"),
+    [
+        (
+            "dep_doctor",
+            "find_alternatives",
+            {"package_name": "requests"},
+            '[{"name":"httpx","reason":"async client"}]',
+            "alternatives",
+            [{"name": "httpx", "reason": "async client"}],
+        ),
+        ("threat_intel", "extract_iocs", {"text": "CVE-2026-1234"}, "HIGH", "llm_severity", "HIGH"),
+        (
+            "threat_intel",
+            "assess_risk",
+            {"title": "Synthetic advisory", "severity": "HIGH", "affected_products": "ExampleApp"},
+            "PRIORITY: HIGH. Verify the synthetic test.",
+            "assessment",
+            "PRIORITY: HIGH. Verify the synthetic test.",
+        ),
+    ],
+)
+def test_model_helpers_have_reasoning_compatible_output_ceiling(
+    family, tool, arguments, reply, field, expected
+):
+    for suffix in ("", "_portable"):
+        backend = _ScriptedLLM([reply])
+        with cartridge_to_preset(_EXAMPLES / f"{family}{suffix}.cartridge") as preset:
+            if preset.model_gateway is not None:
+                preset.model_gateway.set_backend(backend)
+            result = preset.tools.dispatch(
+                ToolCall(tool=tool, args=arguments), ctx=_original_ctx(backend)
+            )
+            assert result.error is None
+            assert result.data[field] == expected
+            assert backend.kwargs[0]["max_tokens"] == 2000
 
 
 # ── dep_doctor: find_alternatives ─────────────────────────────

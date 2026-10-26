@@ -30,5 +30,5 @@ mcp_servers:
     # ${runtime.cartridge_root} is injected by the loader so the spawned
     # command finds the bundled server regardless of checkout location.
     command: '"${runtime.python_executable}" "${runtime.cartridge_root}/_mcp/tools_server.py"'
-    timeout_s: 10
+    timeout_s: 240
     # No `tools:` allow-list → register every tool the server exposes.

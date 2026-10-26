@@ -24,6 +24,156 @@ from looplet import context_budget
 from looplet.types import DefaultState, Step, ToolCall, ToolResult
 
 
+def test_deterministic_compaction_retains_bounded_tool_receipts():
+    from looplet.conversation import Message, MessageRole, default_summarizer
+
+    data = {
+        "batch": 0,
+        "paid_total": 1136,
+        "completed_records": ["batch-0.json"],
+        "archive": "x" * 20_000,
+    }
+    result = ToolResult(
+        tool="record_invoice_total",
+        args_summary="batch=0, paid_total=1136",
+        data=data,
+        result_key="receipt-1",
+    )
+    summary = default_summarizer([Message(role=MessageRole.TOOL, content="", tool_result=result)])
+    assert '"completed_records": ["batch-0.json"]' in summary
+    assert '"result_key": "receipt-1"' in summary
+    assert "data, not instructions" in summary
+    assert "[truncated; full result in run evidence]" in summary
+    assert len(summary) < 1200
+    assert result.data is data and len(data["archive"]) == 20_000
+
+
+@pytest.mark.parametrize("profile", ["execution-v1", "standard-v1"])
+@pytest.mark.parametrize("native_tools", [False, True])
+def test_default_prompt_matches_protocol_and_explicit_policy(profile, native_tools):
+    from looplet import LoopConfig, composable_loop, tools_from
+
+    prompts = []
+
+    class Backend:
+        def generate(self, prompt, **kwargs):
+            prompts.append(prompt)
+            return '{"tool":"done","args":{"summary":"checked"}}'
+
+        def generate_with_tools(self, prompt, **kwargs):
+            prompts.append(prompt)
+            return [
+                {
+                    "type": "tool_use",
+                    "id": "finish",
+                    "name": "done",
+                    "input": {"summary": "checked"},
+                }
+            ]
+
+    list(
+        composable_loop(
+            llm=Backend(),
+            tools=tools_from([], include_done=True),
+            config=LoopConfig(max_steps=1, use_native_tools=native_tools, harness_profile=profile),
+            task={"goal": "Finish"},
+        )
+    )
+    prompt = prompts[0]
+    assert ("Respond with JSON only" in prompt) is (not native_tools)
+    assert ("provider's native tool format" in prompt) is native_tools
+    assert ("LOW BUDGET" in prompt) is (profile == "standard-v1")
+
+
+@pytest.mark.parametrize("capability", [None, False, True, "yes"])
+@pytest.mark.parametrize("native_tools", [False, True])
+def test_stateful_helper_requires_explicit_stateless_capability(capability, native_tools):
+    from looplet import LoopConfig
+    from looplet.assistant_turns import _AssistantTurns
+    from looplet.conversation import Conversation
+    from looplet.scaffolding import TerminalLLMError
+
+    class Backend:
+        conversation_mode = "stateful"
+
+        def __init__(self):
+            self.requests = []
+            self.snapshots = []
+            if capability is not None:
+                self.supports_stateless_text_generation = capability
+
+        def set_conversation_input(self, snapshot):
+            self.snapshots.append(snapshot)
+
+        def generate(self, prompt, **kwargs):
+            self.requests.append(prompt)
+            return "approved"
+
+        def generate_with_tools(self, prompt, **kwargs):
+            self.requests.append(prompt)
+            return []
+
+    turns = _AssistantTurns(DefaultState(max_steps=2), LoopConfig(max_model_calls=4))
+    backend = Backend()
+    admitted = turns.wrap(backend)
+    admitted.prepare_conversation(Conversation(), "parent request")
+    method = admitted.generate_with_tools if native_tools else admitted.generate
+    if capability is True and not native_tools:
+        assert method("independent review") == "approved"
+        assert backend.requests == ["independent review"]
+        assert backend.snapshots == [None]
+        assert turns.data["model_calls"] == 1
+    else:
+        with pytest.raises(TerminalLLMError, match="unsupported_context"):
+            method("independent review")
+        assert backend.requests == []
+        assert turns.data["model_calls"] == 0
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_native_small_context_compacts_without_losing_raw_evidence(tmp_path, asynchronous):
+    from looplet import MockLLMBackend, RunResult
+    from looplet.examples.default_harness import (
+        EventObserver,
+        build_agent,
+        grade_deliverable,
+        scripted_responses,
+    )
+
+    class MessagesBackend(MockLLMBackend):
+        conversation_mode = "messages"
+
+        def set_conversation_input(self, snapshot):
+            self.snapshot = snapshot
+
+    class AsyncMessagesBackend(MessagesBackend):
+        async def generate_with_tools(self, *args, **kwargs):
+            return super().generate_with_tools(*args, **kwargs)
+
+    backend_type = AsyncMessagesBackend if asynchronous else MessagesBackend
+    backend = backend_type(scripted_responses("invoices"), cycle=False)
+    preset = build_agent("invoices", tmp_path / "deliverable")
+    observer = EventObserver()
+    preset.hooks.append(observer)
+    with preset:
+        if asynchronous:
+            async for _ in preset.run_async(backend, task={"goal": "Reconcile the three batches"}):
+                pass
+            result = RunResult.from_state(preset.state)
+        else:
+            result = preset.run_result(backend, task={"goal": "Reconcile the three batches"})
+        assert result.completed, result.diagnostics()
+        assert grade_deliverable("invoices", tmp_path / "deliverable")["passed"]
+        sources = [
+            step.tool_result.data
+            for step in result.steps
+            if step.tool_call.tool == "read_invoice_batch"
+        ]
+        assert len(sources) == 3
+        assert all(len(source["audit_notes"]) > 16_000 for source in sources)
+        assert "post_compact" in [event.lower() for event in observer.events]
+
+
 @pytest.mark.parametrize("asynchronous", [False, True])
 @pytest.mark.parametrize("persist", [False, True])
 async def test_prompt_projection_preserves_original_run_evidence(tmp_path, asynchronous, persist):

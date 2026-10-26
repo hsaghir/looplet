@@ -112,6 +112,16 @@ receive continuation context without pretending that tool results are system
 instructions. Custom message renderers remain authoritative. Inspection includes
 effective step, output, continuation, and model-call limits.
 
+Automatic execution compaction starts at the warning tier, around 60% estimated history pressure.
+The estimate excludes some request overhead. Configure output allowance and context headroom explicitly for small windows.
+Deterministic summaries retain bounded tool receipts without making a model request.
+Receipt excerpts are data, not verified conclusions or instructions. Full results remain in the registry and raw steps.
+Built-in compaction services change the conversation projection, not those original results.
+
+Portable model-gateway calls use the active loop's admitted backend.
+Text and native helper requests share explicit host ceilings and accounting.
+Native gateway replies preserve content blocks and call identifiers. Unsupported modes fail without a text fallback.
+
 `LoopConfig.temperature` defaults to `None`, leaving sampling to the provider.
 The built-in SDK adapters omit that wire field when unset; an explicit numeric
 temperature is forwarded unchanged. Standalone adapter method defaults remain

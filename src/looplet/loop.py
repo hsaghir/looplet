@@ -163,6 +163,7 @@ class LoopContext:
     context_budget: ContextBudgetSnapshot = field(default_factory=ContextBudgetSnapshot)
     policy_decisions: list[dict[str, Any]] = field(default_factory=list)
     run_envelope: RunEnvelope | None = None
+    llm: Any = field(default=None, kw_only=True, repr=False)
 
 
 # ── Hook Protocol ────────────────────────────────────────────────
@@ -2804,7 +2805,8 @@ def _composable_loop_impl(
             selected = config.router.select(purpose="reasoning")  # pyright: ignore[reportOptionalMemberAccess]
         else:
             selected = llm
-        return _turns.wrap(selected) if _turns is not None else selected
+        loop_ctx.llm = _turns.wrap(selected) if _turns is not None else selected
+        return loop_ctx.llm
 
     _context_sources = (
         ContextSourceSelector(
@@ -3021,6 +3023,7 @@ def _composable_loop_impl(
         checkpoint_state = _turns.wrap_checkpoint(checkpoint_state)
         _turns.checkpoint = lambda: _turns.save(_ckpt_store, loop_ctx, checkpoint_state)
         finalizer.bind(hooks, state, session_log, context, _turns.wrap(llm))
+        loop_ctx.llm = _turns.wrap(llm)
 
     for hook in hooks:
         if hasattr(hook, "pre_loop"):

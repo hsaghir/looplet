@@ -57,10 +57,12 @@ Wire format (line-delimited JSON over ``AF_UNIX`` ``SOCK_STREAM``):
     → {"id": 3, "method": "llm/shutdown"}
     ← {"id": 3, "result": {"ok": true}}
 
-The gateway bridges ``generate`` only - the documented ``ctx.llm`` surface
-for *tool-internal* single calls (summarise, classify, extract). The
-loop's own multi-turn ``generate_with_tools`` orchestration is not a tool
-concern and is intentionally out of scope.
+The gateway exposes ``generate`` and ``generate_with_tools``.
+Native requests use ``llm/generate_with_tools`` and return content blocks
+under ``result.content`` without converting them to text.
+Unsupported generation modes fail without a text fallback.
+Preset runs bind the admitted loop backend, so portable helpers share
+request accounting and explicit host ceilings with in-process helpers.
 """
 
 from __future__ import annotations
@@ -154,6 +156,7 @@ class ModelGatewayServer:
         self._backend = backend
         self._backend_loop: asyncio.AbstractEventLoop | None = None
         self.set_backend(backend)
+        self._loop_context: Any = None
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._srv: socket.socket | None = None
@@ -287,12 +290,14 @@ class ModelGatewayServer:
                     "mgp_version": MGP_VERSION,
                     "ready": self._backend is not None,
                 }
-            elif method == "llm/generate":
-                text = self._generate(
+            elif method in {"llm/generate", "llm/generate_with_tools"}:
+                native_tools = method == "llm/generate_with_tools"
+                generated = self._generate(
                     str(params.get("prompt", "")),
                     dict(params.get("kwargs") or {}),
+                    native_tools=native_tools,
                 )
-                result = {"text": text}
+                result = {"content": generated} if native_tools else {"text": generated}
             elif method == "llm/shutdown":
                 self._stop.set()
                 result = {"ok": True}
@@ -307,15 +312,20 @@ class ModelGatewayServer:
             return
         _send_line(conn, {"id": rid, "result": result})
 
-    def _generate(self, prompt: str, kwargs: dict[str, Any]) -> str:
+    def _generate(self, prompt: str, kwargs: dict[str, Any], *, native_tools: bool = False) -> Any:
         with self._lock:
             remaining = remaining_deadline(self._run_envelope)
             if remaining is not None and remaining <= 0:
                 raise ModelGatewayError("model gateway call exceeded run deadline")
-            backend = self._backend
+            backend = self._loop_context.llm if self._loop_context is not None else self._backend
             if backend is None:
                 raise ModelGatewayError("no LLM backend is bound")
-            out = backend.generate(prompt, **kwargs)
+            method = getattr(backend, "generate_with_tools" if native_tools else "generate", None)
+            if not callable(method):
+                raise ModelGatewayError(
+                    "bound backend does not support the requested generation mode"
+                )
+            out = method(prompt, **kwargs)
             if inspect.isawaitable(out):
 
                 async def resolve(value: Any) -> Any:
@@ -330,6 +340,10 @@ class ModelGatewayServer:
                         raise ModelGatewayError("model gateway call exceeded run deadline") from exc
                 else:
                     out = asyncio.run(resolve(out))
+        if native_tools:
+            if not isinstance(out, list) or not all(isinstance(block, dict) for block in out):
+                raise ModelGatewayError("native tool generation did not return content blocks")
+            return out
         return out if isinstance(out, str) else str(out)
 
 
@@ -457,6 +471,19 @@ class ModelGatewayClient:
         result = self._rpc("llm/generate", params)
         return str(result.get("text", ""))
 
+    def generate_with_tools(
+        self, prompt: str, *, tools: list[dict[str, Any]], **kwargs: Any
+    ) -> list[dict[str, Any]]:
+        """Forward native generation without converting content blocks to text."""
+        params = {"prompt": prompt, "kwargs": {"tools": tools, **kwargs}}
+        if self._run_envelope is not None:
+            params["run_envelope"] = self._run_envelope.to_dict()
+        result = self._rpc("llm/generate_with_tools", params)
+        content = result.get("content")
+        if not isinstance(content, list) or not all(isinstance(block, dict) for block in content):
+            raise ModelGatewayError("native tool generation did not return content blocks")
+        return content
+
     def set_run_envelope(self, envelope: RunEnvelope | None) -> None:
         """Bind host correlation context for subsequent model requests."""
         self._run_envelope = envelope
@@ -559,6 +586,10 @@ class ModelGatewayHandle:
     def set_backend(self, backend: Any) -> None:
         """Bind the live LLM backend the gateway exposes to its clients."""
         self.server.set_backend(backend)
+
+    def bind(self, loop_context: Any) -> None:
+        """Use the loop's admitted backend for tool-internal requests."""
+        self.server._loop_context = loop_context
 
     def set_run_envelope(self, envelope: RunEnvelope | None) -> None:
         """Bind host correlation context to the gateway's future clients."""

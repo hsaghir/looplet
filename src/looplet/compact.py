@@ -324,7 +324,7 @@ class TruncateCompact:
         messages_before = _message_count(conversation)
         session_entries_before = _session_entry_count(session_log)
         candidate_step_range = _compacted_step_range(session_log, self.keep_recent)
-        summary = emergency_truncate(state, session_log, keep_recent=self.keep_recent) or ""
+        summary = emergency_truncate(None, session_log, keep_recent=self.keep_recent) or ""
         session_entries_after = _session_entry_count(session_log)
         session_was_compacted = _session_log_was_compacted(
             summary=summary,
@@ -694,7 +694,7 @@ class SummarizeCompact:
 
         # Short-circuit: nothing to compact.
         if not transcript.strip():
-            summary = emergency_truncate(state, session_log, keep_recent=self.keep_recent) or ""
+            summary = emergency_truncate(None, session_log, keep_recent=self.keep_recent) or ""
             session_entries_after = _session_entry_count(session_log)
             session_was_compacted = _session_log_was_compacted(
                 summary=summary,
@@ -754,9 +754,7 @@ class SummarizeCompact:
         # 3. Apply compaction. Deterministic keep-recent runs either
         #    way (so the log is actually shorter); the summary is
         #    spliced in as a synthetic entry.
-        fallback_summary = (
-            emergency_truncate(state, session_log, keep_recent=self.keep_recent) or ""
-        )
+        fallback_summary = emergency_truncate(None, session_log, keep_recent=self.keep_recent) or ""
         session_entries_after_truncate = _session_entry_count(session_log)
         session_was_compacted = _session_log_was_compacted(
             summary=fallback_summary,

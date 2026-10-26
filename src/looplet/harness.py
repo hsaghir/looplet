@@ -84,7 +84,12 @@ def resolve_harness(
                 error_at=int(window * 0.8),
                 compact_buffer=buffer,
             )
-            resolved_hooks.append(ThresholdCompactHook(budget))
+            resolved_hooks.append(
+                ThresholdCompactHook(
+                    budget,
+                    fire_tier="warning" if effective.harness_profile == "execution-v1" else "error",
+                )
+            )
 
     if effective.harness_profile == "execution-v1":
         return ResolvedHarness(effective, resolved_hooks)

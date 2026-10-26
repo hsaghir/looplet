@@ -8,9 +8,9 @@ frameworks, shown as one agent that actually needs them:
   sync handler blocks on ``input()`` until you approve / deny.
 
 * **Compact** - ``DefaultCompactService`` fires whenever the session
-    grows past a tiny 4 000-token budget, so you'll actually watch it
-    happen on a normal-sized run. This example disables the summary LLM
-    call so scripted/offline runs stay deterministic.
+    grows past the small history threshold inside a 12 000-token window.
+    This example disables the summary LLM call so scripted/offline runs
+    stay deterministic.
 
 * **Checkpoints** - every step is serialised to
   ``./checkpoints/data_agent/``. Kill the script (Ctrl-C) mid-run
@@ -47,8 +47,10 @@ from looplet import (
     ApprovalHook,
     ContextBudget,
     DefaultCompactService,
+    DefaultState,
     LoopConfig,
     MockLLMBackend,
+    RunResult,
     ThresholdCompactHook,
     composable_loop,
     tool,
@@ -64,7 +66,7 @@ CHECKPOINT_DIR = Path("./checkpoints/data_agent")
 
 def _make_sample_csv() -> Path:
     """Create a small fake orders CSV so the example is self-contained."""
-    path = Path(tempfile.gettempdir()) / "looplet_orders.csv"
+    path = Path(tempfile.mkdtemp(prefix="looplet-data-")) / "orders.csv"
     rows = [
         {"order_id": 1, "customer": "alice", "amount": 42.0, "status": "paid"},
         {"order_id": 2, "customer": "bob", "amount": 100.0, "status": "paid"},
@@ -109,7 +111,7 @@ def groupby_count(*, path: str, column: str) -> dict:
     return {"counts": counts}
 
 
-@tool(description="Delete rows matching a status. Requires approval.")
+@tool(description="Request host approval, then delete rows matching a status.")
 def delete_rows(*, path: str, where_status: str, ctx: ToolContext | None = None) -> dict:
     """Delete rows matching a status - **requires approval**.
 
@@ -263,10 +265,10 @@ def main(argv: list[str] | None = None) -> int:
         use_llm_summary=False,
     )
     budget = ContextBudget(
-        context_window=4_000,
-        warning_at=2_000,
-        error_at=3_000,
-        compact_buffer=500,
+        context_window=12_000,
+        warning_at=150,
+        error_at=500,
+        compact_buffer=2_000,
     )
 
     # ── Approval: sync stdin handler (or auto-yes for CI).
@@ -296,14 +298,15 @@ def main(argv: list[str] | None = None) -> int:
             "Use that exact path in every tool call. Describe the CSV, "
             "inspect a sample with head_csv, group rows by status with "
             "groupby_count, then call delete_rows to clean up cancelled "
-            "orders. Any destructive action must be explicitly approved."
+            "orders. The delete_rows tool requests host approval before changing the CSV."
         ),
         compact_service=compact_service,
         checkpoint_dir=str(CHECKPOINT_DIR),
         initial_checkpoint=latest,
         checkpoint_state=lambda _context: {"csv_path": str(csv_path)},
         approval_handler=approval,
-        context_window=4_000,
+        context_window=12_000,
+        max_tokens=2_000,
         use_native_tools=not use_scripted,
     )
     hooks = [
@@ -312,9 +315,11 @@ def main(argv: list[str] | None = None) -> int:
     ]
 
     threshold_hook: ThresholdCompactHook = hooks[1]  # type: ignore[assignment]
+    state = DefaultState(max_steps=config.max_steps)
     for step in composable_loop(
         llm=llm,
         tools=tools,
+        state=state,
         config=config,
         task={"goal": (f"inspect the orders CSV at {csv_path} and clean up cancelled orders")},
         hooks=hooks,
@@ -327,7 +332,9 @@ def main(argv: list[str] | None = None) -> int:
     print(
         "# run again with --resume to continue from the last saved step, or --clean to start over."
     )
-    return 0
+    result = RunResult.from_state(state)
+    print(f"# result: {result.status.value} ({result.termination_reason})")
+    return 0 if result.completed else 1
 
 
 if __name__ == "__main__":

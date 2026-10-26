@@ -827,6 +827,7 @@ async def _async_composable_loop_impl(
         checkpoint_state = _turns.wrap_checkpoint(checkpoint_state)
         _turns.checkpoint = lambda: _turns.save(_ckpt_store, loop_ctx, checkpoint_state)
         finalizer.bind(hooks, state, session_log, context, _turns.wrap(llm))
+        loop_ctx.llm = _turns.wrap(llm)
 
     # ── Pre-loop hooks ──────────────────────────────────────────
     try:
@@ -885,7 +886,8 @@ async def _async_composable_loop_impl(
             selected = config.router.select(purpose="reasoning")
         else:
             selected = llm
-        return _turns.wrap(selected) if _turns is not None else selected
+        loop_ctx.llm = _turns.wrap(selected) if _turns is not None else selected
+        return loop_ctx.llm
 
     def _save_checkpoint(step_number: int, *, status: str | None = None) -> None:
         if _ckpt_store is None:

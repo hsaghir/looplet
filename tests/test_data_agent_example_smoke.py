@@ -12,12 +12,36 @@ pytestmark = pytest.mark.smoke
 
 
 class TestDataAgentExample:
+    def test_sample_csv_is_unique_per_run(self):
+        first = data_agent._make_sample_csv()
+        second = data_agent._make_sample_csv()
+        assert first != second
+        assert first.read_bytes() == second.read_bytes()
+
+    def test_nonterminal_run_returns_failure(self, tmp_path, monkeypatch):
+        from looplet import backends
+        from looplet.scaffolding import TerminalLLMError
+
+        class Backend:
+            def generate(self, prompt, **kwargs):
+                raise AssertionError("text fallback must not be used")
+
+            def generate_with_tools(self, prompt, **kwargs):
+                raise TerminalLLMError("request refused", termination_reason="unsupported_context")
+
+        monkeypatch.setattr(backends, "make_backend", Backend)
+        monkeypatch.setattr(data_agent, "CHECKPOINT_DIR", tmp_path / "checkpoints")
+        assert data_agent.main(["--auto-approve"]) == 1
+
     def test_live_run_uses_shared_provider_defaults(self, tmp_path, monkeypatch, capsys) -> None:
         from looplet import backends
 
         csv_path = tmp_path / "orders.csv"
         csv_path.write_text("order_id,customer,amount,status\n1,alice,5,cancelled\n")
         backend = data_agent.scripted_llm(str(csv_path))
+        snapshots = []
+        monkeypatch.setattr(backend, "conversation_mode", "messages", raising=False)
+        monkeypatch.setattr(backend, "set_conversation_input", snapshots.append, raising=False)
         selected = []
 
         def resolve():
@@ -30,7 +54,11 @@ class TestDataAgentExample:
         assert data_agent.main(["--auto-approve"]) == 0
         assert selected == [backend]
         assert backend.calls > 0
-        assert "# tool protocol: native" in capsys.readouterr().out
+        output = capsys.readouterr().out
+        assert "# tool protocol: native" in output
+        assert "# compact fired at steps: [" in output
+        assert snapshots and all(snapshot is not None for snapshot in snapshots)
+        assert b"cancelled" not in csv_path.read_bytes()
 
     def test_build_tools_uses_decorator_schema_and_helpers(self) -> None:
         registry = data_agent.build_tools()
@@ -48,6 +76,7 @@ class TestDataAgentExample:
         assert info["head_csv"]["parameters"]["properties"]["n"]["type"] == "integer"
         assert info["head_csv"]["parameters"]["required"] == ["path"]
         assert info["groupby_count"]["parameters"]["required"] == ["path", "column"]
+        assert "host approval" in info["delete_rows"]["description"]
         assert "ctx" not in info["delete_rows"]["parameters"]["properties"]
         assert info["think"]["free"] is True
         assert "summary" in info["done"]["parameters"]["properties"]

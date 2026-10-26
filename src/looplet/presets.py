@@ -140,6 +140,14 @@ class _PresetAsyncIterator:
 # ── Preset container ─────────────────────────────────────────────
 
 
+class _ModelGatewayBinding:
+    def __init__(self, gateway: Any) -> None:
+        self.gateway = gateway
+
+    def bind(self, loop_context: Any) -> None:
+        self.gateway.bind(loop_context)
+
+
 @dataclass
 class AgentPreset:
     """Complete agent configuration returned by preset functions.
@@ -406,6 +414,8 @@ class AgentPreset:
                     setter(self.config.run_envelope)
             if self.model_gateway is not None:
                 self.model_gateway.set_backend(llm)
+                if callable(getattr(self.model_gateway, "bind", None)):
+                    hooks.append(_ModelGatewayBinding(self.model_gateway))
             return hooks
         except BaseException:
             self._release_failed_claim()

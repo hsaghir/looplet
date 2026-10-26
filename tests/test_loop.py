@@ -190,8 +190,8 @@ class TestLoopConfig:
         c = LoopConfig()
         assert c.max_steps == 15
         assert c.max_tokens is None
-        assert c.temperature == 0.2
-        assert c.recovery_temperature == 0.1
+        assert c.temperature is None
+        assert c.recovery_temperature is None
         assert c.done_tool == "done"
         assert c.use_native_tools is True
         assert c.max_briefing_tokens is None

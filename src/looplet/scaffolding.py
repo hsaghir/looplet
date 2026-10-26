@@ -421,7 +421,7 @@ def llm_call_with_retry(
     *,
     max_tokens: int | None = None,
     system_prompt: str = "",
-    temperature: float = 0.2,
+    temperature: float | None = None,
     max_retries: int = MAX_LLM_RETRIES,
     tools: list[dict[str, Any]] | None = None,
     native_policy: NativeToolPolicy | None = None,
@@ -900,6 +900,8 @@ def age_session_entries(
     llm: Any = None,
     max_entries_to_keep: int = 5,
     must_preserve: Any = None,
+    *,
+    temperature: float | None = None,
 ) -> str | None:
     """Compact old session log entries.
 
@@ -917,6 +919,7 @@ def age_session_entries(
         max_entries_to_keep: How many recent entries to keep verbatim.
         must_preserve: Optional callable(LogEntry) -> bool. Entries for which
             this returns True are kept verbatim even when compacted.
+        temperature: Optional explicit sampling setting for LLM refinement.
 
     Returns the summary text, or None if no compaction was needed.
     """
@@ -942,13 +945,11 @@ def age_session_entries(
             prompt = (
                 "Refine this structured summary. Respond with ONLY text "
                 "(no tool calls).\n\n"
-                "First draft your thinking in <analysis> tags, then produce "
-                "the final summary in <summary> tags.\n\n"
-                "In the <summary>, preserve ALL entities, key findings, and "
+                "Preserve ALL entities, key findings, and "
                 "highlights. Do not add information not in the input.\n\n"
                 f"{deterministic_summary}"
             )
-            refined = llm.generate(prompt, max_tokens=400, temperature=0.1)
+            refined = llm.generate(prompt, max_tokens=400, temperature=temperature)
             if refined and refined.strip():
                 clean = re.sub(r"<analysis>.*?</analysis>", "", refined, flags=re.DOTALL)
                 summary_match = re.search(r"<summary>(.*?)</summary>", clean, flags=re.DOTALL)

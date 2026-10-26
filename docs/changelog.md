@@ -33,7 +33,10 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- Sync, async, and cartridge runs resolve the shared `standard-v1` harness by default. Explicit policies take precedence; `minimal` and per-capability opt-outs retain host control without changing existing positional config arguments.
+- Sync, async, and cartridge runs resolve `execution-v1` by default: deterministic compaction and native typed history without implicit stagnation guidance or a step-derived tool quota. Explicit policies take precedence; the named `standard-v1` policy and `minimal` profile remain available without changing positional config arguments.
+- Original tool results are retained independently of conversation previews and compaction. Base registries expose detached recall and checkpoint snapshots, with a host-owned retention opt-out.
+- Loop configuration leaves temperature unset by default; built-in SDK adapters omit an unset temperature and preserve explicit sampling values.
+- Shared model admission rechecks cancellation and deadlines after acquiring its lock. Run measurements retain observed request counts separately from legacy reported helper totals.
 - Loop API documentation states the existing live-config ownership contract. Explicit loop argument overrides update the supplied config without replacing cancellation tokens or other host controls.
 - OpenAI text streams yield visible text from multipart responses and exclude structured provider metadata in sync and async paths.
 - Cartridge loading reads and validates config and runtime declarations before importing or building shared resources. Reference resolution and resource cleanup retain their existing ownership rules.

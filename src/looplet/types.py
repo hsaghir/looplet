@@ -919,7 +919,7 @@ class LLMBackend(Protocol):
         *,
         max_tokens: int = 2000,
         system_prompt: str = "",
-        temperature: float = 0.2,
+        temperature: float | None = None,
     ) -> str:
         """Generate a completion for the given prompt.
 
@@ -960,7 +960,7 @@ class NativeToolBackend(Protocol):
         tools: list[dict[str, Any]],
         max_tokens: int = 2000,
         system_prompt: str = "",
-        temperature: float = 0.2,
+        temperature: float | None = None,
     ) -> list[dict[str, Any]]:
         """Generate a response with native tool calling.
 

@@ -46,7 +46,7 @@ class _HostLLM:
             return
         try:
             sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            sock.settimeout(30.0)
+            sock.settimeout(240.0)
             sock.connect(path)
             self._sock = sock
             self._rpc("llm/initialize", {})
@@ -276,7 +276,7 @@ def extract_iocs(text):
                 f"Given these IOCs extracted from a threat report, classify the overall "
                 f"threat severity as CRITICAL, HIGH, MEDIUM, or LOW. Respond with just "
                 f"the severity level, nothing else.\n\nIOCs: {json.dumps(result, indent=2)}",
-                max_tokens=20,
+                max_tokens=2000,
             )
             result["llm_severity"] = classification.strip().upper()
         except Exception:
@@ -307,7 +307,7 @@ def assess_risk(title, severity, affected_products):
                 f"Affected: {affected_products}\n\n"
                 f"Respond with: PRIORITY: [IMMEDIATE/HIGH/MEDIUM/LOW] followed by "
                 f"a brief justification.",
-                max_tokens=150,
+                max_tokens=2000,
             )
             return {
                 "title": title,

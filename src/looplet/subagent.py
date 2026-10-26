@@ -103,6 +103,7 @@ class SharedModelBudget:
     ) -> None:
         self._check_constraints(deadline=deadline, cancel_token=cancel_token)
         with self._lock:
+            self._check_constraints(deadline=deadline, cancel_token=cancel_token)
             if self.remaining <= 0:
                 raise ChildRunLimitExceeded("model call budget exhausted")
             self.remaining -= 1

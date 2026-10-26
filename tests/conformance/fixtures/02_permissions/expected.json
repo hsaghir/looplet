@@ -1,7 +1,7 @@
 {
   "max_steps": 8,
   "max_tokens": null,
-  "temperature": 0.2,
+  "temperature": null,
   "done_tool": "done",
   "tools": [
     {"name": "done", "requires": []}

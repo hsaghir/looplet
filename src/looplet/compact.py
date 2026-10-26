@@ -20,7 +20,7 @@ deterministic truncation when the summariser cannot help.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Callable, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
@@ -324,7 +324,7 @@ class TruncateCompact:
         messages_before = _message_count(conversation)
         session_entries_before = _session_entry_count(session_log)
         candidate_step_range = _compacted_step_range(session_log, self.keep_recent)
-        summary = emergency_truncate(state, session_log, keep_recent=self.keep_recent) or ""
+        summary = emergency_truncate(None, session_log, keep_recent=self.keep_recent) or ""
         session_entries_after = _session_entry_count(session_log)
         session_was_compacted = _session_log_was_compacted(
             summary=summary,
@@ -659,7 +659,7 @@ class SummarizeCompact:
         summary_prompt: str | None = None,
         summary_max_chars: int = 4000,
         summary_max_tokens: int = 1200,
-        summary_temperature: float = 0.1,
+        summary_temperature: float | None = None,
     ) -> None:
         self.keep_recent = keep_recent
         self.summary_prompt = summary_prompt or _DEFAULT_SUMMARY_PROMPT
@@ -694,7 +694,7 @@ class SummarizeCompact:
 
         # Short-circuit: nothing to compact.
         if not transcript.strip():
-            summary = emergency_truncate(state, session_log, keep_recent=self.keep_recent) or ""
+            summary = emergency_truncate(None, session_log, keep_recent=self.keep_recent) or ""
             session_entries_after = _session_entry_count(session_log)
             session_was_compacted = _session_log_was_compacted(
                 summary=summary,
@@ -754,9 +754,7 @@ class SummarizeCompact:
         # 3. Apply compaction. Deterministic keep-recent runs either
         #    way (so the log is actually shorter); the summary is
         #    spliced in as a synthetic entry.
-        fallback_summary = (
-            emergency_truncate(state, session_log, keep_recent=self.keep_recent) or ""
-        )
+        fallback_summary = emergency_truncate(None, session_log, keep_recent=self.keep_recent) or ""
         session_entries_after_truncate = _session_entry_count(session_log)
         session_was_compacted = _session_log_was_compacted(
             summary=fallback_summary,
@@ -825,7 +823,8 @@ class PruneToolResults:
     than the last ``keep_recent`` tool results, and replaces their
     ``content`` with a short marker string. Zero LLM calls, zero
     structure changes - the message count stays the same, only the
-    payload shrinks.
+    payload shrinks. Result objects shared with state or evidence observers
+    are preserved; only the conversation projection is replaced.
 
     Use as the cheapest first stage in a :func:`compact_chain`::
 
@@ -904,7 +903,7 @@ class PruneToolResults:
         for idx in to_clear:
             msgs[idx].content = self.cleared_marker
             if msgs[idx].tool_result is not None:
-                msgs[idx].tool_result.data = self.cleared_marker
+                msgs[idx].tool_result = replace(msgs[idx].tool_result, data=self.cleared_marker)
             cleared += 1
 
         return CompactOutcome(

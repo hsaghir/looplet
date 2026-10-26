@@ -163,6 +163,7 @@ class LoopContext:
     context_budget: ContextBudgetSnapshot = field(default_factory=ContextBudgetSnapshot)
     policy_decisions: list[dict[str, Any]] = field(default_factory=list)
     run_envelope: RunEnvelope | None = None
+    llm: Any = field(default=None, kw_only=True, repr=False)
 
 
 # ── Hook Protocol ────────────────────────────────────────────────
@@ -516,12 +517,12 @@ class LoopConfig:
     max_steps: int = 15
     max_tokens: int | None = None
     system_prompt: str = ""
-    temperature: float = 0.2
-    recovery_temperature: float = 0.1
+    temperature: float | None = None
+    recovery_temperature: float | None = None
     # Name of the tool that signals task completion.
     done_tool: str = "done"
 
-    harness_profile: str = field(default="standard-v1", kw_only=True)
+    harness_profile: str = field(default="execution-v1", kw_only=True)
     """Versioned shared defaults; ``minimal`` disables automatic composition."""
 
     disabled_defaults: list[str] = field(default_factory=list, kw_only=True)
@@ -558,6 +559,13 @@ class LoopConfig:
     ``tool.yaml: output_schema:`` block; can also be set directly on
     ``LoopConfig`` for hand-built loops.
     """
+
+    @property
+    def uses_typed_history(self) -> bool:
+        """Preserve native history independently of assistant completion policy."""
+        return self.assistant_turn_policy is not None or (
+            self.harness_profile == "execution-v1" and self.use_native_tools
+        )
 
     def validate_assistant_turns(self, *, require_binding: bool = True) -> None:
         """Validate assistant-turn limits and required host policy binding."""
@@ -1167,7 +1175,11 @@ def _record_run_stats(
     metadata = getattr(state, "metadata", {})
     turns = metadata.get(TURN_STATE_KEY) if isinstance(metadata, dict) else None
     if isinstance(turns, dict) and type(turns.get("model_calls")) is int:
-        llm_calls = turns["model_calls"]
+        llm_calls = (
+            turns["model_calls"]
+            if turns.get("max_model_calls") is not None
+            else max(llm_calls, turns["model_calls"])
+        )
     stats = getattr(state, "_looplet_run_stats", None)
     if not isinstance(stats, dict):
         stats = {}
@@ -1176,6 +1188,8 @@ def _record_run_stats(
         except AttributeError:
             return
     stats["llm_calls"] = llm_calls
+    if isinstance(turns, dict) and type(turns.get("model_calls")) is int:
+        stats["model_requests"] = turns["model_calls"]
     if config is not None:
         stats["model_turn_config"] = {
             name: getattr(config, name)
@@ -1394,7 +1408,7 @@ class _ScopedLLMProxy:
         *,
         max_tokens: int = 2000,
         system_prompt: str = "",
-        temperature: float = 0.2,
+        temperature: float | None = None,
     ) -> str:
         with self._recording._scope_calls(self._scope):
             return self._backend.generate(
@@ -1411,7 +1425,7 @@ class _ScopedLLMProxy:
         tools: list,
         max_tokens: int = 2000,
         system_prompt: str = "",
-        temperature: float = 0.2,
+        temperature: float | None = None,
     ) -> Any:
         with self._recording._scope_calls(self._scope):
             return self._backend.generate_with_tools(
@@ -2791,7 +2805,8 @@ def _composable_loop_impl(
             selected = config.router.select(purpose="reasoning")  # pyright: ignore[reportOptionalMemberAccess]
         else:
             selected = llm
-        return _turns.wrap(selected) if _turns is not None else selected
+        loop_ctx.llm = _turns.wrap(selected) if _turns is not None else selected
+        return loop_ctx.llm
 
     _context_sources = (
         ContextSourceSelector(
@@ -2873,7 +2888,15 @@ def _composable_loop_impl(
         state=state,
         session_log=session_log,
         conversation=_conv,
-        typed_turns=config.assistant_turn_policy is not None,
+        typed_turns=config.uses_typed_history,
+        project_tool_result=lambda result: _dc_replace(
+            result,
+            data=truncate_tool_result(
+                result.data,
+                persist_dir=config.tool_result_persist_dir,
+                persist_threshold=_get_persist_threshold(),
+            ),
+        ),
     )
 
     # Domain adapter seeding: when ``config.domain`` is set, fall back
@@ -2991,11 +3014,16 @@ def _composable_loop_impl(
             )
             finalizer.bind([], state, session_log, context, llm)
             return
-    _turns = _AssistantTurns(state, config) if config.max_model_calls is not None else None
+    _turns = (
+        _AssistantTurns(state, config)
+        if config.max_model_calls is not None or config.uses_typed_history
+        else None
+    )
     if _turns is not None:
         checkpoint_state = _turns.wrap_checkpoint(checkpoint_state)
         _turns.checkpoint = lambda: _turns.save(_ckpt_store, loop_ctx, checkpoint_state)
         finalizer.bind(hooks, state, session_log, context, _turns.wrap(llm))
+        loop_ctx.llm = _turns.wrap(llm)
 
     for hook in hooks:
         if hasattr(hook, "pre_loop"):
@@ -3175,7 +3203,11 @@ def _composable_loop_impl(
         # Resolve effective LLM once per step - used by both the main call and
         # parse-recovery below, regardless of whether pre-flight fires.
         effective_llm = _get_llm()
-        if _turns is not None and _turns.enabled and config.render_messages_override is None:
+        if (
+            _turns is not None
+            and config.uses_typed_history
+            and config.render_messages_override is None
+        ):
             effective_llm.prepare_conversation(
                 _conv, _prepared.conversation_prompt, request_prompt=prompt
             )
@@ -3201,7 +3233,7 @@ def _composable_loop_impl(
                 stop_reason = _d.stop
                 _hook_requested_stop = True
 
-        if _turns is not None and _hook_requested_stop:
+        if _turns is not None and _turns.persistent_admission and _hook_requested_stop:
             break
 
         if preflight_too_long:
@@ -3353,7 +3385,7 @@ def _composable_loop_impl(
                 loop_ctx.context_budget = prepared.budget
                 if (
                     _turns is not None
-                    and _turns.enabled
+                    and config.uses_typed_history
                     and config.render_messages_override is None
                 ):
                     effective_llm.prepare_conversation(
@@ -3457,7 +3489,7 @@ def _composable_loop_impl(
                 post_dispatch_parts.append(_d.additional_context)
 
         if _turns is not None and (
-            _hook_requested_stop
+            (_hook_requested_stop and _turns.persistent_admission)
             or _deadline_expired(loop_ctx)
             or (config.cancel_token is not None and config.cancel_token.is_cancelled)
         ):
@@ -3842,11 +3874,6 @@ def _composable_loop_impl(
                 if not (tool_spec and tool_spec.free) and not was_intercepted:
                     state.queries_used += 1
 
-                tool_result.data = truncate_tool_result(
-                    tool_result.data,
-                    persist_dir=config.tool_result_persist_dir,
-                    persist_threshold=_get_persist_threshold(),
-                )
                 dispatch_mode = (
                     "parallel"
                     if config.concurrent_dispatch
@@ -4356,7 +4383,7 @@ def _composable_loop_impl(
 
     llm_calls += finalizer.finish()
     if _turns is not None:
-        llm_calls = _turns.data["model_calls"]
+        llm_calls = _turns.call_total(llm_calls)
         if _turns.checkpoint is not None:
             _turns.checkpoint()
     _record_run_stats(state, llm_calls=llm_calls)
@@ -4430,7 +4457,7 @@ def _composable_loop_impl(
             "conversation": _conv,
         }
     if _turns is not None:
-        llm_calls = _turns.data["model_calls"]
+        llm_calls = _turns.call_total(llm_calls)
         _record_run_stats(state, llm_calls=llm_calls, duration_ms=(time.time() - t0) * 1000)
         if _turns.checkpoint is not None:
             _turns.checkpoint()

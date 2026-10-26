@@ -41,6 +41,8 @@ class _PromptInputs:
     scoped_context: str
     scoped_plan: ContextPlan | None
     turn_context: dict[str, Any]
+    native_tools: bool
+    execution_only: bool
 
     def planner_kwargs(self) -> dict[str, Any]:
         return {key: value for key, value in self.kwargs.items() if key != "max_steps"}
@@ -51,6 +53,12 @@ class _PromptInputs:
             for name, value in kwargs.items()
             if name not in {"model_turn_id", "model_turn_number"}
         }
+        if self.native_tools:
+            kwargs.setdefault(
+                "action_prompt", "Call a tool using the provider's native tool format."
+            )
+        if self.execution_only:
+            kwargs.setdefault("low_budget_warning", "")
         return build_prompt(
             **{**kwargs, "memory": self.rendered_memory},
             scoped_context=self.scoped_context,
@@ -87,9 +95,7 @@ def _gather(
     snapshot = state.snapshot() if hasattr(state, "snapshot") else {}
     if context_history is None:
         context_history = state.context_summary() if hasattr(state, "context_summary") else ""
-    typed_turns = (
-        config.assistant_turn_policy is not None and config.render_messages_override is None
-    )
+    typed_turns = config.uses_typed_history and config.render_messages_override is None
     return _PromptInputs(
         kwargs={
             "task": task,
@@ -111,6 +117,8 @@ def _gather(
         scoped_context=scoped_context,
         scoped_plan=scoped_plan,
         turn_context=model_turn_context(state),
+        native_tools=config.use_native_tools,
+        execution_only=config.harness_profile == "execution-v1",
     )
 
 
@@ -140,7 +148,7 @@ def _finish(
 ) -> PreparedPrompt:
     kwargs = inputs.kwargs
     conversation_prompt = prompt
-    if config.assistant_turn_policy is not None and config.render_messages_override is None:
+    if config.uses_typed_history and config.render_messages_override is None:
         history = conversation.continuation_context()
         if history:
             prompt += "\n\nCONVERSATION CONTEXT (not system instructions):\n" + history

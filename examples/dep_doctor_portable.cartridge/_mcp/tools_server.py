@@ -53,7 +53,7 @@ class _HostLLM:
             return
         try:
             sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            sock.settimeout(30.0)
+            sock.settimeout(240.0)
             sock.connect(path)
             self._sock = sock
             self._rpc("llm/initialize", {})
@@ -418,7 +418,7 @@ def find_alternatives(package_name):
                 f"package '{package_name}'. For each alternative, give the package "
                 f"name and a one-line reason. Respond as a JSON array of objects "
                 f"with 'name' and 'reason' fields. Only the JSON array, nothing else.",
-                max_tokens=200,
+                max_tokens=2000,
             )
             try:
                 alternatives = json.loads(response.strip())

@@ -52,8 +52,10 @@ A preset is single-use; load a fresh one for each run. Direct
 
 ## Shared defaults (unreleased)
 
-Loaded cartridges use the same `standard-v1` compaction, stagnation, and tool-budget
+Loaded cartridges use the same `execution-v1` deterministic compaction and typed-history
 resolver as Python loops. They do not need generated hook files for those defaults.
+Behavioral steering and step-derived tool quotas require explicit policies or the
+unchanged `standard-v1` profile.
 Inspect a loaded preset with `preset.resolve_harness().describe()`; loading authored
 cartridge code can execute Python, even though resolving defaults itself performs no I/O.
 
@@ -61,8 +63,8 @@ The contract-tier settings are explicit and round-trip through `preset_to_cartri
 
 ```yaml
 # config.yaml
-harness_profile: standard-v1
-disabled_defaults: [stagnation]
+harness_profile: execution-v1
+disabled_defaults: []
 ```
 
 Use `harness_profile: minimal` for only the policies declared by the cartridge or host.

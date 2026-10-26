@@ -109,18 +109,22 @@ The Python walkthrough works with the published package installed above.
 Its optional complete experiment starter and factory commands use a separately marked pinned preview.
 For async code, use `async_composable_loop()` with `contextlib.aclosing`.
 
-## Standard defaults (unreleased)
+## Execution defaults (unreleased)
 
-Source builds use `standard-v1` in both `composable_loop()` and loaded cartridges.
-No manual hook assembly is needed for these defaults:
+Source builds use `execution-v1` in Python loops and loaded cartridges.
+The model chooses its method; the host controls authority and resources.
 
 - Deterministic context compaction, without summary-model calls or filesystem writes.
-- An advisory nudge after six identical tool-and-result observations.
-- A tool-dispatch guard, including successful free calls and concurrent batches.
+- Typed native-tool history without requiring an assistant completion policy.
+- Original tool results retained separately from bounded conversation previews.
+
+There is no automatic stagnation nudge or tool quota derived from step count.
+Select `standard-v1` to retain those policies from the earlier source profile,
+or supply individual hooks and reviewed host limits explicitly.
 
 The published `0.4.1` walkthrough above intentionally uses `minimal_preset`.
 That helper remains an explicit minimal escape hatch in source builds.
-For the standard library path, supply your tools directly to the loop:
+For the ordinary library path, supply your tools directly to the loop:
 
 ```python
 from looplet import LoopConfig, composable_loop, resolve_harness, tools_from
@@ -141,8 +145,11 @@ Set `harness_profile="minimal"` to omit all automatic additions, or set
 Explicit services and hooks remain in place.
 
 Context estimates are approximate and compaction can discard details.
-The dispatch guard is not a provider-request or billing ceiling; set
+An explicitly selected dispatch guard is not a provider-request or billing ceiling; set
 `max_model_calls` explicitly when the host needs request admission.
+The base registry records content-addressed originals for `get_result(result_key)`
+and checkpoint result-store round trips. Hosts can disable new retention with
+`BaseToolRegistry(retain_results=False)` or provide their own registry storage.
 Security isolation, permissions, persistence, tracing, and grading remain host choices.
 See [runtime controls](docs/operations.md#standard-agent-harness) for replacement rules.
 

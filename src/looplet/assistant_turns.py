@@ -83,7 +83,8 @@ class _AssistantTurns:
         validate_assistant_config(config)
         self.config = config
         self.enabled = config.assistant_turn_policy is not None
-        metadata = getattr(state, "metadata", None)
+        self.persistent_admission = config.max_model_calls is not None
+        metadata = getattr(state, "metadata", None) if self.persistent_admission else {}
         if not isinstance(metadata, dict):
             raise ValueError("model-call admission requires mutable state.metadata")
         self.metadata = metadata
@@ -184,7 +185,7 @@ class _AssistantTurns:
         return snapshot
 
     def save(self, store: Any, loop_ctx: Any, domain_checkpoint: Any) -> None:
-        if store is None:
+        if store is None or not self.persistent_admission:
             return
         from looplet.checkpoint import Checkpoint
 
@@ -233,7 +234,10 @@ class _AssistantTurns:
 
     @property
     def stop_reason(self) -> str | None:
-        if self.data["model_calls"] >= self.config.max_model_calls:
+        if (
+            self.config.max_model_calls is not None
+            and self.data["model_calls"] >= self.config.max_model_calls
+        ):
             return "model_call_budget"
         limit = self.config.max_assistant_turns
         if limit is not None and self.data["consecutive_assistant_turns"] >= limit:
@@ -296,7 +300,10 @@ class _AssistantTurns:
         if envelope is not None and envelope.deadline_at is not None:
             if time.time() >= envelope.deadline_at:
                 raise _AdmissionDenied("deadline_exceeded")
-        if self.data["model_calls"] >= self.config.max_model_calls:
+        if (
+            self.config.max_model_calls is not None
+            and self.data["model_calls"] >= self.config.max_model_calls
+        ):
             raise _AdmissionDenied("model_call_budget")
 
     def admit(self, backend: Any = None) -> None:
@@ -317,6 +324,11 @@ class _AssistantTurns:
     def wrap(self, backend: Any) -> Any:
         return _AdmissionBackend(backend, self)
 
+    def call_total(self, reported: int) -> int:
+        """Keep capped admission authoritative without dropping legacy reports."""
+        observed = self.data["model_calls"]
+        return observed if self.persistent_admission else max(reported, observed)
+
     def surface_usage(self) -> None:
         totals: dict[str, Any] = {}
         for record in self.data["requests"]:
@@ -324,8 +336,10 @@ class _AssistantTurns:
                 if isinstance(value, (int, float)) and not isinstance(value, bool):
                     totals[name] = totals.get(name, 0) + value
         if totals:
-            self.metadata["usage_total"] = totals
-            self.metadata["last_usage"] = copy.deepcopy(self.data["requests"][-1]["usage"])
+            metadata = getattr(self.state, "metadata", self.metadata)
+            if isinstance(metadata, dict):
+                metadata["usage_total"] = totals
+                metadata["last_usage"] = copy.deepcopy(self.data["requests"][-1]["usage"])
 
 
 def assistant_checkpoint_metadata(state: Any) -> dict[str, Any]:
@@ -405,6 +419,7 @@ class _AdmissionDenied(TerminalLLMError):
 class _AdmissionBackend:
     def __init__(self, backend: Any, turns: _AssistantTurns) -> None:
         self.backend = backend
+        self._backend = backend
         self.turns = turns
         self.request_records: list[dict[str, Any]] = []
         self.conversation_input: dict[str, Any] | None = None
@@ -434,11 +449,15 @@ class _AdmissionBackend:
             "provider_held": mode == "stateful",
         }
 
-    def _begin(self, args: Any, kwargs: dict[str, Any]) -> dict[str, Any]:
+    def _begin(
+        self, args: Any, kwargs: dict[str, Any], *, native_tools: bool = False
+    ) -> dict[str, Any]:
         with self.turns.admission_lock:
-            return self._begin_locked(args, kwargs)
+            return self._begin_locked(args, kwargs, native_tools=native_tools)
 
-    def _begin_locked(self, args: Any, kwargs: dict[str, Any]) -> dict[str, Any]:
+    def _begin_locked(
+        self, args: Any, kwargs: dict[str, Any], *, native_tools: bool = False
+    ) -> dict[str, Any]:
         self.turns.check_admission()
         if self.context_error:
             raise _AdmissionDenied("unsupported_context")
@@ -452,7 +471,14 @@ class _AdmissionBackend:
         mode = getattr(self.backend, "conversation_mode", "text")
         if mode == "stateful" and self.turns.enabled and self.conversation_input is None:
             raise _AdmissionDenied("unsupported_context")
-        if is_helper and mode == "stateful":
+        if (
+            is_helper
+            and mode == "stateful"
+            and (
+                native_tools
+                or getattr(self.backend, "supports_stateless_text_generation", False) is not True
+            )
+        ):
             raise _AdmissionDenied("unsupported_context")
         if not is_helper and self.turns.data.get("context_reset_required"):
             if getattr(self.backend, "conversation_mode", "text") == "stateful":
@@ -483,10 +509,13 @@ class _AdmissionBackend:
             except TerminalLLMError as error:
                 raise _AdmissionDenied(error.termination_reason) from error
         context = self.turns.data.get("context", {})
+        output_tokens = self.turns.config.max_tokens
+        reserved_output = output_tokens if output_tokens is not None else 3000
         if (
             not is_helper
             and self.conversation_input is not None
-            and context.get("local_estimated_tokens", 0) > self.turns.config.context_window - 3000
+            and context.get("local_estimated_tokens", 0)
+            > self.turns.config.context_window - reserved_output
         ):
             raise _AdmissionDenied("context_limit")
         correlation = getattr(self.backend, "set_model_turn_context", None)
@@ -538,7 +567,7 @@ class _AdmissionBackend:
 
             @wraps(method)
             async def invoke_async(*args: Any, **kwargs: Any) -> Any:
-                record = self._begin(args, kwargs)
+                record = self._begin(args, kwargs, native_tools=name == "generate_with_tools")
                 try:
                     with single_model_request():
                         response = await method(*args, **kwargs)
@@ -551,7 +580,7 @@ class _AdmissionBackend:
 
         @wraps(method)
         def invoke(*args: Any, **kwargs: Any) -> Any:
-            record = self._begin(args, kwargs)
+            record = self._begin(args, kwargs, native_tools=name == "generate_with_tools")
             response: Any = None
             try:
                 with single_model_request():

@@ -313,7 +313,7 @@ def find_alternatives(*, package_name: str, ctx: ToolContext) -> dict:
                 f"package '{package_name}'. For each alternative, give the package "
                 f"name and a one-line reason. Respond as a JSON array of objects "
                 f"with 'name' and 'reason' fields. Only the JSON array, nothing else.",
-                max_tokens=200,
+                max_tokens=2000,
             )
             ctx.warn(f"Used LLM to find alternatives for {package_name}")
             try:

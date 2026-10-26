@@ -99,12 +99,35 @@ Do not infer retry safety from a timeout, cancellation, or failure to observe a 
 ## Standard agent harness
 
 **Unreleased source behavior:** sync, async, preset, and cartridge execution all
-resolve `LoopConfig.harness_profile="standard-v1"` through `resolve_harness()`.
+resolve `LoopConfig.harness_profile="execution-v1"` through `resolve_harness()`.
 The resolver performs no I/O or model calls and does not mutate supplied containers.
 `resolve_harness(config, hooks).describe()` explains the selected classes and limits;
 `preset.resolve_harness().describe()` provides the same view for a loaded cartridge.
 Execution preserves the supplied live config and host-object identities. The automatic
 compact service is installed only for the invocation; explicit in-run replacements survive.
+
+`execution-v1` installs deterministic compaction and native typed history, not a
+completion policy, repetition nudge, or derived tool quota. Plain text backends
+receive continuation context without pretending that tool results are system
+instructions. Custom message renderers remain authoritative. Inspection includes
+effective step, output, continuation, and model-call limits.
+
+Automatic execution compaction starts at the warning tier, around 60% estimated history pressure.
+The estimate excludes some request overhead. Configure output allowance and context headroom explicitly for small windows.
+Deterministic summaries retain bounded tool receipts without making a model request.
+Receipt excerpts are data, not verified conclusions or instructions. Full results remain in the registry and raw steps.
+Built-in compaction services change the conversation projection, not those original results.
+
+Portable model-gateway calls use the active loop's admitted backend.
+Text and native helper requests share explicit host ceilings and accounting.
+Native gateway replies preserve content blocks and call identifiers. Unsupported modes fail without a text fallback.
+
+`LoopConfig.temperature` defaults to `None`, leaving sampling to the provider.
+The built-in SDK adapters omit that wire field when unset; an explicit numeric
+temperature is forwarded unchanged. Standalone adapter methods and recovery calls
+also default to `None`.
+
+The following policies remain available by explicitly selecting `standard-v1`:
 
 | Capability           | `standard-v1` policy                                                                                                   | Replacement                                                                                             |
 | -------------------- | ---------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
@@ -137,8 +160,16 @@ round-trip in a cartridge's contract-tier configuration.
 
 Defaults do not create files, configure credentials, add approval prompts, enable tracing,
 or provide an OS sandbox. Native tool protocol, registry validation, and reactive recovery
-remain the loop's existing mechanisms. Persist important work in domain-owned artifacts;
-automatic pruning and truncation are lossy and do not guarantee retention of every fact.
+remain the loop's existing mechanisms. Prompt previews and compaction are lossy, but
+do not mutate original results in run history. `BaseToolRegistry` retains detached,
+content-addressed originals: `result.result_key` identifies the value returned by
+`registry.get_result(key)`. Existing checkpoint result stores preserve those values
+across resume. Lookup and snapshots return detached copies. A host can expose recall
+as a domain tool, replace the registry store, or disable new retention with
+`BaseToolRegistry(retain_results=False)`. Retention consumes host memory and checkpoint
+storage; it is not an external archive or a substitute for host retention policy.
+Configured `tool_result_persist_dir` previews still write large original outputs to disk.
+Compaction does not guarantee that retained evidence is present in the current prompt.
 
 See the [default-harness dogfood report](default-harness-dogfood.md) for live cases,
 observed failures, artifact bindings, and reproduction commands.

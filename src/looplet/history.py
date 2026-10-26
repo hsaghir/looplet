@@ -20,12 +20,13 @@ domains that run without a SessionLog.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from looplet._backend_contract import json_snapshot
 from looplet.conversation import ContentBlock, Conversation, Message, MessageRole
 from looplet.session import SessionLog
-from looplet.types import Step
+from looplet.types import Step, ToolResult
 
 
 class HistoryRecorder:
@@ -52,12 +53,14 @@ class HistoryRecorder:
         conversation: Conversation | None = None,
         max_message_chars: int = 5000,
         typed_turns: bool = False,
+        project_tool_result: Callable[[ToolResult], ToolResult] | None = None,
     ) -> None:
         self._state = state
         self._session_log = session_log
         self._conversation = conversation
         self._max_chars = max_message_chars
         self._typed_turns = typed_turns
+        self._project_tool_result = project_tool_result
 
     # ── Step recording ───────────────────────────────────────────
 
@@ -130,7 +133,11 @@ class HistoryRecorder:
                 Message(
                     role=MessageRole.TOOL,
                     content="",
-                    tool_result=step.tool_result,
+                    tool_result=(
+                        self._project_tool_result(step.tool_result)
+                        if self._project_tool_result is not None
+                        else step.tool_result
+                    ),
                     metadata={
                         **step.metadata,
                         "tool_call_id": step.tool_call.call_id,

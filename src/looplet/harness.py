@@ -30,6 +30,10 @@ class ResolvedHarness:
             "profile": self.config.harness_profile,
             "disabled_defaults": list(self.config.disabled_defaults),
             "context_window": self.config.context_window,
+            "max_steps": self.config.max_steps,
+            "max_tokens": self.config.max_tokens,
+            "max_turn_continuations": self.config.max_turn_continuations,
+            "typed_history": self.config.uses_typed_history,
             "max_model_calls": self.config.max_model_calls,
             "max_tool_calls": next(
                 (hook.max_calls for hook in self.hooks if isinstance(hook, ToolCallBudgetHook)),
@@ -46,7 +50,8 @@ def resolve_harness(
 ) -> ResolvedHarness:
     """Compose standard defaults underneath explicit host configuration.
 
-    ``standard-v1`` installs deterministic compaction, a non-blocking
+    ``execution-v1`` installs deterministic compaction without steering or
+    derived tool quotas. ``standard-v1`` retains a non-blocking
     stagnation nudge, and a per-invocation tool-dispatch budget. ``minimal``
     keeps only explicitly supplied policies.
     Config and hook containers are not mutated; live host objects retain
@@ -56,8 +61,8 @@ def resolve_harness(
 
     effective = replace(config) if config is not None else LoopConfig()
     resolved_hooks = list(hooks or ())
-    if effective.harness_profile not in {"standard-v1", "minimal"}:
-        raise ValueError("harness_profile must be 'standard-v1' or 'minimal'")
+    if effective.harness_profile not in {"execution-v1", "standard-v1", "minimal"}:
+        raise ValueError("harness_profile must be 'execution-v1', 'standard-v1', or 'minimal'")
     disabled = set(effective.disabled_defaults)
     unknown = disabled - {"compaction", "stagnation", "tool_budget"}
     if unknown:
@@ -79,7 +84,15 @@ def resolve_harness(
                 error_at=int(window * 0.8),
                 compact_buffer=buffer,
             )
-            resolved_hooks.append(ThresholdCompactHook(budget))
+            resolved_hooks.append(
+                ThresholdCompactHook(
+                    budget,
+                    fire_tier="warning" if effective.harness_profile == "execution-v1" else "error",
+                )
+            )
+
+    if effective.harness_profile == "execution-v1":
+        return ResolvedHarness(effective, resolved_hooks)
 
     if "stagnation" not in disabled and not any(
         isinstance(hook, StagnationHook) for hook in resolved_hooks

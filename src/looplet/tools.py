@@ -30,6 +30,7 @@ from typing import (
     overload,
 )
 
+from looplet.backend_contract import json_snapshot
 from looplet.types import (
     ErrorKind,
     ToolCall,
@@ -838,9 +839,11 @@ class BaseToolRegistry:
     efficient execution.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, retain_results: bool = True) -> None:
         self._tools: dict[str, ToolSpec] = {}
         self._resources: dict[str, Any] = {}
+        self._retain_results = retain_results
+        self._evidence_results: dict[str, Any] = {}
 
     def set_resources(self, resources: dict[str, Any]) -> None:
         """Provide the shared-resource registry for tool DI.
@@ -1432,21 +1435,30 @@ class BaseToolRegistry:
         return results
 
     def _store_result(self, call: ToolCall, result_data: Any) -> str | None:
-        """Override in subclasses to enable result storage/recall."""
-        return None
+        """Retain a detached result independently of its conversation preview."""
+        if not self._retain_results:
+            return None
+        snapshot = json_snapshot(result_data)
+        payload = json.dumps(snapshot, sort_keys=True).encode("utf-8")
+        key = "sha256:" + hashlib.sha256(payload).hexdigest()
+        self._evidence_results.setdefault(key, snapshot)
+        return key
+
+    def get_result(self, key: str) -> Any:
+        """Return a detached original result by its recorded recall key."""
+        return deepcopy(self._evidence_results[key])
 
     def snapshot_results(self) -> dict[str, Any]:
         """Return JSON-safe stored results for checkpoint persistence.
 
-        Registries that implement result recall should override this method
-        together with :meth:`restore_results`. The default registry stores no
-        results, so its snapshot is empty.
+        Subclasses with their own result store can override this method
+        together with :meth:`restore_results`.
         """
-        return {}
+        return deepcopy(self._evidence_results)
 
     def restore_results(self, snapshot: dict[str, Any]) -> None:
-        """Restore a checkpointed result snapshot; default is a no-op."""
-        return None
+        """Restore detached original outputs from a checkpoint."""
+        self._evidence_results = json_snapshot(snapshot)
 
     @staticmethod
     def _execute_with_timeout(spec: ToolSpec, kwargs: dict[str, Any], timeout_s: float) -> Any:

@@ -193,7 +193,7 @@ class ResilientBackend:
         *,
         max_tokens: int = 2000,
         system_prompt: str = "",
-        temperature: float = 0.2,
+        temperature: float | None = None,
         **options: Any,
     ) -> str:
         def _call() -> str:
@@ -217,7 +217,7 @@ class ResilientBackend:
         tools: list[dict[str, Any]],
         max_tokens: int = 2000,
         system_prompt: str = "",
-        temperature: float = 0.2,
+        temperature: float | None = None,
         **options: Any,
     ) -> Any:
         def _call() -> Any:

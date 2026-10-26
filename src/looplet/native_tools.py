@@ -123,6 +123,7 @@ def probe_native_tool_support(
     *,
     tool_name: str = "test_probe",
     max_tokens: int = 50,
+    temperature: float | None = None,
 ) -> NativeToolProbeResult:
     """Probe whether ``llm`` actually returns native tool-use blocks.
 
@@ -147,7 +148,7 @@ def probe_native_tool_support(
             tools=tools,
             max_tokens=max_tokens,
             system_prompt="",
-            temperature=0,
+            temperature=temperature,
         )
     except Exception as exc:  # noqa: BLE001
         return NativeToolProbeResult(
@@ -176,6 +177,8 @@ def probe_native_tool_support(
     )
 
 
-def supports_native_tools(llm: Any, *, tool_name: str = "test_probe") -> bool:
+def supports_native_tools(
+    llm: Any, *, tool_name: str = "test_probe", temperature: float | None = None
+) -> bool:
     """Return True when ``probe_native_tool_support`` succeeds."""
-    return probe_native_tool_support(llm, tool_name=tool_name).supported
+    return probe_native_tool_support(llm, tool_name=tool_name, temperature=temperature).supported

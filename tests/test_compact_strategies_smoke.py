@@ -271,6 +271,24 @@ class TestRenames:
 
 
 class TestPruneToolResults:
+    def test_pruning_does_not_mutate_original_tool_evidence(self):
+        conv = _conv_with_tool_results(3)
+        original = conv.messages[1].tool_result
+
+        out = PruneToolResults(keep_recent=1).compact(
+            state=None,
+            session_log=None,
+            llm=None,
+            conversation=conv,
+            step_num=3,
+            reason="test",
+        )
+
+        assert out.extra["cleared"] == 2
+        assert original.data == {"i": 0}
+        assert conv.messages[1].tool_result is not original
+        assert conv.messages[1].tool_result.data == "[tool result cleared by compact]"
+
     def test_clears_old_tool_results(self):
         conv = _conv_with_tool_results(6)
         svc = PruneToolResults(keep_recent=2)
@@ -559,6 +577,33 @@ class _SummaryLLM:
 
 
 class TestSummarizeCompact:
+    @pytest.mark.parametrize("empty_transcript", [False, True])
+    def test_summary_preserves_raw_step_evidence(self, monkeypatch, empty_transcript):
+        from looplet.types import Step, ToolCall
+
+        state = DefaultState()
+        payloads = [{"source": number, "text": "evidence" * 100} for number in range(6)]
+        for number, payload in enumerate(payloads, start=1):
+            state.steps.append(
+                Step(
+                    number=number,
+                    tool_call=ToolCall(tool="source", args={}),
+                    tool_result=ToolResult(tool="source", args_summary="", data=payload),
+                )
+            )
+        session = _log(6)
+        if empty_transcript:
+            monkeypatch.setattr(session, "render", lambda: "")
+        SummarizeCompact(keep_recent=1).compact(
+            state=state,
+            session_log=session,
+            llm=_SummaryLLM(),
+            conversation=None,
+            step_num=6,
+            reason="test",
+        )
+        assert all(step.tool_result.data is payload for step, payload in zip(state.steps, payloads))
+
     def test_reuses_llm_summary_for_conversation_boundary(self):
         conv = _conv_with_tool_results(5)
         log = _log(5)

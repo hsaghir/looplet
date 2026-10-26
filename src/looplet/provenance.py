@@ -119,7 +119,7 @@ class LLMCall:
     prompt: str
     system_prompt: str
     response: Any  # str for generate; list[dict] for generate_with_tools
-    temperature: float = 0.2
+    temperature: float | None = None
     max_tokens: int = 2000
     tools: list[dict[str, Any]] | None = None
     step_num: int | None = None
@@ -295,7 +295,7 @@ class _RecordingBase:
         prompt: str,
         system_prompt: str,
         response: Any,
-        temperature: float,
+        temperature: float | None,
         max_tokens: int,
         tools: list[dict[str, Any]] | None,
         started_at: float,
@@ -471,7 +471,7 @@ class RecordingLLMBackend(_RecordingBase):
         *,
         max_tokens: int = 2000,
         system_prompt: str = "",
-        temperature: float = 0.2,
+        temperature: float | None = None,
         **options: Any,
     ) -> str:
         started = time.time()
@@ -515,7 +515,7 @@ class RecordingLLMBackend(_RecordingBase):
         tools: list[dict[str, Any]],
         max_tokens: int = 2000,
         system_prompt: str = "",
-        temperature: float = 0.2,
+        temperature: float | None = None,
         **options: Any,
     ) -> list[dict[str, Any]]:
         started = time.time()
@@ -580,7 +580,7 @@ class AsyncRecordingLLMBackend(_RecordingBase):
         *,
         max_tokens: int = 2000,
         system_prompt: str = "",
-        temperature: float = 0.2,
+        temperature: float | None = None,
         **options: Any,
     ) -> str:
         import inspect
@@ -627,7 +627,7 @@ class AsyncRecordingLLMBackend(_RecordingBase):
         tools: list[dict[str, Any]],
         max_tokens: int = 2000,
         system_prompt: str = "",
-        temperature: float = 0.2,
+        temperature: float | None = None,
         **options: Any,
     ) -> list[dict[str, Any]]:
         import inspect
@@ -1239,7 +1239,7 @@ class _ReplayLLMBackend:
         *,
         max_tokens: int = 2000,
         system_prompt: str = "",
-        temperature: float = 0.2,
+        temperature: float | None = None,
     ) -> str:
         call = self._next("generate")
         self._raise_recorded_error(call)
@@ -1257,7 +1257,7 @@ class _ReplayLLMBackend:
         tools: list[dict[str, Any]],
         max_tokens: int = 2000,
         system_prompt: str = "",
-        temperature: float = 0.2,
+        temperature: float | None = None,
     ) -> list[dict[str, Any]]:
         call = self._next("generate_with_tools")
         self._raise_recorded_error(call)

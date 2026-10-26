@@ -15,6 +15,163 @@ from looplet.backends import (
 from looplet.cache import CacheControl, CachePolicy, compute_breakpoints
 
 
+@pytest.mark.parametrize(
+    "backend_type",
+    [
+        OpenAIBackend,
+        OpenAIStreamingBackend,
+        AsyncOpenAIBackend,
+        AnthropicBackend,
+        AnthropicStreamingBackend,
+        AsyncAnthropicBackend,
+    ],
+)
+def test_public_backend_sampling_defaults_are_unset(backend_type):
+    import inspect
+
+    for method_name in ("generate", "generate_with_tools", "stream"):
+        method = getattr(backend_type, method_name, None)
+        if method is not None:
+            assert inspect.signature(method).parameters["temperature"].default is None
+
+
+@pytest.mark.parametrize("provider", ["openai", "anthropic"])
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("temperature", [None, 0.3])
+async def test_execution_history_does_not_require_a_steering_policy(
+    provider,
+    asynchronous,
+    temperature,
+):
+    import json
+
+    from looplet import (
+        DefaultState,
+        LoopConfig,
+        RunResult,
+        async_composable_loop,
+        composable_loop,
+        tools_from,
+    )
+
+    httpx = pytest.importorskip("httpx")
+    sdk = pytest.importorskip(provider)
+    requests = []
+
+    def handle(request):
+        requests.append(json.loads(request.content))
+        name = "inspect_source" if len(requests) == 1 else "done"
+        arguments = {} if len(requests) == 1 else {"summary": "ok"}
+        identifier = f"call-{len(requests)}"
+        if provider == "openai":
+            payload = {
+                "id": "chatcmpl-offline",
+                "object": "chat.completion",
+                "created": 0,
+                "model": "fixture",
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+                "choices": [
+                    {
+                        "index": 0,
+                        "finish_reason": "tool_calls",
+                        "message": {
+                            "role": "assistant",
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "id": identifier,
+                                    "type": "function",
+                                    "function": {
+                                        "name": name,
+                                        "arguments": json.dumps(arguments),
+                                    },
+                                }
+                            ],
+                        },
+                    }
+                ],
+            }
+        else:
+            payload = {
+                "id": "msg-offline",
+                "type": "message",
+                "role": "assistant",
+                "model": "fixture",
+                "stop_reason": "tool_use",
+                "stop_sequence": None,
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+                "content": [
+                    {"type": "tool_use", "id": identifier, "name": name, "input": arguments}
+                ],
+            }
+        return httpx.Response(200, json=payload)
+
+    transport = httpx.MockTransport(handle)
+    http_client = (
+        httpx.AsyncClient(transport=transport)
+        if asynchronous
+        else httpx.Client(transport=transport)
+    )
+    client_type = (
+        (sdk.AsyncOpenAI if asynchronous else sdk.OpenAI)
+        if provider == "openai"
+        else (sdk.AsyncAnthropic if asynchronous else sdk.Anthropic)
+    )
+    client = client_type(api_key="offline-fixture", max_retries=0, http_client=http_client)
+    backend_type = (
+        (AsyncOpenAIBackend if asynchronous else OpenAIBackend)
+        if provider == "openai"
+        else (AsyncAnthropicBackend if asynchronous else AnthropicBackend)
+    )
+
+    def inspect_source() -> dict:
+        return {"evidence": "actual source"}
+
+    state = DefaultState(max_steps=3)
+    config = LoopConfig(max_steps=3, temperature=temperature)
+    arguments = dict(
+        llm=backend_type(client=client),
+        tools=tools_from([inspect_source], include_done=True),
+        state=state,
+        config=config,
+    )
+    try:
+        if asynchronous:
+            async for _ in async_composable_loop(**arguments):
+                pass
+        else:
+            list(composable_loop(**arguments))
+    finally:
+        if asynchronous:
+            await client.close()
+        else:
+            client.close()
+
+    assert config.assistant_turn_policy is None
+    assert config.max_model_calls is None
+    assert RunResult.from_state(state).completed
+    assert len(requests) == 2
+    for request in requests:
+        if temperature is None:
+            assert "temperature" not in request
+        else:
+            assert request["temperature"] == temperature
+    messages = requests[1]["messages"]
+    if provider == "openai":
+        result = next(message for message in messages if message["role"] == "tool")
+        assert result["tool_call_id"] == "call-1"
+        assert "actual source" in result["content"]
+    else:
+        results = [
+            block
+            for message in messages
+            for block in message["content"]
+            if isinstance(block, dict) and block.get("type") == "tool_result"
+        ]
+        assert results[0]["tool_use_id"] == "call-1"
+        assert "actual source" in json.dumps(results[0]["content"])
+
+
 def test_public_backend_wrapper_preserves_optional_capabilities():
     from looplet.backend_contract import BackendWrapper, ConversationInputBackend
 

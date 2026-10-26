@@ -52,14 +52,86 @@ class _ScriptedLLM:
     def __init__(self, replies):
         self._replies = list(replies)
         self.prompts: list[str] = []
+        self.kwargs: list[dict] = []
 
     def generate(self, prompt, **kwargs):
         self.prompts.append(prompt)
+        self.kwargs.append(kwargs)
         return self._replies.pop(0) if self._replies else "DONE"
 
 
 def _original_ctx(backend):
     return ToolContext(llm=backend)
+
+
+@pytest.mark.parametrize("family", ["dep_doctor", "git_detective", "threat_intel"])
+def test_portable_model_transport_allows_the_declared_tool_timeout(monkeypatch, family):
+    import runpy
+    from types import SimpleNamespace
+
+    module = runpy.run_path(str(_EXAMPLES / f"{family}_portable.cartridge/_mcp/tools_server.py"))
+    client_type = module["_HostLLM"]
+    timeouts = []
+
+    class HostSocket:
+        def settimeout(self, timeout):
+            timeouts.append(timeout)
+
+        def connect(self, path):
+            assert path == "/host/model.sock"
+
+    monkeypatch.setenv("LOOPLET_LLM_SOCKET", "/host/model.sock")
+    monkeypatch.setitem(
+        client_type.__init__.__globals__,
+        "socket",
+        SimpleNamespace(
+            socket=lambda *_args: HostSocket(),
+            AF_UNIX=socket.AF_UNIX,
+            SOCK_STREAM=socket.SOCK_STREAM,
+        ),
+    )
+    monkeypatch.setattr(client_type, "_rpc", lambda self, method, params: {})
+    client = client_type()
+    assert client._sock is not None
+    assert timeouts == [240.0]
+
+
+@pytest.mark.parametrize(
+    ("family", "tool", "arguments", "reply", "field", "expected"),
+    [
+        (
+            "dep_doctor",
+            "find_alternatives",
+            {"package_name": "requests"},
+            '[{"name":"httpx","reason":"async client"}]',
+            "alternatives",
+            [{"name": "httpx", "reason": "async client"}],
+        ),
+        ("threat_intel", "extract_iocs", {"text": "CVE-2026-1234"}, "HIGH", "llm_severity", "HIGH"),
+        (
+            "threat_intel",
+            "assess_risk",
+            {"title": "Synthetic advisory", "severity": "HIGH", "affected_products": "ExampleApp"},
+            "PRIORITY: HIGH. Verify the synthetic test.",
+            "assessment",
+            "PRIORITY: HIGH. Verify the synthetic test.",
+        ),
+    ],
+)
+def test_model_helpers_have_reasoning_compatible_output_ceiling(
+    family, tool, arguments, reply, field, expected
+):
+    for suffix in ("", "_portable"):
+        backend = _ScriptedLLM([reply])
+        with cartridge_to_preset(_EXAMPLES / f"{family}{suffix}.cartridge") as preset:
+            if preset.model_gateway is not None:
+                preset.model_gateway.set_backend(backend)
+            result = preset.tools.dispatch(
+                ToolCall(tool=tool, args=arguments), ctx=_original_ctx(backend)
+            )
+            assert result.error is None
+            assert result.data[field] == expected
+            assert backend.kwargs[0]["max_tokens"] == 2000
 
 
 # ── dep_doctor: find_alternatives ─────────────────────────────

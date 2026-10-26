@@ -64,6 +64,38 @@ def _original_ctx(backend):
     return ToolContext(llm=backend)
 
 
+@pytest.mark.parametrize("family", ["dep_doctor", "git_detective", "threat_intel"])
+def test_portable_model_transport_allows_the_declared_tool_timeout(monkeypatch, family):
+    import runpy
+    from types import SimpleNamespace
+
+    module = runpy.run_path(str(_EXAMPLES / f"{family}_portable.cartridge/_mcp/tools_server.py"))
+    client_type = module["_HostLLM"]
+    timeouts = []
+
+    class HostSocket:
+        def settimeout(self, timeout):
+            timeouts.append(timeout)
+
+        def connect(self, path):
+            assert path == "/host/model.sock"
+
+    monkeypatch.setenv("LOOPLET_LLM_SOCKET", "/host/model.sock")
+    monkeypatch.setitem(
+        client_type.__init__.__globals__,
+        "socket",
+        SimpleNamespace(
+            socket=lambda *_args: HostSocket(),
+            AF_UNIX=socket.AF_UNIX,
+            SOCK_STREAM=socket.SOCK_STREAM,
+        ),
+    )
+    monkeypatch.setattr(client_type, "_rpc", lambda self, method, params: {})
+    client = client_type()
+    assert client._sock is not None
+    assert timeouts == [240.0]
+
+
 @pytest.mark.parametrize(
     ("family", "tool", "arguments", "reply", "field", "expected"),
     [

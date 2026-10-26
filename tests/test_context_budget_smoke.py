@@ -166,6 +166,92 @@ def test_stateful_helper_requires_explicit_stateless_capability(capability, nati
 
 
 @pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("cartridge", [False, True])
+async def test_small_context_handles_batched_large_sources(tmp_path, asynchronous, cartridge):
+    from looplet import RunResult, cartridge_to_preset, preset_to_cartridge
+    from looplet.examples.default_harness import (
+        EventObserver,
+        build_agent,
+        grade_deliverable,
+        read_invoice_batch,
+    )
+    from looplet.scaffolding import estimate_prompt_tokens
+
+    class Backend:
+        conversation_mode = "messages"
+
+        def __init__(self):
+            self.calls = 0
+
+        def set_conversation_input(self, snapshot):
+            self.snapshot = snapshot
+
+        def generate(self, prompt, **kwargs):
+            raise AssertionError("Native fixture must not use a text fallback")
+
+        def generate_with_tools(self, prompt, **kwargs):
+            self.calls += 1
+            assert estimate_prompt_tokens(prompt) <= 9000
+            if self.calls == 1:
+                return [
+                    {
+                        "type": "tool_use",
+                        "id": f"source-{batch}",
+                        "name": "read_invoice_batch",
+                        "input": {"batch": batch},
+                    }
+                    for batch in range(3)
+                ]
+            if self.calls == 2:
+                return [
+                    {
+                        "type": "tool_use",
+                        "id": f"record-{batch}",
+                        "name": "record_invoice_total",
+                        "input": {
+                            "batch": batch,
+                            "paid_total": read_invoice_batch(batch)["paid_total"],
+                        },
+                    }
+                    for batch in range(3)
+                ]
+            return [
+                {"type": "tool_use", "id": "finish", "name": "done", "input": {"summary": "saved"}}
+            ]
+
+    class AsyncBackend(Backend):
+        async def generate_with_tools(self, prompt, **kwargs):
+            return super().generate_with_tools(prompt, **kwargs)
+
+    preset = build_agent("invoices", tmp_path / "deliverable")
+    if cartridge:
+        bundle = preset_to_cartridge(preset, tmp_path / "agent.cartridge", strict=True)
+        preset.close()
+        preset = cartridge_to_preset(bundle.path)
+    backend = AsyncBackend() if asynchronous else Backend()
+    observer = EventObserver()
+    preset.hooks.append(observer)
+    with preset:
+        if asynchronous:
+            async for _ in preset.run_async(backend, task={"goal": "Reconcile the three batches"}):
+                pass
+            result = RunResult.from_state(preset.state)
+        else:
+            result = preset.run_result(backend, task={"goal": "Reconcile the three batches"})
+        assert result.completed, result.diagnostics()
+        assert backend.calls == 3
+        assert grade_deliverable("invoices", tmp_path / "deliverable")["passed"]
+        sources = [
+            step.tool_result.data
+            for step in result.steps
+            if step.tool_call.tool == "read_invoice_batch"
+        ]
+        assert len(sources) == 3
+        assert all(len(source["audit_notes"]) > 16_000 for source in sources)
+        assert "post_compact" in [event.lower() for event in observer.events]
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
 async def test_native_small_context_compacts_without_losing_raw_evidence(tmp_path, asynchronous):
     from looplet import MockLLMBackend, RunResult
     from looplet.examples.default_harness import (

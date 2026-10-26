@@ -31,6 +31,7 @@ from typing import Any, Awaitable, Callable, Iterable, cast
 
 from looplet.budget import ContextBudget, ThresholdCompactHook
 from looplet.compact import DefaultCompactService
+from looplet.harness import ResolvedHarness, resolve_harness
 from looplet.loop import LoopConfig
 from looplet.memory import StaticMemorySource
 from looplet.tools import BaseToolRegistry, ToolSpec, register_done_tool, tool, tools_from
@@ -409,6 +410,10 @@ class AgentPreset:
         except BaseException:
             self._release_failed_claim()
             raise
+
+    def resolve_harness(self) -> ResolvedHarness:
+        """Inspect the same effective defaults used by Python and cartridge runs."""
+        return resolve_harness(self.config, self.hooks)
 
     def run(
         self,
@@ -1023,6 +1028,7 @@ def minimal_preset(
     config = LoopConfig(
         max_steps=max_steps,
         system_prompt=system_prompt,
+        harness_profile="minimal",
     )
 
     return AgentPreset(

@@ -49,6 +49,8 @@ class CartridgeLayout:
         "recovery_temperature",
         "done_tool",
         "done_tools",
+        "harness_profile",
+        "disabled_defaults",
         "allow_text_completion",
         "requires_assistant_turn_policy",
         "max_model_calls",

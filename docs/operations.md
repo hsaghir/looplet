@@ -96,10 +96,58 @@ Wait for the worker or use a host-owned process boundary when execution must be 
 Inspect the external system's authoritative state before deciding whether a retry is safe.
 Do not infer retry safety from a timeout, cancellation, or failure to observe a local result.
 
+## Standard agent harness
+
+**Unreleased source behavior:** sync, async, preset, and cartridge execution all
+resolve `LoopConfig.harness_profile="standard-v1"` through `resolve_harness()`.
+The resolver performs no I/O or model calls and does not mutate supplied containers.
+`resolve_harness(config, hooks).describe()` explains the selected classes and limits;
+`preset.resolve_harness().describe()` provides the same view for a loaded cartridge.
+Execution preserves the supplied live config and host-object identities. The automatic
+compact service is installed only for the invocation; explicit in-run replacements survive.
+
+| Capability           | `standard-v1` policy                                                                                                   | Replacement                                                                                             |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| Context management   | `ThresholdCompactHook` at 80% estimated history pressure; deterministic `DefaultCompactService(use_llm_summary=False)` | Supply a `compact_service`; any explicit callable `should_compact` hook replaces the automatic trigger. |
+| Repetition detection | `StagnationHook(fingerprint="result", threshold=6)`; terminal tools and `think` ignored                                | Supply a `StagnationHook` with your domain policy.                                                      |
+| Dispatch budget      | `ToolCallBudgetHook(max_calls=max(16, 4 * max_steps))`, including free calls                                           | Supply a `ToolCallBudgetHook` with a reviewed cap.                                                      |
+
+The result fingerprint compares actual arguments, result values, and errors, not
+generated call IDs or just payload size. Legitimate changing poll results are distinct.
+The stagnation policy only adds context; it does not stop or deny work.
+The dispatch guard reserves before a batch executes and stops with `tool_call_budget`.
+Reservations are conservative: later denials can still consume them. The guard is
+per invocation, not a durable cross-resume quota or a provider-request ceiling.
+Set `max_model_calls`, a deadline, and provider timeouts explicitly for host admission controls.
+
+```python
+from looplet import LoopConfig, StagnationHook, ToolCallBudgetHook, resolve_harness
+
+
+config = LoopConfig(disabled_defaults=["compaction"])
+hooks = [StagnationHook(threshold=8), ToolCallBudgetHook(max_calls=100)]
+print(resolve_harness(config, hooks).describe())
+```
+
+`disabled_defaults` accepts `compaction`, `stagnation`, and `tool_budget`.
+It omits automatic additions, not explicit hooks or services.
+`LoopConfig(harness_profile="minimal")` and `minimal_preset()` omit all automatic additions.
+Unknown profile or capability names fail before model calls. The profile and opt-outs
+round-trip in a cartridge's contract-tier configuration.
+
+Defaults do not create files, configure credentials, add approval prompts, enable tracing,
+or provide an OS sandbox. Native tool protocol, registry validation, and reactive recovery
+remain the loop's existing mechanisms. Persist important work in domain-owned artifacts;
+automatic pruning and truncation are lossy and do not guarantee retention of every fact.
+
+See the [default-harness dogfood report](default-harness-dogfood.md) for live cases,
+observed failures, artifact bindings, and reproduction commands.
+
 ## Context pressure and compaction
 
-Thresholds classify an approximate token count. A threshold hook requests
-compaction, while `LoopConfig.compact_service` decides how to compact:
+Thresholds classify an approximate history token count, including structured tool
+arguments and results. Standard source builds install a trigger and service automatically.
+Override the thresholds or allow summary-model calls explicitly when appropriate:
 
 ```python
 from looplet import (
@@ -139,8 +187,10 @@ constraints, artifact paths, accepted decisions, and unresolved work. Observe
 `PRE_COMPACT` and `POST_COMPACT` lifecycle events when production diagnostics
 need the boundary.
 
-The estimate is intentionally approximate. Provider tokenization, tool
-schemas, and hidden framing may differ. Thresholds should be conservative.
+The history estimate is intentionally approximate, not an exact full-request budget.
+System prompts, tool schemas, provider tokenization, and hidden framing can add pressure.
+Set `context_window` for the actual backend and keep thresholds conservative.
+The separate preflight check and reactive recovery remain in place.
 
 ## Stagnation and call limits
 
@@ -158,8 +208,9 @@ stagnation = StagnationHook(
 )
 ```
 
-The default fingerprint compares tool name and arguments. The result-size
-fingerprint also considers the coarse result shape. For domain progress,
+An explicitly constructed `StagnationHook()` compares tool name and arguments.
+The standard harness instead selects the actual-value `result` fingerprint.
+The result-size fingerprint above considers only coarse result shape. For domain progress,
 provide a monotonic `progress(state)` counter, such as accepted artifacts or
 distinct verified records.
 
@@ -378,7 +429,8 @@ Apply explicit access, redaction, retention, and deletion policies.
 
 Since `0.4.1`, `max_steps` limits charged steps, not total tool or model calls.
 Successful nonterminal free calls preserve that budget.
-Add a host deadline when repeated free calls must stop:
+The source build's standard dispatch guard also bounds successful free calls.
+Add a host deadline for elapsed-time control, including when automatic guards are disabled:
 
 ```python
 from time import time

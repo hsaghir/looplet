@@ -14,14 +14,15 @@ This module ships threshold-tier budgeting as first-class config:
   ``True`` when estimated prompt tokens cross the configured tier.
 * :class:`BudgetTelemetry` - observer for production dashboards.
 
-All tiers are **opt-in**. The loop still runs without any budget set
-(identical to prior behaviour). Attach :class:`ThresholdCompactHook`
-to get auto-compaction once you've configured a
-:class:`CompactService`.
+The standard harness installs a threshold hook and deterministic compact
+service. Explicit hooks replace the trigger; the minimal profile keeps
+budgeting opt-in. Estimates describe history pressure, not exact provider
+tokenization or the complete outbound request.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
@@ -139,6 +140,20 @@ def classify_tier(
                 # ContentBlock list - sum text of each block.
                 for blk in c:
                     total_chars += len(getattr(blk, "text", "") or "")
+                    total_chars += len(
+                        json.dumps(getattr(blk, "data", {}), default=str, ensure_ascii=False)
+                    )
+            tool_call = getattr(m, "tool_call", None)
+            if tool_call is not None:
+                total_chars += len(
+                    json.dumps(getattr(tool_call, "args", {}), default=str, ensure_ascii=False)
+                )
+            tool_result = getattr(m, "tool_result", None)
+            if tool_result is not None:
+                total_chars += len(
+                    json.dumps(getattr(tool_result, "data", None), default=str, ensure_ascii=False)
+                )
+                total_chars += len(str(getattr(tool_result, "error", "") or ""))
         est = max(1, total_chars // 4)
     else:
         rendered = session_log.render() if session_log is not None else ""

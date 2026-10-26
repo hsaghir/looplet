@@ -8,6 +8,7 @@ import pytest
 
 from looplet.stagnation import (
     StagnationHook,
+    result_fingerprint,
     result_size_fingerprint,
     tool_call_fingerprint,
 )
@@ -51,6 +52,29 @@ class TestResultSizeFingerprint:
         empty = result_size_fingerprint(None, c, _result("search", data={"hits": []}))
         full = result_size_fingerprint(None, c, _result("search", data={"hits": [1]}))
         assert empty != full
+
+
+class TestResultFingerprint:
+    def test_equal_sized_changing_results_are_progress(self):
+        call = _call("poll", job="job-1")
+        first = result_fingerprint(None, call, _result("poll", {"progress": 10}))
+        second = result_fingerprint(None, call, _result("poll", {"progress": 20}))
+        assert first != second
+
+    def test_mapping_order_and_call_ids_do_not_change_fingerprint(self):
+        first = result_fingerprint(None, _call("read", name="x"), _result("read", {"a": 1, "b": 2}))
+        second = result_fingerprint(
+            None, _call("read", name="x"), _result("read", {"b": 2, "a": 1})
+        )
+        assert first == second
+
+    def test_changing_results_do_not_trigger_nudge(self):
+        hook = StagnationHook(fingerprint="result", threshold=2)
+        for step_num in range(1, 6):
+            result = hook.post_dispatch(
+                None, None, _call("poll"), _result("poll", {"progress": step_num}), step_num
+            )
+            assert result is None
 
 
 class TestStagnationHookBasic:
@@ -220,7 +244,9 @@ class TestValidation:
 
 
 class TestSerialization:
-    @pytest.mark.parametrize("fingerprint", [result_size_fingerprint, "result_size"])
+    @pytest.mark.parametrize(
+        "fingerprint", [result_size_fingerprint, "result_size", result_fingerprint, "result"]
+    )
     def test_strict_round_trip_preserves_result_aware_fingerprint(self, tmp_path, fingerprint):
         from looplet.cartridge import cartridge_to_preset, preset_to_cartridge
 

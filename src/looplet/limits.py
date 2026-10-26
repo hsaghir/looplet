@@ -33,9 +33,55 @@ from __future__ import annotations
 from collections import Counter
 from typing import Any, Callable
 
+from looplet.hook_decision import HookDecision, Stop
 from looplet.types import ErrorKind, ToolCall, ToolError, ToolResult
 
-__all__ = ["PerToolLimitHook", "BudgetWarningHook"]
+__all__ = ["PerToolLimitHook", "BudgetWarningHook", "ToolCallBudgetHook"]
+
+
+class ToolCallBudgetHook:
+    """Stop a run after a bounded number of dispatches, including free calls.
+
+    Reserve calls before dispatch so concurrent batches cannot overshoot.
+    This is a dispatch guard, not a provider-request or billing limit. Hosts
+    requiring physical model-call admission should set ``max_model_calls``.
+    """
+
+    def __init__(self, max_calls: int = 60) -> None:
+        if type(max_calls) is not int or max_calls <= 0:
+            raise ValueError("max_calls must be a positive integer")
+        self.max_calls = max_calls
+        self.calls = 0
+
+    def to_config(self) -> dict[str, Any]:
+        return {"max_calls": self.max_calls}
+
+    def pre_dispatch(
+        self, state: Any, session_log: Any, tool_call: ToolCall, step_num: int
+    ) -> ToolResult | None:
+        if self.calls >= self.max_calls:
+            message = f"Tool call budget exhausted ({self.calls}/{self.max_calls})"
+            return ToolResult(
+                tool=tool_call.tool,
+                args_summary="",
+                data=None,
+                error=message,
+                error_detail=ToolError(
+                    kind=ErrorKind.VALIDATION,
+                    message=message,
+                    retriable=False,
+                    context={"tool_call_budget": self.max_calls, "used": self.calls},
+                ),
+            )
+        self.calls += 1
+        return None
+
+    def post_dispatch(
+        self, state: Any, session_log: Any, tool_call: Any, tool_result: Any, step_num: int
+    ) -> HookDecision | None:
+        if self.calls >= self.max_calls:
+            return Stop("tool_call_budget")
+        return None
 
 
 # ── Per-tool usage cap ──────────────────────────────────────────

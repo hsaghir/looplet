@@ -56,6 +56,39 @@ class TestToolSpec:
         assert props["query"]["type"] == "string"
         assert "limit" in props
 
+    @pytest.mark.parametrize(
+        "declaration, expected_type, optional",
+        [
+            ("int", "integer", False),
+            ("list", "array", False),
+            ("(optional) integer", "integer", True),
+            ("(optional) array", "array", True),
+            (["integer", "null"], ["integer", "null"], False),
+        ],
+    )
+    def test_workspace_descriptors_normalize_native_types(
+        self, declaration, expected_type, optional
+    ):
+        from copy import deepcopy
+
+        from looplet.tools import ToolSpec
+
+        parameters = {
+            "answer": {"type": "string"},
+            "value": {"type": declaration, "description": "Evidence value", "x-source": "kept"},
+        }
+        original = deepcopy(parameters)
+        spec = ToolSpec("evidence", "Record evidence", parameters, lambda **kwargs: kwargs)
+        schema = spec.to_api_schema()["input_schema"]
+        assert schema["properties"]["value"] == {
+            "type": expected_type,
+            "description": "Evidence value",
+            "x-source": "kept",
+        }
+        assert ("value" not in schema["required"]) is optional
+        assert "answer" in schema["required"]
+        assert parameters == original
+
     def test_spec_text(self):
         from looplet.tools import ToolSpec
 

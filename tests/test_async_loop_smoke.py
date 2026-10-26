@@ -49,7 +49,7 @@ class TestAsyncLlmCall:
             {
                 "max_tokens": None,
                 "system_prompt": "",
-                "temperature": 0.2,
+                "temperature": None,
                 "provider_flag": 7,
                 "cancel_token": token,
             }

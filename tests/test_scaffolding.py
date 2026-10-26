@@ -35,6 +35,14 @@ def test_generic_generation_signatures_do_not_choose_sampling():
     package = Path(__file__).resolve().parents[1] / "src" / "looplet"
     for path in sorted(package.glob("*.py")):
         for node in ast.walk(ast.parse(path.read_text(), filename=str(path))):
+            if isinstance(node, ast.Call):
+                for keyword in node.keywords:
+                    if (
+                        keyword.arg in {"temperature", "summary_temperature"}
+                        and isinstance(keyword.value, ast.Constant)
+                        and keyword.value.value is not None
+                    ):
+                        failures.append(f"{path.name}:{node.lineno}:call:{keyword.arg}")
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
             positional = [*node.args.posonlyargs, *node.args.args]
@@ -47,6 +55,35 @@ def test_generic_generation_signatures_do_not_choose_sampling():
                 if not isinstance(value, ast.Constant) or value.value is not None:
                     failures.append(f"{path.name}:{node.lineno}:{node.name}:{argument.arg}")
     assert not failures, failures
+
+
+@pytest.mark.parametrize("helper", ["session", "native_probe", "native_support"])
+@pytest.mark.parametrize("temperature", ["unset", None, 0.7])
+def test_optional_helpers_leave_sampling_unset_unless_configured(helper, temperature):
+    from looplet.native_tools import probe_native_tool_support, supports_native_tools
+
+    backend = MagicMock()
+    options = {} if temperature == "unset" else {"temperature": temperature}
+    if helper == "session":
+        session_log = MagicMock()
+        session_log.compact.return_value = True
+        entry = MagicMock(tool="__summary__", findings=["Original evidence"])
+        session_log.entries = [entry]
+        backend.generate.return_value = "Refined evidence"
+        assert age_session_entries(session_log, llm=backend, **options) == "Refined evidence"
+        call = backend.generate.call_args
+        assert "analysis" not in call.args[0].lower()
+    else:
+        backend.generate_with_tools.return_value = [
+            {"type": "tool_use", "name": "test_probe", "input": {}}
+        ]
+        if helper == "native_probe":
+            assert probe_native_tool_support(backend, **options).supported
+        else:
+            assert supports_native_tools(backend, **options)
+        call = backend.generate_with_tools.call_args
+    assert call.kwargs.get("temperature") == (None if temperature == "unset" else temperature)
+    assert len(backend.method_calls) == 1
 
 
 @pytest.mark.parametrize(

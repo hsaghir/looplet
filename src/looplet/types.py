@@ -1139,6 +1139,26 @@ class ToolResult:
             d["metadata"] = dict(self.metadata)
         return d
 
+    def to_full_dict(self) -> dict[str, Any]:
+        """Serialize complete evidence without prompt-preview limits."""
+        result = self.to_dict()
+        result.update(
+            data=self.data,
+            duration_ms=self.duration_ms,
+            error=self.error,
+            result_key=self.result_key,
+            call_id=self.call_id,
+        )
+        if self.error_detail is not None:
+            result["error_detail"] = {
+                "kind": self.error_detail.kind.value,
+                "message": self.error_detail.message,
+                "retriable": self.error_detail.retriable,
+                "context": self.error_detail.context,
+                "recovery_hint": self.error_detail.recovery_hint,
+            }
+        return result
+
 
 @dataclass
 class Step:
@@ -1171,7 +1191,7 @@ class Step:
     """
 
     def to_dict(self) -> dict[str, Any]:
-        """Serialise to a plain dict for logging or state snapshots."""
+        """Serialize with the compact tool-result view."""
         result = {
             "step": self.number,
             "tool_call": self.tool_call.to_dict(),
@@ -1179,6 +1199,12 @@ class Step:
         }
         if self.metadata:
             result["metadata"] = dict(self.metadata)
+        return result
+
+    def to_full_dict(self) -> dict[str, Any]:
+        """Serialize complete call and result evidence for host trace writers."""
+        result = self.to_dict()
+        result["tool_result"] = self.tool_result.to_full_dict()
         return result
 
     def summary(self) -> str:

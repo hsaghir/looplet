@@ -24,6 +24,9 @@ Currently shipped built-ins:
 * ``search_skills`` - list installed agentskills.io SKILL.md bundles by
   task description without loading them.
 * ``activate_skill`` - load one SKILL.md body into subsequent prompts.
+* ``list_tool_results`` - discover retained result references.
+* ``read_tool_result`` - read a bounded page or JSON field from retained evidence.
+* ``search_tool_result`` - find literal text with bounded excerpts and offsets.
 
 Adding a new built-in: write a small module exposing a ``SPEC``
 :class:`looplet.tools.ToolSpec`, then list its ``name`` in
@@ -40,6 +43,7 @@ from looplet.builtin_tools.skills import (
     SEARCH_SPEC as _SEARCH_SKILLS_SPEC,
 )
 from looplet.builtin_tools.subagent import SPEC as _SUBAGENT_SPEC
+from looplet.builtin_tools.tool_results import SPECS as _RESULT_SPECS
 from looplet.tools import ToolSpec
 
 AVAILABLE: dict[str, ToolSpec] = {
@@ -47,6 +51,7 @@ AVAILABLE: dict[str, ToolSpec] = {
     _SCAFFOLD_SPEC.name: _SCAFFOLD_SPEC,
     _SEARCH_SKILLS_SPEC.name: _SEARCH_SKILLS_SPEC,
     _ACTIVATE_SKILL_SPEC.name: _ACTIVATE_SKILL_SPEC,
+    **{spec.name: spec for spec in _RESULT_SPECS},
 }
 
 

@@ -820,17 +820,18 @@ def truncate_tool_result(
             persist_path.mkdir(parents=True, exist_ok=True)
             digest = hashlib.sha256(raw.encode()).hexdigest()[:12]
             out_file = persist_path / f"tool-output-{digest}.txt"
-            out_file.write_text(raw)
+            out_file.write_text(raw, encoding="utf-8")
             # Return a truncated version with a pointer to the full file.
             truncated = raw[:max_chars] + f"\n... [{len(raw)} chars total]"
             return {
                 "truncated_output": truncated,
                 "persisted_output_path": str(out_file),
-                "persisted_output_size": len(raw),
+                "persisted_output_size": len(raw.encode("utf-8")),
+                "persisted_output_chars": len(raw),
                 "note": (
                     f"Output too large for inline ({len(raw)} chars). "
                     f"Full output saved to {out_file}. "
-                    f"Use read_file or bash to inspect it."
+                    "Use a host-enabled result or file retrieval tool to inspect it."
                 ),
             }
 

@@ -358,7 +358,7 @@ class AgentPreset:
             for spec in self.tools.tool_specs.values()
             for resource_name in getattr(spec, "requires", ())
         }
-        missing_resources = sorted(declared_resources - set(self.resources))
+        missing_resources = sorted(declared_resources - set(self.resources) - {"tool_result_store"})
         if missing_resources:
             errors.append(
                 "tool resource dependencies are not provided by the preset: "

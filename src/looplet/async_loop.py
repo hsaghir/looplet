@@ -228,7 +228,7 @@ class _SyncBridgeLLM:
         *,
         max_tokens: int | None = None,
         system_prompt: str = "",
-        temperature: float | None = 0.2,
+        temperature: float | None = None,
     ) -> str:
         result = self._backend.generate(
             prompt,
@@ -266,7 +266,7 @@ async def async_llm_call(
     *,
     max_tokens: int | None = None,
     system_prompt: str = "",
-    temperature: float | None = 0.2,
+    temperature: float | None = None,
     max_retries: int = MAX_LLM_RETRIES,
     max_continuations: int = 0,
     tools: list[dict[str, Any]] | None = None,

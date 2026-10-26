@@ -1408,7 +1408,7 @@ class _ScopedLLMProxy:
         *,
         max_tokens: int = 2000,
         system_prompt: str = "",
-        temperature: float = 0.2,
+        temperature: float | None = None,
     ) -> str:
         with self._recording._scope_calls(self._scope):
             return self._backend.generate(
@@ -1425,7 +1425,7 @@ class _ScopedLLMProxy:
         tools: list,
         max_tokens: int = 2000,
         system_prompt: str = "",
-        temperature: float = 0.2,
+        temperature: float | None = None,
     ) -> Any:
         with self._recording._scope_calls(self._scope):
             return self._backend.generate_with_tools(

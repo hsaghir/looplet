@@ -158,7 +158,7 @@ class _FallbackLLM:
         *,
         max_tokens: int = 2000,
         system_prompt: str = "",
-        temperature: float = 0.2,
+        temperature: float | None = None,
         **options: Any,
     ) -> str:
         options = {
@@ -185,7 +185,7 @@ class _FallbackLLM:
         tools: list[dict[str, Any]],
         max_tokens: int = 2000,
         system_prompt: str = "",
-        temperature: float = 0.2,
+        temperature: float | None = None,
         **options: Any,
     ) -> Any:
         options = {
@@ -292,7 +292,7 @@ class CostTracker:
         *,
         max_tokens: int = 2000,
         system_prompt: str = "",
-        temperature: float = 0.2,
+        temperature: float | None = None,
         **options: Any,
     ) -> str:
         response = invoke_backend(
@@ -355,7 +355,7 @@ class CostTracker:
         tools: list[dict[str, Any]],
         max_tokens: int = 2000,
         system_prompt: str = "",
-        temperature: float = 0.2,
+        temperature: float | None = None,
         **options: Any,
     ) -> Any:
         response = invoke_backend(
@@ -433,7 +433,7 @@ class RoutingLLMBackend:
         *,
         max_tokens: int = 2000,
         system_prompt: str = "",
-        temperature: float = 0.2,
+        temperature: float | None = None,
         **options: Any,
     ) -> str:
         backend = self._router.select(self._purpose)
@@ -456,7 +456,7 @@ class RoutingLLMBackend:
         tools: list[dict[str, Any]],
         max_tokens: int = 2000,
         system_prompt: str = "",
-        temperature: float = 0.2,
+        temperature: float | None = None,
         **options: Any,
     ) -> Any:
         """Proxy to the selected backend's native tool calling."""

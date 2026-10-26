@@ -421,7 +421,7 @@ def llm_call_with_retry(
     *,
     max_tokens: int | None = None,
     system_prompt: str = "",
-    temperature: float | None = 0.2,
+    temperature: float | None = None,
     max_retries: int = MAX_LLM_RETRIES,
     tools: list[dict[str, Any]] | None = None,
     native_policy: NativeToolPolicy | None = None,

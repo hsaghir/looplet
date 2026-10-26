@@ -659,7 +659,7 @@ class SummarizeCompact:
         summary_prompt: str | None = None,
         summary_max_chars: int = 4000,
         summary_max_tokens: int = 1200,
-        summary_temperature: float = 0.1,
+        summary_temperature: float | None = None,
     ) -> None:
         self.keep_recent = keep_recent
         self.summary_prompt = summary_prompt or _DEFAULT_SUMMARY_PROMPT

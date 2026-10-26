@@ -24,6 +24,41 @@ from looplet import context_budget
 from looplet.types import DefaultState, Step, ToolCall, ToolResult
 
 
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("temperature", [None, 0.7])
+async def test_parse_recovery_sampling_is_unset_unless_configured(asynchronous, temperature):
+    from looplet import LoopConfig, RunResult, async_composable_loop, composable_loop, tools_from
+
+    requests = []
+
+    class Backend:
+        def generate(self, prompt, **kwargs):
+            requests.append(kwargs.get("temperature"))
+            if len(requests) == 1:
+                return "not a tool call"
+            return '{"tool":"done","args":{"summary":"checked"}}'
+
+    class AsyncBackend(Backend):
+        async def generate(self, prompt, **kwargs):
+            return super().generate(prompt, **kwargs)
+
+    options = {} if temperature is None else {"recovery_temperature": temperature}
+    state = DefaultState(max_steps=1)
+    arguments = dict(
+        llm=AsyncBackend() if asynchronous else Backend(),
+        tools=tools_from([], include_done=True),
+        state=state,
+        config=LoopConfig(max_steps=1, use_native_tools=False, **options),
+    )
+    if asynchronous:
+        async for _ in async_composable_loop(**arguments):
+            pass
+    else:
+        list(composable_loop(**arguments))
+    assert RunResult.from_state(state).completed
+    assert requests == [None, temperature]
+
+
 def test_deterministic_compaction_retains_bounded_tool_receipts():
     from looplet.conversation import Message, MessageRole, default_summarizer
 

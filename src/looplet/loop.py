@@ -518,7 +518,7 @@ class LoopConfig:
     max_tokens: int | None = None
     system_prompt: str = ""
     temperature: float | None = None
-    recovery_temperature: float = 0.1
+    recovery_temperature: float | None = None
     # Name of the tool that signals task completion.
     done_tool: str = "done"
 

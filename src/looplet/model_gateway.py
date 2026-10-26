@@ -234,13 +234,14 @@ class ModelGatewayServer:
 
     def stop(self) -> None:
         self._stop.set()
-        if self._srv is not None:
+        listener = self._srv
+        if listener is not None:
             try:
-                self._srv.shutdown(socket.SHUT_RDWR)
+                listener.shutdown(socket.SHUT_RDWR)
             except OSError:
                 pass
             try:
-                self._srv.close()
+                listener.close()
             except OSError:
                 pass
         with self._connections_lock:

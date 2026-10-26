@@ -22,6 +22,7 @@ from looplet.model_gateway import (
     ModelGatewayClient,
     ModelGatewayError,
     ModelGatewayHandle,
+    ModelGatewayServer,
 )
 
 pytestmark = pytest.mark.skipif(
@@ -110,6 +111,25 @@ def test_close_wakes_idle_listener(monkeypatch):
             pass
         duplicate.close()
         handle.close()
+
+
+def test_stop_keeps_listener_when_serve_clears_reference(monkeypatch):
+    server = ModelGatewayServer()
+    closed = []
+
+    class Listener:
+        def shutdown(self, how):
+            assert how == socket.SHUT_RDWR
+            monkeypatch.setattr(server, "_srv", None)
+
+        def close(self):
+            closed.append(True)
+
+    monkeypatch.setattr(server, "_srv", Listener())
+    server.stop()
+    assert closed == [True]
+    assert server._srv is None
+    assert server._stop.is_set()
 
 
 @pytest.mark.parametrize("asynchronous", [False, True])

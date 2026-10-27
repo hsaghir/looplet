@@ -957,7 +957,7 @@ class TrajectoryRecorder:
                         tool_result=json_snapshot(tr_dict),
                         context_before="",
                         llm_call_indices=llm_indices,
-                        metadata=dict(getattr(st, "metadata", {}) or {}),
+                        metadata=json_snapshot(getattr(st, "metadata", {}) or {}),
                     )
                 )
         self.trajectory.steps.sort(key=lambda s: s.step_num)

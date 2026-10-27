@@ -107,7 +107,11 @@ def test_saved_trajectory_preserves_complete_tool_evidence(tmp_path, terminal, d
         call_id=call.call_id,
         metadata={"nested": {"origin": "original"}},
     )
-    state = SimpleNamespace(steps=[Step(1, call, result)], task={}, _stop_reason="done")
+    state = SimpleNamespace(
+        steps=[Step(1, call, result, metadata={"nested": {"origin": "original"}})],
+        task={},
+        _stop_reason="done",
+    )
     expected_args = dict(call.args)
     full_step = state.steps[0].to_full_dict()
     assert full_step["tool_result"]["data"] == data
@@ -121,6 +125,7 @@ def test_saved_trajectory_preserves_complete_tool_evidence(tmp_path, terminal, d
     result.data = "changed after capture"
     call.metadata["nested"]["origin"] = "changed after capture"
     result.metadata["nested"]["origin"] = "changed after capture"
+    state.steps[0].metadata["nested"]["origin"] = "changed after capture"
     sink.flush()
 
     trajectory = json.loads((tmp_path / "trajectory.json").read_text())
@@ -133,6 +138,7 @@ def test_saved_trajectory_preserves_complete_tool_evidence(tmp_path, terminal, d
         assert saved["tool_result"]["result_key"] == "sha256:original-result"
         assert saved["tool_call"]["metadata"]["nested"]["origin"] == "original"
         assert saved["tool_result"]["metadata"]["nested"]["origin"] == "original"
+        assert saved["metadata"]["nested"]["origin"] == "original"
 
 
 def test_complete_tool_evidence_honors_saved_redaction(tmp_path):

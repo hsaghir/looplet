@@ -86,6 +86,78 @@ def test_evidence_save_preserves_existing_ignore_policy(tmp_path):
     assert policy.read_text() == "*.txt\n"
 
 
+@pytest.mark.parametrize("terminal", [False, True])
+@pytest.mark.parametrize("data", ["large output " * 1000, list(range(100)), None])
+def test_saved_trajectory_preserves_complete_tool_evidence(tmp_path, terminal, data):
+    from types import SimpleNamespace
+
+    sink = ProvenanceSink(dir=tmp_path)
+    recorder = sink.trajectory_hook()
+    call = ToolCall(
+        tool="done" if terminal else "read_source",
+        args={"payload": "complete argument " * 1000},
+        call_id="provider-call-id",
+        metadata={"nested": {"origin": "original"}},
+    )
+    result = ToolResult(
+        tool=call.tool,
+        args_summary="bounded argument summary",
+        data=data,
+        result_key="sha256:original-result",
+        call_id=call.call_id,
+        metadata={"nested": {"origin": "original"}},
+    )
+    state = SimpleNamespace(
+        steps=[Step(1, call, result, metadata={"nested": {"origin": "original"}})],
+        task={},
+        _stop_reason="done",
+    )
+    expected_args = dict(call.args)
+    full_step = state.steps[0].to_full_dict()
+    assert full_step["tool_result"]["data"] == data
+    assert full_step["tool_result"]["call_id"] == "provider-call-id"
+    recorder.pre_loop(state, None, None)
+    recorder.pre_prompt(state, None, None, 1)
+    if not terminal:
+        recorder.post_dispatch(state, None, call, result, 1)
+    recorder.on_loop_end(state, None, None, None)
+    call.args["payload"] = "changed after capture"
+    result.data = "changed after capture"
+    call.metadata["nested"]["origin"] = "changed after capture"
+    result.metadata["nested"]["origin"] = "changed after capture"
+    state.steps[0].metadata["nested"]["origin"] = "changed after capture"
+    sink.flush()
+
+    trajectory = json.loads((tmp_path / "trajectory.json").read_text())
+    step_file = json.loads((tmp_path / "steps/step_01.json").read_text())
+    for saved in (trajectory["steps"][0], step_file):
+        assert saved["tool_call"]["args"] == expected_args
+        assert saved["tool_call"]["call_id"] == "provider-call-id"
+        assert saved["tool_result"]["data"] == data
+        assert saved["tool_result"]["call_id"] == "provider-call-id"
+        assert saved["tool_result"]["result_key"] == "sha256:original-result"
+        assert saved["tool_call"]["metadata"]["nested"]["origin"] == "original"
+        assert saved["tool_result"]["metadata"]["nested"]["origin"] == "original"
+        assert saved["metadata"]["nested"]["origin"] == "original"
+
+
+def test_complete_tool_evidence_honors_saved_redaction(tmp_path):
+    from types import SimpleNamespace
+
+    sink = ProvenanceSink(dir=tmp_path, redact=lambda text: text.replace("PRIVATE", "hidden"))
+    recorder = sink.trajectory_hook()
+    call = ToolCall(tool="source", args={"input": "PRIVATE"})
+    result = ToolResult(tool="source", args_summary="source", data="visible " * 1000 + "PRIVATE")
+    state = SimpleNamespace(steps=[Step(1, call, result)], task={}, _stop_reason="done")
+    recorder.post_dispatch(state, None, call, result, 1)
+    recorder.on_loop_end(state, None, None, None)
+    sink.flush()
+    assert recorder.trajectory.steps[0].tool_result["data"] == result.data
+    for path in (tmp_path / "trajectory.json", tmp_path / "steps/step_01.json"):
+        assert "PRIVATE" not in path.read_text()
+        assert "hidden" in path.read_text()
+
+
 @pytest.mark.parametrize("operation", ["set_conversation_input", "apply_context_compaction"])
 @pytest.mark.parametrize(
     "kind", ["thinking", "redacted_thinking", "reasoning", "provider_extension"]

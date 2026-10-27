@@ -260,7 +260,14 @@ def _write_preset_to_cartridge(
     # need loader-provided resources like ``workspace_config``);
     # ``mcp_servers`` re-spawns the MCP subprocess (whose tool executors
     # are closures that cannot serialise to disk).
+    from looplet.builtin_tools import get_builtin_tool  # noqa: PLC0415
+
     builtin_tool_names = list(getattr(preset, "builtin_tool_names", None) or [])
+    builtin_tool_names.extend(
+        name
+        for name, spec in preset.tools.tool_specs.items()
+        if name not in builtin_tool_names and get_builtin_tool(name) is spec
+    )
     if builtin_tool_names:
         serialized_cfg["builtin_tools"] = builtin_tool_names
     mcp_servers = dict(getattr(preset, "mcp_servers", None) or {})

@@ -766,6 +766,7 @@ def tools_from(
     *,
     include_think: bool = False,
     include_done: bool = False,
+    include_result_tools: bool = False,
     done_name: str = "done",
     done_parameters: dict[str, Any] | None = None,
     validate: bool = False,
@@ -779,6 +780,8 @@ def tools_from(
     ``include_think`` and ``include_done`` add looplet's standard helper
     tools after user tools; ``done_parameters`` customizes the completion
     payload while preserving the decorator-first construction path.
+    ``include_result_tools`` grants read-only access to retained evidence.
+    It adds bounded listing, paged reads, and literal search as native tools.
     Set ``validate=True`` to check top-level types, nullability, and enums
     before effects. Nested schemas and other constraints remain tool-owned.
     The default retains the base registry's argument-name checks.
@@ -798,6 +801,11 @@ def tools_from(
         register_think_tool(registry)
     if include_done:
         register_done_tool(registry, name=done_name, parameters=done_parameters)
+    if include_result_tools:
+        from looplet.builtin_tools.tool_results import SPECS  # noqa: PLC0415
+
+        for spec in SPECS:
+            register(spec)
     return registry
 
 
@@ -1096,6 +1104,8 @@ class BaseToolRegistry:
                 for req_name in spec.requires:
                     if req_name in self._resources:
                         live_ctx.resources[req_name] = self._resources[req_name]
+                    elif req_name == "tool_result_store":
+                        live_ctx.resources[req_name] = self
 
         known_params = spec.parameter_names()
         required = spec.required_parameters()
@@ -1447,6 +1457,47 @@ class BaseToolRegistry:
     def get_result(self, key: str) -> Any:
         """Return a detached original result by its recorded recall key."""
         return deepcopy(self._evidence_results[key])
+
+    def list_results(self, *, offset: int = 0, limit: int = 10) -> dict[str, Any]:
+        """List retained result references without returning their payloads."""
+        from looplet.builtin_tools.tool_results import list_results  # noqa: PLC0415
+
+        return list_results(self._evidence_results, offset=offset, limit=limit)
+
+    def read_result(
+        self, key: str, *, json_pointer: str = "", offset: int = 0, limit: int = 2000
+    ) -> dict[str, Any]:
+        """Read a bounded character page from a retained result or JSON field."""
+        from looplet.builtin_tools.tool_results import read_result  # noqa: PLC0415
+
+        return read_result(
+            self._evidence_results[key],
+            result_key=key,
+            json_pointer=json_pointer,
+            offset=offset,
+            limit=limit,
+        )
+
+    def search_result(
+        self,
+        key: str,
+        query: str,
+        *,
+        json_pointer: str = "",
+        offset: int = 0,
+        limit: int = 5,
+    ) -> dict[str, Any]:
+        """Search retained evidence literally and return bounded match excerpts."""
+        from looplet.builtin_tools.tool_results import search_result  # noqa: PLC0415
+
+        return search_result(
+            self._evidence_results[key],
+            result_key=key,
+            query=query,
+            json_pointer=json_pointer,
+            offset=offset,
+            limit=limit,
+        )
 
     def snapshot_results(self) -> dict[str, Any]:
         """Return JSON-safe stored results for checkpoint persistence.

@@ -361,6 +361,174 @@ async def test_prompt_projection_preserves_original_run_evidence(tmp_path, async
         assert original in Path(projected.data["persisted_output_path"]).read_text()
 
 
+@pytest.mark.parametrize("native_blocks", [False, True])
+def test_provider_tool_results_preserve_retrieval_refs_and_warnings(native_blocks):
+    import json
+    from types import SimpleNamespace
+
+    from looplet.backends import _conversation_messages
+
+    snapshot = {
+        "prompt": "Task",
+        "conversation": {
+            "messages": [
+                {
+                    "role": "assistant",
+                    "metadata": {"origin": "model"},
+                    "content": [
+                        {
+                            "kind": "tool_use",
+                            "data": {
+                                "id": "call-1",
+                                "name": "source",
+                                "input": {},
+                            },
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_result": {
+                        "tool": "source",
+                        "call_id": "call-1",
+                        "data": "bounded preview",
+                        "result_key": "sha256:retained",
+                        "warnings": ["incomplete preview"],
+                    },
+                },
+            ]
+        },
+    }
+    messages = _conversation_messages(
+        SimpleNamespace(_conversation_input=snapshot), "Task", native_blocks=native_blocks
+    )
+    if native_blocks:
+        block = messages[-1]["content"][0]
+        assert block["tool_use_id"] == "call-1"
+        payload = json.loads(block["content"])
+    else:
+        tool_message = next(message for message in messages if message["role"] == "tool")
+        assert tool_message["tool_call_id"] == "call-1"
+        payload = json.loads(tool_message["content"])
+    assert payload["data"] == "bounded preview"
+    assert payload["result_key"] == "sha256:retained"
+    assert payload["warnings"] == ["incomplete preview"]
+
+
+def retained_evidence_source() -> str:
+    return "ordinary evidence\n" * 4000 + "needle=405\n"
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize("cartridge", [False, True])
+async def test_full_result_retrieval_across_loop_forms(tmp_path, asynchronous, native, cartridge):
+    import json
+    import re
+
+    from looplet import AgentPreset, LoopConfig, ProvenanceSink, RunResult, tools_from
+    from looplet.cartridge import cartridge_to_preset, preset_to_cartridge
+    from looplet.checkpoint import FileCheckpointStore
+
+    preset = AgentPreset(
+        config=LoopConfig(
+            max_steps=4, use_native_tools=native, checkpoint_dir=str(tmp_path / "checkpoints")
+        ),
+        hooks=[],
+        tools=tools_from([retained_evidence_source], include_done=True, include_result_tools=True),
+        state=DefaultState(max_steps=4),
+    )
+    if cartridge:
+        bundle = preset_to_cartridge(preset, tmp_path / "agent.cartridge", strict=True)
+        preset.close()
+        preset = cartridge_to_preset(bundle.path)
+
+    class Backend:
+        conversation_mode = "messages"
+
+        def __init__(self):
+            self.calls = 0
+            self.snapshot = None
+            self.result_key = None
+
+        def set_conversation_input(self, snapshot):
+            self.snapshot = snapshot
+
+        def response(self, prompt):
+            self.calls += 1
+            if self.calls == 1:
+                return "retained_evidence_source", {}
+            material = json.dumps(self.snapshot) if native else prompt
+            if self.calls == 2:
+                assert "needle=405" not in material
+                self.result_key = re.search(r"sha256:[a-f0-9]{64}", material).group()
+                return "search_tool_result", {"result_key": self.result_key, "query": "needle="}
+            assert "needle=405" in material
+            if self.calls == 3:
+                return "read_tool_result", {
+                    "result_key": self.result_key,
+                    "offset": 72_000,
+                    "limit": 100,
+                }
+            return "done", {"summary": "405"}
+
+        def generate(self, prompt, **kwargs):
+            assert not native
+            name, args = self.response(prompt)
+            return json.dumps({"tool": name, "args": args})
+
+        def generate_with_tools(self, prompt, **kwargs):
+            assert native
+            assert {"read_tool_result", "search_tool_result", "list_tool_results"} <= {
+                tool["name"] for tool in kwargs["tools"]
+            }
+            name, args = self.response(prompt)
+            return [{"type": "tool_use", "id": f"call-{self.calls}", "name": name, "input": args}]
+
+    class AsyncBackend(Backend):
+        async def generate(self, prompt, **kwargs):
+            return super().generate(prompt, **kwargs)
+
+        async def generate_with_tools(self, prompt, **kwargs):
+            return super().generate_with_tools(prompt, **kwargs)
+
+    backend = AsyncBackend() if asynchronous else Backend()
+    sink = ProvenanceSink(dir=tmp_path / "trace")
+    preset.hooks.append(sink.trajectory_hook())
+    recorded_backend = sink.wrap_llm(backend)
+    with preset:
+        if asynchronous:
+            async for _ in preset.run_async(recorded_backend, task={"goal": "Find needle's value"}):
+                pass
+            result = RunResult.from_state(preset.state)
+        else:
+            result = preset.run_result(recorded_backend, task={"goal": "Find needle's value"})
+        sink.flush()
+        assert result.completed, result.diagnostics()
+        assert backend.calls == 4
+        assert result.steps[0].tool_result.data == retained_evidence_source()
+        assert result.steps[2].tool_result.data["content"] == "needle=405\n"
+        saved = json.loads((tmp_path / "trace/trajectory.json").read_text())
+        assert saved["steps"][0]["tool_result"]["data"] == retained_evidence_source()
+        assert len(saved["llm_calls"]) == 4
+        if native:
+            presented = saved["llm_calls"][1]["capture"]["request"]["conversation_input"]
+            assert backend.result_key in json.dumps(presented)
+            assert "needle=405" not in json.dumps(presented)
+
+    checkpoint = FileCheckpointStore(str(tmp_path / "checkpoints")).load_latest()
+    restored = tools_from([], include_result_tools=True)
+    restored.restore_results(checkpoint.tool_results_store)
+    page = restored.dispatch(
+        ToolCall(
+            tool="read_tool_result",
+            args={"result_key": backend.result_key, "offset": 72_000, "limit": 100},
+        )
+    )
+    assert page.error is None, page.error
+    assert page.data["content"] == "needle=405\n"
+
+
 def _make_step(number: int, tool: str, data: Any) -> Step:
     return Step(
         number=number,
@@ -514,6 +682,19 @@ def test_loopconfig_has_tool_result_persist_dir() -> None:
     assert cfg.tool_result_persist_dir is None
     cfg2 = LoopConfig(tool_result_persist_dir="/tmp/looplet-tool-results")
     assert cfg2.tool_result_persist_dir == "/tmp/looplet-tool-results"
+
+
+def test_tool_result_persistence_reports_utf8_bytes_and_characters(tmp_path: Path) -> None:
+    from looplet.scaffolding import truncate_tool_result
+
+    original = "\U0001f600" * 1000
+    projected = truncate_tool_result(
+        original, max_chars=100, persist_dir=str(tmp_path), persist_threshold=500
+    )
+    saved = Path(projected["persisted_output_path"])
+    assert saved.read_bytes() == original.encode("utf-8")
+    assert projected["persisted_output_size"] == len(original.encode("utf-8"))
+    assert projected["persisted_output_chars"] == len(original)
 
 
 def test_truncate_tool_result_persists_when_threshold_exceeded(tmp_path: Path) -> None:

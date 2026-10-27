@@ -225,6 +225,9 @@ class _RecordingBase:
         self._model_call_context: ContextVar[dict[str, Any] | None] = ContextVar(
             "looplet_model_call_context", default=None
         )
+        self._conversation_input: ContextVar[dict[str, Any] | None] = ContextVar(
+            "looplet_recorded_conversation_input", default=None
+        )
         # Set by a TrajectoryRecorder hook so captured calls link back to
         # the step they happened in; optional.
         self.current_step_num: int | None = None
@@ -266,10 +269,12 @@ class _RecordingBase:
                     "Backend lacks conversation input support",
                     termination_reason="unsupported_context",
                 )
+            self._conversation_input.set(None)
             return None
         detached = json_snapshot(snapshot)
         if self._redact_upstream:
             detached = _redact_value(detached, self._redact, preserve_opaque=True)
+        self._conversation_input.set(json_snapshot(detached))
         return method(detached)
 
     def apply_context_compaction(self, snapshot: dict[str, Any]) -> Any:
@@ -338,6 +343,7 @@ class _RecordingBase:
                             "max_tokens": max_tokens,
                             "tools": tools,
                             "options": options or {},
+                            "conversation_input": self._conversation_input.get(),
                         },
                         "response": response,
                         "provider_request": getattr(self._backend, "last_request", None),
@@ -390,6 +396,7 @@ class _RecordingBase:
     def reset(self) -> None:
         self.calls.clear()
         self.current_step_num = None
+        self._conversation_input.set(None)
 
 
 def _format_prompt_block(call: LLMCall) -> str:
@@ -838,7 +845,9 @@ class TrajectoryRecorder:
             }
         )
         tr_dict = (
-            tool_result.to_dict()
+            tool_result.to_full_dict()
+            if hasattr(tool_result, "to_full_dict")
+            else tool_result.to_dict()
             if hasattr(tool_result, "to_dict")
             else {
                 "tool": getattr(tool_result, "tool", "?"),
@@ -895,11 +904,11 @@ class TrajectoryRecorder:
                 live_tr_meta = getattr(live_tr, "metadata", None) if live_tr is not None else None
                 live_step_meta = getattr(live, "metadata", None)
                 if live_tc_meta:
-                    sr.tool_call["metadata"] = dict(live_tc_meta)
+                    sr.tool_call["metadata"] = json_snapshot(live_tc_meta)
                 if live_tr_meta:
-                    sr.tool_result["metadata"] = dict(live_tr_meta)
+                    sr.tool_result["metadata"] = json_snapshot(live_tr_meta)
                 if live_step_meta:
-                    sr.metadata = dict(live_step_meta)
+                    sr.metadata = json_snapshot(live_step_meta)
         # Sweep ``state.steps`` for any Step that was yielded but not
         # routed through ``post_dispatch`` - notably the ``done`` step,
         # which the loop handles on its own termination path.
@@ -912,7 +921,13 @@ class TrajectoryRecorder:
                 tc = getattr(st, "tool_call", None)
                 tr = getattr(st, "tool_result", None)
                 tc_dict = tc.to_dict() if tc is not None and hasattr(tc, "to_dict") else {}
-                tr_dict = tr.to_dict() if tr is not None and hasattr(tr, "to_dict") else {}
+                tr_dict = (
+                    tr.to_full_dict()
+                    if tr is not None and hasattr(tr, "to_full_dict")
+                    else tr.to_dict()
+                    if tr is not None and hasattr(tr, "to_dict")
+                    else {}
+                )
                 pretty = st.pretty() if hasattr(st, "pretty") else ""
                 llm_indices = []
                 if self._recording_llm is not None:
@@ -938,11 +953,11 @@ class TrajectoryRecorder:
                         timestamp=0.0,
                         duration_ms=0.0,
                         pretty=pretty,
-                        tool_call=tc_dict,
-                        tool_result=tr_dict,
+                        tool_call=json_snapshot(tc_dict),
+                        tool_result=json_snapshot(tr_dict),
                         context_before="",
                         llm_call_indices=llm_indices,
-                        metadata=dict(getattr(st, "metadata", {}) or {}),
+                        metadata=json_snapshot(getattr(st, "metadata", {}) or {}),
                     )
                 )
         self.trajectory.steps.sort(key=lambda s: s.step_num)

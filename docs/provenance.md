@@ -134,6 +134,86 @@ A trace alone does not preserve grader expectations or collected artifacts.
 Use `save_eval_run()` for a grading record that you can reload and reassess.
 See the [Quickstart](quickstart.md#4-capture-the-same-agent) for the complete handoff.
 
+### Full tool results and model context
+
+**Unreleased:** Full evidence and model-visible context have separate representations.
+
+| Surface | Content | Persistence |
+|---|---|---|
+| `state.steps` and yielded `Step` | Complete dispatched `ToolCall` and `ToolResult` objects | In memory |
+| Registry result store | Detached original JSON-compatible output, keyed by `sha256:...` | In memory by default |
+| Checkpoint `tool_results_store` | Snapshot of that result store | Written when checkpointing is configured |
+| Conversation and prompt | Selected, projected history, with previews and result references | Recorded with model calls |
+| `trajectory.json` and `steps/step_NN.json` | Complete tool arguments, data, IDs, warnings, errors, and metadata | Written by sink `flush()` |
+
+`ToolResult.to_dict()` remains a compact view, not a lossless audit serializer.
+It limits direct lists to 20 items and other direct values to 2,000 characters.
+`ToolResult.to_full_dict()` preserves complete result data for evidence capture.
+`Step.to_full_dict()` exposes complete calls and results to custom host trace writers.
+The recorder snapshots full results before later state changes can alter them.
+Explicit redaction still applies to saved evidence.
+
+Prompt projection and context compaction do not delete the registry's retained original.
+`registry.get_result(result_key)` returns a detached copy for host code.
+Checkpoint restoration restores this store for later retrieval.
+`BaseToolRegistry(retain_results=False)` disables registry retention, not trace capture or raw `Step` objects.
+
+Optional `LoopConfig(tool_result_persist_dir=...)` also writes large serialized outputs to `tool-output-<hash>.txt`.
+Its preview includes the path, UTF-8 byte size, and character count.
+This option is unset by default.
+A saved path alone does not grant filesystem access or provide a model tool.
+
+#### Model-accessible retrieval
+
+The host can grant retained-evidence access without granting filesystem or shell access:
+
+```python
+from looplet import tools_from
+
+tools = tools_from(my_tools, include_done=True, include_result_tools=True)
+```
+
+Cartridges select the same built-ins:
+
+```yaml
+builtin_tools:
+  - list_tool_results
+  - read_tool_result
+  - search_tool_result
+```
+
+These are ordinary native tools and also support JSON-text calls.
+They use the current registry, not a global store or arbitrary file paths.
+Hosts can explicitly provide a narrower `tool_result_store` resource.
+Enabling retrieval grants the model access to that store's full retained values.
+Do not enable it when the model may see only redacted previews.
+
+- `list_tool_results(offset=0, limit=10)` discovers references after compaction. The maximum limit is 20.
+- `read_tool_result(result_key, json_pointer="", offset=0, limit=2000)` reads a page. The maximum page is 8,000 characters.
+- `search_tool_result(result_key, query, json_pointer="", offset=0, limit=5)` performs literal search. The maximum is 10 matches.
+
+`json_pointer` follows RFC 6901. For example, `/stdout` selects a command's stdout.
+Strings are read directly. Other selected values use JSON text.
+Offsets count Unicode characters, not UTF-8 bytes.
+Responses include `next_offset`; `null` means no further page or match.
+Search returns bounded excerpts with offsets suitable for a later read.
+Retrieval neither invokes an LLM nor chooses an analytical method.
+
+#### Inspecting the model's view
+
+Inspect each model call's structured `capture.request`, not a raw `Step`, to see its selected input.
+It records the prompt, system prompt, schemas, options, and selected `conversation_input` when available.
+This includes native tool-result previews and their original call IDs.
+`capture.provider_request` contains backend-provided request metadata when the backend exposes it.
+It is not a universal HTTP wire capture.
+The human-readable call files and legacy summary fields can be bounded independently.
+
+Call `sink.flush()` in `finally` to save evidence when a run raises or is canceled.
+Recording is not a write-ahead journal; an abrupt process or host failure can lose unflushed records.
+Use checkpoints for persisted result retention between runs.
+Capture covers values tools return, not output they discarded before returning.
+Use a separate sink for each child loop and retain its parent/run linkage.
+
 ### Structured model-call capture
 
 **Unreleased:** New captures include a `capture` object on each model-call record in
@@ -554,7 +634,7 @@ for i in indices:
 | `timestamp`, `duration_ms` | When the step ran and how long |
 | `pretty` | `Step.pretty()` - `#N ✓ tool(args) → result [Xms]` |
 | `tool_call` | `ToolCall.to_dict()` |
-| `tool_result` | `ToolResult.to_dict()` (truncated safely) |
+| `tool_result` | `ToolResult.to_full_dict()`; complete result data and call identity |
 | `context_before` | The briefing shown to the LLM before this step's prompt |
 | `llm_call_indices` | Into `trajectory.llm_calls` (empty if no recording backend) |
 | `metadata` | Free-form annotations for external hooks; defaults to `{}` |

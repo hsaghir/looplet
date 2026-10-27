@@ -24,6 +24,127 @@ def test_original_results_are_detached_and_retention_is_host_controlled():
     assert unretained.snapshot_results() == {}
 
 
+def test_result_tools_read_search_and_discover_full_retained_evidence():
+    from looplet import ToolCall, tools_from
+
+    text = "unrelated line\n" * 1000 + "answer=405\n"
+    original = {"stdout": text, "a/b": {"~key": [1, 2, 3]}}
+    registry = tools_from([lambda: original], include_result_tools=True)
+    source = registry.dispatch(ToolCall(tool="<lambda>"))
+    key = source.result_key
+    assert key is not None
+
+    def retrieve(name, **args):
+        result = registry.dispatch(ToolCall(tool=name, args=args))
+        assert result.error is None, result.error
+        return result.data
+
+    listed = retrieve("list_tool_results")
+    assert key in [item["result_key"] for item in listed["results"]]
+    page = retrieve(
+        "read_tool_result", result_key=key, json_pointer="/stdout", offset=15_000, limit=100
+    )
+    assert page["content"] == "answer=405\n"
+    assert page["next_offset"] is None
+    assert page["offset_unit"] == "characters"
+    found = retrieve(
+        "search_tool_result", result_key=key, json_pointer="/stdout", query="answer=405"
+    )
+    assert found["matches"][0]["offset"] == 15_000
+    assert "answer=405" in found["matches"][0]["excerpt"]
+    escaped = retrieve("read_tool_result", result_key=key, json_pointer="/a~1b/~0key/2")
+    assert escaped["content"] == "3"
+    assert registry.get_result(key) == original
+
+
+def test_result_tools_are_an_explicit_host_capability():
+    from looplet import tools_from
+
+    assert not {"list_tool_results", "read_tool_result", "search_tool_result"}.intersection(
+        tools_from([]).tool_names
+    )
+
+
+def test_result_tools_preserve_unicode_and_page_continuations():
+    from looplet import ToolCall, tools_from
+
+    original = "row-\U0001f600\n" * 400
+    registry = tools_from([lambda: original], include_result_tools=True)
+    key = registry.dispatch(ToolCall(tool="<lambda>")).result_key
+    parts = []
+    offset = 0
+    while True:
+        page = registry.read_result(key, offset=offset, limit=37)
+        parts.append(page["content"])
+        assert page["total_chars"] == len(original)
+        if page["next_offset"] is None:
+            break
+        offset = page["next_offset"]
+    assert "".join(parts) == original
+
+
+def test_result_tools_are_scoped_to_the_current_or_host_selected_store():
+    from looplet import ToolCall, tools_from
+
+    first = tools_from([lambda: "first run only"], include_result_tools=True)
+    key = first.dispatch(ToolCall(tool="<lambda>")).result_key
+    second = tools_from([], include_result_tools=True)
+    denied = second.dispatch(ToolCall(tool="read_tool_result", args={"result_key": key}))
+    assert denied.error
+    second.set_resources({"tool_result_store": first})
+    allowed = second.dispatch(ToolCall(tool="read_tool_result", args={"result_key": key}))
+    assert allowed.error is None
+    assert allowed.data["content"] == "first run only"
+
+
+@pytest.mark.parametrize("name", ["read_tool_result", "search_tool_result"])
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("offset", -1),
+        ("offset", True),
+        ("limit", 0),
+        ("limit", 100_000),
+        ("json_pointer", "not/a/pointer"),
+        ("json_pointer", "/bad~2escape"),
+    ],
+)
+def test_result_tools_reject_invalid_or_unbounded_requests(name, field, value):
+    from looplet import ToolCall, tools_from
+
+    registry = tools_from([lambda: {"stdout": "evidence"}], include_result_tools=True)
+    key = registry.dispatch(ToolCall(tool="<lambda>")).result_key
+    args = {"result_key": key, field: value}
+    if name == "search_tool_result":
+        args["query"] = "evidence"
+    result = registry.dispatch(ToolCall(tool=name, args=args))
+    assert result.error
+    assert registry.get_result(key) == {"stdout": "evidence"}
+
+
+def test_result_tools_search_is_literal_and_resumable():
+    from looplet import ToolCall, tools_from
+
+    registry = tools_from([lambda: "a.*b.*c.*"], include_result_tools=True)
+    key = registry.dispatch(ToolCall(tool="<lambda>")).result_key
+    first = registry.search_result(key, ".*", limit=1)
+    second = registry.search_result(key, ".*", offset=first["next_offset"], limit=2)
+    assert [match["offset"] for match in first["matches"] + second["matches"]] == [1, 4, 7]
+    assert second["next_offset"] is None
+
+
+def test_result_tools_native_schemas_preserve_required_and_optional_fields():
+    from looplet import tools_from
+
+    schemas = {
+        schema["name"]: schema["input_schema"]
+        for schema in tools_from([], include_result_tools=True).tool_view().schemas
+    }
+    assert schemas["list_tool_results"].get("required", []) == []
+    assert schemas["read_tool_result"]["required"] == ["result_key"]
+    assert schemas["search_tool_result"]["required"] == ["result_key", "query"]
+
+
 # ── ToolSpec tests ────────────────────────────────────────────────
 
 

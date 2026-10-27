@@ -361,7 +361,12 @@ def _conversation_messages(
         result = message.get("tool_result")
         if result is not None:
             call_id = result.get("call_id") or metadata.get("tool_call_id")
-            rendered = json.dumps({"data": result.get("data"), "error": result.get("error")})
+            payload = {"data": result.get("data"), "error": result.get("error")}
+            if result.get("result_key"):
+                payload["result_key"] = result["result_key"]
+            if result.get("warnings"):
+                payload["warnings"] = result["warnings"]
+            rendered = json.dumps(payload)
             if call_id in pending:
                 pending.remove(call_id)
                 messages.append(

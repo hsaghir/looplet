@@ -366,7 +366,7 @@ def _conversation_messages(
                 payload["result_key"] = result["result_key"]
             if result.get("warnings"):
                 payload["warnings"] = result["warnings"]
-            rendered = json.dumps(payload)
+            rendered = json.dumps(payload, ensure_ascii=False)
             if call_id in pending:
                 pending.remove(call_id)
                 messages.append(

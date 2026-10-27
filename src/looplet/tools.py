@@ -481,6 +481,13 @@ class ToolSpec:
     ``host.absolute_path``. An empty list preserves legacy behavior.
     """
 
+    result_is_view: bool = False
+    """Whether this tool returns a bounded view of existing evidence.
+
+    Views are recorded in raw steps and traces, not retained as new source
+    results. Model projections must preserve a view intact or refuse it.
+    """
+
     _accepts_ctx: bool | None = field(default=None, repr=False, compare=False)
     """Cached result of ``inspect.signature(execute)`` for ``ctx`` detection."""
 
@@ -696,6 +703,7 @@ def tool(
     concurrent_safe: bool = False,
     free: bool = False,
     timeout_s: float | None = None,
+    result_is_view: bool = False,
 ) -> ToolSpec: ...
 
 
@@ -708,6 +716,7 @@ def tool(
     concurrent_safe: bool = False,
     free: bool = False,
     timeout_s: float | None = None,
+    result_is_view: bool = False,
 ) -> Callable[[Callable[..., Any]], ToolSpec]: ...
 
 
@@ -719,6 +728,7 @@ def tool(
     concurrent_safe: bool = False,
     free: bool = False,
     timeout_s: float | None = None,
+    result_is_view: bool = False,
 ) -> ToolSpec | Callable[[Callable[..., Any]], ToolSpec]:
     """Create a :class:`ToolSpec` from a Python callable.
 
@@ -753,6 +763,7 @@ def tool(
             concurrent_safe=concurrent_safe,
             free=free,
             timeout_s=timeout_s,
+            result_is_view=result_is_view,
         )
 
     if fn is None:
@@ -1304,12 +1315,14 @@ class BaseToolRegistry:
             )
 
         elapsed = (time.time() - t0) * 1000
-        result_key = self._store_result(call, result_data)
+        result_key, retention_metadata = self._retain_result(call, result_data)
         warns = (
             list(ctx.warnings[warn_start:])
             if ctx is not None and len(ctx.warnings) > warn_start
             else []
         )
+        if retention_metadata:
+            warns.append("Result retention unavailable; original output remains in run evidence.")
 
         return ToolResult(
             tool=call.tool,
@@ -1319,6 +1332,11 @@ class BaseToolRegistry:
             result_key=result_key,
             call_id=call.call_id,
             warnings=warns,
+            metadata={
+                **retention_metadata,
+                **({"result_is_view": True} if spec.result_is_view else {}),
+                **({"render": dict(spec.render)} if spec.render else {}),
+            },
         )
 
     async def async_dispatch(
@@ -1373,12 +1391,16 @@ class BaseToolRegistry:
                 warnings=warnings,
             )
 
-        result_key = self._store_result(call, result_data)
+        result_key, retention_metadata = self._retain_result(call, result_data)
         warnings = (
             list(ctx.warnings[prepared.warning_start :])
             if ctx is not None and len(ctx.warnings) > prepared.warning_start
             else []
         )
+        if retention_metadata:
+            warnings.append(
+                "Result retention unavailable; original output remains in run evidence."
+            )
         return ToolResult(
             tool=call.tool,
             args_summary=self._summarize_args(call),
@@ -1387,6 +1409,11 @@ class BaseToolRegistry:
             result_key=result_key,
             call_id=call.call_id,
             warnings=warnings,
+            metadata={
+                **retention_metadata,
+                **({"result_is_view": True} if spec.result_is_view else {}),
+                **({"render": dict(spec.render)} if spec.render else {}),
+            },
         )
 
     async def async_dispatch_batch(
@@ -1444,10 +1471,24 @@ class BaseToolRegistry:
             offset += len(batch_calls)
         return results
 
+    def _external_result_store(self) -> Any:
+        store = self._resources.get("tool_result_store")
+        return store if callable(getattr(store, "store_result", None)) else None
+
+    def _retain_result(self, call: ToolCall, data: Any) -> tuple[str | None, dict[str, Any]]:
+        try:
+            return self._store_result(call, data), {}
+        except OSError as error:
+            return None, {"retention_error": {"type": type(error).__name__, "message": str(error)}}
+
     def _store_result(self, call: ToolCall, result_data: Any) -> str | None:
         """Retain a detached result independently of its conversation preview."""
-        if not self._retain_results:
+        spec = self._tools.get(call.tool)
+        if not self._retain_results or (spec is not None and spec.result_is_view):
             return None
+        store = self._external_result_store()
+        if store is not None:
+            return store.store_result(result_data)
         snapshot = json_snapshot(result_data)
         payload = json.dumps(snapshot, sort_keys=True).encode("utf-8")
         key = "sha256:" + hashlib.sha256(payload).hexdigest()
@@ -1456,18 +1497,33 @@ class BaseToolRegistry:
 
     def get_result(self, key: str) -> Any:
         """Return a detached original result by its recorded recall key."""
+        store = self._external_result_store()
+        if store is not None:
+            return store.get_result(key)
         return deepcopy(self._evidence_results[key])
 
-    def list_results(self, *, offset: int = 0, limit: int = 10) -> dict[str, Any]:
+    def list_results(
+        self, *, offset: int = 0, limit: int = 10, end_offset: int | None = None
+    ) -> dict[str, Any]:
         """List retained result references without returning their payloads."""
+        store = self._external_result_store()
+        if store is not None:
+            if end_offset is not None:
+                return store.list_results(offset=offset, limit=limit, end_offset=end_offset)
+            return store.list_results(offset=offset, limit=limit)
         from looplet.builtin_tools.tool_results import list_results  # noqa: PLC0415
 
-        return list_results(self._evidence_results, offset=offset, limit=limit)
+        return list_results(
+            self._evidence_results, offset=offset, limit=limit, end_offset=end_offset
+        )
 
     def read_result(
         self, key: str, *, json_pointer: str = "", offset: int = 0, limit: int = 2000
     ) -> dict[str, Any]:
         """Read a bounded character page from a retained result or JSON field."""
+        store = self._external_result_store()
+        if store is not None:
+            return store.read_result(key, json_pointer=json_pointer, offset=offset, limit=limit)
         from looplet.builtin_tools.tool_results import read_result  # noqa: PLC0415
 
         return read_result(
@@ -1488,6 +1544,11 @@ class BaseToolRegistry:
         limit: int = 5,
     ) -> dict[str, Any]:
         """Search retained evidence literally and return bounded match excerpts."""
+        store = self._external_result_store()
+        if store is not None:
+            return store.search_result(
+                key, query, json_pointer=json_pointer, offset=offset, limit=limit
+            )
         from looplet.builtin_tools.tool_results import search_result  # noqa: PLC0415
 
         return search_result(
@@ -1505,10 +1566,17 @@ class BaseToolRegistry:
         Subclasses with their own result store can override this method
         together with :meth:`restore_results`.
         """
+        store = self._external_result_store()
+        if store is not None:
+            return store.snapshot_results()
         return deepcopy(self._evidence_results)
 
     def restore_results(self, snapshot: dict[str, Any]) -> None:
         """Restore detached original outputs from a checkpoint."""
+        store = self._external_result_store()
+        if store is not None:
+            store.restore_results(snapshot)
+            return
         self._evidence_results = json_snapshot(snapshot)
 
     @staticmethod

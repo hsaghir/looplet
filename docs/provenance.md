@@ -148,6 +148,7 @@ See the [Quickstart](quickstart.md#4-capture-the-same-agent) for the complete ha
 
 `ToolResult.to_dict()` remains a compact view, not a lossless audit serializer.
 It limits direct lists to 20 items and other direct values to 2,000 characters.
+Already projected model results are not clipped a second time by this serializer.
 `ToolResult.to_full_dict()` preserves complete result data for evidence capture.
 `Step.to_full_dict()` exposes complete calls and results to custom host trace writers.
 The recorder snapshots full results before later state changes can alter them.
@@ -162,6 +163,37 @@ Optional `LoopConfig(tool_result_persist_dir=...)` also writes large serialized 
 Its preview includes the path, UTF-8 byte size, and character count.
 This option is unset by default.
 A saved path alone does not grant filesystem access or provide a model tool.
+
+#### Bounded Model Views
+
+Native and JSON-text calls share one result projection. The character budget
+counts the serialized envelope, including nested data, the result reference,
+warnings, errors, and JSON escaping. Original tool outputs are not changed.
+
+`LoopConfig.context_inline_per_step_chars` defaults to 3,000 characters.
+Source previews also respect `LOOPLET_TOOL_RESULT_MAX_CHARS` and the existing
+row limit. An explicit `ToolSpec.render["max_chars"]` overrides the per-result
+default; `render["preview"]` selects the source row limit. Cartridge exports
+put these host policies in `runtime.yaml: tool_render_hints`, not `tool.yaml`.
+
+Native result batches share `context_window_total_chars` (20,000 by default).
+The largest previews shrink first, and admitted previews remain stable on later
+turns. Text history uses the same aggregate limit. These are character budgets,
+not exact token counts or a replacement for whole-conversation compaction.
+
+Retrieval tools return views of existing evidence. A view is delivered intact
+or replaced by `result_view_too_large`, without page content or a continuation
+cursor. Retry the same offset with a smaller `limit`. An 8,000-character read
+is an allowed request, not a promise that every configured envelope budget can
+deliver it. Exceptionally small budgets that cannot fit a control envelope
+raise a context overflow instead of silently exceeding the limit.
+
+Custom read/search tools can opt into this contract with
+`@tool(result_is_view=True)` or `ToolSpec(result_is_view=True, ...)`.
+Cartridges use `result_is_view: true` in `tool.yaml`. Views still appear in raw
+steps and traces, but are not retained as new source results. The flag is not
+a privacy control: the tool owner must ensure it really returns a view and
+that the model has authority to inspect its underlying evidence.
 
 #### Model-accessible retrieval
 
@@ -188,7 +220,7 @@ Hosts can explicitly provide a narrower `tool_result_store` resource.
 Enabling retrieval grants the model access to that store's full retained values.
 Do not enable it when the model may see only redacted previews.
 
-- `list_tool_results(offset=0, limit=10)` discovers references after compaction. The maximum limit is 20.
+- `list_tool_results(offset=0, limit=10, end_offset=None)` discovers references after compaction. The maximum limit is 20.
 - `read_tool_result(result_key, json_pointer="", offset=0, limit=2000)` reads a page. The maximum page is 8,000 characters.
 - `search_tool_result(result_key, query, json_pointer="", offset=0, limit=5)` performs literal search. The maximum is 10 matches.
 
@@ -198,6 +230,51 @@ Offsets count Unicode characters, not UTF-8 bytes.
 Responses include `next_offset`; `null` means no further page or match.
 Search returns bounded excerpts with offsets suitable for a later read.
 Retrieval neither invokes an LLM nor chooses an analytical method.
+
+Listing returns an `end_offset`. Carry the first page's boundary into subsequent
+calls to finish that catalog even if new source results arrive during paging.
+Listing, reading, and searching do not add their own replies to the catalog.
+A later listing without the boundary can discover newly retained sources.
+
+#### Optional File-Backed Retention
+
+`FileToolResultStore` implements the same result-store resource with opaque
+content-addressed keys. Attach it to the preset so Python and cartridge runs
+receive the same host-selected store:
+
+```python
+from looplet import FileToolResultStore
+
+preset.resources["tool_result_store"] = FileToolResultStore(
+  "./private-tool-results", max_bytes=100_000_000
+)
+preset.tools.set_resources(preset.resources)
+```
+
+Direct registry users can instead call
+`tools.set_resources({"tool_result_store": store})` before running their loop.
+A writable resource receives new source results; a read-only resource can
+continue exposing a narrower host-selected collection without receiving writes.
+Do not share a directory between independent writers. Share one store instance
+for concurrent calls within a process.
+
+Source files and selected serialized views are reused across pages and store
+reopens. `max_bytes` bounds encoded source and cache content, excluding the small
+catalog. It is not a filesystem-wide disk quota. Cache writes are optional;
+when they do not fit, reads can still use the retained source. A source retention
+I/O or quota failure leaves the successful raw tool output intact, omits its
+result key, and adds a visible warning plus `metadata.retention_error`.
+
+The host owns directory selection, permissions, cleanup, and lifetime. Keys
+are references, not secrets or access-control tokens. Enabling retrieval grants
+access to all results in that resource; use a separate store for each authority
+boundary. Files are atomically replaced, but writes are not fsynced and there is
+no write-ahead journal or cross-process writer coordination.
+
+Disk retention does not bound total process memory. Raw steps, provenance,
+checkpoint snapshots, and reading a selected JSON value can still materialize
+full outputs. Checkpoint exports include retained values rather than depending
+only on the continued existence of this directory.
 
 #### Inspecting the model's view
 

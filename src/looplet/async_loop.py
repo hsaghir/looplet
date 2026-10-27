@@ -91,6 +91,7 @@ from looplet.native_tools import NativeToolPolicy, NativeToolUnsupportedError
 from looplet.parse import parse_multi_tool_calls, to_text
 from looplet.prompt_preparation import prepare_prompt_async
 from looplet.recovery_strategies import recovery_aggressive_budget, recovery_clear_old_results
+from looplet.result_projection import project_tool_result
 from looplet.scaffolding import (
     PARSE_RECOVERY_MAX,
     ContextOverflowError,
@@ -101,7 +102,6 @@ from looplet.scaffolding import (
     _native_llm_result,
     _NativeTurnRecovery,
     build_parse_recovery_prompt,
-    truncate_tool_result,
 )
 from looplet.scaffolding import _accepts_kwarg as _sync_accepts_kwarg
 from looplet.scaffolding import (
@@ -747,13 +747,10 @@ async def _async_composable_loop_impl(
         session_log=session_log,
         conversation=_conv,
         typed_turns=config.uses_typed_history,
-        project_tool_result=lambda result: _dc_replace(
+        project_tool_result=lambda result: project_tool_result(
             result,
-            data=truncate_tool_result(
-                result.data,
-                persist_dir=config.tool_result_persist_dir,
-                persist_threshold=_get_persist_threshold(),
-            ),
+            persist_dir=config.tool_result_persist_dir,
+            persist_threshold=_get_persist_threshold(),
         ),
     )
 

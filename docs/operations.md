@@ -171,8 +171,20 @@ storage; it is not an external archive or a substitute for host retention policy
 Configured `tool_result_persist_dir` previews still write large original outputs to disk.
 Compaction does not guarantee that retained evidence is present in the current prompt.
 
+Model-visible envelopes are bounded for nested JSON as well as plain strings.
+Native batches share the context-result budget; retrieval pages arrive intact
+or return an explicit refusal so the model can retry a smaller page.
+Retrieval replies do not become new source results. Hosts can opt into
+`FileToolResultStore` through the existing `tool_result_store` resource,
+with a content quota and reusable serialized views. This does not remove full
+outputs from raw steps, traces, or checkpoints. See
+[result projection and retention](provenance.md#bounded-model-views) for budgets,
+fixed-boundary paging, cartridge policy, authority, and failure semantics.
+
 See the [default-harness dogfood report](default-harness-dogfood.md) for live cases,
 observed failures, artifact bindings, and reproduction commands.
+The [bounded-results qualification](bounded-results-dogfood.md) covers the newer
+envelope, page-delivery, disk-retention, and Analytics compatibility contracts.
 
 ## Context pressure and compaction
 

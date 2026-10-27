@@ -15,6 +15,7 @@ from looplet.context_projection import (
 )
 from looplet.memory import render_memory
 from looplet.prompts import build_prompt
+from looplet.result_projection import project_result_batches
 from looplet.scaffolding import ContextBudgetSnapshot, estimate_prompt_tokens
 from looplet.tools import ToolView
 
@@ -147,6 +148,7 @@ def _finish(
     inputs: _PromptInputs, prompt: str, config: Any, conversation: Any, plan: Any
 ) -> PreparedPrompt:
     kwargs = inputs.kwargs
+    project_result_batches(conversation)
     conversation_prompt = prompt
     if config.uses_typed_history and config.render_messages_override is None:
         history = conversation.continuation_context()

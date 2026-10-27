@@ -159,6 +159,17 @@ The independently graded example exercises both entry paths and compaction:
 python -m looplet.examples.default_harness --scripted --output ./harness-run-001
 ```
 
+The settlement case retrieves evidence beyond a bounded preview, handles an
+oversized page refusal, and independently grades the saved record:
+
+```bash
+python -m looplet.examples.default_harness --scripted --cases evidence --output ./evidence-run-001
+```
+
+Omit `--scripted` and supply `--base-url` and `--models` for a live endpoint.
+See [bounded result views](docs/provenance.md#bounded-model-views) for shared
+native/text budgets, retrieval tools, and optional file-backed retention.
+
 ## Customize what you need
 
 The same loop supports these optional features.

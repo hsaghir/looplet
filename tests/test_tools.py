@@ -65,6 +65,37 @@ def test_result_tools_are_an_explicit_host_capability():
     )
 
 
+def test_result_catalog_does_not_enumerate_its_own_views():
+    from looplet import ToolCall, tools_from
+
+    def source(*, value: str) -> str:
+        return value
+
+    registry = tools_from([source], include_result_tools=True)
+    originals = [
+        registry.dispatch(ToolCall(tool="source", args={"value": value}))
+        for value in ("first evidence", "second evidence")
+    ]
+    for offset, original in enumerate(originals):
+        listed = registry.dispatch(
+            ToolCall(tool="list_tool_results", args={"offset": offset, "limit": 1})
+        )
+        assert listed.error is None
+        assert listed.data["total_results"] == len(originals)
+        assert listed.data["results"][0]["result_key"] == original.result_key
+        expected_next = offset + 1 if offset + 1 < len(originals) else None
+        assert listed.data["next_offset"] == expected_next
+
+    for name in ("read_tool_result", "search_tool_result"):
+        args = {"result_key": originals[0].result_key}
+        if name == "search_tool_result":
+            args["query"] = "evidence"
+        retrieved = registry.dispatch(ToolCall(tool=name, args=args))
+        assert retrieved.error is None
+        assert "evidence" in str(retrieved.data)
+    assert registry.list_results()["total_results"] == len(originals)
+
+
 def test_result_tools_preserve_unicode_and_page_continuations():
     from looplet import ToolCall, tools_from
 
@@ -143,6 +174,96 @@ def test_result_tools_native_schemas_preserve_required_and_optional_fields():
     assert schemas["list_tool_results"].get("required", []) == []
     assert schemas["read_tool_result"]["required"] == ["result_key"]
     assert schemas["search_tool_result"]["required"] == ["result_key", "query"]
+
+
+def test_file_result_store_is_a_writable_host_resource(tmp_path, monkeypatch):
+    from looplet import ToolCall, tools_from
+    from looplet.builtin_tools import tool_results
+    from looplet.result_store import FileToolResultStore
+
+    original = {"nested": {"archive": "row-\U0001f600\r\n" * 4000 + "answer=405\r\n"}}
+    store = FileToolResultStore(str(tmp_path / "evidence"))
+    registry = tools_from([lambda: original], include_result_tools=True)
+    registry.set_resources({"tool_result_store": store})
+    result = registry.dispatch(ToolCall(tool="<lambda>"))
+    assert result.error is None
+    assert result.result_key is not None
+    assert registry.get_result(result.result_key) == original
+    assert store.get_result(result.result_key) == original
+    assert registry.list_results()["total_results"] == 1
+
+    serializations = []
+    original_text = tool_results._text
+
+    def observe_text(data, pointer):
+        if pointer or not isinstance(data, str):
+            serializations.append(pointer)
+        return original_text(data, pointer)
+
+    monkeypatch.setattr(tool_results, "_text", observe_text)
+    page = registry.read_result(result.result_key, json_pointer="/nested/archive", limit=37)
+    assert page["content"] == original["nested"]["archive"][:37]
+    found = registry.search_result(result.result_key, "answer=", json_pointer="/nested/archive")
+    assert "answer=405" in found["matches"][0]["excerpt"]
+    reopened = FileToolResultStore(str(tmp_path / "evidence"))
+    assert reopened.read_result(result.result_key, json_pointer="/nested/archive", limit=37) == page
+    assert serializations == ["/nested/archive"]
+    assert reopened.snapshot_results() == registry.snapshot_results()
+    restored = FileToolResultStore(str(tmp_path / "restored"))
+    restored.restore_results(registry.snapshot_results())
+    assert restored.get_result(result.result_key) == original
+    assert registry.list_results()["total_results"] == 1
+
+
+def test_file_result_store_quota_does_not_discard_successful_tool_output(tmp_path):
+    from looplet import ToolCall, tools_from
+    from looplet.result_store import FileToolResultStore
+
+    original = {"archive": "retained evidence" * 1000}
+    registry = tools_from([lambda: original], include_result_tools=True)
+    registry.set_resources({"tool_result_store": FileToolResultStore(str(tmp_path), max_bytes=32)})
+    result = registry.dispatch(ToolCall(tool="<lambda>"))
+    assert result.error is None
+    assert result.data == original
+    assert result.result_key is None
+    assert result.warnings
+    assert result.metadata["retention_error"]["type"] == "OSError"
+    assert registry.list_results()["total_results"] == 0
+
+
+@pytest.mark.parametrize("key", ["../outside", "sha256:" + "0" * 64])
+def test_file_result_store_never_accepts_model_selected_paths(tmp_path, key):
+    from looplet.result_store import FileToolResultStore
+
+    with pytest.raises((KeyError, ValueError)):
+        FileToolResultStore(str(tmp_path)).get_result(key)
+
+
+@pytest.mark.parametrize("file_backed", [False, True])
+def test_result_listing_can_freeze_its_catalog_boundary(tmp_path, file_backed):
+    from looplet import ToolCall
+    from looplet.result_store import FileToolResultStore
+    from looplet.tools import BaseToolRegistry
+
+    store = FileToolResultStore(str(tmp_path)) if file_backed else BaseToolRegistry()
+
+    def retain(value):
+        if file_backed:
+            return store.store_result(value)
+        return store._store_result(ToolCall(tool="source"), value)
+
+    first_key = retain("first")
+    second_key = retain("second")
+    first = store.list_results(limit=1)
+    assert first["results"][0]["result_key"] == first_key
+    retain("arrived later")
+    second = store.list_results(
+        offset=first["next_offset"], end_offset=first["end_offset"], limit=1
+    )
+    assert second["results"][0]["result_key"] == second_key
+    assert second["total_results"] == 2
+    assert second["next_offset"] is None
+    assert store.list_results()["total_results"] == 3
 
 
 # ── ToolSpec tests ────────────────────────────────────────────────

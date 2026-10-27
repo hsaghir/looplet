@@ -130,6 +130,8 @@ def _render_dataclass_kwargs(instance: Any, imports: set[str]) -> str:
 
     parts: list[str] = []
     for f in _dc.fields(instance):
+        if not f.init:
+            continue
         val = getattr(instance, f.name)
         # Skip fields holding their default - keeps builder readable
         # and matches dataclass __repr__ semantics.

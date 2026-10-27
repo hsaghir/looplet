@@ -167,6 +167,80 @@ def test_stateful_helper_requires_explicit_stateless_capability(capability, nati
 
 @pytest.mark.parametrize("asynchronous", [False, True])
 @pytest.mark.parametrize("cartridge", [False, True])
+@pytest.mark.parametrize("native", [False, True])
+async def test_settlement_evidence_example(tmp_path, asynchronous, cartridge, native):
+    import json
+
+    from looplet import (
+        FileToolResultStore,
+        MockLLMBackend,
+        RunResult,
+        cartridge_to_preset,
+        preset_to_cartridge,
+    )
+    from looplet.backends import _conversation_messages
+    from looplet.examples.default_harness import (
+        build_agent,
+        grade_deliverable,
+        scripted_responses,
+        task_for,
+    )
+    from looplet.testing import _scripted_native_blocks
+
+    requests = []
+
+    class Backend(MockLLMBackend):
+        conversation_mode = "messages"
+
+        def set_conversation_input(self, snapshot):
+            self._conversation_input = snapshot
+
+        def generate(self, prompt, **kwargs):
+            requests.append(prompt)
+            return super().generate(prompt, **kwargs)
+
+        def generate_with_tools(self, prompt, *, tools, **kwargs):
+            requests.append(json.dumps(_conversation_messages(self, prompt, native_blocks=False)))
+            return _scripted_native_blocks(MockLLMBackend.generate(self, prompt, **kwargs))
+
+    class AsyncBackend(Backend):
+        async def generate(self, prompt, **kwargs):
+            return super().generate(prompt, **kwargs)
+
+        async def generate_with_tools(self, prompt, **kwargs):
+            return super().generate_with_tools(prompt, **kwargs)
+
+    preset = build_agent("evidence", tmp_path / "deliverable")
+    preset.config.use_native_tools = native
+    if cartridge:
+        bundle = preset_to_cartridge(preset, tmp_path / "agent.cartridge", strict=True)
+        preset.close()
+        preset = cartridge_to_preset(bundle.path)
+    backend_type = AsyncBackend if asynchronous else Backend
+    backend = backend_type(scripted_responses("evidence"), cycle=False)
+    with preset:
+        if asynchronous:
+            async for _ in preset.run_async(backend, task=task_for("evidence")):
+                pass
+            result = RunResult.from_state(preset.state)
+        else:
+            result = preset.run_result(backend, task=task_for("evidence"))
+        assert result.completed, result.diagnostics()
+        assert len(requests) == 6
+        assert "731405" not in requests[1]
+        assert "result_view_too_large" in requests[3]
+        assert "731405" in requests[4]
+        assert grade_deliverable("evidence", tmp_path / "deliverable")["passed"]
+        source = result.steps[0].tool_result
+        assert len(source.data["body"]) > 200_000
+        assert preset.tools.get_result(source.result_key) == source.data
+        reopened = FileToolResultStore(str(tmp_path / "tool-results"))
+        assert reopened.get_result(source.result_key) == source.data
+        assert [step.tool_call.args["limit"] for step in result.steps[2:4]] == [8000, 1000]
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("cartridge", [False, True])
 async def test_small_context_handles_batched_large_sources(tmp_path, asynchronous, cartridge):
     from looplet import RunResult, cartridge_to_preset, preset_to_cartridge
     from looplet.examples.default_harness import (
@@ -224,6 +298,9 @@ async def test_small_context_handles_batched_large_sources(tmp_path, asynchronou
             return super().generate_with_tools(prompt, **kwargs)
 
     preset = build_agent("invoices", tmp_path / "deliverable")
+    preset.config.context_inline_per_step_chars = 40_000
+    preset.config.context_window_total_chars = 100_000
+    preset.tools.tool_specs["read_invoice_batch"].render = {"max_chars": 40_000}
     if cartridge:
         bundle = preset_to_cartridge(preset, tmp_path / "agent.cartridge", strict=True)
         preset.close()
@@ -274,6 +351,9 @@ async def test_native_small_context_compacts_without_losing_raw_evidence(tmp_pat
     backend_type = AsyncMessagesBackend if asynchronous else MessagesBackend
     backend = backend_type(scripted_responses("invoices"), cycle=False)
     preset = build_agent("invoices", tmp_path / "deliverable")
+    preset.config.context_inline_per_step_chars = 40_000
+    preset.config.context_window_total_chars = 100_000
+    preset.tools.tool_specs["read_invoice_batch"].render = {"max_chars": 40_000}
     observer = EventObserver()
     preset.hooks.append(observer)
     with preset:
@@ -419,6 +499,100 @@ def retained_evidence_source() -> str:
     return "ordinary evidence\n" * 4000 + "needle=405\n"
 
 
+def retained_evidence_view() -> dict:
+    return {"content": "view-data" * 200, "next_offset": 1800}
+
+
+def test_source_projection_honors_legacy_limits_without_clipping_views(monkeypatch):
+    from looplet.result_projection import payload_text, project_tool_result
+
+    monkeypatch.setattr(context_budget, "TOOL_RESULT_MAX_CHARS", 500)
+    monkeypatch.setattr(context_budget, "TOOL_RESULT_MAX_ROWS", 2)
+    source = ToolResult(tool="source", args_summary="", data={"body": "x" * 4000})
+    assert len(payload_text(project_tool_result(source))) <= 500
+    rows = ToolResult(tool="rows", args_summary="", data=[1, 2, 3, 4])
+    assert project_tool_result(rows).data["rows"] == [1, 2]
+    view = ToolResult(
+        tool="view", args_summary="", data="x" * 1000, metadata={"result_is_view": True}
+    )
+    assert project_tool_result(view).data == view.data
+    source.metadata["render"] = {"max_chars": 2000}
+    assert 1500 < len(payload_text(project_tool_result(source))) <= 2000
+
+
+def test_result_view_contract_and_render_policy_roundtrip(tmp_path):
+    from looplet import (
+        AgentPreset,
+        LoopConfig,
+        cartridge_to_preset,
+        preset_to_cartridge,
+        tool,
+        tools_from,
+    )
+    from looplet.result_projection import project_tool_result
+
+    view = tool(retained_evidence_view, result_is_view=True)
+    view.render = {"max_chars": 1000}
+    preset = AgentPreset(
+        config=LoopConfig(max_steps=2),
+        hooks=[],
+        tools=tools_from([view], include_done=True),
+        state=DefaultState(max_steps=2),
+    )
+    bundle = preset_to_cartridge(preset, tmp_path / "agent.cartridge", strict=True)
+    with cartridge_to_preset(bundle.path) as restored:
+        result = restored.tools.dispatch(ToolCall(tool="retained_evidence_view"))
+        assert result.error is None
+        assert result.metadata["result_is_view"] is True
+        assert result.metadata["render"] == {"max_chars": 1000}
+        assert restored.tools.list_results()["total_results"] == 0
+        projected = project_tool_result(result)
+        assert projected.error.startswith("result_view_too_large")
+        assert projected.data is None
+        assert result.data == retained_evidence_view()
+    assert "tool_render_hints:" in (bundle.path / "runtime.yaml").read_text()
+    assert "render:" not in (bundle.path / "tools/retained_evidence_view/tool.yaml").read_text()
+
+
+def test_file_result_store_resource_roundtrips_with_its_quota(tmp_path):
+    from looplet import (
+        AgentPreset,
+        FileToolResultStore,
+        LoopConfig,
+        cartridge_to_preset,
+        preset_to_cartridge,
+        tools_from,
+    )
+
+    registry = tools_from([retained_evidence_source], include_done=True, include_result_tools=True)
+    preset = AgentPreset(
+        config=LoopConfig(max_steps=3),
+        hooks=[],
+        tools=registry,
+        state=DefaultState(max_steps=3),
+        resources={
+            "tool_result_store": FileToolResultStore(str(tmp_path / "evidence"), max_bytes=100_000)
+        },
+    )
+    bundle = preset_to_cartridge(preset, tmp_path / "agent.cartridge", strict=True)
+    with cartridge_to_preset(bundle.path) as restored:
+        store = restored.tools.resources["tool_result_store"]
+        assert isinstance(store, FileToolResultStore)
+        assert store.max_bytes == 100_000
+        result = restored.tools.dispatch(ToolCall(tool="retained_evidence_source"))
+        assert result.error is None
+        assert store.get_result(result.result_key) == retained_evidence_source()
+        page = restored.tools.dispatch(
+            ToolCall(
+                tool="read_tool_result",
+                args={"result_key": result.result_key, "offset": 72_000, "limit": 100},
+            )
+        )
+        assert page.error is None
+        assert page.data["content"] == "needle=405\n"
+        assert store.list_results()["total_results"] == 1
+
+
 @pytest.mark.parametrize("asynchronous", [False, True])
 @pytest.mark.parametrize("native", [False, True])
 @pytest.mark.parametrize("cartridge", [False, True])
@@ -529,12 +703,233 @@ async def test_full_result_retrieval_across_loop_forms(tmp_path, asynchronous, n
     assert page.data["content"] == "needle=405\n"
 
 
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize("inline_chars", [3000, 12_000])
+async def test_result_view_delivery_is_complete_or_explicitly_refused(
+    asynchronous, native, inline_chars
+):
+    import json
+    import re
+
+    from looplet import LoopConfig, RunResult, async_composable_loop, composable_loop, tools_from
+    from looplet.backends import _conversation_messages
+
+    original = "prefix" * 2000 + "p" * 7900 + "__PAGE_END__" + "tail" * 3000
+    expected_page = original[12_000:20_000]
+
+    def source() -> str:
+        return original
+
+    class Backend:
+        conversation_mode = "messages"
+
+        def __init__(self):
+            self.calls = 0
+            self._conversation_input = None
+
+        def set_conversation_input(self, snapshot):
+            self._conversation_input = snapshot
+
+        def response(self, prompt):
+            self.calls += 1
+            material = (
+                json.dumps(_conversation_messages(self, prompt, native_blocks=False))
+                if native
+                else prompt
+            )
+            if self.calls == 1:
+                return "source", {}
+            if self.calls == 2:
+                result_key = re.search(r"sha256:[a-f0-9]{64}", material).group()
+                return "read_tool_result", {
+                    "result_key": result_key,
+                    "offset": 12_000,
+                    "limit": 8000,
+                }
+            assert expected_page in material or "result_view_too_large" in material
+            if expected_page not in material:
+                assert '"next_offset": 20000' not in material
+            return "done", {"summary": "checked"}
+
+        def generate(self, prompt, **kwargs):
+            name, args = self.response(prompt)
+            return json.dumps({"tool": name, "args": args})
+
+        def generate_with_tools(self, prompt, **kwargs):
+            name, args = self.response(prompt)
+            return [{"type": "tool_use", "id": f"call-{self.calls}", "name": name, "input": args}]
+
+    class AsyncBackend(Backend):
+        async def generate(self, prompt, **kwargs):
+            return super().generate(prompt, **kwargs)
+
+        async def generate_with_tools(self, prompt, **kwargs):
+            return super().generate_with_tools(prompt, **kwargs)
+
+    state = DefaultState(max_steps=3)
+    arguments = dict(
+        llm=AsyncBackend() if asynchronous else Backend(),
+        tools=tools_from([source], include_done=True, include_result_tools=True),
+        state=state,
+        config=LoopConfig(
+            max_steps=3,
+            use_native_tools=native,
+            context_inline_per_step_chars=inline_chars,
+        ),
+    )
+    if asynchronous:
+        async for _ in async_composable_loop(**arguments):
+            pass
+    else:
+        list(composable_loop(**arguments))
+    result = RunResult.from_state(state)
+    assert result.completed, result.diagnostics()
+    assert arguments["llm"].calls == 3
+    assert state.steps[1].tool_result.data["content"] == expected_page
+    assert state.steps[1].tool_result.data["next_offset"] == 20_000
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("native_blocks", [False, True])
+async def test_native_result_batches_are_bounded_and_stable(asynchronous, native_blocks):
+    import json
+
+    from looplet import LoopConfig, RunResult, async_composable_loop, composable_loop, tools_from
+    from looplet.backends import _conversation_messages
+
+    def source(*, batch: int) -> dict:
+        return {"batch": batch, "nested": {"archive": str(batch) * 20_000}}
+
+    class Backend:
+        conversation_mode = "messages"
+
+        def __init__(self):
+            self.requests = []
+            self._conversation_input = None
+
+        def set_conversation_input(self, snapshot):
+            self._conversation_input = snapshot
+
+        def generate(self, prompt, **kwargs):
+            raise AssertionError("Native batch fixture must not use a text fallback")
+
+        def generate_with_tools(self, prompt, **kwargs):
+            self.requests.append(_conversation_messages(self, prompt, native_blocks=native_blocks))
+            if len(self.requests) == 1:
+                return [
+                    {
+                        "type": "tool_use",
+                        "id": f"source-{batch}",
+                        "name": "source",
+                        "input": {"batch": batch},
+                    }
+                    for batch in range(4)
+                ]
+            if len(self.requests) == 2:
+                return [
+                    {"type": "tool_use", "id": "source-4", "name": "source", "input": {"batch": 4}}
+                ]
+            return [
+                {
+                    "type": "tool_use",
+                    "id": "finish",
+                    "name": "done",
+                    "input": {"summary": "checked"},
+                }
+            ]
+
+    class AsyncBackend(Backend):
+        async def generate_with_tools(self, prompt, **kwargs):
+            return super().generate_with_tools(prompt, **kwargs)
+
+    backend = AsyncBackend() if asynchronous else Backend()
+    state = DefaultState(max_steps=6)
+    arguments = dict(
+        llm=backend,
+        tools=tools_from([source], include_done=True),
+        state=state,
+        config=LoopConfig(max_steps=6, context_window_total_chars=5000),
+    )
+    if asynchronous:
+        async for _ in async_composable_loop(**arguments):
+            pass
+    else:
+        list(composable_loop(**arguments))
+    result = RunResult.from_state(state)
+    assert result.completed, result.diagnostics()
+    assert len(backend.requests) == 3
+
+    def tool_payloads(messages):
+        if native_blocks:
+            return [
+                block["content"]
+                for message in messages
+                if isinstance(message.get("content"), list)
+                for block in message["content"]
+                if block.get("type") == "tool_result"
+            ]
+        return [message["content"] for message in messages if message["role"] == "tool"]
+
+    initial = tool_payloads(backend.requests[1])
+    continued = tool_payloads(backend.requests[2])
+    assert len(initial) == 4
+    assert sum(map(len, initial)) <= 5000
+    assert continued[:4] == initial
+    assert all(json.loads(payload)["result_key"] for payload in initial)
+    assert [step.tool_result.data for step in result.steps[:5]] == [
+        source(batch=batch) for batch in range(5)
+    ]
+
+
 def _make_step(number: int, tool: str, data: Any) -> Step:
     return Step(
         number=number,
         tool_call=ToolCall(tool=tool, args={}),
         tool_result=ToolResult(tool=tool, args_summary="", data=data),
     )
+
+
+@pytest.mark.parametrize("limit", [128, 300, 1000])
+@pytest.mark.parametrize("as_view", [False, True])
+def test_result_projection_bounds_escaped_json_and_warning_envelopes(limit, as_view):
+    from looplet.result_projection import payload_text, project_tool_result
+    from looplet.scaffolding import ContextOverflowError
+
+    data = {"nested": [{"text": '\\"\r\n\U0001f600' * 3000}], "next_offset": 12_000}
+    result = ToolResult(
+        tool="source",
+        args_summary="",
+        data=data,
+        result_key="sha256:" + "a" * 64,
+        warnings=["long warning" * 1000],
+        metadata={"result_is_view": as_view},
+    )
+    try:
+        projected = project_tool_result(result, max_chars=limit)
+    except ContextOverflowError:
+        assert limit < 300
+    else:
+        assert len(payload_text(projected)) <= limit
+        if as_view:
+            assert projected.data is None
+            assert projected.error.startswith("result_view_too_large")
+    assert result.data is data
+    assert result.warnings == ["long warning" * 1000]
+
+
+def test_text_context_honors_a_tool_specific_view_budget():
+    from looplet.result_projection import payload_text, project_tool_result
+
+    result = ToolResult(
+        tool="custom_page",
+        args_summary="",
+        data={"content": "p" * 4000, "next_offset": 4000},
+        metadata={"result_is_view": True, "render": {"max_chars": 5000}},
+    )
+    state = DefaultState()
+    state.steps.append(Step(number=1, tool_call=ToolCall(tool="custom_page"), tool_result=result))
+    assert payload_text(project_tool_result(result)) in state.context_summary()
 
 
 # ── Layer 2: context_summary inlines actual data ────────────────

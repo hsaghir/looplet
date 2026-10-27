@@ -59,6 +59,7 @@ from looplet.recovery_strategies import (
 from looplet.recovery_strategies import (
     recovery_clear_old_results as _recovery_clear_old_results,
 )
+from looplet.result_projection import project_tool_result
 from looplet.scaffolding import (
     PARSE_RECOVERY_MAX,
     ContextBudgetSnapshot,
@@ -67,7 +68,6 @@ from looplet.scaffolding import (
     NativeToolStats,
     build_parse_recovery_prompt,
     llm_call_with_retry,
-    truncate_tool_result,
 )
 from looplet.scaffolding import (
     estimate_prompt_tokens as estimate_prompt_tokens,
@@ -2889,13 +2889,10 @@ def _composable_loop_impl(
         session_log=session_log,
         conversation=_conv,
         typed_turns=config.uses_typed_history,
-        project_tool_result=lambda result: _dc_replace(
+        project_tool_result=lambda result: project_tool_result(
             result,
-            data=truncate_tool_result(
-                result.data,
-                persist_dir=config.tool_result_persist_dir,
-                persist_threshold=_get_persist_threshold(),
-            ),
+            persist_dir=config.tool_result_persist_dir,
+            persist_threshold=_get_persist_threshold(),
         ),
     )
 

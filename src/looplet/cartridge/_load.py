@@ -1303,6 +1303,7 @@ def _workspace_to_preset_inner(
                 concurrent_safe=bool(yaml_payload.get("concurrent_safe", False)),
                 free=bool(yaml_payload.get("free", False)),
                 timeout_s=yaml_payload.get("timeout_s"),
+                result_is_view=bool(yaml_payload.get("result_is_view", False)),
                 idempotency=str(yaml_payload.get("idempotency", "unknown")),
                 retryable=bool(yaml_payload.get("retryable", False)),
                 requires=list(yaml_payload.get("requires", []) or []),

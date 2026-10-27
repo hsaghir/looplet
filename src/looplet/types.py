@@ -808,13 +808,11 @@ class DefaultState:
 
         # Lazy import keeps the module-import order stable and lets
         # tests monkeypatch budgets without re-importing types.
-        import json as _json  # noqa: PLC0415
-
         from looplet.context_budget import (  # noqa: PLC0415
-            get_context_inline_per_step_chars,
             get_context_window_steps,
             get_context_window_total_chars,
         )
+        from looplet.result_projection import payload_text, project_tool_result
 
         # Read overrides set by composable_loop from LoopConfig (or
         # fall back to the env-overridable module defaults). This is
@@ -822,7 +820,6 @@ class DefaultState:
         # ``context_window_steps: 20`` in config.yaml without forcing
         # the host process to set the env var at boot time.
         CONTEXT_WINDOW_STEPS = get_context_window_steps()
-        CONTEXT_INLINE_PER_STEP_CHARS = get_context_inline_per_step_chars()
         CONTEXT_WINDOW_TOTAL_CHARS = get_context_window_total_chars()
 
         # Pass 1: render each step in the window with per-step cap.
@@ -830,6 +827,13 @@ class DefaultState:
         # it for anything but stable iteration) so ``int`` covers both
         # the real step number and the ``id(step)`` fallback.
         rendered: list[tuple[int, str]] = []
+        view_numbers: set[int] = set()
+        conversation = getattr(self, "conversation", None)
+        projections = {
+            message.tool_result.call_id: message.tool_result
+            for message in getattr(conversation, "messages", [])
+            if message.tool_result is not None and message.tool_result.call_id is not None
+        }
         recent_steps = self.steps[-CONTEXT_WINDOW_STEPS:] if CONTEXT_WINDOW_STEPS > 0 else []
         for step in recent_steps:
             tr = getattr(step, "tool_result", None)
@@ -839,24 +843,17 @@ class DefaultState:
             tool_name = getattr(tr, "tool", "?")
             args_summary = getattr(tr, "args_summary", "") or ""
             err = getattr(tr, "error", None)
-            data = getattr(tr, "data", None)
             raw_number = getattr(step, "number", None)
             number_int = int(raw_number) if isinstance(raw_number, int) else len(rendered) + 1
             number_label = str(raw_number) if raw_number is not None else str(number_int)
             if err:
                 block = f"S{number_label} ✗ {tool_name}({args_summary}) → ERROR: {err[:200]}"
             else:
-                # Show the actual data so the model can reference it
-                # verbatim on the next turn (e.g. pipe ``commits`` from
-                # ``fetch_commits`` into ``group_by_type``). Pre-truncated
-                # at dispatch time by ``truncate_tool_result``; this layer
-                # caps the *serialized* form for prompt assembly.
-                payload = _json.dumps(data, default=str, ensure_ascii=False)
-                if len(payload) > CONTEXT_INLINE_PER_STEP_CHARS:
-                    keep = CONTEXT_INLINE_PER_STEP_CHARS
-                    payload = (
-                        payload[:keep] + f"\n... [truncated; full result {len(payload)} chars]"
-                    )
+                selected = projections.get(getattr(tr, "call_id", None), tr)
+                projected = project_tool_result(selected)
+                payload = payload_text(projected)
+                if projected.metadata.get("result_is_view"):
+                    view_numbers.add(number_int)
                 block = f"S{number_label} ✓ {tool_name}({args_summary}) → {payload}"
             rendered.append((number_int, block))
 
@@ -873,6 +870,13 @@ class DefaultState:
             # Find the largest block index.
             largest_idx = max(range(len(rendered)), key=lambda i: len(rendered[i][1]))
             num, block = rendered[largest_idx]
+            if num in view_numbers and len(block) > 200:
+                rendered[largest_idx] = (
+                    num,
+                    f"S{num} ERROR: result_view_too_large: request a smaller limit; "
+                    "no page was delivered within the aggregate budget.",
+                )
+                continue
             # If we can still meaningfully shrink it, halve it; otherwise drop oldest.
             if len(block) > 200:
                 shrunk_to = max(200, len(block) // 2)
@@ -1126,7 +1130,9 @@ class ToolResult:
                 d["error_retriable"] = self.error_detail.retriable
         elif self.result_key:
             d["result_key"] = self.result_key
-        if isinstance(self.data, list):
+        if self.metadata.get("model_projection"):
+            d["data"] = self.data
+        elif isinstance(self.data, list):
             d["total_items"] = len(self.data)
             d["data"] = self.data[:20]
         elif isinstance(self.data, dict):

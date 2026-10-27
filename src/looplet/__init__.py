@@ -183,6 +183,7 @@ from looplet.presets import (
 from looplet.prompts import preview_prompt
 from looplet.provenance import ProvenanceSink, TrajectoryRecorder, async_replay_loop, replay_loop
 from looplet.resilient import ResilientBackend, RetryExhausted
+from looplet.result_store import FileToolResultStore
 from looplet.run_records import ArtifactRef, RunEvent, RunRecord, event_from_payload
 from looplet.run_store import FileRunStore, MemoryRunStore, RunStore
 from looplet.runtime import AgentRuntime, RunHandle
@@ -361,6 +362,7 @@ __all__ = [
     "PermissionDecision",
     # ── CHECKPOINTS ─────────────────────────────────────────────
     "FileCheckpointStore",
+    "FileToolResultStore",
     # ── OBSERVABILITY ───────────────────────────────────────────
     "TrajectoryRecorder",
     "ProvenanceSink",

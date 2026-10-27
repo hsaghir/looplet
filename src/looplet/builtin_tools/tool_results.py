@@ -35,14 +35,19 @@ def _text(data: Any, pointer: str) -> str:
     return data if isinstance(data, str) else json.dumps(data, ensure_ascii=False, indent=2)
 
 
-def list_results(results: dict[str, Any], *, offset: int, limit: int) -> dict[str, Any]:
+def list_results(
+    results: dict[str, Any], *, offset: int, limit: int, end_offset: int | None = None
+) -> dict[str, Any]:
     _integer(offset, "offset")
     _integer(limit, "limit", maximum=20)
+    if end_offset is not None:
+        _integer(end_offset, "end_offset")
     if not limit:
         raise ValueError("limit must be positive")
     keys = tuple(results)
+    boundary = len(keys) if end_offset is None else min(len(keys), end_offset)
     entries = []
-    for key in keys[offset : offset + limit]:
+    for key in keys[offset : min(offset + limit, boundary)]:
         data = results[key]
         entry: dict[str, Any] = {"result_key": key, "type": type(data).__name__}
         if isinstance(data, (str, list, dict)):
@@ -51,8 +56,9 @@ def list_results(results: dict[str, Any], *, offset: int, limit: int) -> dict[st
     end = offset + len(entries)
     return {
         "results": entries,
-        "total_results": len(keys),
-        "next_offset": end if end < len(keys) else None,
+        "total_results": boundary,
+        "end_offset": boundary,
+        "next_offset": end if end < boundary else None,
     }
 
 
@@ -115,8 +121,12 @@ def _store(ctx: ToolContext) -> Any:
     return store
 
 
-def _list(*, offset: int = 0, limit: int = 10, ctx: ToolContext) -> dict[str, Any]:
-    return _store(ctx).list_results(offset=offset, limit=limit)
+def _list(
+    *, offset: int = 0, limit: int = 10, end_offset: int | None = None, ctx: ToolContext
+) -> dict[str, Any]:
+    if end_offset is None:
+        return _store(ctx).list_results(offset=offset, limit=limit)
+    return _store(ctx).list_results(offset=offset, limit=limit, end_offset=end_offset)
 
 
 def _read(
@@ -162,7 +172,10 @@ _POINTER = {
 SPECS = (
     ToolSpec(
         name="list_tool_results",
-        description="List retained result references without reading their payloads.",
+        description=(
+            "List retained source references. Continue with next_offset and the returned "
+            "end_offset to keep the catalog boundary fixed while new results arrive."
+        ),
         parameters={
             "offset": {
                 "type": "integer",
@@ -171,10 +184,17 @@ SPECS = (
                 "description": "Zero-based result offset.",
             },
             "limit": {"type": "integer", "minimum": 1, "maximum": 20, "default": 10},
+            "end_offset": {
+                "type": ["integer", "null"],
+                "minimum": 0,
+                "default": None,
+                "description": "Keep the first page's end_offset on subsequent pages.",
+            },
         },
         execute=_list,
         requires=["tool_result_store"],
         concurrent_safe=True,
+        result_is_view=True,
     ),
     ToolSpec(
         name="read_tool_result",
@@ -188,6 +208,7 @@ SPECS = (
         execute=_read,
         requires=["tool_result_store"],
         concurrent_safe=True,
+        result_is_view=True,
     ),
     ToolSpec(
         name="search_tool_result",
@@ -202,5 +223,6 @@ SPECS = (
         execute=_search,
         requires=["tool_result_store"],
         concurrent_safe=True,
+        result_is_view=True,
     ),
 )

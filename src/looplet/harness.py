@@ -10,6 +10,7 @@ from uuid import uuid4
 from looplet.budget import ContextBudget, ThresholdCompactHook
 from looplet.compact import DefaultCompactService
 from looplet.limits import ToolCallBudgetHook
+from looplet.result_store import FileToolResultStore
 from looplet.stagnation import StagnationHook
 
 if TYPE_CHECKING:
@@ -144,6 +145,14 @@ def resolve_harness(
     return ResolvedHarness(effective, resolved_hooks)
 
 
+class _AutomaticResultStore(FileToolResultStore):
+    """Keep completed results readable until the registry starts another run."""
+
+    def __init__(self, directory: str, owner: Any) -> None:
+        super().__init__(directory)
+        self._owner = owner
+
+
 @dataclass
 class _HarnessRun:
     config: Any
@@ -204,13 +213,18 @@ def prepare_harness_run(
     from looplet._storage import DiskBackedDict, DiskBackedList
     from looplet.checkpoint import CheckpointHook, FileCheckpointStore
     from looplet.provenance import ProvenanceSink, TrajectoryRecorder, _recording_backend
-    from looplet.result_store import FileToolResultStore
     from looplet.session import SessionLog
     from looplet.session_tree import SessionTree, SessionTreeRecorder, TreeNode
     from looplet.types import DefaultState
 
     prepared = _HarnessRun(config, list(hooks), llm, state, session_log)
     disabled = set(config.disabled_defaults)
+    if callable(getattr(tools, "set_resources", None)):
+        resources = tools.resources
+        store = resources.get("tool_result_store")
+        if isinstance(store, _AutomaticResultStore) and store._owner is tools:
+            resources.pop("tool_result_store")
+            tools.set_resources(resources)
     if config.harness_profile == "minimal" or "persistence" in disabled or tools is None:
         return prepared
     if not callable(getattr(tools, "set_resources", None)):
@@ -240,13 +254,17 @@ def prepare_harness_run(
     prepared.state = state if state is not None else DefaultState(max_steps=effective.max_steps)
     if type(prepared.state) is DefaultState and "history" not in disabled:
         prepared.state.steps = DiskBackedList(
-            lambda step: step.to_full_dict(), _restore_step, prepared.state.steps
+            lambda step: step.to_full_dict(),
+            _restore_step,
+            prepared.state.steps,
+            preserve_python=True,
+            weight=DefaultState._step_charge,
         )
     prepared.session_log = session_log if session_log is not None else SessionLog()
     resources = tools.resources
+    result_store = None
     if "result_retention" not in disabled and "tool_result_store" not in resources:
-        resources["tool_result_store"] = FileToolResultStore(str(root / "results" / uuid4().hex))
-        tools.set_resources(resources)
+        result_store = _AutomaticResultStore(str(root / "results" / uuid4().hex), tools)
     metadata = getattr(prepared.state, "metadata", None)
     if isinstance(metadata, dict):
         metadata["run_dir"] = str(root)
@@ -281,4 +299,7 @@ def prepare_harness_run(
             prepared.restore_config.append((name, previous, installed))
             setattr(config, name, installed)
     prepared.config = config
+    if result_store is not None:
+        resources["tool_result_store"] = result_store
+        tools.set_resources(resources)
     return prepared

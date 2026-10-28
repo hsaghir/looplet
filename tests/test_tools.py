@@ -202,6 +202,118 @@ def test_file_result_checkpoint_branches_without_loading_all_values(tmp_path, mo
         source.restore_results(snapshot)
 
 
+@pytest.mark.parametrize("size", [20, 40, 400])
+def test_file_result_checkpoint_catalog_grows_once_per_result(tmp_path, size):
+    from looplet.result_store import FileToolResultStore
+
+    store = FileToolResultStore(str(tmp_path))
+    first_snapshot = None
+    first_key = None
+    for number in range(size):
+        key = store.store_result(f"result-{number:04d}")
+        snapshot = store.checkpoint_results()
+        if first_snapshot is None:
+            first_snapshot = snapshot
+            first_key = key
+    catalogs = list((tmp_path / ".snapshots").glob("*.jsonl"))
+    entries = sum(len(path.read_bytes().splitlines()) for path in catalogs)
+    assert entries == size
+    assert len(catalogs) == 1
+    assert store.checkpoint_results() == snapshot
+    assert list(FileToolResultStore.checkpoint_values(first_snapshot)) == [
+        (first_key, "result-0000")
+    ]
+
+
+def test_file_result_checkpoint_only_decodes_new_catalog_entries(tmp_path, monkeypatch):
+    from looplet.result_store import FileToolResultStore
+
+    store = FileToolResultStore(str(tmp_path))
+    decode = store._catalog._decode
+    decoded = []
+
+    def observe_decode(value):
+        decoded.append(value["result_key"])
+        return decode(value)
+
+    monkeypatch.setattr(store._catalog, "_decode", observe_decode)
+    for number in range(100):
+        store.store_result(f"result-{number:04d}")
+        store.checkpoint_results()
+    assert len(decoded) == 100
+    snapshot = store.checkpoint_results()
+    assert store.checkpoint_results() == snapshot
+    assert len(decoded) == 100
+
+
+def test_file_result_checkpoint_keeps_pre_restore_boundaries(tmp_path):
+    from looplet.result_store import FileToolResultStore
+
+    source = FileToolResultStore(str(tmp_path / "source"))
+    first = source.store_result("source first")
+    first_snapshot = source.checkpoint_results()
+    second = source.store_result("source second")
+    second_snapshot = source.checkpoint_results()
+    branch = FileToolResultStore(str(tmp_path / "branch"))
+    previous = branch.store_result("branch before restore")
+    previous_snapshot = branch.checkpoint_results()
+    branch.restore_results(first_snapshot)
+    added = branch.store_result("branch after restore")
+    branch_snapshot = branch.checkpoint_results()
+
+    assert list(FileToolResultStore.checkpoint_values(previous_snapshot)) == [
+        (previous, "branch before restore")
+    ]
+    assert list(FileToolResultStore.checkpoint_values(first_snapshot)) == [(first, "source first")]
+    assert list(FileToolResultStore.checkpoint_values(second_snapshot)) == [
+        (first, "source first"),
+        (second, "source second"),
+    ]
+    assert list(FileToolResultStore.checkpoint_values(branch_snapshot)) == [
+        (first, "source first"),
+        (added, "branch after restore"),
+    ]
+    restored = FileToolResultStore(str(tmp_path / "restored"))
+    restored.restore_results(previous_snapshot)
+    assert restored.get_result(previous) == "branch before restore"
+
+
+def test_file_result_checkpoint_restores_legacy_catalog_reference(tmp_path):
+    import hashlib
+    import json
+
+    from looplet.result_store import FileToolResultStore
+
+    source = FileToolResultStore(str(tmp_path / "source"))
+    key = source.store_result({"legacy": "complete evidence"})
+    catalog = json.dumps(source._catalog[key], sort_keys=True).encode("utf-8") + b"\n"
+    checksum = hashlib.sha256(catalog).hexdigest()
+    directory = tmp_path / "source" / ".snapshots"
+    directory.mkdir()
+    (directory / (checksum + ".jsonl")).write_bytes(catalog)
+    snapshot = {
+        "__looplet_file_result_store_v1__": {"directory": source.directory, "sha256": checksum}
+    }
+    branch = FileToolResultStore(str(tmp_path / "branch"))
+    branch.restore_results(snapshot)
+    assert branch.get_result(key) == {"legacy": "complete evidence"}
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [("bytes", -1), ("bytes", True), ("bytes", 1.5), ("catalog", "../catalog.jsonl")],
+)
+def test_file_result_checkpoint_rejects_invalid_prefix_reference(tmp_path, field, value):
+    from looplet.result_store import FileToolResultStore
+
+    source = FileToolResultStore(str(tmp_path / "source"))
+    source.store_result("complete evidence")
+    snapshot = source.checkpoint_results()
+    snapshot["__looplet_file_result_store_v1__"][field] = value
+    with pytest.raises(ValueError, match="Invalid checkpoint"):
+        list(FileToolResultStore.checkpoint_values(snapshot))
+
+
 @pytest.mark.parametrize("damage", ["catalog", "missing_catalog", "source", "missing_source"])
 def test_file_result_checkpoint_refuses_missing_or_corrupt_evidence(tmp_path, damage):
     from looplet.result_store import FileToolResultStore
@@ -211,7 +323,10 @@ def test_file_result_checkpoint_refuses_missing_or_corrupt_evidence(tmp_path, da
     snapshot = source.checkpoint_results()
     reference = snapshot["__looplet_file_result_store_v1__"]
     path = (
-        tmp_path / "source" / ".snapshots" / (reference["sha256"] + ".jsonl")
+        tmp_path
+        / "source"
+        / ".snapshots"
+        / reference.get("catalog", reference["sha256"] + ".jsonl")
         if "catalog" in damage
         else tmp_path / "source" / (key.removeprefix("sha256:") + ".json")
     )

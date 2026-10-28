@@ -236,3 +236,88 @@ One large active value, caller-held records, explicit exports, and tool implemen
 Temporary spools are not recovery journals or filesystem durability guarantees.
 Checkpoints do not roll back external effects.
 Hosts still own sandboxing, deadlines, credentials, storage limits, and cleanup.
+
+## October 28 Stabilization Qualification
+
+This section covers four findings from a fresh review of public master `114e2f3750f4c028043fcc85cda28aa1e753c1c8`.
+It qualifies automatic store ownership, Python result types, budget accounting, and checkpoint catalog growth.
+Earlier results and artifacts remain separate historical evidence.
+
+An intermediate candidate wheel matched source and installation bytes for all 305 non-metadata members.
+Its SHA-256 is:
+
+```text
+1a692820f57c80c58a9d56ba6abe4bd36f3e81eff16a254bde61ce26533e2ef9
+```
+
+| Check | Coverage | Result |
+| ----- | -------- | ------ |
+| Real-model trials | Both models, Python and cartridge entry, sync and async drivers | 8/8 trials; 16/16 runs |
+| Client requests | SDK retries disabled; bodies retained without headers | 64 sends; 64 recorded calls |
+| Scripted installed wheel | Python 3.13.7; both entry paths and drivers | 4/4 trials; 8/8 runs |
+| Scripted installed wheel | Python 3.11.13; both entry paths and drivers | 4/4 trials; 8/8 runs |
+
+The live models were `gpt-6.1-sol` and `gpt-6.1-terra`, using OpenAI SDK 2.32.0 through the local proxy.
+Text and native protocols alternate across trials; this is not every protocol combination.
+Each trial reuses one registry for two runs with fresh state, configuration metadata, and run directories.
+Each run reads exact `Decimal` amounts, tuple rows, and integer-keyed source mappings.
+An independent file grader checks reconciliation totals of 1975 and 2630 cents.
+The model's completion claim is not the file grader.
+
+Checks verify lossless raw history, independent final snapshots, post-run evidence access, and separate-store checkpoint restore.
+The next run cannot retrieve the previous source key or send its private marker to the model.
+The previous store remains readable through its saved handle.
+Recorded requests omit an unset temperature.
+The host sets six tool steps, eight model calls, 1200 output tokens, and a 32,000-token context window.
+No live trial triggered context compaction; the regression suite separately covers compaction and bounded memory.
+Cartridge conversion is strict but requires the host-owned fixture module, as the exporter reports.
+This is not a self-contained cartridge distribution or an accuracy benchmark.
+
+Focused scaling checks use operation counts instead of wall-clock thresholds.
+At 20, 40, and 400 records, repeated budget reads cause zero history decodes after the fix.
+The failing 400-record control decoded 240,597 steps before the incremental counter was added.
+Per-result checkpoints now write 400 catalog entries, rather than 80,200 cumulative entries.
+Legacy catalog restore, prefix validation, missing evidence, and historical branch checkpoints have regression coverage.
+
+Scripted wheel controls found one additional raw-result copy in assistant-turn checkpoint metadata.
+That checkpoint-only projection now converts result values to JSON without changing live history.
+Sixteen regression combinations cover result size, `Decimal`, native or text mode, and both drivers.
+Observer setup also needed stock retrieval-tool registration without ordinary tool validation.
+A small native context window correctly refused a request; the final host window provides measured headroom.
+These failed controls remain separate; none sent live inference requests.
+The intermediate live cohort retains all successful and recovery requests, not only clean first attempts.
+
+The local evidence bundle is `looplet-harness-stabilization-20261028.vq6bwr6K`.
+Intermediate cohort summaries are `live-qualified-v2/summary.json`, `scripted-qualified-py313-v3/summary.json`, and `scripted-qualified-py311-v2/summary.json`.
+The source remained unchanged during each qualifying cohort.
+Private logs retain provider diagnostics and complete payloads; they are not committed.
+Full release-gate results are recorded in the pull request.
+
+### Final Registry Ownership Qualification
+
+Final review distinguished reuse by the creating registry from an explicit transfer to another registry.
+Automatic stores now record that ownership, so an explicit transfer remains shared under either harness profile.
+The lifecycle and recovery slice passed 60 tests after this refinement.
+An interrupted full gate is diagnostic only and is not counted as passing.
+
+A fresh wheel repeated all four scripted trials on Python 3.11.13 and 3.13.7.
+Both live models repeated all eight trials, completing 16 independently graded runs.
+All 58 captured sends matched recorded calls with SDK retries disabled.
+The same isolation, type, checkpoint, and final-snapshot checks passed.
+The source remained unchanged during each final cohort.
+No live trial triggered context compaction.
+Installed-wheel smoke passed 20 executions, four parity pairs, and four early-exit checks.
+All 305 non-metadata wheel members matched source and installation bytes.
+The final wheel SHA-256 is:
+
+```text
+81fe0efddaa52191f071132179d256b4725c1ae1852b97c5a54ac9293ed16aef
+```
+
+Final summaries are `live-final/summary.json`, `scripted-final-py313/summary.json`, and `scripted-final-py311/summary.json`.
+These final receipts are separate from the intermediate wheel and its cohorts.
+
+Python history uses trusted private temporary pickles; portable evidence remains JSON.
+Values that cannot be pickled require custom state or the history opt-out.
+Checkpoint references still require their source directory and do not roll back external effects.
+Hosts own storage quotas, cleanup, deadlines, credentials, and sandboxing.

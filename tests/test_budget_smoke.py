@@ -22,6 +22,236 @@ pytestmark = pytest.mark.smoke
 
 class TestDefaultHarness:
     @pytest.mark.parametrize("asynchronous", [False, True])
+    async def test_automatic_result_store_is_scoped_to_each_run(self, tmp_path, asynchronous):
+        from looplet import AsyncMockLLMBackend, MockLLMBackend, async_composable_loop, tools_from
+
+        registry = tools_from([], include_done=True)
+        host_resource = object()
+        registry.set_resources({"host": host_resource})
+        stores = []
+        result_keys = []
+
+        def observe_store():
+            store = registry.resources["tool_result_store"]
+            if stores:
+                with pytest.raises(KeyError):
+                    store.get_result(result_keys[-1])
+            result_keys.append(store.store_result({"run": len(stores)}))
+            stores.append(store)
+
+        for run_number in range(2):
+            state = DefaultState(max_steps=1)
+            responses = ['{"tool":"done","args":{"summary":"ok"}}']
+            arguments = dict(
+                tools=registry,
+                state=state,
+                config=LoopConfig(
+                    max_steps=1,
+                    use_native_tools=False,
+                    run_dir=str(tmp_path / str(run_number)),
+                ),
+            )
+            if asynchronous:
+                async for _step in async_composable_loop(
+                    llm=AsyncMockLLMBackend(responses), **arguments
+                ):
+                    observe_store()
+            else:
+                for _step in composable_loop(llm=MockLLMBackend(responses), **arguments):
+                    observe_store()
+            assert state.run_status == "completed"
+            assert registry.resources["host"] is host_resource
+            assert registry.get_result(result_keys[-1]) == {"run": run_number}
+        assert len(stores) == 2
+        assert stores[0] is not stores[1]
+        assert stores[0].get_result(result_keys[0]) == {"run": 0}
+
+    @pytest.mark.parametrize(
+        "profile,disabled",
+        [
+            ("minimal", []),
+            ("execution-v1", ["persistence"]),
+            ("execution-v1", ["result_retention"]),
+        ],
+    )
+    def test_persistence_opt_out_drops_previous_automatic_store(self, tmp_path, profile, disabled):
+        from looplet import tools_from
+        from looplet.harness import prepare_harness_run
+
+        registry = tools_from([], include_done=True)
+        ignored = ["provenance", "checkpointing", "branching"]
+        first = prepare_harness_run(
+            LoopConfig(run_dir=str(tmp_path / "first"), disabled_defaults=ignored),
+            [],
+            None,
+            registry,
+            DefaultState(),
+            None,
+            None,
+        )
+        previous = registry.resources["tool_result_store"]
+        key = previous.store_result("previous run only")
+        first.finish()
+        second = prepare_harness_run(
+            LoopConfig(
+                run_dir=str(tmp_path / "second"),
+                harness_profile=profile,
+                disabled_defaults=ignored + disabled,
+            ),
+            [],
+            None,
+            registry,
+            DefaultState(),
+            None,
+            None,
+        )
+        second.finish()
+        assert "tool_result_store" not in registry.resources
+        with pytest.raises(KeyError):
+            registry.get_result(key)
+        assert previous.get_result(key) == "previous run only"
+
+    @pytest.mark.parametrize("profile", ["minimal", "execution-v1"])
+    def test_transferred_store_is_an_explicit_host_resource(self, tmp_path, profile):
+        from looplet import tools_from
+        from looplet.harness import prepare_harness_run
+
+        source_registry = tools_from([], include_done=True)
+        disabled = ["provenance", "checkpointing", "branching"]
+        source = prepare_harness_run(
+            LoopConfig(run_dir=str(tmp_path / "source"), disabled_defaults=disabled),
+            [],
+            None,
+            source_registry,
+            DefaultState(),
+            None,
+            None,
+        )
+        store = source_registry.resources["tool_result_store"]
+        key = store.store_result("explicitly shared evidence")
+        source.finish()
+        receiving_registry = tools_from([], include_done=True)
+        receiving_registry.set_resources({"tool_result_store": store})
+        receiving = prepare_harness_run(
+            LoopConfig(
+                run_dir=str(tmp_path / "receiving"),
+                harness_profile=profile,
+                disabled_defaults=disabled,
+            ),
+            [],
+            None,
+            receiving_registry,
+            DefaultState(),
+            None,
+            None,
+        )
+        receiving.finish()
+        assert receiving_registry.resources["tool_result_store"] is store
+        assert receiving_registry.get_result(key) == "explicitly shared evidence"
+
+    @pytest.mark.parametrize("asynchronous", [False, True])
+    @pytest.mark.parametrize("include_decimal", [False, True])
+    @pytest.mark.parametrize("native", [False, True])
+    @pytest.mark.parametrize("large", [False, True])
+    async def test_default_history_preserves_python_result_values(
+        self, tmp_path, caplog, asynchronous, include_decimal, native, large
+    ):
+        from decimal import Decimal
+
+        from looplet import (
+            AsyncMockLLMBackend,
+            MockLLMBackend,
+            RunResult,
+            async_composable_loop,
+            tools_from,
+        )
+
+        payload = {"rows": [(1, 1.25)], "keyed": {1: "one"}}
+        if include_decimal:
+            payload["amount"] = Decimal("1.25")
+        if large:
+            payload["archive"] = "Complete source evidence. " * 2000
+
+        def values() -> dict:
+            return payload
+
+        state = DefaultState(max_steps=2)
+        responses = [
+            '{"tool":"values","args":{}}',
+            '{"tool":"done","args":{"summary":"ok"}}',
+        ]
+        arguments = dict(
+            tools=tools_from([values], include_done=True),
+            state=state,
+            config=LoopConfig(
+                max_steps=2,
+                max_model_calls=6,
+                use_native_tools=native,
+                run_dir=str(tmp_path),
+            ),
+            task={"goal": "Read the source values and finish."},
+        )
+        if asynchronous:
+            yielded = [
+                step
+                async for step in async_composable_loop(
+                    llm=AsyncMockLLMBackend(responses), **arguments
+                )
+            ]
+        else:
+            yielded = list(composable_loop(llm=MockLLMBackend(responses), **arguments))
+        assert state.run_status == "completed"
+        assert yielded[0].tool_result.data == payload
+        assert state.steps[0].tool_result.data == payload
+        result = RunResult.from_state(state)
+        assert result.steps[0].tool_result.data == payload
+        assert isinstance(result.steps[0].tool_result.data["rows"][0], tuple)
+        assert list(result.steps[0].tool_result.data["keyed"]) == [1]
+        assert "should_compact hook raised" not in caplog.text
+
+    @pytest.mark.parametrize("size", [20, 40, 400])
+    def test_budget_reads_do_not_decode_history(self, tmp_path, monkeypatch, size):
+        from looplet import Step, ToolCall, ToolResult, harness, tools_from
+
+        decoded = 0
+        restore_step = harness._restore_step
+
+        def count_decode(value):
+            nonlocal decoded
+            decoded += 1
+            return restore_step(value)
+
+        monkeypatch.setattr(harness, "_restore_step", count_decode)
+        state = DefaultState(max_steps=size * 2)
+        prepared = harness.prepare_harness_run(
+            LoopConfig(
+                run_dir=str(tmp_path),
+                disabled_defaults=["provenance", "checkpointing", "branching"],
+            ),
+            [],
+            None,
+            tools_from([], include_done=True),
+            state,
+            None,
+            None,
+        )
+        try:
+            for number in range(1, size + 1):
+                state.steps.append(
+                    Step(
+                        number,
+                        ToolCall("work"),
+                        ToolResult("work", "", {"payload": "x" * 2048}),
+                        metadata={"budget_free": number % 3 == 0},
+                    )
+                )
+                for _check in range(3):
+                    assert state.budget_remaining == size * 2 - number + number // 3
+            assert decoded == 0
+        finally:
+            prepared.finish()
+
+    @pytest.mark.parametrize("asynchronous", [False, True])
     @pytest.mark.parametrize("explicit_service", [False, True])
     async def test_setup_failure_preserves_caller_compact_service(
         self, tmp_path, asynchronous, explicit_service

@@ -234,6 +234,76 @@ class TestStepConstruction:
 # ── AgentState Protocol compliance ───────────────────────────────
 
 
+def test_disk_history_charge_total_tracks_mutations_and_snapshots():
+    from looplet._storage import DiskBackedList
+    from looplet.harness import _restore_step
+    from looplet.types import DefaultState, Step, ToolCall, ToolResult
+
+    def step(number, free=False):
+        return Step(
+            number,
+            ToolCall("work"),
+            ToolResult("work", "", {"number": number}),
+            metadata={"budget_free": free},
+        )
+
+    history = DiskBackedList(
+        lambda value: value.to_full_dict(),
+        _restore_step,
+        [step(1), step(2, True), step(3)],
+        preserve_python=True,
+        weight=DefaultState._step_charge,
+    )
+    state = DefaultState(steps=history, max_steps=100)
+    snapshot = history.snapshot()
+    operations = [
+        lambda: history.append(step(4, True)),
+        lambda: history.insert(1, step(5)),
+        lambda: history.__setitem__(0, step(6, True)),
+        lambda: history.__setitem__(slice(1, 3), [step(7), step(8), step(9, True)]),
+        lambda: history.__setitem__(slice(None, None, 2), [step(10, True)] * 3),
+        lambda: history.__delitem__(slice(None, None, 2)),
+        lambda: history.reverse(),
+        lambda: history.sort(key=lambda value: value.number),
+        lambda: history.pop(),
+        lambda: history.clear(),
+    ]
+    for operation in operations:
+        operation()
+        expected = 100 - sum(DefaultState._step_charge(value) for value in history)
+        assert state.budget_remaining == expected
+    assert len(snapshot) == 3
+    assert snapshot._records.total_weight == 2
+    assert snapshot[0].number == 1
+
+
+def test_cached_step_budget_changes_do_not_serialize_results(monkeypatch):
+    from looplet._storage import DiskBackedList
+    from looplet.harness import _restore_step
+    from looplet.types import DefaultState, Step, ToolCall, ToolResult
+
+    step = Step(1, ToolCall("work"), ToolResult("work", "", {"payload": "complete"}))
+    history = DiskBackedList(
+        lambda value: value.to_full_dict(),
+        _restore_step,
+        [step],
+        weight=DefaultState._step_charge,
+    )
+    state = DefaultState(steps=history, max_steps=4)
+
+    def refuse_serialization(value):
+        raise AssertionError("budget access must not serialize result payloads")
+
+    monkeypatch.setattr(history, "_dumps", refuse_serialization)
+    assert state.budget_remaining == 3
+    step.metadata["budget_free"] = True
+    assert state.budget_remaining == 4
+    state.budget_remaining = 2
+    assert state.budget_remaining == 2
+    step.metadata["budget_free"] = False
+    assert state.budget_remaining == 1
+
+
 class ConcreteAgentState:
     """Minimal concrete implementation of AgentState Protocol."""
 

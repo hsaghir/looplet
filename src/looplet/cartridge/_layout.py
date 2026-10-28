@@ -62,6 +62,7 @@ class CartridgeLayout:
         "reactive_recovery",
         "context_window",
         "max_briefing_tokens",
+        "run_dir",
         "checkpoint_dir",
         "tool_metadata",
         "generate_kwargs",
@@ -134,6 +135,7 @@ class CartridgeLayout:
             "compact_service",
             "cache_policy",
             # Persistence - operational, not behavioural.
+            "run_dir",
             "checkpoint_dir",
             "initial_checkpoint",
             "tool_result_persist_dir",

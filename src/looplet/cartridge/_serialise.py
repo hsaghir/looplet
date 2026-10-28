@@ -286,13 +286,19 @@ def _write_preset_to_cartridge(
     if preset.llm_gateway_enabled is not None:
         serialized_cfg["llm_gateway"] = preset.llm_gateway_enabled
 
+    render_hints = {
+        name: dict(spec.render) for name, spec in preset.tools.tool_specs.items() if spec.render
+    }
+    if render_hints:
+        serialized_cfg["tool_render_hints"] = render_hints
+
     if serialized_cfg:
         # ── Cartridge spec v2 split: contract → config.yaml,
         # runtime knobs → runtime.yaml. Field tiering lives on
         # CartridgeLayout (RUNTIME_TIER_FIELDS / contract_tier_fields).
         # The split is purely about file destination; both files
         # round-trip via the loader's merge in _load.py.
-        runtime_keys = CartridgeLayout.RUNTIME_TIER_FIELDS
+        runtime_keys = CartridgeLayout.RUNTIME_TIER_FIELDS | CartridgeLayout.RUNTIME_TIER_OVERRIDES
         runtime_payload = {k: v for k, v in serialized_cfg.items() if k in runtime_keys}
         contract_payload = {k: v for k, v in serialized_cfg.items() if k not in runtime_keys}
 
@@ -1046,6 +1052,8 @@ def _write_tool(
         yaml_payload["idempotency"] = idempotency
     if retryable:
         yaml_payload["retryable"] = True
+    if spec.result_is_view:
+        yaml_payload["result_is_view"] = True
     # Schema v2 keeps cross-tool categorisation with the consuming policy,
     # not on each tool. Programmatic ToolSpecs may still carry host-side tags,
     # but a cartridge cannot represent them.
@@ -1058,11 +1066,6 @@ def _write_tool(
         if strict:
             raise CartridgeSerializationError(msg)
         warnings.append(msg)
-    # Render hints remain valid tool defaults and can be overridden per host
-    # through runtime.yaml:tool_render_hints.
-    render = getattr(spec, "render", None) or {}
-    if render:
-        yaml_payload["render"] = dict(render)
     (tool_dir / "tool.yaml").write_text(_dump_yaml(yaml_payload) + "\n", encoding="utf-8")
 
     fn = spec.execute

@@ -323,6 +323,7 @@ def _load_single_file_tool(
         concurrent_safe=bool(getattr(module, "__concurrent_safe__", False)),
         free=bool(getattr(module, "__free__", False)),
         timeout_s=getattr(module, "__timeout_s__", None),
+        result_is_view=bool(getattr(module, "__result_is_view__", False)),
         requires=requires_dunder,
         tags=tags_dunder,
         render=render_dunder,

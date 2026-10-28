@@ -1758,6 +1758,8 @@ def _run_case_evals(
             preset.config.max_steps = max_steps
             if hasattr(preset.state, "max_steps"):
                 preset.state.max_steps = max_steps
+        if run_dir is None and "persistence" not in preset.config.disabled_defaults:
+            preset.config.disabled_defaults = [*preset.config.disabled_defaults, "persistence"]
 
         hook = EvalHook(
             evaluators=bundle.graders,

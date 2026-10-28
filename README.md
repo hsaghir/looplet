@@ -114,9 +114,10 @@ For async code, use `async_composable_loop()` with `contextlib.aclosing`.
 Source builds use `execution-v1` in Python loops and loaded cartridges.
 The model chooses its method; the host controls authority and resources.
 
-- Deterministic context compaction, without summary-model calls or filesystem writes.
+- Deterministic context compaction, without summary-model calls.
 - Typed native-tool history without requiring an assistant completion policy.
 - Original tool results retained separately from bounded conversation previews.
+- Disk-backed history and provenance, retained results, checkpoints, and branch metadata under a private run directory.
 
 There is no automatic stagnation nudge or tool quota derived from step count.
 Select `standard-v1` to retain those policies from the earlier source profile,
@@ -141,7 +142,8 @@ for step in composable_loop(
 
 Use `preset.resolve_harness().describe()` for the equivalent cartridge inspection.
 Set `harness_profile="minimal"` to omit all automatic additions, or set
-`disabled_defaults=["compaction", "stagnation", "tool_budget"]` selectively.
+`disabled_defaults` selectively. For example, `["persistence"]` omits automatic
+history spooling, evidence files, result-store binding, checkpoints, and branch recording.
 Explicit services and hooks remain in place.
 
 Context estimates are approximate and compaction can discard details.
@@ -150,7 +152,9 @@ An explicitly selected dispatch guard is not a provider-request or billing ceili
 The base registry records content-addressed originals for `get_result(result_key)`
 and checkpoint result-store round trips. Hosts can disable new retention with
 `BaseToolRegistry(retain_results=False)` or provide their own registry storage.
-Security isolation, permissions, persistence, tracing, and grading remain host choices.
+The host controls security isolation, permissions, grading, and evidence retention lifetime.
+Run files default to `.looplet/runs/<unique-id>`; set `run_dir` to choose their location.
+The state metadata exposes the resolved run and trace directories.
 See [runtime controls](docs/operations.md#standard-agent-harness) for replacement rules.
 
 The independently graded example exercises both entry paths and compaction:
@@ -159,23 +163,38 @@ The independently graded example exercises both entry paths and compaction:
 python -m looplet.examples.default_harness --scripted --output ./harness-run-001
 ```
 
+The settlement case retrieves evidence beyond a bounded preview, handles an
+oversized page refusal, and independently grades the saved record:
+
+```bash
+python -m looplet.examples.default_harness --scripted --cases evidence --output ./evidence-run-001
+```
+
+Omit `--scripted` and supply `--base-url` and `--models` for a live endpoint.
+See [bounded result views](docs/provenance.md#bounded-model-views) for shared
+native/text budgets, retrieval tools, and optional file-backed retention.
+
+Delivery refusals preserve the tool's execution status and provide retry details separately.
+Hosts can also install [request admission](docs/operations.md#host-request-admission)
+with their own token counter. Result-character limits and request-token limits remain separate controls.
+
 ## Customize what you need
 
 The same loop supports these optional features.
 You do not need a new execution engine to use them.
 
-| Need | Feature | Guide |
-| --- | --- | --- |
-| Keep a long run within context limits | Context budgets, summaries, and truncation | [Context management](docs/operations.md#context-pressure-and-compaction) |
-| Add context or change the prompt | Hooks before the model call | [Hooks](docs/hooks.md) |
-| Check or change calls and results | Hooks before and after tools run | [Hooks](docs/hooks.md) |
-| Limit calls or detect repeated actions | Step limits, tool-call limits, and repetition checks | [Run controls](docs/operations.md#stagnation-and-call-limits) |
-| Save prompts, responses, and steps | `ProvenanceSink` | [Capture and replay](docs/provenance.md) |
-| Check files or other results | Collectors and graders | [Tests and graders](docs/evals.md) |
-| Build a fresh agent run for each task | A Python factory returning `AgentPreset` | [Python API](docs/api.md#optional-preset-conveniences) |
-| Store an agent in files | A cartridge directory | [Cartridges](docs/cartridge.md) |
-| Use an agent from a shell | `new`, `run`, `inspect`, and `eval` | [Command-line guide](docs/cli.md) |
-| Connect tools or other hosts | Protocol adapters | [Portability](docs/portability.md) |
+| Need                                   | Feature                                              | Guide                                                                    |
+| -------------------------------------- | ---------------------------------------------------- | ------------------------------------------------------------------------ |
+| Keep a long run within context limits  | Context budgets, summaries, and truncation           | [Context management](docs/operations.md#context-pressure-and-compaction) |
+| Add context or change the prompt       | Hooks before the model call                          | [Hooks](docs/hooks.md)                                                   |
+| Check or change calls and results      | Hooks before and after tools run                     | [Hooks](docs/hooks.md)                                                   |
+| Limit calls or detect repeated actions | Step limits, tool-call limits, and repetition checks | [Run controls](docs/operations.md#stagnation-and-call-limits)            |
+| Save prompts, responses, and steps     | `ProvenanceSink`                                     | [Capture and replay](docs/provenance.md)                                 |
+| Check files or other results           | Collectors and graders                               | [Tests and graders](docs/evals.md)                                       |
+| Build a fresh agent run for each task  | A Python factory returning `AgentPreset`             | [Python API](docs/api.md#optional-preset-conveniences)                   |
+| Store an agent in files                | A cartridge directory                                | [Cartridges](docs/cartridge.md)                                          |
+| Use an agent from a shell              | `new`, `run`, `inspect`, and `eval`                  | [Command-line guide](docs/cli.md)                                        |
+| Connect tools or other hosts           | Protocol adapters                                    | [Portability](docs/portability.md)                                       |
 
 Looplet `0.4.0` includes the Python helpers and unified CLI.
 The guides identify behavior added in `0.4.1`.
@@ -241,15 +260,15 @@ It does not replace those systems.
 
 ## Documentation
 
-| Guide | Purpose |
-| --- | --- |
-| [Quickstart](docs/quickstart.md) | Run, inspect, and stop one loop |
-| [Install](docs/install.md) | Choose a version and configure a model |
-| [Python API](docs/api.md) | Find the classes and functions you need |
-| [Migration](docs/migrate.md) | Replace a loop without new tool implementations |
+| Guide                                     | Purpose                                                 |
+| ----------------------------------------- | ------------------------------------------------------- |
+| [Quickstart](docs/quickstart.md)          | Run, inspect, and stop one loop                         |
+| [Install](docs/install.md)                | Choose a version and configure a model                  |
+| [Python API](docs/api.md)                 | Find the classes and functions you need                 |
+| [Migration](docs/migrate.md)              | Replace a loop without new tool implementations         |
 | [Report-agent tutorial](docs/tutorial.md) | Add a case, collector, and grader to a file-based agent |
-| [Operations](docs/operations.md) | Use async code, retries, cancellation, and checkpoints |
-| [Examples](examples/) | Run complete examples |
+| [Operations](docs/operations.md)          | Use async code, retries, cancellation, and checkpoints  |
+| [Examples](examples/)                     | Run complete examples                                   |
 
 See the [documentation site](https://hsaghir.com/looplet/) for the full guide list.
 

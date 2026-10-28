@@ -19,7 +19,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
 from looplet._backend_contract import TerminalLLMError
 from looplet._backend_contract import attempt_limit as _attempt_limit
@@ -974,7 +974,7 @@ def age_session_entries(
 
 
 def trim_results(
-    steps: list,
+    steps: Sequence,
     per_result_chars: int = RESULT_BUDGET_PER_RESULT,
     aggregate_chars: int = RESULT_BUDGET_AGGREGATE,
 ) -> None:

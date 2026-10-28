@@ -34,7 +34,7 @@ from looplet.blueprints import (
     package_agent_factory_as_bundle,
     wrap_claude_skill_as_bundle,
 )
-from looplet.budget import ContextBudget, ThresholdCompactHook
+from looplet.budget import ContextBudget, RequestTokenBudget, ThresholdCompactHook
 from looplet.bundled import bundled_cartridge_path
 from looplet.bundles import (
     BundleCard,
@@ -183,6 +183,7 @@ from looplet.presets import (
 from looplet.prompts import preview_prompt
 from looplet.provenance import ProvenanceSink, TrajectoryRecorder, async_replay_loop, replay_loop
 from looplet.resilient import ResilientBackend, RetryExhausted
+from looplet.result_store import FileToolResultStore
 from looplet.run_records import ArtifactRef, RunEvent, RunRecord, event_from_payload
 from looplet.run_store import FileRunStore, MemoryRunStore, RunStore
 from looplet.runtime import AgentRuntime, RunHandle
@@ -348,6 +349,7 @@ __all__ = [
     "default_compact_service",
     "run_compact",
     "ContextBudget",
+    "RequestTokenBudget",
     "ThresholdCompactHook",
     "CachePolicy",
     "StaticMemorySource",
@@ -361,6 +363,7 @@ __all__ = [
     "PermissionDecision",
     # ── CHECKPOINTS ─────────────────────────────────────────────
     "FileCheckpointStore",
+    "FileToolResultStore",
     # ── OBSERVABILITY ───────────────────────────────────────────
     "TrajectoryRecorder",
     "ProvenanceSink",

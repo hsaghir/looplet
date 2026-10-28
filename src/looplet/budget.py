@@ -25,7 +25,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Callable, Literal
 
 from looplet.scaffolding import estimate_prompt_tokens
 from looplet.session import SessionLog
@@ -36,6 +36,7 @@ if TYPE_CHECKING:
 __all__ = [
     "BudgetTier",
     "ContextBudget",
+    "RequestTokenBudget",
     "ThresholdCompactHook",
     "BudgetTelemetry",
     "classify_tier",
@@ -53,6 +54,32 @@ BudgetTier = Literal["ok", "warning", "error", "blocking"]
 * ``blocking`` - past the compaction-buffer boundary; reactive
   recovery (prompt-too-long) is imminent if no action is taken.
 """
+
+
+@dataclass(frozen=True)
+class RequestTokenBudget:
+    """Apply a host-owned token counter to a complete prepared request."""
+
+    max_input_tokens: int
+    count_input_tokens: Callable[[dict[str, Any]], int]
+
+    def __post_init__(self) -> None:
+        if type(self.max_input_tokens) is not int or self.max_input_tokens < 1:
+            raise ValueError("max_input_tokens must be a positive integer")
+        if not callable(self.count_input_tokens):
+            raise ValueError("count_input_tokens must be callable")
+
+    def __call__(self, request: dict[str, Any]) -> None:
+        from looplet.backend_contract import TerminalLLMError
+
+        measured = self.count_input_tokens(request)
+        if type(measured) is not int or measured < 0:
+            raise ValueError("count_input_tokens must return a nonnegative integer")
+        if measured > self.max_input_tokens:
+            raise TerminalLLMError(
+                f"Host request budget exceeded: {measured} > {self.max_input_tokens} input tokens",
+                termination_reason="context_overflow",
+            )
 
 
 @dataclass
@@ -154,6 +181,11 @@ def classify_tier(
                     json.dumps(getattr(tool_result, "data", None), default=str, ensure_ascii=False)
                 )
                 total_chars += len(str(getattr(tool_result, "error", "") or ""))
+        serialize = getattr(conversation, "serialize", None)
+        if callable(serialize):
+            total_chars = max(
+                total_chars, len(json.dumps(serialize(), default=str, ensure_ascii=False))
+            )
         est = max(1, total_chars // 4)
     else:
         rendered = session_log.render() if session_log is not None else ""

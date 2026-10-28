@@ -21,6 +21,31 @@ pytestmark = pytest.mark.smoke
 
 
 class TestDefaultHarness:
+    @pytest.mark.parametrize("asynchronous", [False, True])
+    @pytest.mark.parametrize("explicit_service", [False, True])
+    async def test_setup_failure_preserves_caller_compact_service(
+        self, tmp_path, asynchronous, explicit_service
+    ):
+        from looplet import MockLLMBackend, async_composable_loop, tools_from
+
+        blocked = tmp_path / "blocked"
+        blocked.write_text("not a directory")
+        service = TruncateCompact() if explicit_service else None
+        config = LoopConfig(run_dir=str(blocked), compact_service=service)
+        backend = MockLLMBackend([])
+        arguments = dict(llm=backend, tools=tools_from([], include_done=True), config=config)
+        with pytest.raises(FileExistsError):
+            if asynchronous:
+                async for _step in async_composable_loop(**arguments):
+                    pass
+            else:
+                for _step in composable_loop(**arguments):
+                    pass
+        assert config.compact_service is service
+        assert config.run_dir == str(blocked)
+        assert config.checkpoint_dir is None
+        assert backend.calls == 0
+
     @pytest.mark.parametrize("context_window", [4, 4096, 32768, 262144])
     def test_execution_defaults_do_not_prescribe_strategy(self, context_window):
         from looplet import DefaultCompactService, ToolCallBudgetHook, resolve_harness
@@ -105,6 +130,113 @@ class TestDefaultHarness:
             resolve_harness(LoopConfig(harness_profile="standard-v99"))
         with pytest.raises(ValueError, match="disabled_defaults"):
             resolve_harness(LoopConfig(disabled_defaults=["compcat"]))
+
+    def test_persistence_resolution_does_not_create_files(self, tmp_path):
+        from looplet import resolve_harness
+
+        directory = tmp_path / "not-created"
+        resolved = resolve_harness(LoopConfig(run_dir=str(directory)))
+        assert not directory.exists()
+        assert resolved.describe()["persistence"] == {
+            "enabled": True,
+            "run_dir": str(directory),
+            "defaults": ["history", "result_retention", "provenance", "checkpointing", "branching"],
+        }
+
+    @pytest.mark.parametrize("asynchronous", [False, True])
+    @pytest.mark.parametrize(
+        "profile,disabled", [("minimal", []), ("execution-v1", ["persistence"])]
+    )
+    async def test_persistence_opt_out_performs_no_automatic_writes(
+        self, tmp_path, asynchronous, profile, disabled
+    ):
+        from looplet import AsyncMockLLMBackend, MockLLMBackend, async_composable_loop, tools_from
+
+        directory = tmp_path / "not-created"
+        state = DefaultState(max_steps=1)
+        history = state.steps
+        tools = tools_from([], include_done=True)
+        responses = ['{"tool":"done","args":{"summary":"ok"}}']
+        arguments = dict(
+            tools=tools,
+            state=state,
+            config=LoopConfig(
+                max_steps=1,
+                use_native_tools=False,
+                run_dir=str(directory),
+                harness_profile=profile,
+                disabled_defaults=disabled,
+            ),
+        )
+        if asynchronous:
+            async for _ in async_composable_loop(llm=AsyncMockLLMBackend(responses), **arguments):
+                pass
+        else:
+            list(composable_loop(llm=MockLLMBackend(responses), **arguments))
+        assert state.run_status == "completed"
+        assert state.steps is history
+        assert tools.resources == {}
+        assert not directory.exists()
+
+    @pytest.mark.parametrize("asynchronous", [False, True])
+    async def test_explicit_persistence_components_replace_defaults(self, tmp_path, asynchronous):
+        from looplet import AsyncMockLLMBackend, MockLLMBackend, async_composable_loop, tools_from
+        from looplet.provenance import (
+            AsyncRecordingLLMBackend,
+            RecordingLLMBackend,
+            TrajectoryRecorder,
+        )
+        from looplet.result_store import FileToolResultStore
+        from looplet.session_tree import SessionTree, SessionTreeRecorder
+
+        class HostState(DefaultState):
+            pass
+
+        class HostCheckpoint:
+            checkpoint_owner = True
+
+            def __init__(self):
+                self.steps = []
+
+            def post_step(self, state, session_log, step_num):
+                self.steps.append(step_num)
+
+        state = HostState(max_steps=1)
+        history = state.steps
+        tools = tools_from([], include_done=True)
+        store = FileToolResultStore(str(tmp_path / "host-results"))
+        tools.set_resources({"tool_result_store": store})
+        responses = ['{"tool":"done","args":{"summary":"ok"}}']
+        backend = (
+            AsyncRecordingLLMBackend(AsyncMockLLMBackend(responses))
+            if asynchronous
+            else RecordingLLMBackend(MockLLMBackend(responses))
+        )
+        recorder = TrajectoryRecorder(recording_llm=backend)
+        tree = SessionTree()
+        directory = tmp_path / "defaults"
+        config = LoopConfig(max_steps=1, use_native_tools=False, run_dir=str(directory))
+        checkpoint = HostCheckpoint()
+        hooks = [recorder, SessionTreeRecorder(tree), checkpoint]
+        arguments = dict(llm=backend, tools=tools, state=state, config=config, hooks=hooks)
+        if asynchronous:
+            async for _ in async_composable_loop(**arguments):
+                pass
+        else:
+            list(composable_loop(**arguments))
+        assert state.run_status == "completed"
+        assert state.steps is history
+        assert tools.resources["tool_result_store"] is store
+        assert len(recorder.trajectory.steps) == 1
+        assert len(recorder.trajectory.llm_calls) == 1
+        assert len(tree.nodes) == 2
+        assert checkpoint.steps == [1]
+        assert not (directory / "traces").exists()
+        assert not (directory / "checkpoints").exists()
+        assert not (directory / "session.jsonl").exists()
+        assert config.checkpoint_dir is None
+        assert config.initial_checkpoint is None
+        assert len(hooks) == 3
 
     @pytest.mark.parametrize("is_async", [False, True])
     @pytest.mark.parametrize("host_replaces_service", [False, True])
@@ -200,11 +332,13 @@ class TestDefaultHarness:
             assert standard["hooks"] == ["ThresholdCompactHook"]
             preset.config.harness_profile = "minimal"
             preset.config.disabled_defaults = ["stagnation"]
+            preset.config.run_dir = str(tmp_path / "evidence")
             preset_to_cartridge(preset, tmp_path / "exported")
 
         with cartridge_to_preset(tmp_path / "exported") as restored:
             assert restored.config.harness_profile == "minimal"
             assert restored.config.disabled_defaults == ["stagnation"]
+            assert restored.config.run_dir == str(tmp_path / "evidence")
             assert restored.resolve_harness().hooks == []
 
     @pytest.mark.parametrize("is_async", [False, True])

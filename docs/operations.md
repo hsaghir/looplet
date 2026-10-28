@@ -4,18 +4,18 @@ Operational controls should remain separate, composable layers around the
 loop. Add one when a measured failure mode justifies it, and preserve a test
 for the boundary it owns.
 
-| Need | Start with |
-| --- | --- |
-| Async provider calls or async host | `async_composable_loop()` |
-| Transient provider failures | `ResilientBackend` |
-| Growing prompt context | `ContextBudget` plus a compaction service |
-| Repeated or wasteful actions | `StagnationHook`, tool limits, budget warnings |
-| Tool authorization | `PermissionEngine` and `PermissionHook` |
-| Live events | `StreamingHook` and an emitter |
-| Local traces and aggregate metrics | `TracingHook` and `MetricsHook` |
-| Crash recovery | `LoopConfig(checkpoint_dir=...)` |
-| Cooperative stop | `CancelToken` |
-| Host-owned run lifecycle | `AgentRuntime` + `RunStore` |
+| Need                               | Start with                                     |
+| ---------------------------------- | ---------------------------------------------- |
+| Async provider calls or async host | `async_composable_loop()`                      |
+| Transient provider failures        | `ResilientBackend`                             |
+| Growing prompt context             | `ContextBudget` plus a compaction service      |
+| Repeated or wasteful actions       | `StagnationHook`, tool limits, budget warnings |
+| Tool authorization                 | `PermissionEngine` and `PermissionHook`        |
+| Live events                        | `StreamingHook` and an emitter                 |
+| Local traces and aggregate metrics | `TracingHook` and `MetricsHook`                |
+| Crash recovery                     | `LoopConfig(checkpoint_dir=...)`               |
+| Cooperative stop                   | `CancelToken`                                  |
+| Host-owned run lifecycle           | `AgentRuntime` + `RunStore`                    |
 
 ## Asynchronous loops
 
@@ -113,7 +113,9 @@ instructions. Custom message renderers remain authoritative. Inspection includes
 effective step, output, continuation, and model-call limits.
 
 Automatic execution compaction starts at the warning tier, around 60% estimated history pressure.
-The estimate excludes some request overhead. Configure output allowance and context headroom explicitly for small windows.
+The estimate includes serialized selected conversation metadata, warnings, and result references.
+Automatic thresholds reserve `max_tokens`, or 3,000 output tokens when it is unset.
+The estimate still excludes some request overhead. Configure context headroom explicitly for small windows.
 Deterministic summaries retain bounded tool receipts without making a model request.
 Receipt excerpts are data, not verified conclusions or instructions. Full results remain in the registry and raw steps.
 Built-in compaction services change the conversation projection, not those original results.
@@ -152,13 +154,15 @@ hooks = [StagnationHook(threshold=8), ToolCallBudgetHook(max_calls=100)]
 print(resolve_harness(config, hooks).describe())
 ```
 
-`disabled_defaults` accepts `compaction`, `stagnation`, and `tool_budget`.
+`disabled_defaults` accepts `compaction`, `stagnation`, `tool_budget`, `history`,
+`result_retention`, `provenance`, `checkpointing`, `branching`, and `persistence`.
+The last name omits all automatic persistence additions.
 It omits automatic additions, not explicit hooks or services.
 `LoopConfig(harness_profile="minimal")` and `minimal_preset()` omit all automatic additions.
 Unknown profile or capability names fail before model calls. The profile and opt-outs
 round-trip in a cartridge's contract-tier configuration.
 
-Defaults do not create files, configure credentials, add approval prompts, enable tracing,
+Defaults do not configure credentials, add approval prompts, enable telemetry export,
 or provide an OS sandbox. Native tool protocol, registry validation, and reactive recovery
 remain the loop's existing mechanisms. Prompt previews and compaction are lossy, but
 do not mutate original results in run history. `BaseToolRegistry` retains detached,
@@ -166,13 +170,71 @@ content-addressed originals: `result.result_key` identifies the value returned b
 `registry.get_result(key)`. Existing checkpoint result stores preserve those values
 across resume. Lookup and snapshots return detached copies. A host can expose recall
 as a domain tool, replace the registry store, or disable new retention with
-`BaseToolRegistry(retain_results=False)`. Retention consumes host memory and checkpoint
-storage; it is not an external archive or a substitute for host retention policy.
+`BaseToolRegistry(retain_results=False)`. Retention consumes host disk space;
+it is not an external archive or a substitute for host retention policy.
 Configured `tool_result_persist_dir` previews still write large original outputs to disk.
 Compaction does not guarantee that retained evidence is present in the current prompt.
 
+Model-visible envelopes are bounded for nested JSON as well as plain strings.
+Native batches share the context-result budget; retrieval pages arrive intact
+or return an explicit refusal so the model can retry a smaller page.
+Retrieval replies do not become new source results. Default execution binds
+`FileToolResultStore` through the existing `tool_result_store` resource unless
+the host supplies one. It supports a content quota and reusable serialized views. See
+[result projection and retention](provenance.md#bounded-model-views) for budgets,
+fixed-boundary paging, cartridge policy, authority, and failure semantics.
+
 See the [default-harness dogfood report](default-harness-dogfood.md) for live cases,
 observed failures, artifact bindings, and reproduction commands.
+The [bounded-results qualification](bounded-results-dogfood.md) covers the newer
+envelope, page-delivery, disk-retention, and downstream compatibility contracts.
+
+### Default persistence and memory
+
+Starting a standard-profile run creates `.looplet/runs/<unique-id>` unless
+`LoopConfig(run_dir=...)` selects another directory. Resolution alone creates nothing.
+New run directories are private and contain a wildcard Git ignore policy.
+The state metadata reports `run_dir` and `trace_dir` for inspection.
+
+The harness composes existing primitives, without extra model calls or tool retries:
+
+| Primitive       | Default                                                               | Explicit replacement                                                                                            |
+| --------------- | --------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| Raw history     | Lazy disk-backed `DefaultState.steps`                                 | Supply a custom state type or disable `history`.                                                                |
+| Tool evidence   | `FileToolResultStore` in the run directory                            | Bind `tool_result_store`; the supplied resource retains identity.                                               |
+| Provenance      | Recording backend and `TrajectoryRecorder`, saved at run finalization | Supply a `TrajectoryRecorder` and its recording backend.                                                        |
+| Checkpoints     | Per-step files under the run directory                                | Set `checkpoint_dir`, supply `CheckpointHook`, or mark a checkpoint-owning hook with `checkpoint_owner = True`. |
+| Branch topology | `SessionTreeRecorder`, saved as `session.jsonl`                       | Supply a `SessionTreeRecorder`.                                                                                 |
+
+Explicit services, hooks, resource bindings, and checkpoint paths win independently.
+An explicit hook is not removed by a disabled default. Temporary configuration changes
+are restored after the invocation unless host code replaces them during the run.
+`run_dir` round-trips through cartridge `runtime.yaml`, not the agent contract.
+
+History indexing and iteration load records lazily. Assign an edited record back to
+its sequence when it may have left the one-record cache. `RunResult.from_state()`
+creates an independent lazy snapshot for disk-backed history; it does not collect every output.
+The default synchronous return trace includes the last five steps, `steps_total`, and
+`trace_dir`; the complete sequence remains available on the state and in provenance.
+Explicit `build_trace`, full slices, `to_dict()`, and `snapshot_results()` may materialize
+complete history. The runtime's `events()` tuple is also an explicit full export.
+Explicitly restoring a checkpoint into an unbound in-memory registry materializes
+its values after verification. Bind a file store for incremental restore instead.
+Eval runs without an evidence output directory omit automatic persistence;
+the CLI's `--no-save` keeps that explicit opt-out.
+
+Automatic checkpointing uses immutable SHA-256-bound result-catalog references,
+not a full payload copy per step. Keep the referenced source directory for resume.
+Restore an earlier checkpoint into a fresh registry or separate file store to branch
+without replacing later evidence. Missing or corrupt evidence fails restoration.
+An explicit registry snapshot implementation remains authoritative.
+
+This bounds automatic retention of accumulated outputs, not total process RSS.
+One active result, a live batch, selected context, JSON extraction, native database
+buffers, and OS file caches still need memory. Host tools, custom state or hooks,
+and callers collecting every yielded step can retain additional memory.
+No disk quota, cleanup schedule, remote archive, external-system rollback, or
+fsync durability guarantee is installed. The host owns retention and recovery policy.
 
 ## Context pressure and compaction
 
@@ -206,12 +268,12 @@ next response and provider-added framing.
 
 ### Choose a compaction strategy
 
-| Service | Tradeoff |
-| --- | --- |
-| `DefaultCompactService` | Recommended starting chain: prune bulky results, preserve a summary where possible, and fall back safely. |
-| `TruncateCompact(keep_recent=N)` | No model call and deterministic, but discarded middle context is gone. |
-| `SummarizeCompact(keep_recent=N)` | Retains a compact narrative but spends a model call and can omit details. |
-| `PruneToolResults(keep_recent=N)` | Clears old bulky payloads while preserving conversation structure. |
+| Service                           | Tradeoff                                                                                                  |
+| --------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `DefaultCompactService`           | Recommended starting chain: prune bulky results, preserve a summary where possible, and fall back safely. |
+| `TruncateCompact(keep_recent=N)`  | No model call and deterministic, but discarded middle context is gone.                                    |
+| `SummarizeCompact(keep_recent=N)` | Retains a compact narrative but spends a model call and can omit details.                                 |
+| `PruneToolResults(keep_recent=N)` | Clears old bulky payloads while preserving conversation structure.                                        |
 
 Compaction is a harness behavior. Test what must survive it, such as user
 constraints, artifact paths, accepted decisions, and unresolved work. Observe
@@ -222,6 +284,37 @@ The history estimate is intentionally approximate, not an exact full-request bud
 System prompts, tool schemas, provider tokenization, and hidden framing can add pressure.
 Set `context_window` for the actual backend and keep thresholds conservative.
 The separate preflight check and reactive recovery remain in place.
+
+### Host request admission
+
+Result envelopes use portable character limits. An optional backend callback checks the prepared provider request before transmission.
+It receives a detached JSON snapshot after provider options are applied.
+It runs synchronously, including on asynchronous adapters. Awaitable callbacks are rejected without sending a request.
+
+`RequestTokenBudget` compares a host-owned token count with an input limit.
+Supply a provider-aware synchronous counter as `host_count_input_tokens`:
+
+```python
+from looplet import RequestTokenBudget
+
+
+llm.configure_request_admission(
+    RequestTokenBudget(
+        max_input_tokens=90_000,
+        count_input_tokens=host_count_input_tokens,
+    )
+)
+```
+
+The counter must return a nonnegative integer. Counts equal to the limit are admitted.
+An excessive count raises `TerminalLLMError` with `termination_reason="context_overflow"` before the provider request.
+The callback does not compact history or retry the request. No admission policy is installed by default.
+
+The host owns the counter's accuracy, tokenizer, and allowance for provider framing.
+Serialized request length is only an estimate, not exact provider tokenization or billing.
+Responses requests can reference provider-held history through `previous_response_id`.
+The host must account for that history separately; it is not present in the prepared request's serialized length.
+Set output allowance separately. This input limit does not replace model-call ceilings, deadlines, or provider timeouts.
 
 ## Stagnation and call limits
 

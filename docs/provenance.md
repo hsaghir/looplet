@@ -34,15 +34,15 @@ for step in replay_loop(trace_dir, tools=tools):
 
 **Two primitives, one facade, two extras:**
 
-| Class / function | What it does | Implements |
-|---|---|---|
-| `RecordingLLMBackend` | Every call to `generate` / `generate_with_tools` | `LLMBackend` (wraps any backend) |
-| `AsyncRecordingLLMBackend` | Same, async | `AsyncLLMBackend` |
-| `TrajectoryRecorder` | Every loop step, with context-before and linked LLM calls | `LoopHook` |
-| `ProvenanceSink` | Both of the above in a 3-line drop-in | Not a protocol |
-| `replay_loop(dir, ...)` | Rerun the loop against cached LLM output | generator |
-| `async_replay_loop(dir, ...)` | Replay with awaited async tools and hooks | async generator |
-| `python -m looplet show <dir>` | One-page readable summary | CLI |
+| Class / function               | What it does                                              | Implements                       |
+| ------------------------------ | --------------------------------------------------------- | -------------------------------- |
+| `RecordingLLMBackend`          | Every call to `generate` / `generate_with_tools`          | `LLMBackend` (wraps any backend) |
+| `AsyncRecordingLLMBackend`     | Same, async                                               | `AsyncLLMBackend`                |
+| `TrajectoryRecorder`           | Every loop step, with context-before and linked LLM calls | `LoopHook`                       |
+| `ProvenanceSink`               | Both of the above in a 3-line drop-in                     | Not a protocol                   |
+| `replay_loop(dir, ...)`        | Rerun the loop against cached LLM output                  | generator                        |
+| `async_replay_loop(dir, ...)`  | Replay with awaited async tools and hooks                 | async generator                  |
+| `python -m looplet show <dir>` | One-page readable summary                                 | CLI                              |
 
 All of it is zero-dependency and preserves the `NativeToolBackend` capability
 surface of whatever it wraps. Prompts and responses may contain sensitive
@@ -138,16 +138,17 @@ See the [Quickstart](quickstart.md#4-capture-the-same-agent) for the complete ha
 
 **Unreleased:** Full evidence and model-visible context have separate representations.
 
-| Surface | Content | Persistence |
-|---|---|---|
-| `state.steps` and yielded `Step` | Complete dispatched `ToolCall` and `ToolResult` objects | In memory |
-| Registry result store | Detached original JSON-compatible output, keyed by `sha256:...` | In memory by default |
-| Checkpoint `tool_results_store` | Snapshot of that result store | Written when checkpointing is configured |
-| Conversation and prompt | Selected, projected history, with previews and result references | Recorded with model calls |
-| `trajectory.json` and `steps/step_NN.json` | Complete tool arguments, data, IDs, warnings, errors, and metadata | Written by sink `flush()` |
+| Surface                                    | Content                                                            | Persistence                              |
+| ------------------------------------------ | ------------------------------------------------------------------ | ---------------------------------------- |
+| `state.steps` and yielded `Step`           | Complete dispatched `ToolCall` and `ToolResult` objects            | In memory                                |
+| Registry result store                      | Detached original JSON-compatible output, keyed by `sha256:...`    | In memory by default                     |
+| Checkpoint `tool_results_store`            | Snapshot of that result store                                      | Written when checkpointing is configured |
+| Conversation and prompt                    | Selected, projected history, with previews and result references   | Recorded with model calls                |
+| `trajectory.json` and `steps/step_NN.json` | Complete tool arguments, data, IDs, warnings, errors, and metadata | Written by sink `flush()`                |
 
 `ToolResult.to_dict()` remains a compact view, not a lossless audit serializer.
 It limits direct lists to 20 items and other direct values to 2,000 characters.
+Already projected model results are not clipped a second time by this serializer.
 `ToolResult.to_full_dict()` preserves complete result data for evidence capture.
 `Step.to_full_dict()` exposes complete calls and results to custom host trace writers.
 The recorder snapshots full results before later state changes can alter them.
@@ -162,6 +163,47 @@ Optional `LoopConfig(tool_result_persist_dir=...)` also writes large serialized 
 Its preview includes the path, UTF-8 byte size, and character count.
 This option is unset by default.
 A saved path alone does not grant filesystem access or provide a model tool.
+
+#### Bounded Model Views
+
+Native and JSON-text calls share one result projection. The character budget
+counts the serialized envelope, including nested data, the result reference,
+warnings, errors, and JSON escaping. Original tool outputs are not changed.
+
+`LoopConfig.context_inline_per_step_chars` defaults to 3,000 characters.
+Source previews also respect `LOOPLET_TOOL_RESULT_MAX_CHARS` and the existing
+row limit. An explicit `ToolSpec.render["max_chars"]` overrides the per-result
+default; `render["preview"]` selects the source row limit. Cartridge exports
+put these host policies in `runtime.yaml: tool_render_hints`, not `tool.yaml`.
+
+Native result batches share `context_window_total_chars` (20,000 by default).
+The largest previews shrink first, and admitted previews remain stable on later
+turns. Text history uses the same aggregate limit. These are character budgets,
+not exact token counts or a replacement for whole-conversation compaction.
+
+Retrieval tools return views of existing evidence. A view is delivered intact
+or replaced by a delivery refusal, without page content or a continuation cursor.
+`delivery.status` is `"refused"`; `delivery.reason` identifies the boundary, such as `result_view_too_large`.
+`error` still describes tool execution. A successful read does not become an execution failure because its page cannot fit.
+Retry the same offset with a smaller `limit`. When available, `delivery.suggested_limit` accounts for the complete serialized page envelope.
+The hint does not advance the offset or deliver hidden content. An 8,000-character read
+is an allowed request, not a promise that every configured envelope budget can
+deliver it. Exceptionally small budgets that cannot fit a control envelope
+raise a context overflow instead of silently exceeding the limit.
+
+Failed tool results keep their execution error and source reference.
+If the error alone is too large, `delivery.error_truncated` marks its shortened model-facing text.
+Complete errors and warnings remain in raw evidence. Conversation serialization preserves selected warnings, references, and delivery status.
+Text continuation and native messages use the same result envelope.
+Backends can observe original results through `record_tool_receipt(call, result)` before projection.
+This explicit capability does not invoke a host's legacy `record_tool_result(call_id, data, error)` callback.
+
+Custom read/search tools can opt into this contract with
+`@tool(result_is_view=True)` or `ToolSpec(result_is_view=True, ...)`.
+Cartridges use `result_is_view: true` in `tool.yaml`. Views still appear in raw
+steps and traces, but are not retained as new source results. The flag is not
+a privacy control: the tool owner must ensure it really returns a view and
+that the model has authority to inspect its underlying evidence.
 
 #### Model-accessible retrieval
 
@@ -188,7 +230,7 @@ Hosts can explicitly provide a narrower `tool_result_store` resource.
 Enabling retrieval grants the model access to that store's full retained values.
 Do not enable it when the model may see only redacted previews.
 
-- `list_tool_results(offset=0, limit=10)` discovers references after compaction. The maximum limit is 20.
+- `list_tool_results(offset=0, limit=10, end_offset=None)` discovers references after compaction. The maximum limit is 20.
 - `read_tool_result(result_key, json_pointer="", offset=0, limit=2000)` reads a page. The maximum page is 8,000 characters.
 - `search_tool_result(result_key, query, json_pointer="", offset=0, limit=5)` performs literal search. The maximum is 10 matches.
 
@@ -198,6 +240,69 @@ Offsets count Unicode characters, not UTF-8 bytes.
 Responses include `next_offset`; `null` means no further page or match.
 Search returns bounded excerpts with offsets suitable for a later read.
 Retrieval neither invokes an LLM nor chooses an analytical method.
+
+Listing returns an `end_offset`. Carry the first page's boundary into subsequent
+calls to finish that catalog even if new source results arrive during paging.
+Listing, reading, and searching do not add their own replies to the catalog.
+A later listing without the boundary can discover newly retained sources.
+
+#### File-Backed Retention
+
+`FileToolResultStore` implements the same result-store resource with opaque
+content-addressed keys. Standard execution profiles bind one automatically under
+the run directory. Attach an explicit store to the preset to override that default
+for both Python and cartridge runs:
+
+```python
+from looplet import FileToolResultStore
+
+preset.resources["tool_result_store"] = FileToolResultStore(
+  "./private-tool-results", max_bytes=100_000_000
+)
+```
+
+Preset execution binds its resources to the registry before inference.
+Preset resources take precedence over duplicate registry bindings; registry-only resources remain available.
+Enabled retrieval tools require the store's corresponding list, read, or search method to be callable.
+An invalid binding fails before inference. Python and cartridge execution use the same check.
+
+Direct registry users can instead call
+`tools.set_resources({"tool_result_store": store})` before running their loop.
+A writable resource receives new source results; a read-only resource can
+continue exposing a narrower host-selected collection without receiving writes.
+Do not share a directory between independent writers. Share one store instance
+for concurrent calls within a process.
+
+Source files and selected serialized views are reused across pages and store
+reopens. `max_bytes` bounds encoded source and cache content, excluding the small
+catalog. It is not a filesystem-wide disk quota. Cache writes are optional;
+when they do not fit, reads can still use the retained source. A source retention
+I/O or quota failure leaves the successful raw tool output intact, omits its
+result key, and adds a visible warning plus `metadata.retention_error`.
+
+Cached views use incremental reads and literal searches, including across chunk boundaries.
+Unicode offsets and line endings remain unchanged. Late offsets and uncached length checks still require linear scans.
+The first extraction of a selected JSON value can still materialize the complete source.
+
+The host owns directory selection, permissions, cleanup, and lifetime. Keys
+are references, not secrets or access-control tokens. Enabling retrieval grants
+access to all results in that resource; use a separate store for each authority
+boundary. Files are atomically replaced, but writes are not fsynced and there is
+no write-ahead journal or cross-process writer coordination.
+
+The default harness also spools raw steps and provenance to disk and streams
+provenance export. Automatic checkpoints reference an immutable, verified catalog;
+they require the original result directory to remain available. Restoring to a fresh
+store verifies and copies one source value at a time, preserving the original store.
+Explicit `snapshot_results()` still exports complete values for a portable snapshot
+and may allocate memory proportional to all results.
+
+Lazy history and automatic checkpointing avoid retaining every output in RAM.
+This is not a total-process memory limit: one active result, a concurrent batch,
+selected JSON extraction, custom host state, or an explicit full export can allocate
+more. A caller that collects every yielded step also retains those objects.
+See [default persistence and memory](operations.md#default-persistence-and-memory)
+for replacement rules, opt-outs, file lifetime, and the bounded return summary.
 
 #### Inspecting the model's view
 
@@ -502,21 +607,21 @@ llm.save("traces/debug_run/")
 
 Each entry in `llm.calls` exposes:
 
-| Field | Type | Notes |
-|---|---|---|
-| `index` | `int` | 0-based, monotonic |
-| `timestamp` | `float` | Unix time when the call started |
-| `duration_ms` | `float` | Wall-clock around the wrapped call |
-| `method` | `str` | `"generate"` or `"generate_with_tools"` |
-| `prompt` | `str` | Exact text passed in (after redaction/truncation) |
-| `system_prompt` | `str` | Same |
-| `response` | `str \| list[dict]` | String for `generate`; content blocks for `generate_with_tools` |
-| `tools` | `list[dict] \| None` | Tool schemas passed, when applicable |
-| `temperature` | `float` | As passed |
-| `max_tokens` | `int` | As passed |
-| `step_num` | `int \| None` | Set by `TrajectoryRecorder` to link calls to loop steps |
-| `error` | `str \| None` | `f"{type(e).__name__}: {e}"` if the wrapped backend raised |
-| `metadata` | `dict[str, Any]` | Free-form annotations for external hooks; defaults to `{}` |
+| Field           | Type                 | Notes                                                           |
+| --------------- | -------------------- | --------------------------------------------------------------- |
+| `index`         | `int`                | 0-based, monotonic                                              |
+| `timestamp`     | `float`              | Unix time when the call started                                 |
+| `duration_ms`   | `float`              | Wall-clock around the wrapped call                              |
+| `method`        | `str`                | `"generate"` or `"generate_with_tools"`                         |
+| `prompt`        | `str`                | Exact text passed in (after redaction/truncation)               |
+| `system_prompt` | `str`                | Same                                                            |
+| `response`      | `str \| list[dict]`  | String for `generate`; content blocks for `generate_with_tools` |
+| `tools`         | `list[dict] \| None` | Tool schemas passed, when applicable                            |
+| `temperature`   | `float`              | As passed                                                       |
+| `max_tokens`    | `int`                | As passed                                                       |
+| `step_num`      | `int \| None`        | Set by `TrajectoryRecorder` to link calls to loop steps         |
+| `error`         | `str \| None`        | `f"{type(e).__name__}: {e}"` if the wrapped backend raised      |
+| `metadata`      | `dict[str, Any]`     | Free-form annotations for external hooks; defaults to `{}`      |
 
 ### Safety knobs
 
@@ -628,16 +733,16 @@ for i in indices:
 
 ### What a `StepRecord` captures
 
-| Field | Notes |
-|---|---|
-| `step_num` | 1-based loop step index |
-| `timestamp`, `duration_ms` | When the step ran and how long |
-| `pretty` | `Step.pretty()` - `#N ✓ tool(args) → result [Xms]` |
-| `tool_call` | `ToolCall.to_dict()` |
-| `tool_result` | `ToolResult.to_full_dict()`; complete result data and call identity |
-| `context_before` | The briefing shown to the LLM before this step's prompt |
-| `llm_call_indices` | Into `trajectory.llm_calls` (empty if no recording backend) |
-| `metadata` | Free-form annotations for external hooks; defaults to `{}` |
+| Field                      | Notes                                                               |
+| -------------------------- | ------------------------------------------------------------------- |
+| `step_num`                 | 1-based loop step index                                             |
+| `timestamp`, `duration_ms` | When the step ran and how long                                      |
+| `pretty`                   | `Step.pretty()` - `#N ✓ tool(args) → result [Xms]`                  |
+| `tool_call`                | `ToolCall.to_dict()`                                                |
+| `tool_result`              | `ToolResult.to_full_dict()`; complete result data and call identity |
+| `context_before`           | The briefing shown to the LLM before this step's prompt             |
+| `llm_call_indices`         | Into `trajectory.llm_calls` (empty if no recording backend)         |
+| `metadata`                 | Free-form annotations for external hooks; defaults to `{}`          |
 
 ### Termination inference
 

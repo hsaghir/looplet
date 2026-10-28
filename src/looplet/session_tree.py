@@ -229,12 +229,12 @@ class SessionTree:
 
 @dataclass
 class SessionTreeRecorder:
-    """Hook that records POST_TOOL_USE events into a :class:`SessionTree`."""
+    """Record executed tools and accepted terminal outputs into a session tree."""
 
     tree: SessionTree
 
     def on_event(self, payload: EventPayload) -> None:
-        if payload.event != LifecycleEvent.POST_TOOL_USE:
+        if payload.event not in {LifecycleEvent.POST_TOOL_USE, LifecycleEvent.DONE_ACCEPTED}:
             return
         tc = payload.tool_call
         tr = payload.tool_result

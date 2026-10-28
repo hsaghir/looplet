@@ -1,20 +1,21 @@
 """Central, env-overridable tunables for context-budget management.
 
-Looplet's context pipeline has THREE nested budgets that mirror Claude
-Code's design:
+Looplet's context pipeline has three nested budgets:
 
-1. **Per-tool-result cap** - at dispatch time, ``truncate_tool_result``
-   caps any single tool's ``data`` to :data:`TOOL_RESULT_MAX_CHARS`.
-   Persist-and-preview kicks in when the result exceeds
+1. **Per-tool-result cap** - shared model projection bounds the complete
+    serialized envelope, without mutating raw evidence. Source previews
+    respect :data:`TOOL_RESULT_MAX_CHARS` and row limits unless overridden
+    by explicit per-tool render policy. Persist-and-preview applies above
    :data:`TOOL_RESULT_PERSIST_THRESHOLD_CHARS` and a persist directory
    is configured.
 
 2. **Per-context-window aggregate cap** - at LLM-prompt assembly time,
    ``state.context_summary()`` shows the last
-   :data:`CONTEXT_WINDOW_STEPS` steps with each step's data inlined
-   (truncated to :data:`CONTEXT_INLINE_PER_STEP_CHARS` per step). When
-   the aggregate exceeds :data:`CONTEXT_WINDOW_TOTAL_CHARS`, the
-   largest entries get persist-previewed until the total fits.
+    :data:`CONTEXT_WINDOW_STEPS` steps, using
+    :data:`CONTEXT_INLINE_PER_STEP_CHARS` as the default envelope budget.
+    Text history and native result batches are bounded by
+    :data:`CONTEXT_WINDOW_TOTAL_CHARS`. Derived views arrive intact or
+    are explicitly refused, never clipped past a hidden paging cursor.
 
 3. **Whole-conversation compact** - when the loop's reactive-compact
    layer detects context pressure (handled by
@@ -73,12 +74,10 @@ def _env_float(name: str, default: float) -> float:
 
 
 TOOL_RESULT_MAX_CHARS: int = _env_int("TOOL_RESULT_MAX_CHARS", 6000)
-"""Max characters of any single tool result before in-result truncation kicks in.
+"""Default source-result character cap, applied to the serialized model envelope.
 
-The dispatcher calls :func:`looplet.scaffolding.truncate_tool_result`
-on every result; that function applies this cap. Choose lower values
-(2-4K) to keep the LLM context tight; higher values (12-50K, mirroring
-Claude Code's 50K) when tool results are the agent's primary signal.
+The shared projector also respects the context inline limit. Explicit tool
+render policy can override this default. Complete evidence is not truncated.
 """
 
 
@@ -94,8 +93,7 @@ TOOL_RESULT_PERSIST_THRESHOLD_CHARS: int = _env_int("TOOL_RESULT_PERSIST_THRESHO
 """Above this size, a tool result is persisted to disk + replaced with
 preview.
 
-Mirrors Claude Code's ``DEFAULT_MAX_RESULT_SIZE_CHARS = 50_000``.
-The dispatcher writes the full result to ``persist_dir/tool-output-<hash>.txt``
+The projector writes the full result to ``persist_dir/tool-output-<hash>.txt``
 and the model sees only a preview + the file path so it can read more
 on demand. Requires ``persist_dir`` to be set on the
 :func:`looplet.scaffolding.truncate_tool_result` call.
@@ -105,9 +103,8 @@ on demand. Requires ``persist_dir`` to be set on the
 TOOL_RESULT_PREVIEW_CHARS: int = _env_int("TOOL_RESULT_PREVIEW_CHARS", 2000)
 """Length of the inline preview shown when a tool result is persisted.
 
-The model gets the first ``TOOL_RESULT_PREVIEW_CHARS`` characters of the
-serialized result, plus the persist-path. Mirrors Claude Code's
-``PREVIEW_SIZE_BYTES = 2000``.
+Host integrations can use this hint; the shared projector independently
+bounds the complete model-visible envelope, including any persist path.
 """
 
 
@@ -123,22 +120,19 @@ summaries (Layer 3). This is the sliding window before per-step caps.
 
 
 CONTEXT_INLINE_PER_STEP_CHARS: int = _env_int("CONTEXT_INLINE_PER_STEP_CHARS", 3000)
-"""Per-step soft cap when serializing tool results into the context window.
+"""Default serialized-envelope budget shared by text and native result views.
 
-Each step's result is JSON-serialized; if the serialization exceeds
-this cap, it gets per-step truncation with a "[truncated; full result
-N chars]" tail. Independent of Layer 1 - Layer 1 caps at dispatch
-time, this layer caps at prompt-assembly time.
+Source previews can be shortened. Derived views must fit intact or be
+replaced by an explicit delivery refusal. Tool render hints can override it.
 """
 
 
 CONTEXT_WINDOW_TOTAL_CHARS: int = _env_int("CONTEXT_WINDOW_TOTAL_CHARS", 20_000)
 """Aggregate cap across all inlined steps in one prompt.
 
-When the assembled context_summary exceeds this, the largest steps in
-the window are truncated to free budget until the total fits. Mirrors
-Claude Code's ``MAX_TOOL_RESULTS_PER_MESSAGE_CHARS = 200_000``,
-scaled down for typical looplet workloads.
+Text history shrinks the largest entries until the total fits. Native tool
+result batches share the same limit. Derived views are refused rather than
+partially delivered with a misleading continuation cursor.
 """
 
 

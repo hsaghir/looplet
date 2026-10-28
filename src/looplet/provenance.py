@@ -32,9 +32,8 @@ Design notes:
 - ``generate_with_tools`` is surfaced only when the wrapped backend
   provides it (so ``hasattr(llm, "generate_with_tools")`` stays honest
   for native-tools detection).
-- Recorders keep bounded memory: ``max_chars_per_call`` truncates
-  captured strings with an elision marker, and writes to disk flush the
-  in-memory list on ``save()``.
+- Recorders spool complete records to private temporary disk and load
+    them lazily. ``max_chars_per_call`` bounds readable projections only.
 - A user-supplied ``redact`` callable can scrub secrets from prompts
   and responses before storage.
 """
@@ -47,9 +46,11 @@ import json
 import logging
 import re
 import time
+from collections.abc import MutableSequence
 from contextlib import aclosing, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
+from itertools import pairwise
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Iterator
 from uuid import uuid4
@@ -61,6 +62,7 @@ from looplet._backend_contract import (
     invoke_backend,
     json_snapshot,
 )
+from looplet._storage import DiskBackedDict, DiskBackedList
 from looplet.artifact_compat import (
     _artifact_path,
     begin_artifact_write,
@@ -201,6 +203,24 @@ def _recorded_json(value: Any, redact: Callable[[str], str] | None) -> str:
     return json.dumps(value, indent=2, default=str)
 
 
+def _recording_backend(backend: Any) -> _RecordingBase | None:
+    for _ in range(8):
+        if isinstance(backend, _RecordingBase):
+            return backend
+        attributes = getattr(backend, "__dict__", {})
+        backend = next(
+            (
+                attributes[name]
+                for name in ("backend", "_backend", "_inner")
+                if attributes.get(name) is not None
+            ),
+            None,
+        )
+        if backend is None:
+            break
+    return None
+
+
 class _RecordingBase:
     """Shared state for sync/async recording backends."""
 
@@ -220,7 +240,7 @@ class _RecordingBase:
         # backend - so secrets never leave the process, not just the
         # trace.  Set to False to record-only.
         self._redact_upstream = redact_upstream
-        self.calls: list[LLMCall] = []
+        self.calls: MutableSequence[LLMCall] = DiskBackedList(vars, lambda value: LLMCall(**value))
         self._call_scope: ContextVar[str | None] = ContextVar("looplet_call_scope", default=None)
         self._model_call_context: ContextVar[dict[str, Any] | None] = ContextVar(
             "looplet_model_call_context", default=None
@@ -234,6 +254,28 @@ class _RecordingBase:
 
     def __getattr__(self, name: str) -> Any:
         return backend_attribute(self._backend, name)
+
+    def for_backend(self, backend: Any) -> _RecordingBase:
+        """Record a router-selected backend into this run's existing call stream."""
+        if backend is self:
+            return self
+        asynchronous = any(
+            inspect.iscoroutinefunction(getattr(backend, method, None))
+            for method in ("generate", "generate_with_tools")
+        )
+        cls = AsyncRecordingLLMBackend if asynchronous else RecordingLLMBackend
+        recorder = cls(
+            backend,
+            max_chars_per_call=self._max_chars,
+            redact=self._redact,
+            redact_upstream=self._redact_upstream,
+        )
+        recorder.calls = self.calls
+        recorder.current_step_num = self.current_step_num
+        recorder._call_scope = self._call_scope
+        recorder._model_call_context = self._model_call_context
+        recorder._conversation_input = self._conversation_input
+        return recorder
 
     def __setattr__(self, name: str, value: Any) -> None:
         if name in MUTABLE_CAPABILITIES and "_backend" in self.__dict__:
@@ -715,8 +757,8 @@ class Trajectory:
     started_at: float
     ended_at: float | None = None
     task: dict[str, Any] = field(default_factory=dict)
-    steps: list[StepRecord] = field(default_factory=list)
-    llm_calls: list[LLMCall] = field(default_factory=list)
+    steps: MutableSequence[StepRecord] = field(default_factory=list)
+    llm_calls: MutableSequence[LLMCall] = field(default_factory=list)
     spans: list[Span] = field(default_factory=list)
     termination_reason: str = "unknown"
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -767,6 +809,7 @@ class TrajectoryRecorder:
         self.trajectory = Trajectory(
             run_id=uuid4().hex[:12],
             started_at=time.time(),
+            steps=DiskBackedList(vars, lambda value: StepRecord(**value)),
         )
         self._recording_llm = recording_llm
         self._capture_context = capture_context
@@ -881,7 +924,9 @@ class TrajectoryRecorder:
         if self._harness_snapshot is not None:
             self.trajectory.metadata["harness_snapshot"] = dict(self._harness_snapshot)
         if self._recording_llm is not None:
-            self.trajectory.llm_calls = list(self._recording_llm.calls)
+            self.trajectory.llm_calls = DiskBackedList(
+                vars, lambda value: LLMCall(**value), self._recording_llm.calls
+            )
         if self._tracer is not None and self._loop_span is not None:
             self._tracer.end_span(self._loop_span)
             self.trajectory.spans = list(self._tracer.root_spans)
@@ -893,10 +938,12 @@ class TrajectoryRecorder:
         # without this sweep, those mutations are silently lost when the
         # recorder snapshotted via ``to_dict()`` before the tagger ran.
         if state is not None and hasattr(state, "steps"):
-            live_by_num = {getattr(s, "number", None): s for s in state.steps}
-            for sr in self.trajectory.steps:
-                live = live_by_num.get(sr.step_num)
-                if live is None:
+            live_steps = iter(state.steps)
+            live = next(live_steps, None)
+            for index, sr in enumerate(self.trajectory.steps):
+                while live is not None and getattr(live, "number", 0) < sr.step_num:
+                    live = next(live_steps, None)
+                if live is None or getattr(live, "number", None) != sr.step_num:
                     continue
                 live_tc = getattr(live, "tool_call", None)
                 live_tr = getattr(live, "tool_result", None)
@@ -909,14 +956,18 @@ class TrajectoryRecorder:
                     sr.tool_result["metadata"] = json_snapshot(live_tr_meta)
                 if live_step_meta:
                     sr.metadata = json_snapshot(live_step_meta)
+                self.trajectory.steps[index] = sr
         # Sweep ``state.steps`` for any Step that was yielded but not
         # routed through ``post_dispatch`` - notably the ``done`` step,
         # which the loop handles on its own termination path.
-        captured_nums = {s.step_num for s in self.trajectory.steps}
+        captured_nums = DiskBackedDict(lambda value: value, lambda value: value)
+        with captured_nums.transaction():
+            for record in self.trajectory.steps:
+                captured_nums[str(record.step_num)] = True
         if state is not None and hasattr(state, "steps"):
             for st in state.steps:
                 num = getattr(st, "number", None)
-                if num is None or num in captured_nums:
+                if num is None or str(num) in captured_nums:
                     continue
                 tc = getattr(st, "tool_call", None)
                 tr = getattr(st, "tool_result", None)
@@ -960,7 +1011,16 @@ class TrajectoryRecorder:
                         metadata=json_snapshot(getattr(st, "metadata", {}) or {}),
                     )
                 )
-        self.trajectory.steps.sort(key=lambda s: s.step_num)
+        if any(
+            previous.step_num > current.step_num
+            for previous, current in pairwise(self.trajectory.steps)
+        ):
+            if isinstance(self.trajectory.steps, DiskBackedList):
+                self.trajectory.steps.sort(key=lambda step: step.step_num)
+            else:
+                self.trajectory.steps[:] = sorted(
+                    self.trajectory.steps, key=lambda step: step.step_num
+                )
         # The loop records the authoritative reason before on_loop_end,
         # including custom primary/secondary terminal sentinels. Keep the
         # old inference only for callers that invoke this hook manually.
@@ -1053,8 +1113,30 @@ class TrajectoryRecorder:
         if publish_descriptor:
             begin_artifact_write(root)
         _clear_call_artifacts(root)
-        traj_text = _recorded_json(self.trajectory.to_dict(), self._redact)
-        (root / "trajectory.json").write_text(traj_text, encoding="utf-8")
+        trajectory = self.trajectory
+        fields = {
+            "run_id": trajectory.run_id,
+            "started_at": trajectory.started_at,
+            "ended_at": trajectory.ended_at,
+            "task": trajectory.task,
+            "termination_reason": trajectory.termination_reason,
+            "session_log_text": trajectory.session_log_text,
+            "metadata": trajectory.metadata,
+            "step_count": len(trajectory.steps),
+            "llm_call_count": len(trajectory.llm_calls),
+        }
+        with (root / "trajectory.json").open("w", encoding="utf-8") as stream:
+            stream.write("{")
+            for name, value in fields.items():
+                stream.write(json.dumps(name) + ": " + _recorded_json(value, self._redact) + ",\n")
+            for name, records in (("steps", trajectory.steps), ("llm_calls", trajectory.llm_calls)):
+                stream.write(json.dumps(name) + ": [")
+                for index, record in enumerate(records):
+                    if index:
+                        stream.write(",\n")
+                    stream.write(_recorded_json(record.to_dict(), self._redact))
+                stream.write("],\n" if name == "steps" else "]\n")
+            stream.write("}\n")
         steps_dir = root / "steps"
         steps_dir.mkdir(exist_ok=True)
         for path in steps_dir.iterdir():

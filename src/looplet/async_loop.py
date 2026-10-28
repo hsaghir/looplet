@@ -91,6 +91,7 @@ from looplet.native_tools import NativeToolPolicy, NativeToolUnsupportedError
 from looplet.parse import parse_multi_tool_calls, to_text
 from looplet.prompt_preparation import prepare_prompt_async
 from looplet.recovery_strategies import recovery_aggressive_budget, recovery_clear_old_results
+from looplet.result_projection import project_tool_result
 from looplet.scaffolding import (
     PARSE_RECOVERY_MAX,
     ContextOverflowError,
@@ -101,7 +102,6 @@ from looplet.scaffolding import (
     _native_llm_result,
     _NativeTurnRecovery,
     build_parse_recovery_prompt,
-    truncate_tool_result,
 )
 from looplet.scaffolding import _accepts_kwarg as _sync_accepts_kwarg
 from looplet.scaffolding import (
@@ -545,7 +545,7 @@ async def async_composable_loop(
     or use ``contextlib.aclosing``. Cleanup runs on exhaustion, closure, and exceptions.
     Early closure marks an unfinished run as stopped, not completed.
     """
-    from looplet.harness import resolve_harness
+    from looplet.harness import prepare_harness_run, resolve_harness
 
     effective_config = _resolve_loop_config(
         config, max_steps=max_steps, system_prompt=system_prompt
@@ -554,19 +554,27 @@ async def async_composable_loop(
     original_compact_service = effective_config.compact_service
     effective_config.compact_service = harness.config.compact_service
     hooks = harness.hooks
+    try:
+        prepared = prepare_harness_run(
+            effective_config, hooks, llm, tools, state, session_log, conversation
+        )
+    except BaseException:
+        if effective_config.compact_service is harness.config.compact_service:
+            effective_config.compact_service = original_compact_service
+        raise
     tokens = _set_context_overrides(effective_config)
     from looplet.loop import _LoopFinalizer, _mark_terminal_state
 
     finalizer = _LoopFinalizer()
     iterator = _async_composable_loop_impl(
-        llm=llm,
+        llm=prepared.llm,
         task=task,
         tools=tools,
         context=context,
-        hooks=hooks,
-        config=effective_config,
-        state=state,
-        session_log=session_log,
+        hooks=prepared.hooks,
+        config=prepared.config,
+        state=prepared.state,
+        session_log=prepared.session_log,
         stream=stream,
         conversation=conversation,
         _finalizer=finalizer,
@@ -587,9 +595,12 @@ async def async_composable_loop(
             finally:
                 await finalizer.finish_async(suppress_errors=True)
         finally:
-            _reset_context_overrides(tokens)
-            if effective_config.compact_service is harness.config.compact_service:
-                effective_config.compact_service = original_compact_service
+            try:
+                prepared.finish()
+            finally:
+                _reset_context_overrides(tokens)
+                if effective_config.compact_service is harness.config.compact_service:
+                    effective_config.compact_service = original_compact_service
 
 
 async def _async_composable_loop_impl(
@@ -747,13 +758,11 @@ async def _async_composable_loop_impl(
         session_log=session_log,
         conversation=_conv,
         typed_turns=config.uses_typed_history,
-        project_tool_result=lambda result: _dc_replace(
+        observe_tool_result=getattr(llm, "record_tool_receipt", None),
+        project_tool_result=lambda result: project_tool_result(
             result,
-            data=truncate_tool_result(
-                result.data,
-                persist_dir=config.tool_result_persist_dir,
-                persist_threshold=_get_persist_threshold(),
-            ),
+            persist_dir=config.tool_result_persist_dir,
+            persist_threshold=_get_persist_threshold(),
         ),
     )
 
@@ -884,6 +893,10 @@ async def _async_composable_loop_impl(
     def _get_llm() -> Any:
         if config.router is not None:
             selected = config.router.select(purpose="reasoning")
+            from looplet.provenance import _RecordingBase
+
+            if isinstance(llm, _RecordingBase):
+                selected = llm.for_backend(selected)
         else:
             selected = llm
         loop_ctx.llm = _turns.wrap(selected) if _turns is not None else selected
@@ -908,7 +921,7 @@ async def _async_composable_loop_impl(
                 "queries_used": getattr(state, "queries_used", 0),
                 "budget_remaining": getattr(state, "budget_remaining", 0),
             },
-            tool_results_store=tools.snapshot_results(),
+            tool_results_store=tools.checkpoint_results(),
             domain_state=(checkpoint_state(loop_ctx) if checkpoint_state is not None else {}),
             run_envelope=(
                 loop_ctx.run_envelope.to_dict() if loop_ctx.run_envelope is not None else None
@@ -1601,7 +1614,7 @@ async def _async_composable_loop_impl(
                                     "queries_used": getattr(state, "queries_used", 0),
                                     "budget_remaining": getattr(state, "budget_remaining", 0),
                                 },
-                                tool_results_store=tools.snapshot_results(),
+                                tool_results_store=tools.checkpoint_results(),
                                 domain_state=(
                                     checkpoint_state(loop_ctx)
                                     if checkpoint_state is not None
@@ -1943,7 +1956,7 @@ async def _async_composable_loop_impl(
                             "queries_used": getattr(state, "queries_used", 0),
                             "budget_remaining": getattr(state, "budget_remaining", 0),
                         },
-                        tool_results_store=tools.snapshot_results(),
+                        tool_results_store=tools.checkpoint_results(),
                         domain_state=(
                             checkpoint_state(loop_ctx) if checkpoint_state is not None else {}
                         ),

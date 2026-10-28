@@ -445,7 +445,14 @@ class TestAsyncComposableLoop:
             pass
 
         assert seen
-        assert getattr(seen[0], "_backend", None) is selected
+        backend = seen[0]
+        for _ in range(5):
+            if backend is selected:
+                break
+            backend = getattr(backend, "_backend", None)
+        assert backend is selected
+        assert selected.calls == 2
+        assert original.calls == 0
 
     async def test_async_compaction_events_are_awaited(self):
         from looplet import DefaultCompactService, LifecycleEvent

@@ -79,8 +79,10 @@ def test_loopconfig_context_window_steps_overrides_default() -> None:
     assert _CONTEXT_WINDOW_STEPS_OVERRIDE.get() is None
 
 
-def test_loopconfig_context_inline_per_step_chars_override() -> None:
+@pytest.mark.parametrize("limit", [99, 499])
+def test_loopconfig_context_inline_per_step_chars_override(limit: int) -> None:
     from looplet.context_budget import get_context_inline_per_step_chars
+    from looplet.scaffolding import ContextOverflowError
 
     captured: list[int] = []
 
@@ -98,12 +100,17 @@ def test_loopconfig_context_inline_per_step_chars_override() -> None:
             ),
         ]
     )
-    cfg = LoopConfig(max_steps=5, context_inline_per_step_chars=99)
+    cfg = LoopConfig(max_steps=5, context_inline_per_step_chars=limit)
     state = DefaultState(max_steps=5)
-    list(
-        composable_loop(llm=llm, tools=tools, state=state, config=cfg, hooks=[], task={"goal": "x"})
+    execution = composable_loop(
+        llm=llm, tools=tools, state=state, config=cfg, hooks=[], task={"goal": "x"}
     )
-    assert captured == [99]
+    if limit == 99:
+        with pytest.raises(ContextOverflowError, match="control envelope"):
+            list(execution)
+    else:
+        list(execution)
+    assert captured == [limit]
 
 
 def test_loopconfig_context_window_total_chars_override() -> None:

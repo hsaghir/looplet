@@ -128,7 +128,7 @@ def run_diagnostics(
         envelope = result.get("run_envelope")
     if type(metadata) is not dict:
         metadata = {}
-    if not isinstance(steps, (list, tuple)):
+    if not isinstance(steps, (list, tuple)) and not isinstance(result, RunResult):
         steps = ()
 
     def number(value: Any) -> int | float | None:

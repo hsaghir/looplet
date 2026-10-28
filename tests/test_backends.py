@@ -15,6 +15,74 @@ from looplet.backends import (
 from looplet.cache import CacheControl, CachePolicy, compute_breakpoints
 
 
+@pytest.mark.parametrize("provider", ["openai", "anthropic"])
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("mode", ["text", "native", "stream"])
+async def test_host_request_admission_sees_complete_request_before_send(
+    provider, asynchronous, mode
+):
+    from looplet import RequestTokenBudget
+    from looplet.backend_contract import BackendWrapper, TerminalLLMError
+
+    measured = []
+
+    def count(request):
+        measured.append(request)
+        request["model"] = "detached-policy-copy"
+        return 101
+
+    backend_type = (
+        (AsyncOpenAIBackend if asynchronous else OpenAIBackend)
+        if provider == "openai"
+        else (AsyncAnthropicBackend if asynchronous else AnthropicBackend)
+    )
+    if mode == "stream" and not asynchronous:
+        backend_type = OpenAIStreamingBackend if provider == "openai" else AnthropicStreamingBackend
+    backend = BackendWrapper(backend_type(client=object(), model="fixture"))
+    backend.configure_request_options({"seed": 37} if provider == "openai" else {"top_k": 37})
+    backend.configure_request_admission(RequestTokenBudget(100, count))
+    arguments = {"system_prompt": "host system", "max_tokens": 50}
+    with pytest.raises(TerminalLLMError, match="Host request budget exceeded"):
+        if mode == "native":
+            result = backend.generate_with_tools(
+                "host task",
+                tools=[{"name": "lookup", "input_schema": {"type": "object"}}],
+                **arguments,
+            )
+            if asynchronous:
+                await result
+        elif mode == "stream":
+            stream = backend.backend.stream("host task", **arguments)
+            if asynchronous:
+                async for _ in stream:
+                    pass
+            else:
+                list(stream)
+        else:
+            result = backend.generate("host task", **arguments)
+            if asynchronous:
+                await result
+    assert len(measured) == 1
+    assert measured[0]["messages"]
+    assert measured[0]["seed" if provider == "openai" else "top_k"] == 37
+    assert ("tools" in measured[0]) is (mode == "native")
+    assert backend.last_request["model"] == "fixture"
+    assert backend.last_response is None
+    assert backend.last_usage == {}
+
+
+def test_request_admission_rejects_awaitables_without_sending():
+    from looplet.backend_contract import TerminalLLMError
+
+    async def admission(request):
+        return None
+
+    backend = OpenAIBackend(client=object())
+    backend.configure_request_admission(admission)
+    with pytest.raises(TerminalLLMError, match="must be synchronous"):
+        backend.generate("host task")
+
+
 @pytest.mark.parametrize(
     "backend_type",
     [

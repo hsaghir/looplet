@@ -86,6 +86,169 @@ def test_evidence_save_preserves_existing_ignore_policy(tmp_path):
     assert policy.read_text() == "*.txt\n"
 
 
+def test_sink_spools_full_steps_without_retaining_run_in_memory(tmp_path):
+    import tracemalloc
+
+    sink = ProvenanceSink(dir=tmp_path)
+    recorder = sink.trajectory_hook()
+    tracemalloc.start()
+    try:
+        for number in range(32):
+            call = ToolCall(tool="source", args={"number": number})
+            result = ToolResult(
+                tool="source", args_summary="source", data=f"{number}:" + "x" * 262144
+            )
+            recorder.post_dispatch(None, None, call, result, number + 1)
+        retained, _ = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert retained < 2_000_000
+    assert len(recorder.trajectory.steps) == 32
+    assert recorder.trajectory.steps[0].tool_result["data"] == "0:" + "x" * 262144
+    assert recorder.trajectory.steps[-1].tool_result["data"] == "31:" + "x" * 262144
+    sink.flush()
+    saved = json.loads((tmp_path / "steps" / "step_01.json").read_text())
+    assert saved["tool_result"]["data"] == "0:" + "x" * 262144
+
+
+def test_finished_trajectory_survives_recording_backend_reset():
+    backend = RecordingLLMBackend(MockLLMBackend(["complete response"]))
+    backend.generate("complete prompt")
+    recorder = TrajectoryRecorder(recording_llm=backend)
+    recorder.on_loop_end(None, None, None, backend)
+    backend.calls.clear()
+    assert len(recorder.trajectory.llm_calls) == 1
+    assert recorder.trajectory.llm_calls[0].prompt == "complete prompt"
+    assert recorder.trajectory.llm_calls[0].response == "complete response"
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("routed", [False, True])
+async def test_default_harness_composes_persistent_recovery(tmp_path, asynchronous, routed):
+    from types import SimpleNamespace
+
+    from looplet import (
+        AsyncMockLLMBackend,
+        DefaultState,
+        FileCheckpointStore,
+        LoopConfig,
+        async_composable_loop,
+        composable_loop,
+        tools_from,
+    )
+
+    def source():
+        return {"payload": "complete evidence " * 20000}
+
+    tools = tools_from([source], include_done=True, done_parameters={"summary": "Outcome"})
+    state = DefaultState(max_steps=2)
+    backend_type = AsyncMockLLMBackend if asynchronous else MockLLMBackend
+    backend = backend_type(
+        [
+            json.dumps({"tool": "source", "args": {}}),
+            json.dumps({"tool": "done", "args": {"summary": "ok"}}),
+        ]
+    )
+    arguments = dict(
+        llm=backend_type([]) if routed else backend,
+        tools=tools,
+        state=state,
+        config=LoopConfig(
+            run_dir=str(tmp_path),
+            max_steps=2,
+            use_native_tools=False,
+            router=SimpleNamespace(select=lambda **kwargs: backend) if routed else None,
+        ),
+    )
+    if asynchronous:
+        async for _step in async_composable_loop(**arguments):
+            pass
+    else:
+        for _step in composable_loop(**arguments):
+            pass
+
+    assert state.run_status == "completed"
+    assert state.metadata["run_dir"] == str(tmp_path)
+    assert len(state.steps) == 2
+    assert state.steps[0].tool_result.data == source()
+    trace_dir = Path(state.metadata["trace_dir"])
+    trace = json.loads((trace_dir / "trajectory.json").read_text())
+    assert len(trace["llm_calls"]) == 2
+    assert [call["index"] for call in trace["llm_calls"]] == [0, 1]
+    assert trace["steps"][0]["tool_result"]["data"] == source()
+    assert (tmp_path / "session.jsonl").is_file()
+    checkpoint = FileCheckpointStore(tmp_path / "checkpoints").load_latest()
+    assert checkpoint is not None
+    assert checkpoint.step_number == 2
+    assert checkpoint.conversation_data is not None
+    assert tools.get_result(state.steps[0].tool_result.result_key) == source()
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("runtime_wrapper", [False, True])
+async def test_default_harness_bounds_memory_through_checkpoint_and_export(
+    tmp_path, asynchronous, runtime_wrapper
+):
+    import tracemalloc
+
+    from looplet import (
+        AgentPreset,
+        AgentRuntime,
+        DefaultState,
+        LoopConfig,
+        RunResult,
+        async_composable_loop,
+        composable_loop,
+        tools_from,
+    )
+    from looplet.testing import AsyncMockLLMBackend
+
+    def source(number: int):
+        return {"payload": f"{number}:" + "x" * 262144}
+
+    responses = [json.dumps({"tool": "source", "args": {"number": number}}) for number in range(32)]
+    responses.append(json.dumps({"tool": "done", "args": {"summary": "ok"}}))
+    backend = (AsyncMockLLMBackend if asynchronous else MockLLMBackend)(responses)
+    tools = tools_from([source], include_done=True, done_parameters={"summary": "Outcome"})
+    state = DefaultState(max_steps=33)
+    arguments = dict(
+        llm=backend,
+        tools=tools,
+        state=state,
+        config=LoopConfig(run_dir=str(tmp_path), max_steps=33, use_native_tools=False),
+    )
+    tracemalloc.start()
+    try:
+        if runtime_wrapper:
+            runtime = AgentRuntime(
+                AgentPreset(tools=tools, state=state, config=arguments["config"], hooks=[])
+            )
+            result = await runtime.run_async(backend) if asynchronous else runtime.run(backend)
+        elif asynchronous:
+            async for _step in async_composable_loop(**arguments):
+                pass
+        else:
+            for _step in composable_loop(**arguments):
+                pass
+        if not runtime_wrapper:
+            result = RunResult.from_state(state)
+        retained, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert state.run_status == "completed"
+    assert state.step_count == 33
+    assert retained < 4_000_000
+    assert peak < 8_000_000
+    assert state.steps[0].tool_result.data == source(0)
+    assert state.steps[-2].tool_result.data == source(31)
+    state.steps.clear()
+    assert len(result.steps) == 33
+    assert result.steps[0].tool_result.data == source(0)
+    assert result.steps[-2].tool_result.data == source(31)
+
+
 @pytest.mark.parametrize("terminal", [False, True])
 @pytest.mark.parametrize("data", ["large output " * 1000, list(range(100)), None])
 def test_saved_trajectory_preserves_complete_tool_evidence(tmp_path, terminal, data):

@@ -4,18 +4,18 @@ Operational controls should remain separate, composable layers around the
 loop. Add one when a measured failure mode justifies it, and preserve a test
 for the boundary it owns.
 
-| Need | Start with |
-| --- | --- |
-| Async provider calls or async host | `async_composable_loop()` |
-| Transient provider failures | `ResilientBackend` |
-| Growing prompt context | `ContextBudget` plus a compaction service |
-| Repeated or wasteful actions | `StagnationHook`, tool limits, budget warnings |
-| Tool authorization | `PermissionEngine` and `PermissionHook` |
-| Live events | `StreamingHook` and an emitter |
-| Local traces and aggregate metrics | `TracingHook` and `MetricsHook` |
-| Crash recovery | `LoopConfig(checkpoint_dir=...)` |
-| Cooperative stop | `CancelToken` |
-| Host-owned run lifecycle | `AgentRuntime` + `RunStore` |
+| Need                               | Start with                                     |
+| ---------------------------------- | ---------------------------------------------- |
+| Async provider calls or async host | `async_composable_loop()`                      |
+| Transient provider failures        | `ResilientBackend`                             |
+| Growing prompt context             | `ContextBudget` plus a compaction service      |
+| Repeated or wasteful actions       | `StagnationHook`, tool limits, budget warnings |
+| Tool authorization                 | `PermissionEngine` and `PermissionHook`        |
+| Live events                        | `StreamingHook` and an emitter                 |
+| Local traces and aggregate metrics | `TracingHook` and `MetricsHook`                |
+| Crash recovery                     | `LoopConfig(checkpoint_dir=...)`               |
+| Cooperative stop                   | `CancelToken`                                  |
+| Host-owned run lifecycle           | `AgentRuntime` + `RunStore`                    |
 
 ## Asynchronous loops
 
@@ -113,7 +113,9 @@ instructions. Custom message renderers remain authoritative. Inspection includes
 effective step, output, continuation, and model-call limits.
 
 Automatic execution compaction starts at the warning tier, around 60% estimated history pressure.
-The estimate excludes some request overhead. Configure output allowance and context headroom explicitly for small windows.
+The estimate includes serialized selected conversation metadata, warnings, and result references.
+Automatic thresholds reserve `max_tokens`, or 3,000 output tokens when it is unset.
+The estimate still excludes some request overhead. Configure context headroom explicitly for small windows.
 Deterministic summaries retain bounded tool receipts without making a model request.
 Receipt excerpts are data, not verified conclusions or instructions. Full results remain in the registry and raw steps.
 Built-in compaction services change the conversation projection, not those original results.
@@ -218,12 +220,12 @@ next response and provider-added framing.
 
 ### Choose a compaction strategy
 
-| Service | Tradeoff |
-| --- | --- |
-| `DefaultCompactService` | Recommended starting chain: prune bulky results, preserve a summary where possible, and fall back safely. |
-| `TruncateCompact(keep_recent=N)` | No model call and deterministic, but discarded middle context is gone. |
-| `SummarizeCompact(keep_recent=N)` | Retains a compact narrative but spends a model call and can omit details. |
-| `PruneToolResults(keep_recent=N)` | Clears old bulky payloads while preserving conversation structure. |
+| Service                           | Tradeoff                                                                                                  |
+| --------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `DefaultCompactService`           | Recommended starting chain: prune bulky results, preserve a summary where possible, and fall back safely. |
+| `TruncateCompact(keep_recent=N)`  | No model call and deterministic, but discarded middle context is gone.                                    |
+| `SummarizeCompact(keep_recent=N)` | Retains a compact narrative but spends a model call and can omit details.                                 |
+| `PruneToolResults(keep_recent=N)` | Clears old bulky payloads while preserving conversation structure.                                        |
 
 Compaction is a harness behavior. Test what must survive it, such as user
 constraints, artifact paths, accepted decisions, and unresolved work. Observe
@@ -234,6 +236,37 @@ The history estimate is intentionally approximate, not an exact full-request bud
 System prompts, tool schemas, provider tokenization, and hidden framing can add pressure.
 Set `context_window` for the actual backend and keep thresholds conservative.
 The separate preflight check and reactive recovery remain in place.
+
+### Host request admission
+
+Result envelopes use portable character limits. An optional backend callback checks the prepared provider request before transmission.
+It receives a detached JSON snapshot after provider options are applied.
+It runs synchronously, including on asynchronous adapters. Awaitable callbacks are rejected without sending a request.
+
+`RequestTokenBudget` compares a host-owned token count with an input limit.
+Supply a provider-aware synchronous counter as `host_count_input_tokens`:
+
+```python
+from looplet import RequestTokenBudget
+
+
+llm.configure_request_admission(
+    RequestTokenBudget(
+        max_input_tokens=90_000,
+        count_input_tokens=host_count_input_tokens,
+    )
+)
+```
+
+The counter must return a nonnegative integer. Counts equal to the limit are admitted.
+An excessive count raises `TerminalLLMError` with `termination_reason="context_overflow"` before the provider request.
+The callback does not compact history or retry the request. No admission policy is installed by default.
+
+The host owns the counter's accuracy, tokenizer, and allowance for provider framing.
+Serialized request length is only an estimate, not exact provider tokenization or billing.
+Responses requests can reference provider-held history through `previous_response_id`.
+The host must account for that history separately; it is not present in the prepared request's serialized length.
+Set output allowance separately. This input limit does not replace model-call ceilings, deadlines, or provider timeouts.
 
 ## Stagnation and call limits
 

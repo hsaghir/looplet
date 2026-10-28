@@ -77,6 +77,8 @@ def resolve_harness(
             callable(getattr(hook, "should_compact", None)) for hook in resolved_hooks
         ):
             window = effective.context_window
+            reserved_output = effective.max_tokens if effective.max_tokens is not None else 3000
+            window = max(4, window - reserved_output)
             buffer = min(13_000, max(0, (window - 1) // 10))
             budget = ContextBudget(
                 context_window=window,

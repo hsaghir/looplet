@@ -1128,10 +1128,13 @@ class ToolResult:
             if self.error_detail is not None:
                 d["error_kind"] = self.error_detail.kind.value
                 d["error_retriable"] = self.error_detail.retriable
-        elif self.result_key:
+        if self.result_key:
             d["result_key"] = self.result_key
         if self.metadata.get("model_projection"):
             d["data"] = self.data
+            delivery = self.metadata["model_projection"].get("delivery")
+            if delivery:
+                d["delivery"] = dict(delivery)
         elif isinstance(self.data, list):
             d["total_items"] = len(self.data)
             d["data"] = self.data[:20]

@@ -98,6 +98,69 @@ class TestLoopControl:
 
 class TestAgentPreset:
     @pytest.mark.parametrize("async_run", [False, True])
+    async def test_host_resources_bind_to_python_registry(self, async_run):
+        from looplet import (
+            AgentPreset,
+            AsyncMockLLMBackend,
+            DefaultState,
+            LoopConfig,
+            MockLLMBackend,
+            ToolContext,
+            tool,
+            tools_from,
+        )
+
+        @tool
+        def lookup(ctx: ToolContext):
+            return ctx.resources["settings"]
+
+        lookup.requires = ["settings"]
+        settings = {"value": 7}
+        with AgentPreset(
+            tools=tools_from([lookup], include_done=True),
+            hooks=[],
+            state=DefaultState(max_steps=2),
+            resources={"settings": settings},
+            config=LoopConfig(max_steps=2, use_native_tools=False),
+        ) as preset:
+            assert "settings" not in preset.tools.resources
+            backend = (AsyncMockLLMBackend if async_run else MockLLMBackend)(
+                [
+                    '{"tool":"lookup","args":{}}',
+                    '{"tool":"done","args":{"summary":"checked"}}',
+                ],
+                cycle=False,
+            )
+            result = (
+                await preset.run_result_async(backend) if async_run else preset.run_result(backend)
+            )
+            assert result.completed, result.diagnostics()
+            assert result.steps[0].tool_result.data == settings
+            assert preset.tools.resources["settings"] is settings
+
+    @pytest.mark.parametrize("async_run", [False, True])
+    async def test_invalid_result_store_is_rejected_before_inference(self, async_run):
+        from looplet import AgentPreset, DefaultState, LoopConfig, tools_from
+        from looplet.builtin_tools.tool_results import SPECS
+
+        class Backend:
+            def generate(self, prompt, **kwargs):
+                raise AssertionError("Invalid resources must fail before inference")
+
+        with AgentPreset(
+            tools=tools_from(list(SPECS), include_done=True),
+            hooks=[],
+            state=DefaultState(max_steps=1),
+            resources={"tool_result_store": object()},
+            config=LoopConfig(max_steps=1),
+        ) as preset:
+            with pytest.raises(ValueError, match="tool_result_store must provide callable"):
+                if async_run:
+                    preset.run_async(Backend())
+                else:
+                    preset.run(Backend())
+
+    @pytest.mark.parametrize("async_run", [False, True])
     async def test_early_stream_close_finalizes_loop_immediately(self, async_run):
         from looplet import AsyncMockLLMBackend, MockLLMBackend, minimal_preset
 

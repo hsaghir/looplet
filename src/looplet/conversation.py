@@ -260,11 +260,13 @@ class Conversation:
 
     def continuation_context(self) -> str:
         """Render logical turns without repeating generated prompts."""
+        from looplet.result_projection import payload_text
+
         lines = []
         for message in self.messages:
             if message.tool_result is not None:
                 result = message.tool_result
-                payload = json.dumps({"data": result.data, "error": result.error}, default=str)
+                payload = payload_text(result)
                 lines.append(f"[TOOL RESULT {result.tool}] {payload}")
             elif (
                 message.metadata.get("kind") == "compaction_boundary"
@@ -505,6 +507,7 @@ def _serialize_message(msg: Message) -> dict[str, Any]:
             "result_key": tr.result_key,
             "call_id": tr.call_id,
             "metadata": dict(tr.metadata) if tr.metadata else {},
+            **({"warnings": list(tr.warnings)} if tr.warnings else {}),
         }
     return d
 
@@ -556,6 +559,7 @@ def _deserialize_message(d: dict[str, Any]) -> Message:
             duration_ms=tr_data.get("duration_ms", 0.0),
             result_key=tr_data.get("result_key"),
             call_id=tr_data.get("call_id"),
+            warnings=list(tr_data.get("warnings") or []),
             metadata=dict(tr_data.get("metadata") or {}),
         )
 

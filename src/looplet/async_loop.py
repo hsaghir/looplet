@@ -747,6 +747,7 @@ async def _async_composable_loop_impl(
         session_log=session_log,
         conversation=_conv,
         typed_turns=config.uses_typed_history,
+        observe_tool_result=getattr(llm, "record_tool_receipt", None),
         project_tool_result=lambda result: project_tool_result(
             result,
             persist_dir=config.tool_result_persist_dir,

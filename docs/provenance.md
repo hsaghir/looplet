@@ -34,15 +34,15 @@ for step in replay_loop(trace_dir, tools=tools):
 
 **Two primitives, one facade, two extras:**
 
-| Class / function | What it does | Implements |
-|---|---|---|
-| `RecordingLLMBackend` | Every call to `generate` / `generate_with_tools` | `LLMBackend` (wraps any backend) |
-| `AsyncRecordingLLMBackend` | Same, async | `AsyncLLMBackend` |
-| `TrajectoryRecorder` | Every loop step, with context-before and linked LLM calls | `LoopHook` |
-| `ProvenanceSink` | Both of the above in a 3-line drop-in | Not a protocol |
-| `replay_loop(dir, ...)` | Rerun the loop against cached LLM output | generator |
-| `async_replay_loop(dir, ...)` | Replay with awaited async tools and hooks | async generator |
-| `python -m looplet show <dir>` | One-page readable summary | CLI |
+| Class / function               | What it does                                              | Implements                       |
+| ------------------------------ | --------------------------------------------------------- | -------------------------------- |
+| `RecordingLLMBackend`          | Every call to `generate` / `generate_with_tools`          | `LLMBackend` (wraps any backend) |
+| `AsyncRecordingLLMBackend`     | Same, async                                               | `AsyncLLMBackend`                |
+| `TrajectoryRecorder`           | Every loop step, with context-before and linked LLM calls | `LoopHook`                       |
+| `ProvenanceSink`               | Both of the above in a 3-line drop-in                     | Not a protocol                   |
+| `replay_loop(dir, ...)`        | Rerun the loop against cached LLM output                  | generator                        |
+| `async_replay_loop(dir, ...)`  | Replay with awaited async tools and hooks                 | async generator                  |
+| `python -m looplet show <dir>` | One-page readable summary                                 | CLI                              |
 
 All of it is zero-dependency and preserves the `NativeToolBackend` capability
 surface of whatever it wraps. Prompts and responses may contain sensitive
@@ -138,13 +138,13 @@ See the [Quickstart](quickstart.md#4-capture-the-same-agent) for the complete ha
 
 **Unreleased:** Full evidence and model-visible context have separate representations.
 
-| Surface | Content | Persistence |
-|---|---|---|
-| `state.steps` and yielded `Step` | Complete dispatched `ToolCall` and `ToolResult` objects | In memory |
-| Registry result store | Detached original JSON-compatible output, keyed by `sha256:...` | In memory by default |
-| Checkpoint `tool_results_store` | Snapshot of that result store | Written when checkpointing is configured |
-| Conversation and prompt | Selected, projected history, with previews and result references | Recorded with model calls |
-| `trajectory.json` and `steps/step_NN.json` | Complete tool arguments, data, IDs, warnings, errors, and metadata | Written by sink `flush()` |
+| Surface                                    | Content                                                            | Persistence                              |
+| ------------------------------------------ | ------------------------------------------------------------------ | ---------------------------------------- |
+| `state.steps` and yielded `Step`           | Complete dispatched `ToolCall` and `ToolResult` objects            | In memory                                |
+| Registry result store                      | Detached original JSON-compatible output, keyed by `sha256:...`    | In memory by default                     |
+| Checkpoint `tool_results_store`            | Snapshot of that result store                                      | Written when checkpointing is configured |
+| Conversation and prompt                    | Selected, projected history, with previews and result references   | Recorded with model calls                |
+| `trajectory.json` and `steps/step_NN.json` | Complete tool arguments, data, IDs, warnings, errors, and metadata | Written by sink `flush()`                |
 
 `ToolResult.to_dict()` remains a compact view, not a lossless audit serializer.
 It limits direct lists to 20 items and other direct values to 2,000 characters.
@@ -182,11 +182,21 @@ turns. Text history uses the same aggregate limit. These are character budgets,
 not exact token counts or a replacement for whole-conversation compaction.
 
 Retrieval tools return views of existing evidence. A view is delivered intact
-or replaced by `result_view_too_large`, without page content or a continuation
-cursor. Retry the same offset with a smaller `limit`. An 8,000-character read
+or replaced by a delivery refusal, without page content or a continuation cursor.
+`delivery.status` is `"refused"`; `delivery.reason` identifies the boundary, such as `result_view_too_large`.
+`error` still describes tool execution. A successful read does not become an execution failure because its page cannot fit.
+Retry the same offset with a smaller `limit`. When available, `delivery.suggested_limit` accounts for the complete serialized page envelope.
+The hint does not advance the offset or deliver hidden content. An 8,000-character read
 is an allowed request, not a promise that every configured envelope budget can
 deliver it. Exceptionally small budgets that cannot fit a control envelope
 raise a context overflow instead of silently exceeding the limit.
+
+Failed tool results keep their execution error and source reference.
+If the error alone is too large, `delivery.error_truncated` marks its shortened model-facing text.
+Complete errors and warnings remain in raw evidence. Conversation serialization preserves selected warnings, references, and delivery status.
+Text continuation and native messages use the same result envelope.
+Backends can observe original results through `record_tool_receipt(call, result)` before projection.
+This explicit capability does not invoke a host's legacy `record_tool_result(call_id, data, error)` callback.
 
 Custom read/search tools can opt into this contract with
 `@tool(result_is_view=True)` or `ToolSpec(result_is_view=True, ...)`.
@@ -248,8 +258,12 @@ from looplet import FileToolResultStore
 preset.resources["tool_result_store"] = FileToolResultStore(
   "./private-tool-results", max_bytes=100_000_000
 )
-preset.tools.set_resources(preset.resources)
 ```
+
+Preset execution binds its resources to the registry before inference.
+Preset resources take precedence over duplicate registry bindings; registry-only resources remain available.
+Enabled retrieval tools require the store's corresponding list, read, or search method to be callable.
+An invalid binding fails before inference. Python and cartridge execution use the same check.
 
 Direct registry users can instead call
 `tools.set_resources({"tool_result_store": store})` before running their loop.
@@ -264,6 +278,10 @@ catalog. It is not a filesystem-wide disk quota. Cache writes are optional;
 when they do not fit, reads can still use the retained source. A source retention
 I/O or quota failure leaves the successful raw tool output intact, omits its
 result key, and adds a visible warning plus `metadata.retention_error`.
+
+Cached views use incremental reads and literal searches, including across chunk boundaries.
+Unicode offsets and line endings remain unchanged. Late offsets and uncached length checks still require linear scans.
+The first extraction of a selected JSON value can still materialize the complete source.
 
 The host owns directory selection, permissions, cleanup, and lifetime. Keys
 are references, not secrets or access-control tokens. Enabling retrieval grants
@@ -579,21 +597,21 @@ llm.save("traces/debug_run/")
 
 Each entry in `llm.calls` exposes:
 
-| Field | Type | Notes |
-|---|---|---|
-| `index` | `int` | 0-based, monotonic |
-| `timestamp` | `float` | Unix time when the call started |
-| `duration_ms` | `float` | Wall-clock around the wrapped call |
-| `method` | `str` | `"generate"` or `"generate_with_tools"` |
-| `prompt` | `str` | Exact text passed in (after redaction/truncation) |
-| `system_prompt` | `str` | Same |
-| `response` | `str \| list[dict]` | String for `generate`; content blocks for `generate_with_tools` |
-| `tools` | `list[dict] \| None` | Tool schemas passed, when applicable |
-| `temperature` | `float` | As passed |
-| `max_tokens` | `int` | As passed |
-| `step_num` | `int \| None` | Set by `TrajectoryRecorder` to link calls to loop steps |
-| `error` | `str \| None` | `f"{type(e).__name__}: {e}"` if the wrapped backend raised |
-| `metadata` | `dict[str, Any]` | Free-form annotations for external hooks; defaults to `{}` |
+| Field           | Type                 | Notes                                                           |
+| --------------- | -------------------- | --------------------------------------------------------------- |
+| `index`         | `int`                | 0-based, monotonic                                              |
+| `timestamp`     | `float`              | Unix time when the call started                                 |
+| `duration_ms`   | `float`              | Wall-clock around the wrapped call                              |
+| `method`        | `str`                | `"generate"` or `"generate_with_tools"`                         |
+| `prompt`        | `str`                | Exact text passed in (after redaction/truncation)               |
+| `system_prompt` | `str`                | Same                                                            |
+| `response`      | `str \| list[dict]`  | String for `generate`; content blocks for `generate_with_tools` |
+| `tools`         | `list[dict] \| None` | Tool schemas passed, when applicable                            |
+| `temperature`   | `float`              | As passed                                                       |
+| `max_tokens`    | `int`                | As passed                                                       |
+| `step_num`      | `int \| None`        | Set by `TrajectoryRecorder` to link calls to loop steps         |
+| `error`         | `str \| None`        | `f"{type(e).__name__}: {e}"` if the wrapped backend raised      |
+| `metadata`      | `dict[str, Any]`     | Free-form annotations for external hooks; defaults to `{}`      |
 
 ### Safety knobs
 
@@ -705,16 +723,16 @@ for i in indices:
 
 ### What a `StepRecord` captures
 
-| Field | Notes |
-|---|---|
-| `step_num` | 1-based loop step index |
-| `timestamp`, `duration_ms` | When the step ran and how long |
-| `pretty` | `Step.pretty()` - `#N ✓ tool(args) → result [Xms]` |
-| `tool_call` | `ToolCall.to_dict()` |
-| `tool_result` | `ToolResult.to_full_dict()`; complete result data and call identity |
-| `context_before` | The briefing shown to the LLM before this step's prompt |
-| `llm_call_indices` | Into `trajectory.llm_calls` (empty if no recording backend) |
-| `metadata` | Free-form annotations for external hooks; defaults to `{}` |
+| Field                      | Notes                                                               |
+| -------------------------- | ------------------------------------------------------------------- |
+| `step_num`                 | 1-based loop step index                                             |
+| `timestamp`, `duration_ms` | When the step ran and how long                                      |
+| `pretty`                   | `Step.pretty()` - `#N ✓ tool(args) → result [Xms]`                  |
+| `tool_call`                | `ToolCall.to_dict()`                                                |
+| `tool_result`              | `ToolResult.to_full_dict()`; complete result data and call identity |
+| `context_before`           | The briefing shown to the LLM before this step's prompt             |
+| `llm_call_indices`         | Into `trajectory.llm_calls` (empty if no recording backend)         |
+| `metadata`                 | Free-form annotations for external hooks; defaults to `{}`          |
 
 ### Termination inference
 

@@ -170,23 +170,27 @@ Omit `--scripted` and supply `--base-url` and `--models` for a live endpoint.
 See [bounded result views](docs/provenance.md#bounded-model-views) for shared
 native/text budgets, retrieval tools, and optional file-backed retention.
 
+Delivery refusals preserve the tool's execution status and provide retry details separately.
+Hosts can also install [request admission](docs/operations.md#host-request-admission)
+with their own token counter. Result-character limits and request-token limits remain separate controls.
+
 ## Customize what you need
 
 The same loop supports these optional features.
 You do not need a new execution engine to use them.
 
-| Need | Feature | Guide |
-| --- | --- | --- |
-| Keep a long run within context limits | Context budgets, summaries, and truncation | [Context management](docs/operations.md#context-pressure-and-compaction) |
-| Add context or change the prompt | Hooks before the model call | [Hooks](docs/hooks.md) |
-| Check or change calls and results | Hooks before and after tools run | [Hooks](docs/hooks.md) |
-| Limit calls or detect repeated actions | Step limits, tool-call limits, and repetition checks | [Run controls](docs/operations.md#stagnation-and-call-limits) |
-| Save prompts, responses, and steps | `ProvenanceSink` | [Capture and replay](docs/provenance.md) |
-| Check files or other results | Collectors and graders | [Tests and graders](docs/evals.md) |
-| Build a fresh agent run for each task | A Python factory returning `AgentPreset` | [Python API](docs/api.md#optional-preset-conveniences) |
-| Store an agent in files | A cartridge directory | [Cartridges](docs/cartridge.md) |
-| Use an agent from a shell | `new`, `run`, `inspect`, and `eval` | [Command-line guide](docs/cli.md) |
-| Connect tools or other hosts | Protocol adapters | [Portability](docs/portability.md) |
+| Need                                   | Feature                                              | Guide                                                                    |
+| -------------------------------------- | ---------------------------------------------------- | ------------------------------------------------------------------------ |
+| Keep a long run within context limits  | Context budgets, summaries, and truncation           | [Context management](docs/operations.md#context-pressure-and-compaction) |
+| Add context or change the prompt       | Hooks before the model call                          | [Hooks](docs/hooks.md)                                                   |
+| Check or change calls and results      | Hooks before and after tools run                     | [Hooks](docs/hooks.md)                                                   |
+| Limit calls or detect repeated actions | Step limits, tool-call limits, and repetition checks | [Run controls](docs/operations.md#stagnation-and-call-limits)            |
+| Save prompts, responses, and steps     | `ProvenanceSink`                                     | [Capture and replay](docs/provenance.md)                                 |
+| Check files or other results           | Collectors and graders                               | [Tests and graders](docs/evals.md)                                       |
+| Build a fresh agent run for each task  | A Python factory returning `AgentPreset`             | [Python API](docs/api.md#optional-preset-conveniences)                   |
+| Store an agent in files                | A cartridge directory                                | [Cartridges](docs/cartridge.md)                                          |
+| Use an agent from a shell              | `new`, `run`, `inspect`, and `eval`                  | [Command-line guide](docs/cli.md)                                        |
+| Connect tools or other hosts           | Protocol adapters                                    | [Portability](docs/portability.md)                                       |
 
 Looplet `0.4.0` includes the Python helpers and unified CLI.
 The guides identify behavior added in `0.4.1`.
@@ -252,15 +256,15 @@ It does not replace those systems.
 
 ## Documentation
 
-| Guide | Purpose |
-| --- | --- |
-| [Quickstart](docs/quickstart.md) | Run, inspect, and stop one loop |
-| [Install](docs/install.md) | Choose a version and configure a model |
-| [Python API](docs/api.md) | Find the classes and functions you need |
-| [Migration](docs/migrate.md) | Replace a loop without new tool implementations |
+| Guide                                     | Purpose                                                 |
+| ----------------------------------------- | ------------------------------------------------------- |
+| [Quickstart](docs/quickstart.md)          | Run, inspect, and stop one loop                         |
+| [Install](docs/install.md)                | Choose a version and configure a model                  |
+| [Python API](docs/api.md)                 | Find the classes and functions you need                 |
+| [Migration](docs/migrate.md)              | Replace a loop without new tool implementations         |
 | [Report-agent tutorial](docs/tutorial.md) | Add a case, collector, and grader to a file-based agent |
-| [Operations](docs/operations.md) | Use async code, retries, cancellation, and checkpoints |
-| [Examples](examples/) | Run complete examples |
+| [Operations](docs/operations.md)          | Use async code, retries, cancellation, and checkpoints  |
+| [Examples](examples/)                     | Run complete examples                                   |
 
 See the [documentation site](https://hsaghir.com/looplet/) for the full guide list.
 

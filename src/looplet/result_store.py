@@ -31,6 +31,9 @@ class FileToolResultStore:
     _catalog: dict[str, dict[str, Any]] = field(init=False, repr=False, compare=False)
     _used_bytes: int = field(init=False, repr=False, compare=False)
     _lock: Any = field(init=False, repr=False, compare=False)
+    _view_lengths: dict[str, int] = field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
 
     def __post_init__(self) -> None:
         if self.max_bytes is not None and (type(self.max_bytes) is not int or self.max_bytes < 0):
@@ -137,7 +140,7 @@ class FileToolResultStore:
                 "next_offset": end if end < boundary else None,
             }
 
-    def _text(self, key: str, pointer: str) -> str:
+    def _text(self, key: str, pointer: str) -> str | Path:
         from looplet.builtin_tools.tool_results import _text
 
         with self._lock:
@@ -147,8 +150,7 @@ class FileToolResultStore:
             digest = hashlib.sha256(json.dumps([key, pointer]).encode("utf-8")).hexdigest()
             path = self._root / ".views" / (digest + ".txt")
             if path.exists():
-                with path.open(encoding="utf-8", newline="") as stream:
-                    return stream.read()
+                return path
             text = _text(self.get_result(key), pointer)
             payload = text.encode("utf-8")
             if self.max_bytes is None or self._used_bytes + len(payload) <= self.max_bytes:
@@ -158,7 +160,25 @@ class FileToolResultStore:
                 except OSError:
                     return text
                 self._used_bytes += len(payload)
+                self._view_lengths[path.name] = len(text)
+                return path
             return text
+
+    @staticmethod
+    def _skip(stream: Any, characters: int) -> None:
+        while characters > 0:
+            content = stream.read(min(characters, 65536))
+            if not content:
+                break
+            characters -= len(content)
+
+    def _view_length(self, path: Path) -> int:
+        if path.name not in self._view_lengths:
+            with path.open(encoding="utf-8", newline="") as stream:
+                self._view_lengths[path.name] = sum(
+                    len(chunk) for chunk in iter(lambda: stream.read(65536), "")
+                )
+        return self._view_lengths[path.name]
 
     def read_result(
         self, key: str, *, json_pointer: str = "", offset: int = 0, limit: int = 2000
@@ -166,12 +186,24 @@ class FileToolResultStore:
         from looplet.builtin_tools.tool_results import read_result
 
         result = read_result(
-            self._text(key, json_pointer),
+            "",
             result_key=key,
             json_pointer="",
             offset=offset,
             limit=limit,
         )
+        view = self._text(key, json_pointer)
+        if isinstance(view, Path):
+            with view.open(encoding="utf-8", newline="") as stream:
+                self._skip(stream, offset)
+                content = stream.read(limit)
+            total = self._view_length(view)
+            end = offset + len(content)
+            result.update(
+                content=content, total_chars=total, next_offset=end if end < total else None
+            )
+        else:
+            result = read_result(view, result_key=key, json_pointer="", offset=offset, limit=limit)
         result["json_pointer"] = json_pointer
         return result
 
@@ -181,7 +213,7 @@ class FileToolResultStore:
         from looplet.builtin_tools.tool_results import search_result
 
         result = search_result(
-            self._text(key, json_pointer),
+            "",
             result_key=key,
             query=query,
             json_pointer="",
@@ -189,6 +221,47 @@ class FileToolResultStore:
             limit=limit,
         )
         result["json_pointer"] = json_pointer
+        view = self._text(key, json_pointer)
+        if not isinstance(view, Path):
+            result = search_result(
+                view, result_key=key, query=query, json_pointer="", offset=offset, limit=limit
+            )
+            result["json_pointer"] = json_pointer
+            return result
+        result["total_chars"] = self._view_length(view)
+        base = max(0, offset - 80)
+        cursor = offset
+        continuation = None
+        buffer = ""
+        with view.open(encoding="utf-8", newline="") as stream:
+            self._skip(stream, base)
+            while True:
+                chunk = stream.read(65536)
+                buffer += chunk
+                safe_end = max(0, len(buffer) - len(query) - 80) if chunk else len(buffer) + 1
+                while True:
+                    found = buffer.find(query, max(0, cursor - base))
+                    if found < 0:
+                        break
+                    if len(result["matches"]) == limit:
+                        result["next_offset"] = continuation
+                        return result
+                    if found >= safe_end:
+                        break
+                    result["matches"].append(
+                        {
+                            "offset": base + found,
+                            "excerpt": buffer[max(0, found - 80) : found + len(query) + 80],
+                        }
+                    )
+                    cursor = base + found + len(query)
+                    continuation = cursor
+                if not chunk:
+                    break
+                cursor = max(cursor, base + safe_end)
+                discard = max(0, cursor - base - 80)
+                buffer = buffer[discard:]
+                base += discard
         return result
 
     def snapshot_results(self) -> dict[str, Any]:

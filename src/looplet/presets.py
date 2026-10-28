@@ -364,6 +364,14 @@ class AgentPreset:
                 "tool resource dependencies are not provided by the preset: "
                 + ", ".join(missing_resources)
             )
+        store = self.resources.get("tool_result_store", self.tools)
+        for tool_name, method in (
+            ("list_tool_results", "list_results"),
+            ("read_tool_result", "read_result"),
+            ("search_tool_result", "search_result"),
+        ):
+            if tool_name in names and not callable(getattr(store, method, None)):
+                errors.append(f"tool_result_store must provide callable {method} for {tool_name}")
         owned_ids = {id(resource) for resource in self.owned_resources}
         for handle in self.state_service_handles:
             client = getattr(handle, "client", None)
@@ -397,6 +405,9 @@ class AgentPreset:
         """Claim, validate, and bind the same wiring for both loop drivers."""
         self._claim_run()
         try:
+            resources = {**self.tools.resources, **self.resources}
+            self.resources.update(resources)
+            self.tools.set_resources(resources)
             errors = self._contract_errors()
             if errors:
                 raise ValueError("invalid agent preset: " + "; ".join(errors))

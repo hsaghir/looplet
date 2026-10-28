@@ -441,6 +441,79 @@ async def test_prompt_projection_preserves_original_run_evidence(tmp_path, async
         assert original in Path(projected.data["persisted_output_path"]).read_text()
 
 
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_native_paging_compacts_before_reserved_context_admission(asynchronous):
+    import hashlib
+    import json
+
+    from looplet import AgentPreset, LoopConfig, MockLLMBackend, RunResult, tools_from
+    from looplet.builtin_tools.tool_results import SPECS
+    from looplet.examples.default_harness import EventObserver, SmallWindowCompactService
+
+    original = "retained evidence\n" * 24000
+    key = "sha256:" + hashlib.sha256(json.dumps(original, sort_keys=True).encode()).hexdigest()
+
+    def source():
+        return original
+
+    class Backend(MockLLMBackend):
+        conversation_mode = "messages"
+
+        def set_conversation_input(self, snapshot):
+            self.snapshot = snapshot
+
+    class AsyncBackend(Backend):
+        async def generate_with_tools(self, *args, **kwargs):
+            return super().generate_with_tools(*args, **kwargs)
+
+    replies = (
+        [{"tool": "source", "args": {}}]
+        + [
+            {
+                "tool": "read_tool_result",
+                "args": {"result_key": key, "offset": index * 1800, "limit": 1800},
+            }
+            for index in range(6)
+        ]
+        + [{"tool": "done", "args": {"summary": "all pages checked"}}]
+    )
+    backend = (AsyncBackend if asynchronous else Backend)(
+        [json.dumps(reply) for reply in replies],
+        cycle=False,
+    )
+    tools = tools_from([source], include_done=True)
+    tools.tool_specs["source"].render = {"max_chars": 900}
+    for spec in SPECS:
+        tools.register(spec)
+    observer = EventObserver()
+    preset = AgentPreset(
+        config=LoopConfig(
+            max_steps=10,
+            max_tokens=2000,
+            context_window=6000,
+            use_native_tools=True,
+            compact_service=SmallWindowCompactService(),
+        ),
+        tools=tools,
+        state=DefaultState(max_steps=10),
+        hooks=[observer],
+    )
+    with preset:
+        if asynchronous:
+            async for _ in preset.run_async(
+                backend, task={"goal": "Read six evidence pages and finish"}
+            ):
+                pass
+            result = RunResult.from_state(preset.state)
+        else:
+            result = preset.run_result(backend, task={"goal": "Read six evidence pages and finish"})
+    assert result.completed, result.diagnostics()
+    assert result.steps[0].tool_result.data == original
+    assert len(result.steps) == len(replies)
+    assert all(step.tool_result.error is None for step in result.steps)
+    assert "post_compact" in [event.lower() for event in observer.events]
+
+
 @pytest.mark.parametrize("native_blocks", [False, True])
 def test_provider_tool_results_preserve_retrieval_refs_and_warnings(native_blocks):
     import json
@@ -503,6 +576,221 @@ def retained_evidence_view() -> dict:
     return {"content": "view-data" * 200, "next_offset": 1800}
 
 
+@pytest.mark.parametrize("native_blocks", [False, True])
+@pytest.mark.parametrize("refused", [False, True])
+def test_conversation_preserves_complete_result_envelope(native_blocks, refused):
+    import json
+    from types import SimpleNamespace
+
+    from looplet.backends import _conversation_messages
+    from looplet.conversation import ContentBlock, Conversation, Message, MessageRole
+    from looplet.result_projection import project_tool_result, result_payload
+
+    original = ToolResult(
+        tool="read_tool_result",
+        args_summary="",
+        call_id="observed",
+        data={"content": "x" * (8000 if refused else 10), "offset": 13, "next_offset": 8013},
+        error="permission denied" if not refused else None,
+        warnings=["host-observed warning"],
+        result_key="sha256:" + "a" * 64,
+        metadata={"result_is_view": True},
+    )
+    result = project_tool_result(original, max_chars=900)
+    conversation = Conversation(
+        messages=[
+            Message(
+                role=MessageRole.ASSISTANT,
+                content=[
+                    ContentBlock(
+                        kind="tool_use",
+                        data={
+                            "id": "observed",
+                            "name": "read_tool_result",
+                            "input": {},
+                        },
+                    )
+                ],
+                metadata={"origin": "model"},
+            ),
+            Message(role=MessageRole.TOOL, content="", tool_result=result),
+        ]
+    )
+    restored = Conversation.deserialize(conversation.serialize())
+    assert restored.messages[-1].tool_result.warnings == result.warnings
+    assert json.loads(
+        restored.continuation_context().split("[TOOL RESULT read_tool_result] ")[1]
+    ) == result_payload(result)
+    messages = _conversation_messages(
+        SimpleNamespace(
+            _conversation_input={"prompt": "Task", "conversation": restored.serialize()}
+        ),
+        "Task",
+        native_blocks=native_blocks,
+    )
+    raw = (
+        next(
+            message["content"][0]["content"]
+            for message in messages
+            if isinstance(message.get("content"), list)
+            and message["content"][0].get("type") == "tool_result"
+        )
+        if native_blocks
+        else next(message["content"] for message in messages if message["role"] == "tool")
+    )
+    assert json.loads(raw) == result_payload(result)
+
+
+@pytest.mark.parametrize("execution_error", [None, "permission denied"])
+def test_delivery_refusal_preserves_execution_status(execution_error):
+    import json
+
+    from looplet.result_projection import payload_text, project_tool_result
+
+    original = ToolResult(
+        tool="read_tool_result",
+        args_summary="offset=11, limit=8000",
+        data={"offset": 11, "content": "x" * 8000, "next_offset": 8011},
+        error=execution_error,
+        result_key="sha256:" + "a" * 64,
+        metadata={"result_is_view": True},
+    )
+    projected = project_tool_result(original, max_chars=900)
+    payload = json.loads(payload_text(projected))
+    assert projected.error == execution_error
+    assert projected.data is None
+    assert len(payload_text(projected)) <= 900
+    assert payload["delivery"]["status"] == "refused"
+    assert payload["delivery"]["reason"] == "result_view_too_large"
+    assert payload["delivery"]["max_chars"] == 900
+    assert payload["delivery"]["offset"] == 11
+    assert 0 < payload["delivery"]["suggested_limit"] < 8000
+    assert "next_offset" not in payload["delivery"]
+    assert original.data["next_offset"] == 8011
+    assert original.error == execution_error
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("wrapped", [False, True])
+async def test_backend_observes_original_result_before_projection(asynchronous, wrapped):
+    from looplet import LoopConfig, async_composable_loop, composable_loop, tools_from
+    from looplet.backend_contract import BackendWrapper
+
+    observed = []
+
+    def source():
+        return {"body": "original evidence" * 4000}
+
+    class Backend:
+        def generate(self, prompt, **kwargs):
+            return (
+                '{"tool":"source","args":{}}'
+                if not observed
+                else '{"tool":"done","args":{"summary":"checked"}}'
+            )
+
+        def record_tool_result(self, call_id, data, error=None):
+            raise AssertionError("Legacy recorder belongs to the host hook")
+
+        def record_tool_receipt(self, call, result):
+            observed.append((call, result))
+
+    class AsyncBackend(Backend):
+        async def generate(self, prompt, **kwargs):
+            return super().generate(prompt, **kwargs)
+
+    backend = AsyncBackend() if asynchronous else Backend()
+    if wrapped:
+        backend = BackendWrapper(backend)
+    arguments = dict(
+        llm=backend,
+        tools=tools_from([source], include_done=True),
+        config=LoopConfig(max_steps=2, use_native_tools=False),
+    )
+    if asynchronous:
+        async for _ in async_composable_loop(**arguments):
+            pass
+    else:
+        list(composable_loop(**arguments))
+    assert observed[0][0].tool == "source"
+    assert observed[0][1].data == source()
+    assert "model_projection" not in observed[0][1].metadata
+    assert len(observed) == 2
+    assert observed[-1][0].tool == "done"
+    assert all(result.error is None for _, result in observed)
+
+
+def test_delivery_retry_hint_accounts_for_json_escaping():
+    from looplet.builtin_tools.tool_results import read_result
+    from looplet.result_projection import project_tool_result
+
+    source = '\\"\r\n' * 4000
+    key = "sha256:" + "a" * 64
+    page = read_result(source, result_key=key, json_pointer="", offset=13, limit=8000)
+    refused = project_tool_result(
+        ToolResult(
+            tool="read_tool_result",
+            args_summary="",
+            data=page,
+            metadata={"result_is_view": True},
+        ),
+        max_chars=900,
+    )
+    delivery = refused.metadata["model_projection"]["delivery"]
+    retry = read_result(
+        source,
+        result_key=key,
+        json_pointer="",
+        offset=13,
+        limit=delivery["suggested_limit"],
+    )
+    delivered = project_tool_result(
+        ToolResult(
+            tool="read_tool_result",
+            args_summary="",
+            data=retry,
+            metadata={"result_is_view": True},
+        ),
+        max_chars=900,
+    )
+    assert not delivered.metadata["model_projection"].get("refused")
+    assert delivered.data["content"] == source[13 : 13 + delivery["suggested_limit"]]
+    assert delivery["result_key"] == key
+    assert "next_offset" not in delivery
+
+
+@pytest.mark.parametrize("as_view", [False, True])
+@pytest.mark.parametrize("max_chars", [1000, 2000, 5000])
+def test_batch_projection_can_be_verified_from_original_receipts(as_view, max_chars):
+    from looplet.result_projection import bound_result_batch, project_tool_result, result_payload
+    from looplet.scaffolding import ContextOverflowError
+
+    originals = [
+        ToolResult(
+            tool="source",
+            args_summary="",
+            data={"offset": 0, "content": '\\"\r\n' * 3000, "next_offset": 12000},
+            result_key="sha256:" + str(index) * 64,
+            metadata={"result_is_view": as_view},
+        )
+        for index in range(3)
+    ]
+    try:
+        selected = bound_result_batch(
+            [project_tool_result(result) for result in originals],
+            max_chars=max_chars,
+        )
+    except ContextOverflowError:
+        assert max_chars == 1000
+        return
+    for original, result in zip(originals, selected):
+        reproduced = project_tool_result(
+            original,
+            max_chars=result.metadata["model_projection"]["max_chars"],
+        )
+        assert result_payload(result) == result_payload(reproduced)
+
+
 def test_source_projection_honors_legacy_limits_without_clipping_views(monkeypatch):
     from looplet.result_projection import payload_text, project_tool_result
 
@@ -547,7 +835,10 @@ def test_result_view_contract_and_render_policy_roundtrip(tmp_path):
         assert result.metadata["render"] == {"max_chars": 1000}
         assert restored.tools.list_results()["total_results"] == 0
         projected = project_tool_result(result)
-        assert projected.error.startswith("result_view_too_large")
+        assert projected.error is None
+        assert (
+            projected.metadata["model_projection"]["delivery"]["reason"] == "result_view_too_large"
+        )
         assert projected.data is None
         assert result.data == retained_evidence_view()
     assert "tool_render_hints:" in (bundle.path / "runtime.yaml").read_text()
@@ -913,7 +1204,9 @@ def test_result_projection_bounds_escaped_json_and_warning_envelopes(limit, as_v
         assert len(payload_text(projected)) <= limit
         if as_view:
             assert projected.data is None
-            assert projected.error.startswith("result_view_too_large")
+            assert projected.error is None
+            delivery = projected.metadata["model_projection"]["delivery"]
+            assert delivery["reason"] == "result_view_too_large"
     assert result.data is data
     assert result.warnings == ["long warning" * 1000]
 

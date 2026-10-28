@@ -54,7 +54,7 @@ import copy
 import json
 import logging
 import os
-from typing import Any, AsyncGenerator, Generator
+from typing import Any, AsyncGenerator, Callable, Generator
 
 from looplet.backend_contract import (
     BackendRequestPolicy,
@@ -211,6 +211,18 @@ def _begin_request(backend: Any, request: dict[str, Any]) -> None:
     backend.last_response = None
     backend.last_stop_reason = None
     backend.last_usage = {}
+    admission = getattr(backend, "request_admission", None)
+    if admission is not None:
+        from inspect import isawaitable
+
+        decision = admission(json_snapshot(request))
+        if isawaitable(decision):
+            close = getattr(decision, "close", None)
+            if callable(close):
+                close()
+            raise TerminalLLMError(
+                "Request admission must be synchronous", termination_reason="unsupported_context"
+            )
 
 
 def _capture_response(backend: Any, response: Any) -> None:
@@ -349,6 +361,8 @@ def _openai_prompt_cache_key(cache_breakpoints: list[Any]) -> str:
 def _conversation_messages(
     backend: Any, prompt: str, *, native_blocks: bool
 ) -> list[dict[str, Any]]:
+    from looplet.result_projection import model_result_payload
+
     snapshot = getattr(backend, "_conversation_input", None)
     if snapshot is None:
         return [{"role": "user", "content": prompt}]
@@ -361,11 +375,13 @@ def _conversation_messages(
         result = message.get("tool_result")
         if result is not None:
             call_id = result.get("call_id") or metadata.get("tool_call_id")
-            payload = {"data": result.get("data"), "error": result.get("error")}
-            if result.get("result_key"):
-                payload["result_key"] = result["result_key"]
-            if result.get("warnings"):
-                payload["warnings"] = result["warnings"]
+            payload = model_result_payload(
+                result.get("data"),
+                error=result.get("error"),
+                result_key=result.get("result_key"),
+                warnings=result.get("warnings"),
+                delivery=result.get("metadata", {}).get("model_projection", {}).get("delivery"),
+            )
             rendered = json.dumps(payload, ensure_ascii=False)
             if call_id in pending:
                 pending.remove(call_id)
@@ -464,6 +480,15 @@ class _ConversationBackend:
     conversation_mode = "messages"
     _native_blocks = False
     request_policy = BackendRequestPolicy(supports_single_model_request=True)
+    request_admission: Callable[[dict[str, Any]], None] | None = None
+
+    def configure_request_admission(
+        self, admission: Callable[[dict[str, Any]], None] | None
+    ) -> None:
+        """Install an optional synchronous host policy before provider transmission."""
+        if admission is not None and not callable(admission):
+            raise ValueError("request admission must be callable or None")
+        self.request_admission = admission
 
     @property
     def supported_request_options(self) -> frozenset[str]:

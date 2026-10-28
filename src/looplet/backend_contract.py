@@ -159,6 +159,8 @@ FORWARDED_CAPABILITIES = frozenset(
         "apply_context_compaction",
         "set_model_turn_context",
         "record_tool_result",
+        "record_tool_receipt",
+        "supports_stateless_text_generation",
         "set_run_envelope",
         "new_run_backend",
         "request_budgets",
@@ -166,6 +168,8 @@ FORWARDED_CAPABILITIES = frozenset(
         "request_attempt_callback",
         "set_request_attempt_callback",
         "configure_request_options",
+        "configure_request_admission",
+        "request_admission",
         "supported_request_options",
         "request_configuration",
         "close",
@@ -177,7 +181,7 @@ FORWARDED_CAPABILITIES = frozenset(
     }
 )
 MUTABLE_CAPABILITIES = frozenset(
-    {"last_usage", "request_attempt_callback", "_client", "_state_path"}
+    {"last_usage", "request_attempt_callback", "request_admission", "_client", "_state_path"}
 )
 
 

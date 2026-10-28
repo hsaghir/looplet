@@ -34,7 +34,7 @@ from looplet.blueprints import (
     package_agent_factory_as_bundle,
     wrap_claude_skill_as_bundle,
 )
-from looplet.budget import ContextBudget, ThresholdCompactHook
+from looplet.budget import ContextBudget, RequestTokenBudget, ThresholdCompactHook
 from looplet.bundled import bundled_cartridge_path
 from looplet.bundles import (
     BundleCard,
@@ -349,6 +349,7 @@ __all__ = [
     "default_compact_service",
     "run_compact",
     "ContextBudget",
+    "RequestTokenBudget",
     "ThresholdCompactHook",
     "CachePolicy",
     "StaticMemorySource",

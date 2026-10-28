@@ -19,6 +19,7 @@ def model_result_payload(
     error: str | None = None,
     result_key: str | None = None,
     warnings: list[str] | None = None,
+    delivery: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the same envelope for text and provider-native results."""
     payload: dict[str, Any] = {}
@@ -27,6 +28,8 @@ def model_result_payload(
     payload.update(data=data, error=error)
     if warnings:
         payload["warnings"] = list(warnings)
+    if delivery:
+        payload["delivery"] = dict(delivery)
     return payload
 
 
@@ -36,6 +39,7 @@ def result_payload(result: ToolResult) -> dict[str, Any]:
         error=result.error,
         result_key=result.result_key,
         warnings=result.warnings,
+        delivery=result.metadata.get("model_projection", {}).get("delivery"),
     )
 
 
@@ -46,18 +50,54 @@ def payload_text(result: ToolResult) -> str:
 def _refuse(result: ToolResult, error: str, limit: int) -> ToolResult:
     from looplet.scaffolding import ContextOverflowError
 
+    prior = result.metadata.get("model_projection", {}).get("delivery", {})
+    delivery = {**prior, "status": "refused", "reason": error.partition(":")[0], "max_chars": limit}
+    data = result.data
+    if isinstance(data, dict) and isinstance(data.get("content"), str):
+        offset = data.get("offset")
+        if type(offset) is int:
+            delivery["offset"] = offset
+            content = data["content"]
+            lower, upper = 0, len(content)
+            while lower < upper:
+                middle = (lower + upper + 1) // 2
+                page = {**data, "content": content[:middle], "next_offset": offset + middle}
+                candidate = replace(
+                    result,
+                    data=page,
+                    metadata={**result.metadata, "model_projection": {"max_chars": limit}},
+                )
+                if len(payload_text(candidate)) <= limit:
+                    lower = middle
+                else:
+                    upper = middle - 1
+            delivery["suggested_limit"] = lower or None
+        if data.get("result_key"):
+            delivery["result_key"] = data["result_key"]
     refused = replace(
         result,
         data=None,
-        error=error,
         warnings=[],
         metadata={
             **result.metadata,
-            "model_projection": {"max_chars": limit, "refused": True},
+            "model_projection": {"max_chars": limit, "refused": True, "delivery": delivery},
         },
     )
     if len(payload_text(refused)) > limit:
-        raise ContextOverflowError("Tool result control envelope exceeds max_chars")
+        if not result.error:
+            raise ContextOverflowError("Tool result control envelope exceeds max_chars")
+        delivery["error_truncated"] = True
+        lower, upper = 0, len(result.error)
+        while lower < upper:
+            middle = (lower + upper + 1) // 2
+            candidate = replace(refused, error=result.error[:middle])
+            if len(payload_text(candidate)) <= limit:
+                lower = middle
+            else:
+                upper = middle - 1
+        if not lower:
+            raise ContextOverflowError("Tool result control envelope exceeds max_chars")
+        refused = replace(refused, error=result.error[:lower])
     return refused
 
 
@@ -79,6 +119,9 @@ def project_tool_result(
     limit = hints.get("max_chars", default_limit) if max_chars is None else max_chars
     if type(limit) is not int or limit < 1:
         raise ValueError("Tool result max_chars must be a positive integer")
+    prior = result.metadata.get("model_projection", {})
+    if prior.get("refused"):
+        return _refuse(result, prior["delivery"]["reason"], limit)
     metadata = {**result.metadata, "model_projection": {"max_chars": limit}}
     candidate = replace(result, metadata=metadata)
     if result.metadata.get("result_is_view"):
@@ -159,16 +202,13 @@ def bound_result_batch(results: list[ToolResult], *, max_chars: int) -> list[Too
                 projected[largest], max_chars=max(1, sizes[largest] // 2)
             )
         except ContextOverflowError:
-            replacement = replace(
-                projected[largest],
-                data=None,
-                error=(
-                    "result_view_too_large: reduce limit."
-                    if projected[largest].metadata.get("result_is_view")
-                    else "result_budget_exhausted: inspect result_key."
-                ),
-                warnings=[],
-            )
+            try:
+                replacement = project_tool_result(
+                    projected[largest], max_chars=max(1, sizes[largest] - 1)
+                )
+            except ContextOverflowError:
+                eligible.remove(largest)
+                continue
         size = len(payload_text(replacement))
         if size >= sizes[largest]:
             eligible.remove(largest)

@@ -26,7 +26,7 @@ from typing import Any
 from looplet._backend_contract import json_snapshot
 from looplet.conversation import ContentBlock, Conversation, Message, MessageRole
 from looplet.session import SessionLog
-from looplet.types import Step, ToolResult
+from looplet.types import Step, ToolCall, ToolResult
 
 
 class HistoryRecorder:
@@ -54,6 +54,7 @@ class HistoryRecorder:
         max_message_chars: int = 5000,
         typed_turns: bool = False,
         project_tool_result: Callable[[ToolResult], ToolResult] | None = None,
+        observe_tool_result: Callable[[ToolCall, ToolResult], None] | None = None,
     ) -> None:
         self._state = state
         self._session_log = session_log
@@ -61,6 +62,7 @@ class HistoryRecorder:
         self._max_chars = max_message_chars
         self._typed_turns = typed_turns
         self._project_tool_result = project_tool_result
+        self._observe_tool_result = observe_tool_result
 
     # ── Step recording ───────────────────────────────────────────
 
@@ -83,6 +85,14 @@ class HistoryRecorder:
         if self._state is not None and hasattr(self._state, "steps"):
             if not self._state.steps or self._state.steps[-1] is not step:
                 self._state.steps.append(step)
+
+        if (
+            self._observe_tool_result is not None
+            and step.tool_call.call_id
+            and not step.tool_call.tool.startswith("__")
+            and step.tool_call.metadata.get("completion_source") != "assistant_message"
+        ):
+            self._observe_tool_result(step.tool_call, step.tool_result)
 
         if self._session_log is not None:
             self._session_log.record(

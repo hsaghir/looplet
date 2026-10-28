@@ -215,6 +215,54 @@ def test_file_result_store_is_a_writable_host_resource(tmp_path, monkeypatch):
     assert registry.list_results()["total_results"] == 1
 
 
+@pytest.mark.parametrize("offset", [0, 65500, 65535, 65540, 131100])
+@pytest.mark.parametrize("query", ["NEEDLE", "x" * 256, "missing", "\U0001f600"])
+@pytest.mark.parametrize("limit", [1, 2, 5])
+def test_cached_result_views_use_bounded_reads(tmp_path, monkeypatch, offset, query, limit):
+    from pathlib import Path
+
+    from looplet.builtin_tools.tool_results import read_result, search_result
+    from looplet.result_store import FileToolResultStore
+
+    text = "x" * 65533 + "NEEDLE" + "\r\n\U0001f600line\n" * 9000 + "NEEDLEtail"
+    store = FileToolResultStore(str(tmp_path))
+    key = store.store_result({"body": text})
+    store.read_result(key, json_pointer="/body", limit=1)
+    reopened = FileToolResultStore(str(tmp_path))
+    original_open = Path.open
+
+    class BoundedReader:
+        def __init__(self, stream):
+            self.stream = stream
+
+        def read(self, size=-1):
+            assert 0 <= size <= 65536
+            return self.stream.read(size)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.stream.close()
+
+    def open_path(path, *args, **kwargs):
+        stream = original_open(path, *args, **kwargs)
+        return BoundedReader(stream) if path.suffix == ".txt" else stream
+
+    monkeypatch.setattr(Path, "open", open_path)
+    expected_page = read_result(text, result_key=key, json_pointer="", offset=offset, limit=37)
+    expected_page["json_pointer"] = "/body"
+    assert reopened.read_result(key, json_pointer="/body", offset=offset, limit=37) == expected_page
+    expected_search = search_result(
+        text, result_key=key, query=query, json_pointer="", offset=offset, limit=limit
+    )
+    expected_search["json_pointer"] = "/body"
+    assert (
+        reopened.search_result(key, query, json_pointer="/body", offset=offset, limit=limit)
+        == expected_search
+    )
+
+
 def test_file_result_store_quota_does_not_discard_successful_tool_output(tmp_path):
     from looplet import ToolCall, tools_from
     from looplet.result_store import FileToolResultStore

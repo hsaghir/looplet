@@ -1571,12 +1571,32 @@ class BaseToolRegistry:
             return store.snapshot_results()
         return deepcopy(self._evidence_results)
 
+    def checkpoint_results(self) -> dict[str, Any]:
+        """Use a store's durable reference when supported; preserve explicit snapshots."""
+        if (
+            getattr(self.snapshot_results, "__func__", None)
+            is not BaseToolRegistry.snapshot_results
+        ):
+            return self.snapshot_results()
+        store = self._external_result_store()
+        capture = getattr(store, "checkpoint_results", None)
+        if not callable(capture):
+            return self.snapshot_results()
+        snapshot = capture()
+        if not isinstance(snapshot, dict):
+            raise TypeError("Checkpoint result store must return a dictionary")
+        return snapshot
+
     def restore_results(self, snapshot: dict[str, Any]) -> None:
         """Restore detached original outputs from a checkpoint."""
         store = self._external_result_store()
         if store is not None:
             store.restore_results(snapshot)
             return
+        if "__looplet_file_result_store_v1__" in snapshot:
+            from looplet.result_store import FileToolResultStore
+
+            snapshot = dict(FileToolResultStore.checkpoint_values(snapshot))
         self._evidence_results = json_snapshot(snapshot)
 
     @staticmethod

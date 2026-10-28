@@ -114,9 +114,10 @@ For async code, use `async_composable_loop()` with `contextlib.aclosing`.
 Source builds use `execution-v1` in Python loops and loaded cartridges.
 The model chooses its method; the host controls authority and resources.
 
-- Deterministic context compaction, without summary-model calls or filesystem writes.
+- Deterministic context compaction, without summary-model calls.
 - Typed native-tool history without requiring an assistant completion policy.
 - Original tool results retained separately from bounded conversation previews.
+- Disk-backed history and provenance, retained results, checkpoints, and branch metadata under a private run directory.
 
 There is no automatic stagnation nudge or tool quota derived from step count.
 Select `standard-v1` to retain those policies from the earlier source profile,
@@ -141,7 +142,8 @@ for step in composable_loop(
 
 Use `preset.resolve_harness().describe()` for the equivalent cartridge inspection.
 Set `harness_profile="minimal"` to omit all automatic additions, or set
-`disabled_defaults=["compaction", "stagnation", "tool_budget"]` selectively.
+`disabled_defaults` selectively. For example, `["persistence"]` omits automatic
+history spooling, evidence files, result-store binding, checkpoints, and branch recording.
 Explicit services and hooks remain in place.
 
 Context estimates are approximate and compaction can discard details.
@@ -150,7 +152,9 @@ An explicitly selected dispatch guard is not a provider-request or billing ceili
 The base registry records content-addressed originals for `get_result(result_key)`
 and checkpoint result-store round trips. Hosts can disable new retention with
 `BaseToolRegistry(retain_results=False)` or provide their own registry storage.
-Security isolation, permissions, persistence, tracing, and grading remain host choices.
+The host controls security isolation, permissions, grading, and evidence retention lifetime.
+Run files default to `.looplet/runs/<unique-id>`; set `run_dir` to choose their location.
+The state metadata exposes the resolved run and trace directories.
 See [runtime controls](docs/operations.md#standard-agent-harness) for replacement rules.
 
 The independently graded example exercises both entry paths and compaction:

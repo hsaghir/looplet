@@ -18,6 +18,7 @@ import ntpath
 import os
 import tempfile
 import time
+from collections.abc import MutableSequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Protocol, cast, runtime_checkable
@@ -666,7 +667,7 @@ class CheckpointHook:
         """Save a checkpoint if step_num is a multiple of save_every_n_steps."""
         n = step_num
         if n % self.save_every_n_steps == 0:
-            if isinstance(getattr(state, "steps", None), list):
+            if isinstance(getattr(state, "steps", None), MutableSequence):
                 self._pending_steps.append(n)
             else:
                 self._save(n)

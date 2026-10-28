@@ -54,7 +54,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 - Inspectable `resolve_harness()` and preset-level resolution compose deterministic context compaction, actual-result stagnation nudges, and a bounded dispatch budget without implicit I/O or summary-model calls.
 - `ToolCallBudgetHook` reserves before concurrent dispatch and counts successful free calls. It is a per-invocation tool guard, not a provider-request or billing limit.
-- Independently graded default-harness examples exercise fresh Python and strict-exported cartridge agents; a downstream qualification script covers Analytics profiles and both proxy transports.
+- Independently graded default-harness examples exercise fresh Python and strict-exported cartridge agents; private downstream qualification covers both proxy transports.
+- Standard execution composes disk-backed history, complete provenance, retained tool results, checkpoints, and branch metadata beneath explicit host configuration. Minimal mode and individual persistence opt-outs remain available.
+- Automatic file-result checkpoints use verified immutable catalog references. Lazy final-result snapshots preserve complete history without collecting all outputs in memory; explicit full exports remain available.
 - `is_loop_hook()` recognizes partial, duck-typed hooks without mandatory inheritance. `LoopHook` remains the complete interface for protocol checks.
 - Public optional backend contracts preserve transparent wrappers, retry ownership, typed context and provider state without required inheritance.
 - Shared model budgets admit individual requests, avoid duplicate nested charges and restore consumed allowances without replenishment.

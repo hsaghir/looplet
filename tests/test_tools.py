@@ -176,6 +176,93 @@ def test_result_tools_native_schemas_preserve_required_and_optional_fields():
     assert schemas["search_tool_result"]["required"] == ["result_key", "query"]
 
 
+def test_file_result_checkpoint_branches_without_loading_all_values(tmp_path, monkeypatch):
+    import json
+
+    from looplet.result_store import FileToolResultStore
+
+    source = FileToolResultStore(str(tmp_path / "source"))
+    first = source.store_result({"payload": "complete evidence " * 10000})
+    original_get = FileToolResultStore.get_result
+
+    def reject_loading(*args):
+        raise AssertionError("Checkpoint creation must not load full results")
+
+    with monkeypatch.context() as context:
+        context.setattr(FileToolResultStore, "get_result", reject_loading)
+        snapshot = source.checkpoint_results()
+    assert len(json.dumps(snapshot)) < 1000
+    second = source.store_result("retained after checkpoint")
+    branch = FileToolResultStore(str(tmp_path / "branch"))
+    branch.restore_results(snapshot)
+    assert branch.get_result(first) == original_get(source, first)
+    assert branch.list_results()["total_results"] == 1
+    assert source.get_result(second) == "retained after checkpoint"
+    with pytest.raises(ValueError, match="separate result store"):
+        source.restore_results(snapshot)
+
+
+@pytest.mark.parametrize("damage", ["catalog", "missing_catalog", "source", "missing_source"])
+def test_file_result_checkpoint_refuses_missing_or_corrupt_evidence(tmp_path, damage):
+    from looplet.result_store import FileToolResultStore
+
+    source = FileToolResultStore(str(tmp_path / "source"))
+    key = source.store_result("complete evidence")
+    snapshot = source.checkpoint_results()
+    reference = snapshot["__looplet_file_result_store_v1__"]
+    path = (
+        tmp_path / "source" / ".snapshots" / (reference["sha256"] + ".jsonl")
+        if "catalog" in damage
+        else tmp_path / "source" / (key.removeprefix("sha256:") + ".json")
+    )
+    if damage.startswith("missing"):
+        path.unlink()
+    else:
+        path.write_text('"changed"\n')
+    branch = FileToolResultStore(str(tmp_path / "branch"))
+    previous = branch.store_result("existing destination evidence")
+    with pytest.raises((ValueError, FileNotFoundError)):
+        branch.restore_results(snapshot)
+    assert branch.get_result(previous) == "existing destination evidence"
+    assert branch.list_results()["total_results"] == 1
+
+
+@pytest.mark.parametrize("damage", ["unchanged", "corrupt", "missing"])
+def test_file_result_checkpoint_verifies_same_store_evidence(tmp_path, damage):
+    from looplet.result_store import FileToolResultStore
+
+    source = FileToolResultStore(str(tmp_path / "source"))
+    key = source.store_result("complete evidence")
+    snapshot = source.checkpoint_results()
+    path = tmp_path / "source" / (key.removeprefix("sha256:") + ".json")
+    if damage == "unchanged":
+        source.restore_results(snapshot)
+        assert source.get_result(key) == "complete evidence"
+    else:
+        if damage == "missing":
+            path.unlink()
+        else:
+            path.write_text('"changed"\n')
+        with pytest.raises((ValueError, FileNotFoundError)):
+            source.restore_results(snapshot)
+    assert source.list_results()["total_results"] == 1
+
+
+def test_checkpoint_results_preserves_explicit_registry_snapshot(tmp_path):
+    from looplet.result_store import FileToolResultStore
+    from looplet.tools import BaseToolRegistry
+
+    class ExplicitRegistry(BaseToolRegistry):
+        def snapshot_results(self):
+            return {"explicit": "host-owned checkpoint"}
+
+    registry = ExplicitRegistry()
+    registry.set_resources({"tool_result_store": FileToolResultStore(str(tmp_path))})
+    assert registry.checkpoint_results() == {"explicit": "host-owned checkpoint"}
+    with pytest.raises(ValueError, match="Invalid checkpoint"):
+        BaseToolRegistry().restore_results({"__looplet_file_result_store_v1__": {}})
+
+
 def test_file_result_store_is_a_writable_host_resource(tmp_path, monkeypatch):
     from looplet import ToolCall, tools_from
     from looplet.builtin_tools import tool_results

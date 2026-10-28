@@ -9,6 +9,7 @@ must satisfy to work with the looplet loop engine.
 
 from __future__ import annotations
 
+from collections.abc import MutableSequence, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -94,7 +95,7 @@ class RunResult:
     phase: RunPhase
     termination_reason: str | None
     output: Any | None
-    steps: tuple["Step", ...]
+    steps: Sequence["Step"]
     run_envelope: "RunEnvelope | None" = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -120,13 +121,14 @@ class RunResult:
         *,
         output: Any | None = None,
         tool_name: str | None = None,
-        steps: list["Step"] | tuple["Step", ...] | None = None,
+        steps: Sequence["Step"] | None = None,
     ) -> "RunResult":
         """Build a result, selecting the actual accepted terminal by default.
 
         Explicit ``tool_name`` selections preserve legacy collector behavior.
         States without an acceptance record retain the ``done`` fallback.
         """
+        from looplet._storage import DiskBackedList
         from looplet.done_steps import done_output  # noqa: PLC0415
 
         metadata = getattr(state, "metadata", {})
@@ -147,7 +149,10 @@ class RunResult:
             reason = getattr(state, "termination_reason", None)
         if reason is None:
             reason = metadata_copy.get("termination_reason")
-        selected_steps = tuple(steps if steps is not None else getattr(state, "steps", ()))
+        history = steps if steps is not None else getattr(state, "steps", ())
+        selected_steps = (
+            history.snapshot() if isinstance(history, DiskBackedList) else tuple(history)
+        )
         selected_tool = (
             tool_name
             if tool_name is not None
@@ -697,7 +702,7 @@ class AgentState(Protocol):
     producing summaries for LLM context windows.
     """
 
-    steps: list
+    steps: MutableSequence
     queries_used: int
 
     @property
@@ -736,7 +741,7 @@ class DefaultState:
     subclass or write your own class satisfying the ``AgentState`` protocol.
     """
 
-    steps: list = field(default_factory=list)
+    steps: MutableSequence = field(default_factory=list)
     queries_used: int = 0
     max_steps: int = 15
     metadata: dict[str, Any] = field(default_factory=dict)

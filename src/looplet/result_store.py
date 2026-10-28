@@ -8,11 +8,15 @@ import os
 import re
 import tempfile
 from dataclasses import dataclass, field
+from itertools import islice, zip_longest
 from pathlib import Path
 from threading import RLock
 from typing import Any
 
 from looplet._backend_contract import json_snapshot
+from looplet._storage import DiskBackedDict
+
+_CHECKPOINT_REFERENCE = "__looplet_file_result_store_v1__"
 
 
 @dataclass
@@ -28,7 +32,7 @@ class FileToolResultStore:
     directory: str
     max_bytes: int | None = None
     _root: Path = field(init=False, repr=False, compare=False)
-    _catalog: dict[str, dict[str, Any]] = field(init=False, repr=False, compare=False)
+    _catalog: Any = field(init=False, repr=False, compare=False)
     _used_bytes: int = field(init=False, repr=False, compare=False)
     _lock: Any = field(init=False, repr=False, compare=False)
     _view_lengths: dict[str, int] = field(
@@ -43,7 +47,12 @@ class FileToolResultStore:
         self._root.mkdir(parents=True, exist_ok=True, mode=0o700)
         self._lock = RLock()
         catalog = self._root / ".catalog.json"
-        self._catalog = json.loads(catalog.read_text(encoding="utf-8")) if catalog.exists() else {}
+        self._catalog = DiskBackedDict(
+            lambda value: value, lambda value: value, self._root / ".catalog.sqlite3"
+        )
+        if not self._catalog and catalog.exists():
+            with self._catalog.transaction():
+                self._catalog.update(json.loads(catalog.read_text(encoding="utf-8")))
         for key in self._catalog:
             self._path(key)
         self._used_bytes = sum(
@@ -72,7 +81,7 @@ class FileToolResultStore:
                 temporary.unlink(missing_ok=True)
 
     def _save_catalog(self) -> None:
-        self._write(self._root / ".catalog.json", json.dumps(self._catalog).encode("utf-8"))
+        self._catalog.flush()
 
     def _put(self, data: Any) -> str:
         snapshot = json_snapshot(data)
@@ -96,15 +105,10 @@ class FileToolResultStore:
 
     def store_result(self, data: Any) -> str:
         """Store a detached source value; identical values share a key."""
-        with self._lock:
-            previous = dict(self._catalog)
-            try:
-                key = self._put(data)
-                self._save_catalog()
-                return key
-            except BaseException:
-                self._catalog = previous
-                raise
+        with self._lock, self._catalog.transaction():
+            key = self._put(data)
+            self._save_catalog()
+            return key
 
     def get_result(self, key: str) -> Any:
         with self._lock:
@@ -131,7 +135,7 @@ class FileToolResultStore:
             boundary = (
                 len(self._catalog) if end_offset is None else min(len(self._catalog), end_offset)
             )
-            entries = list(self._catalog.values())[offset : min(offset + limit, boundary)]
+            entries = list(islice(self._catalog.values(), offset, min(offset + limit, boundary)))
             end = offset + len(entries)
             return {
                 "results": [dict(entry) for entry in entries],
@@ -160,6 +164,8 @@ class FileToolResultStore:
                 except OSError:
                     return text
                 self._used_bytes += len(payload)
+                if len(self._view_lengths) >= 64:
+                    self._view_lengths.pop(next(iter(self._view_lengths)))
                 self._view_lengths[path.name] = len(text)
                 return path
             return text
@@ -174,6 +180,8 @@ class FileToolResultStore:
 
     def _view_length(self, path: Path) -> int:
         if path.name not in self._view_lengths:
+            if len(self._view_lengths) >= 64:
+                self._view_lengths.pop(next(iter(self._view_lengths)))
             with path.open(encoding="utf-8", newline="") as stream:
                 self._view_lengths[path.name] = sum(
                     len(chunk) for chunk in iter(lambda: stream.read(65536), "")
@@ -268,15 +276,80 @@ class FileToolResultStore:
         with self._lock:
             return {key: self.get_result(key) for key in self._catalog}
 
-    def restore_results(self, snapshot: dict[str, Any]) -> None:
+    def checkpoint_results(self) -> dict[str, Any]:
+        """Reference a verified immutable catalog without loading its source values."""
         with self._lock:
-            previous = dict(self._catalog)
+            directory = self._root / ".snapshots"
+            directory.mkdir(exist_ok=True, mode=0o700)
+            digest = hashlib.sha256()
+            temporary = None
             try:
-                for key, data in snapshot.items():
-                    if self._put(data) != key:
+                with tempfile.NamedTemporaryFile(
+                    dir=directory, prefix=".write-", delete=False
+                ) as stream:
+                    temporary = Path(stream.name)
+                    for entry in self._catalog.values():
+                        payload = json.dumps(entry, sort_keys=True).encode("utf-8") + b"\n"
+                        digest.update(payload)
+                        stream.write(payload)
+                checksum = digest.hexdigest()
+                destination = directory / (checksum + ".jsonl")
+                os.replace(temporary, destination)
+                return {_CHECKPOINT_REFERENCE: {"directory": self.directory, "sha256": checksum}}
+            finally:
+                if temporary is not None:
+                    temporary.unlink(missing_ok=True)
+
+    @staticmethod
+    def _checkpoint_source(snapshot: dict[str, Any]) -> tuple[FileToolResultStore, Path]:
+        reference = snapshot.get(_CHECKPOINT_REFERENCE)
+        if not isinstance(reference, dict) or set(reference) != {"sha256", "directory"}:
+            raise ValueError("Invalid checkpoint result store reference")
+        checksum = reference["sha256"]
+        if not isinstance(checksum, str) or re.fullmatch(r"[a-f0-9]{64}", checksum) is None:
+            raise ValueError("Invalid checkpoint result catalog digest")
+        if not isinstance(reference["directory"], str):
+            raise ValueError("Invalid checkpoint result store directory")
+        directory = Path(reference["directory"]).resolve()
+        if not directory.is_dir():
+            raise ValueError("Checkpoint result store is unavailable")
+        path = directory / ".snapshots" / (checksum + ".jsonl")
+        with path.open("rb") as stream:
+            if hashlib.file_digest(stream, "sha256").hexdigest() != checksum:
+                raise ValueError("Checkpoint result catalog digest does not match")
+        return FileToolResultStore(str(directory)), path
+
+    @staticmethod
+    def checkpoint_values(snapshot: dict[str, Any]) -> Any:
+        """Iterate verified source values for explicit restore into another store."""
+        source, path = FileToolResultStore._checkpoint_source(snapshot)
+        with path.open(encoding="utf-8") as stream:
+            for line in stream:
+                key = json.loads(line)["result_key"]
+                yield key, source.get_result(key)
+
+    def restore_results(self, snapshot: dict[str, Any]) -> None:
+        if set(snapshot) == {_CHECKPOINT_REFERENCE}:
+            source, path = self._checkpoint_source(snapshot)
+            if source._root == self._root:
+                with self._lock, path.open(encoding="utf-8") as stream:
+                    keys = (json.loads(line)["result_key"] for line in stream)
+                    if any(left != right for left, right in zip_longest(keys, self._catalog)):
+                        raise ValueError("Restore an earlier catalog into a separate result store")
+                    for key in self._catalog:
+                        self.get_result(key)
+                return
+            with self._lock, self._catalog.transaction(), path.open(encoding="utf-8") as stream:
+                self._catalog.clear()
+                for line in stream:
+                    key = json.loads(line)["result_key"]
+                    if self._put(source.get_result(key)) != key:
                         raise ValueError("Checkpoint result content does not match its key")
-                self._catalog = {key: self._catalog[key] for key in snapshot}
                 self._save_catalog()
-            except BaseException:
-                self._catalog = previous
-                raise
+            return
+        with self._lock, self._catalog.transaction():
+            self._catalog.clear()
+            for key, data in snapshot.items():
+                if self._put(data) != key:
+                    raise ValueError("Checkpoint result content does not match its key")
+            self._save_catalog()

@@ -526,9 +526,20 @@ class LoopConfig:
     """Versioned shared defaults; ``minimal`` disables automatic composition."""
 
     disabled_defaults: list[str] = field(default_factory=list, kw_only=True)
-    """Default capabilities to omit: compaction, stagnation, tool_budget.
+    """Default capabilities to omit by name.
+
+    Names are compaction, stagnation, tool_budget, history, result_retention,
+    provenance, checkpointing, branching, and persistence (all persistence defaults).
 
     Explicitly supplied services and hooks are never removed by this setting.
+    """
+
+    run_dir: str | None = field(default=None, kw_only=True)
+    """Private run directory for default evidence, results, checkpoints, and branches.
+
+    Standard profiles allocate a unique directory under ``.looplet/runs``.
+    Explicit stores, recorders, and checkpoint paths take precedence.
+    ``minimal`` or ``disabled_defaults=["persistence"]`` disables this composition.
     """
 
     done_tools: list[str] = field(default_factory=list)
@@ -1319,7 +1330,8 @@ def _build_tool_ctx(
                 {
                     key: value
                     for key, value in _state_meta.items()
-                    if key not in {"run_status", "run_phase", "termination_reason"}
+                    if key
+                    not in {"run_status", "run_phase", "termination_reason", "run_dir", "trace_dir"}
                 }
             )
 
@@ -2571,6 +2583,12 @@ class _LoopFinalizer:
         return calls
 
 
+def _trace_steps(state: Any) -> Any:
+    from looplet._storage import DiskBackedList
+
+    return state.steps[-5:] if isinstance(state.steps, DiskBackedList) else state.steps
+
+
 def composable_loop(
     llm: Any,
     task: Any = None,
@@ -2618,7 +2636,7 @@ def composable_loop(
     or use ``contextlib.closing``. Cleanup runs on exhaustion, closure, and exceptions.
     Early closure marks an unfinished run as stopped, not completed.
     """
-    from looplet.harness import resolve_harness
+    from looplet.harness import prepare_harness_run, resolve_harness
 
     effective_config = _resolve_loop_config(
         config, max_steps=max_steps, system_prompt=system_prompt
@@ -2627,18 +2645,26 @@ def composable_loop(
     original_compact_service = effective_config.compact_service
     effective_config.compact_service = harness.config.compact_service
     hooks = harness.hooks
+    try:
+        prepared = prepare_harness_run(
+            effective_config, hooks, llm, tools, state, session_log, conversation
+        )
+    except BaseException:
+        if effective_config.compact_service is harness.config.compact_service:
+            effective_config.compact_service = original_compact_service
+        raise
     tokens = _set_context_overrides(effective_config)
     finalizer = _LoopFinalizer()
     try:
         trace = yield from _composable_loop_impl(
-            llm=llm,
+            llm=prepared.llm,
             task=task,
             tools=tools,
             context=context,
-            hooks=hooks,
-            config=effective_config,
-            state=state,
-            session_log=session_log,
+            hooks=prepared.hooks,
+            config=prepared.config,
+            state=prepared.state,
+            session_log=prepared.session_log,
             stream=stream,
             conversation=conversation,
             _finalizer=finalizer,
@@ -2654,9 +2680,12 @@ def composable_loop(
         try:
             finalizer.finish(suppress_errors=True)
         finally:
-            _reset_context_overrides(tokens)
-            if effective_config.compact_service is harness.config.compact_service:
-                effective_config.compact_service = original_compact_service
+            try:
+                prepared.finish()
+            finally:
+                _reset_context_overrides(tokens)
+                if effective_config.compact_service is harness.config.compact_service:
+                    effective_config.compact_service = original_compact_service
 
 
 def _composable_loop_impl(
@@ -2803,6 +2832,10 @@ def _composable_loop_impl(
     def _get_llm() -> Any:
         if config is not None and config.router is not None:  # pyright: ignore[reportOptionalMemberAccess]
             selected = config.router.select(purpose="reasoning")  # pyright: ignore[reportOptionalMemberAccess]
+            from looplet.provenance import _RecordingBase
+
+            if isinstance(llm, _RecordingBase):
+                selected = llm.for_backend(selected)
         else:
             selected = llm
         loop_ctx.llm = _turns.wrap(selected) if _turns is not None else selected
@@ -3814,7 +3847,7 @@ def _composable_loop_impl(
                                     "queries_used": getattr(state, "queries_used", 0),
                                     "budget_remaining": getattr(state, "budget_remaining", 0),
                                 },
-                                tool_results_store=tools.snapshot_results(),
+                                tool_results_store=tools.checkpoint_results(),
                                 domain_state=(
                                     checkpoint_state(loop_ctx)
                                     if checkpoint_state is not None
@@ -3985,7 +4018,7 @@ def _composable_loop_impl(
                             "queries_used": getattr(state, "queries_used", 0),
                             "budget_remaining": getattr(state, "budget_remaining", 0),
                         },
-                        tool_results_store=tools.snapshot_results(),
+                        tool_results_store=tools.checkpoint_results(),
                         domain_state=(
                             checkpoint_state(loop_ctx) if checkpoint_state is not None else {}
                         ),
@@ -4173,7 +4206,7 @@ def _composable_loop_impl(
                             "queries_used": getattr(state, "queries_used", 0),
                             "budget_remaining": getattr(state, "budget_remaining", 0),
                         },
-                        tool_results_store=tools.snapshot_results(),
+                        tool_results_store=tools.checkpoint_results(),
                         domain_state=(
                             checkpoint_state(loop_ctx) if checkpoint_state is not None else {}
                         ),
@@ -4287,7 +4320,7 @@ def _composable_loop_impl(
                             "queries_used": getattr(state, "queries_used", 0),
                             "budget_remaining": getattr(state, "budget_remaining", 0),
                         },
-                        tool_results_store=tools.snapshot_results(),
+                        tool_results_store=tools.checkpoint_results(),
                         domain_state=(
                             checkpoint_state(loop_ctx) if checkpoint_state is not None else {}
                         ),
@@ -4441,7 +4474,9 @@ def _composable_loop_impl(
             )
             trace = {
                 "task": task,
-                "steps": [step.to_dict() for step in state.steps],
+                "steps": [step.to_dict() for step in _trace_steps(state)],
+                "steps_total": len(state.steps),
+                "trace_dir": getattr(state, "metadata", {}).get("trace_dir"),
                 "llm_calls": _turns.data["model_calls"] if _turns is not None else llm_calls,
                 "total_time_ms": elapsed,
                 "conversation": _conv,
@@ -4449,7 +4484,9 @@ def _composable_loop_impl(
     else:
         trace = {
             "task": task,
-            "steps": [s.to_dict() for s in state.steps],
+            "steps": [s.to_dict() for s in _trace_steps(state)],
+            "steps_total": len(state.steps),
+            "trace_dir": getattr(state, "metadata", {}).get("trace_dir"),
             "llm_calls": llm_calls,
             "total_time_ms": elapsed,
             "conversation": _conv,

@@ -50,9 +50,9 @@ missing/denied approval does not. All failed probes and setup attempts were reta
 
 ## Downstream Qualification
 
-A frozen Analytics comparison used noneditable packages, identical non-Looplet
+A frozen Downstream comparison used noneditable packages, identical non-Looplet
 dependencies, identical source/task/oracle hashes, and nine matching opening
-prompts. Baseline Analytics passed 685 tests; candidate passed 695, including ten
+prompts. Baseline Downstream passed 685 tests; candidate passed 695, including ten
 new serialization-shape cases. Ruff and lock checks passed. Both had the same
 75 existing type diagnostics, compared as complete diagnostic multisets.
 
@@ -132,7 +132,7 @@ and source typing gates passed. Edited source files had no editor diagnostics.
 Dependency-order merges separately revalidate each integrated base and require
 green hosted Python 3.11-3.13, lint, distribution, and docs checks at its exact head.
 
-Installed Analytics at its actual declared core pin
+Installed Downstream at its actual declared core pin
 `0f1dd9f7ca94e6b4525212a3a524b0c2003e547d` passed 685 tests; the reviewed-core
 preview `1572fa979ebd2ddd89f0fe55c1b74023acaad3f8` passed 695. Both retained the
 same six existing warnings and the exact same complete multiset of 75 existing
@@ -143,7 +143,7 @@ The complete actual-pin live admission pair is still pending. Its first attempt
 was interrupted without terminal receipts and remains preserved, with an unknown
 cause. A new complete nine-case control-then-candidate pair was launched at
 2026-10-02 20:48:44 UTC with frozen packages/settings and durable terminal receipts.
-Partial outcomes are not admission evidence. Analytics remains draft until the
+Partial outcomes are not admission evidence. Downstream remains draft until the
 complete pair and immutable offline audits support adoption; no accuracy,
 efficiency, or billing improvement is claimed.
 
@@ -153,5 +153,5 @@ efficiency, or billing improvement is claimed.
 - Original pair exit log: `/tmp/looplet-dx-matched-pair-20261001.log`.
 - Installed-wheel gate: `/tmp/looplet-dx-installed-wheel-check-20261001.log`.
 - Installed demos: `/tmp/looplet-dx-installed-demos-20261002.log`.
-- Original live traces remain in the isolated Analytics worktrees under
+- Original live traces remain in the isolated Downstream worktrees under
   `eval-runs/nine-case-dx-{control,candidate}-9w-20261001-trial-1`.

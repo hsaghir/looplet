@@ -246,11 +246,12 @@ calls to finish that catalog even if new source results arrive during paging.
 Listing, reading, and searching do not add their own replies to the catalog.
 A later listing without the boundary can discover newly retained sources.
 
-#### Optional File-Backed Retention
+#### File-Backed Retention
 
 `FileToolResultStore` implements the same result-store resource with opaque
-content-addressed keys. Attach it to the preset so Python and cartridge runs
-receive the same host-selected store:
+content-addressed keys. Standard execution profiles bind one automatically under
+the run directory. Attach an explicit store to the preset to override that default
+for both Python and cartridge runs:
 
 ```python
 from looplet import FileToolResultStore
@@ -289,10 +290,19 @@ access to all results in that resource; use a separate store for each authority
 boundary. Files are atomically replaced, but writes are not fsynced and there is
 no write-ahead journal or cross-process writer coordination.
 
-Disk retention does not bound total process memory. Raw steps, provenance,
-checkpoint snapshots, and reading a selected JSON value can still materialize
-full outputs. Checkpoint exports include retained values rather than depending
-only on the continued existence of this directory.
+The default harness also spools raw steps and provenance to disk and streams
+provenance export. Automatic checkpoints reference an immutable, verified catalog;
+they require the original result directory to remain available. Restoring to a fresh
+store verifies and copies one source value at a time, preserving the original store.
+Explicit `snapshot_results()` still exports complete values for a portable snapshot
+and may allocate memory proportional to all results.
+
+Lazy history and automatic checkpointing avoid retaining every output in RAM.
+This is not a total-process memory limit: one active result, a concurrent batch,
+selected JSON extraction, custom host state, or an explicit full export can allocate
+more. A caller that collects every yielded step also retains those objects.
+See [default persistence and memory](operations.md#default-persistence-and-memory)
+for replacement rules, opt-outs, file lifetime, and the bounded return summary.
 
 #### Inspecting the model's view
 

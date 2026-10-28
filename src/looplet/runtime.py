@@ -6,12 +6,13 @@ import asyncio
 import concurrent.futures
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, MutableSequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Iterable
 from uuid import uuid4
 
+from looplet._storage import DiskBackedList
 from looplet.checkpoint import Checkpoint
 from looplet.events import EventPayload
 from looplet.execution_session import ExecutionSession
@@ -34,12 +35,13 @@ def _failed_runtime_result(
     if isinstance(stats, dict):
         metadata["looplet_run_stats"] = dict(stats)
     metadata["error"] = f"{type(exc).__name__}: {exc}"
+    history = getattr(state, "steps", ())
     return RunResult(
         status=RunStatus.FAILED,
         phase=RunPhase.TERMINAL,
         termination_reason="error",
         output=None,
-        steps=tuple(getattr(state, "steps", ())),
+        steps=history.snapshot() if isinstance(history, DiskBackedList) else tuple(history),
         run_envelope=envelope,
         metadata=metadata,
     )
@@ -49,7 +51,7 @@ class _RuntimeEventHook:
     def __init__(
         self,
         envelope: RunEnvelope,
-        events: list[RunEvent],
+        events: MutableSequence[RunEvent],
         store: RunStore | None,
         persistence_errors: list[str],
     ) -> None:
@@ -75,6 +77,8 @@ class _RuntimeEventHook:
 
 
 class _RunStoreCheckpointHook:
+    checkpoint_owner = True
+
     def __init__(
         self,
         store: RunStore,
@@ -157,7 +161,7 @@ class _RunStoreCheckpointHook:
                     "queries_used": getattr(state, "queries_used", 0),
                     "budget_remaining": getattr(state, "budget_remaining", None),
                 },
-                tool_results_store=self.tools.snapshot_results(),
+                tool_results_store=self.tools.checkpoint_results(),
                 domain_state=domain_state,
                 metadata=dict(getattr(state, "metadata", {}) or {}),
                 run_status=str(getattr(state, "run_status", "running")),
@@ -179,7 +183,7 @@ class RunHandle:
         run_id: str,
         cancel_token: CancelToken,
         future: concurrent.futures.Future[RunResult],
-        events: list[RunEvent],
+        events: MutableSequence[RunEvent],
         executor: concurrent.futures.ThreadPoolExecutor,
     ) -> None:
         self.run_id = run_id
@@ -263,7 +267,7 @@ class AgentRuntime:
         envelope: RunEnvelope,
         token: CancelToken,
         *,
-        events: list[RunEvent] | None = None,
+        events: MutableSequence[RunEvent] | None = None,
         claimed: bool = False,
     ) -> Iterator[_RuntimeExecution]:
         """Own setup, persistence, restoration, and release for either driver."""
@@ -274,7 +278,12 @@ class AgentRuntime:
                 self._ensure_open()
             persistence_errors: list[str] = []
             observer = _RuntimeEventHook(
-                envelope, events if events is not None else [], self.store, persistence_errors
+                envelope,
+                events
+                if events is not None
+                else DiskBackedList(RunEvent.to_dict, RunEvent.from_dict),
+                self.store,
+                persistence_errors,
             )
             checkpoint_hook = (
                 _RunStoreCheckpointHook(
@@ -336,7 +345,7 @@ class AgentRuntime:
         envelope: RunEnvelope | None = None,
         extra_hooks: Iterable[Any] = (),
         _cancel_token: CancelToken | None = None,
-        _event_buffer: list[RunEvent] | None = None,
+        _event_buffer: MutableSequence[RunEvent] | None = None,
         _claimed: bool = False,
     ) -> RunResult:
         """Run synchronously and always return a host-facing result."""
@@ -388,7 +397,7 @@ class AgentRuntime:
         run_envelope = envelope or self._new_envelope()
         token = CancelToken()
         self._claim(run_envelope.run_id, token)
-        events: list[RunEvent] = []
+        events: MutableSequence[RunEvent] = DiskBackedList(RunEvent.to_dict, RunEvent.from_dict)
         executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="looplet-run"
         )

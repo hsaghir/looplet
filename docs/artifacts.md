@@ -27,14 +27,14 @@ traces/run-42/
 └── call_01_response.txt
 ```
 
-| Path | Contents | Primary reader |
-| --- | --- | --- |
-| `artifact.json` | Format version, artifact kind, producing Looplet version, and declared components. | All supported directory readers |
-| `trajectory.json` | Run metadata, task view, steps, stop reason, timing, and captured context. | `EvalContext.from_trajectory_dir()` or JSON tooling |
-| `steps/step_NN.json` | One review-friendly copy of each step record. | Humans, diffs, JSON tooling |
-| `manifest.jsonl` | One structured summary per model call. | `looplet show`, replay loader, line-oriented tooling |
-| `call_NN_prompt.txt` | Exact recorded system prompt, user prompt, tool schemas, and call settings. | Humans and replay diagnostics |
-| `call_NN_response.txt` | Exact recorded model response or captured error. | Replay loader and humans |
+| Path                   | Contents                                                                           | Primary reader                                       |
+| ---------------------- | ---------------------------------------------------------------------------------- | ---------------------------------------------------- |
+| `artifact.json`        | Format version, artifact kind, producing Looplet version, and declared components. | All supported directory readers                      |
+| `trajectory.json`      | Run metadata, task view, steps, stop reason, timing, and captured context.         | `EvalContext.from_trajectory_dir()` or JSON tooling  |
+| `steps/step_NN.json`   | One review-friendly copy of each step record.                                      | Humans, diffs, JSON tooling                          |
+| `manifest.jsonl`       | One structured summary per model call.                                             | `looplet show`, replay loader, line-oriented tooling |
+| `call_NN_prompt.txt`   | Exact recorded system prompt, user prompt, tool schemas, and call settings.        | Humans and replay diagnostics                        |
+| `call_NN_response.txt` | Exact recorded model response or captured error.                                   | Replay loader and humans                             |
 
 Create and inspect a trace:
 
@@ -83,13 +83,13 @@ eval-runs/regression-42/
 └── case.json                   # when the case was supplied
 ```
 
-| Path | Contents | Trust role |
-| --- | --- | --- |
-| `artifact.json` | Declares a versioned `eval_run` and its required components. | Compatibility boundary |
-| `artifacts.json` | Collector-observed world state used by graders. | Host observation |
-| `evals.json` | Normalized grader scores, labels, metrics, and errors. | Decision evidence |
-| `expected.json` | Grader-only expected data restored into `ctx.task["expected"]` after the run. | Promotion oracle input |
-| `case.json` | The source case: id, task, expected data, marks, and notes. | Corpus identity and review |
+| Path             | Contents                                                                      | Trust role                 |
+| ---------------- | ----------------------------------------------------------------------------- | -------------------------- |
+| `artifact.json`  | Declares a versioned `eval_run` and its required components.                  | Compatibility boundary     |
+| `artifacts.json` | Collector-observed world state used by graders.                               | Host observation           |
+| `evals.json`     | Normalized grader scores, labels, metrics, and errors.                        | Decision evidence          |
+| `expected.json`  | Grader-only expected data restored into `ctx.task["expected"]` after the run. | Promotion oracle input     |
+| `case.json`      | The source case: id, task, expected data, marks, and notes.                   | Corpus identity and review |
 
 Load the complete record through the supported reader:
 
@@ -111,15 +111,15 @@ observations across rescoring. The reader recovers this metadata from older
 
 ### Writer inventory
 
-| Writer | Files it owns |
-| --- | --- |
-| `RecordingLLMBackend.save()` and its async twin | `artifact.json`, `manifest.jsonl`, and indexed `call_NN_{prompt,response}.txt` pairs |
-| `TrajectoryRecorder.save()` | `artifact.json`, `trajectory.json`, `steps/step_NN.json`, and the model-call files when a recording backend is attached |
-| `ProvenanceSink.flush()` | The union selected by its attached recorder/backend; an unused sink may create only its directory |
-| `EvalHook.save()` | Deprecated compatibility-only standalone report with `task`, `results`, `summary`, and optional `expected` / `artifacts` |
-| `save_eval_run()` | A versioned eval-run directory: required trajectory, artifacts, and eval results; optional case, expectations, and recorded calls |
-| `promote_to_offline()` | The same layout as `save_eval_run()` |
-| `run_cartridge_evals(..., output_dir=...)` | One `save_eval_run()` directory per case plus a `workspace/` owned by the evaluated application |
+| Writer                                          | Files it owns                                                                                                                     |
+| ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `RecordingLLMBackend.save()` and its async twin | `artifact.json`, `manifest.jsonl`, and indexed `call_NN_{prompt,response}.txt` pairs                                              |
+| `TrajectoryRecorder.save()`                     | `artifact.json`, `trajectory.json`, `steps/step_NN.json`, and the model-call files when a recording backend is attached           |
+| `ProvenanceSink.flush()`                        | The union selected by its attached recorder/backend; an unused sink may create only its directory                                 |
+| `EvalHook.save()`                               | Deprecated compatibility-only standalone report with `task`, `results`, `summary`, and optional `expected` / `artifacts`          |
+| `save_eval_run()`                               | A versioned eval-run directory: required trajectory, artifacts, and eval results; optional case, expectations, and recorded calls |
+| `promote_to_offline()`                          | The same layout as `save_eval_run()`                                                                                              |
+| `run_cartridge_evals(..., output_dir=...)`      | One `save_eval_run()` directory per case plus a `workspace/` owned by the evaluated application                                   |
 
 `EvalHook.save()` warns but retains its unversioned compatibility report. It has no
 supported round-trip reader and should not be used as a long-lived CI wire
@@ -155,10 +155,14 @@ process isolation for untrusted candidates.
 ```
 
 A checkpoint stores the step number, session log, conversation, selected
-configuration fields, an optional JSON-safe tool-result store snapshot,
+configuration fields, a JSON-safe tool-result store snapshot or verified catalog reference,
 metadata, and creation timestamp. Custom registries opt into result recall
 resume by implementing `snapshot_results()` and `restore_results()`;
-the default registry has no stored result payloads.
+the base registry retains original results. Its full snapshot export remains available.
+Standard execution binds a file result store and uses its immutable catalog reference
+for automatic checkpoints, avoiding a full payload copy per step. Keep that source
+directory for resume, or explicitly export a full snapshot for transport.
+Restore an earlier reference into a fresh store to branch without overwriting later evidence.
 When the same checkpoint directory is used again and `initial_checkpoint` is
 unset, Looplet resumes the highest-step incomplete checkpoint for the current
 `RunEnvelope.run_id`. A terminal checkpoint is authoritative and prevents
@@ -212,17 +216,17 @@ it without advancing the format. Unknown object fields are ignored; this makes
 additive metadata forward-compatible. Unknown component names are refused
 because components declare completeness.
 
-| File | Required stable | Optional stable | Internal or application-owned |
-| --- | --- | --- | --- |
-| `artifact.json` | `schema`, `version`, `kind`, `producer.name`, `producer.version`, `components` | Additional object fields | None |
-| `trajectory.json` | `run_id`, `termination_reason`, `steps`; each step's `tool_call` and `tool_result` | `task`, timestamps, counts, session text, metadata, context, call linkage, call summaries | In-memory span objects |
-| `manifest.jsonl` | Contiguous `index`, supported `method`; matching indexed prompt/response files and replay response section | Timing, sizes, tool count, step link, error, scope, metadata | None |
-| `artifacts.json` | A JSON object | Application-defined keys and values | The meaning of application keys |
-| `evals.json` | An array; each result's `name` | Present `score`, `label`, `metrics`, `details`, `explanation`, `duration_ms` | None |
-| `expected.json` | A JSON object when present | The whole file is optional | Application-defined keys and values |
-| `case.json` | `id` and `task` when present | `expected`, `marks`, `notes`; the whole file is optional | None |
-| `steps/step_NN.json` | None | None | Redundant review copy; `trajectory.json` is authoritative |
-| `workspace/` | None | None | Evaluated application state, outside the artifact schema |
+| File                 | Required stable                                                                                            | Optional stable                                                                           | Internal or application-owned                             |
+| -------------------- | ---------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- | --------------------------------------------------------- |
+| `artifact.json`      | `schema`, `version`, `kind`, `producer.name`, `producer.version`, `components`                             | Additional object fields                                                                  | None                                                      |
+| `trajectory.json`    | `run_id`, `termination_reason`, `steps`; each step's `tool_call` and `tool_result`                         | `task`, timestamps, counts, session text, metadata, context, call linkage, call summaries | In-memory span objects                                    |
+| `manifest.jsonl`     | Contiguous `index`, supported `method`; matching indexed prompt/response files and replay response section | Timing, sizes, tool count, step link, error, scope, metadata                              | None                                                      |
+| `artifacts.json`     | A JSON object                                                                                              | Application-defined keys and values                                                       | The meaning of application keys                           |
+| `evals.json`         | An array; each result's `name`                                                                             | Present `score`, `label`, `metrics`, `details`, `explanation`, `duration_ms`              | None                                                      |
+| `expected.json`      | A JSON object when present                                                                                 | The whole file is optional                                                                | Application-defined keys and values                       |
+| `case.json`          | `id` and `task` when present                                                                               | `expected`, `marks`, `notes`; the whole file is optional                                  | None                                                      |
+| `steps/step_NN.json` | None                                                                                                       | None                                                                                      | Redundant review copy; `trajectory.json` is authoritative |
+| `workspace/`         | None                                                                                                       | None                                                                                      | Evaluated application state, outside the artifact schema  |
 
 Current writers also emit `task`, `results`, and `summary` in the standalone
 `EvalHook.save()` report; `expected` and `artifacts` are optional there. Those
@@ -277,14 +281,14 @@ Do not upload unreviewed traces to a public issue.
 
 ## Which artifact should I use?
 
-| Need | Artifact |
-| --- | --- |
-| Inspect what the model saw and returned | Provenance trace |
-| Re-execute recorded responses through changed harness code | Provenance trace with recorded calls |
-| Re-grade an observed product outcome | Persisted eval run |
-| Review one step in a pull request | `steps/step_NN.json` |
-| Resume an interrupted logical task | Checkpoint directory |
-| Compare prompt or model quality | Fresh sampled runs plus persisted eval records |
+| Need                                                       | Artifact                                       |
+| ---------------------------------------------------------- | ---------------------------------------------- |
+| Inspect what the model saw and returned                    | Provenance trace                               |
+| Re-execute recorded responses through changed harness code | Provenance trace with recorded calls           |
+| Re-grade an observed product outcome                       | Persisted eval run                             |
+| Review one step in a pull request                          | `steps/step_NN.json`                           |
+| Resume an interrupted logical task                         | Checkpoint directory                           |
+| Compare prompt or model quality                            | Fresh sampled runs plus persisted eval records |
 
 Read [capture and replay](provenance.md) for execution semantics,
 [behavioral evals](evals.md) for graders and cases, and

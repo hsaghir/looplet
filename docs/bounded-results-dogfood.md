@@ -7,14 +7,14 @@ The initial qualification appears first. See the [follow-up qualification](#foll
 
 ## Candidate
 
-| Input          | Revision or setting                        |
-| -------------- | ------------------------------------------ |
-| Core base      | `1c90ef2a55d194e4aadd78dabf97185bcb53dbad` |
-| Analytics base | `0e469947c58826085fec23950f354b00b8424ad1` |
-| Models         | `gpt-6.1-sol`, `gpt-6.1-terra`             |
-| Proxy          | `http://127.0.0.1:19823/v1`                |
-| Python         | `3.13.7`                                   |
-| OpenAI SDK     | `3.6.0`                                    |
+| Input           | Revision or setting                        |
+| --------------- | ------------------------------------------ |
+| Core base       | `1c90ef2a55d194e4aadd78dabf97185bcb53dbad` |
+| Downstream base | `0e469947c58826085fec23950f354b00b8424ad1` |
+| Models          | `gpt-6.1-sol`, `gpt-6.1-terra`             |
+| Proxy           | `http://127.0.0.1:19823/v1`                |
+| Python          | `3.13.7`                                   |
+| OpenAI SDK      | `3.6.0`                                    |
 
 Trials used an installed Core wheel, not an editable Core import.
 All 304 non-metadata wheel members matched the source and installed files.
@@ -25,8 +25,8 @@ bf5dbe79aa483490b9cb8e269f30ff76908f1444fbdb378f44d76729f908bf84
 ```
 
 The final controller rechecked those source and installed bytes before and after qualification.
-It also bound both changed Analytics files by SHA-256.
-Analytics kept its existing dependency pin; a separate environment tested that unchanged pin.
+It also bound both changed Downstream files by SHA-256.
+Downstream kept its existing dependency pin; a separate environment tested that unchanged pin.
 The consumer repair recomputes selected projections from observed original receipts and rejects mismatches.
 It does not replace the original receipt with its model preview.
 
@@ -54,7 +54,7 @@ Deterministic tests cover sync/async, native/JSON-text, and Python/cartridge exe
 They also check escaped nested JSON, aggregate batch limits, stable admitted previews,
 fixed-boundary discovery, quota failures, line endings, and resource/policy round trips.
 
-## Analytics
+## Downstream
 
 The final randomized large-output check passed over Chat and Responses, with 13 captured sends.
 The host generated the expected amount before running the agent and kept it outside the task.
@@ -79,28 +79,26 @@ Outer calls leave sampling unset, but existing review helpers explicitly select 
 
 ## Local Gates
 
-| Gate                                 | Final result                                                              |
-| ------------------------------------ | ------------------------------------------------------------------------- |
-| Core `make check`                    | 6,700 passed, 2 skipped; text style, lint, formatting, and Pyright passed |
-| Analytics with candidate Core        | 959 passed                                                                |
-| Analytics with unchanged pinned Core | 955 passed, 4 expected projection-test skips                              |
-| Analytics lock, Ruff, full Pyright   | Passed; Pyright checked both Core environments                            |
-| Analytics sdist and wheel            | Built successfully                                                        |
+| Gate                                  | Final result                                                              |
+| ------------------------------------- | ------------------------------------------------------------------------- |
+| Core `make check`                     | 6,700 passed, 2 skipped; text style, lint, formatting, and Pyright passed |
+| Downstream with candidate Core        | 959 passed                                                                |
+| Downstream with unchanged pinned Core | 955 passed, 4 expected projection-test skips                              |
+| Downstream lock, Ruff, full Pyright   | Passed; Pyright checked both Core environments                            |
+| Downstream sdist and wheel            | Built successfully                                                        |
 
 The earlier complete Core run found two regressions; both were repaired before the final gate.
-An earlier Analytics run had 958 passes and one `os.setsid()` failure because pytest itself
+An earlier Downstream run had 958 passes and one `os.setsid()` failure because pytest itself
 was a process-group leader. A child-process launch passed that focused test and both full suites.
 Warnings and failed receipts remain preserved. Local checks used Python 3.13;
 other supported Python versions remain CI responsibilities.
 
 ## Reproduce
 
-Build the candidate Core wheel, install Analytics' locked development environment,
-then substitute that wheel without changing the project's dependency pin:
+Build the candidate Core wheel and install it in a fresh environment for the public examples:
 
 ```bash
-uv sync --locked --group dev
-uv --no-config pip install --python .venv/bin/python --no-deps --reinstall "$CORE_WHEEL"
+uv pip install --python .venv/bin/python "$CORE_WHEEL"
 
 export OPENAI_BASE_URL=http://127.0.0.1:19823/v1
 export OPENAI_API_KEY=local-proxy
@@ -109,20 +107,18 @@ uv run --no-sync python -m looplet.examples.default_harness \
   --scripted --cases invoices policy evidence --output "$RUN_ROOT/scripted"
 uv run --no-sync python -m looplet.examples.default_harness \
   --cases invoices policy evidence --output "$RUN_ROOT/live"
-uv run --no-sync python "$CORE_CHECKOUT/scripts/dogfood_default_harness_analytics.py" \
-  --output "$RUN_ROOT/analytics"
 ```
 
-Set `CORE_WHEEL` and `CORE_CHECKOUT` to the candidate artifact and checkout.
+Set `CORE_WHEEL` to the candidate artifact.
 Every output directory must be new. Do not synchronize after substituting the wheel.
-The randomized delivery check and wire observer are host-owned qualification scripts.
+Downstream integration, randomized delivery, and wire observers are host-owned qualification scripts.
 
 ## Evidence And Limits
 
 The private local bundle is `looplet-bounded-results-evidence-2v4xYLv3`.
 Qualified example receipts are under `qualified-v2`; final consumer and gate receipts
 are under `qualified-v2/final`. `artifact-parity.json`, `consumer-source.json`,
-`final-gates.json`, and the two Analytics JUnit files bind the final qualification.
+`final-gates.json`, and the two Downstream JUnit files bind the final qualification.
 Earlier wheels, failures, retries, stdout/stderr, and wire receipts remain distinct.
 Raw source data, provider continuity items, and authenticated headers are not committed.
 
@@ -130,7 +126,9 @@ The observer counts client sends, not hidden proxy retries or provider billing.
 Character budgets cover result envelopes, not exact provider tokens or whole requests.
 Retrieval access is host authority, not redaction or a sandbox.
 File retention has a content quota and one active writer per directory, not fsync/WAL durability.
-Raw steps, provenance, checkpoint snapshots, and selected JSON values can still use full memory.
+These historical artifacts predate default disk-backed history and checkpoint catalog references.
+They do not qualify the later memory changes. Explicit full exports and selected JSON extraction
+can still materialize complete values.
 See [bounded model views](provenance.md#bounded-model-views) for the operational contract.
 
 ## Follow-Up Recovery Qualification
@@ -142,8 +140,8 @@ The model still chooses its method. No automatic retrieval, tool retry, summary 
 ### Artifacts
 
 The final cohort is `qualified-v4` in the private bundle `looplet-result-recovery-evidence-20261027-tdh7bCM7`.
-Trials used fresh, non-editable Core and Analytics wheels.
-All 304 Core and 85 Analytics non-metadata members matched their source and installed files.
+Trials used fresh, non-editable Core and Downstream wheels.
+All 304 Core and 85 Downstream non-metadata members matched their source and installed files.
 The controller rechecked those source bytes before and after each phase.
 The models, proxy, Python version, and OpenAI SDK match the initial qualification settings above.
 SDK retries were disabled.
@@ -154,25 +152,25 @@ Core wheel SHA-256:
 c35ea121b49b57bcc090b22e12bed1ce0dae4aabdd106ac0232e212c799d754c
 ```
 
-Analytics wheel SHA-256:
+Downstream wheel SHA-256:
 
 ```text
 30f6418cd47715ee3351ab6bae8ffee08f89aea5fdb772fc3ec118ddb47d24f8
 ```
 
-Analytics retains its existing public Core dependency pin.
+Downstream retains its existing public Core dependency pin.
 Candidate-wheel checks and unchanged-pin checks use separate environments.
 Documentation changes do not replace the tested wheels or rewrite their hashes.
 
 ### Live Outcomes
 
-| Final-artifact matrix | Passed | Client HTTP sends |
-| --- | --- | --- |
-| Public examples: three cases, two models, Python and cartridge | 12/12 | 111 |
-| Randomized blind retrieval: eight scenarios per model | 16/16 | 94 |
-| Analytics: Chat, Responses, SSE, and failed-command recovery | 8/8 | 66 |
-| Analytics: paid totals, grounded join, temporal join, and policy | 8/8 | 55 |
-| Total for this cohort only | 44/44 | 326 |
+| Final-artifact matrix                                             | Passed | Client HTTP sends |
+| ----------------------------------------------------------------- | ------ | ----------------- |
+| Public examples: three cases, two models, Python and cartridge    | 12/12  | 111               |
+| Randomized blind retrieval: eight scenarios per model             | 16/16  | 94                |
+| Downstream: Chat, Responses, SSE, and failed-command recovery     | 8/8    | 66                |
+| Downstream: paid totals, grounded join, temporal join, and policy | 8/8    | 55                |
+| Total for this cohort only                                        | 44/44  | 326               |
 
 These are independently graded outcomes, not completion claims or an estimated general success rate.
 Wire receipts retain actual request bodies and responses privately, without authenticated headers.
@@ -196,7 +194,7 @@ The host admission estimator divided serialized UTF-8 request bytes by four, rou
 Its 10,000 input ceiling was an approximation, not provider-exact token accounting.
 It does not measure provider-held history referenced by Responses continuation IDs.
 
-Six Analytics delivery trials retrieved answers from untrimmed returned stdout exceeding 20,000 characters.
+Six Downstream delivery trials retrieved answers from untrimmed returned stdout exceeding 20,000 characters.
 They covered Chat native tools, Responses native tools, and actual Responses SSE on both models.
 The SSE trials captured 105 and 120 events.
 Two additional trials recovered evidence after an intentional command exit status of seven.
@@ -223,18 +221,18 @@ That artifact predates the final conversation-envelope and callback repairs.
 Those results do not qualify the final artifact, and final normal-window success does not establish that the tight-window limitation is fixed.
 
 The separate `qualified-v3` normal-window cohort passed 16/16 blind trials, 12/12 public examples, and eight delivery outcomes.
-Its broader Analytics matrix passed 7/8, using 57 sends.
+Its broader Downstream matrix passed 7/8, using 57 sends.
 Sol exhausted the shared model-call ceiling after submitting evidence IDs that differed from its reviewed bundle.
 The final fresh 8/8 cohort does not relabel that failure or prove that a callback change repaired model reasoning.
 
-The full `qualified-v3` Analytics suite also exposed 31 integration failures.
+The full `qualified-v3` Downstream suite also exposed 31 integration failures.
 Core had invoked a legacy host recorder with typed receipt arguments.
 The repair uses the explicit `record_tool_receipt(call, result)` capability and leaves legacy recording to the host hook.
 All 31 observed failures passed their focused reruns before rebuilding the final wheels.
 The existing sync/async wrapper tests now reject accidental calls to the legacy recorder.
 
 One earlier failed-command observer incorrectly required a large in-memory stdout value.
-The complete stream was retained, but Analytics had returned a 2,000-character preview.
+The complete stream was retained, but Downstream had returned a 2,000-character preview.
 A separate hash-bound audit verified failed-command recovery with zero new model requests.
 The original false observer receipt remains unchanged. Final-artifact trials use the corrected stream-specific check.
 
@@ -267,14 +265,14 @@ Do not synchronize the project environment after substituting the candidate whee
 Randomized fixture generation, protected oracles, and the HTTP observer remain host-owned qualification code.
 Focused public regressions cover delivery hints, escaped envelopes, failed receipts, aggregate reprojection, cached chunk boundaries, resource binding, and request admission.
 
-| Final local gate | Result |
-| --- | --- |
-| Core `make check` | 6,796 passed, 2 skipped; text style, Ruff, formatting, and Pyright passed |
-| Analytics with candidate Core | 1,011 passed |
-| Analytics with unchanged pinned Core | 955 passed, 56 expected feature skips |
-| Analytics Pyright | Passed with both Core environments |
-| Analytics Ruff and dependency lock | Passed; public dependency pin unchanged |
-| Core and Analytics distributions | Both sdist and wheel builds passed; rebuilt wheels are byte-identical to the live-tested wheels |
+| Final local gate                      | Result                                                                                          |
+| ------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| Core `make check`                     | 6,796 passed, 2 skipped; text style, Ruff, formatting, and Pyright passed                       |
+| Downstream with candidate Core        | 1,011 passed                                                                                    |
+| Downstream with unchanged pinned Core | 955 passed, 56 expected feature skips                                                           |
+| Downstream Pyright                    | Passed with both Core environments                                                              |
+| Downstream Ruff and dependency lock   | Passed; public dependency pin unchanged                                                         |
+| Core and Downstream distributions     | Both sdist and wheel builds passed; rebuilt wheels are byte-identical to the live-tested wheels |
 
 Full-suite receipts are saved under `qualified-v4/gates` and require unchanged tracked source during execution.
 Earlier full gates remain bound to their original artifacts, not the final wheel.

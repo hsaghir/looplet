@@ -83,7 +83,19 @@ class HistoryRecorder:
         migration) we do not duplicate it.
         """
         if self._state is not None and hasattr(self._state, "steps"):
-            if not self._state.steps or self._state.steps[-1] is not step:
+            from looplet._storage import DiskBackedList
+
+            history = self._state.steps
+            previous = history[-1] if history else None
+            if previous is step:
+                pass
+            elif (
+                isinstance(history, DiskBackedList)
+                and previous is not None
+                and previous.number == step.number
+            ):
+                history[-1] = step
+            else:
                 self._state.steps.append(step)
 
         if (

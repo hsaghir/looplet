@@ -154,13 +154,15 @@ hooks = [StagnationHook(threshold=8), ToolCallBudgetHook(max_calls=100)]
 print(resolve_harness(config, hooks).describe())
 ```
 
-`disabled_defaults` accepts `compaction`, `stagnation`, and `tool_budget`.
+`disabled_defaults` accepts `compaction`, `stagnation`, `tool_budget`, `history`,
+`result_retention`, `provenance`, `checkpointing`, `branching`, and `persistence`.
+The last name omits all automatic persistence additions.
 It omits automatic additions, not explicit hooks or services.
 `LoopConfig(harness_profile="minimal")` and `minimal_preset()` omit all automatic additions.
 Unknown profile or capability names fail before model calls. The profile and opt-outs
 round-trip in a cartridge's contract-tier configuration.
 
-Defaults do not create files, configure credentials, add approval prompts, enable tracing,
+Defaults do not configure credentials, add approval prompts, enable telemetry export,
 or provide an OS sandbox. Native tool protocol, registry validation, and reactive recovery
 remain the loop's existing mechanisms. Prompt previews and compaction are lossy, but
 do not mutate original results in run history. `BaseToolRegistry` retains detached,
@@ -168,25 +170,71 @@ content-addressed originals: `result.result_key` identifies the value returned b
 `registry.get_result(key)`. Existing checkpoint result stores preserve those values
 across resume. Lookup and snapshots return detached copies. A host can expose recall
 as a domain tool, replace the registry store, or disable new retention with
-`BaseToolRegistry(retain_results=False)`. Retention consumes host memory and checkpoint
-storage; it is not an external archive or a substitute for host retention policy.
+`BaseToolRegistry(retain_results=False)`. Retention consumes host disk space;
+it is not an external archive or a substitute for host retention policy.
 Configured `tool_result_persist_dir` previews still write large original outputs to disk.
 Compaction does not guarantee that retained evidence is present in the current prompt.
 
 Model-visible envelopes are bounded for nested JSON as well as plain strings.
 Native batches share the context-result budget; retrieval pages arrive intact
 or return an explicit refusal so the model can retry a smaller page.
-Retrieval replies do not become new source results. Hosts can opt into
-`FileToolResultStore` through the existing `tool_result_store` resource,
-with a content quota and reusable serialized views. This does not remove full
-outputs from raw steps, traces, or checkpoints. See
+Retrieval replies do not become new source results. Default execution binds
+`FileToolResultStore` through the existing `tool_result_store` resource unless
+the host supplies one. It supports a content quota and reusable serialized views. See
 [result projection and retention](provenance.md#bounded-model-views) for budgets,
 fixed-boundary paging, cartridge policy, authority, and failure semantics.
 
 See the [default-harness dogfood report](default-harness-dogfood.md) for live cases,
 observed failures, artifact bindings, and reproduction commands.
 The [bounded-results qualification](bounded-results-dogfood.md) covers the newer
-envelope, page-delivery, disk-retention, and Analytics compatibility contracts.
+envelope, page-delivery, disk-retention, and downstream compatibility contracts.
+
+### Default persistence and memory
+
+Starting a standard-profile run creates `.looplet/runs/<unique-id>` unless
+`LoopConfig(run_dir=...)` selects another directory. Resolution alone creates nothing.
+New run directories are private and contain a wildcard Git ignore policy.
+The state metadata reports `run_dir` and `trace_dir` for inspection.
+
+The harness composes existing primitives, without extra model calls or tool retries:
+
+| Primitive       | Default                                                               | Explicit replacement                                                                                            |
+| --------------- | --------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| Raw history     | Lazy disk-backed `DefaultState.steps`                                 | Supply a custom state type or disable `history`.                                                                |
+| Tool evidence   | `FileToolResultStore` in the run directory                            | Bind `tool_result_store`; the supplied resource retains identity.                                               |
+| Provenance      | Recording backend and `TrajectoryRecorder`, saved at run finalization | Supply a `TrajectoryRecorder` and its recording backend.                                                        |
+| Checkpoints     | Per-step files under the run directory                                | Set `checkpoint_dir`, supply `CheckpointHook`, or mark a checkpoint-owning hook with `checkpoint_owner = True`. |
+| Branch topology | `SessionTreeRecorder`, saved as `session.jsonl`                       | Supply a `SessionTreeRecorder`.                                                                                 |
+
+Explicit services, hooks, resource bindings, and checkpoint paths win independently.
+An explicit hook is not removed by a disabled default. Temporary configuration changes
+are restored after the invocation unless host code replaces them during the run.
+`run_dir` round-trips through cartridge `runtime.yaml`, not the agent contract.
+
+History indexing and iteration load records lazily. Assign an edited record back to
+its sequence when it may have left the one-record cache. `RunResult.from_state()`
+creates an independent lazy snapshot for disk-backed history; it does not collect every output.
+The default synchronous return trace includes the last five steps, `steps_total`, and
+`trace_dir`; the complete sequence remains available on the state and in provenance.
+Explicit `build_trace`, full slices, `to_dict()`, and `snapshot_results()` may materialize
+complete history. The runtime's `events()` tuple is also an explicit full export.
+Explicitly restoring a checkpoint into an unbound in-memory registry materializes
+its values after verification. Bind a file store for incremental restore instead.
+Eval runs without an evidence output directory omit automatic persistence;
+the CLI's `--no-save` keeps that explicit opt-out.
+
+Automatic checkpointing uses immutable SHA-256-bound result-catalog references,
+not a full payload copy per step. Keep the referenced source directory for resume.
+Restore an earlier checkpoint into a fresh registry or separate file store to branch
+without replacing later evidence. Missing or corrupt evidence fails restoration.
+An explicit registry snapshot implementation remains authoritative.
+
+This bounds automatic retention of accumulated outputs, not total process RSS.
+One active result, a live batch, selected context, JSON extraction, native database
+buffers, and OS file caches still need memory. Host tools, custom state or hooks,
+and callers collecting every yielded step can retain additional memory.
+No disk quota, cleanup schedule, remote archive, external-system rollback, or
+fsync durability guarantee is installed. The host owns retention and recovery policy.
 
 ## Context pressure and compaction
 

@@ -11,6 +11,8 @@ Provides:
 from __future__ import annotations
 
 import asyncio
+import contextvars
+import functools
 import glob
 import inspect
 import json
@@ -772,7 +774,9 @@ def save_pending_dispatch(
 
 
 async def _run_persistence(operation: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
-    pending = asyncio.create_task(asyncio.to_thread(operation, *args, **kwargs))
+    pending = asyncio.get_running_loop().run_in_executor(
+        None, functools.partial(contextvars.copy_context().run, operation, *args, **kwargs)
+    )
     cancelled = None
     while True:
         try:

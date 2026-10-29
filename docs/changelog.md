@@ -33,6 +33,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Async persistence drains workers during shutdown-wide task cancellation and preserves caller context.
 - Automatic checkpoints share immutable JSON records. Explicit checkpoint stores keep plain JSON snapshots. Copy the full automatic checkpoint directory when moving runs.
 - Async loops await automatic checkpoint and recorder writes in workers. Cancellation drains writes before cleanup. Host callbacks and live-config restoration remain on the loop thread.
 - Concurrent loops reject a shared tool registry before rebinding run-owned evidence. Use fresh registries for overlapping runs; sequential reuse remains supported.

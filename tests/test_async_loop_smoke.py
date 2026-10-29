@@ -122,11 +122,17 @@ async def test_default_persistence_keeps_io_off_the_loop_and_callbacks_on_it(
 
 
 @pytest.mark.parametrize("fail", [False, True])
-async def test_persistence_drains_inflight_write_before_propagating_cancellation(fail):
+@pytest.mark.parametrize("cancel_helpers", [False, True])
+async def test_persistence_drains_inflight_write_before_propagating_cancellation(
+    fail, cancel_helpers
+):
+    from contextvars import ContextVar
     from threading import Event
 
     from looplet.checkpoint import _run_persistence
 
+    marker = ContextVar("persistence_context", default="missing")
+    marker.set("caller")
     loop = asyncio.get_running_loop()
     started = asyncio.Event()
     release = Event()
@@ -135,6 +141,7 @@ async def test_persistence_drains_inflight_write_before_propagating_cancellation
     def write():
         loop.call_soon_threadsafe(started.set)
         assert release.wait(5)
+        assert marker.get() == "caller"
         events.append("written")
         if fail:
             raise OSError("storage failed")
@@ -145,10 +152,16 @@ async def test_persistence_drains_inflight_write_before_propagating_cancellation
         finally:
             events.append("finalized")
 
+    existing_tasks = asyncio.all_tasks()
     pending = asyncio.create_task(drive())
     try:
         await started.wait()
         pending.cancel()
+        if cancel_helpers:
+            helpers = asyncio.all_tasks() - existing_tasks - {pending}
+            for helper in helpers:
+                helper.cancel()
+            await asyncio.gather(*helpers, return_exceptions=True)
         advanced = loop.create_future()
         loop.call_soon(advanced.set_result, None)
         await advanced

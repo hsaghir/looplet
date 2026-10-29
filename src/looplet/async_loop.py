@@ -627,7 +627,8 @@ async def run_result_async(
     Host-supplied backends, tools, hooks, and resources are not closed.
     """
     config = _resolve_loop_config(config, max_steps=max_steps, system_prompt=system_prompt)
-    state = _resolve_loop_state(state, config)
+    if state is None:
+        state = _resolve_loop_state(None, config)
     async with aclosing(
         async_composable_loop(llm, task=task, tools=tools, config=config, state=state, **kwargs)
     ) as steps:

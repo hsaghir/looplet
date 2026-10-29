@@ -280,6 +280,56 @@ class TestPlainPythonInputs:
 
 class TestRunResultShortcuts:
     @pytest.mark.parametrize("asynchronous", [False, True])
+    def test_rejected_registry_preserves_supplied_state(self, asynchronous):
+        from contextlib import aclosing, closing
+
+        from looplet import (
+            DefaultState,
+            LoopConfig,
+            async_composable_loop,
+            run_result,
+            run_result_async,
+            tools_from,
+        )
+        from looplet.testing import AsyncMockLLMBackend
+
+        def ping() -> str:
+            return "pong"
+
+        registry = tools_from([ping], include_done=True)
+        config = LoopConfig(harness_profile="minimal", max_steps=2)
+        supplied = DefaultState(max_steps=99)
+        response = '{"tool":"ping","args":{}}'
+        if asynchronous:
+
+            async def collect():
+                async with aclosing(
+                    async_composable_loop(
+                        AsyncMockLLMBackend([response]), tools=registry, config=config
+                    )
+                ) as steps:
+                    await anext(steps)
+                    backend = AsyncMockLLMBackend()
+                    with pytest.raises(RuntimeError, match="active loop"):
+                        await run_result_async(
+                            backend, tools=registry, state=supplied, config=config
+                        )
+                    assert backend.calls == 0
+
+            asyncio.run(collect())
+        else:
+            with closing(
+                composable_loop(MockLLMBackend([response]), tools=registry, config=config)
+            ) as steps:
+                next(steps)
+                backend = MockLLMBackend()
+                with pytest.raises(RuntimeError, match="active loop"):
+                    run_result(backend, tools=registry, state=supplied, config=config)
+                assert backend.calls == 0
+        assert supplied.max_steps == 99
+        assert supplied.steps == []
+
+    @pytest.mark.parametrize("asynchronous", [False, True])
     @pytest.mark.parametrize("supply_state", [False, True])
     def test_collectors_use_the_same_state_and_terminal_contract(self, asynchronous, supply_state):
         from looplet import DefaultState, LoopConfig, RunResult, run_result, run_result_async

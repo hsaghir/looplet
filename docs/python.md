@@ -11,7 +11,7 @@ Use this exact preview revision in a virtual environment:
 ```bash
 python -m venv .venv-looplet
 . .venv-looplet/bin/activate
-python -m pip install "looplet[openai] @ https://github.com/hsaghir/looplet/archive/13904754fdb1fbeb6f141570d10b1af04b37c538.zip"
+python -m pip install "looplet[openai] @ https://github.com/hsaghir/looplet/archive/cf642eba3a0d4a2239db7400611222797e791540.zip"
 ```
 
 This non-editable install needs network access, but no Git installation or checkout.

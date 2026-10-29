@@ -166,7 +166,10 @@ _KEY = {"type": "string", "description": "Exact retained result_key from a tool 
 _POINTER = {
     "type": "string",
     "default": "",
-    "description": "RFC 6901 JSON Pointer. Empty selects the whole result; /stdout selects stdout.",
+    "description": (
+        "RFC 6901 JSON Pointer into the original tool return value, not its preview wrapper. "
+        "Empty selects the whole original value; /stdout selects an original stdout field."
+    ),
 }
 
 SPECS = (

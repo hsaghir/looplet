@@ -33,6 +33,10 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Retained-result tools clarify that JSON pointers address original return values, not preview wrappers.
+- The settlement example identifies the retained `/body` field and its exact final-section header instead of historical mentions.
+- Ordinary Python loops accept task strings and typed function sequences. Sequences get fresh validated registries and non-conflicting completion defaults. Explicit registries remain authoritative.
+- Source-build onboarding starts with functions and a loop. The published `0.4.1` walkthrough stays separate from the commit-pinned Python-first preview.
 - Async persistence drains workers during shutdown-wide task cancellation and preserves caller context.
 - Automatic checkpoints share immutable JSON records. Explicit checkpoint stores keep plain JSON snapshots. Copy the full automatic checkpoint directory when moving runs.
 - Async loops await automatic checkpoint and recorder writes in workers. Cancellation drains writes before cleanup. Host callbacks and live-config restoration remain on the loop thread.
@@ -57,6 +61,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `run_result()` and `run_result_async()` consume and close the existing loops, returning accepted output, steps, and status without mandatory state construction.
 - Inspectable `resolve_harness()` and preset-level resolution compose deterministic context compaction, actual-result stagnation nudges, and a bounded dispatch budget without implicit I/O or summary-model calls.
 - `ToolCallBudgetHook` reserves before concurrent dispatch and counts successful free calls. It is a per-invocation tool guard, not a provider-request or billing limit.
 - Independently graded default-harness examples exercise fresh Python and strict-exported cartridge agents; private downstream qualification covers both proxy transports.

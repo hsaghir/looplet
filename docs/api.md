@@ -3,12 +3,13 @@
 Start with the loop, tools, and a backend.
 The other APIs are optional.
 This page helps you choose an API; it does not list every helper.
-Use the [Quickstart](quickstart.md) for a complete example.
+Use the [Python quickstart](python.md) for a complete source-build example.
+The [published walkthrough](quickstart.md) uses release `0.4.1`.
 
 Import the main APIs from `looplet`:
 
 ```python
-from looplet import composable_loop, tools_from
+from looplet import composable_loop, run_result
 ```
 
 Some provider and advanced APIs need a submodule import.
@@ -17,13 +18,18 @@ Some provider and advanced APIs need a submodule import.
 ## Choose an entry point
 
 Use `composable_loop()` as the primary Python entry point.
-Supply a backend, `tools_from([...])`, and `LoopConfig`.
+**Unreleased:** supply a backend, a task string, and a list of typed Python functions.
+The loop creates its config, state, and validated registry.
+It adds standard completion only when no configured terminal is present.
+Task dictionaries and explicit registries remain supported and retain their identity.
 Use `async_composable_loop()` when your backend is asynchronous.
-Add `DefaultState` and `RunResult.from_state()` when you need the accepted output after iteration.
+Use `run_result()` or `await run_result_async()` to collect the accepted output without constructing state.
+Keep `DefaultState` and `RunResult.from_state()` when you manage state explicitly.
 
 | Need | Entry point |
 | --- | --- |
 | Inspect each tool call | `composable_loop()` or `async_composable_loop()` |
+| Collect one loop's result | `run_result()` or `await run_result_async()`; **unreleased** |
 | Assemble reusable dependencies | A factory returning a fresh `AgentPreset` |
 | Collect a preset's final result | `preset.run_result()` or `preset.run_result_async()` |
 | Load an agent stored as files | `cartridge_to_preset()`, then the same preset methods |
@@ -59,6 +65,7 @@ Host resources still retain their supplied identity.
 | --- | --- |
 | `composable_loop(...)` | Yield a `Step` after each tool call. |
 | `async_composable_loop(...)` | Use the same loop with async iteration. |
+| `run_result(...)` / `run_result_async(...)` | Consume and close the same loops; return `RunResult`. **Unreleased.** |
 | `LoopConfig` | Set limits, prompts, tool protocols, context reduction, checkpoints, and cancellation. |
 | `resolve_harness(config, hooks)` | Inspect shared versioned defaults without executing a run. **Unreleased.** |
 | `ResolvedHarness` | Access the effective config and hook list, or call `.describe()`. **Unreleased.** |
@@ -322,8 +329,10 @@ Explicit `sub_tools` registries remain unchanged and must register their own ter
 | `ToolContext.async_llm` | Access the async backend inside async tools or child loops without the synchronous bridge. |
 | `ToolError` / `ToolValidationError` | Return or test structured failures without parsing exception text. |
 
-Start with ordinary typed functions and pass them to `tools_from` or `minimal_preset`.
+Start with ordinary typed functions passed directly to the loop in current source builds.
 Their names remain callable in application code and unit tests.
+Function sequences get top-level type validation and standard completion when needed.
+Use `tools_from` when you need an explicitly configured registry.
 `minimal_preset` installs `done` automatically; `tools_from` does not.
 Use `tools_from([...], include_done=True)` for the standard completion tool.
 Register a matching terminal tool yourself when using a custom `done_tool` or `done_tools`.
@@ -365,7 +374,8 @@ Model Context Protocol (MCP) discovery retains the server's full `inputSchema`.
 New MCP servers should use JSON Schema `required` lists.
 Older `(optional)` markers and JSON-string array or object repair remain supported.
 
-Use `tools_from([...], validate=True)` or `minimal_preset(..., validate=True)` for typed Python tools.
+Direct function sequences enable top-level type validation in current source builds.
+For explicit construction, use `tools_from([...], validate=True)` or `minimal_preset(..., validate=True)`.
 These options check top-level types, nullability, and enum choices before effects.
 They reject invalid values rather than coercing them.
 Nested schemas and other constraints remain tool-owned.

@@ -103,7 +103,7 @@ def record_control(section: str, requirement: str, *, ctx: ToolContext) -> dict[
 
 
 def read_settlement_report() -> dict[str, str]:
-    """Read a settlement report with archived history and a final settlement section."""
+    """Read report_id and body; retained evidence uses JSON Pointer /body."""
     return {
         "report_id": "SET-204",
         "body": (
@@ -184,7 +184,8 @@ def task_for(case: str) -> dict[str, str]:
         ),
         "evidence": (
             "Read the settlement report and save the final reference and amount_cents. "
-            "Locate the FINAL_SETTLEMENT section, not historical entries. First request "
+            "Search /body for the standalone FINAL_SETTLEMENT section header, including "
+            "its surrounding newline characters, not historical mentions. First request "
             "an 8000-character read of that section; if delivery is refused, retry a smaller "
             "page before recording the settlement. Finish after the record exists."
         ),

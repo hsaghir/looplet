@@ -1,5 +1,8 @@
 # Quickstart
 
+This walkthrough uses published `0.4.1`.
+For the shorter, unreleased functions-and-loop API, use the [Python quickstart](python.md).
+
 Run one Python agent, get its answer, test it, and replay its saved model responses.
 You need Python 3.11 or newer.
 You do not need a model key until the optional real-model section.

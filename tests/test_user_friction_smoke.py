@@ -9,6 +9,7 @@ Covers the small UX wins:
 
 from __future__ import annotations
 
+import asyncio
 import os
 import warnings
 from typing import Any
@@ -124,6 +125,376 @@ class TestComposableLoopShortcuts:
             pass
         gen.close()
         assert cfg.system_prompt == "new"
+
+
+class TestPlainPythonInputs:
+    @pytest.mark.parametrize("asynchronous", [False, True])
+    @pytest.mark.parametrize("container", [list, tuple])
+    @pytest.mark.parametrize("native", [False, True])
+    def test_functions_validate_arguments_and_supply_completion(
+        self, asynchronous, container, native
+    ):
+        from looplet import LoopConfig, async_composable_loop
+        from looplet.testing import AsyncMockLLMBackend
+
+        calls = []
+
+        def lookup_owner(service: str) -> str:
+            """Find the team that owns a service."""
+            calls.append(service)
+            return "fintech-platform"
+
+        responses = [
+            '{"tool":"lookup_owner","args":{"service":7}}',
+            '{"tool":"lookup_owner","args":{"service":"payments"}}',
+            '{"tool":"done","args":{"summary":"fintech-platform"}}',
+        ]
+        config = LoopConfig(harness_profile="minimal", use_native_tools=native)
+        if asynchronous:
+
+            async def collect():
+                return [
+                    step
+                    async for step in async_composable_loop(
+                        AsyncMockLLMBackend(responses, cycle=False),
+                        task="Find the payments owner",
+                        tools=container([lookup_owner]),
+                        config=config,
+                    )
+                ]
+
+            steps = asyncio.run(collect())
+        else:
+            steps = list(
+                composable_loop(
+                    MockLLMBackend(responses, cycle=False),
+                    task="Find the payments owner",
+                    tools=container([lookup_owner]),
+                    config=config,
+                )
+            )
+        assert calls == ["payments"]
+        assert steps[0].tool_result.error is not None
+        assert steps[1].tool_result.data == "fintech-platform"
+        assert steps[2].tool_result.tool == "done"
+        assert steps[2].tool_result.error is None
+
+    def test_explicit_registry_and_terminal_tools_remain_authoritative(self):
+        from looplet import LoopConfig
+        from looplet.loop import _normalize_loop_inputs
+        from looplet.tools import tools_from
+
+        def finish(answer: str) -> str:
+            return answer
+
+        config = LoopConfig(done_tools=["finish"])
+        task = {"goal": "Answer"}
+        registry = tools_from([finish])
+        normalized_task, normalized_registry = _normalize_loop_inputs(task, registry, config)
+        assert normalized_task is task
+        assert normalized_registry is registry
+        assert registry.tool_names == ["finish"]
+        _, inferred_registry = _normalize_loop_inputs("Answer", [finish], config)
+        assert inferred_registry.tool_names == ["finish"]
+
+    def test_sequences_get_fresh_registries(self):
+        from looplet import LoopConfig
+        from looplet.loop import _normalize_loop_inputs
+
+        functions = []
+        task, first = _normalize_loop_inputs("Answer", functions, LoopConfig())
+        _, second = _normalize_loop_inputs("Answer", functions, LoopConfig())
+        assert task == {"description": "Answer"}
+        assert first is not second
+        assert first.tool_names == second.tool_names == ["done"]
+        assert functions == []
+
+    def test_function_sequences_allow_overlapping_async_runs(self, tmp_path, monkeypatch):
+        from looplet import run_result_async
+        from looplet.testing import AsyncMockLLMBackend
+
+        monkeypatch.chdir(tmp_path)
+
+        async def collect():
+            ready = asyncio.Event()
+            entered = 0
+
+            class OverlappingBackend(AsyncMockLLMBackend):
+                async def generate_with_tools(self, *args, **kwargs):
+                    nonlocal entered
+                    entered += 1
+                    if entered == 2:
+                        ready.set()
+                    await ready.wait()
+                    return await super().generate_with_tools(*args, **kwargs)
+
+            functions = []
+            return await asyncio.gather(
+                run_result_async(
+                    OverlappingBackend(['{"tool":"done","args":{"summary":"first"}}'], cycle=False),
+                    task="First task",
+                    tools=functions,
+                ),
+                run_result_async(
+                    OverlappingBackend(
+                        ['{"tool":"done","args":{"summary":"second"}}'], cycle=False
+                    ),
+                    task="Second task",
+                    tools=functions,
+                ),
+            )
+
+        first, second = asyncio.run(collect())
+        assert first.completed and second.completed
+        assert first.output["summary"] == "first"
+        assert second.output["summary"] == "second"
+        assert first.metadata["run_dir"] != second.metadata["run_dir"]
+
+    @pytest.mark.parametrize("asynchronous", [False, True])
+    @pytest.mark.parametrize("invalid_tools", ["lookup_owner", [None], [7]])
+    def test_invalid_sequences_fail_before_persistence(self, asynchronous, invalid_tools, tmp_path):
+        from looplet import LoopConfig, async_composable_loop
+        from looplet.testing import AsyncMockLLMBackend
+
+        config = LoopConfig(run_dir=str(tmp_path / "must-not-exist"))
+        if asynchronous:
+            backend = AsyncMockLLMBackend()
+
+            async def collect():
+                return [
+                    step
+                    async for step in async_composable_loop(
+                        backend, tools=invalid_tools, config=config
+                    )
+                ]
+
+            with pytest.raises(TypeError, match="tools must"):
+                asyncio.run(collect())
+        else:
+            backend = MockLLMBackend()
+            with pytest.raises(TypeError, match="tools must"):
+                list(composable_loop(backend, tools=invalid_tools, config=config))
+        assert backend.calls == 0
+        assert not list(tmp_path.iterdir())
+
+
+class TestRunResultShortcuts:
+    @pytest.mark.parametrize("asynchronous", [False, True])
+    def test_rejected_registry_preserves_supplied_state(self, asynchronous):
+        from contextlib import aclosing, closing
+
+        from looplet import (
+            DefaultState,
+            LoopConfig,
+            async_composable_loop,
+            run_result,
+            run_result_async,
+            tools_from,
+        )
+        from looplet.testing import AsyncMockLLMBackend
+
+        def ping() -> str:
+            return "pong"
+
+        registry = tools_from([ping], include_done=True)
+        config = LoopConfig(harness_profile="minimal", max_steps=2)
+        supplied = DefaultState(max_steps=99)
+        response = '{"tool":"ping","args":{}}'
+        if asynchronous:
+
+            async def collect():
+                async with aclosing(
+                    async_composable_loop(
+                        AsyncMockLLMBackend([response]), tools=registry, config=config
+                    )
+                ) as steps:
+                    await anext(steps)
+                    backend = AsyncMockLLMBackend()
+                    with pytest.raises(RuntimeError, match="active loop"):
+                        await run_result_async(
+                            backend, tools=registry, state=supplied, config=config
+                        )
+                    assert backend.calls == 0
+
+            asyncio.run(collect())
+        else:
+            with closing(
+                composable_loop(MockLLMBackend([response]), tools=registry, config=config)
+            ) as steps:
+                next(steps)
+                backend = MockLLMBackend()
+                with pytest.raises(RuntimeError, match="active loop"):
+                    run_result(backend, tools=registry, state=supplied, config=config)
+                assert backend.calls == 0
+        assert supplied.max_steps == 99
+        assert supplied.steps == []
+
+    @pytest.mark.parametrize("asynchronous", [False, True])
+    @pytest.mark.parametrize("supply_state", [False, True])
+    def test_collectors_use_the_same_state_and_terminal_contract(self, asynchronous, supply_state):
+        from looplet import DefaultState, LoopConfig, RunResult, run_result, run_result_async
+        from looplet.testing import AsyncMockLLMBackend
+
+        def finish(answer: str) -> dict:
+            return {"answer": answer}
+
+        class Observer:
+            def on_event(self, payload):
+                events.append(payload)
+
+        events = []
+        config = LoopConfig(harness_profile="minimal", use_native_tools=False, done_tool="finish")
+        state = DefaultState(max_steps=2) if supply_state else None
+        responses = ['{"tool":"finish","args":{"answer":"fintech-platform"}}']
+        kwargs = {
+            "task": "Find the payments owner",
+            "tools": [finish],
+            "config": config,
+            "state": state,
+            "max_steps": 2,
+            "system_prompt": "Use the supplied functions.",
+            "hooks": [Observer()],
+        }
+        if asynchronous:
+            result = asyncio.run(
+                run_result_async(AsyncMockLLMBackend(responses, cycle=False), **kwargs)
+            )
+        else:
+            result = run_result(MockLLMBackend(responses, cycle=False), **kwargs)
+        assert result.completed
+        assert result.output == {"answer": "fintech-platform"}
+        assert len(result.steps) == 1
+        assert events
+        assert config.max_steps == 2
+        assert config.system_prompt == "Use the supplied functions."
+        if state is not None:
+            assert result == RunResult.from_state(state)
+
+    @pytest.mark.parametrize("asynchronous", [False, True])
+    def test_default_native_runs_keep_evidence_and_lazy_history(self, asynchronous, tmp_path):
+        import json
+        from pathlib import Path
+
+        from looplet import LoopConfig, run_result, run_result_async
+        from looplet.testing import AsyncMockLLMBackend
+
+        def lookup_owner(service: str) -> str:
+            return "fintech-platform"
+
+        responses = [
+            '{"tool":"lookup_owner","args":{"service":"payments"}}',
+            '{"tool":"done","args":{"summary":"fintech-platform"}}',
+        ]
+        config = LoopConfig(run_dir=str(tmp_path / "run"))
+        kwargs = {"task": "Find the payments owner", "tools": [lookup_owner], "config": config}
+        if asynchronous:
+            result = asyncio.run(
+                run_result_async(AsyncMockLLMBackend(responses, cycle=False), **kwargs)
+            )
+        else:
+            result = run_result(MockLLMBackend(responses, cycle=False), **kwargs)
+        assert result.completed
+        assert result.output == {"status": "completed", "summary": "fintech-platform"}
+        assert len(result.steps) == 2
+        assert result.steps[0].tool_result.data == "fintech-platform"
+        trajectory = json.loads(
+            (Path(result.metadata["trace_dir"]) / "trajectory.json").read_text()
+        )
+        assert "harness_snapshot" in trajectory["metadata"]
+        assert len(trajectory["llm_calls"]) == 2
+        assert (tmp_path / "run" / "session.jsonl").is_file()
+
+    @pytest.mark.parametrize("asynchronous", [False, True])
+    def test_noncompletion_remains_visible(self, asynchronous):
+        from looplet import LoopConfig, run_result, run_result_async
+        from looplet.testing import AsyncMockLLMBackend
+
+        def ping() -> str:
+            return "pong"
+
+        responses = ['{"tool":"ping","args":{}}']
+        config = LoopConfig(harness_profile="minimal")
+        kwargs = {"task": "Keep checking", "tools": [ping], "config": config, "max_steps": 1}
+        if asynchronous:
+            result = asyncio.run(
+                run_result_async(AsyncMockLLMBackend(responses, cycle=False), **kwargs)
+            )
+        else:
+            result = run_result(MockLLMBackend(responses, cycle=False), **kwargs)
+        assert not result.completed
+        assert result.output is None
+        assert result.termination_reason == "budget_exhausted"
+        assert len(result.steps) == 1
+
+    @pytest.mark.parametrize("asynchronous", [False, True])
+    def test_precancelled_runs_do_not_call_the_backend(self, asynchronous):
+        from looplet import CancelToken, LoopConfig, run_result, run_result_async
+        from looplet.testing import AsyncMockLLMBackend
+
+        token = CancelToken()
+        token.cancel()
+        config = LoopConfig(harness_profile="minimal", cancel_token=token)
+        if asynchronous:
+            backend = AsyncMockLLMBackend()
+            result = asyncio.run(run_result_async(backend, tools=[], config=config))
+        else:
+            backend = MockLLMBackend()
+            result = run_result(backend, tools=[], config=config)
+        assert result.cancelled
+        assert backend.calls == 0
+        assert config.cancel_token is token
+
+    @pytest.mark.parametrize("asynchronous", [False, True])
+    def test_early_close_releases_an_explicit_registry(self, asynchronous):
+        from contextlib import aclosing, closing
+
+        from looplet import DefaultState, LoopConfig, RunResult, async_composable_loop
+        from looplet.testing import AsyncMockLLMBackend
+        from looplet.tools import tools_from
+
+        def ping() -> str:
+            return "pong"
+
+        registry = tools_from([ping], include_done=True, validate=True)
+        config = LoopConfig(harness_profile="minimal", max_steps=2)
+        state = DefaultState(max_steps=2)
+        response = '{"tool":"ping","args":{}}'
+        terminal = '{"tool":"done","args":{"summary":"finished"}}'
+        if asynchronous:
+
+            async def collect():
+                backend = AsyncMockLLMBackend([response, terminal], cycle=False)
+                async with aclosing(
+                    async_composable_loop(backend, tools=registry, state=state, config=config)
+                ) as steps:
+                    async for _step in steps:
+                        break
+                assert backend.calls == 1
+                assert RunResult.from_state(state).termination_reason == "stream_closed"
+                return [
+                    step
+                    async for step in async_composable_loop(
+                        AsyncMockLLMBackend([terminal], cycle=False), tools=registry, config=config
+                    )
+                ]
+
+            later = asyncio.run(collect())
+        else:
+            backend = MockLLMBackend([response, terminal], cycle=False)
+            with closing(
+                composable_loop(backend, tools=registry, state=state, config=config)
+            ) as steps:
+                for _step in steps:
+                    break
+            assert backend.calls == 1
+            assert RunResult.from_state(state).termination_reason == "stream_closed"
+            later = list(
+                composable_loop(
+                    MockLLMBackend([terminal], cycle=False), tools=registry, config=config
+                )
+            )
+        assert len(later) == 1
+        assert later[0].tool_result.error is None
 
 
 class TestOpenAIBackendFromEnv:

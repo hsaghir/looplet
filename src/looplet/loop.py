@@ -11,6 +11,7 @@ import logging
 import time
 import warnings
 from collections.abc import Sequence
+from contextlib import closing
 from dataclasses import asdict, dataclass, field
 from dataclasses import replace as _dc_replace
 from typing import (
@@ -71,11 +72,18 @@ from looplet.scaffolding import (
     estimate_prompt_tokens as estimate_prompt_tokens,
 )
 from looplet.session import SessionLog
-from looplet.tools import BaseToolRegistry, _summarize_args_dict
+from looplet.tools import (
+    BaseToolRegistry,
+    ToolSpec,
+    _summarize_args_dict,
+    register_done_tool,
+    tools_from,
+)
 from looplet.types import (
     AgentState,
     RunEnvelope,
     RunPhase,
+    RunResult,
     RunStatus,
     Step,
     ToolCall,
@@ -2090,6 +2098,29 @@ def _validate_hooks(hooks: list[Any]) -> None:
             )
 
 
+def _normalize_loop_inputs(
+    task: Any,
+    tools: BaseToolRegistry | Sequence[ToolSpec | Callable[..., Any]] | None,
+    config: LoopConfig,
+) -> tuple[Any, BaseToolRegistry]:
+    if isinstance(task, str):
+        task = {"description": task}
+    if tools is None:
+        raise ValueError("tools is required")
+    if isinstance(tools, Sequence):
+        if isinstance(tools, (str, bytes)):
+            raise TypeError("tools must be a registry or a sequence of Python functions")
+        if any(not isinstance(item, ToolSpec) and not callable(item) for item in tools):
+            raise TypeError("tools must contain Python functions or ToolSpec objects")
+        registry = tools_from(tuple(tools), validate=True)
+        if not config.allow_text_completion and not set(
+            config.resolve_terminal_outcomes()
+        ).intersection(registry.tool_names):
+            register_done_tool(registry, name=config.done_tool)
+        tools = registry
+    return task, tools
+
+
 def _validate_loop_inputs(task: Any, tools: BaseToolRegistry, config: LoopConfig) -> None:
     """Reject impossible loop wiring before prompt assembly begins."""
     from looplet.assistant_turns import validate_assistant_config
@@ -2590,7 +2621,7 @@ def _trace_steps(state: Any) -> Any:
 def composable_loop(
     llm: Any,
     task: Any = None,
-    tools: BaseToolRegistry | None = None,
+    tools: BaseToolRegistry | Sequence[ToolSpec | Callable[..., Any]] | None = None,
     context: Any = None,
     hooks: list[Any] | None = None,
     config: LoopConfig | None = None,
@@ -2606,10 +2637,11 @@ def composable_loop(
 
     Args:
         llm: Backend implementing synchronous ``generate()``.
-        task: A dict of task fields, such as ``{'description': 'Find the owner'}``.
-            A bare string is not accepted. Defaults to an empty dict.
-        tools: Required tool registry, usually built with ``tools_from(...)``.
-            Do not pass a list of functions directly.
+        task: A task string or a dict of task fields. Strings become
+            ``{'description': task}``. Defaults to an empty dict.
+        tools: Python functions, tool specs, or an explicit registry.
+            Sequences get argument validation and a standard completion tool
+            unless completion is already configured. Explicit registries stay unchanged.
         context: Optional application object passed unchanged to hook methods.
         hooks: Explicit policies composed with the configured harness defaults.
         config: ``LoopConfig`` with budgets, prompt builders, and runtime options.
@@ -2639,6 +2671,7 @@ def composable_loop(
     effective_config = _resolve_loop_config(
         config, max_steps=max_steps, system_prompt=system_prompt
     )
+    task, tools = _normalize_loop_inputs(task, tools, effective_config)
     harness = resolve_harness(effective_config, hooks)
     original_compact_service = effective_config.compact_service
     effective_config.compact_service = harness.config.compact_service
@@ -2685,6 +2718,35 @@ def composable_loop(
                 _reset_context_overrides(tokens)
                 if effective_config.compact_service is harness.config.compact_service:
                     effective_config.compact_service = original_compact_service
+
+
+def run_result(
+    llm: Any,
+    task: Any = None,
+    tools: BaseToolRegistry | Sequence[ToolSpec | Callable[..., Any]] | None = None,
+    *,
+    config: LoopConfig | None = None,
+    state: AgentState | None = None,
+    max_steps: int | None = None,
+    system_prompt: str | None = None,
+    **kwargs: Any,
+) -> RunResult:
+    """Consume and close the ordinary loop, returning its accepted output and status.
+
+    Functions and task strings use the same defaults as :func:`composable_loop`.
+    Omitted state is created for this invocation. Supplied state uses ordinary budget rules.
+    Additional keyword arguments pass unchanged to :func:`composable_loop`.
+    Host-supplied backends, tools, hooks, and resources are not closed.
+    """
+    config = _resolve_loop_config(config, max_steps=max_steps, system_prompt=system_prompt)
+    if state is None:
+        state = _resolve_loop_state(None, config)
+    with closing(
+        composable_loop(llm, task=task, tools=tools, config=config, state=state, **kwargs)
+    ) as steps:
+        for _step in steps:
+            pass
+    return RunResult.from_state(state)
 
 
 def _composable_loop_impl(
@@ -2736,33 +2798,8 @@ def _composable_loop_impl(
     """
     if task is None:
         task = {}
-    # Common new-user mistake: pass a bare string instead of a dict.
-    # The docs and AGENTS.md show ``task={'goal': '...'}`` / ``{'description':
-    # '...'}``; a bare string crashes downstream with
-    # ``AttributeError: 'str' object has no attribute 'items'`` because
-    # the prompt builder iterates ``task.items()``. Catch the shape
-    # mistake at the entry point.
-    if isinstance(task, str):
-        raise TypeError(
-            "composable_loop(task=...) expects a dict, not a string. "
-            f"Wrap the value in a dict like ``task={{'description': {task!r}}}``"
-            " or ``task={{'goal': '...'}}``. The prompt builder iterates the "
-            "dict's keys to render the TASK section."
-        )
     if tools is None:
         raise ValueError("tools is required")
-    # Common new-user mistake: pass a list of @tool ToolSpecs (or plain
-    # functions) instead of a registry. The downstream failure is a
-    # bare ``AttributeError: 'list' object has no attribute
-    # 'tool_catalog_text'`` deep inside prompt assembly. Catch the
-    # mistake at the entry point and tell the user about ``tools_from``.
-    if isinstance(tools, list):
-        raise TypeError(
-            "composable_loop(tools=...) expects a tool registry, not a list. "
-            "Wrap your list of @tool functions with ``tools_from(...)``: "
-            "``from looplet import tools_from; tools = tools_from([greet, ...], "
-            "include_done=True, done_parameters={'answer': 'Final answer'})``."
-        )
     if config is None or max_steps is not None or system_prompt is not None:
         config = _resolve_loop_config(config, max_steps=max_steps, system_prompt=system_prompt)
     if hooks is None:

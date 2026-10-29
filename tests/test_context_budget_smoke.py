@@ -227,6 +227,7 @@ async def test_settlement_evidence_example(tmp_path, asynchronous, cartridge, na
             result = preset.run_result(backend, task=task_for("evidence"))
         assert result.completed, result.diagnostics()
         assert len(requests) == 6
+        assert "/body" in requests[0]
         assert "731405" not in requests[1]
         assert "result_view_too_large" in requests[3]
         assert "731405" in requests[4]
@@ -718,6 +719,17 @@ async def test_backend_observes_original_result_before_projection(asynchronous, 
     assert len(observed) == 2
     assert observed[-1][0].tool == "done"
     assert all(result.error is None for _, result in observed)
+
+
+@pytest.mark.parametrize("name", ["read_tool_result", "search_tool_result"])
+def test_query_tools_document_original_result_pointer(name):
+    from looplet.builtin_tools.tool_results import SPECS
+
+    spec = next(spec for spec in SPECS if spec.name == name)
+    pointer = spec.to_api_schema()["input_schema"]["properties"]["json_pointer"]
+    assert pointer["default"] == ""
+    assert "original tool return value" in pointer["description"]
+    assert "not its preview wrapper" in pointer["description"]
 
 
 def test_delivery_retry_hint_accounts_for_json_escaping():

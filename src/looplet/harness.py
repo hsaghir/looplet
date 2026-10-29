@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field, replace
+from functools import wraps
 from pathlib import Path
 from threading import Lock
 from typing import TYPE_CHECKING, Any
@@ -165,6 +167,39 @@ class _AutomaticResultStore(FileToolResultStore):
         self._owner = owner
 
 
+class _AsyncPersistenceHook:
+    def __init__(self, hook: Any) -> None:
+        self.hook = hook
+
+    def __getattr__(self, name: str) -> Any:
+        callback = getattr(self.hook, name)
+        if name not in {"post_dispatch", "on_event", "on_loop_end"}:
+            return callback
+
+        @wraps(callback)
+        async def persist(*args: Any, **kwargs: Any) -> Any:
+            from looplet.checkpoint import _run_persistence
+
+            session_text = None
+            if name == "on_loop_end" and hasattr(self.hook, "trajectory"):
+                session_log = args[1]
+                if session_log is not None and hasattr(session_log, "render"):
+                    try:
+                        session_text = str(session_log.render() or "")
+                    except Exception:
+                        logging.getLogger(__name__).warning(
+                            "Failed to render session log for trajectory", exc_info=True
+                        )
+                args = (args[0], None, *args[2:])
+            try:
+                return await _run_persistence(callback, *args, **kwargs)
+            finally:
+                if session_text is not None:
+                    self.hook.trajectory.session_log_text = session_text
+
+        return persist
+
+
 @dataclass
 class _HarnessRun:
     config: Any
@@ -174,25 +209,39 @@ class _HarnessRun:
     session_log: Any
     sink: Any = None
     tree: Any = None
+    checkpoint_store: Any = None
+    persistence_hooks: list[Any] = field(default_factory=list)
     restore_config: list[tuple[str, Any, Any]] = field(default_factory=list)
     registry_id: int | None = None
     registry_token: object | None = None
 
+    def enable_async_persistence(self) -> None:
+        owned = {id(hook) for hook in self.persistence_hooks}
+        self.hooks = [
+            _AsyncPersistenceHook(hook) if id(hook) in owned else hook for hook in self.hooks
+        ]
+
+    def persist(self) -> None:
+        if self.sink is not None:
+            self.sink.flush()
+        if self.tree is not None:
+            from looplet.session_tree import save_tree
+
+            save_tree(self.tree, Path(self.config.run_dir) / "session.jsonl")
+
+    def release(self) -> None:
+        try:
+            for name, previous, installed in reversed(self.restore_config):
+                if getattr(self.config, name) is installed:
+                    setattr(self.config, name, previous)
+        finally:
+            _release_registry(self.registry_id, self.registry_token)
+
     def finish(self) -> None:
         try:
-            if self.sink is not None:
-                self.sink.flush()
-            if self.tree is not None:
-                from looplet.session_tree import save_tree
-
-                save_tree(self.tree, Path(self.config.run_dir) / "session.jsonl")
+            self.persist()
         finally:
-            try:
-                for name, previous, installed in reversed(self.restore_config):
-                    if getattr(self.config, name) is installed:
-                        setattr(self.config, name, previous)
-            finally:
-                _release_registry(self.registry_id, self.registry_token)
+            self.release()
 
 
 def _restore_step(value: dict[str, Any]) -> Any:
@@ -257,7 +306,7 @@ def _prepare_harness_run(
     conversation: Any,
 ) -> _HarnessRun:
     from looplet._storage import DiskBackedDict, DiskBackedList
-    from looplet.checkpoint import CheckpointHook, FileCheckpointStore
+    from looplet.checkpoint import CheckpointHook, FileCheckpointStore, _IncrementalCheckpointStore
     from looplet.provenance import ProvenanceSink, TrajectoryRecorder, _recording_backend
     from looplet.session import SessionLog
     from looplet.session_tree import SessionTree, SessionTreeRecorder, TreeNode
@@ -290,6 +339,7 @@ def _prepare_harness_run(
         )
     ):
         effective.checkpoint_dir = str(root / "checkpoints")
+        prepared.checkpoint_store = _IncrementalCheckpointStore(effective.checkpoint_dir)
     if effective.initial_checkpoint is None and effective.checkpoint_dir is not None:
         effective.initial_checkpoint = FileCheckpointStore(
             effective.checkpoint_dir
@@ -326,6 +376,7 @@ def _prepare_harness_run(
             prepared.llm = prepared.sink.wrap_llm(llm)
             recorder = prepared.sink.trajectory_hook()
         prepared.hooks.append(recorder)
+        prepared.persistence_hooks.append(recorder)
         if isinstance(metadata, dict):
             metadata["trace_dir"] = str(prepared.sink._dir)
     if "branching" not in disabled and not any(
@@ -338,7 +389,9 @@ def _prepare_harness_run(
         children.update(prepared.tree.children)
         prepared.tree.nodes = nodes
         prepared.tree.children = children
-        prepared.hooks.append(SessionTreeRecorder(prepared.tree))
+        recorder = SessionTreeRecorder(prepared.tree)
+        prepared.hooks.append(recorder)
+        prepared.persistence_hooks.append(recorder)
     if prepared.sink is not None:
         from looplet.harness_snapshot import serialize_harness
 

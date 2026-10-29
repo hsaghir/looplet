@@ -41,10 +41,10 @@ from typing import Any, AsyncGenerator, Callable
 
 from looplet._backend_contract import TerminalLLMError
 from looplet._backend_contract import attempt_limit as _attempt_limit
-from looplet.checkpoint import Checkpoint as _Checkpoint
 from looplet.checkpoint import FileCheckpointStore as _FileCheckpointStore
+from looplet.checkpoint import _capture_checkpoint, _run_persistence
+from looplet.checkpoint import _save_pending_dispatch_async as _save_pending_dispatch
 from looplet.checkpoint import resume_loop_state as _resume_loop_state
-from looplet.checkpoint import save_pending_dispatch as _save_pending_dispatch
 from looplet.checkpoint import validate_checkpoint_identity as _validate_checkpoint_identity
 from looplet.context_plan import ContextSourceSelector
 from looplet.context_projection import ContextProjection as ContextProjection
@@ -562,6 +562,7 @@ async def async_composable_loop(
         if effective_config.compact_service is harness.config.compact_service:
             effective_config.compact_service = original_compact_service
         raise
+    prepared.enable_async_persistence()
     tokens = _set_context_overrides(effective_config)
     from looplet.loop import _LoopFinalizer, _mark_terminal_state
 
@@ -578,6 +579,7 @@ async def async_composable_loop(
         stream=stream,
         conversation=conversation,
         _finalizer=finalizer,
+        _checkpoint_store=prepared.checkpoint_store,
     )
     try:
         async for step in iterator:
@@ -596,11 +598,14 @@ async def async_composable_loop(
                 await finalizer.finish_async(suppress_errors=True)
         finally:
             try:
-                prepared.finish()
+                await _run_persistence(prepared.persist)
             finally:
-                _reset_context_overrides(tokens)
-                if effective_config.compact_service is harness.config.compact_service:
-                    effective_config.compact_service = original_compact_service
+                try:
+                    prepared.release()
+                finally:
+                    _reset_context_overrides(tokens)
+                    if effective_config.compact_service is harness.config.compact_service:
+                        effective_config.compact_service = original_compact_service
 
 
 async def _async_composable_loop_impl(
@@ -618,6 +623,7 @@ async def _async_composable_loop_impl(
     max_steps: int | None = None,
     system_prompt: str | None = None,
     _finalizer: Any = None,
+    _checkpoint_store: Any = None,
 ) -> AsyncGenerator[Step, None]:
     """Async version of :func:`looplet.loop.composable_loop`.
 
@@ -686,7 +692,7 @@ async def _async_composable_loop_impl(
 
     _ckpt_store = None
     if config.checkpoint_dir is not None:
-        _ckpt_store = _FileCheckpointStore(config.checkpoint_dir)
+        _ckpt_store = _checkpoint_store or _FileCheckpointStore(config.checkpoint_dir)
         if config.initial_checkpoint is None:
             _latest = _ckpt_store.load_latest_for_resume(
                 run_id=(config.run_envelope.run_id if config.run_envelope is not None else None)
@@ -835,6 +841,7 @@ async def _async_composable_loop_impl(
     if _turns is not None:
         checkpoint_state = _turns.wrap_checkpoint(checkpoint_state)
         _turns.checkpoint = lambda: _turns.save(_ckpt_store, loop_ctx, checkpoint_state)
+        _turns.async_checkpoint = lambda: _turns.save_async(_ckpt_store, loop_ctx, checkpoint_state)
         finalizer.bind(hooks, state, session_log, context, _turns.wrap(llm))
         loop_ctx.llm = _turns.wrap(llm)
 
@@ -902,36 +909,21 @@ async def _async_composable_loop_impl(
         loop_ctx.llm = _turns.wrap(selected) if _turns is not None else selected
         return loop_ctx.llm
 
-    def _save_checkpoint(step_number: int, *, status: str | None = None) -> None:
+    async def _save_checkpoint(step_number: int, *, status: str | None = None) -> None:
         if _ckpt_store is None:
             return
         metadata = {"task": str(task)}
         if status is not None:
             metadata["status"] = status
         loop_ctx.step_num = step_number
-        _checkpoint = _Checkpoint(
+        _checkpoint = _capture_checkpoint(
+            loop_ctx,
             step_number=step_number,
-            session_log_data={
-                "entries": session_log.to_list(),
-                "current_theory": session_log.current_theory,
-            },
-            conversation_data=_conv.serialize(),
-            config_snapshot={
-                "max_steps": config.max_steps,
-                "queries_used": getattr(state, "queries_used", 0),
-                "budget_remaining": getattr(state, "budget_remaining", 0),
-            },
-            tool_results_store=tools.checkpoint_results(),
-            domain_state=(checkpoint_state(loop_ctx) if checkpoint_state is not None else {}),
-            run_envelope=(
-                loop_ctx.run_envelope.to_dict() if loop_ctx.run_envelope is not None else None
-            ),
-            metadata={**metadata, **_policy_checkpoint_metadata(state)},
-            run_status=loop_ctx.status.value,
-            run_phase=loop_ctx.phase.value,
-            termination_reason=loop_ctx.termination_reason,
+            checkpoint_state=checkpoint_state,
+            metadata={**metadata, **_policy_checkpoint_metadata(state, _ckpt_store)},
         )
-        _ckpt_store.save(
+        await _run_persistence(
+            _ckpt_store.save,
             _checkpoint,
             key=f"step_{step_number}" if status is None else f"step_{step_number}_{status}",
         )
@@ -1464,7 +1456,7 @@ async def _async_composable_loop_impl(
                         step, theory="", entities=[], findings=[], highlights=[], recall_key=""
                     )
                     await _notify_post_step_async(hooks, state, session_log, step_num)
-                    _save_checkpoint(step_num)
+                    await _save_checkpoint(step_num)
                     reason = await _post_step_stop_reason_async(
                         hooks,
                         state=state,
@@ -1525,7 +1517,7 @@ async def _async_composable_loop_impl(
                     recall_key="",
                 )
                 await _notify_post_step_async(hooks, state, session_log, step_num)
-                _save_checkpoint(step_num)
+                await _save_checkpoint(step_num)
                 reason = await _post_step_stop_reason_async(
                     hooks,
                     state=state,
@@ -1602,7 +1594,7 @@ async def _async_composable_loop_impl(
                     calls_to_dispatch = [call for _, call in dispatch_items]
                     if calls_to_dispatch:
                         if _ckpt_store is not None:
-                            _save_pending_dispatch(
+                            await _save_pending_dispatch(
                                 _ckpt_store,
                                 calls=group,
                                 dispatching=calls_to_dispatch,
@@ -1625,7 +1617,10 @@ async def _async_composable_loop_impl(
                                     if loop_ctx.run_envelope is not None
                                     else None
                                 ),
-                                metadata={"task": str(task), **_policy_checkpoint_metadata(state)},
+                                metadata={
+                                    "task": str(task),
+                                    **_policy_checkpoint_metadata(state, _ckpt_store),
+                                },
                                 run_status=loop_ctx.status.value,
                                 run_phase=loop_ctx.phase.value,
                             )
@@ -1778,7 +1773,7 @@ async def _async_composable_loop_impl(
                             metadata=event_metadata,
                         )
                     )
-                _save_checkpoint(cur_step)
+                await _save_checkpoint(cur_step)
 
                 if not config.concurrent_dispatch:
                     reason = None
@@ -1927,7 +1922,7 @@ async def _async_composable_loop_impl(
                     recall_key="",
                 )
                 await _notify_post_step_async(hooks, state, session_log, cur_step)
-                _save_checkpoint(cur_step)
+                await _save_checkpoint(cur_step)
             else:
                 _ctx = _build_tool_ctx(
                     config,
@@ -1944,7 +1939,7 @@ async def _async_composable_loop_impl(
                     _ckpt_store is not None
                     and tool_call.metadata.get("completion_source") != "assistant_message"
                 ):
-                    _save_pending_dispatch(
+                    await _save_pending_dispatch(
                         _ckpt_store,
                         calls=tool_calls[done_idx:],
                         dispatching=[tool_call],
@@ -1965,7 +1960,10 @@ async def _async_composable_loop_impl(
                             if loop_ctx.run_envelope is not None
                             else None
                         ),
-                        metadata={"task": str(task), **_policy_checkpoint_metadata(state)},
+                        metadata={
+                            "task": str(task),
+                            **_policy_checkpoint_metadata(state, _ckpt_store),
+                        },
                         run_status=loop_ctx.status.value,
                         run_phase=loop_ctx.phase.value,
                     )
@@ -2031,7 +2029,7 @@ async def _async_composable_loop_impl(
                     terminal_tool=tool_call.tool,
                 )
                 await _notify_post_step_async(hooks, state, session_log, cur_step)
-                _save_checkpoint(cur_step, status="done")
+                await _save_checkpoint(cur_step, status="done")
                 done = True
                 stop_reason = "done"
                 await emit_event_async(
@@ -2085,8 +2083,8 @@ async def _async_composable_loop_impl(
 
     if _turns is not None:
         llm_calls = _turns.data["model_calls"]
-        if _turns.checkpoint is not None:
-            _turns.checkpoint()
+        if _turns.async_checkpoint is not None:
+            await _turns.async_checkpoint()
     _record_run_stats(state, llm_calls=llm_calls)
 
     await emit_event_async(
@@ -2102,8 +2100,8 @@ async def _async_composable_loop_impl(
     llm_calls += await finalizer.finish_async()
     if _turns is not None:
         llm_calls = _turns.call_total(llm_calls)
-        if _turns.checkpoint is not None:
-            _turns.checkpoint()
+        if _turns.async_checkpoint is not None:
+            await _turns.async_checkpoint()
     _record_run_stats(state, llm_calls=llm_calls)
 
     _record_run_stats(

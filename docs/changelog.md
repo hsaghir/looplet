@@ -33,6 +33,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Async persistence drains workers during shutdown-wide task cancellation and preserves caller context.
+- Automatic checkpoints share immutable JSON records. Explicit checkpoint stores keep plain JSON snapshots. Copy the full automatic checkpoint directory when moving runs.
+- Async loops await automatic checkpoint and recorder writes in workers. Cancellation drains writes before cleanup. Host callbacks and live-config restoration remain on the loop thread.
 - Concurrent loops reject a shared tool registry before rebinding run-owned evidence. Use fresh registries for overlapping runs; sequential reuse remains supported.
 - Automatic trajectories identify the resolved harness policy, qualified component types, and full system-prompt digest without exporting arbitrary provider options.
 - Sync, async, and cartridge runs resolve `execution-v1` by default: deterministic compaction and native typed history without implicit stagnation guidance or a step-derived tool quota. Explicit policies take precedence; the named `standard-v1` policy and `minimal` profile remain available without changing positional config arguments.

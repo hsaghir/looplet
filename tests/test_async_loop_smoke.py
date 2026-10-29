@@ -23,6 +23,157 @@ from looplet.types import ToolContext
 pytestmark = [pytest.mark.smoke, pytest.mark.asyncio]
 
 
+@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize("model_limit", [None, 6])
+async def test_default_persistence_keeps_io_off_the_loop_and_callbacks_on_it(
+    tmp_path, monkeypatch, native, model_limit
+):
+    from functools import wraps
+    from threading import get_ident
+
+    from looplet import tools_from
+    from looplet.checkpoint import FileCheckpointStore
+    from looplet.provenance import ProvenanceSink, TrajectoryRecorder
+    from looplet.session import SessionLog
+    from looplet.session_tree import SessionTreeRecorder
+
+    owner = get_ident()
+    writes = []
+    flushes = []
+    captures = []
+    recorder_callbacks = []
+    original_save = FileCheckpointStore.save
+    original_flush = ProvenanceSink.flush
+
+    def save(store, checkpoint, key):
+        writes.append((key, get_ident()))
+        return original_save(store, checkpoint, key)
+
+    def flush(sink):
+        flushes.append(get_ident())
+        return original_flush(sink)
+
+    def capture(context):
+        captures.append(get_ident())
+        return {"cursor": context.step_num}
+
+    def recorded(callback):
+        @wraps(callback)
+        def record(*args, **kwargs):
+            assert get_ident() != owner
+            recorder_callbacks.append(callback.__name__)
+            return callback(*args, **kwargs)
+
+        return record
+
+    class ThreadBoundLog(SessionLog):
+        def to_list(self):
+            assert get_ident() == owner
+            return super().to_list()
+
+        def render(self, *args, **kwargs):
+            assert get_ident() == owner
+            return super().render(*args, **kwargs)
+
+    class ThreadBoundConfig(LoopConfig):
+        def __setattr__(self, name, value):
+            assert get_ident() == owner
+            super().__setattr__(name, value)
+
+    def source():
+        return {"answer": 42}
+
+    monkeypatch.setattr(FileCheckpointStore, "save", save)
+    monkeypatch.setattr(ProvenanceSink, "flush", flush)
+    for recorder_type, method in (
+        (TrajectoryRecorder, "post_dispatch"),
+        (TrajectoryRecorder, "on_loop_end"),
+        (SessionTreeRecorder, "on_event"),
+    ):
+        monkeypatch.setattr(recorder_type, method, recorded(getattr(recorder_type, method)))
+    backend = AsyncMockLLMBackend(
+        ['{"tool":"source","args":{}}', '{"tool":"done","args":{"summary":"ok"}}'],
+        cycle=False,
+    )
+    state = DefaultState(max_steps=2)
+    async for _step in async_composable_loop(
+        backend,
+        tools=tools_from([source], include_done=True, done_parameters={"summary": "Outcome"}),
+        state=state,
+        session_log=ThreadBoundLog(),
+        config=ThreadBoundConfig(
+            max_steps=2,
+            max_model_calls=model_limit,
+            use_native_tools=native,
+            run_dir=str(tmp_path),
+            checkpoint_state=capture,
+        ),
+    ):
+        pass
+    assert state.run_status == "completed"
+    assert state.step_count == 2
+    assert backend.calls == 2
+    assert writes and all(thread != owner for _, thread in writes)
+    assert flushes and all(thread != owner for thread in flushes)
+    assert captures and all(thread == owner for thread in captures)
+    assert set(recorder_callbacks) == {"post_dispatch", "on_event", "on_loop_end"}
+    assert any("pending" in key for key, _ in writes)
+    assert any(key == "model_turn" for key, _ in writes) == (model_limit is not None)
+
+
+@pytest.mark.parametrize("fail", [False, True])
+@pytest.mark.parametrize("cancel_helpers", [False, True])
+async def test_persistence_drains_inflight_write_before_propagating_cancellation(
+    fail, cancel_helpers
+):
+    from contextvars import ContextVar
+    from threading import Event
+
+    from looplet.checkpoint import _run_persistence
+
+    marker = ContextVar("persistence_context", default="missing")
+    marker.set("caller")
+    loop = asyncio.get_running_loop()
+    started = asyncio.Event()
+    release = Event()
+    events = []
+
+    def write():
+        loop.call_soon_threadsafe(started.set)
+        assert release.wait(5)
+        assert marker.get() == "caller"
+        events.append("written")
+        if fail:
+            raise OSError("storage failed")
+
+    async def drive():
+        try:
+            await _run_persistence(write)
+        finally:
+            events.append("finalized")
+
+    existing_tasks = asyncio.all_tasks()
+    pending = asyncio.create_task(drive())
+    try:
+        await started.wait()
+        pending.cancel()
+        if cancel_helpers:
+            helpers = asyncio.all_tasks() - existing_tasks - {pending}
+            for helper in helpers:
+                helper.cancel()
+            await asyncio.gather(*helpers, return_exceptions=True)
+        advanced = loop.create_future()
+        loop.call_soon(advanced.set_result, None)
+        await advanced
+        pending.cancel()
+        assert not pending.done()
+    finally:
+        release.set()
+    with pytest.raises(OSError if fail else asyncio.CancelledError):
+        await pending
+    assert events == ["written", "finalized"]
+
+
 class TestAsyncLlmCall:
     async def test_forwards_cancel_token_and_kwargs_to_permissive_backend(self):
         class Backend:

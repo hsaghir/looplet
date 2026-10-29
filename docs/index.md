@@ -90,7 +90,7 @@ Write a Python function and pass it to the ordinary loop.
 This Python-first API is **unreleased**. Install the fixed preview in a virtual environment:
 
 ```bash
-python -m pip install "looplet[openai] @ https://github.com/hsaghir/looplet/archive/d4e0f4a5d62dd1a2a46f3a2f33261cacfaca65c0.zip"
+python -m pip install "looplet[openai] @ https://github.com/hsaghir/looplet/archive/13904754fdb1fbeb6f141570d10b1af04b37c538.zip"
 ```
 
 Set `OPENAI_API_KEY` and `OPENAI_MODEL` for your provider.

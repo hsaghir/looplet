@@ -34,7 +34,7 @@ Write Python functions, give them to a loop, and inspect each step.
 The Python-first API below is **unreleased**. Install this fixed preview:
 
 ```bash
-python -m pip install "looplet[openai] @ https://github.com/hsaghir/looplet/archive/d4e0f4a5d62dd1a2a46f3a2f33261cacfaca65c0.zip"
+python -m pip install "looplet[openai] @ https://github.com/hsaghir/looplet/archive/13904754fdb1fbeb6f141570d10b1af04b37c538.zip"
 ```
 
 Use a virtual environment. Set `OPENAI_API_KEY` and `OPENAI_MODEL` for your provider.

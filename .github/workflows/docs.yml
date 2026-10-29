@@ -48,7 +48,7 @@ jobs:
         # of the root-level canonical files with docs-relative links.
         run: mkdocs build --strict
 
-      - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9
         if: github.event_name != 'pull_request'
         with: { path: site }
 

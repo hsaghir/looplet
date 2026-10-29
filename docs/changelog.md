@@ -87,6 +87,10 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Reused registries receive a fresh automatic result store per run. Completed stores remain readable, and explicit host stores remain shared.
+- Automatic raw history preserves picklable Python result types. Conversation checkpoints convert result payloads to JSON without changing live results.
+- Default disk-backed history maintains step charges incrementally. Budget reads no longer decode or serialize earlier result payloads.
+- File-result checkpoints append new catalog entries once and bind verified prefix boundaries. Legacy catalogs and historical branch checkpoints remain readable.
 - Context-pressure estimates include structured tool arguments, result values, and errors instead of counting only text messages.
 - Stock completion and thinking tools use equivalent importable implementations so strict cartridge exports remain runnable.
 - Native tool schemas normalize optional markers and type aliases in cartridge dictionary descriptors without mutating authored declarations or dropping constraints.

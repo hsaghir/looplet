@@ -217,6 +217,17 @@ Persistence opt-outs remove the previous automatic binding instead of inheriting
 Keep the old store handle or run directory when earlier evidence is needed.
 An explicit `tool_result_store` remains host-owned and can share evidence across runs.
 
+One registry can serve only one active loop, including minimal-profile runs.
+Overlapping sync or async use raises before resource bindings change.
+Create fresh registries for concurrent runs; shared client resources keep their identity.
+Completion, explicit closure, setup failure, and finalization errors release the registry claim.
+
+Automatic trajectories include a `harness_snapshot` in their metadata.
+It records allowlisted limits, resolved defaults, tool schemas, component names, and the full system prompt's SHA-256 hash.
+Provider kwargs and live resource contents are not exported by this snapshot.
+Explicit recorders remain host-owned.
+The snapshot identifies configuration; it does not freeze code, dependencies, data, or external effects.
+
 History indexing and iteration load records lazily. Assign an edited record back to
 its sequence when it may have left the one-record cache. `RunResult.from_state()`
 creates an independent lazy snapshot for disk-backed history; it does not collect every output.

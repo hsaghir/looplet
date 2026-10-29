@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from hashlib import sha256
 
 from looplet import serialize_harness
 from looplet.provenance import TrajectoryRecorder
@@ -56,6 +57,7 @@ def test_serialize_harness_captures_config_and_component_names():
         "schema_version": 2,
         "extra": {"variant": "a"},
         "system_prompt": "You are careful.",
+        "system_prompt_sha256": sha256(b"You are careful.").hexdigest(),
         "max_steps": 5,
         "max_tokens": 1000,
         "temperature": 0.1,
@@ -67,8 +69,11 @@ def test_serialize_harness_captures_config_and_component_names():
             {"name": "read", "description": "Read a file."},
         ],
         "hooks": ["GuardHook"],
+        "hook_types": [f"{GuardHook.__module__}.{GuardHook.__qualname__}"],
         "memory_sources": ["MemorySource"],
+        "memory_source_types": [f"{MemorySource.__module__}.{MemorySource.__qualname__}"],
         "llm_backend": "Backend",
+        "llm_backend_type": f"{Backend.__module__}.{Backend.__qualname__}",
     }
     json.dumps(snap)
 
@@ -99,3 +104,49 @@ def test_trajectory_recorder_without_harness_snapshot_leaves_metadata_empty():
     recorder.on_loop_end(None, None, None, None)
 
     assert recorder.trajectory.metadata == {}
+
+
+def test_snapshot_distinguishes_effective_limits_without_exporting_secrets():
+    from looplet import LoopConfig, resolve_harness
+
+    first = LoopConfig(max_model_calls=1, context_window=8000)
+    second = LoopConfig(max_model_calls=40, context_window=64000)
+    second.generate_kwargs = {"api_key": "private-test-key", "extra_headers": {"token": "secret"}}
+    first_snapshot = serialize_harness(config=resolve_harness(first).config)
+    second_snapshot = serialize_harness(config=resolve_harness(second).config)
+
+    assert first_snapshot != second_snapshot
+    assert first_snapshot["max_model_calls"] == 1
+    assert second_snapshot["max_model_calls"] == 40
+    assert first_snapshot["context_window"] == 8000
+    assert second_snapshot["context_window"] == 64000
+    assert second_snapshot["harness_profile"] == "execution-v1"
+    assert "private-test-key" not in json.dumps(second_snapshot)
+    assert "secret" not in json.dumps(second_snapshot)
+    assert "generate_kwargs" not in second_snapshot
+
+
+def test_snapshot_hash_distinguishes_truncated_prompt_tails():
+    from looplet import LoopConfig
+
+    first = serialize_harness(config=LoopConfig(system_prompt="x" * 5000 + "first"))
+    second = serialize_harness(config=LoopConfig(system_prompt="x" * 5000 + "other"))
+
+    assert first["system_prompt"] == second["system_prompt"]
+    assert first["system_prompt_sha256"] != second["system_prompt_sha256"]
+
+
+def test_snapshot_detaches_tool_schemas_and_identifies_components():
+    from looplet import LoopConfig, tools_from
+
+    def source(number: int):
+        return number
+
+    tools = tools_from([source])
+    config = LoopConfig(disabled_defaults=["branching"])
+    snapshot = serialize_harness(config=config, tools=tools)
+
+    assert snapshot["tools"][0]["parameters"]["properties"]["number"]["type"] == "integer"
+    assert snapshot["tools"][0]["implementation"].endswith(".<locals>.source")
+    config.disabled_defaults.append("checkpointing")
+    assert snapshot["disabled_defaults"] == ["branching"]

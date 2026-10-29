@@ -24,6 +24,163 @@ from looplet.testing import MockLLMBackend
 from looplet.types import LLMBackend, Step, ToolCall, ToolResult
 
 
+@pytest.mark.parametrize("first_async", [False, True])
+@pytest.mark.parametrize("second_async", [False, True])
+@pytest.mark.parametrize("profile", ["execution-v1", "minimal"])
+async def test_active_registry_rejects_another_run(tmp_path, first_async, second_async, profile):
+    from looplet import (
+        AsyncMockLLMBackend,
+        DefaultState,
+        FileCheckpointStore,
+        LoopConfig,
+        async_composable_loop,
+        composable_loop,
+        tools_from,
+    )
+
+    def source(number: int):
+        return {"number": number}
+
+    tools = tools_from([source], include_done=True, done_parameters={"summary": "Outcome"})
+    state = DefaultState(max_steps=2)
+
+    def iterator(asynchronous, number, directory, run_state=None):
+        backend = AsyncMockLLMBackend if asynchronous else MockLLMBackend
+        driver = async_composable_loop if asynchronous else composable_loop
+        return driver(
+            backend(
+                [
+                    json.dumps({"tool": "source", "args": {"number": number}}),
+                    json.dumps({"tool": "done", "args": {"summary": "ok"}}),
+                ],
+                cycle=False,
+            ),
+            tools=tools,
+            state=run_state,
+            config=LoopConfig(
+                max_steps=2,
+                use_native_tools=False,
+                harness_profile=profile,
+                run_dir=str(directory),
+            ),
+        )
+
+    first = iterator(first_async, 111, tmp_path / "first", state)
+    second = iterator(second_async, 222, tmp_path / "second")
+    try:
+        step = await anext(first) if first_async else next(first)
+        key = step.tool_result.result_key
+        assert key is not None
+        original_resources = tools.resources
+        with pytest.raises(RuntimeError, match="registry already has an active loop"):
+            if second_async:
+                await anext(second)
+            else:
+                next(second)
+        assert tools.resources == original_resources
+        assert tools.get_result(key) == {"number": 111}
+        if first_async:
+            async for _step in first:
+                pass
+        else:
+            for _step in first:
+                pass
+        assert state.run_status == "completed"
+        assert state.step_count == 2
+        if profile != "minimal":
+            checkpoint = FileCheckpointStore(tmp_path / "first" / "checkpoints").load("step_1")
+            assert checkpoint is not None
+            restored = tools_from([])
+            restored.restore_results(checkpoint.tool_results_store)
+            assert restored.get_result(key) == {"number": 111}
+        third = iterator(second_async, 333, tmp_path / "third")
+        try:
+            if second_async:
+                await anext(third)
+            else:
+                next(third)
+        finally:
+            if second_async:
+                await third.aclose()
+            else:
+                third.close()
+        fourth = iterator(first_async, 444, tmp_path / "fourth")
+        if first_async:
+            async for _step in fourth:
+                pass
+        else:
+            for _step in fourth:
+                pass
+    finally:
+        if second_async:
+            await second.aclose()
+        else:
+            second.close()
+        if first_async:
+            await first.aclose()
+        else:
+            first.close()
+
+
+def test_registry_lease_released_after_setup_and_finalization_errors(tmp_path, monkeypatch):
+    from looplet import LoopConfig, tools_from
+    from looplet.harness import prepare_harness_run
+
+    tools = tools_from([])
+    blocked = tmp_path / "blocked"
+    blocked.write_text("not a directory")
+    with pytest.raises(FileExistsError):
+        prepare_harness_run(LoopConfig(run_dir=str(blocked)), [], None, tools, None, None, None)
+
+    prepared = prepare_harness_run(
+        LoopConfig(run_dir=str(tmp_path / "first")), [], None, tools, None, None, None
+    )
+
+    def fail():
+        raise OSError("storage unavailable")
+
+    monkeypatch.setattr(prepared.sink, "flush", fail)
+    with pytest.raises(OSError, match="storage unavailable"):
+        prepared.finish()
+    replacement = prepare_harness_run(
+        LoopConfig(harness_profile="minimal"), [], None, tools, None, None, None
+    )
+    try:
+        with pytest.raises(OSError, match="storage unavailable"):
+            prepared.finish()
+        with pytest.raises(RuntimeError, match="registry already has an active loop"):
+            prepare_harness_run(LoopConfig(), [], None, tools, None, None, None)
+    finally:
+        replacement.finish()
+
+
+def test_registry_lease_claim_is_atomic_across_threads():
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    from looplet import LoopConfig, tools_from
+    from looplet.harness import prepare_harness_run
+
+    tools = tools_from([])
+    barrier = Barrier(2)
+
+    def claim():
+        barrier.wait(timeout=5)
+        try:
+            return prepare_harness_run(
+                LoopConfig(harness_profile="minimal"), [], None, tools, None, None, None
+            )
+        except RuntimeError as error:
+            assert "registry already has an active loop" in str(error)
+            return None
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        claims = list(executor.map(lambda _: claim(), range(2)))
+    accepted = [prepared for prepared in claims if prepared is not None]
+    assert len(accepted) == 1
+    accepted[0].finish()
+
+
 @pytest.mark.parametrize("writer", ["calls", "trajectory", "eval"])
 def test_saved_evidence_is_git_ignored_in_consumer_project(tmp_path, writer):
     from looplet import EvalContext, save_eval_run
@@ -174,6 +331,12 @@ async def test_default_harness_composes_persistent_recovery(tmp_path, asynchrono
     assert state.steps[0].tool_result.data == source()
     trace_dir = Path(state.metadata["trace_dir"])
     trace = json.loads((trace_dir / "trajectory.json").read_text())
+    snapshot = trace["metadata"]["harness_snapshot"]
+    assert snapshot["harness_profile"] == "execution-v1"
+    assert snapshot["max_steps"] == 2
+    assert snapshot["extra"]["resolved_harness"]["persistence"]["run_dir"] == str(tmp_path)
+    assert "TrajectoryRecorder" in snapshot["hooks"]
+    assert "SessionTreeRecorder" in snapshot["hooks"]
     assert len(trace["llm_calls"]) == 2
     assert [call["index"] for call in trace["llm_calls"]] == [0, 1]
     assert trace["steps"][0]["tool_result"]["data"] == source()

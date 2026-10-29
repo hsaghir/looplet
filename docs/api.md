@@ -14,6 +14,45 @@ from looplet import composable_loop, tools_from
 Some provider and advanced APIs need a submodule import.
 `looplet.__all__` lists the names that the installed version exports from `looplet`.
 
+## Choose an entry point
+
+Use `composable_loop()` as the primary Python entry point.
+Supply a backend, `tools_from([...])`, and `LoopConfig`.
+Use `async_composable_loop()` when your backend is asynchronous.
+Add `DefaultState` and `RunResult.from_state()` when you need the accepted output after iteration.
+
+| Need | Entry point |
+| --- | --- |
+| Inspect each tool call | `composable_loop()` or `async_composable_loop()` |
+| Assemble reusable dependencies | A factory returning a fresh `AgentPreset` |
+| Collect a preset's final result | `preset.run_result()` or `preset.run_result_async()` |
+| Load an agent stored as files | `cartridge_to_preset()`, then the same preset methods |
+| Manage host run identity and cancellation | `AgentRuntime` around a fresh preset |
+
+These are composition layers over the same execution contract, not separate execution engines.
+Existing entry points remain supported.
+
+Configure the limits first, then add controls only when needed:
+
+| Concern | Configuration |
+| --- | --- |
+| Successful, chargeable tool steps | `max_steps` |
+| Backend invocations, including recovery | `max_model_calls` |
+| Per-response output tokens | `max_tokens` |
+| Prompt context | `context_window` |
+| Evidence location | `run_dir` |
+| Policy replacement | Explicit services and hooks, inspected with `resolve_harness().describe()` |
+
+Use a fresh registry, config, state, and mutable hook set for each concurrent run.
+Tool functions and explicitly shared clients can remain shared.
+**Unreleased:** an active registry rejects a second loop before rebinding resources.
+Sequential registry reuse remains supported; automatic evidence rotates at the next run.
+Always exhaust or close the iterator to release its run claim.
+
+In parallel child requests, pass `tools` to let the child helper construct a separate registry.
+Use a fresh registry per child when supplying `sub_tools` explicitly.
+Host resources still retain their supplied identity.
+
 ## Execution core
 
 | API | Use it for |

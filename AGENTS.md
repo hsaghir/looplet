@@ -12,7 +12,7 @@ runtime dependencies and is provider-agnostic.
 
 Agents can be expressed two ways:
 
-- **In Python**: `tools_from([...])` + `LoopConfig(...)` + `composable_loop(...)`. Everything in-process; no files. Best for: in-memory orchestration, sub-agents, library code that *uses* an agent.
+- **In Python**: `tools_from([...])` + `LoopConfig(...)` + `composable_loop(...)`. Best for: orchestration, sub-agents, library code that *uses* an agent. Source defaults save private run evidence; the minimal profile omits automatic persistence.
 - **As a cartridge**: a directory of files (`cartridge.json`, `config.yaml`, `prompts/system.md`, `tools/<name>/{tool.yaml, execute.py}`, `resources/<name>.py`) loaded via `cartridge_to_preset(path)` into the same loop. Best for: agents you want to *ship*, version, share, or have another agent edit.
 
 The two are isomorphic: `preset_to_cartridge(preset, path)` round-trips a Python-built `AgentPreset` to disk; `cartridge_to_preset(path)` round-trips back. Pick whichever shape fits the problem; you can switch later.

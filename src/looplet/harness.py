@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from threading import Lock
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
@@ -17,6 +18,17 @@ if TYPE_CHECKING:
     from looplet.loop import LoopConfig
 
 __all__ = ["ResolvedHarness", "resolve_harness"]
+
+_active_registries: dict[int, object] = {}
+_registry_lock = Lock()
+
+
+def _release_registry(registry_id: int | None, token: object | None) -> None:
+    if registry_id is None:
+        return
+    with _registry_lock:
+        if token is not None and _active_registries.get(registry_id) is token:
+            del _active_registries[registry_id]
 
 
 @dataclass(frozen=True)
@@ -163,6 +175,8 @@ class _HarnessRun:
     sink: Any = None
     tree: Any = None
     restore_config: list[tuple[str, Any, Any]] = field(default_factory=list)
+    registry_id: int | None = None
+    registry_token: object | None = None
 
     def finish(self) -> None:
         try:
@@ -173,9 +187,12 @@ class _HarnessRun:
 
                 save_tree(self.tree, Path(self.config.run_dir) / "session.jsonl")
         finally:
-            for name, previous, installed in reversed(self.restore_config):
-                if getattr(self.config, name) is installed:
-                    setattr(self.config, name, previous)
+            try:
+                for name, previous, installed in reversed(self.restore_config):
+                    if getattr(self.config, name) is installed:
+                        setattr(self.config, name, previous)
+            finally:
+                _release_registry(self.registry_id, self.registry_token)
 
 
 def _restore_step(value: dict[str, Any]) -> Any:
@@ -210,6 +227,35 @@ def prepare_harness_run(
     conversation: Any,
 ) -> _HarnessRun:
     """Bind missing persistence primitives without replacing explicit host choices."""
+    registry_id = id(tools) if tools is not None else None
+    token = object()
+    if registry_id is not None:
+        with _registry_lock:
+            if registry_id in _active_registries:
+                raise RuntimeError(
+                    "Tool registry already has an active loop; build a fresh registry "
+                    "for concurrent runs"
+                )
+            _active_registries[registry_id] = token
+    try:
+        prepared = _prepare_harness_run(config, hooks, llm, tools, state, session_log, conversation)
+    except BaseException:
+        _release_registry(registry_id, token)
+        raise
+    prepared.registry_id = registry_id
+    prepared.registry_token = token
+    return prepared
+
+
+def _prepare_harness_run(
+    config: LoopConfig,
+    hooks: list[Any],
+    llm: Any,
+    tools: Any,
+    state: Any,
+    session_log: Any,
+    conversation: Any,
+) -> _HarnessRun:
     from looplet._storage import DiskBackedDict, DiskBackedList
     from looplet.checkpoint import CheckpointHook, FileCheckpointStore
     from looplet.provenance import ProvenanceSink, TrajectoryRecorder, _recording_backend
@@ -293,6 +339,17 @@ def prepare_harness_run(
         prepared.tree.nodes = nodes
         prepared.tree.children = children
         prepared.hooks.append(SessionTreeRecorder(prepared.tree))
+    if prepared.sink is not None:
+        from looplet.harness_snapshot import serialize_harness
+
+        prepared.sink.trajectory_hook().trajectory.metadata["harness_snapshot"] = serialize_harness(
+            config=effective,
+            hooks=prepared.hooks,
+            tools=tools,
+            memory_sources=effective.memory_sources,
+            llm=llm,
+            extra={"resolved_harness": ResolvedHarness(effective, prepared.hooks).describe()},
+        )
     for name in ("run_dir", "checkpoint_dir", "initial_checkpoint"):
         previous, installed = getattr(config, name), getattr(effective, name)
         if previous is not installed:

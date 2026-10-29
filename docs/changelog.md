@@ -33,6 +33,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Concurrent loops reject a shared tool registry before rebinding run-owned evidence. Use fresh registries for overlapping runs; sequential reuse remains supported.
+- Automatic trajectories identify the resolved harness policy, qualified component types, and full system-prompt digest without exporting arbitrary provider options.
 - Sync, async, and cartridge runs resolve `execution-v1` by default: deterministic compaction and native typed history without implicit stagnation guidance or a step-derived tool quota. Explicit policies take precedence; the named `standard-v1` policy and `minimal` profile remain available without changing positional config arguments.
 - Original tool results are retained independently of conversation previews and compaction. Base registries expose detached recall and checkpoint snapshots, with a host-owned retention opt-out.
 - Loop configuration leaves temperature unset by default; built-in SDK adapters omit an unset temperature and preserve explicit sampling values.

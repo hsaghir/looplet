@@ -28,11 +28,9 @@ from weakref import WeakKeyDictionary
 
 from looplet.capabilities import ExecutionPolicy
 from looplet.checkpoint import (
-    Checkpoint as _Checkpoint,
-)
-from looplet.checkpoint import (
     FileCheckpointStore as _FileCheckpointStore,
 )
+from looplet.checkpoint import _capture_checkpoint
 from looplet.checkpoint import (
     resume_loop_state as _resume_loop_state,
 )
@@ -1246,14 +1244,14 @@ def _record_policy_decision(state: Any, decision: Any) -> None:
             decisions.append(data)
 
 
-def _policy_checkpoint_metadata(state: Any) -> dict[str, Any]:
+def _policy_checkpoint_metadata(state: Any, checkpoint_store: Any = None) -> dict[str, Any]:
     from looplet.assistant_turns import assistant_checkpoint_metadata
 
     metadata = getattr(state, "metadata", None)
     decisions = metadata.get("policy_decisions") if isinstance(metadata, dict) else None
     return {
         **({"policy_decisions": list(decisions)} if isinstance(decisions, list) else {}),
-        **assistant_checkpoint_metadata(state),
+        **assistant_checkpoint_metadata(state, checkpoint_store=checkpoint_store),
     }
 
 
@@ -2701,6 +2699,7 @@ def composable_loop(
             stream=stream,
             conversation=conversation,
             _finalizer=finalizer,
+            _checkpoint_store=prepared.checkpoint_store,
         )
         return trace
     except GeneratorExit:
@@ -2765,6 +2764,7 @@ def _composable_loop_impl(
     max_steps: int | None = None,
     system_prompt: str | None = None,
     _finalizer: _LoopFinalizer | None = None,
+    _checkpoint_store: Any = None,
 ) -> Generator[Step, None, Any]:
     """Domain-agnostic agent loop with composable hooks.
 
@@ -2889,7 +2889,7 @@ def _composable_loop_impl(
     # ── Checkpoint store setup ──────────────────────────────────
     _ckpt_store = None
     if config.checkpoint_dir is not None:
-        _ckpt_store = _FileCheckpointStore(config.checkpoint_dir)
+        _ckpt_store = _checkpoint_store or _FileCheckpointStore(config.checkpoint_dir)
 
         # Auto-resume: if checkpoint_dir has checkpoints and no
         # explicit initial_checkpoint was given, load the latest.
@@ -3895,7 +3895,10 @@ def _composable_loop_impl(
                                     if loop_ctx.run_envelope is not None
                                     else None
                                 ),
-                                metadata={"task": str(task), **_policy_checkpoint_metadata(state)},
+                                metadata={
+                                    "task": str(task),
+                                    **_policy_checkpoint_metadata(state, _ckpt_store),
+                                },
                                 run_status=loop_ctx.status.value,
                                 run_phase=loop_ctx.phase.value,
                             )
@@ -4043,31 +4046,14 @@ def _composable_loop_impl(
                 # Save checkpoint after the session log and conversation include this step.
                 if _ckpt_store is not None:
                     loop_ctx.step_num = cur_step
-                    _checkpoint = _Checkpoint(
+                    _checkpoint = _capture_checkpoint(
+                        loop_ctx,
                         step_number=cur_step,
-                        session_log_data={
-                            "entries": session_log.to_list(),
-                            "current_theory": session_log.current_theory,
+                        checkpoint_state=checkpoint_state,
+                        metadata={
+                            "task": str(task),
+                            **_policy_checkpoint_metadata(state, _ckpt_store),
                         },
-                        conversation_data=_conv.serialize(),
-                        config_snapshot={
-                            "max_steps": config.max_steps,
-                            "queries_used": getattr(state, "queries_used", 0),
-                            "budget_remaining": getattr(state, "budget_remaining", 0),
-                        },
-                        tool_results_store=tools.checkpoint_results(),
-                        domain_state=(
-                            checkpoint_state(loop_ctx) if checkpoint_state is not None else {}
-                        ),
-                        run_envelope=(
-                            loop_ctx.run_envelope.to_dict()
-                            if loop_ctx.run_envelope is not None
-                            else None
-                        ),
-                        metadata={"task": str(task), **_policy_checkpoint_metadata(state)},
-                        run_status=loop_ctx.status.value,
-                        run_phase=loop_ctx.phase.value,
-                        termination_reason=loop_ctx.termination_reason,
                     )
                     _ckpt_store.save(_checkpoint, key=f"step_{cur_step}")
 
@@ -4252,7 +4238,10 @@ def _composable_loop_impl(
                             if loop_ctx.run_envelope is not None
                             else None
                         ),
-                        metadata={"task": str(task), **_policy_checkpoint_metadata(state)},
+                        metadata={
+                            "task": str(task),
+                            **_policy_checkpoint_metadata(state, _ckpt_store),
+                        },
                         run_status=loop_ctx.status.value,
                         run_phase=loop_ctx.phase.value,
                     )
@@ -4345,35 +4334,15 @@ def _composable_loop_impl(
                 # Save checkpoint after done step (after yield, matching non-done pattern)
                 if _ckpt_store is not None:
                     loop_ctx.step_num = cur_step
-                    _checkpoint = _Checkpoint(
+                    _checkpoint = _capture_checkpoint(
+                        loop_ctx,
                         step_number=cur_step,
-                        session_log_data={
-                            "entries": session_log.to_list(),
-                            "current_theory": session_log.current_theory,
-                        },
-                        conversation_data=_conv.serialize(),
-                        config_snapshot={
-                            "max_steps": config.max_steps,
-                            "queries_used": getattr(state, "queries_used", 0),
-                            "budget_remaining": getattr(state, "budget_remaining", 0),
-                        },
-                        tool_results_store=tools.checkpoint_results(),
-                        domain_state=(
-                            checkpoint_state(loop_ctx) if checkpoint_state is not None else {}
-                        ),
-                        run_envelope=(
-                            loop_ctx.run_envelope.to_dict()
-                            if loop_ctx.run_envelope is not None
-                            else None
-                        ),
+                        checkpoint_state=checkpoint_state,
                         metadata={
                             "task": str(task),
                             "status": "done",
-                            **_policy_checkpoint_metadata(state),
+                            **_policy_checkpoint_metadata(state, _ckpt_store),
                         },
-                        run_status=loop_ctx.status.value,
-                        run_phase=loop_ctx.phase.value,
-                        termination_reason=loop_ctx.termination_reason,
                     )
                     _ckpt_store.save(_checkpoint, key=f"step_{cur_step}_done")
                 done = True

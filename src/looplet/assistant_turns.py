@@ -169,6 +169,7 @@ class _AssistantTurns:
         self.data.setdefault("requests", [])
         metadata[TURN_STATE_KEY] = self.data
         self.checkpoint: Callable[[], None] | None = None
+        self.async_checkpoint: Callable[[], Any] | None = None
 
     def wrap_checkpoint(self, domain_checkpoint: Any) -> Callable[[Any], dict[str, Any]]:
         def snapshot(loop_ctx: Any) -> dict[str, Any]:
@@ -185,21 +186,24 @@ class _AssistantTurns:
 
         return snapshot
 
-    def save(self, store: Any, loop_ctx: Any, domain_checkpoint: Any) -> None:
-        if store is None or not self.persistent_admission:
-            return
-        from looplet.checkpoint import Checkpoint
+    def capture(
+        self, loop_ctx: Any, domain_checkpoint: Any, *, checkpoint_store: Any = None
+    ) -> Checkpoint:
+        from looplet.checkpoint import _capture_checkpoint
+        from looplet.types import DefaultState
 
         if loop_ctx.phase.value == "terminal":
             self.data["terminal_status"] = loop_ctx.status.value
         domain = copy.deepcopy(domain_checkpoint(loop_ctx) if domain_checkpoint else {})
-        checkpoint = Checkpoint(
-            step_number=max((step.number for step in self.state.steps), default=0),
-            session_log_data={
-                "entries": loop_ctx.session_log.to_list(),
-                "current_theory": loop_ctx.session_log.current_theory,
-            },
-            conversation_data=loop_ctx.conversation.serialize(),
+        step_number = (
+            (self.state.steps[-1].number if self.state.steps else 0)
+            if type(self.state) is DefaultState
+            else max((step.number for step in self.state.steps), default=0)
+        )
+        checkpoint = _capture_checkpoint(
+            loop_ctx,
+            step_number=step_number,
+            checkpoint_state=lambda context: domain,
             config_snapshot={
                 name: getattr(self.config, name)
                 for name in (
@@ -217,15 +221,22 @@ class _AssistantTurns:
                 "budget_remaining": self.state.budget_remaining,
                 "queries_used": getattr(self.state, "queries_used", 0),
             },
-            tool_results_store=loop_ctx.tools.snapshot_results(),
-            domain_state=domain,
-            run_envelope=loop_ctx.run_envelope.to_dict() if loop_ctx.run_envelope else None,
-            metadata=assistant_checkpoint_metadata(self.state),
-            run_status=loop_ctx.status.value,
-            run_phase=loop_ctx.phase.value,
-            termination_reason=loop_ctx.termination_reason,
+            metadata=assistant_checkpoint_metadata(self.state, checkpoint_store=checkpoint_store),
         )
-        store.save(checkpoint, "model_turn")
+        return checkpoint
+
+    def save(self, store: Any, loop_ctx: Any, domain_checkpoint: Any) -> None:
+        if store is not None and self.persistent_admission:
+            store.save(
+                self.capture(loop_ctx, domain_checkpoint, checkpoint_store=store), "model_turn"
+            )
+
+    async def save_async(self, store: Any, loop_ctx: Any, domain_checkpoint: Any) -> None:
+        if store is not None and self.persistent_admission:
+            from looplet.checkpoint import _run_persistence
+
+            checkpoint = self.capture(loop_ctx, domain_checkpoint, checkpoint_store=store)
+            await _run_persistence(store.save, checkpoint, "model_turn")
 
     @property
     def turn_id(self) -> str:
@@ -316,7 +327,7 @@ class _AssistantTurns:
             "model_turn_id": self.turn_id,
             "model_call_number": self.data["model_calls"],
         }
-        if self.checkpoint is not None:
+        if self.checkpoint is not None and self.async_checkpoint is None:
             self.checkpoint()
 
     def acknowledge(self) -> None:
@@ -343,19 +354,22 @@ class _AssistantTurns:
                 metadata["last_usage"] = copy.deepcopy(self.data["requests"][-1]["usage"])
 
 
-def assistant_checkpoint_metadata(state: Any) -> dict[str, Any]:
+def _checkpoint_step_record(step: Any) -> dict[str, Any]:
+    record = asdict(step)
+    record["tool_result"]["data"] = json_snapshot(record["tool_result"]["data"])
+    return record
+
+
+def assistant_checkpoint_metadata(state: Any, *, checkpoint_store: Any = None) -> dict[str, Any]:
+    from looplet._checkpoint_storage import CheckpointSequence
+    from looplet.checkpoint import _IncrementalCheckpointStore
+
     metadata = getattr(state, "metadata", {})
     if not isinstance(metadata, dict) or TURN_STATE_KEY not in metadata:
         return {}
-    steps = []
-    for step in state.steps:
-        record = asdict(step)
-        record["tool_result"]["data"] = json_snapshot(record["tool_result"]["data"])
-        steps.append(record)
-    return copy.deepcopy(
+    result = copy.deepcopy(
         {
             TURN_STATE_KEY: metadata[TURN_STATE_KEY],
-            "assistant_steps": steps,
             "accepted_terminal_tool": getattr(state, "_accepted_terminal_tool", None),
             "assistant_usage": {
                 name: metadata[name] for name in ("last_usage", "usage_total") if name in metadata
@@ -366,6 +380,12 @@ def assistant_checkpoint_metadata(state: Any) -> dict[str, Any]:
             },
         }
     )
+    result["assistant_steps"] = (
+        CheckpointSequence(state.steps, _checkpoint_step_record)
+        if isinstance(checkpoint_store, _IncrementalCheckpointStore)
+        else [_checkpoint_step_record(step) for step in state.steps]
+    )
+    return result
 
 
 def restore_assistant_checkpoint(
@@ -569,14 +589,18 @@ class _AdmissionBackend:
         if name not in {"generate", "generate_with_tools"}:
             return backend_attribute(self.backend, name)
         method = getattr(self.backend, name)
-        if inspect.iscoroutinefunction(method):
+        if inspect.iscoroutinefunction(method) or self.turns.async_checkpoint is not None:
 
             @wraps(method)
             async def invoke_async(*args: Any, **kwargs: Any) -> Any:
                 record = self._begin(args, kwargs, native_tools=name == "generate_with_tools")
+                if self.turns.async_checkpoint is not None:
+                    await self.turns.async_checkpoint()
                 try:
                     with single_model_request():
-                        response = await method(*args, **kwargs)
+                        response = method(*args, **kwargs)
+                        if inspect.isawaitable(response):
+                            response = await response
                     self._finish(record, response)
                     return response
                 finally:

@@ -35,6 +35,347 @@ from looplet.checkpoint import (
 from looplet.session import SessionLog
 
 
+def test_checkpoint_documents_share_history_and_preserve_old_snapshots(tmp_path):
+    import sqlite3
+
+    from looplet._checkpoint_storage import CheckpointDocuments
+
+    documents = CheckpointDocuments(tmp_path)
+    history = []
+    roots = []
+    sizes = []
+    for number in range(80):
+        history.append({"number": number, "payload": "evidence" * 100})
+        roots.append(documents.save({"history": history}, {"step_number": number}))
+        if number in (19, 39, 79):
+            with sqlite3.connect(documents.path) as connection:
+                sizes.append(
+                    connection.execute("SELECT sum(length(payload)) FROM records").fetchone()[0]
+                )
+    assert documents.load(roots[19])["history"] == history[:20]
+    assert documents.load(roots[-1])["history"] == history
+    assert documents.load(roots[19], summary_only=True) == {"step_number": 19}
+    assert sizes[1] < sizes[0] * 2.5
+    assert sizes[2] < sizes[1] * 2.5
+    assert sizes[2] < 1_000_000
+
+
+@pytest.mark.parametrize("invalid", [float("nan"), float("inf"), object()])
+def test_checkpoint_documents_reject_invalid_values_without_partial_publication(tmp_path, invalid):
+    from looplet._checkpoint_storage import CheckpointDocuments
+
+    documents = CheckpointDocuments(tmp_path)
+    original = documents.save({"saved": True}, {})
+    with pytest.raises(ValueError):
+        documents.save({"saved": True, "invalid": invalid}, {})
+    assert documents.load(original) == {"saved": True}
+
+
+def test_checkpoint_documents_validate_hashes_and_missing_records(tmp_path):
+    import sqlite3
+
+    from looplet._checkpoint_storage import CheckpointDocuments
+
+    documents = CheckpointDocuments(tmp_path)
+    root = documents.save({"saved": True}, {})
+    with sqlite3.connect(documents.path) as connection:
+        connection.execute("UPDATE records SET payload = ? WHERE digest = ?", (b"[]", root))
+    with pytest.raises(ValueError, match="hash mismatch"):
+        documents.load(root)
+    with pytest.raises(ValueError, match="missing"):
+        documents.load("0" * 64)
+
+
+def test_checkpoint_documents_preserve_portable_json_semantics(tmp_path):
+    from looplet._checkpoint_storage import CheckpointDocuments
+
+    documents = CheckpointDocuments(tmp_path)
+    payload = {1: (1, 2), "nested": {None: True, False: "value"}, "unicode": "\u2028"}
+    root = documents.save(payload, {})
+    assert documents.load(root) == json.loads(json.dumps(payload))
+    recursive = []
+    recursive.append(recursive)
+    with pytest.raises(ValueError, match="circular"):
+        documents.save({"recursive": recursive}, {})
+
+
+@pytest.mark.parametrize("invalid_node", [["value", "not a list"], ["object", []]])
+def test_checkpoint_documents_verify_rejects_invalid_list_chunks(tmp_path, invalid_node):
+    import sqlite3
+
+    from looplet._checkpoint_storage import CheckpointDocuments
+
+    documents = CheckpointDocuments(tmp_path)
+    documents.save({}, {})
+    with sqlite3.connect(documents.path) as connection:
+        child = documents._put(connection, invalid_node)
+        root = documents._put(connection, ["concat", [child]])
+    with pytest.raises(ValueError, match="invalid checkpoint list chunk"):
+        documents.verify(root, set())
+
+
+def test_incremental_overwrite_verifies_records_without_reconstructing_history(
+    tmp_path, monkeypatch
+):
+    from looplet._checkpoint_storage import CheckpointDocuments
+    from looplet.checkpoint import _IncrementalCheckpointStore
+
+    full_reads = []
+    original_load = CheckpointDocuments.load
+
+    def load(documents, root, *, summary_only=False, **options):
+        if not summary_only and options.get("fields") is None:
+            full_reads.append(root)
+        return original_load(documents, root, summary_only=summary_only, **options)
+
+    monkeypatch.setattr(CheckpointDocuments, "load", load)
+    store = _IncrementalCheckpointStore(tmp_path)
+    entries = []
+    for number in range(12):
+        entries.append({"number": number, "payload": "complete evidence" * 100})
+        store.save(Checkpoint(number, {"entries": entries}, None, {}, {}, {}), "model_turn")
+    assert full_reads == []
+    restored = store.load("model_turn")
+    assert restored is not None
+    assert restored.session_log_data == {"entries": entries}
+
+
+@pytest.mark.parametrize("reader", ["load_latest", "load_latest_for_resume"])
+def test_incremental_discovery_only_reconstructs_the_selected_snapshot(
+    tmp_path, monkeypatch, reader
+):
+    from looplet._checkpoint_storage import CheckpointDocuments
+    from looplet.checkpoint import _IncrementalCheckpointStore
+
+    store = _IncrementalCheckpointStore(tmp_path)
+    entries = []
+    for number in range(24):
+        entries.append({"number": number, "payload": "complete evidence" * 100})
+        store.save(Checkpoint(number, {"entries": entries}, None, {}, {}, {}), key=f"step_{number}")
+    original_load = CheckpointDocuments.load
+    full_reads = []
+
+    def load(documents, root, *, summary_only=False, fields=None):
+        if not summary_only and fields is None:
+            full_reads.append(root)
+        return original_load(documents, root, summary_only=summary_only, fields=fields)
+
+    monkeypatch.setattr(CheckpointDocuments, "load", load)
+    checkpoint = getattr(FileCheckpointStore(tmp_path), reader)()
+    assert checkpoint is not None
+    assert checkpoint.step_number == 23
+    assert checkpoint.session_log_data["entries"] == entries
+    assert len(full_reads) == 1
+    manifest = json.loads((tmp_path / "step_0.json").read_text())
+    assert set(manifest) == {"schema", "root"}
+    assert (tmp_path / "step_0.json").stat().st_size < 200
+    with pytest.raises(ValueError, match="missing step_number"):
+        Checkpoint.from_dict(manifest)
+    portable = checkpoint.to_dict()
+    assert Checkpoint.from_dict(portable).session_log_data == {"entries": entries}
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid"),
+    [
+        ("session_log_data", []),
+        ("conversation_data", []),
+        ("config_snapshot", []),
+        ("tool_results_store", []),
+        ("metadata", []),
+        ("domain_state", []),
+        ("run_envelope", {"run_id": "other"}),
+        ("step_number", "invalid"),
+    ],
+)
+def test_incremental_overwrite_preserves_structurally_corrupt_existing_record(
+    tmp_path, field, invalid
+):
+    from looplet._checkpoint_storage import CheckpointDocuments
+    from looplet.checkpoint import _IncrementalCheckpointStore
+
+    store = _IncrementalCheckpointStore(tmp_path)
+    original = Checkpoint(1, {}, None, {}, {}, {}, run_envelope={"run_id": "selected"})
+    store.save(original, "model_turn")
+    path = tmp_path / "selected__model_turn.json"
+    manifest = json.loads(path.read_text())
+    documents = CheckpointDocuments(tmp_path)
+    summary = documents.load(manifest["root"], summary_only=True)
+    payload = original.to_dict()
+    payload[field] = invalid
+    manifest["root"] = documents.save(payload, summary)
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    before = path.read_bytes()
+    with pytest.raises(ValueError):
+        store.save(original, "model_turn")
+    assert path.read_bytes() == before
+
+
+def test_incremental_overwrite_refuses_corrupt_unselected_history(tmp_path):
+    import sqlite3
+
+    from looplet._checkpoint_storage import CheckpointDocuments
+    from looplet.checkpoint import _IncrementalCheckpointStore
+
+    store = _IncrementalCheckpointStore(tmp_path)
+    evidence = "old evidence that is not reused by the replacement"
+    store.save(Checkpoint(1, {"entries": [evidence]}, None, {}, {}, {}), "model_turn")
+    path = tmp_path / "model_turn.json"
+    before = path.read_bytes()
+    documents = CheckpointDocuments(tmp_path)
+    payload = json.dumps(["value", evidence], separators=(",", ":")).encode()
+    with sqlite3.connect(documents.path) as connection:
+        changed = connection.execute(
+            "UPDATE records SET payload = ? WHERE payload = ?", (b"[]", payload)
+        ).rowcount
+    assert changed == 1
+    with pytest.raises(ValueError, match="hash mismatch"):
+        store.save(Checkpoint(2, {}, None, {}, {}, {}), "model_turn")
+    assert path.read_bytes() == before
+
+
+def test_incremental_corruption_is_fail_closed_and_run_scoped(tmp_path):
+    import sqlite3
+
+    from looplet._checkpoint_storage import CheckpointDocuments
+    from looplet.checkpoint import _IncrementalCheckpointStore
+
+    store = _IncrementalCheckpointStore(tmp_path)
+    for run_id in ("first", "second"):
+        store.save(
+            Checkpoint(1, {}, None, {}, {}, {}, run_envelope={"run_id": run_id}), key="step_1"
+        )
+    manifest = json.loads((tmp_path / "first__step_1.json").read_text())
+    documents = CheckpointDocuments(tmp_path)
+    with sqlite3.connect(documents.path) as connection:
+        connection.execute(
+            "UPDATE records SET payload = ? WHERE digest = ?", (b"[]", manifest["root"])
+        )
+    with pytest.raises(ValueError, match="Cannot safely resume"):
+        store.load_latest_for_resume(run_id="first")
+    restored = store.load_latest_for_resume(run_id="second")
+    assert restored is not None and restored.run_id == "second"
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_default_incremental_pending_checkpoint_refuses_an_implicit_retry(
+    tmp_path, monkeypatch, asynchronous
+):
+    from looplet import tools_from
+    from looplet.checkpoint import UncertainToolEffect
+
+    effects = []
+
+    def source():
+        effects.append("executed")
+        return {"answer": 42}
+
+    tools = tools_from([source], include_done=True)
+    backend_type = AsyncMockLLMBackend if asynchronous else MockLLMBackend
+    driver = async_composable_loop if asynchronous else composable_loop
+    original_save = FileCheckpointStore.save
+
+    def interrupt(store, checkpoint, key):
+        original_save(store, checkpoint, key)
+        if checkpoint.metadata.get("pending_calls"):
+            raise RuntimeError("interrupted after pending commit")
+
+    monkeypatch.setattr(FileCheckpointStore, "save", interrupt)
+    arguments = dict(
+        tools=tools,
+        config=LoopConfig(max_steps=2, use_native_tools=False, run_dir=str(tmp_path)),
+    )
+    with pytest.raises(RuntimeError, match="interrupted after pending commit"):
+        iterator = driver(backend_type(['{"tool":"source","args":{}}']), **arguments)
+        if asynchronous:
+            async for _step in iterator:
+                pass
+        else:
+            list(iterator)
+    assert effects == []
+    monkeypatch.setattr(FileCheckpointStore, "save", original_save)
+    backend = backend_type(['{"tool":"source","args":{}}'])
+    original = {path.name: path.read_bytes() for path in (tmp_path / "checkpoints").glob("*.json")}
+    with pytest.raises(UncertainToolEffect):
+        iterator = driver(backend, **arguments)
+        if asynchronous:
+            async for _step in iterator:
+                pass
+        else:
+            list(iterator)
+    assert backend.calls == 0
+    assert effects == []
+    assert {
+        path.name: path.read_bytes() for path in (tmp_path / "checkpoints").glob("*.json")
+    } == original
+
+
+@pytest.mark.parametrize("custom_state", [False, True])
+def test_assistant_capture_uses_durable_refs_without_scanning_default_history(
+    tmp_path, monkeypatch, custom_state
+):
+    from types import SimpleNamespace
+
+    from looplet._storage import DiskBackedList
+    from looplet.assistant_turns import _AssistantTurns
+    from looplet.checkpoint import _IncrementalCheckpointStore
+    from looplet.conversation import Conversation
+    from looplet.harness import _restore_step
+    from looplet.types import Step, ToolCall, ToolResult
+
+    class CustomState(DefaultState):
+        pass
+
+    state = CustomState(max_steps=100) if custom_state else DefaultState(max_steps=100)
+    state.steps = DiskBackedList(
+        lambda step: step.to_full_dict(),
+        _restore_step,
+        [
+            Step(
+                number=number,
+                tool_call=ToolCall(tool="source", args={}),
+                tool_result=ToolResult(tool="source", args_summary="", data={"number": number}),
+            )
+            for number in ([80, 4] if custom_state else range(80))
+        ],
+        weight=DefaultState._step_charge,
+    )
+    config = LoopConfig(max_steps=100, max_model_calls=100)
+    reference = {"immutable_catalog": "host-owned-reference"}
+    context = SimpleNamespace(
+        state=state,
+        config=config,
+        session_log=SessionLog(),
+        conversation=Conversation(),
+        tools=SimpleNamespace(checkpoint_results=lambda: reference),
+        run_envelope=None,
+        termination_reason=None,
+        phase=SimpleNamespace(value="starting"),
+        status=SimpleNamespace(value="created"),
+    )
+    indexes = []
+    original_get = DiskBackedList.__getitem__
+
+    def get(records, index):
+        indexes.append(index)
+        return original_get(records, index)
+
+    monkeypatch.setattr(DiskBackedList, "__getitem__", get)
+    store = _IncrementalCheckpointStore(tmp_path)
+    turns = _AssistantTurns(state, config)
+    checkpoint = turns.capture(context, None, checkpoint_store=store)
+    assert checkpoint.step_number == (80 if custom_state else 79)
+    assert checkpoint.tool_results_store == reference
+    assert checkpoint.config_snapshot["budget_remaining"] == (98 if custom_state else 20)
+    if not custom_state:
+        assert indexes == [-1]
+    store.save(checkpoint, "model_turn")
+    restored = store.load("model_turn")
+    assert restored is not None
+    assert len(restored.metadata["assistant_steps"]) == (2 if custom_state else 80)
+    assert isinstance(turns.capture(context, None).metadata["assistant_steps"], list)
+
+
 def test_checkpoint_participants_capture_detached_state_and_budget():
     from looplet.checkpoint import CheckpointParticipant, CheckpointParticipants
     from looplet.subagent import SharedModelBudget

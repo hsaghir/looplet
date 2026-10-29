@@ -46,6 +46,13 @@ Hook methods may be synchronous or `async def`; Looplet awaits them in order.
 The existing compaction service, terminal output schemas, routing, context
 budgets, and cancellation/deadline semantics apply to async runs as well.
 
+Automatic checkpoint writes and final evidence flushing run in awaited workers.
+Automatic trajectory and session-tree disk callbacks use the same ordered worker path.
+Each run waits for its current write before submitting another operation or dispatching a tool.
+Cancellation drains an in-flight write before finalization releases the registry.
+Checkpoint callbacks and session-log capture remain on the loop thread and should be brief.
+Explicit hooks and stores retain their host-defined behavior.
+
 `ResilientBackend` wraps the synchronous backend protocol. Do not use it as an
 async retry layer. Configure retries and timeouts in the async provider client
 or an async adapter instead.
@@ -203,7 +210,7 @@ The harness composes existing primitives, without extra model calls or tool retr
 | Raw history     | Lazy disk-backed `DefaultState.steps`                                 | Supply a custom state type or disable `history`.                                                                |
 | Tool evidence   | `FileToolResultStore` in the run directory                            | Bind `tool_result_store`; the supplied resource retains identity.                                               |
 | Provenance      | Recording backend and `TrajectoryRecorder`, saved at run finalization | Supply a `TrajectoryRecorder` and its recording backend.                                                        |
-| Checkpoints     | Per-step files under the run directory                                | Set `checkpoint_dir`, supply `CheckpointHook`, or mark a checkpoint-owning hook with `checkpoint_owner = True`. |
+| Checkpoints     | Per-step manifests sharing immutable JSON records                    | Set `checkpoint_dir`, supply `CheckpointHook`, or mark a checkpoint-owning hook with `checkpoint_owner = True`. |
 | Branch topology | `SessionTreeRecorder`, saved as `session.jsonl`                       | Supply a `SessionTreeRecorder`.                                                                                 |
 
 Explicit services, hooks, resource bindings, and checkpoint paths win independently.
@@ -254,6 +261,16 @@ Earlier full-catalog references remain readable.
 Restore an earlier checkpoint into a fresh registry or separate file store to branch
 without replacing later evidence. Missing or corrupt evidence fails restoration.
 An explicit registry snapshot implementation remains authoritative.
+
+Automatic checkpoint manifests also share unchanged conversation, session, and metadata records.
+Their private SQLite database stores immutable, SHA-256-verified JSON values and list chunks.
+Discovery verifies referenced records once and reconstructs only the selected snapshot.
+Keep the complete checkpoint directory, including its database, when copying a run.
+A manifest alone is not a standalone backup.
+`FileCheckpointStore.load()` reads both automatic manifests and legacy JSON snapshots.
+`Checkpoint.to_dict()` still returns a complete portable JSON snapshot.
+An explicitly selected `checkpoint_dir` or `CheckpointHook` retains plain JSON saves.
+Missing or corrupt selected-run records block automatic recovery.
 
 This bounds automatic retention of accumulated outputs, not total process RSS.
 One active result, a live batch, selected context, JSON extraction, native database

@@ -10,6 +10,9 @@ Provides:
 
 from __future__ import annotations
 
+import asyncio
+import contextvars
+import functools
 import glob
 import inspect
 import json
@@ -28,6 +31,7 @@ if TYPE_CHECKING:
     from looplet.types import AgentState, LLMBackend, ToolCall, ToolResult
 
 logger = logging.getLogger(__name__)
+_DOCUMENT_SCHEMA = "looplet.checkpoint-documents.v1"
 
 
 class CheckpointIdentityError(ValueError):
@@ -284,14 +288,14 @@ class Checkpoint:
             self.run_phase == "terminal" or self.termination_reason is not None
         )
 
-    def to_dict(self) -> dict[str, Any]:
-        """Serialize to a JSON-safe dictionary."""
+    def _payload(self) -> dict[str, Any]:
+        """Return the payload before portable JSON normalization."""
         from looplet.assistant_turns import TURN_STATE_KEY, TURN_STATE_SCHEMA
 
         step_number: Any = self.step_number
         if TURN_STATE_KEY in self.metadata:
             step_number = {"tool_step": self.step_number, "required_semantics": TURN_STATE_SCHEMA}
-        payload = {
+        return {
             "step_number": step_number,
             "session_log_data": self.session_log_data,
             "conversation_data": self.conversation_data,
@@ -305,8 +309,11 @@ class Checkpoint:
             "run_phase": self.run_phase,
             "termination_reason": self.termination_reason,
         }
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to a JSON-safe dictionary."""
         try:
-            return json.loads(json.dumps(payload, allow_nan=False))
+            return json.loads(json.dumps(self._payload(), allow_nan=False))
         except (TypeError, ValueError) as exc:
             raise ValueError("checkpoint contains non-JSON-safe data") from exc
 
@@ -397,7 +404,7 @@ class CheckpointStore(Protocol):
 
 
 class FileCheckpointStore:
-    """Saves and loads checkpoints as JSON files in a directory.
+    """Save plain JSON and load plain or automatic incremental checkpoints.
 
     Files are named ``{key}.json`` inside the configured directory.
     The directory is created if it does not exist.
@@ -406,6 +413,51 @@ class FileCheckpointStore:
     def __init__(self, directory: str | Path) -> None:
         self._dir = Path(directory)
         self._dir.mkdir(parents=True, exist_ok=True)
+
+    def _serialize(self, checkpoint: Checkpoint) -> dict[str, Any]:
+        return checkpoint.to_dict()
+
+    def _read_existing(self, path: Path) -> Checkpoint:
+        return self._read(path)
+
+    def _read(self, path: Path, *, summary_only: bool = False) -> Checkpoint:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, dict) and data.get("schema") == _DOCUMENT_SCHEMA:
+            from looplet._checkpoint_storage import CheckpointDocuments
+
+            if set(data) != {"schema", "root"}:
+                raise ValueError("invalid checkpoint document manifest")
+            documents = CheckpointDocuments(self._dir)
+            fields = None
+            if summary_only:
+                from looplet.assistant_turns import TURN_STATE_KEY
+
+                fields = {
+                    "step_number": None,
+                    "session_log_data": {},
+                    "conversation_data": {},
+                    "config_snapshot": {},
+                    "tool_results_store": {},
+                    "domain_state": {},
+                    "run_envelope": {"run_id": None},
+                    "metadata": {TURN_STATE_KEY: {"turn_count": None, "model_calls": None}},
+                    "created_at": None,
+                    "run_status": None,
+                    "run_phase": None,
+                    "termination_reason": None,
+                }
+            checkpoint = Checkpoint.from_dict(documents.load(data["root"], fields=fields))
+            if _checkpoint_summary(checkpoint) != documents.load(data["root"], summary_only=True):
+                raise ValueError("checkpoint summary does not match its payload")
+            return checkpoint
+        return Checkpoint.from_dict(data)
+
+    def _verify_records(self, path: Path, verified: set[str]) -> None:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, dict) and data.get("schema") == _DOCUMENT_SCHEMA:
+            from looplet._checkpoint_storage import CheckpointDocuments
+
+            CheckpointDocuments(self._dir).verify(data["root"], verified)
 
     @staticmethod
     def _validate_run_id(run_id: str | None) -> None:
@@ -437,13 +489,13 @@ class FileCheckpointStore:
         temporary = Path(temporary_name)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                handle.write(json.dumps(checkpoint.to_dict(), indent=2))
+                handle.write(json.dumps(self._serialize(checkpoint), indent=2))
                 handle.flush()
                 os.fsync(handle.fileno())
             try:
                 os.link(temporary, path)
             except FileExistsError:
-                existing = Checkpoint.from_dict(json.loads(path.read_text(encoding="utf-8")))
+                existing = self._read_existing(path)
                 if existing.run_id != checkpoint.run_id:
                     raise ValueError("checkpoint path already belongs to a different run")
                 os.replace(temporary, path)
@@ -470,8 +522,7 @@ class FileCheckpointStore:
                 raise ValueError(f"checkpoint key {key!r} is ambiguous; pass run_id explicitly")
         if not path.exists():
             return None
-        data = json.loads(path.read_text())
-        checkpoint = Checkpoint.from_dict(data)
+        checkpoint = self._read(path)
         validate_checkpoint_identity(checkpoint, run_id)
         return checkpoint
 
@@ -487,17 +538,20 @@ class FileCheckpointStore:
         """
         self._validate_run_id(run_id)
         best: Checkpoint | None = None
+        best_path: Path | None = None
+        verified: set[str] = set()
         for path in sorted(self._dir.glob("*.json")):
             try:
-                data = json.loads(path.read_text())
-                cp = Checkpoint.from_dict(data)
+                cp = self._read(path, summary_only=True)
                 if run_id is not None and cp.run_id != run_id:
                     continue
+                self._verify_records(path, verified)
                 if best is None or _checkpoint_order(cp) > _checkpoint_order(best):
                     best = cp
+                    best_path = path
             except Exception:  # noqa: BLE001
                 logger.warning("Skipping corrupt checkpoint: %s", path)
-        return best
+        return self._read(best_path) if best_path is not None else None
 
     def load_latest_for_resume(self, *, run_id: str | None = None) -> Checkpoint | None:
         """Load the latest incomplete checkpoint unless the run is terminal.
@@ -512,20 +566,25 @@ class FileCheckpointStore:
         self._validate_run_id(run_id)
         best: Checkpoint | None = None
         terminal: Checkpoint | None = None
+        best_path: Path | None = None
+        terminal_path: Path | None = None
+        verified: set[str] = set()
         for path in sorted(self._dir.glob("*.json")):
             try:
-                data = json.loads(path.read_text())
-                cp = Checkpoint.from_dict(data)
+                cp = self._read(path, summary_only=True)
                 if (run_id is None and cp.run_id is not None) or (
                     run_id is not None and cp.run_id != run_id
                 ):
                     continue
+                self._verify_records(path, verified)
                 if cp.is_terminal:
                     if terminal is None or _checkpoint_order(cp) > _checkpoint_order(terminal):
                         terminal = cp
+                        terminal_path = path
                     continue
                 if best is None or _checkpoint_order(cp) > _checkpoint_order(best):
                     best = cp
+                    best_path = path
             except (OSError, ValueError, TypeError) as error:
                 if (
                     run_id is not None
@@ -537,11 +596,54 @@ class FileCheckpointStore:
                     f"Cannot safely resume from checkpoint {path}. "
                     "Preserve the file and reconcile recovery state before retrying."
                 ) from error
-        if terminal is not None:
+        if terminal_path is not None:
             from looplet.assistant_turns import TURN_STATE_KEY
 
+            terminal = self._read(terminal_path)
             return terminal if TURN_STATE_KEY in terminal.metadata else None
-        return best
+        return self._read(best_path) if best_path is not None else None
+
+
+def _checkpoint_summary(checkpoint: Checkpoint) -> dict[str, Any]:
+    from looplet.assistant_turns import TURN_STATE_KEY
+
+    metadata = {}
+    if TURN_STATE_KEY in checkpoint.metadata:
+        turns = checkpoint.metadata[TURN_STATE_KEY]
+        metadata[TURN_STATE_KEY] = (
+            {name: turns.get(name, 0) for name in ("turn_count", "model_calls")}
+            if isinstance(turns, dict)
+            else turns
+        )
+    return {
+        "step_number": checkpoint.step_number,
+        "session_log_data": {},
+        "config_snapshot": {},
+        "tool_results_store": {},
+        "metadata": metadata,
+        "created_at": checkpoint.created_at,
+        "run_status": checkpoint.run_status,
+        "run_phase": checkpoint.run_phase,
+        "termination_reason": checkpoint.termination_reason,
+        "run_envelope": {"run_id": checkpoint.run_id} if checkpoint.run_id is not None else None,
+    }
+
+
+class _IncrementalCheckpointStore(FileCheckpointStore):
+    """Automatic manifests backed by immutable, shared JSON records."""
+
+    def _read_existing(self, path: Path) -> Checkpoint:
+        checkpoint = self._read(path, summary_only=True)
+        self._verify_records(path, set())
+        return checkpoint
+
+    def _serialize(self, checkpoint: Checkpoint) -> dict[str, Any]:
+        from looplet._checkpoint_storage import CheckpointDocuments
+
+        root = CheckpointDocuments(self._dir).save(
+            checkpoint._payload(), _checkpoint_summary(checkpoint)
+        )
+        return {"schema": _DOCUMENT_SCHEMA, "root": root}
 
 
 def _checkpoint_order(checkpoint: Checkpoint) -> tuple[int, int, int, float]:
@@ -554,6 +656,87 @@ def _checkpoint_order(checkpoint: Checkpoint) -> tuple[int, int, int, float]:
     if any(type(value) is not int or value < 0 for value in counters):
         raise ValueError("invalid checkpoint model-turn cursor")
     return (*counters, checkpoint.step_number, checkpoint.created_at)
+
+
+def _capture_checkpoint(
+    loop_ctx: Any,
+    *,
+    step_number: int,
+    metadata: dict[str, Any],
+    checkpoint_state: Callable[..., Any] | None = None,
+    config_snapshot: dict[str, Any] | None = None,
+) -> Checkpoint:
+    state = loop_ctx.state
+    return Checkpoint(
+        step_number=step_number,
+        session_log_data={
+            "entries": loop_ctx.session_log.to_list(),
+            "current_theory": loop_ctx.session_log.current_theory,
+        },
+        conversation_data=loop_ctx.conversation.serialize(),
+        config_snapshot=(
+            config_snapshot
+            if config_snapshot is not None
+            else {
+                "max_steps": loop_ctx.config.max_steps,
+                "queries_used": getattr(state, "queries_used", 0),
+                "budget_remaining": getattr(state, "budget_remaining", 0),
+            }
+        ),
+        tool_results_store=loop_ctx.tools.checkpoint_results(),
+        domain_state=checkpoint_state(loop_ctx) if checkpoint_state is not None else {},
+        run_envelope=loop_ctx.run_envelope.to_dict() if loop_ctx.run_envelope is not None else None,
+        metadata=metadata,
+        run_status=loop_ctx.status.value,
+        run_phase=loop_ctx.phase.value,
+        termination_reason=loop_ctx.termination_reason,
+    )
+
+
+def _pending_dispatch_checkpoint(
+    *,
+    calls: list[ToolCall],
+    dispatching: list[ToolCall],
+    step_number: int,
+    session_log: SessionLog,
+    conversation_data: dict[str, Any],
+    config_snapshot: dict[str, Any],
+    tool_results_store: dict[str, Any],
+    domain_state: dict[str, Any],
+    run_envelope: dict[str, Any] | None,
+    metadata: dict[str, Any],
+    run_status: str,
+    run_phase: str,
+) -> Checkpoint:
+    """Persist pending calls before execution, including the state needed for reconciliation."""
+    dispatching_ids = {id(call) for call in dispatching}
+    pending_calls = [
+        {
+            "call_id": call.call_id,
+            "tool": call.tool,
+            "proposed_args": call.metadata.get("proposed_args", call.args),
+            "effective_args": call.args,
+            "execution_status": (
+                "effect_unknown" if id(call) in dispatching_ids else "not_executed"
+            ),
+        }
+        for call in calls
+    ]
+    return Checkpoint(
+        step_number=step_number,
+        session_log_data={
+            "entries": session_log.to_list(),
+            "current_theory": session_log.current_theory,
+        },
+        conversation_data=conversation_data,
+        config_snapshot=config_snapshot,
+        tool_results_store=tool_results_store,
+        domain_state=domain_state,
+        run_envelope=run_envelope,
+        metadata={**metadata, "pending_calls": pending_calls},
+        run_status=run_status,
+        run_phase=run_phase,
+    )
 
 
 def save_pending_dispatch(
@@ -572,38 +755,45 @@ def save_pending_dispatch(
     run_status: str,
     run_phase: str,
 ) -> None:
-    """Persist pending calls before execution, including the state needed for reconciliation."""
-    dispatching_ids = {id(call) for call in dispatching}
-    pending_calls = [
-        {
-            "call_id": call.call_id,
-            "tool": call.tool,
-            "proposed_args": call.metadata.get("proposed_args", call.args),
-            "effective_args": call.args,
-            "execution_status": (
-                "effect_unknown" if id(call) in dispatching_ids else "not_executed"
-            ),
-        }
-        for call in calls
-    ]
-    store.save(
-        Checkpoint(
-            step_number=step_number,
-            session_log_data={
-                "entries": session_log.to_list(),
-                "current_theory": session_log.current_theory,
-            },
-            conversation_data=conversation_data,
-            config_snapshot=config_snapshot,
-            tool_results_store=tool_results_store,
-            domain_state=domain_state,
-            run_envelope=run_envelope,
-            metadata={**metadata, "pending_calls": pending_calls},
-            run_status=run_status,
-            run_phase=run_phase,
-        ),
-        key=f"step_{step_number}_pending",
+    """Persist pending calls before execution and preserve uncertain effects."""
+    checkpoint = _pending_dispatch_checkpoint(
+        calls=calls,
+        dispatching=dispatching,
+        step_number=step_number,
+        session_log=session_log,
+        conversation_data=conversation_data,
+        config_snapshot=config_snapshot,
+        tool_results_store=tool_results_store,
+        domain_state=domain_state,
+        run_envelope=run_envelope,
+        metadata=metadata,
+        run_status=run_status,
+        run_phase=run_phase,
     )
+    store.save(checkpoint, key=f"step_{step_number}_pending")
+
+
+async def _run_persistence(operation: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    pending = asyncio.get_running_loop().run_in_executor(
+        None, functools.partial(contextvars.copy_context().run, operation, *args, **kwargs)
+    )
+    cancelled = None
+    while True:
+        try:
+            result = await asyncio.shield(pending)
+            break
+        except asyncio.CancelledError as error:
+            if pending.cancelled():
+                raise
+            cancelled = error
+    if cancelled is not None:
+        raise cancelled
+    return result
+
+
+async def _save_pending_dispatch_async(store: CheckpointStore, **values: Any) -> None:
+    checkpoint = _pending_dispatch_checkpoint(**values)
+    await _run_persistence(store.save, checkpoint, key=f"step_{checkpoint.step_number}_pending")
 
 
 # ── CheckpointHook ─────────────────────────────────────────────────

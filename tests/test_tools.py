@@ -246,6 +246,55 @@ def test_file_result_checkpoint_only_decodes_new_catalog_entries(tmp_path, monke
     assert len(decoded) == 100
 
 
+def test_file_result_checkpoint_rolls_back_a_failed_append(tmp_path, monkeypatch):
+    from looplet.result_store import FileToolResultStore
+
+    store = FileToolResultStore(str(tmp_path))
+    first = store.store_result("previous evidence")
+    snapshot = store.checkpoint_results()
+    reference = snapshot["__looplet_file_result_store_v1__"]
+    path = tmp_path / ".snapshots" / reference["catalog"]
+    previous = path.read_bytes()
+    second = store.store_result("second evidence")
+    third = store.store_result("third evidence")
+    decode = store._catalog._decode
+
+    def reject_third_entry(value):
+        if value["result_key"] == third:
+            raise OSError("Catalog append interrupted")
+        return decode(value)
+
+    with monkeypatch.context() as context:
+        context.setattr(store._catalog, "_decode", reject_third_entry)
+        with pytest.raises(OSError, match="Catalog append interrupted"):
+            store.checkpoint_results()
+    assert path.read_bytes() == previous
+    assert list(FileToolResultStore.checkpoint_values(snapshot)) == [(first, "previous evidence")]
+    recovered = store.checkpoint_results()
+    assert list(FileToolResultStore.checkpoint_values(recovered)) == [
+        (first, "previous evidence"),
+        (second, "second evidence"),
+        (third, "third evidence"),
+    ]
+    assert len(path.read_bytes().splitlines()) == 3
+
+
+def test_file_result_checkpoint_refuses_changed_catalog_length(tmp_path):
+    from looplet.result_store import FileToolResultStore
+
+    store = FileToolResultStore(str(tmp_path))
+    first = store.store_result("previous evidence")
+    snapshot = store.checkpoint_results()
+    reference = snapshot["__looplet_file_result_store_v1__"]
+    path = tmp_path / ".snapshots" / reference["catalog"]
+    with path.open("ab") as stream:
+        stream.write(b"unexpected suffix\n")
+    store.store_result("next evidence")
+    with pytest.raises(ValueError, match="catalog length changed"):
+        store.checkpoint_results()
+    assert list(FileToolResultStore.checkpoint_values(snapshot)) == [(first, "previous evidence")]
+
+
 def test_file_result_checkpoint_keeps_pre_restore_boundaries(tmp_path):
     from looplet.result_store import FileToolResultStore
 

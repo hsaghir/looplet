@@ -149,6 +149,41 @@ class TestDefaultHarness:
         assert receiving_registry.resources["tool_result_store"] is store
         assert receiving_registry.get_result(key) == "explicitly shared evidence"
 
+    @pytest.mark.parametrize("max_bytes", [None, 1000000])
+    def test_completed_run_store_round_trips_as_host_resource(self, tmp_path, max_bytes):
+        from dataclasses import replace
+
+        from looplet import cartridge_to_preset, preset_to_cartridge, scaffold_cartridge
+        from looplet.builtin_tools.tool_results import SPECS
+        from looplet.harness import prepare_harness_run
+
+        root = scaffold_cartridge(tmp_path / "original", name="completed_agent", tools=[])
+        disabled = ["provenance", "checkpointing", "branching"]
+        with cartridge_to_preset(root) as preset:
+            preset.config.run_dir = str(tmp_path / "source")
+            preset.config.disabled_defaults = disabled
+            prepared = prepare_harness_run(
+                preset.config, [], None, preset.tools, DefaultState(), None, None
+            )
+            store = preset.tools.resources["tool_result_store"]
+            store.max_bytes = max_bytes
+            key = store.store_result("completed run evidence")
+            prepared.finish()
+            preset.resources["tool_result_store"] = store
+            preset.tools.register(replace(SPECS[0], requires=["tool_result_store"]))
+            preset_to_cartridge(preset, tmp_path / "exported", strict=True)
+
+        with cartridge_to_preset(tmp_path / "exported") as restored:
+            store = restored.tools.resources["tool_result_store"]
+            assert store.max_bytes == max_bytes
+            assert restored.tools.get_result(key) == "completed run evidence"
+            prepared = prepare_harness_run(
+                restored.config, [], None, restored.tools, DefaultState(), None, None
+            )
+            prepared.finish()
+            assert restored.tools.resources["tool_result_store"] is store
+            assert restored.tools.get_result(key) == "completed run evidence"
+
     @pytest.mark.parametrize("asynchronous", [False, True])
     @pytest.mark.parametrize("include_decimal", [False, True])
     @pytest.mark.parametrize("native", [False, True])

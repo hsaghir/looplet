@@ -148,8 +148,8 @@ def resolve_harness(
 class _AutomaticResultStore(FileToolResultStore):
     """Keep completed results readable until the registry starts another run."""
 
-    def __init__(self, directory: str, owner: Any) -> None:
-        super().__init__(directory)
+    def __init__(self, directory: str, max_bytes: int | None = None, *, owner: Any = None) -> None:
+        super().__init__(directory, max_bytes=max_bytes)
         self._owner = owner
 
 
@@ -264,7 +264,7 @@ def prepare_harness_run(
     resources = tools.resources
     result_store = None
     if "result_retention" not in disabled and "tool_result_store" not in resources:
-        result_store = _AutomaticResultStore(str(root / "results" / uuid4().hex), tools)
+        result_store = _AutomaticResultStore(str(root / "results" / uuid4().hex), owner=tools)
     metadata = getattr(prepared.state, "metadata", None)
     if isinstance(metadata, dict):
         metadata["run_dir"] = str(root)

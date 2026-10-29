@@ -776,7 +776,7 @@ async def test_parallel_children_keep_approval_requests_separate():
             "llm": AsyncMockLLMBackend(
                 responses=[json.dumps({"tool": "request", "args": {"label": label}})], cycle=False
             ),
-            "sub_tools": tools,
+            "tools": tools,
             "parent_hooks": [parent],
             "config": LoopConfig(max_steps=3, use_native_tools=False),
         }

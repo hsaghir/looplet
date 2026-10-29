@@ -49,6 +49,10 @@ Tool functions and explicitly shared clients can remain shared.
 Sequential registry reuse remains supported; automatic evidence rotates at the next run.
 Always exhaust or close the iterator to release its run claim.
 
+In parallel child requests, pass `tools` to let the child helper construct a separate registry.
+Use a fresh registry per child when supplying `sub_tools` explicitly.
+Host resources still retain their supplied identity.
+
 ## Execution core
 
 | API | Use it for |

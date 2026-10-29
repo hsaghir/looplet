@@ -86,67 +86,36 @@ The loop still yields steps, so your code can inspect each result and stop befor
 
 ## Start with one loop
 
-Install the fixed release for the examples and fixes in these guides.
-Run it inside a virtual environment:
+Write a Python function and pass it to the ordinary loop.
+This Python-first API is **unreleased**. Install the fixed preview in a virtual environment:
 
 ```bash
-python -m pip install "looplet==0.4.1"
+python -m pip install "looplet[openai] @ https://github.com/hsaghir/looplet/archive/d4e0f4a5d62dd1a2a46f3a2f33261cacfaca65c0.zip"
 ```
 
-This non-editable package needs no Git installation or local checkout.
-Release `0.4.1` includes the safety fixes missing from `0.4.0`.
-Pin the version and artifact hashes in your dependency lockfile for deployment.
-See the [Quickstart](quickstart.md) for environment setup and the same agent's tests.
-This example uses fixed responses and does not contact a model service.
-
-Run the included example without creating a file:
-
-```bash
-python -m looplet.examples.quickstart
-```
-
-It runs the tools and checks the resulting answer.
-To own the code, use the same loop below.
-`validate=True` checks top-level argument types, nullability, and enum choices before tools run.
-Nested data and other constraints remain tool-owned.
+Set `OPENAI_API_KEY` and `OPENAI_MODEL` for your provider.
+The [Python quickstart](python.md) covers setup, results, async loops, and network-free tests.
 
 ```python title="first_loop.py"
-from looplet import MockLLMBackend, minimal_preset
+from looplet import OpenAIBackend, composable_loop
 
 
-def lookup_owner(service: str) -> dict:
-  """Find the team that owns a service."""
-  owners = {"payments": "fintech-platform", "search": "discovery"}
-  return {"service": service, "owner": owners.get(service)}
+def lookup_owner(service: str) -> str:
+    """Find the team that owns a service."""
+    owners = {"payments": "fintech-platform", "search": "discovery"}
+    return owners.get(service, "unknown")
 
 
-def done(service: str, owner: str, summary: str = "") -> dict:
-  """Finish with the service, its owner, and an optional explanation."""
-  return {"service": service, "owner": owner, "summary": summary}
-
-
-llm = MockLLMBackend([
-    '{"tool":"lookup_owner","args":{"service":"payments"}}',
-    '{"tool":"done","args":{"service":"payments","owner":"fintech-platform","summary":"The payments owner is fintech-platform."}}',
-], cycle=False)
-with minimal_preset(tools=[lookup_owner, done], max_steps=2, validate=True) as run:
-    run.config.use_native_tools = False
-    result = run.run_result(llm, task={"goal": "Find the payments owner, then finish."})
-
-print(result.output)
-print(result.completed, result.termination_reason)
+llm = OpenAIBackend.from_env()
+for step in composable_loop(llm, task="Who owns payments?", tools=[lookup_owner]):
+    print(step.pretty())
 ```
 
-`result.output` contains the answer, and `result.steps` contains each tool call and result.
-The `with` block closes this run and its owned resources.
-Create a fresh preset for each task.
-Use [step-by-step iteration](quickstart.md#inspect-steps-or-stop-early) to inspect or stop between calls.
-
-The example selects the JSON-text protocol for its fixed responses.
-Real models use native tool calls by default.
-`cycle=False` rejects unexpected extra model calls instead of repeating the script.
-The [Quickstart](quickstart.md) explains each field and shows early exit.
-See [Install](install.md) to configure a real model.
+No decorator, registry, preset, custom completion function, or state object is required.
+Use `run_result()` to collect accepted output instead of inspecting each step.
+Both entry styles use the same engine and defaults.
+The latest published package is `0.4.1`; its [released walkthrough](quickstart.md) remains available.
+The Python-first additions require the preview above.
 
 ## Add only what you need
 

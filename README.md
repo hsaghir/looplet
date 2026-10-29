@@ -26,88 +26,68 @@ Looplet requires Python 3.11 or newer.
 The core package has no third-party runtime dependencies.
 It does not require a workflow graph, a hosted service, or a cartridge.
 
-[Documentation](https://hsaghir.com/looplet/) | [Quickstart](docs/quickstart.md) | [Python API](docs/api.md)
+[Documentation](https://hsaghir.com/looplet/) | [Quickstart](docs/python.md) | [Python API](docs/api.md)
 
 ## Run one loop
 
-Install the fixed release for the example below.
+Write Python functions, give them to a loop, and inspect each step.
+The Python-first API below is **unreleased**. Install this fixed preview:
+
+```bash
+python -m pip install "looplet[openai] @ https://github.com/hsaghir/looplet/archive/d4e0f4a5d62dd1a2a46f3a2f33261cacfaca65c0.zip"
+```
+
+Use a virtual environment. Set `OPENAI_API_KEY` and `OPENAI_MODEL` for your provider.
+See the [Python quickstart](docs/python.md) for setup and a network-free test.
 No Git installation or local repository checkout is needed.
+
+```python
+from looplet import OpenAIBackend, composable_loop
+
+
+def lookup_owner(service: str) -> str:
+    """Find the team that owns a service."""
+    owners = {"payments": "fintech-platform", "search": "discovery"}
+    return owners.get(service, "unknown")
+
+
+llm = OpenAIBackend.from_env()
+for step in composable_loop(llm, task="Who owns payments?", tools=[lookup_owner]):
+    print(step.pretty())
+```
+
+The function stays callable as ordinary Python: `lookup_owner("payments")`.
+Looplet builds a fresh registry, checks top-level argument types, and supplies a standard `done` tool.
+It handles model retries, tool dispatch, context compaction, and private run evidence.
+Nested validation, tool effects, security isolation, and evidence retention remain host responsibilities.
+
+To collect the result instead of iterating:
+
+```python
+from looplet import run_result
+
+result = run_result(llm, task="Who owns payments?", tools=[lookup_owner])
+print(result.output)
+print(result.completed, result.termination_reason)
+```
+
+These are two ways to consume the same engine.
+Use `async_composable_loop()` or `await run_result_async()` with an asynchronous backend.
+Use `contextlib.closing` or `aclosing` when stopping iteration early.
+Add [configuration and hooks](docs/python.md#change-one-thing-at-a-time) only when needed.
+
+### Published package
+
+The latest PyPI release is `0.4.1`.
+The Python-first additions above are not in that release.
+For its complete, network-free walkthrough, use the [released guide](docs/quickstart.md):
 
 ```bash
 python -m pip install "looplet==0.4.1"
 ```
 
-Run this inside a virtual environment; see [Install](docs/install.md).
-This installs a non-editable package and needs network access.
-
-The latest PyPI release is `0.4.1`.
 It includes the [safety fixes](docs/install.md#unreleased-safety-fixes) missing from `0.4.0`.
 Pin the version and artifact hashes in your dependency lockfile for deployment.
-
-The example uses fixed model responses.
-It runs without a model service or an API key.
-
-Start with the included example:
-
-```bash
-python -m looplet.examples.quickstart
-```
-
-It runs the tools and checks the resulting answer.
-To own the code, use the same two-tool loop below:
-
-```python
-from looplet import MockLLMBackend, minimal_preset
-
-
-def lookup_owner(service: str) -> dict:
-    """Find the team that owns a service."""
-    owners = {"payments": "fintech-platform", "search": "discovery"}
-    return {"service": service, "owner": owners.get(service)}
-
-
-def done(service: str, owner: str, summary: str = "") -> dict:
-    """Finish with the service, its owner, and an optional explanation."""
-    return {"service": service, "owner": owner, "summary": summary}
-
-
-llm = MockLLMBackend([
-    '{"tool":"lookup_owner","args":{"service":"payments"}}',
-    '{"tool":"done","args":{"service":"payments","owner":"fintech-platform","summary":"The payments owner is fintech-platform."}}',
-], cycle=False)
-with minimal_preset(tools=[lookup_owner, done], max_steps=2, validate=True) as run:
-    run.config.use_native_tools = False
-    result = run.run_result(llm, task={"goal": "Find the payments owner, then finish."})
-
-print(result.output)
-print(result.completed, result.termination_reason)
-```
-
-The loop calls `lookup_owner`, then `done`.
-The lookup returns `fintech-platform` as the payments owner.
-The last line prints `True done`: completion and its stop reason.
-`cycle=False` rejects unexpected extra model calls instead of repeating the script.
-
-The tool remains a normal Python function.
-You can also call `lookup_owner("payments")` directly.
-
-`run_result()` collects the answer and the completed steps.
-The `with` block closes this run and its owned resources.
-Create a fresh preset for each task; do not reuse its mutable state.
-Use [step-by-step iteration](docs/quickstart.md#inspect-steps-or-stop-early) when you need to inspect or stop between calls.
-
-`validate=True` checks top-level argument types, nullability, and enum choices before tools run.
-Nested data and other constraints remain the tool's responsibility.
-Without this option, the base registry checks argument names and required fields, not full types.
-
-This example selects the JSON-text protocol for its fixed responses.
-Real models use native tool calls by default.
-See [Install](docs/install.md) for provider adapters and configuration.
-
-The [Quickstart](docs/quickstart.md) uses this same API and adds pytest checks, capture, and replay.
-The Python walkthrough works with the published package installed above.
-Its optional complete experiment starter and factory commands use a separately marked pinned preview.
-For async code, use `async_composable_loop()` with `contextlib.aclosing`.
 
 ## Execution defaults (unreleased)
 

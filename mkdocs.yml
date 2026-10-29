@@ -106,7 +106,8 @@ markdown_extensions:
 nav:
   - Home: index.md
   - Start:
-    - Quickstart: quickstart.md
+    - Python quickstart: python.md
+    - Published 0.4.1 walkthrough: quickstart.md
     - Install and configure: install.md
     - Migrate an existing loop: migrate.md
     - Troubleshooting: troubleshooting.md

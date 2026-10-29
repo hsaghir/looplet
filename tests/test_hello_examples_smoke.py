@@ -39,12 +39,78 @@ def test_public_loop_help_documents_inputs_and_cleanup(loop_function):
 
 
 @pytest.mark.parametrize("guide_name", ["README.md", "docs/index.md", "docs/install.md"])
-def test_frontdoor_install_uses_fixed_release_without_checkout(guide_name):
+def test_frontdoor_install_matches_its_documented_release_stage(guide_name):
     guide = Path(__file__).resolve().parents[1] / guide_name
-    command = re.findall(r"^```bash[^\n]*\n(.*?)^```[ \t]*$", guide.read_text(), re.M | re.S)[0]
+    content = guide.read_text()
+    command = re.findall(r"^```bash[^\n]*\n(.*?)^```[ \t]*$", content, re.M | re.S)[0]
     arguments = shlex.split(command.replace("\\\n", " "))
-    assert "looplet==0.4.1" in arguments
+    if guide_name == "docs/install.md":
+        assert "looplet==0.4.1" in arguments
+    else:
+        assert "unreleased" in content[: content.index(command)].lower()
+        assert any(
+            re.fullmatch(
+                r"looplet\[openai\] @ https://github.com/hsaghir/looplet/archive/[a-f0-9]{40}\.zip",
+                argument,
+            )
+            for argument in arguments
+        )
     assert "-e" not in arguments
+
+
+@pytest.mark.parametrize("guide_name", ["README.md", "docs/index.md", "docs/python.md"])
+def test_python_first_intro_executes_the_same_loop(guide_name, tmp_path, monkeypatch):
+    from looplet import OpenAIBackend
+
+    root = Path(__file__).resolve().parents[1]
+    content = (root / guide_name).read_text()
+    code = re.findall(r"^```python[^\n]*\n(.*?)^```[ \t]*$", content, re.M | re.S)[0]
+    canonical = re.findall(
+        r"^```python[^\n]*\n(.*?)^```[ \t]*$", (root / "docs/python.md").read_text(), re.M | re.S
+    )[0]
+    assert ast.dump(ast.parse(code)) == ast.dump(ast.parse(canonical))
+    backend = MockLLMBackend(
+        [
+            '{"tool":"lookup_owner","args":{"service":"payments"}}',
+            '{"tool":"done","args":{"summary":"fintech-platform"}}',
+        ],
+        cycle=False,
+    )
+    monkeypatch.setattr(OpenAIBackend, "from_env", staticmethod(lambda: backend))
+    monkeypatch.chdir(tmp_path)
+    namespace = {}
+    exec(compile(code, guide_name, "exec"), namespace)
+    assert namespace["lookup_owner"]("payments") == "fintech-platform"
+    assert namespace["step"].tool_result.tool == "done"
+    assert backend.calls == 2
+    assert not {"LoopConfig", "DefaultState", "AgentPreset", "tools_from"}.intersection(namespace)
+
+
+def test_python_first_guide_all_python_fences_execute(tmp_path, monkeypatch):
+    from looplet import OpenAIBackend
+    from looplet.testing import AsyncMockLLMBackend
+
+    guide = Path(__file__).resolve().parents[1] / "docs/python.md"
+    blocks = re.findall(r"^```python[^\n]*\n(.*?)^```[ \t]*$", guide.read_text(), re.M | re.S)
+    responses = [
+        '{"tool":"lookup_owner","args":{"service":"payments"}}',
+        '{"tool":"done","args":{"summary":"fintech-platform"}}',
+    ]
+    monkeypatch.setattr(
+        OpenAIBackend, "from_env", staticmethod(lambda: MockLLMBackend(responses, cycle=False))
+    )
+    monkeypatch.chdir(tmp_path)
+    namespace = {}
+    for index, code in enumerate(blocks):
+        namespace["llm"] = MockLLMBackend(responses, cycle=False)
+        exec(compile(code, f"python.md fence {index + 1}", "exec"), namespace)
+    assert namespace["result"].completed
+
+    import asyncio
+
+    backend = AsyncMockLLMBackend(responses, cycle=False)
+    asyncio.run(namespace["inspect_async"](backend))
+    assert backend.calls == 1
 
 
 def test_quickstart_starts_with_the_release_and_defers_preview_setup():

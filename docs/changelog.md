@@ -33,6 +33,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Ordinary Python loops accept task strings and typed function sequences. Sequences get fresh validated registries and non-conflicting completion defaults. Explicit registries remain authoritative.
+- Source-build onboarding starts with functions and a loop. The published `0.4.1` walkthrough stays separate from the commit-pinned Python-first preview.
 - Concurrent loops reject a shared tool registry before rebinding run-owned evidence. Use fresh registries for overlapping runs; sequential reuse remains supported.
 - Automatic trajectories identify the resolved harness policy, qualified component types, and full system-prompt digest without exporting arbitrary provider options.
 - Sync, async, and cartridge runs resolve `execution-v1` by default: deterministic compaction and native typed history without implicit stagnation guidance or a step-derived tool quota. Explicit policies take precedence; the named `standard-v1` policy and `minimal` profile remain available without changing positional config arguments.
@@ -54,6 +56,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `run_result()` and `run_result_async()` consume and close the existing loops, returning accepted output, steps, and status without mandatory state construction.
 - Inspectable `resolve_harness()` and preset-level resolution compose deterministic context compaction, actual-result stagnation nudges, and a bounded dispatch budget without implicit I/O or summary-model calls.
 - `ToolCallBudgetHook` reserves before concurrent dispatch and counts successful free calls. It is a per-invocation tool guard, not a provider-request or billing limit.
 - Independently graded default-harness examples exercise fresh Python and strict-exported cartridge agents; private downstream qualification covers both proxy transports.

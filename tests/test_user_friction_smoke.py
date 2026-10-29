@@ -209,6 +209,47 @@ class TestPlainPythonInputs:
         assert first.tool_names == second.tool_names == ["done"]
         assert functions == []
 
+    def test_function_sequences_allow_overlapping_async_runs(self, tmp_path, monkeypatch):
+        from looplet import run_result_async
+        from looplet.testing import AsyncMockLLMBackend
+
+        monkeypatch.chdir(tmp_path)
+
+        async def collect():
+            ready = asyncio.Event()
+            entered = 0
+
+            class OverlappingBackend(AsyncMockLLMBackend):
+                async def generate_with_tools(self, *args, **kwargs):
+                    nonlocal entered
+                    entered += 1
+                    if entered == 2:
+                        ready.set()
+                    await ready.wait()
+                    return await super().generate_with_tools(*args, **kwargs)
+
+            functions = []
+            return await asyncio.gather(
+                run_result_async(
+                    OverlappingBackend(['{"tool":"done","args":{"summary":"first"}}'], cycle=False),
+                    task="First task",
+                    tools=functions,
+                ),
+                run_result_async(
+                    OverlappingBackend(
+                        ['{"tool":"done","args":{"summary":"second"}}'], cycle=False
+                    ),
+                    task="Second task",
+                    tools=functions,
+                ),
+            )
+
+        first, second = asyncio.run(collect())
+        assert first.completed and second.completed
+        assert first.output["summary"] == "first"
+        assert second.output["summary"] == "second"
+        assert first.metadata["run_dir"] != second.metadata["run_dir"]
+
     @pytest.mark.parametrize("asynchronous", [False, True])
     @pytest.mark.parametrize("invalid_tools", ["lookup_owner", [None], [7]])
     def test_invalid_sequences_fail_before_persistence(self, asynchronous, invalid_tools, tmp_path):

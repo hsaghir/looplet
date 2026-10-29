@@ -734,22 +734,18 @@ def test_preview_prompt_includes_system_prompt() -> None:
     assert "TASK" in text
 
 
-# ── fix 12: helpful TypeError when tools= is a list ───────────────
+# ── fix 12: ToolSpec lists work at the loop boundary ─────────────
 
 
-def test_composable_loop_helpful_error_when_tools_is_a_list() -> None:
-    """A common new-user mistake: pass a list of @tool ToolSpecs to
-    composable_loop instead of wrapping with tools_from. The downstream
-    failure was a bare ``AttributeError: 'list' object has no attribute
-    'tool_catalog_text'`` deep inside prompt assembly. The loop now
-    catches the mistake at the entry point and points at tools_from.
-    """
+def test_composable_loop_accepts_tool_spec_lists() -> None:
+    """Decorated functions are accepted without a manually constructed registry."""
     import json as _json  # noqa: PLC0415
 
     from looplet import (  # noqa: PLC0415
         DefaultState,
         LoopConfig,
         MockLLMBackend,
+        RunResult,
         composable_loop,
         tool,
     )
@@ -759,22 +755,28 @@ def test_composable_loop_helpful_error_when_tools_is_a_list() -> None:
         return {"hi": name}
 
     backend = MockLLMBackend(
-        responses=[_json.dumps({"tool": "done", "args": {}, "reasoning": "", "call_id": "1"})]
+        responses=[
+            _json.dumps({"tool": "greet", "args": {"name": "Ada"}}),
+            _json.dumps({"tool": "done", "args": {"summary": "Greeted Ada"}}),
+        ],
+        cycle=False,
     )
-
-    with pytest.raises(TypeError) as exc_info:
-        list(
-            composable_loop(
-                llm=backend,
-                tools=[greet],  # mistake: list, not registry
-                state=DefaultState(max_steps=2),
-                config=LoopConfig(max_steps=2),
-                task={"description": "go"},
-            )
+    state = DefaultState(max_steps=2)
+    steps = list(
+        composable_loop(
+            llm=backend,
+            tools=[greet],
+            state=state,
+            config=LoopConfig(max_steps=2, harness_profile="minimal"),
+            task={"description": "Greet Ada"},
         )
-    msg = str(exc_info.value)
-    # Must name the fix so a builder reading the traceback can act.
-    assert "tools_from" in msg, f"expected 'tools_from' in error: {msg}"
+    )
+    assert steps[0].tool_result.data == {"hi": "Ada"}
+    assert all(step.tool_result.error is None for step in steps)
+    result = RunResult.from_state(state)
+    assert result.completed
+    assert result.output["summary"] == "Greeted Ada"
+    assert backend.calls == 2
 
 
 # ── fix 13: permission denial includes "Permission denied for tool X" prefix ─
@@ -910,23 +912,18 @@ def test_agents_md_symbol_index_entries_are_importable() -> None:
     )
 
 
-# ── fix 15: helpful error when task= is a string ─────────────────
+# ── fix 15: task strings reach the model as task descriptions ────
 
 
-def test_composable_loop_helpful_error_when_task_is_a_string() -> None:
-    """A common new-user mistake is to pass a bare string as the task
-    (the README shows dicts, but copy-paste drift is real). Before the
-    fix, the loop crashed downstream with
-    ``AttributeError: 'str' object has no attribute 'items'`` deep
-    inside the prompt builder. Now the error is caught at the entry
-    point and tells the user how to fix it.
-    """
+def test_composable_loop_accepts_string_tasks() -> None:
+    """A bare task string is rendered without requiring a task dictionary."""
     import json as _json  # noqa: PLC0415
 
     from looplet import (  # noqa: PLC0415
         DefaultState,
         LoopConfig,
         MockLLMBackend,
+        RunResult,
         composable_loop,
         tool,
         tools_from,
@@ -936,25 +933,34 @@ def test_composable_loop_helpful_error_when_task_is_a_string() -> None:
     def noop() -> dict:
         return {}
 
-    tools = tools_from([noop], include_done=True, done_parameters={"answer": "x"})
-    backend = MockLLMBackend(
-        responses=[_json.dumps({"tool": "done", "args": {}, "reasoning": "", "call_id": "1"})]
+    prompts = []
+
+    class ObservedBackend(MockLLMBackend):
+        def generate(self, prompt, **kwargs):
+            prompts.append(prompt)
+            return super().generate(prompt, **kwargs)
+
+    tools = tools_from([noop], include_done=True)
+    backend = ObservedBackend(
+        responses=[_json.dumps({"tool": "done", "args": {"summary": "Finished"}})],
+        cycle=False,
     )
-    cfg = LoopConfig(max_steps=2)
+    cfg = LoopConfig(max_steps=2, harness_profile="minimal", use_native_tools=False)
     state = DefaultState(max_steps=2)
-    with pytest.raises(TypeError) as exc_info:
-        list(
-            composable_loop(
-                llm=backend,
-                tools=tools,
-                state=state,
-                config=cfg,
-                task="just a string task",  # mistake: not a dict
-            )
+    list(
+        composable_loop(
+            llm=backend,
+            tools=tools,
+            state=state,
+            config=cfg,
+            task="just a string task",
         )
-    msg = str(exc_info.value)
-    # The error must name 'dict' so the fix is obvious.
-    assert "dict" in msg.lower(), f"expected 'dict' in error: {msg}"
+    )
+    assert len(prompts) == 1
+    assert "just a string task" in prompts[0]
+    result = RunResult.from_state(state)
+    assert result.completed
+    assert result.output["summary"] == "Finished"
 
 
 # ── fix 16: memory source raising doesn't crash the loop ────────

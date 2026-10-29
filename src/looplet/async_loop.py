@@ -36,8 +36,9 @@ import asyncio
 import inspect
 import logging
 import time
+from contextlib import aclosing
 from dataclasses import replace as _dc_replace
-from typing import Any, AsyncGenerator, Callable
+from typing import Any, AsyncGenerator, Callable, Sequence
 
 from looplet._backend_contract import TerminalLLMError
 from looplet._backend_contract import attempt_limit as _attempt_limit
@@ -69,6 +70,7 @@ from looplet.loop import (
     _emit_hook_decision_event_async,
     _intercept_tool_calls_async,
     _mark_failed_state,
+    _normalize_loop_inputs,
     _notify_post_step_async,
     _policy_checkpoint_metadata,
     _post_step_stop_reason_async,
@@ -108,13 +110,14 @@ from looplet.scaffolding import (
     estimate_prompt_tokens as estimate_prompt_tokens,
 )
 from looplet.session import SessionLog
-from looplet.tools import BaseToolRegistry, _summarize_args_dict
-from looplet.types import AgentState, Step, ToolCall, ToolResult
+from looplet.tools import BaseToolRegistry, ToolSpec, _summarize_args_dict
+from looplet.types import AgentState, RunResult, Step, ToolCall, ToolResult
 from looplet.validation import validate_args as _validate_args
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "run_result_async",
     "async_composable_loop",
     "async_llm_call",
 ]
@@ -504,7 +507,7 @@ async def async_llm_call(
 async def async_composable_loop(
     llm: Any,
     task: Any = None,
-    tools: BaseToolRegistry | None = None,
+    tools: BaseToolRegistry | Sequence[ToolSpec | Callable[..., Any]] | None = None,
     context: Any = None,
     hooks: list[Any] | None = None,
     config: LoopConfig | None = None,
@@ -520,10 +523,11 @@ async def async_composable_loop(
 
     Args:
         llm: Backend whose ``generate()`` result can be awaited.
-        task: A dict of task fields, such as ``{'description': 'Find the owner'}``.
-            A bare string is not accepted. Defaults to an empty dict.
-        tools: Required tool registry, usually built with ``tools_from(...)``.
-            Do not pass a list of functions directly.
+        task: A task string or a dict of task fields. Strings become
+            ``{'description': task}``. Defaults to an empty dict.
+        tools: Python functions, tool specs, or an explicit registry.
+            Sequences get argument validation and a standard completion tool
+            unless completion is already configured. Explicit registries stay unchanged.
         context: Optional application object passed unchanged to hook methods.
         hooks: Explicit policies composed with the configured harness defaults.
         config: ``LoopConfig`` with budgets, prompt builders, and runtime options.
@@ -550,6 +554,7 @@ async def async_composable_loop(
     effective_config = _resolve_loop_config(
         config, max_steps=max_steps, system_prompt=system_prompt
     )
+    task, tools = _normalize_loop_inputs(task, tools, effective_config)
     harness = resolve_harness(effective_config, hooks)
     original_compact_service = effective_config.compact_service
     effective_config.compact_service = harness.config.compact_service
@@ -601,6 +606,34 @@ async def async_composable_loop(
                 _reset_context_overrides(tokens)
                 if effective_config.compact_service is harness.config.compact_service:
                     effective_config.compact_service = original_compact_service
+
+
+async def run_result_async(
+    llm: Any,
+    task: Any = None,
+    tools: BaseToolRegistry | Sequence[ToolSpec | Callable[..., Any]] | None = None,
+    *,
+    config: LoopConfig | None = None,
+    state: AgentState | None = None,
+    max_steps: int | None = None,
+    system_prompt: str | None = None,
+    **kwargs: Any,
+) -> RunResult:
+    """Await and close the ordinary async loop, returning its accepted output and status.
+
+    Functions and task strings use the same defaults as :func:`async_composable_loop`.
+    Omitted state is created for this invocation. Supplied state uses ordinary budget rules.
+    Additional keyword arguments pass unchanged to :func:`async_composable_loop`.
+    Host-supplied backends, tools, hooks, and resources are not closed.
+    """
+    config = _resolve_loop_config(config, max_steps=max_steps, system_prompt=system_prompt)
+    state = _resolve_loop_state(state, config)
+    async with aclosing(
+        async_composable_loop(llm, task=task, tools=tools, config=config, state=state, **kwargs)
+    ) as steps:
+        async for _step in steps:
+            pass
+    return RunResult.from_state(state)
 
 
 async def _async_composable_loop_impl(

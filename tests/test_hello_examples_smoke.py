@@ -31,8 +31,9 @@ def test_public_loop_help_documents_inputs_and_cleanup(loop_function):
     for parameter in inspect.signature(loop_function).parameters:
         assert f"{parameter}:" in documentation
     assert "dict" in documentation
-    assert "bare string" in documentation
-    assert "tools_from" in documentation
+    assert "task string" in documentation
+    assert "Python functions" in documentation
+    assert "Explicit registries stay unchanged" in documentation
     assert "override" in documentation
     assert "close()" in documentation
 

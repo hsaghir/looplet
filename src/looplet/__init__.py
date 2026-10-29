@@ -17,7 +17,7 @@ __version__ = "0.4.1"
 
 from looplet.approval import ApprovalHook
 from looplet.assistant_turns import AssistantTurnContext, AssistantTurnDecision
-from looplet.async_loop import async_composable_loop, async_llm_call
+from looplet.async_loop import async_composable_loop, async_llm_call, run_result_async
 from looplet.backends import AnthropicBackend, OpenAIBackend
 from looplet.blueprints import (
     AgentBlueprint,
@@ -148,6 +148,7 @@ from looplet.loop import (
     composable_loop,
     emit_event,
     is_loop_hook,
+    run_result,
 )
 from looplet.mcp import MCPToolAdapter
 from looplet.memory import (
@@ -254,6 +255,8 @@ __all__ = [
     "__version__",
     "composable_loop",
     "async_composable_loop",
+    "run_result",
+    "run_result_async",
     "async_llm_call",
     "ExecutionPolicy",
     "CapabilityDeniedError",

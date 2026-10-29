@@ -1675,7 +1675,7 @@ def test_documented_summary_omits_private_evidence(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("document", ["README.md", "docs/index.md"])
 def test_documented_first_loop(document: str, tmp_path, monkeypatch) -> None:
-    from looplet import minimal_preset
+    from looplet import OpenAIBackend
     from looplet.testing import LLMResponsesExhausted
 
     root = Path(__file__).resolve().parents[1]
@@ -1683,32 +1683,40 @@ def test_documented_first_loop(document: str, tmp_path, monkeypatch) -> None:
     blocks = _python_blocks(path)
     assert blocks, f"No Python example in {document}"
     observations = []
+    backend = MockLLMBackend(
+        [
+            '{"tool":"lookup_owner","args":{"service":"payments"}}',
+            '{"tool":"done","args":{"summary":"fintech-platform"}}',
+        ],
+        cycle=False,
+    )
+    generate = Mock(wraps=backend.generate)
+    monkeypatch.setattr(backend, "generate", generate)
+    monkeypatch.setattr(OpenAIBackend, "from_env", staticmethod(lambda: backend))
 
-    def observed_preset(**kwargs):
-        preset = minimal_preset(**kwargs)
-        backend = namespace["llm"]
-        registry = preset.tools
-        generate = Mock(wraps=backend.generate)
-        dispatch = Mock(wraps=registry.dispatch)
-        monkeypatch.setattr(backend, "generate", generate)
-        monkeypatch.setattr(registry, "dispatch", dispatch)
-        observations.append((generate, dispatch))
-        return preset
+    class ObserveRun:
+        def bind(self, context):
+            registry = context.tools
+            dispatch = Mock(wraps=registry.dispatch)
+            monkeypatch.setattr(registry, "dispatch", dispatch)
+            observations.append((context.state, dispatch))
 
-    monkeypatch.setattr("looplet.minimal_preset", observed_preset)
+    def observed_loop(*args, **kwargs):
+        return composable_loop(*args, hooks=[ObserveRun()], **kwargs)
+
+    monkeypatch.setattr("looplet.composable_loop", observed_loop)
+    monkeypatch.chdir(tmp_path)
     namespace = {"__name__": "__main__"}
     exec(compile(blocks[0], str(path), "exec"), namespace)
-    state = namespace["run"].state
+    state, dispatch = observations[0]
     assert [step.tool_call.tool for step in state.steps] == ["lookup_owner", "done"]
-    assert state.steps[0].tool_result.data == {
-        "service": "payments",
-        "owner": "fintech-platform",
-    }
+    assert state.steps[0].tool_result.data == "fintech-platform"
     assert state.termination_reason == "done"
-    assert namespace["result"].completed
-    assert namespace["result"].output["owner"] == "fintech-platform"
-    assert observations[0][0].call_count == 2
-    assert observations[0][1].call_count == 2
+    result = RunResult.from_state(state)
+    assert result.completed
+    assert result.output == {"status": "completed", "summary": "fintech-platform"}
+    assert generate.call_count == 2
+    assert dispatch.call_count == 2
     with pytest.raises(LLMResponsesExhausted):
         namespace["llm"].generate("Unexpected extra model call")
 

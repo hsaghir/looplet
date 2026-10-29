@@ -498,7 +498,7 @@ def _serialize_message(msg: Message) -> dict[str, Any]:
         d["tool_result"] = {
             "tool": tr.tool,
             "args_summary": tr.args_summary,
-            "data": tr.data,
+            "data": json.loads(json.dumps(tr.data, ensure_ascii=False, default=str)),
             "error": tr.error,
             "error_kind": tr.error_detail.kind.value if tr.error_detail else None,
             "error_retriable": tr.error_detail.retriable if tr.error_detail else None,

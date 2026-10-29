@@ -767,13 +767,23 @@ class DefaultState:
         """Return the total number of steps completed so far in this run."""
         return len(self.steps)
 
+    @staticmethod
+    def _step_charge(step: Any) -> int:
+        return int(not (isinstance(step, Step) and step.metadata.get("budget_free") is True))
+
+    def _charged_step_count(self) -> int:
+        from looplet._storage import DiskBackedList
+
+        if isinstance(self.steps, DiskBackedList):
+            total = self.steps.total_weight
+            if total is not None:
+                return total
+        return sum(self._step_charge(step) for step in self.steps)
+
     @property
     def budget_remaining(self) -> int:
         """Return the remaining charged steps, excluding successful free tool calls."""
-        charged_steps = sum(
-            not (isinstance(step, Step) and step.metadata.get("budget_free") is True)
-            for step in self.steps
-        )
+        charged_steps = self._charged_step_count()
         return max(0, self.max_steps - self._budget_offset - charged_steps)
 
     @budget_remaining.setter
@@ -781,10 +791,7 @@ class DefaultState:
         """Restore remaining budget without discarding recorded charged steps."""
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
             raise ValueError("budget_remaining must be a nonnegative integer")
-        charged_steps = sum(
-            not (isinstance(step, Step) and step.metadata.get("budget_free") is True)
-            for step in self.steps
-        )
+        charged_steps = self._charged_step_count()
         self._budget_offset = max(0, self.max_steps - value - charged_steps)
 
     def context_summary(self) -> str:

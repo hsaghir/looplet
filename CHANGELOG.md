@@ -33,6 +33,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Automatic checkpoints share immutable JSON records. Explicit checkpoint stores keep plain JSON snapshots. Copy the full automatic checkpoint directory when moving runs.
+- Async loops await automatic checkpoint and recorder writes in workers. Cancellation drains writes before cleanup. Host callbacks and live-config restoration remain on the loop thread.
 - Sync, async, and cartridge runs resolve `execution-v1` by default: deterministic compaction and native typed history without implicit stagnation guidance or a step-derived tool quota. Explicit policies take precedence; the named `standard-v1` policy and `minimal` profile remain available without changing positional config arguments.
 - Original tool results are retained independently of conversation previews and compaction. Base registries expose detached recall and checkpoint snapshots, with a host-owned retention opt-out.
 - Loop configuration leaves temperature unset by default; built-in SDK adapters omit an unset temperature and preserve explicit sampling values.

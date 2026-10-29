@@ -99,6 +99,47 @@ def test_checkpoint_documents_preserve_portable_json_semantics(tmp_path):
         documents.save({"recursive": recursive}, {})
 
 
+@pytest.mark.parametrize("invalid_node", [["value", "not a list"], ["object", []]])
+def test_checkpoint_documents_verify_rejects_invalid_list_chunks(tmp_path, invalid_node):
+    import sqlite3
+
+    from looplet._checkpoint_storage import CheckpointDocuments
+
+    documents = CheckpointDocuments(tmp_path)
+    documents.save({}, {})
+    with sqlite3.connect(documents.path) as connection:
+        child = documents._put(connection, invalid_node)
+        root = documents._put(connection, ["concat", [child]])
+    with pytest.raises(ValueError, match="invalid checkpoint list chunk"):
+        documents.verify(root, set())
+
+
+def test_incremental_overwrite_verifies_records_without_reconstructing_history(
+    tmp_path, monkeypatch
+):
+    from looplet._checkpoint_storage import CheckpointDocuments
+    from looplet.checkpoint import _IncrementalCheckpointStore
+
+    full_reads = []
+    original_load = CheckpointDocuments.load
+
+    def load(documents, root, *, summary_only=False, **options):
+        if not summary_only and options.get("fields") is None:
+            full_reads.append(root)
+        return original_load(documents, root, summary_only=summary_only, **options)
+
+    monkeypatch.setattr(CheckpointDocuments, "load", load)
+    store = _IncrementalCheckpointStore(tmp_path)
+    entries = []
+    for number in range(12):
+        entries.append({"number": number, "payload": "complete evidence" * 100})
+        store.save(Checkpoint(number, {"entries": entries}, None, {}, {}, {}), "model_turn")
+    assert full_reads == []
+    restored = store.load("model_turn")
+    assert restored is not None
+    assert restored.session_log_data == {"entries": entries}
+
+
 @pytest.mark.parametrize("reader", ["load_latest", "load_latest_for_resume"])
 def test_incremental_discovery_only_reconstructs_the_selected_snapshot(
     tmp_path, monkeypatch, reader
@@ -114,10 +155,10 @@ def test_incremental_discovery_only_reconstructs_the_selected_snapshot(
     original_load = CheckpointDocuments.load
     full_reads = []
 
-    def load(documents, root, *, summary_only=False):
-        if not summary_only:
+    def load(documents, root, *, summary_only=False, fields=None):
+        if not summary_only and fields is None:
             full_reads.append(root)
-        return original_load(documents, root, summary_only=summary_only)
+        return original_load(documents, root, summary_only=summary_only, fields=fields)
 
     monkeypatch.setattr(CheckpointDocuments, "load", load)
     checkpoint = getattr(FileCheckpointStore(tmp_path), reader)()
@@ -132,6 +173,65 @@ def test_incremental_discovery_only_reconstructs_the_selected_snapshot(
         Checkpoint.from_dict(manifest)
     portable = checkpoint.to_dict()
     assert Checkpoint.from_dict(portable).session_log_data == {"entries": entries}
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid"),
+    [
+        ("session_log_data", []),
+        ("conversation_data", []),
+        ("config_snapshot", []),
+        ("tool_results_store", []),
+        ("metadata", []),
+        ("domain_state", []),
+        ("run_envelope", {"run_id": "other"}),
+        ("step_number", "invalid"),
+    ],
+)
+def test_incremental_overwrite_preserves_structurally_corrupt_existing_record(
+    tmp_path, field, invalid
+):
+    from looplet._checkpoint_storage import CheckpointDocuments
+    from looplet.checkpoint import _IncrementalCheckpointStore
+
+    store = _IncrementalCheckpointStore(tmp_path)
+    original = Checkpoint(1, {}, None, {}, {}, {}, run_envelope={"run_id": "selected"})
+    store.save(original, "model_turn")
+    path = tmp_path / "selected__model_turn.json"
+    manifest = json.loads(path.read_text())
+    documents = CheckpointDocuments(tmp_path)
+    summary = documents.load(manifest["root"], summary_only=True)
+    payload = original.to_dict()
+    payload[field] = invalid
+    manifest["root"] = documents.save(payload, summary)
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    before = path.read_bytes()
+    with pytest.raises(ValueError):
+        store.save(original, "model_turn")
+    assert path.read_bytes() == before
+
+
+def test_incremental_overwrite_refuses_corrupt_unselected_history(tmp_path):
+    import sqlite3
+
+    from looplet._checkpoint_storage import CheckpointDocuments
+    from looplet.checkpoint import _IncrementalCheckpointStore
+
+    store = _IncrementalCheckpointStore(tmp_path)
+    evidence = "old evidence that is not reused by the replacement"
+    store.save(Checkpoint(1, {"entries": [evidence]}, None, {}, {}, {}), "model_turn")
+    path = tmp_path / "model_turn.json"
+    before = path.read_bytes()
+    documents = CheckpointDocuments(tmp_path)
+    payload = json.dumps(["value", evidence], separators=(",", ":")).encode()
+    with sqlite3.connect(documents.path) as connection:
+        changed = connection.execute(
+            "UPDATE records SET payload = ? WHERE payload = ?", (b"[]", payload)
+        ).rowcount
+    assert changed == 1
+    with pytest.raises(ValueError, match="hash mismatch"):
+        store.save(Checkpoint(2, {}, None, {}, {}, {}), "model_turn")
+    assert path.read_bytes() == before
 
 
 def test_incremental_corruption_is_fail_closed_and_run_scoped(tmp_path):

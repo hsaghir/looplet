@@ -158,6 +158,11 @@ class CheckpointDocuments:
                     visit(connection, child)
             elif kind in {"list", "concat"}:
                 for child in value:
+                    if kind == "concat" and self._node(connection, child)[0] not in {
+                        "list",
+                        "concat",
+                    }:
+                        raise ValueError("invalid checkpoint list chunk")
                     visit(connection, child)
             verified.add(digest)
 
@@ -167,7 +172,9 @@ class CheckpointDocuments:
         except sqlite3.Error as error:
             raise ValueError("cannot read checkpoint records") from error
 
-    def _decode(self, connection: sqlite3.Connection, digest: str) -> Any:
+    def _decode(
+        self, connection: sqlite3.Connection, digest: str, fields: dict[str, Any] | None = None
+    ) -> Any:
         kind, value = self._node(connection, digest)
         if kind == "value":
             if value is not None and not isinstance(value, (str, bool, int, float)):
@@ -194,11 +201,16 @@ class CheckpointDocuments:
                     or not isinstance(member[0], str)
                 ):
                     raise ValueError("invalid checkpoint object member")
-                result_object[member[0]] = self._decode(connection, member[1])
+                if fields is None or member[0] in fields:
+                    result_object[member[0]] = self._decode(
+                        connection, member[1], fields.get(member[0]) if fields is not None else None
+                    )
             return result_object
         raise ValueError("unknown checkpoint record kind")
 
-    def load(self, root: str, *, summary_only: bool = False) -> dict[str, Any]:
+    def load(
+        self, root: str, *, summary_only: bool = False, fields: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         try:
             with closing(self._connect(write=False)) as connection:
                 kind, members = self._node(connection, root)
@@ -208,7 +220,7 @@ class CheckpointDocuments:
                 if set(references) != {"checkpoint", "summary"}:
                     raise ValueError("invalid checkpoint document fields")
                 selected = references["summary" if summary_only else "checkpoint"]
-                result = self._decode(connection, selected)
+                result = self._decode(connection, selected, fields)
                 if not isinstance(result, dict):
                     raise ValueError("checkpoint document must be an object")
                 return result

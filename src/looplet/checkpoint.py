@@ -415,6 +415,9 @@ class FileCheckpointStore:
     def _serialize(self, checkpoint: Checkpoint) -> dict[str, Any]:
         return checkpoint.to_dict()
 
+    def _read_existing(self, path: Path) -> Checkpoint:
+        return self._read(path)
+
     def _read(self, path: Path, *, summary_only: bool = False) -> Checkpoint:
         data = json.loads(path.read_text(encoding="utf-8"))
         if isinstance(data, dict) and data.get("schema") == _DOCUMENT_SCHEMA:
@@ -423,12 +426,26 @@ class FileCheckpointStore:
             if set(data) != {"schema", "root"}:
                 raise ValueError("invalid checkpoint document manifest")
             documents = CheckpointDocuments(self._dir)
-            checkpoint = Checkpoint.from_dict(
-                documents.load(data["root"], summary_only=summary_only)
-            )
-            if not summary_only and _checkpoint_summary(checkpoint) != documents.load(
-                data["root"], summary_only=True
-            ):
+            fields = None
+            if summary_only:
+                from looplet.assistant_turns import TURN_STATE_KEY
+
+                fields = {
+                    "step_number": None,
+                    "session_log_data": {},
+                    "conversation_data": {},
+                    "config_snapshot": {},
+                    "tool_results_store": {},
+                    "domain_state": {},
+                    "run_envelope": {"run_id": None},
+                    "metadata": {TURN_STATE_KEY: {"turn_count": None, "model_calls": None}},
+                    "created_at": None,
+                    "run_status": None,
+                    "run_phase": None,
+                    "termination_reason": None,
+                }
+            checkpoint = Checkpoint.from_dict(documents.load(data["root"], fields=fields))
+            if _checkpoint_summary(checkpoint) != documents.load(data["root"], summary_only=True):
                 raise ValueError("checkpoint summary does not match its payload")
             return checkpoint
         return Checkpoint.from_dict(data)
@@ -476,7 +493,7 @@ class FileCheckpointStore:
             try:
                 os.link(temporary, path)
             except FileExistsError:
-                existing = self._read(path)
+                existing = self._read_existing(path)
                 if existing.run_id != checkpoint.run_id:
                     raise ValueError("checkpoint path already belongs to a different run")
                 os.replace(temporary, path)
@@ -612,6 +629,11 @@ def _checkpoint_summary(checkpoint: Checkpoint) -> dict[str, Any]:
 
 class _IncrementalCheckpointStore(FileCheckpointStore):
     """Automatic manifests backed by immutable, shared JSON records."""
+
+    def _read_existing(self, path: Path) -> Checkpoint:
+        checkpoint = self._read(path, summary_only=True)
+        self._verify_records(path, set())
+        return checkpoint
 
     def _serialize(self, checkpoint: Checkpoint) -> dict[str, Any]:
         from looplet._checkpoint_storage import CheckpointDocuments

@@ -211,9 +211,20 @@ An explicit hook is not removed by a disabled default. Temporary configuration c
 are restored after the invocation unless host code replaces them during the run.
 `run_dir` round-trips through cartridge `runtime.yaml`, not the agent contract.
 
+A completed automatic result store remains readable through its registry.
+The next run replaces that automatic binding, even when reusing the registry.
+Persistence opt-outs remove the previous automatic binding instead of inheriting its evidence.
+Keep the old store handle or run directory when earlier evidence is needed.
+An explicit `tool_result_store` remains host-owned and can share evidence across runs.
+
 History indexing and iteration load records lazily. Assign an edited record back to
 its sequence when it may have left the one-record cache. `RunResult.from_state()`
 creates an independent lazy snapshot for disk-backed history; it does not collect every output.
+Automatic history preserves picklable Python values, including tuples, integer keys, and `Decimal` values.
+Its temporary spool uses private pickles, never imported checkpoint or cartridge data.
+Supply custom state or disable `history` for values that cannot be pickled.
+Portable evidence and conversation checkpoints remain JSON; unsupported result values use their text representation there.
+Budget reads use an incremental charge total without decoding or serializing old result payloads.
 The default synchronous return trace includes the last five steps, `steps_total`, and
 `trace_dir`; the complete sequence remains available on the state and in provenance.
 Explicit `build_trace`, full slices, `to_dict()`, and `snapshot_results()` may materialize
@@ -225,6 +236,10 @@ the CLI's `--no-save` keeps that explicit opt-out.
 
 Automatic checkpointing uses immutable SHA-256-bound result-catalog references,
 not a full payload copy per step. Keep the referenced source directory for resume.
+Each checkpoint binds a byte length and digest in an append-only catalog.
+Creating later checkpoints appends only new entries; earlier checkpoints keep their original boundary.
+Restore verifies the selected prefix and each source value's content hash.
+Earlier full-catalog references remain readable.
 Restore an earlier checkpoint into a fresh registry or separate file store to branch
 without replacing later evidence. Missing or corrupt evidence fails restoration.
 An explicit registry snapshot implementation remains authoritative.

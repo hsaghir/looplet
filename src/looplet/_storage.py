@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import pickle
 import sqlite3
 import tempfile
 import weakref
@@ -27,6 +28,7 @@ class DiskBackedList(MutableSequence[Record], Generic[Record]):
     Indexing and iteration load records lazily. Explicit slices and copies can
     materialize multiple records. Assign an edited record to persist changes
     after it leaves the one-record cache. This is not a recovery journal.
+    Python mode uses pickles only in this process's private temporary spool.
     """
 
     def __init__(
@@ -34,6 +36,9 @@ class DiskBackedList(MutableSequence[Record], Generic[Record]):
         encode: Callable[[Record], Any],
         decode: Callable[[Any], Record],
         values: Iterable[Record] = (),
+        *,
+        preserve_python: bool = False,
+        weight: Callable[[Record], int] | None = None,
     ) -> None:
         directory = tempfile.TemporaryDirectory(prefix="looplet-records-")
         self._connection = sqlite3.connect(
@@ -42,19 +47,51 @@ class DiskBackedList(MutableSequence[Record], Generic[Record]):
         self._connection.execute("PRAGMA cache_size = -64")
         self._connection.execute("PRAGMA journal_mode = OFF")
         self._connection.execute(
-            "CREATE TABLE records (position INTEGER PRIMARY KEY, payload TEXT)"
+            "CREATE TABLE records (position INTEGER PRIMARY KEY, payload BLOB, weight INTEGER NOT NULL)"
         )
         self._finalizer = weakref.finalize(self, _close_records, self._connection, directory)
         self._encode = encode
         self._decode = decode
+        self._preserve_python = preserve_python
+        self._weight = weight
+        self._total_weight = 0
+        self._cache_weight = 0
         self._length = 0
         self._cache: tuple[int, Record] | None = None
-        self._cache_payload: str | None = None
+        self._cache_payload: str | bytes | None = None
         self._lock = RLock()
         self.extend(values)
 
+    def _dumps(self, value: Record) -> str | bytes:
+        encoded = self._encode(value)
+        if self._preserve_python:
+            return pickle.dumps(encoded, protocol=pickle.HIGHEST_PROTOCOL)
+        return json.dumps(encoded, default=str)
+
+    def _loads(self, payload: Any) -> Record:
+        encoded = pickle.loads(payload) if self._preserve_python else json.loads(payload)
+        return self._decode(encoded)
+
     def __len__(self) -> int:
         return self._length
+
+    def _sync_weight(self) -> None:
+        if self._cache is not None and self._weight is not None:
+            position, value = self._cache
+            weight = self._weight(value)
+            if weight != self._cache_weight:
+                self._connection.execute(
+                    "UPDATE records SET weight = ? WHERE position = ?", (weight, position)
+                )
+                self._total_weight += weight - self._cache_weight
+                self._cache_weight = weight
+
+    @property
+    def total_weight(self) -> int | None:
+        """Return the incremental total without decoding or serializing payloads."""
+        with self._lock:
+            self._sync_weight()
+            return self._total_weight if self._weight is not None else None
 
     def _index(self, index: int) -> int:
         if index < 0:
@@ -64,9 +101,10 @@ class DiskBackedList(MutableSequence[Record], Generic[Record]):
         return index
 
     def _flush(self) -> None:
+        self._sync_weight()
         if self._cache is not None:
             index, value = self._cache
-            payload = json.dumps(self._encode(value), default=str)
+            payload = self._dumps(value)
             if payload != self._cache_payload:
                 self._connection.execute(
                     "UPDATE records SET payload = ? WHERE position = ?", (payload, index)
@@ -87,10 +125,11 @@ class DiskBackedList(MutableSequence[Record], Generic[Record]):
             if self._cache is None or self._cache[0] != position:
                 self._flush()
                 row = self._connection.execute(
-                    "SELECT payload FROM records WHERE position = ?", (position,)
+                    "SELECT payload, weight FROM records WHERE position = ?", (position,)
                 ).fetchone()
-                self._cache = (position, self._decode(json.loads(row[0])))
+                self._cache = (position, self._loads(row[0]))
                 self._cache_payload = row[0]
+                self._cache_weight = row[1]
             return self._cache[1]
 
     def __setitem__(self, index: Any, value: Any) -> None:
@@ -111,13 +150,19 @@ class DiskBackedList(MutableSequence[Record], Generic[Record]):
                 return
             position = self._index(index)
             self._flush()
-            payload = json.dumps(self._encode(value), default=str)
+            payload = self._dumps(value)
+            weight = self._weight(value) if self._weight is not None else 0
+            previous_weight = self._connection.execute(
+                "SELECT weight FROM records WHERE position = ?", (position,)
+            ).fetchone()[0]
             self._connection.execute(
-                "UPDATE records SET payload = ? WHERE position = ?",
-                (payload, position),
+                "UPDATE records SET payload = ?, weight = ? WHERE position = ?",
+                (payload, weight, position),
             )
+            self._total_weight += weight - previous_weight
             self._cache = (position, value)
             self._cache_payload = payload
+            self._cache_weight = weight
 
     def __delitem__(self, index: Any) -> None:
         with self._lock:
@@ -128,6 +173,9 @@ class DiskBackedList(MutableSequence[Record], Generic[Record]):
             position = self._index(index)
             self._flush()
             self._cache = None
+            weight = self._connection.execute(
+                "SELECT weight FROM records WHERE position = ?", (position,)
+            ).fetchone()[0]
             self._connection.execute("DELETE FROM records WHERE position = ?", (position,))
             self._connection.execute(
                 "UPDATE records SET position = -position WHERE position > ?", (position,)
@@ -136,30 +184,35 @@ class DiskBackedList(MutableSequence[Record], Generic[Record]):
                 "UPDATE records SET position = -position - 1 WHERE position < 0"
             )
             self._length -= 1
+            self._total_weight -= weight
 
     def insert(self, index: int, value: Record) -> None:
         with self._lock:
             position = max(0, min(index if index >= 0 else self._length + index, self._length))
             self._flush()
             self._cache = None
+            payload = self._dumps(value)
+            weight = self._weight(value) if self._weight is not None else 0
             self._connection.execute(
                 "UPDATE records SET position = -position - 1 WHERE position >= ?", (position,)
             )
             self._connection.execute("UPDATE records SET position = -position WHERE position < 0")
-            payload = json.dumps(self._encode(value), default=str)
             self._connection.execute(
-                "INSERT INTO records VALUES (?, ?)",
-                (position, payload),
+                "INSERT INTO records VALUES (?, ?, ?)",
+                (position, payload, weight),
             )
             self._length += 1
+            self._total_weight += weight
             self._cache = (position, value)
             self._cache_payload = payload
+            self._cache_weight = weight
 
     def clear(self) -> None:
         with self._lock:
             self._cache = None
             self._connection.execute("DELETE FROM records")
             self._length = 0
+            self._total_weight = 0
 
     def sort(self, *, key: Callable[[Record], Any], reverse: bool = False) -> None:
         with self._lock:
@@ -188,9 +241,15 @@ class DiskBackedList(MutableSequence[Record], Generic[Record]):
         """Return an independent read-only snapshot without loading all records."""
         with self._lock:
             self._flush()
-            records = DiskBackedList(self._encode, self._decode)
+            records = DiskBackedList(
+                self._encode,
+                self._decode,
+                preserve_python=self._preserve_python,
+                weight=self._weight,
+            )
             self._connection.backup(records._connection)
             records._length = self._length
+            records._total_weight = self._total_weight
             return DiskBackedSequence(records)
 
 
@@ -267,6 +326,17 @@ class DiskBackedDict(MutableMapping[str, Record], Generic[Record]):
             rows = self._connection.execute("SELECT key FROM records ORDER BY rowid")
             for row in rows:
                 yield row[0]
+
+    def items_after(self, position: int) -> Iterator[tuple[int, str, Record]]:
+        """Iterate newly appended catalog records from a stable row position."""
+        with self._lock:
+            self.flush()
+            rows = self._connection.execute(
+                "SELECT rowid, key, payload FROM records WHERE rowid > ? ORDER BY rowid",
+                (position,),
+            )
+            for row in rows:
+                yield row[0], row[1], self._decode(json.loads(row[2]))
 
     def __getitem__(self, key: str) -> Record:
         with self._lock:

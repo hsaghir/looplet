@@ -17,6 +17,7 @@ from looplet.backend_contract import (
     TerminalLLMError,
     backend_attribute,
     backend_request_policy,
+    json_snapshot,
     single_model_request,
 )
 
@@ -346,10 +347,15 @@ def assistant_checkpoint_metadata(state: Any) -> dict[str, Any]:
     metadata = getattr(state, "metadata", {})
     if not isinstance(metadata, dict) or TURN_STATE_KEY not in metadata:
         return {}
+    steps = []
+    for step in state.steps:
+        record = asdict(step)
+        record["tool_result"]["data"] = json_snapshot(record["tool_result"]["data"])
+        steps.append(record)
     return copy.deepcopy(
         {
             TURN_STATE_KEY: metadata[TURN_STATE_KEY],
-            "assistant_steps": [asdict(step) for step in state.steps],
+            "assistant_steps": steps,
             "accepted_terminal_tool": getattr(state, "_accepted_terminal_tool", None),
             "assistant_usage": {
                 name: metadata[name] for name in ("last_usage", "usage_total") if name in metadata

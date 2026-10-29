@@ -721,6 +721,17 @@ async def test_backend_observes_original_result_before_projection(asynchronous, 
     assert all(result.error is None for _, result in observed)
 
 
+@pytest.mark.parametrize("name", ["read_tool_result", "search_tool_result"])
+def test_query_tools_document_original_result_pointer(name):
+    from looplet.builtin_tools.tool_results import SPECS
+
+    spec = next(spec for spec in SPECS if spec.name == name)
+    pointer = spec.to_api_schema()["input_schema"]["properties"]["json_pointer"]
+    assert pointer["default"] == ""
+    assert "original tool return value" in pointer["description"]
+    assert "not its preview wrapper" in pointer["description"]
+
+
 def test_delivery_retry_hint_accounts_for_json_escaping():
     from looplet.builtin_tools.tool_results import read_result
     from looplet.result_projection import project_tool_result

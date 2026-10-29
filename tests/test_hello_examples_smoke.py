@@ -113,6 +113,32 @@ def test_python_first_guide_all_python_fences_execute(tmp_path, monkeypatch):
     assert backend.calls == 1
 
 
+def test_readme_progressive_configuration_uses_the_intro_functions(tmp_path, monkeypatch):
+    from looplet import OpenAIBackend
+
+    guide = Path(__file__).resolve().parents[1] / "README.md"
+    blocks = _python_blocks(guide)
+    response = [
+        '{"tool":"lookup_owner","args":{"service":"payments"}}',
+        '{"tool":"done","args":{"summary":"fintech-platform"}}',
+    ]
+    backend = MockLLMBackend(response, cycle=False)
+    monkeypatch.setattr(OpenAIBackend, "from_env", staticmethod(lambda: backend))
+    monkeypatch.chdir(tmp_path)
+    namespace = {}
+    exec(compile(blocks[0], "README.md intro", "exec"), namespace)
+    backend = MockLLMBackend(response, cycle=False)
+    namespace["llm"] = backend
+    advanced = next(block for block in blocks if "resolve_harness(config).describe()" in block)
+    exec(compile(advanced, "README.md configuration", "exec"), namespace)
+    assert backend.calls == 2
+    assert namespace["step"].tool_result.data == {
+        "status": "completed",
+        "summary": "fintech-platform",
+    }
+    assert namespace["config"].max_steps == 8
+
+
 def test_quickstart_starts_with_the_release_and_defers_preview_setup():
     docs = Path(__file__).resolve().parents[1] / "docs"
     guide = (docs / "quickstart.md").read_text()

@@ -108,14 +108,14 @@ That helper remains an explicit minimal escape hatch in source builds.
 For the ordinary library path, supply your tools directly to the loop:
 
 ```python
-from looplet import LoopConfig, composable_loop, resolve_harness, tools_from
+from looplet import LoopConfig, composable_loop, resolve_harness
 
 
 config = LoopConfig(max_steps=8, context_window=32_000)
 print(resolve_harness(config).describe())
 for step in composable_loop(
-    llm=llm, tools=tools_from([lookup_owner, done]), config=config,
-    task={"goal": "Find the payments owner, then finish."},
+    llm=llm, tools=[lookup_owner], config=config,
+    task="Find the payments owner, then finish.",
 ):
     print(step.pretty())
 ```

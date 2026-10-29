@@ -227,6 +227,7 @@ async def test_settlement_evidence_example(tmp_path, asynchronous, cartridge, na
             result = preset.run_result(backend, task=task_for("evidence"))
         assert result.completed, result.diagnostics()
         assert len(requests) == 6
+        assert "/body" in requests[0]
         assert "731405" not in requests[1]
         assert "result_view_too_large" in requests[3]
         assert "731405" in requests[4]

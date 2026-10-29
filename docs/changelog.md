@@ -33,13 +33,15 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Sync and async loops share one run-setup path. Automatic persistence and compaction bindings no longer overwrite caller configuration.
+- Overlapping runs retain independent default compaction services. Explicit host services keep their identity and replacement precedence.
 - Retained-result tools clarify that JSON pointers address original return values, not preview wrappers.
 - The settlement example identifies the retained `/body` field and its exact final-section header instead of historical mentions.
 - Ordinary Python loops accept task strings and typed function sequences. Sequences get fresh validated registries and non-conflicting completion defaults. Explicit registries remain authoritative.
 - Source-build onboarding starts with functions and a loop. The published `0.4.1` walkthrough stays separate from the commit-pinned Python-first preview.
 - Async persistence drains workers during shutdown-wide task cancellation and preserves caller context.
 - Automatic checkpoints share immutable JSON records. Explicit checkpoint stores keep plain JSON snapshots. Copy the full automatic checkpoint directory when moving runs.
-- Async loops await automatic checkpoint and recorder writes in workers. Cancellation drains writes before cleanup. Host callbacks and live-config restoration remain on the loop thread.
+- Async loops await automatic checkpoint and recorder writes in workers. Cancellation drains writes before cleanup. Host callbacks and registry release remain on the loop thread.
 - Concurrent loops reject a shared tool registry before rebinding run-owned evidence. Use fresh registries for overlapping runs; sequential reuse remains supported.
 - Automatic trajectories identify the resolved harness policy, qualified component types, and full system-prompt digest without exporting arbitrary provider options.
 - Sync, async, and cartridge runs resolve `execution-v1` by default: deterministic compaction and native typed history without implicit stagnation guidance or a step-derived tool quota. Explicit policies take precedence; the named `standard-v1` policy and `minimal` profile remain available without changing positional config arguments.
@@ -97,6 +99,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Changing live configuration cannot redirect an active run's session-tree output into a later run's directory.
+- Failed context-override setup releases registry ownership without leaking partial context settings. Corrected configuration can reuse the registry immediately.
 - Reused registries receive a fresh automatic result store per run. Completed stores remain readable, and explicit host stores remain shared.
 - Automatic raw history preserves picklable Python result types. Conversation checkpoints convert result payloads to JSON without changing live results.
 - Default disk-backed history maintains step charges incrementally. Budget reads no longer decode or serialize earlier result payloads.

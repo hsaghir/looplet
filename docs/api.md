@@ -118,6 +118,16 @@ The `max_steps=` and `system_prompt=` loop arguments update that config in place
 Cancellation tokens and other host controls retain their identity.
 Use separate configs for runs that need independent settings.
 
+**Unreleased:** sync and async loops share one run-setup path.
+Automatic compaction, checkpoint selection, and evidence paths belong to the active run.
+They do not overwrite `config.compact_service`, `config.checkpoint_dir`,
+`config.initial_checkpoint`, or `config.run_dir`.
+Explicit compaction services still override the run default.
+Inspect effective policies with `resolve_harness(config, hooks).describe()`.
+Read the allocated evidence path from `state.metadata["run_dir"]`.
+Changing `config.run_dir` after iteration starts affects later runs, not current evidence.
+Invalid context-override setup releases ownership without leaking partial context settings.
+
 **Unreleased:** ordinary runs select `harness_profile="execution-v1"`.
 It preserves native history and deterministic compaction without choosing an analysis
 strategy or deriving a tool quota. Select `standard-v1` for its existing explicit policies.

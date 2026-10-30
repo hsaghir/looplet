@@ -35,6 +35,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 - Sync and async loops share one run-setup path. Automatic persistence and compaction bindings no longer overwrite caller configuration.
 - Overlapping runs retain independent default compaction services. Explicit host services keep their identity and replacement precedence.
+- The policy example reports saved progress and remaining sections on reads and writes. Progress survives compaction without an added loop policy.
 - Retained-result tools clarify that JSON pointers address original return values, not preview wrappers.
 - The settlement example identifies the retained `/body` field and its exact final-section header instead of historical mentions.
 - Ordinary Python loops accept task strings and typed function sequences. Sequences get fresh validated registries and non-conflicting completion defaults. Explicit registries remain authoritative.

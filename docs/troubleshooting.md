@@ -33,11 +33,33 @@ public issue.
 | `ModuleNotFoundError: looplet` | Confirm `python` and `pip` point at the same virtual environment. |
 | `looplet: command not found` | Run `python -m looplet --help`; then inspect the environment's scripts directory. |
 | Provider import fails | Install `looplet[openai]` or `looplet[anthropic]` in the active environment. |
-| A new API is missing | Print `looplet.__version__` and compare it with the version you installed. |
+| A new API is missing | Compare the build fingerprint, not only `looplet.__version__`. Use the preview required by the guide. |
+| Run evidence cannot be saved | Choose a writable `run_dir` or disable automatic persistence. See the remedies below. |
 
-The documentation may describe the next release before that release reaches
-PyPI. Pin and inspect the package version rather than inferring it from the
-website.
+The published package and source preview can report the same version.
+A version number alone does not identify their APIs.
+Use the selected guide's exact install command.
+Record the installed code's fingerprint without selecting or calling a provider:
+
+```bash
+looplet doctor --no-backend --json
+```
+
+The JSON report's `build` check identifies the installed code.
+Include that fingerprint and the installed archive revision in a bug report.
+
+## Run evidence cannot be saved
+
+Source-preview runs save evidence under `.looplet/runs/<unique-id>` by default.
+The working directory must permit those writes.
+Setup fails before a model call when the evidence directory cannot be initialized.
+Looplet preserves the original filesystem error; it does not silently discard evidence.
+
+Pass `LoopConfig(run_dir=...)` with a writable directory to keep saved evidence.
+Choose a fresh directory for each task.
+Pass `LoopConfig(disabled_defaults=("persistence",))` when the run must not save evidence.
+This opt-out leaves explicit host persistence unchanged.
+See [source runtime controls](operations.md#standard-agent-harness) for the full policy.
 
 ## OpenAI-compatible backend configuration
 

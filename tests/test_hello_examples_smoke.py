@@ -132,6 +132,22 @@ def test_frontdoor_install_matches_its_documented_release_stage(guide_name):
     assert "-e" not in arguments
 
 
+def test_beginner_paths_defer_source_only_and_advanced_features():
+    docs = Path(__file__).resolve().parents[1] / "docs"
+    python = (docs / "python.md").read_text()
+    assert python.index("## Run one loop") < python.index("## Collect and check the result")
+    assert python.index("## Collect and check the result") < python.index(
+        "## How the loop fits together"
+    )
+    quickstart = (docs / "quickstart.md").read_text()
+    released, preview = quickstart.split("## Optional experiment starter", 1)
+    assert "resolve_harness" not in released
+    assert "looplet.examples.default_harness" not in released
+    assert preview.index("python -m pip install") < preview.index(
+        '<a id="standard-harness-in-source-builds"></a>'
+    )
+
+
 @pytest.mark.parametrize("guide_name", ["README.md", "docs/index.md", "docs/python.md"])
 def test_python_first_intro_executes_the_same_loop(guide_name, tmp_path, monkeypatch):
     from looplet import OpenAIBackend

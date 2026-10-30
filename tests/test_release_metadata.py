@@ -24,6 +24,15 @@ def test_package_readme_links_work_outside_the_repository() -> None:
     assert "https://hsaghir.com/looplet/quickstart/" in targets
 
 
+def test_troubleshooting_distinguishes_builds_and_explains_storage_remedies() -> None:
+    troubleshooting = (ROOT / "docs/troubleshooting.md").read_text()
+    assert "looplet doctor --no-backend --json" in troubleshooting
+    assert "A version number alone does not identify their APIs." in troubleshooting
+    assert "`build` check" in troubleshooting
+    assert "LoopConfig(run_dir=...)" in troubleshooting
+    assert 'LoopConfig(disabled_defaults=("persistence",))' in troubleshooting
+
+
 def test_package_version_is_consistent_with_its_release_stage() -> None:
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
     version = project["version"]

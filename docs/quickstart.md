@@ -117,40 +117,6 @@ Reuse the function for repeated or concurrent tasks, not the instance inside it.
 Nested schemas and other constraints remain tool-owned.
 The base registry retains its lighter argument-name checks when this option is omitted.
 
-## Standard harness in source builds
-
-The released-package walkthrough above deliberately uses `minimal_preset`.
-In current source builds it remains minimal; it does not install automatic policies.
-Ordinary `composable_loop()`, `async_composable_loop()`, and cartridge runs instead
-use the versioned `execution-v1` defaults: deterministic compaction, faithful native
-history, and original-result retention, without behavioral steering or derived quotas.
-The explicitly selected `standard-v1` profile retains advisory stagnation detection
-and its step-derived tool-dispatch budget.
-
-Inspect the effective policies without running a model:
-
-```python
-from looplet import LoopConfig, resolve_harness
-
-
-print(resolve_harness(LoopConfig(max_steps=8)).describe())
-```
-
-To use those defaults with this tutorial's factory, set
-`run.config.harness_profile = "execution-v1"` inside its `with` block.
-No additional hooks are required. Explicit hooks still take precedence for
-the supported replacement points. See [runtime controls](operations.md#standard-agent-harness)
-for individual opt-outs and custom policies.
-
-The source build also includes a complete offline pressure test:
-
-```bash
-python -m looplet.examples.default_harness --scripted --output ./harness-run-001
-```
-
-It builds two agents, exports and reloads their cartridges, and grades their
-files independently after compaction. Use a fresh output directory for each run.
-
 ## Use the same agent with a real model
 
 This step is optional.
@@ -482,7 +448,7 @@ Use a separate environment so you can keep your released-package project unchang
 ```bash
 python -m venv .venv-looplet-preview
 source .venv-looplet-preview/bin/activate
-python -m pip install "looplet @ https://github.com/hsaghir/looplet/archive/e4663644bf9572153975bae8db8f170d8aa46341.zip"
+python -m pip install "looplet @ https://github.com/hsaghir/looplet/archive/3ecf285ba98b1d3635af2c9711a1a73910147f8f.zip"
 looplet doctor --no-backend --json
 ```
 
@@ -494,6 +460,12 @@ Keep the commit and the doctor's library source fingerprint with your results.
 Add provider extras from the same archive, not from the published package.
 On Windows, activate `.venv-looplet-preview\Scripts\Activate.ps1` in PowerShell.
 See the [preview details](install.md#try-unreleased-factory-commands) for the same install.
+
+<a id="standard-harness-in-source-builds"></a>
+
+The preview's ordinary loops add context compaction and private run evidence by default.
+`minimal_preset` keeps its minimal policy in both builds.
+See [source runtime controls](operations.md#standard-agent-harness) to inspect or change these defaults.
 
 Use a new trace directory to capture the included example:
 
@@ -674,7 +646,7 @@ Older eval captures without a case file retain their saved expectations too.
 Keep the exported file and install the provider extra from the same pinned preview:
 
 ```bash title="one_file_live.sh"
-python -m pip install "looplet[openai] @ https://github.com/hsaghir/looplet/archive/e4663644bf9572153975bae8db8f170d8aa46341.zip"
+python -m pip install "looplet[openai] @ https://github.com/hsaghir/looplet/archive/3ecf285ba98b1d3635af2c9711a1a73910147f8f.zip"
 export OPENAI_API_KEY=...
 export OPENAI_MODEL=gpt-4o
 python my_agent.py --backend openai --max-steps 8 --experiment

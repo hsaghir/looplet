@@ -38,23 +38,24 @@ def test_public_loop_help_documents_inputs_and_cleanup(loop_function):
     assert "close()" in documentation
 
 
-@pytest.mark.parametrize("guide_name", ["README.md", "docs/index.md", "docs/install.md"])
+@pytest.mark.parametrize(
+    "guide_name", ["README.md", "docs/index.md", "docs/python.md", "docs/install.md"]
+)
 def test_frontdoor_install_matches_its_documented_release_stage(guide_name):
-    guide = Path(__file__).resolve().parents[1] / guide_name
-    content = guide.read_text()
+    root = Path(__file__).resolve().parents[1]
+    content = (root / guide_name).read_text()
+    if guide_name == "docs/index.md":
+        assert "](python.md#install)" in content
+        content = (root / "docs/python.md").read_text()
     command = re.findall(r"^```bash[^\n]*\n(.*?)^```[ \t]*$", content, re.M | re.S)[0]
     arguments = shlex.split(command.replace("\\\n", " "))
-    if guide_name == "docs/install.md":
-        assert "looplet==0.4.1" in arguments
-    else:
-        assert "unreleased" in content[: content.index(command)].lower()
-        assert any(
-            re.fullmatch(
-                r"looplet\[openai\] @ https://github.com/hsaghir/looplet/archive/[a-f0-9]{40}\.zip",
-                argument,
-            )
-            for argument in arguments
-        )
+    assert "unreleased" in content[: content.index(command)].lower()
+    preview = re.search(
+        r"looplet @ https://github.com/hsaghir/looplet/archive/[a-f0-9]{40}\.zip",
+        (root / "docs/install.md").read_text(),
+    )
+    assert preview is not None
+    assert preview.group() in arguments
     assert "-e" not in arguments
 
 
@@ -69,26 +70,23 @@ def test_python_first_intro_executes_the_same_loop(guide_name, tmp_path, monkeyp
         r"^```python[^\n]*\n(.*?)^```[ \t]*$", (root / "docs/python.md").read_text(), re.M | re.S
     )[0]
     assert ast.dump(ast.parse(code)) == ast.dump(ast.parse(canonical))
-    backend = MockLLMBackend(
-        [
-            '{"tool":"lookup_owner","args":{"service":"payments"}}',
-            '{"tool":"done","args":{"summary":"fintech-platform"}}',
-        ],
-        cycle=False,
+    monkeypatch.setattr(
+        OpenAIBackend,
+        "from_env",
+        staticmethod(Mock(side_effect=AssertionError("The first loop must stay offline"))),
     )
-    monkeypatch.setattr(OpenAIBackend, "from_env", staticmethod(lambda: backend))
     monkeypatch.chdir(tmp_path)
     namespace = {}
     exec(compile(code, guide_name, "exec"), namespace)
     assert namespace["lookup_owner"]("payments") == "fintech-platform"
     assert namespace["step"].tool_result.tool == "done"
-    assert backend.calls == 2
+    assert isinstance(namespace["llm"], MockLLMBackend)
+    assert namespace["llm"].calls == 2
     assert not {"LoopConfig", "DefaultState", "AgentPreset", "tools_from"}.intersection(namespace)
 
 
 def test_python_first_guide_all_python_fences_execute(tmp_path, monkeypatch):
     from looplet import OpenAIBackend
-    from looplet.testing import AsyncMockLLMBackend
 
     guide = Path(__file__).resolve().parents[1] / "docs/python.md"
     blocks = re.findall(r"^```python[^\n]*\n(.*?)^```[ \t]*$", guide.read_text(), re.M | re.S)
@@ -102,41 +100,39 @@ def test_python_first_guide_all_python_fences_execute(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     namespace = {}
     for index, code in enumerate(blocks):
-        namespace["llm"] = MockLLMBackend(responses, cycle=False)
         exec(compile(code, f"python.md fence {index + 1}", "exec"), namespace)
     assert namespace["result"].completed
-
-    import asyncio
-
-    backend = AsyncMockLLMBackend(responses, cycle=False)
-    asyncio.run(namespace["inspect_async"](backend))
-    assert backend.calls == 1
+    assert namespace["captured"].completed
+    assert namespace["replayed"][0].tool_result.data == "fintech-platform"
+    assert namespace["llm"].calls == 1
+    assert namespace["step"].tool_call.tool == "lookup_owner"
+    assert namespace["steps"].gi_frame is None
 
 
 def test_readme_progressive_configuration_uses_the_intro_functions(tmp_path, monkeypatch):
-    from looplet import OpenAIBackend
+    from looplet import run_result
 
     guide = Path(__file__).resolve().parents[1] / "README.md"
     blocks = _python_blocks(guide)
-    response = [
-        '{"tool":"lookup_owner","args":{"service":"payments"}}',
-        '{"tool":"done","args":{"summary":"fintech-platform"}}',
-    ]
-    backend = MockLLMBackend(response, cycle=False)
-    monkeypatch.setattr(OpenAIBackend, "from_env", staticmethod(lambda: backend))
+    observed_run = Mock(wraps=run_result)
+    monkeypatch.setattr("looplet.run_result", observed_run)
     monkeypatch.chdir(tmp_path)
     namespace = {}
     exec(compile(blocks[0], "README.md intro", "exec"), namespace)
-    backend = MockLLMBackend(response, cycle=False)
-    namespace["llm"] = backend
-    advanced = next(block for block in blocks if "resolve_harness(config).describe()" in block)
+    lookup_owner = namespace["lookup_owner"]
+    advanced = next(block for block in blocks if "result = run_result(" in block)
     exec(compile(advanced, "README.md configuration", "exec"), namespace)
+    observed_run.assert_called_once()
+    backend = observed_run.call_args.args[0]
     assert backend.calls == 2
-    assert namespace["step"].tool_result.data == {
+    assert observed_run.call_args.kwargs["tools"] == [lookup_owner]
+    assert observed_run.call_args.kwargs["max_steps"] == 4
+    assert namespace["result"].completed
+    assert namespace["result"].steps[0].tool_result.data == "fintech-platform"
+    assert namespace["result"].output == {
         "status": "completed",
         "summary": "fintech-platform",
     }
-    assert namespace["config"].max_steps == 8
 
 
 def test_quickstart_starts_with_the_release_and_defers_preview_setup():
@@ -182,9 +178,10 @@ def test_factory_shell_workflow_has_a_pinned_preview_install():
     docs = Path(__file__).resolve().parents[1] / "docs"
     install = (docs / "install.md").read_text()
     section = install.split("## Try unreleased factory commands\n", 1)[1].split("\n## ", 1)[0]
-    command = re.findall(r"^```bash[^\n]*\n(.*?)^```[ \t]*$", section, re.M | re.S)[0]
+    current = install.split("## Install the current build\n", 1)[1].split("\n## ", 1)[0]
+    command = re.findall(r"^```bash[^\n]*\n(.*?)^```[ \t]*$", current, re.M | re.S)[0]
     arguments = shlex.split(command.replace("\\\n", " "))
-    assert ".venv-looplet-preview" in arguments
+    assert ".venv-looplet" in arguments
     assert "-e" not in arguments
     assert any(
         re.fullmatch(
@@ -192,8 +189,9 @@ def test_factory_shell_workflow_has_a_pinned_preview_install():
         )
         for item in arguments
     )
-    assert "source fingerprint" in section
-    assert "Both builds report version `0.4.1`" in section
+    assert "same fixed revision" in section
+    assert "source fingerprint" in current
+    assert "Both the preview and release report version `0.4.1`" in current
     assert "(install.md#try-unreleased-factory-commands)" in (docs / "quickstart.md").read_text()
 
 
@@ -1709,16 +1707,12 @@ def test_documented_first_loop(document: str, tmp_path, monkeypatch) -> None:
     blocks = _python_blocks(path)
     assert blocks, f"No Python example in {document}"
     observations = []
-    backend = MockLLMBackend(
-        [
-            '{"tool":"lookup_owner","args":{"service":"payments"}}',
-            '{"tool":"done","args":{"summary":"fintech-platform"}}',
-        ],
-        cycle=False,
+    generate_calls = []
+    monkeypatch.setattr(
+        OpenAIBackend,
+        "from_env",
+        staticmethod(Mock(side_effect=AssertionError("The first loop must stay offline"))),
     )
-    generate = Mock(wraps=backend.generate)
-    monkeypatch.setattr(backend, "generate", generate)
-    monkeypatch.setattr(OpenAIBackend, "from_env", staticmethod(lambda: backend))
 
     class ObserveRun:
         def bind(self, context):
@@ -1728,6 +1722,11 @@ def test_documented_first_loop(document: str, tmp_path, monkeypatch) -> None:
             observations.append((context.state, dispatch))
 
     def observed_loop(*args, **kwargs):
+        backend = args[0]
+        assert isinstance(backend, MockLLMBackend)
+        generate = Mock(wraps=backend.generate)
+        monkeypatch.setattr(backend, "generate", generate)
+        generate_calls.append(generate)
         return composable_loop(*args, hooks=[ObserveRun()], **kwargs)
 
     monkeypatch.setattr("looplet.composable_loop", observed_loop)
@@ -1741,7 +1740,8 @@ def test_documented_first_loop(document: str, tmp_path, monkeypatch) -> None:
     result = RunResult.from_state(state)
     assert result.completed
     assert result.output == {"status": "completed", "summary": "fintech-platform"}
-    assert generate.call_count == 2
+    assert len(generate_calls) == 1
+    assert generate_calls[0].call_count == 2
     assert dispatch.call_count == 2
     with pytest.raises(LLMResponsesExhausted):
         namespace["llm"].generate("Unexpected extra model call")

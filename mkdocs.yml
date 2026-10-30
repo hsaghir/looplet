@@ -107,16 +107,16 @@ nav:
   - Home: index.md
   - Start:
     - Python quickstart: python.md
-    - Published 0.4.1 walkthrough: quickstart.md
     - Install and configure: install.md
     - Migrate an existing loop: migrate.md
     - Troubleshooting: troubleshooting.md
+    - Published 0.4.1 walkthrough: quickstart.md
   - Guides:
     - Build:
-      - Cartridges: cartridge.md
       - Hooks: hooks.md
+      - Cartridges: cartridge.md
       - Skills and bundles: skills.md
-      - Agent factory: agent-factory.md
+      - Generate a cartridge: agent-factory.md
     - Test:
       - Report-agent tutorial: tutorial.md
       - Failure to regression: regression-demo.md
@@ -150,4 +150,4 @@ plugins:
       separator: '[\s\-,:!=\[\]()"/]+|(?!\b)(?=[A-Z][a-z])|\.(?!\d)|&[lg]t;'
   - redirects:
       redirect_maps:
-        getting-started.md: quickstart.md
+        getting-started.md: python.md

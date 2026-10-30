@@ -5,6 +5,7 @@ The other APIs are optional.
 This page helps you choose an API; it does not list every helper.
 Use the [Python quickstart](python.md) for a complete source-build example.
 The [published walkthrough](quickstart.md) uses release `0.4.1`.
+Unreleased APIs below match the [fixed preview install](install.md#install-the-current-build).
 
 Import the main APIs from `looplet`:
 
@@ -26,28 +27,28 @@ Use `async_composable_loop()` when your backend is asynchronous.
 Use `run_result()` or `await run_result_async()` to collect the accepted output without constructing state.
 Keep `DefaultState` and `RunResult.from_state()` when you manage state explicitly.
 
-| Need | Entry point |
-| --- | --- |
-| Inspect each tool call | `composable_loop()` or `async_composable_loop()` |
-| Collect one loop's result | `run_result()` or `await run_result_async()`; **unreleased** |
-| Assemble reusable dependencies | A factory returning a fresh `AgentPreset` |
-| Collect a preset's final result | `preset.run_result()` or `preset.run_result_async()` |
-| Load an agent stored as files | `cartridge_to_preset()`, then the same preset methods |
-| Manage host run identity and cancellation | `AgentRuntime` around a fresh preset |
+| Need                                      | Entry point                                                                       |
+| ----------------------------------------- | --------------------------------------------------------------------------------- |
+| Inspect each tool call                    | `composable_loop()` or `async_composable_loop()`                                  |
+| Collect one loop's result                 | `run_result()` or `await run_result_async()`; **unreleased**                      |
+| Assemble reusable dependencies            | A [Python factory](#optional-preset-conveniences) returning a fresh `AgentPreset` |
+| Collect a preset's final result           | `preset.run_result()` or `preset.run_result_async()`                              |
+| Load an agent stored as files             | `cartridge_to_preset()`, then the same preset methods                             |
+| Manage host run identity and cancellation | `AgentRuntime` around a fresh preset                                              |
 
 These are composition layers over the same execution contract, not separate execution engines.
 Existing entry points remain supported.
 
 Configure the limits first, then add controls only when needed:
 
-| Concern | Configuration |
-| --- | --- |
-| Successful, chargeable tool steps | `max_steps` |
-| Backend invocations, including recovery | `max_model_calls` |
-| Per-response output tokens | `max_tokens` |
-| Prompt context | `context_window` |
-| Evidence location | `run_dir` |
-| Policy replacement | Explicit services and hooks, inspected with `resolve_harness().describe()` |
+| Concern                                 | Configuration                                                              |
+| --------------------------------------- | -------------------------------------------------------------------------- |
+| Successful, chargeable tool steps       | `max_steps`                                                                |
+| Backend invocations, including recovery | `max_model_calls`                                                          |
+| Per-response output tokens              | `max_tokens`                                                               |
+| Prompt context                          | `context_window`                                                           |
+| Evidence location                       | `run_dir`                                                                  |
+| Policy replacement                      | Explicit services and hooks, inspected with `resolve_harness().describe()` |
 
 Use a fresh registry, config, state, and mutable hook set for each concurrent run.
 Tool functions and explicitly shared clients can remain shared.
@@ -61,19 +62,19 @@ Host resources still retain their supplied identity.
 
 ## Execution core
 
-| API | Use it for |
-| --- | --- |
-| `composable_loop(...)` | Yield a `Step` after each tool call. |
-| `async_composable_loop(...)` | Use the same loop with async iteration. |
-| `run_result(...)` / `run_result_async(...)` | Consume and close the same loops; return `RunResult`. **Unreleased.** |
-| `LoopConfig` | Set limits, prompts, tool protocols, context reduction, checkpoints, and cancellation. |
-| `resolve_harness(config, hooks)` | Inspect shared versioned defaults without executing a run. **Unreleased.** |
-| `ResolvedHarness` | Access the effective config and hook list, or call `.describe()`. **Unreleased.** |
-| `LoopContext` | Provide host context to the loop and tools. |
-| `is_loop_hook(...)` | Recognize a partial, duck-typed hook. **Unreleased.** |
-| `DefaultState` | Record steps and stop state. Use a compatible custom state if you need more fields. |
-| `Step` | Read one tool call, its result, times, and metadata. |
-| `ToolCall` / `ToolResult` | Represent a call and its result as typed records. |
+| API                                         | Use it for                                                                             |
+| ------------------------------------------- | -------------------------------------------------------------------------------------- |
+| `composable_loop(...)`                      | Yield a `Step` after each tool call.                                                   |
+| `async_composable_loop(...)`                | Use the same loop with async iteration.                                                |
+| `run_result(...)` / `run_result_async(...)` | Consume and close the same loops; return `RunResult`. **Unreleased.**                  |
+| `LoopConfig`                                | Set limits, prompts, tool protocols, context reduction, checkpoints, and cancellation. |
+| `resolve_harness(config, hooks)`            | Inspect shared versioned defaults without executing a run. **Unreleased.**             |
+| `ResolvedHarness`                           | Access the effective config and hook list, or call `.describe()`. **Unreleased.**      |
+| `LoopContext`                               | Provide host context to the loop and tools.                                            |
+| `is_loop_hook(...)`                         | Recognize a partial, duck-typed hook. **Unreleased.**                                  |
+| `DefaultState`                              | Record steps and stop state. Use a compatible custom state if you need more fields.    |
+| `Step`                                      | Read one tool call, its result, times, and metadata.                                   |
+| `ToolCall` / `ToolResult`                   | Represent a call and its result as typed records.                                      |
 
 The loop receives explicit dependencies and yields after each tool call.
 These snippets assume that you have a backend, registry, state, and hooks:
@@ -276,7 +277,8 @@ See the [published-version differences](install.md#unreleased-safety-fixes).
 `AgentPreset` holds `tools`, `state`, `config`, and `hooks`.
 It represents one live run, not reusable configuration.
 Call a Python factory for each task instead of caching a preset instance.
-It is not another execution engine.
+A Python factory is an ordinary function that builds fresh dependencies.
+It does not generate source code or require a model call.
 `preset.run(llm, task=task)` passes those objects to `composable_loop()` and returns its iterator.
 `run_async()` does the same for the async loop.
 You still supply the backend and task mapping explicitly.
@@ -284,32 +286,35 @@ You can inspect or change the objects before the run.
 
 Looplet `0.4.0` includes two result helpers:
 
-| API | Meaning |
-| --- | --- |
-| `preset.run_result(llm, **kwargs)` | Consume `preset.run(...)`, close the iterator, and return `RunResult.from_state(preset.state)`. |
-| `await preset.run_result_async(llm, **kwargs)` | The same operation over `preset.run_async(...)`. |
+| API                                            | Meaning                                                                                         |
+| ---------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `preset.run_result(llm, **kwargs)`             | Consume `preset.run(...)`, close the iterator, and return `RunResult.from_state(preset.state)`. |
+| `await preset.run_result_async(llm, **kwargs)` | The same operation over `preset.run_async(...)`.                                                |
 
 ```python
 from looplet import minimal_preset
 
 
-def run_agent(llm, task):
-    with minimal_preset(tools=[lookup_owner], max_steps=5, validate=True) as run:
-        return run.run_result(llm, task=task)
+def build_agent():
+    return minimal_preset(tools=[lookup_owner], max_steps=5, validate=True)
 
 
-result = run_agent(llm, {"goal": "Find the payments owner"})
+with build_agent() as preset:
+    result = preset.run_result(llm, task={"goal": "Find the payments owner"})
 print(result.output)
 ```
 
+This example uses `minimal_preset()`, which omits automatic harness policies.
+It still registers the standard completion tool.
 Both helpers pass arguments to the same loop.
 The caller still owns resources.
 The helpers raise setup errors and unhandled execution errors.
 Normal stops return results.
 `preset.close()` returns separate shutdown diagnostics.
 Use each preset for one run.
-Call `run_agent()` again for another run with fresh state and resources.
-See the [Quickstart](quickstart.md) for a complete executable example and repeated-run test.
+Call `build_agent()` again for fresh state and resources.
+The [`looplet new` generator](agent-factory.md) is a separate tool for drafting cartridges.
+See the [Python quickstart](python.md) before adding a preset or factory.
 
 Load a cartridge with `cartridge_to_preset()` or a bundle with `load_skill_bundle()`.
 File format and loop execution remain separate.
@@ -326,18 +331,18 @@ Since `0.4.1`, child loops install an isolated completion tool when cloning excl
 That tool accepts a `summary` and does not invoke the parent's terminal tool.
 Explicit `sub_tools` registries remain unchanged and must register their own terminal tool.
 
-| API | Use it for |
-| --- | --- |
-| `tools_from([...])` | Create a registry from ordinary typed functions or tool specs and optionally add the standard `done` tool. |
-| `@tool(...)` | Optionally replace a function with a non-callable `ToolSpec`. |
-| `ToolSpec` | Inspect or construct a tool name, description, schema, and implementation explicitly. |
-| `BaseToolRegistry` | Register, validate, look up, and dispatch tools. |
-| `BaseToolRegistry.get_result(key)` | Recall a detached original tool output; result-store snapshots survive checkpoints. Set `retain_results=False` to disable new retention. |
-| `BaseToolRegistry.async_dispatch(...)` | Await coroutine tools directly and move blocking sync tools off the event loop. |
-| `register_done_tool(...)` | Add the completion tool to a custom registry. |
-| `ToolContext` | Access host resources, workspace details, cancellation, progress, and the selected backend inside a tool. |
-| `ToolContext.async_llm` | Access the async backend inside async tools or child loops without the synchronous bridge. |
-| `ToolError` / `ToolValidationError` | Return or test structured failures without parsing exception text. |
+| API                                    | Use it for                                                                                                                               |
+| -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `tools_from([...])`                    | Create a registry from ordinary typed functions or tool specs and optionally add the standard `done` tool.                               |
+| `@tool(...)`                           | Optionally replace a function with a non-callable `ToolSpec`.                                                                            |
+| `ToolSpec`                             | Inspect or construct a tool name, description, schema, and implementation explicitly.                                                    |
+| `BaseToolRegistry`                     | Register, validate, look up, and dispatch tools.                                                                                         |
+| `BaseToolRegistry.get_result(key)`     | Recall a detached original tool output; result-store snapshots survive checkpoints. Set `retain_results=False` to disable new retention. |
+| `BaseToolRegistry.async_dispatch(...)` | Await coroutine tools directly and move blocking sync tools off the event loop.                                                          |
+| `register_done_tool(...)`              | Add the completion tool to a custom registry.                                                                                            |
+| `ToolContext`                          | Access host resources, workspace details, cancellation, progress, and the selected backend inside a tool.                                |
+| `ToolContext.async_llm`                | Access the async backend inside async tools or child loops without the synchronous bridge.                                               |
+| `ToolError` / `ToolValidationError`    | Return or test structured failures without parsing exception text.                                                                       |
 
 Start with ordinary typed functions passed directly to the loop in current source builds.
 Their names remain callable in application code and unit tests.
@@ -433,14 +438,14 @@ Use a fresh preset for another run.
 
 ## Backends
 
-| API | Import | Notes |
-| --- | --- | --- |
-| `OpenAIBackend` | `from looplet import OpenAIBackend` | Sync OpenAI and OpenAI-compatible adapter with native tool support. |
-| `AnthropicBackend` | `from looplet import AnthropicBackend` | Sync Anthropic adapter with native tool support. |
-| `AsyncOpenAIBackend` | `from looplet.backends import AsyncOpenAIBackend` | Async OpenAI-compatible adapter. |
-| `OpenAIStreamingBackend` | `from looplet.backends import OpenAIStreamingBackend` | OpenAI adapter exposing token chunks. |
-| `LLMBackend` | `from looplet import LLMBackend` | Runtime-checkable shape for custom synchronous backends. |
-| `ResilientBackend` | `from looplet import ResilientBackend` | Sync retry, backoff, and caller-side timeout wrapper. |
+| API                      | Import                                                | Notes                                                               |
+| ------------------------ | ----------------------------------------------------- | ------------------------------------------------------------------- |
+| `OpenAIBackend`          | `from looplet import OpenAIBackend`                   | Sync OpenAI and OpenAI-compatible adapter with native tool support. |
+| `AnthropicBackend`       | `from looplet import AnthropicBackend`                | Sync Anthropic adapter with native tool support.                    |
+| `AsyncOpenAIBackend`     | `from looplet.backends import AsyncOpenAIBackend`     | Async OpenAI-compatible adapter.                                    |
+| `OpenAIStreamingBackend` | `from looplet.backends import OpenAIStreamingBackend` | OpenAI adapter exposing token chunks.                               |
+| `LLMBackend`             | `from looplet import LLMBackend`                      | Runtime-checkable shape for custom synchronous backends.            |
+| `ResilientBackend`       | `from looplet import ResilientBackend`                | Sync retry, backoff, and caller-side timeout wrapper.               |
 
 Install provider extras separately. See [install and configure](install.md).
 
@@ -533,14 +538,14 @@ Hooks are ordinary objects.
 Implement only the methods that you need.
 Use these return values:
 
-| Decision | Meaning |
-| --- | --- |
-| `Continue()` | Proceed without changing the current operation. |
-| `Allow()` / `Deny(reason)` | Resolve a permission boundary. |
-| `Block(reason)` | Reject completion or another gated transition with feedback. |
-| `Stop(reason)` | Terminate the loop with an explicit stop reason. |
-| `InjectContext(text)` | Add host context to a subsequent prompt. |
-| `RewriteThread(...)` | Apply a declarative thread or metadata rewrite. |
+| Decision                   | Meaning                                                      |
+| -------------------------- | ------------------------------------------------------------ |
+| `Continue()`               | Proceed without changing the current operation.              |
+| `Allow()` / `Deny(reason)` | Resolve a permission boundary.                               |
+| `Block(reason)`            | Reject completion or another gated transition with feedback. |
+| `Stop(reason)`             | Terminate the loop with an explicit stop reason.             |
+| `InjectContext(text)`      | Add host context to a subsequent prompt.                     |
+| `RewriteThread(...)`       | Apply a declarative thread or metadata rewrite.              |
 
 `HookDecision` is the common decision type.
 The constructors above express specific decisions.
@@ -552,18 +557,18 @@ They should not block.
 
 ## Cartridges and presets
 
-| API | Use it for |
-| --- | --- |
-| `AgentPreset` | In-memory composition of backend-independent harness pieces. |
-| `AgentBlueprint` / `blueprint_from_bundle(...)` | Inspect stable agent structure without retaining the temporary runtime preset. |
-| `ContextProjection` | Immutable snapshot passed to `render_messages_override` for custom prompt rendering. |
-| `validate_preset_contract(...)` | Validate a built preset at a bundle/host boundary before execution. |
-| `bundled_cartridge_path(name)` | Resolve a reference cartridge shipped in the source tree or installed distribution. |
-| `Cartridge` / `CartridgeLayout` | Parsed file-native harness and its paths. |
-| `cartridge_to_preset(...)` | Load a cartridge into the same preset used by Python callers. |
-| `preset_to_cartridge(...)` | Write a supported preset surface as reviewable files. |
-| `scaffold_cartridge(...)` | Create the initial cartridge structure programmatically. |
-| `resource_ref_for(...)` | Resolve a host resource reference during round-trip serialization. |
+| API                                             | Use it for                                                                           |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------ |
+| `AgentPreset`                                   | In-memory composition of backend-independent harness pieces.                         |
+| `AgentBlueprint` / `blueprint_from_bundle(...)` | Inspect stable agent structure without retaining the temporary runtime preset.       |
+| `ContextProjection`                             | Immutable snapshot passed to `render_messages_override` for custom prompt rendering. |
+| `validate_preset_contract(...)`                 | Validate a built preset at a bundle/host boundary before execution.                  |
+| `bundled_cartridge_path(name)`                  | Resolve a reference cartridge shipped in the source tree or installed distribution.  |
+| `Cartridge` / `CartridgeLayout`                 | Parsed file-native harness and its paths.                                            |
+| `cartridge_to_preset(...)`                      | Load a cartridge into the same preset used by Python callers.                        |
+| `preset_to_cartridge(...)`                      | Write a supported preset surface as reviewable files.                                |
+| `scaffold_cartridge(...)`                       | Create the initial cartridge structure programmatically.                             |
+| `resource_ref_for(...)`                         | Resolve a host resource reference during round-trip serialization.                   |
 
 Use a cartridge when you want to review or distribute an agent as one directory.
 It is optional.
@@ -592,13 +597,13 @@ Custom builders and older keyword renderers remain supported.
 
 ## Evidence and replay
 
-| API | Use it for |
-| --- | --- |
-| `ProvenanceSink` | Capture model calls and trajectory records into readable files. |
-| `TrajectoryRecorder` | Lower-level step recording for custom hosts; start with `ProvenanceSink`. |
-| `replay_loop(...)` | Feed captured model responses through fresh synchronous harness execution. |
-| `async_replay_loop(...)` | Replay captured responses while awaiting async hooks and tools. |
-| `serialize_harness(...)` | Preserve a reviewable snapshot of the active harness. |
+| API                      | Use it for                                                                 |
+| ------------------------ | -------------------------------------------------------------------------- |
+| `ProvenanceSink`         | Capture model calls and trajectory records into readable files.            |
+| `TrajectoryRecorder`     | Lower-level step recording for custom hosts; start with `ProvenanceSink`.  |
+| `replay_loop(...)`       | Feed captured model responses through fresh synchronous harness execution. |
+| `async_replay_loop(...)` | Replay captured responses while awaiting async hooks and tools.            |
+| `serialize_harness(...)` | Preserve a reviewable snapshot of the active harness.                      |
 
 Replay fixes recorded model responses only.
 Tools, clocks, networks, state, permissions, and random values can change.
@@ -623,22 +628,22 @@ Graders and collectors are synchronous, including when the agent uses `async_com
 Await collection in your host before passing observed artifacts to synchronous graders.
 See the [async-host pattern](evals.md#async-hosts) for a complete example and validation guidance.
 
-| API | Use it for |
-| --- | --- |
-| `load_evals(path, ...)` | Load ordinary grader and collector functions from one file or directory, plus optional JSON cases. |
-| `EvalCase` / `load_cases(...)` / `save_case(...)` | Task input, grader-only expected data, marks, and notes as reviewable JSON. |
-| `EvalContext` | Final output, observed artifacts, steps, stop reason, and grader task view. |
-| `ctx.expected` | Read grader-only expectations without changing the existing task view. |
-| `EvalResult` | Explicit gate score, passive metrics, details, or error information. Boolean graders also work. |
-| `EvalReport` | Versioned assessment with `passed`, `valid`, results, and integrity failures. |
-| `eval_assess(graders, ctx, ...)` | Grade an existing observation and assess it without executing an agent or collector. |
-| `EvalHook` | Host-attached collection and scoring at the end of a live loop. |
-| `hook.assessment(...)` | Assess the latest grades without repeating collection or grading. |
-| `EvalReport.from_records(records, ...)` | Assess saved grades using a recorded or explicit trusted grader inventory. |
-| `EvalReport.save(path, evidence=...)` | Save a separate assessment to a new private JSON file, with optional relative evidence links. Unreleased. |
-| `eval_mark(...)` | Attach selection marks such as `required`, `smoke`, or `slow`. |
-| `run_cartridge_evals(...)` | Own collection and grading for a cartridge's self-tests, replacing embedded eval observers. |
-| `save_eval_run(...)` / `load_eval_run(...)` | Persist and restore one self-contained eval record. |
+| API                                               | Use it for                                                                                                |
+| ------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `load_evals(path, ...)`                           | Load ordinary grader and collector functions from one file or directory, plus optional JSON cases.        |
+| `EvalCase` / `load_cases(...)` / `save_case(...)` | Task input, grader-only expected data, marks, and notes as reviewable JSON.                               |
+| `EvalContext`                                     | Final output, observed artifacts, steps, stop reason, and grader task view.                               |
+| `ctx.expected`                                    | Read grader-only expectations without changing the existing task view.                                    |
+| `EvalResult`                                      | Explicit gate score, passive metrics, details, or error information. Boolean graders also work.           |
+| `EvalReport`                                      | Versioned assessment with `passed`, `valid`, results, and integrity failures.                             |
+| `eval_assess(graders, ctx, ...)`                  | Grade an existing observation and assess it without executing an agent or collector.                      |
+| `EvalHook`                                        | Host-attached collection and scoring at the end of a live loop.                                           |
+| `hook.assessment(...)`                            | Assess the latest grades without repeating collection or grading.                                         |
+| `EvalReport.from_records(records, ...)`           | Assess saved grades using a recorded or explicit trusted grader inventory.                                |
+| `EvalReport.save(path, evidence=...)`             | Save a separate assessment to a new private JSON file, with optional relative evidence links. Unreleased. |
+| `eval_mark(...)`                                  | Attach selection marks such as `required`, `smoke`, or `slow`.                                            |
+| `run_cartridge_evals(...)`                        | Own collection and grading for a cartridge's self-tests, replacing embedded eval observers.               |
+| `save_eval_run(...)` / `load_eval_run(...)`       | Persist and restore one self-contained eval record.                                                       |
 
 Use `looplet eval init --python` for a runnable pytest starter and `looplet eval check` for trusted definition validation.
 Definition validation does not execute the agent or prove its correctness.
@@ -663,21 +668,21 @@ See [Tests and graders](evals.md).
 
 ## Runtime controls
 
-| Concern | Primary API |
-| --- | --- |
-| Context pressure | `ContextBudget`, `ThresholdCompactHook`, `DefaultCompactService` |
-| Deterministic truncation | `TruncateCompact` |
-| Model-assisted summary | `SummarizeCompact` |
-| Large tool payloads | `PruneToolResults` |
-| Permissions | `PermissionEngine`, `PermissionRule`, `PermissionHook` |
-| Human approval boundary | `ApprovalHook` |
-| Repeated actions | `StagnationHook` |
-| Step budget warnings | `BudgetWarningHook` |
-| Per-tool call caps | `PerToolLimitHook` |
-| Cooperative cancellation | `CancelToken` |
-| JSON checkpoints | `FileCheckpointStore` and `LoopConfig.checkpoint_dir` |
-| Spans and aggregate metrics | `Tracer`, `TracingHook`, `MetricsCollector`, `MetricsHook` |
-| Typed live events | `StreamingHook` and emitters from `looplet.streaming` |
+| Concern                     | Primary API                                                      |
+| --------------------------- | ---------------------------------------------------------------- |
+| Context pressure            | `ContextBudget`, `ThresholdCompactHook`, `DefaultCompactService` |
+| Deterministic truncation    | `TruncateCompact`                                                |
+| Model-assisted summary      | `SummarizeCompact`                                               |
+| Large tool payloads         | `PruneToolResults`                                               |
+| Permissions                 | `PermissionEngine`, `PermissionRule`, `PermissionHook`           |
+| Human approval boundary     | `ApprovalHook`                                                   |
+| Repeated actions            | `StagnationHook`                                                 |
+| Step budget warnings        | `BudgetWarningHook`                                              |
+| Per-tool call caps          | `PerToolLimitHook`                                               |
+| Cooperative cancellation    | `CancelToken`                                                    |
+| JSON checkpoints            | `FileCheckpointStore` and `LoopConfig.checkpoint_dir`            |
+| Spans and aggregate metrics | `Tracer`, `TracingHook`, `MetricsCollector`, `MetricsHook`       |
+| Typed live events           | `StreamingHook` and emitters from `looplet.streaming`            |
 
 These controls are optional.
 Add a control for a failure or runtime requirement that you have observed.
@@ -703,16 +708,16 @@ You do not need these APIs to run or check an agent.
 Add them when a host must manage sessions, events, or saved results.
 See [Host integration](host-integration.md).
 
-| API | Use it for |
-| --- | --- |
-| `AgentRuntime` / `RunHandle` | Host lifecycle wrapper with cancellation, events, persistence, and cleanup. |
-| `ExecutionSession` | Group related run IDs and forked host sessions. |
-| `RunResult` | Host-facing summary of status, termination, output, steps, envelope, and metadata. |
-| `RunEnvelope` | Host-supplied identity, deployment, policy, trace, and deadline context. |
-| `RunStatus` / `RunPhase` | Lifecycle enums for host observers and result consumers. |
-| `RunEvent` / `ArtifactRef` | Host event and artifact-reference records. |
-| `MemoryRunStore` / `FileRunStore` | Logical run persistence over checkpoints and artifacts. |
-| `ContextPlan` | Advisory prompt selection and budget plan through `ContextProjection`. |
+| API                               | Use it for                                                                         |
+| --------------------------------- | ---------------------------------------------------------------------------------- |
+| `AgentRuntime` / `RunHandle`      | Host lifecycle wrapper with cancellation, events, persistence, and cleanup.        |
+| `ExecutionSession`                | Group related run IDs and forked host sessions.                                    |
+| `RunResult`                       | Host-facing summary of status, termination, output, steps, envelope, and metadata. |
+| `RunEnvelope`                     | Host-supplied identity, deployment, policy, trace, and deadline context.           |
+| `RunStatus` / `RunPhase`          | Lifecycle enums for host observers and result consumers.                           |
+| `RunEvent` / `ArtifactRef`        | Host event and artifact-reference records.                                         |
+| `MemoryRunStore` / `FileRunStore` | Logical run persistence over checkpoints and artifacts.                            |
+| `ContextPlan`                     | Advisory prompt selection and budget plan through `ContextProjection`.             |
 
 ## Specialized surfaces
 

@@ -1,24 +1,15 @@
 # Cartridges: the harness as reviewable files
 
-`looplet.cartridge` makes the agent harness an editable, testable artifact on
-disk. A cartridge round-trips with an `AgentPreset` for the supported subset
-of the harness and keeps explicit Python bodies in tools, hooks, resources,
-and dynamic memory sources.
+A cartridge is a directory containing an agent's prompts, tools, hooks, and configuration.
+Use one when you need to review, version, or share an agent as files.
+Start with [Python functions](python.md) when packaging is not needed.
 
-Think of a host application running Looplet as a game console: it can load
-different cartridges to run different agents without rewriting the loop.
-Each cartridge holds that agent's instructions, tools, hooks, and configuration;
-the host still supplies model access, service authority, and release checks.
+Loading a cartridge creates an `AgentPreset` for the same loop.
+The host supplies model access, service permissions, and protected release checks.
+The preset owns one run; load a fresh preset for each task.
 
-This is the review unit for test-driven harness engineering. Prompt changes,
-tool implementations, hook policy, runtime wiring, and self-test cases become
-ordinary diffs instead of hidden framework state.
-
-A person or external builder can copy a version, edit it, and test it against
-recorded failures and fresh cases. The host keeps model access and release
-checks outside the editable copy. Looplet provides the loading and evaluation
-primitives; candidate search and promotion belong to the host or another
-system. For a supported preset, the conversion looks like this:
+You can export supported presets and load them again.
+The example below assumes `my_preset` and `llm` already exist:
 
 ```python
 from looplet import preset_to_cartridge, cartridge_to_preset
@@ -45,10 +36,9 @@ with cartridge_to_preset("agent.cartridge") as preset:
   Missing imports are not serialization loss, so this list is separate from `serialization_warnings`.
   Run `looplet inspect agent.cartridge --mode runtime` on the receiving host before using the exported agent.
 
-`preset.run()` binds the run envelope and host model gateway before delegating
-to the core loop. The context closes preset-owned resources, even on failure.
-A preset is single-use; load a fresh one for each run. Direct
-`composable_loop()` remains available for hosts that own their wiring themselves.
+`preset.run()` passes the loaded tools, state, hooks, and configuration to the loop.
+The context manager closes preset-owned resources, including after failure.
+You can also pass explicit dependencies to `composable_loop()`.
 
 ## Shared defaults (unreleased)
 
@@ -99,8 +89,8 @@ Python hosts can use `looplet.cartridge.inspect_cartridge(path)` or
 metadata without importing the entrypoint. Its factory output remains unknown.
 Use instantiated blueprints for exact comparisons and executable validation.
 
-A cartridge is a normal directory; everything below is plain text or
-Python. Diff-friendly. Git-friendly. Editor-friendly. Agent-friendly.
+A cartridge contains ordinary text and Python files.
+Review changes with the same editor and Git tools as your application code.
 
 Cartridges support two honest execution profiles. A **Python-host** cartridge
 may keep tool bodies, hook classes, and shared objects in process. A
@@ -122,38 +112,32 @@ the evidence and limitations.
 
 ## Principled exclusions: what cartridges deliberately don't do
 
-The cartridge format is intentionally narrow. Every feature in the
-table below was considered and *deliberately left out* of the format,
-because it can be expressed cleanly as a composition of existing
-primitives (subagent, hook, tool, builtin). Adding it to the format
-would force every cartridge author to pay the complexity tax whether
-they use it or not, and would foreclose the alternative compositions
-each user might prefer.
+Cartridges store agent code and settings.
+Use tools, hooks, or host code for the behaviors below.
+The format does not add a separate scheduling language.
 
-This table is the **canonical** version. `AGENTS.md` ("Anti-features")
-and `SPEC.md` reference it; the paper (`paper/boundary.tex`,
-`paper/principled_cartridge_v2.md`) builds on it. If you change the
-exclusion stance, update this table first and propagate.
+This table defines the format's design limits.
+The agent guide and design papers refer to it.
 
-| Excluded feature | Principle | Use this instead | Working example |
-| --- | --- | --- | --- |
-| Built-in **plan mode** (loop-level plan/execute split) | Planning is one composition of `subagent + done`, not a loop phase. | Parent cartridge calls `subagent` against a child planner cartridge, then executes the returned plan. | [`examples/planner.cartridge/`](https://github.com/hsaghir/looplet/blob/master/examples/planner.cartridge/) |
-| Built-in **mid-edit linting** (run linters after every `write`) | Transient errors during edits waste budget. Run gates *at the boundary*. | A `check_done` hook that runs pytest/ruff/etc. exactly when the agent calls `done()`; failure blocks `done()` with an actionable message. | [`examples/snippets/11_quality_gate/quality_gate.py`](https://github.com/hsaghir/looplet/blob/master/examples/snippets/11_quality_gate/quality_gate.py) |
-| Built-in **to-do list** (loop-tracked task ledger) | They confuse models and duplicate the session log. | Have the agent read/write a plain `TODO.md` file with the same tools it uses for everything else, OR compose a `Todo` tool. | (any tool with `read`/`write` over `TODO.md`) |
-| Built-in **approval popups** by default | Approval fatigue degrades into security theatre. The right boundary is a sandbox. | Run inside a container/worktree (default). Opt in to `PermissionHook(engine)` + `ApprovalHook` only when there is a real human supervising. | [`src/looplet/permissions.py`](https://github.com/hsaghir/looplet/blob/master/src/looplet/permissions.py) |
-| Built-in **TUI / chat shell** | looplet is a library that yields `Step`s. Shells and TUIs are downstream. | Build any TUI on top of the `Step` stream, or use the separate `looplet new` shell. | (consumer code) |
-| Built-in **background daemons** (long-running shell tasks) | Lifecycle, signals, and cleanup are not loop concerns. | tmux, systemd, or a job queue that already solves daemon supervision. | (out of scope) |
-| Built-in **DSL / magic globals** | Cartridges should be plain Python data + plain functions. | YAML for declarative slots; importable Python for code. No DSL. | (every shipped cartridge) |
-| Built-in **mandatory inheritance** | Hooks/backends/states are `@runtime_checkable` Protocols. | Any object with the right methods works; no base class is required. | [`src/looplet/loop.py` `LoopHook`](https://github.com/hsaghir/looplet/blob/master/src/looplet/loop.py) |
-| **Phases / state machines** | Phases turn the LLM into a slot-filler and re-introduce the rigidity cartridges replaced. | Write the SOP into `prompts/system.md` and let the LLM follow it. For genuine state-machine routing, write a host application that orchestrates multiple cartridges. | [`examples/coder.cartridge/prompts/system.md`](https://github.com/hsaghir/looplet/blob/master/examples/coder.cartridge/prompts/system.md) |
-| **Wider context window / cache policy / compaction knobs in the cartridge** | Two hosts can legitimately disagree about token budgets, retention, and cache TTLs without changing what the agent does. | Sibling `runtime.yaml` carries every RUNTIME-tier knob (`context_window`, `max_tokens`, `cache_policy`, `compact_service`, etc.); the same cartridge runs unchanged on a 32k-window host and a 1M-window host. | [`examples/coder.cartridge/runtime.yaml`](https://github.com/hsaghir/looplet/blob/master/examples/coder.cartridge/runtime.yaml) |
-| **Magic prompt files** (`prompts/briefing.md`, `prompts/recovery.md` auto-loaded by filename) | Magic filenames create hidden behaviour discovered only by reading the loader. Every hook a cartridge installs should be visible in `config.yaml`. | Declare the file via `builtin_hooks: - static_briefing: { path: ... }` / `recovery_hint`. Hard-rejected in v2 unless declared. | [docs below: `static_briefing` / `recovery_hint`](#builtin-hooks) |
-| **Tool `tags:` for cross-tool filtering** (treating tags as routing input) | Tags spread categorisation across every `tool.yaml`; the consuming hook should own its categorisation so tools stay decoupled. | Put the tool list in the hook's `kwargs:` (`enrichment_tools: [a, b, c]`). Tools advertise capabilities via their schema, not labels. | (any hook with a `kwargs.<role>_tools:` field) |
-| **Multi-`extends:`** (`extends: [a, b]`) | Diamond-inheritance / C3 linearisation buys nothing in practice; cartridges that "extend two parents" are composing two concerns. | Single `extends:` chain + `builtin_hooks:` + a shared `resources/` module. For genuinely independent concerns, host the two cartridges side-by-side. | [`examples/snippets/01_inheritance/`](https://github.com/hsaghir/looplet/blob/master/examples/snippets/01_inheritance/) |
-| **Polyglot tool bodies in one cartridge** (Python + TypeScript + Rust under one `tools/<name>/`) | A runtime cannot execute tool bodies in a language it does not host; mixing languages forecloses portability instead of enabling it. | Pick one body language per cartridge. Cross-language reuse belongs behind a protocol boundary. | (out of scope) |
-| **Signed cartridges** (signature embedded in the cartridge body) | Signing is a registry concern; the cartridge must remain content-addressable so the signature can target a stable hash. | Sibling `<name>.cartridge.sig` over the [canonical content hash](https://github.com/hsaghir/looplet/blob/master/SPEC.md#content-identity). Computed by the registry or signer, not by the loader. | (out of scope) |
-| **Host-owned release holdouts inside candidate inputs** | Colocated evals are useful self-tests, but a candidate that can edit or inspect its promotion oracle can manufacture a false green. | Ship versioned self-tests under `evals/`; keep promotion collectors, graders, expected data, and capabilities in a host-owned runner and out of candidate task/runtime/resources/tools/files. | [Issue #100: holdout boundary recipe](https://github.com/hsaghir/looplet/issues/100) |
-| **API keys / model secrets / approval handlers / cancel tokens / trajectory sinks** | These are HOST-tier and are never serialised. The cartridge declares *intent* (`model:`, `permissions: ask:`); the host supplies *capability*. | API keys via host env. Approval handlers via `runtime={"ask_handler": fn}` (load-time fail-loud if `ask:` rules are present without one). Trajectory sinks via `ProvenanceSink` in the runner. | [SPEC.md configuration tiers](https://github.com/hsaghir/looplet/blob/master/SPEC.md#configuration-tiers) |
+| Excluded feature                                                                                 | Principle                                                                                                                                          | Use this instead                                                                                                                                                                                               | Working example                                                                                                                                         |
+| ------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Built-in **plan mode** (loop-level plan/execute split)                                           | Planning is one composition of `subagent + done`, not a loop phase.                                                                                | Parent cartridge calls `subagent` against a child planner cartridge, then executes the returned plan.                                                                                                          | [`examples/planner.cartridge/`](https://github.com/hsaghir/looplet/blob/master/examples/planner.cartridge/)                                             |
+| Built-in **mid-edit linting** (run linters after every `write`)                                  | Transient errors during edits waste budget. Run gates *at the boundary*.                                                                           | A `check_done` hook that runs pytest/ruff/etc. exactly when the agent calls `done()`; failure blocks `done()` with an actionable message.                                                                      | [`examples/snippets/11_quality_gate/quality_gate.py`](https://github.com/hsaghir/looplet/blob/master/examples/snippets/11_quality_gate/quality_gate.py) |
+| Built-in **to-do list** (loop-tracked task ledger)                                               | They confuse models and duplicate the session log.                                                                                                 | Have the agent read/write a plain `TODO.md` file with the same tools it uses for everything else, OR compose a `Todo` tool.                                                                                    | (any tool with `read`/`write` over `TODO.md`)                                                                                                           |
+| Built-in **approval popups** by default                                                          | Tool approval cannot isolate code.                                                                                                                 | Configure a restricted container or VM. Looplet does not create one. A worktree only separates edits. Add permission or approval hooks when needed.                                                            | [`src/looplet/permissions.py`](https://github.com/hsaghir/looplet/blob/master/src/looplet/permissions.py)                                               |
+| Built-in **TUI / chat shell**                                                                    | looplet is a library that yields `Step`s. Shells and TUIs are downstream.                                                                          | Build any TUI on top of the `Step` stream, or use the separate `looplet new` shell.                                                                                                                            | (consumer code)                                                                                                                                         |
+| Built-in **background daemons** (long-running shell tasks)                                       | Lifecycle, signals, and cleanup are not loop concerns.                                                                                             | tmux, systemd, or a job queue that already solves daemon supervision.                                                                                                                                          | (out of scope)                                                                                                                                          |
+| Built-in **DSL / magic globals**                                                                 | Cartridges should be plain Python data + plain functions.                                                                                          | YAML for declarative slots; importable Python for code. No DSL.                                                                                                                                                | (every shipped cartridge)                                                                                                                               |
+| Built-in **mandatory inheritance**                                                               | Hooks/backends/states are `@runtime_checkable` Protocols.                                                                                          | Any object with the right methods works; no base class is required.                                                                                                                                            | [`src/looplet/loop.py` `LoopHook`](https://github.com/hsaghir/looplet/blob/master/src/looplet/loop.py)                                                  |
+| **Phases / state machines**                                                                      | Phases turn the LLM into a slot-filler and re-introduce the rigidity cartridges replaced.                                                          | Write the SOP into `prompts/system.md` and let the LLM follow it. For genuine state-machine routing, write a host application that orchestrates multiple cartridges.                                           | [`examples/coder.cartridge/prompts/system.md`](https://github.com/hsaghir/looplet/blob/master/examples/coder.cartridge/prompts/system.md)               |
+| **Wider context window / cache policy / compaction knobs in the cartridge**                      | Two hosts can legitimately disagree about token budgets, retention, and cache TTLs without changing what the agent does.                           | Sibling `runtime.yaml` carries every RUNTIME-tier knob (`context_window`, `max_tokens`, `cache_policy`, `compact_service`, etc.); the same cartridge runs unchanged on a 32k-window host and a 1M-window host. | [`examples/coder.cartridge/runtime.yaml`](https://github.com/hsaghir/looplet/blob/master/examples/coder.cartridge/runtime.yaml)                         |
+| **Magic prompt files** (`prompts/briefing.md`, `prompts/recovery.md` auto-loaded by filename)    | Magic filenames create hidden behaviour discovered only by reading the loader. Every hook a cartridge installs should be visible in `config.yaml`. | Declare the file via `builtin_hooks: - static_briefing: { path: ... }` / `recovery_hint`. Hard-rejected in v2 unless declared.                                                                                 | [docs below: `static_briefing` / `recovery_hint`](#builtin-hooks)                                                                                       |
+| **Tool `tags:` for cross-tool filtering** (treating tags as routing input)                       | Tags spread categorisation across every `tool.yaml`; the consuming hook should own its categorisation so tools stay decoupled.                     | Put the tool list in the hook's `kwargs:` (`enrichment_tools: [a, b, c]`). Tools advertise capabilities via their schema, not labels.                                                                          | (any hook with a `kwargs.<role>_tools:` field)                                                                                                          |
+| **Multi-`extends:`** (`extends: [a, b]`)                                                         | Diamond-inheritance / C3 linearisation buys nothing in practice; cartridges that "extend two parents" are composing two concerns.                  | Single `extends:` chain + `builtin_hooks:` + a shared `resources/` module. For genuinely independent concerns, host the two cartridges side-by-side.                                                           | [`examples/snippets/01_inheritance/`](https://github.com/hsaghir/looplet/blob/master/examples/snippets/01_inheritance/)                                 |
+| **Polyglot tool bodies in one cartridge** (Python + TypeScript + Rust under one `tools/<name>/`) | A runtime cannot execute tool bodies in a language it does not host; mixing languages forecloses portability instead of enabling it.               | Pick one body language per cartridge. Cross-language reuse belongs behind a protocol boundary.                                                                                                                 | (out of scope)                                                                                                                                          |
+| **Signed cartridges** (signature embedded in the cartridge body)                                 | Signing is a registry concern; the cartridge must remain content-addressable so the signature can target a stable hash.                            | Sibling `<name>.cartridge.sig` over the [canonical content hash](https://github.com/hsaghir/looplet/blob/master/SPEC.md#content-identity). Computed by the registry or signer, not by the loader.              | (out of scope)                                                                                                                                          |
+| **Host-owned release holdouts inside candidate inputs**                                          | Colocated evals are useful self-tests, but a candidate that can edit or inspect its promotion oracle can manufacture a false green.                | Ship versioned self-tests under `evals/`; keep promotion collectors, graders, expected data, and capabilities in a host-owned runner and out of candidate task/runtime/resources/tools/files.                  | [Issue #100: holdout boundary recipe](https://github.com/hsaghir/looplet/issues/100)                                                                    |
+| **API keys / model secrets / approval handlers / cancel tokens / trajectory sinks**              | These are HOST-tier and are never serialised. The cartridge declares *intent* (`model:`, `permissions: ask:`); the host supplies *capability*.     | API keys via host env. Approval handlers via `runtime={"ask_handler": fn}` (load-time fail-loud if `ask:` rules are present without one). Trajectory sinks via `ProvenanceSink` in the runner.                 | [SPEC.md configuration tiers](https://github.com/hsaghir/looplet/blob/master/SPEC.md#configuration-tiers)                                               |
 
 If a feature in this table turns out to be wrong, the bar to add it
 to the format is: (a) it cannot be expressed as a hook / tool /
@@ -280,9 +264,9 @@ use OS, container, or process isolation for that threat. See
 String values in `config.yaml` and hook `config.yaml` can use the
 cartridge reference grammar. Two explicit forms share one resolver:
 
-| Form | Resolves to |
-| --- | --- |
-| `${ref:name}` | The resource built by `resources/name.py::build()` |
+| Form               | Resolves to                                                                                                                                                               |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `${ref:name}`      | The resource built by `resources/name.py::build()`                                                                                                                        |
 | `${runtime.field}` | The value of `runtime[field]` passed to `cartridge_to_preset(cartridge_path, runtime=...)`. Supports nested lookup (`${runtime.a.b.c}`) and defaults (`${runtime.x:-15}`) |
 
 The legacy `"@name"` form is still accepted as an alias for
@@ -339,12 +323,12 @@ ships the following.
 
 ### `builtin_tools:` (looplet) { #builtin-tools }
 
-| Name | Purpose |
-| --- | --- |
-| `subagent` | Spawn a sub-loop with its own tools/system_prompt and return the structured result; used to compose agents-as-tools without manual orchestration. |
+| Name                 | Purpose                                                                                                                                                                                                       |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `subagent`           | Spawn a sub-loop with its own tools/system_prompt and return the structured result; used to compose agents-as-tools without manual orchestration.                                                             |
 | `scaffold_cartridge` | Write a fresh cartridge skeleton (`cartridge.json` + `config.yaml` + `prompts/system.md` + `tools/done/`) into a target directory; used by `agent_factory.cartridge` to let an agent bootstrap another agent. |
-| `search_skills` | Query the active `SkillManager` for skills matching a description; returns ranked candidates. |
-| `activate_skill` | Activate a discovered skill into the current loop, registering its tools and adding its instructions to the briefing. |
+| `search_skills`      | Query the active `SkillManager` for skills matching a description; returns ranked candidates.                                                                                                                 |
+| `activate_skill`     | Activate a discovered skill into the current loop, registering its tools and adding its instructions to the briefing.                                                                                         |
 
 Opt in from a cartridge:
 
@@ -360,14 +344,14 @@ canonical list lives at `looplet.builtin_tools.AVAILABLE`.
 
 ### `builtin_hooks:` (looplet) { #builtin-hooks }
 
-| Name | Purpose |
-| --- | --- |
-| `skill_activation` | Pairs with `search_skills` / `activate_skill`: tracks active skills across steps and threads their instructions into the briefing. Requires the `skill_manager` resource. |
-| `stagnation` | Nudges the agent when an action repeats without progress (`threshold:`, `ignore_tools:`, `fingerprint:`). It does not stop the loop; compose a stop hook or hard budget when needed. |
-| `per_tool_limit` | Blocks further calls to a named tool once a per-tool budget is exhausted (`limits: { write: 50 }`); returns `Block(...)` with the limit in the reason so the model can self-correct. |
-| `threshold_compact` | Triggers compaction when prompt tokens cross a fraction of the context window. Pairs with `compact_service:` in `runtime.yaml`. |
-| `static_briefing` | Loads a fixed file (e.g. `prompts/briefing.md`) and prepends it to every step's prompt. The file is rejected when this explicit declaration is absent. |
-| `recovery_hint` | Loads a fixed file (e.g. `prompts/recovery.md`) and injects it after a tool error. The file is rejected when this explicit declaration is absent. |
+| Name                | Purpose                                                                                                                                                                              |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `skill_activation`  | Pairs with `search_skills` / `activate_skill`: tracks active skills across steps and threads their instructions into the briefing. Requires the `skill_manager` resource.            |
+| `stagnation`        | Nudges the agent when an action repeats without progress (`threshold:`, `ignore_tools:`, `fingerprint:`). It does not stop the loop; compose a stop hook or hard budget when needed. |
+| `per_tool_limit`    | Blocks further calls to a named tool once a per-tool budget is exhausted (`limits: { write: 50 }`); returns `Block(...)` with the limit in the reason so the model can self-correct. |
+| `threshold_compact` | Triggers compaction when prompt tokens cross a fraction of the context window. Pairs with `compact_service:` in `runtime.yaml`.                                                      |
+| `static_briefing`   | Loads a fixed file (e.g. `prompts/briefing.md`) and prepends it to every step's prompt. The file is rejected when this explicit declaration is absent.                               |
+| `recovery_hint`     | Loads a fixed file (e.g. `prompts/recovery.md`) and injects it after a tool error. The file is rejected when this explicit declaration is absent.                                    |
 
 Opt in with optional kwargs:
 
@@ -406,17 +390,17 @@ If installation fails, the previous destination is restored.
 
 ### What round-trips losslessly
 
-| Component | How |
-| --- | --- |
-| CONTRACT-tier fields (`max_steps`, `done_tool`, `permissions`, `memory`, `model`, `extends`, `builtin_tools`, `builtin_hooks`; plus loader-populated metadata) | Serialised via `config.yaml` |
-| RUNTIME-tier fields (`max_tokens`, `temperature`, `recovery_temperature`, `max_turn_continuations`, `generate_kwargs`, `use_native_tools`, `concurrent_dispatch`, `max_parallel_calls`, `reactive_recovery`, `context_window`, `max_briefing_tokens`, `compact_service`, `cache_policy`, `checkpoint_dir`, `initial_checkpoint`, `tool_result_persist_dir`, `router`, `tracer`, `recovery_registry`) | Serialised via sibling `runtime.yaml`; schema v2 rejects these fields in `config.yaml`. |
-| `system_prompt` | Written to `prompts/system.md` |
-| Tools whose `execute` is an importable top-level function | `execute.py` imports the original function, retaining its module dependencies. The receiving host must have that module installed. |
-| Self-contained script functions | Function source and an `execute` alias are written to `execute.py`. Imports inside the function are retained. |
-| Supported `ValidatingToolRegistry` argument policies, including `tools_from(..., validate=True)` | Per-tool `argument_validation` preserves types, nullability, enums, required flags, and schema strictness. Tools without a policy keep base checks. |
-| Hooks with an opt-in `to_config(self) -> dict` method | `hooks/NN_<ClassName>/{hook.py, config.yaml}`; class source is preserved, kwargs come from `to_config()` |
-| Hooks whose constructor takes no kwargs | Same as above; `kwargs: {}` |
-| `StaticMemorySource` instances | One markdown file per source under `memory/` |
+| Component                                                                                                                                                                                                                                                                                                                                                                                            | How                                                                                                                                                 |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| CONTRACT-tier fields (`max_steps`, `done_tool`, `permissions`, `memory`, `model`, `extends`, `builtin_tools`, `builtin_hooks`; plus loader-populated metadata)                                                                                                                                                                                                                                       | Serialised via `config.yaml`                                                                                                                        |
+| RUNTIME-tier fields (`max_tokens`, `temperature`, `recovery_temperature`, `max_turn_continuations`, `generate_kwargs`, `use_native_tools`, `concurrent_dispatch`, `max_parallel_calls`, `reactive_recovery`, `context_window`, `max_briefing_tokens`, `compact_service`, `cache_policy`, `checkpoint_dir`, `initial_checkpoint`, `tool_result_persist_dir`, `router`, `tracer`, `recovery_registry`) | Serialised via sibling `runtime.yaml`; schema v2 rejects these fields in `config.yaml`.                                                             |
+| `system_prompt`                                                                                                                                                                                                                                                                                                                                                                                      | Written to `prompts/system.md`                                                                                                                      |
+| Tools whose `execute` is an importable top-level function                                                                                                                                                                                                                                                                                                                                            | `execute.py` imports the original function, retaining its module dependencies. The receiving host must have that module installed.                  |
+| Self-contained script functions                                                                                                                                                                                                                                                                                                                                                                      | Function source and an `execute` alias are written to `execute.py`. Imports inside the function are retained.                                       |
+| Supported `ValidatingToolRegistry` argument policies, including `tools_from(..., validate=True)`                                                                                                                                                                                                                                                                                                     | Per-tool `argument_validation` preserves types, nullability, enums, required flags, and schema strictness. Tools without a policy keep base checks. |
+| Hooks with an opt-in `to_config(self) -> dict` method                                                                                                                                                                                                                                                                                                                                                | `hooks/NN_<ClassName>/{hook.py, config.yaml}`; class source is preserved, kwargs come from `to_config()`                                            |
+| Hooks whose constructor takes no kwargs                                                                                                                                                                                                                                                                                                                                                              | Same as above; `kwargs: {}`                                                                                                                         |
+| `StaticMemorySource` instances                                                                                                                                                                                                                                                                                                                                                                       | One markdown file per source under `memory/`                                                                                                        |
 
 `strict=True` rejects unsupported conversion; it does not promise a standalone distribution.
 Check required modules and run the exported agent's tests on its receiving host.
@@ -562,13 +546,13 @@ print(cartridge.name, cartridge.description, cartridge.schema_version)
 
 ## When to use a Cartridge vs. SkillBundle
 
-| You want to … | Use |
-| --- | --- |
-| Ship a runnable bundle as a Python package with a custom `build()` factory | `SkillBundle` |
-| Edit prompt / tool / hook content as text files, version-control diffs, and re-execute | `Cartridge` |
-| Review or modify a harness from another process or agent | `Cartridge` |
-| Snapshot the live preset of a running agent for later inspection | `Cartridge` |
-| Both: ship a bundle whose `build()` simply loads a cartridge | Both; the bundle's `looplet.py` calls `cartridge_to_preset(__file__).to_preset()` |
+| You want to …                                                                          | Use                                                                               |
+| -------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| Ship a runnable bundle as a Python package with a custom `build()` factory             | `SkillBundle`                                                                     |
+| Edit prompt / tool / hook content as text files, version-control diffs, and re-execute | `Cartridge`                                                                       |
+| Review or modify a harness from another process or agent                               | `Cartridge`                                                                       |
+| Snapshot the live preset of a running agent for later inspection                       | `Cartridge`                                                                       |
+| Both: ship a bundle whose `build()` simply loads a cartridge                           | Both; the bundle's `looplet.py` calls `cartridge_to_preset(__file__).to_preset()` |
 
 ---
 

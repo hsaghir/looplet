@@ -1,15 +1,21 @@
-# The agent factory
+# Generate a cartridge
 
-`looplet new` is an optional authoring accelerator: describe a harness in one
-paragraph and get a reviewable cartridge draft. It is useful for scaffolding,
-but generation is not the product and generated code is not automatically a
-release-ready harness. Review the files, run structural tests, add behavioral
-cases, and gate the outcomes you care about.
+<a id="the-agent-factory"></a>
 
-The factory is built on the same primitives ([`extends:`](cartridge.md#extends),
-[`builtin_tools:`](cartridge.md#builtin-tools),
-[`scaffold_cartridge`](cartridge.md#builtin-tools)) you'd use to hand-roll an
-agent. It is simply an agent that builds other agents.
+Use `looplet new` to generate a cartridge draft from a task description.
+The command uses a model to write prompts, tools, configuration, and tests.
+The resulting cartridge uses the same loop as a Python agent.
+
+This generator is optional.
+Start with the [Python quickstart](python.md) when writing your own functions.
+Use a [Python factory](api.md#optional-preset-conveniences) to build fresh dependencies without generating code.
+
+Generated files are executable code.
+Review them and add task-specific tests before granting credentials or service access.
+Run the generator and untrusted drafts in a restricted container or VM.
+
+The generator uses existing [cartridge composition](cartridge.md#extends) and
+[`scaffold_cartridge`](cartridge.md#builtin-tools).
 
 ---
 
@@ -29,9 +35,8 @@ looplet new "an agent that takes a URL and returns the page title and a 2-senten
 looplet run-cartridge ./url_summarizer.cartridge "Summarize https://example.com"
 ```
 
-No Python host code is required for this first run. The cartridge is still
-ordinary source: inspect its prompt, tools, permissions, and tests before
-giving it credentials or production access.
+The command loads the cartridge without a separate Python host script.
+Inspect its prompt, tools, permissions, and tests before running it.
 
 ---
 
@@ -64,14 +69,14 @@ They are generated smoke tests, not independent evidence of task quality.
 
 Generate a cartridge from a brief.
 
-| Flag | Default | Purpose |
-| --- | --- | --- |
-| `target` (positional) | `./agent.cartridge` | User output directory; distinct from the bundled factory cartridge |
-| `--name` | derived from `target` | Cartridge name (becomes `cartridge.json.name`) |
-| `--tool TOOL` | _(none)_ | Pre-scaffold a tool by name (repeatable). When omitted, the agent picks tools from the brief. |
-| `--max-steps N` | `80` | Override the factory's max steps |
-| `--quiet` | _(off)_ | Suppress per-step output |
-| `--offline` | _(off)_ | Scaffold placeholders without constructing a backend |
+| Flag                  | Default               | Purpose                                                                                       |
+| --------------------- | --------------------- | --------------------------------------------------------------------------------------------- |
+| `target` (positional) | `./agent.cartridge`   | User output directory; distinct from the bundled factory cartridge                            |
+| `--name`              | derived from `target` | Cartridge name (becomes `cartridge.json.name`)                                                |
+| `--tool TOOL`         | _(none)_              | Pre-scaffold a tool by name (repeatable). When omitted, the agent picks tools from the brief. |
+| `--max-steps N`       | `80`                  | Override the factory's max steps                                                              |
+| `--quiet`             | _(off)_               | Suppress per-step output                                                                      |
+| `--offline`           | _(off)_               | Scaffold placeholders without constructing a backend                                          |
 
 When `--tool` is supplied, the host pre-scaffolds the skeleton (saving several
 LLM turns). Otherwise the factory agent reads your brief and picks the tool
@@ -88,10 +93,10 @@ Load a cartridge and run it on a task.
 
 `looplet run-workspace` remains a backward-compatible alias.
 
-| Flag | Default | Purpose |
-| --- | --- | --- |
-| `--max-steps N` | from cartridge's `config.yaml` | Override |
-| `--quiet` | _(off)_ | Suppress per-step output |
+| Flag            | Default                        | Purpose                  |
+| --------------- | ------------------------------ | ------------------------ |
+| `--max-steps N` | from cartridge's `config.yaml` | Override                 |
+| `--quiet`       | _(off)_                        | Suppress per-step output |
 
 ---
 
@@ -104,11 +109,11 @@ write thin wrappers instead of hallucinating signatures from training data.
 
 The factory's planning phase recognises three patterns and uses bash + `inspect` to ground itself in the real source:
 
-| Pattern in the brief | What the factory does |
-| --- | --- |
-| Mentions a CLI on `$PATH` (e.g. `gh`, `kubectl`, `aws`, an internal CLI) | Runs `<cli> --help` and a couple of `<cli> <subcommand> --help` calls; detects `--json` support; writes subprocess-based tool bodies that call the real subcommands |
-| Mentions a Python dotted path (`pkg.module` or `pkg.module:Class`) | Imports it, runs `inspect.signature` on the public callables, and writes tool bodies that call the real methods. For class wraps it uses the cartridge `resources/` mechanism: `resources/<name>.py` builds the singleton, every tool declares `requires: [<name>]`, the body looks it up via `ctx.resources["<name>"]` |
-| Mentions a local script (`./scripts/foo.sh`, `~/bin/bar.py`) | Reads the file and writes a subprocess- or import-based wrapper from the actual source |
+| Pattern in the brief                                                     | What the factory does                                                                                                                                                                                                                                                                                                   |
+| ------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Mentions a CLI on `$PATH` (e.g. `gh`, `kubectl`, `aws`, an internal CLI) | Runs `<cli> --help` and a couple of `<cli> <subcommand> --help` calls; detects `--json` support; writes subprocess-based tool bodies that call the real subcommands                                                                                                                                                     |
+| Mentions a Python dotted path (`pkg.module` or `pkg.module:Class`)       | Imports it, runs `inspect.signature` on the public callables, and writes tool bodies that call the real methods. For class wraps it uses the cartridge `resources/` mechanism: `resources/<name>.py` builds the singleton, every tool declares `requires: [<name>]`, the body looks it up via `ctx.resources["<name>"]` |
+| Mentions a local script (`./scripts/foo.sh`, `~/bin/bar.py`)             | Reads the file and writes a subprocess- or import-based wrapper from the actual source                                                                                                                                                                                                                                  |
 
 ### Example: wrap the GitHub CLI
 

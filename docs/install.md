@@ -6,143 +6,41 @@ Model provider adapters are optional extras.
 
 ## Install the current build
 
-The [Quickstart](quickstart.md) starts with the published package below.
-Use its pinned preview only for the optional complete experiment starter or factory commands.
-
-Use release `0.4.1` for new integrations.
-It includes the [safety fixes](#unreleased-safety-fixes) missing from `0.4.0`.
-Install it in your own project without Git or a repository checkout:
+Use this **unreleased source preview** for the [Python quickstart](python.md).
+It includes the Python-first API and current run ownership fixes.
+Those additions are not in PyPI `0.4.1`.
+Use the [published package](#install-the-published-package) when you need that released API.
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-python -m pip install "looplet==0.4.1"
+python -m venv .venv-looplet
+. .venv-looplet/bin/activate
+python -m pip install "looplet @ https://github.com/hsaghir/looplet/archive/e4663644bf9572153975bae8db8f170d8aa46341.zip"
 ```
 
-This installs a non-editable package at a fixed version.
-Installation needs network access, but not Git.
-The fixed-response tutorial itself needs neither a model key nor a model service.
-Record package hashes in your dependency lockfile for deployment.
-Use `looplet doctor --no-backend --json` when you also need the library source fingerprint.
+Installation needs network access, but no Git checkout.
+The examples with fixed responses need no model key or model service.
+On Windows, activate `.venv-looplet\Scripts\Activate.ps1` in PowerShell.
 
-## Try unreleased factory commands
-
-The editable starter and factory shell workflow require unreleased source, not the PyPI `0.4.1` package.
-This is the separate environment used in the [optional Quickstart section](quickstart.md#optional-experiment-starter):
+Both the preview and release report version `0.4.1`.
+Record the source fingerprint to distinguish them:
 
 ```bash
-python -m venv .venv-looplet-preview
-source .venv-looplet-preview/bin/activate
-python -m pip install "looplet @ https://github.com/hsaghir/looplet/archive/81d0ad13c74ae4e8365bed8da7ae739238fedfaa.zip"
 looplet doctor --no-backend --json
 ```
 
-This non-editable install pins commit `81d0ad1` with factory commands and the complete one-file starter.
-The starter selects providers, saves replay evidence, and runs repeat-safe experiments.
-Failed grades explain mismatches; experiment inspection shows stage status, errors, and available traces.
-Factory inspection supports declaration-only reports and explicit runtime wiring checks.
-Human runtime reports list tools and limits; `--json` includes the full blueprint.
-Its cases keep tasks and expectations together.
-CLI replay preserves the captured protocol and saved expectations.
-Installation needs network access, but not Git or a model key.
-It does not install a new PyPI release.
-Both builds report version `0.4.1`; the preview appends its source fingerprint to `looplet --version`.
-This matches the doctor's `build` check and distinguishes same-version source builds without Git or provider calls.
-Experiment trace paths are report-relative; copied legacy reports prefer their colocated capture and replay directories.
-Malformed saved starter input returns concise recovery guidance without changing evidence.
-Eval help introduces Python factories first.
-Inspection lists saved suite cases and opens separately saved assessments without rerunning graders.
-Rescoring supports a named assessment file while preserving capture-time grades.
-Human rescoring keeps result labels and includes available failure explanations.
-Exhausted replay fails immediately with `replay_exhausted`, without retry backoff.
-Inspection lists saved experiment history, including unreadable reports and child navigation.
-Keep the commit and source fingerprint with experiment results.
-The ordinary Python, pytest, capture, and replay examples work with released `0.4.1`.
-Keep the published environment unchanged when trying this separate preview.
-Add provider extras from the same pinned archive, as shown in the guide.
-
-## Install the published package
-
-The latest PyPI release is `0.4.1`.
-Run this inside an activated virtual environment:
-
-```bash
-python -m pip install "looplet==0.4.1"
-```
-
-Add `[openai]`, `[anthropic]`, or `[all]` before `==0.4.1` for provider adapters.
-Use `0.4.0` only when reproducing that older release; it lacks the fixes below.
-
-<a id="unreleased-safety-fixes"></a>
-
-## Safety fixes in 0.4.1
-
-Release `0.4.1` includes the later safety fixes previously available only in source builds.
-Run `looplet doctor --no-backend --json` to record the version and library source fingerprint.
-These differences matter for completion, budgets, tool contracts, native calls, and captured evidence:
-
-| Behavior | Published `0.4.0` | Release `0.4.1` |
-| --- | --- | --- |
-| Serial native batches | A batch may execute before its first yielded `Step`. | Each serial call runs before its own step; stopping prevents later calls. |
-| Native response redaction | `redact=` does not scrub native response blocks. | `redact=` scrubs nested string values and keys. |
-| Python replay defaults | Uses model-call count as the budget and an empty task. | Uses saved tool steps and task when omitted. |
-| Tool timeout errors | May report a blank, retryable timeout. | Warns about unknown effects and requires reconciliation before retrying. |
-| Rich Python annotations | `Annotated`, `Any`, and multi-type unions may become string schemas. | Preserves supported contracts and rejects unsupported annotations clearly. |
-| Callable preset typing | Accepts functions at runtime but declares only `ToolSpec` inputs. | Type annotations match callable inputs and reusable sequences. |
-| Failed terminal dispatch | May report accepted completion with no output, even with `--require-completed`. | Rejects failed calls and permits correction within the remaining budget. |
-| Free tool budget | `DefaultState` charges every recorded step despite `free=True`. | Successful free calls preserve budget; failures and terminal attempts still consume steps. |
-| CLI failure details | Completion output may omit the underlying error. | Human and JSON output include bounded last-error details for incomplete runs. |
-| Missing terminal setup | Unknown terminal calls consume turns before failure. | Warns before the first model call when no configured terminal tool is registered. |
-
-Do not treat published `0.4.0` native captures as redacted.
-Keep them private and review evidence before sharing it.
-The [recommended install](#install-the-current-build) includes these fixes without an editable checkout.
-Explicit concurrent dispatch still runs a batch before yielding its results.
-
-## Develop Looplet
-
-Clone the repository only when changing Looplet itself.
-Run these commands in a directory where you want the repository:
-
-```bash
-git clone https://github.com/hsaghir/looplet.git
-cd looplet
-python -m venv .venv
-source .venv/bin/activate
-python -m pip install -e .
-```
-
-On Windows, activate the environment with `.venv\Scripts\Activate.ps1` in PowerShell.
-
-Install a provider extra from that checkout when you need a real model:
-
-```bash
-python -m pip install -e ".[openai]"
-```
-
-Use `.[anthropic]` for Anthropic or `.[all]` for both adapters.
+Keep the revision and artifact hashes in your deployment lockfile.
 
 ## Choose provider extras
 
-Use these commands for the fixed release inside a virtual environment.
+Install the adapter from the same preview revision.
+For OpenAI or a compatible endpoint:
 
-| Goal | Command |
-| --- | --- |
-| Core APIs or fixed model responses | `python -m pip install "looplet==0.4.1"` |
-| OpenAI or a compatible endpoint | `python -m pip install "looplet[openai]==0.4.1"` |
-| Anthropic | `python -m pip install "looplet[anthropic]==0.4.1"` |
-| Both provider adapters | `python -m pip install "looplet[all]==0.4.1"` |
-
-For published versions, pin the minor version in your application:
-
-```toml title="pyproject.toml"
-dependencies = ["looplet>=0.4.1,<0.5"]
+```bash
+python -m pip install "looplet[openai] @ https://github.com/hsaghir/looplet/archive/e4663644bf9572153975bae8db8f170d8aa46341.zip"
 ```
 
-Before version `1.0`, a minor release can change an API incompatibly.
-Read the [changelog](changelog.md) before you change the minor version.
-The published Python examples and safety fixes are included in `0.4.1`.
-Preview-only features are marked unreleased.
+Use `[anthropic]` for Anthropic or `[all]` for both adapters.
+Choose your provider below, then keep the same Python functions and loop.
 
 ## Verify without a provider
 
@@ -153,7 +51,7 @@ It does not need a model key or network connection:
 python -m looplet.examples.hello_world --scripted
 ```
 
-Use the [Quickstart](quickstart.md) to write a loop that you control.
+Use the [Python quickstart](python.md) to write a loop that you control.
 Then run the [regression example](regression-demo.md) to check a tool change:
 
 ```bash
@@ -261,11 +159,11 @@ See the [Python API](api.md#backends) for the full backend interface.
 looplet doctor
 ```
 
-| Option | Effect |
-| --- | --- |
-| `--no-backend` | Check local settings without network access |
-| `--json` | Print a JSON report |
-| `--strict` | Return a non-zero exit code for warnings too |
+| Option         | Effect                                       |
+| -------------- | -------------------------------------------- |
+| `--no-backend` | Check local settings without network access  |
+| `--json`       | Print a JSON report                          |
+| `--strict`     | Return a non-zero exit code for warnings too |
 
 The command-line interface shares backend selection across `doctor`, `new`, `run`, and `eval`.
 It selects Anthropic if an Anthropic key is present.
@@ -278,6 +176,71 @@ An explicit provider choice removes the warning without changing stored credenti
 
 Looplet `0.4.0` includes these selection rules for both providers.
 See the [command-line guide](cli.md) for options and older command names.
+
+## Install the published package
+
+The latest PyPI release is `0.4.1`.
+Use its [released walkthrough](quickstart.md), not the Python-first preview examples.
+Install it in a separate virtual environment:
+
+```bash
+python -m venv .venv-looplet-release
+. .venv-looplet-release/bin/activate
+python -m pip install "looplet==0.4.1"
+```
+
+Add `[openai]`, `[anthropic]`, or `[all]` before `==0.4.1` for provider adapters.
+For example, `looplet[openai]==0.4.1` installs the released OpenAI adapter.
+Before version `1.0`, a minor release can change an API incompatibly.
+Read the [changelog](changelog.md) before changing versions.
+
+## Try unreleased factory commands
+
+The preview above also includes the optional experiment starter and factory commands.
+Use the same fixed revision; a second preview build is not needed.
+See the [experiment starter](quickstart.md#optional-experiment-starter) for the shell workflow.
+The [`looplet new` generator](agent-factory.md) uses a model to draft a cartridge.
+A [Python factory](api.md#optional-preset-conveniences) is an ordinary function that builds fresh run dependencies.
+
+<a id="unreleased-safety-fixes"></a>
+
+## Safety fixes in 0.4.1
+
+Use `0.4.0` only when reproducing that older release.
+It lacks the fixes below.
+Release `0.4.1` and the recommended preview include them.
+
+| Behavior                  | Published `0.4.0`                                                               | Release `0.4.1`                                                                            |
+| ------------------------- | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| Serial native batches     | A batch may execute before its first yielded `Step`.                            | Each serial call runs before its own step; stopping prevents later calls.                  |
+| Native response redaction | `redact=` does not scrub native response blocks.                                | `redact=` scrubs nested string values and keys.                                            |
+| Python replay defaults    | Uses model-call count as the budget and an empty task.                          | Uses saved tool steps and task when omitted.                                               |
+| Tool timeout errors       | May report a blank, retryable timeout.                                          | Warns about unknown effects and requires reconciliation before retrying.                   |
+| Rich Python annotations   | `Annotated`, `Any`, and multi-type unions may become string schemas.            | Preserves supported contracts and rejects unsupported annotations clearly.                 |
+| Callable preset typing    | Accepts functions at runtime but declares only `ToolSpec` inputs.               | Type annotations match callable inputs and reusable sequences.                             |
+| Failed terminal dispatch  | May report accepted completion with no output, even with `--require-completed`. | Rejects failed calls and permits correction within the remaining budget.                   |
+| Free tool budget          | `DefaultState` charges every recorded step despite `free=True`.                 | Successful free calls preserve budget; failures and terminal attempts still consume steps. |
+| CLI failure details       | Completion output may omit the underlying error.                                | Human and JSON output include bounded last-error details for incomplete runs.              |
+| Missing terminal setup    | Unknown terminal calls consume turns before failure.                            | Warns before the first model call when no configured terminal tool is registered.          |
+
+Do not treat published `0.4.0` native captures as redacted.
+Keep them private and review evidence before sharing it.
+Explicit concurrent dispatch still runs a batch before yielding its results.
+
+## Develop Looplet
+
+Clone the repository only when changing Looplet itself:
+
+```bash
+git clone https://github.com/hsaghir/looplet.git
+cd looplet
+python -m venv .venv
+. .venv/bin/activate
+python -m pip install -e .
+```
+
+Install `.[openai]`, `.[anthropic]`, or `.[all]` from that checkout for provider adapters.
+See [Contributing](contributing.md) for development checks.
 
 ## Prepare a package release
 
@@ -297,6 +260,6 @@ Publish only the qualified commit after its pull request has merged.
 
 ## Next
 
-- [Quickstart](quickstart.md): run, inspect, and stop one loop.
+- [Python quickstart](python.md): run, inspect, and extend one loop.
 - [Migration](migrate.md): replace a loop without new tool implementations.
 - [Troubleshooting](troubleshooting.md): find causes of provider, tool, hook, replay, and eval errors.

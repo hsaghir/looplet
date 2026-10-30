@@ -459,12 +459,12 @@ The `done` call does not occur.
 Your loop receives a `Step` after each tool call.
 The tool has already run when you receive this object.
 
-| Field | Meaning |
-| --- | --- |
-| `step.tool_call.tool` | The tool name |
-| `step.tool_call.args` | The arguments that the model supplied |
-| `step.tool_result.data` | The data that the tool returned |
-| `step.tool_result.error` | The error, if the tool call failed |
+| Field                    | Meaning                               |
+| ------------------------ | ------------------------------------- |
+| `step.tool_call.tool`    | The tool name                         |
+| `step.tool_call.args`    | The arguments that the model supplied |
+| `step.tool_result.data`  | The data that the tool returned       |
+| `step.tool_result.error` | The error, if the tool call failed    |
 
 Use a [hook](hooks.md) to approve or reject a call before the tool runs.
 
@@ -482,11 +482,12 @@ Use a separate environment so you can keep your released-package project unchang
 ```bash
 python -m venv .venv-looplet-preview
 source .venv-looplet-preview/bin/activate
-python -m pip install "looplet @ https://github.com/hsaghir/looplet/archive/81d0ad13c74ae4e8365bed8da7ae739238fedfaa.zip"
+python -m pip install "looplet @ https://github.com/hsaghir/looplet/archive/e4663644bf9572153975bae8db8f170d8aa46341.zip"
 looplet doctor --no-backend --json
 ```
 
-This non-editable install pins commit `81d0ad1` and needs no Git checkout.
+This install uses the same fixed preview as the [Python quickstart](python.md).
+It needs no Git checkout.
 Keep this preview environment active for the remaining experiment and factory recipes.
 Both builds report version `0.4.1`; the preview's `looplet --version` also prints its source fingerprint.
 Keep the commit and the doctor's library source fingerprint with your results.
@@ -673,7 +674,7 @@ Older eval captures without a case file retain their saved expectations too.
 Keep the exported file and install the provider extra from the same pinned preview:
 
 ```bash title="one_file_live.sh"
-python -m pip install "looplet[openai] @ https://github.com/hsaghir/looplet/archive/81d0ad13c74ae4e8365bed8da7ae739238fedfaa.zip"
+python -m pip install "looplet[openai] @ https://github.com/hsaghir/looplet/archive/e4663644bf9572153975bae8db8f170d8aa46341.zip"
 export OPENAI_API_KEY=...
 export OPENAI_MODEL=gpt-4o
 python my_agent.py --backend openai --max-steps 8 --experiment
@@ -798,13 +799,13 @@ You do not need a skill bundle for that transition.
 See the [CLI guide](cli.md#choose-an-agent-format) for the Python factory workflow.
 Add the other features below only when your agent needs them.
 
-| Goal | Guide |
-| --- | --- |
-| Use a real model | [Install and configure](install.md#configure-openai) |
-| Change the loop's decisions | [Hooks](hooks.md) |
-| Save and replay a run | [Capture and replay](provenance.md) |
-| Check the result | [Tests and graders](evals.md) |
-| Run the full regression example | [Regression example](regression-demo.md) |
-| Put an agent in a directory | [Cartridges](cartridge.md) |
-| Add a file-based test case | [Report-agent tutorial](tutorial.md) |
-| Replace a loop that you have | [Migration guide](migrate.md) |
+| Goal                            | Guide                                                |
+| ------------------------------- | ---------------------------------------------------- |
+| Use a real model                | [Install and configure](install.md#configure-openai) |
+| Change the loop's decisions     | [Hooks](hooks.md)                                    |
+| Save and replay a run           | [Capture and replay](provenance.md)                  |
+| Check the result                | [Tests and graders](evals.md)                        |
+| Run the full regression example | [Regression example](regression-demo.md)             |
+| Put an agent in a directory     | [Cartridges](cartridge.md)                           |
+| Add a file-based test case      | [Report-agent tutorial](tutorial.md)                 |
+| Replace a loop that you have    | [Migration guide](migrate.md)                        |

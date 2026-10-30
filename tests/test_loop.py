@@ -65,6 +65,111 @@ def _make_registry_with_done(*extra_tools):
     return reg
 
 
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize(
+    ("misspelled", "expected"),
+    [
+        ("check_permissions", "check_permission"),
+        ("post_dispach", "post_dispatch"),
+        ("pre_prompts", "pre_prompt"),
+    ],
+)
+async def test_mixed_hook_warns_about_misspelled_method(asynchronous, misspelled, expected):
+    from looplet import LoopConfig, MockLLMBackend, run_result, run_result_async
+    from looplet.testing import AsyncMockLLMBackend
+
+    class Policy:
+        def on_event(self, payload):
+            return None
+
+    def misspelled_method(*args, **kwargs):
+        return False
+
+    def lookup_owner(service: str) -> str:
+        return "fintech-platform"
+
+    setattr(Policy, misspelled, misspelled_method)
+    responses = [
+        '{"tool":"lookup_owner","args":{"service":"payments"}}',
+        '{"tool":"done","args":{"summary":"fintech-platform"}}',
+    ]
+    backend_type = AsyncMockLLMBackend if asynchronous else MockLLMBackend
+    backend = backend_type(responses, cycle=False)
+    kwargs = {
+        "task": "Who owns payments?",
+        "tools": [lookup_owner],
+        "hooks": [Policy()],
+        "config": LoopConfig(harness_profile="minimal"),
+    }
+    with pytest.warns(UserWarning, match=f"{misspelled}.*{expected}"):
+        if asynchronous:
+            result = await run_result_async(backend, **kwargs)
+        else:
+            result = run_result(backend, **kwargs)
+    assert result.completed
+    assert result.steps[0].tool_result.data == "fintech-platform"
+    assert backend.calls == 2
+
+
+def test_hook_validation_ignores_helpers_and_properties():
+    import warnings
+
+    from looplet.loop import _validate_hooks
+
+    class Policy:
+        pre_prompts = "not a method"
+
+        def on_event(self, payload):
+            return None
+
+        def check_authorization(self):
+            return False
+
+        def _post_dispach(self):
+            return None
+
+        @property
+        def check_permissions(self):
+            raise AssertionError("Hook validation must not evaluate properties")
+
+    with warnings.catch_warnings(record=True) as captured:
+        warnings.simplefilter("always")
+        _validate_hooks([Policy()])
+    assert not captured
+
+
+@pytest.mark.parametrize("descriptor", [lambda method: method, staticmethod, classmethod])
+def test_hook_validation_checks_inherited_methods(descriptor):
+    from looplet.loop import _validate_hooks
+
+    class BasePolicy:
+        pass
+
+    def misspelled_method(*args, **kwargs):
+        return False
+
+    BasePolicy.check_permissions = descriptor(misspelled_method)
+
+    class Policy(BasePolicy):
+        def on_event(self, payload):
+            return None
+
+    with pytest.warns(UserWarning, match="check_permissions.*check_permission"):
+        _validate_hooks([Policy()])
+
+
+def test_hook_validation_keeps_warning_for_unrecognized_hooks():
+    from looplet.loop import _validate_hooks
+
+    class Policy:
+        def check_permissions(self, tool_call, state):
+            return False
+
+    with pytest.warns(UserWarning, match="no recognized hook methods") as captured:
+        _validate_hooks([Policy()])
+    assert len(captured) == 1
+
+
 # ══════════════════════════════════════════════════════════════════
 # parse.py tests
 # ══════════════════════════════════════════════════════════════════

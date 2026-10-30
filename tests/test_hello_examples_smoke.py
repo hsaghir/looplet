@@ -38,6 +38,79 @@ def test_public_loop_help_documents_inputs_and_cleanup(loop_function):
     assert "close()" in documentation
 
 
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("operation", ["directory", "policy"])
+async def test_run_evidence_setup_error_explains_remedies(
+    tmp_path, monkeypatch, asynchronous, operation
+):
+    import errno
+
+    from looplet import LoopConfig, run_result, run_result_async
+    from looplet.testing import AsyncMockLLMBackend
+
+    run_dir = tmp_path / "run"
+    path = run_dir if operation == "directory" else run_dir / ".gitignore"
+    failure = PermissionError(errno.EACCES, "Evidence directory is not writable", str(path))
+    method = "mkdir" if operation == "directory" else "write_text"
+    original = getattr(Path, method)
+
+    def fail_setup(target, *args, **kwargs):
+        if target == path:
+            raise failure
+        return original(target, *args, **kwargs)
+
+    monkeypatch.setattr(Path, method, fail_setup)
+    backend_type = AsyncMockLLMBackend if asynchronous else MockLLMBackend
+    backend = backend_type(['{"tool":"done","args":{"summary":"finished"}}'], cycle=False)
+    kwargs = {"task": "Finish", "tools": [], "config": LoopConfig(run_dir=str(run_dir))}
+    with pytest.raises(PermissionError, match="Cannot initialize run evidence") as captured:
+        if asynchronous:
+            await run_result_async(backend, **kwargs)
+        else:
+            run_result(backend, **kwargs)
+    assert captured.value.errno == failure.errno
+    assert captured.value.filename == failure.filename
+    assert captured.value.__cause__ is failure
+    assert "LoopConfig(run_dir=...)" in str(captured.value)
+    assert "disabled_defaults=('persistence',)" in str(captured.value)
+    assert backend.calls == 0
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("remedy", ["directory", "opt_out"])
+async def test_run_evidence_readonly_remedies(tmp_path, monkeypatch, asynchronous, remedy):
+    import errno
+
+    from looplet import LoopConfig, run_result, run_result_async
+    from looplet.testing import AsyncMockLLMBackend
+
+    monkeypatch.chdir(tmp_path)
+    original = Path.mkdir
+
+    def deny_default_directory(path, *args, **kwargs):
+        if path.is_relative_to(tmp_path / ".looplet"):
+            raise PermissionError(errno.EACCES, "Working directory is not writable", str(path))
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", deny_default_directory)
+    config = (
+        LoopConfig(run_dir=str(tmp_path / "writable-run"))
+        if remedy == "directory"
+        else LoopConfig(disabled_defaults=("persistence",))
+    )
+    backend_type = AsyncMockLLMBackend if asynchronous else MockLLMBackend
+    backend = backend_type(['{"tool":"done","args":{"summary":"finished"}}'], cycle=False)
+    kwargs = {"task": "Finish", "tools": [], "config": config}
+    result = (
+        await run_result_async(backend, **kwargs) if asynchronous else run_result(backend, **kwargs)
+    )
+    assert result.completed
+    assert result.output["summary"] == "finished"
+    assert backend.calls == 1
+    assert not (tmp_path / ".looplet").exists()
+    assert (tmp_path / "writable-run" / ".gitignore").exists() is (remedy == "directory")
+
+
 @pytest.mark.parametrize(
     "guide_name", ["README.md", "docs/index.md", "docs/python.md", "docs/install.md"]
 )

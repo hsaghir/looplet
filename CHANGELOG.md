@@ -100,6 +100,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Hook validation warns about likely method-name typos even when another hook method is valid.
+- Run-evidence setup errors explain writable-directory and persistence opt-out remedies while preserving the original filesystem error.
+- Package README links use absolute documentation and repository URLs.
 - Changing live configuration cannot redirect an active run's session-tree output into a later run's directory.
 - Failed context-override setup releases registry ownership without leaking partial context settings. Corrected configuration can reuse the registry immediately.
 - Reused registries receive a fresh automatic result store per run. Completed stores remain readable, and explicit host stores remain shared.

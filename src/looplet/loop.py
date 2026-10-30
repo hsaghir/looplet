@@ -2076,13 +2076,10 @@ def is_loop_hook(value: Any) -> bool:
 
 
 def _validate_hooks(hooks: list[Any]) -> None:
-    """Warn when a hook object has no recognized hook methods.
-
-    Catches typos like ``post_dispach`` by checking that at least one
-    method name matches the known set.  Silently accepts hooks with
-    at least one valid method - partial implementations are the norm.
-    """
+    """Warn about empty hooks and likely misspellings of supported methods."""
+    import inspect  # noqa: PLC0415
     import warnings  # noqa: PLC0415
+    from difflib import get_close_matches  # noqa: PLC0415
 
     for hook in hooks:
         if not is_loop_hook(hook):
@@ -2093,6 +2090,23 @@ def _validate_hooks(hooks: list[Any]) -> None:
                 UserWarning,
                 stacklevel=3,
             )
+            continue
+        for name in dir(hook):
+            if name.startswith("_") or name in _KNOWN_HOOK_METHODS:
+                continue
+            matches = get_close_matches(name, _KNOWN_HOOK_METHODS, n=1, cutoff=0.9)
+            if not matches:
+                continue
+            method = inspect.getattr_static(hook, name, None)
+            if isinstance(method, (classmethod, staticmethod)):
+                method = method.__func__
+            if callable(method):
+                warnings.warn(
+                    f"Hook {type(hook).__name__}.{name} is not a supported hook method. "
+                    f"Did you mean {matches[0]}?",
+                    UserWarning,
+                    stacklevel=3,
+                )
 
 
 def _normalize_loop_inputs(

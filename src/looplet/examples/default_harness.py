@@ -80,13 +80,17 @@ def record_invoice_total(batch: int, paid_total: int, *, ctx: ToolContext) -> di
     return {**payload, "completed_records": sorted(path.name for path in root.glob("*.json"))}
 
 
-def read_policy(section: str) -> dict[str, Any]:
+def read_policy(section: str, *, ctx: ToolContext) -> dict[str, Any]:
     """Read accounts, privileges, backups, or secrets policy requirements."""
     if section not in POLICIES:
         raise ValueError("Unknown policy section")
+    root = Path(ctx.metadata["deliverable_dir"])
+    completed = sorted(path.name for path in root.glob("*.json"))
     return {
         "section": section,
         "requirement": POLICIES[section],
+        "completed_records": completed,
+        "remaining_sections": [name for name in POLICIES if f"{name}.json" not in completed],
         "archive": "Historical administrative notes; the current requirement is above. " * 250,
     }
 
@@ -99,7 +103,12 @@ def record_control(section: str, requirement: str, *, ctx: ToolContext) -> dict[
     root.mkdir(parents=True, exist_ok=True)
     payload = {"section": section, "requirement": requirement}
     (root / f"{section}.json").write_text(json.dumps(payload), encoding="utf-8")
-    return {**payload, "completed_records": sorted(path.name for path in root.glob("*.json"))}
+    completed = sorted(path.name for path in root.glob("*.json"))
+    return {
+        **payload,
+        "completed_records": completed,
+        "remaining_sections": [name for name in POLICIES if f"{name}.json" not in completed],
+    }
 
 
 def read_settlement_report() -> dict[str, str]:

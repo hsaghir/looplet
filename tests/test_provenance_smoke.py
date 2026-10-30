@@ -181,6 +181,138 @@ def test_registry_lease_claim_is_atomic_across_threads():
     accepted[0].finish()
 
 
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_rejected_run_does_not_install_default_policies(tmp_path, asynchronous):
+    from looplet import LoopConfig, async_composable_loop, composable_loop, tools_from
+    from looplet.harness import prepare_harness_run
+    from looplet.testing import AsyncMockLLMBackend
+
+    assignments = []
+
+    class ObservedConfig(LoopConfig):
+        def __setattr__(self, name, value):
+            if name == "compact_service" and getattr(self, "_observe", False):
+                assignments.append(value)
+            super().__setattr__(name, value)
+
+    tools = tools_from([], include_done=True)
+    owner = prepare_harness_run(
+        LoopConfig(harness_profile="minimal"), [], None, tools, None, None, None
+    )
+    directory = tmp_path / "rejected"
+    config = ObservedConfig(run_dir=str(directory))
+    config._observe = True
+    assignments.clear()
+    backend_type = AsyncMockLLMBackend if asynchronous else MockLLMBackend
+    driver = async_composable_loop if asynchronous else composable_loop
+    backend = backend_type(["unused"], cycle=False)
+    iterator = driver(backend, tools=tools, config=config)
+    try:
+        with pytest.raises(RuntimeError, match="registry already has an active loop"):
+            if asynchronous:
+                await anext(iterator)
+            else:
+                next(iterator)
+    finally:
+        if asynchronous:
+            await iterator.aclose()
+        else:
+            iterator.close()
+        owner.finish()
+    assert assignments == []
+    assert config.compact_service is None
+    assert backend.calls == 0
+    assert not directory.exists()
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_live_config_changes_do_not_redirect_owned_run_evidence(tmp_path, asynchronous):
+    from looplet import LoopConfig, async_composable_loop, composable_loop
+    from looplet.testing import AsyncMockLLMBackend
+
+    def source():
+        return {"answer": 42}
+
+    directory = tmp_path / "current"
+    next_directory = tmp_path / "next"
+    config = LoopConfig(run_dir=str(directory), use_native_tools=False)
+    backend_type = AsyncMockLLMBackend if asynchronous else MockLLMBackend
+    driver = async_composable_loop if asynchronous else composable_loop
+    backend = backend_type(
+        [
+            '{"tool":"source","args":{}}',
+            '{"tool":"done","args":{"summary":"42"}}',
+        ],
+        cycle=False,
+    )
+    iterator = driver(backend, task="Read the answer", tools=[source], config=config)
+    try:
+        step = await anext(iterator) if asynchronous else next(iterator)
+        assert step.tool_result.data == {"answer": 42}
+        assert config.checkpoint_dir is None
+        assert config.initial_checkpoint is None
+        assert config.compact_service is None
+        config.run_dir = str(next_directory)
+        if asynchronous:
+            async for _step in iterator:
+                pass
+        else:
+            list(iterator)
+    finally:
+        if asynchronous:
+            await iterator.aclose()
+        else:
+            iterator.close()
+    assert (directory / "session.jsonl").is_file()
+    assert list((directory / "traces").glob("*/trajectory.json"))
+    assert not next_directory.exists()
+    assert config.run_dir == str(next_directory)
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_invalid_context_setup_releases_run_owner(tmp_path, monkeypatch, asynchronous):
+    import looplet.harness as harness_module
+    from looplet import LoopConfig, async_composable_loop, composable_loop, tools_from
+    from looplet.context_budget import _CONTEXT_WINDOW_STEPS_OVERRIDE
+    from looplet.testing import AsyncMockLLMBackend
+
+    monkeypatch.setattr(harness_module, "_active_registries", {})
+    previous = _CONTEXT_WINDOW_STEPS_OVERRIDE.get()
+    token = _CONTEXT_WINDOW_STEPS_OVERRIDE.set(previous)
+    config = LoopConfig(
+        run_dir=str(tmp_path / "run"),
+        use_native_tools=False,
+        context_window_steps=7,
+    )
+    config.context_inline_per_step_chars = "not-a-number"
+    tools = tools_from([], include_done=True)
+    backend_type = AsyncMockLLMBackend if asynchronous else MockLLMBackend
+    driver = async_composable_loop if asynchronous else composable_loop
+    backend = backend_type(['{"tool":"done","args":{"summary":"recovered"}}'], cycle=False)
+    iterator = driver(backend, tools=tools, config=config)
+    try:
+        with pytest.raises(ValueError, match="invalid literal"):
+            if asynchronous:
+                await anext(iterator)
+            else:
+                next(iterator)
+        assert _CONTEXT_WINDOW_STEPS_OVERRIDE.get() == previous
+        assert config.compact_service is None
+        assert backend.calls == 0
+        config.context_inline_per_step_chars = None
+        iterator = driver(backend, tools=tools, config=config)
+        steps = [step async for step in iterator] if asynchronous else list(iterator)
+        assert steps[-1].tool_call.tool == "done"
+        assert _CONTEXT_WINDOW_STEPS_OVERRIDE.get() == previous
+        assert config.compact_service is None
+    finally:
+        if asynchronous:
+            await iterator.aclose()
+        else:
+            iterator.close()
+        _CONTEXT_WINDOW_STEPS_OVERRIDE.reset(token)
+
+
 @pytest.mark.parametrize("writer", ["calls", "trajectory", "eval"])
 def test_saved_evidence_is_git_ignored_in_consumer_project(tmp_path, writer):
     from looplet import EvalContext, save_eval_run

@@ -510,7 +510,6 @@ class TestDefaultHarness:
     ):
         from looplet import (
             AsyncMockLLMBackend,
-            DefaultCompactService,
             MockLLMBackend,
             RunResult,
             ToolCallBudgetHook,
@@ -544,9 +543,87 @@ class TestDefaultHarness:
                 pass
         else:
             list(composable_loop(llm=MockLLMBackend(responses=responses), **arguments))
-        assert isinstance(active_services[0], DefaultCompactService)
+        assert active_services == [None]
         assert config.compact_service is (replacement if host_replaces_service else None)
         assert RunResult.from_state(state).completed
+
+    @pytest.mark.parametrize("is_async", [False, True])
+    @pytest.mark.parametrize("explicit", [False, True])
+    async def test_overlapping_runs_own_defaults_without_replacing_explicit_services(
+        self, tmp_path, monkeypatch, is_async, explicit
+    ):
+        import looplet.compact as compact_module
+        from looplet import AsyncMockLLMBackend, MockLLMBackend, async_composable_loop
+
+        monkeypatch.chdir(tmp_path)
+        services = []
+        original = compact_module.run_compact_async if is_async else compact_module.run_compact
+        if is_async:
+
+            async def observe(service, **kwargs):
+                services.append(service)
+                return await original(service, **kwargs)
+        else:
+
+            def observe(service, **kwargs):
+                services.append(service)
+                return original(service, **kwargs)
+
+        monkeypatch.setattr(
+            compact_module, "run_compact_async" if is_async else "run_compact", observe
+        )
+
+        class CompactEachStep:
+            def should_compact(self, state, session_log, conversation, step_num):
+                return True
+
+        def source() -> dict:
+            return {"answer": 42}
+
+        explicit_service = TruncateCompact(keep_recent=7) if explicit else None
+        config = LoopConfig(use_native_tools=False, compact_service=explicit_service)
+        backend_type = AsyncMockLLMBackend if is_async else MockLLMBackend
+        driver = async_composable_loop if is_async else composable_loop
+        responses = ['{"tool":"source","args":{}}', '{"tool":"done","args":{"summary":"42"}}']
+        iterators = [
+            driver(
+                backend_type(list(responses), cycle=False),
+                task="Read the answer",
+                tools=[source],
+                config=config,
+                hooks=[CompactEachStep()],
+            )
+            for _run in range(2)
+        ]
+        first, second = iterators
+        try:
+            for iterator in iterators:
+                step = await anext(iterator) if is_async else next(iterator)
+                assert step.tool_result.data == {"answer": 42}
+            if is_async:
+                await first.aclose()
+                remaining = [step async for step in second]
+            else:
+                first.close()
+                remaining = list(second)
+            assert remaining[-1].tool_call.tool == "done"
+        finally:
+            for iterator in iterators:
+                if is_async:
+                    await iterator.aclose()
+                else:
+                    iterator.close()
+        assert len(services) == 3
+        if explicit:
+            assert all(service is explicit_service for service in services)
+        else:
+            assert services[0] is not services[1]
+        assert services[2] is services[1]
+        assert config.compact_service is explicit_service
+        assert config.run_dir is None
+        assert config.checkpoint_dir is None
+        assert config.initial_checkpoint is None
+        assert len(list((tmp_path / ".looplet" / "runs").glob("*/session.jsonl"))) == 2
 
     def test_loop_compacts_under_pressure_without_a_supplied_hook(self):
         from looplet import MockLLMBackend, tools_from

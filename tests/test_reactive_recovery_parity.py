@@ -124,6 +124,51 @@ async def test_reactive_compaction_refreshes_typed_input(asynchronous, mode):
 
 
 @pytest.mark.parametrize("asynchronous", [False, True])
+async def test_minimal_profile_uses_emergency_compaction_fallback(asynchronous):
+    from looplet import RunResult, async_composable_loop
+
+    events = []
+
+    class ObserveCompaction:
+        def on_event(self, payload):
+            if payload.event.value in ("pre_compact", "post_compact"):
+                events.append(payload.event.value)
+
+    backend_type = _AsyncFlakyLLM if asynchronous else _FlakyLLM
+    backend = backend_type(
+        [
+            _PromptTooLongError(),
+            _PromptTooLongError(),
+            '{"tool":"done","args":{"summary":"recovered"}}',
+        ]
+    )
+    config = LoopConfig(
+        harness_profile="minimal",
+        max_steps=1,
+        max_model_calls=3,
+        use_native_tools=False,
+    )
+    state = DefaultState(max_steps=1)
+    arguments = dict(
+        llm=backend,
+        tools=_registry(),
+        state=state,
+        config=config,
+        hooks=[ObserveCompaction()],
+    )
+    steps = (
+        [step async for step in async_composable_loop(**arguments)]
+        if asynchronous
+        else list(composable_loop(**arguments))
+    )
+    assert [step.tool_call.tool for step in steps] == ["done"]
+    assert RunResult.from_state(state).completed
+    assert backend.calls == 3
+    assert events == ["pre_compact", "post_compact"]
+    assert config.compact_service is None
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
 @pytest.mark.parametrize("phase", ["pre_compact", "post_compact", "cleanup"])
 async def test_compaction_detects_hook_and_cleanup_projection_changes(asynchronous, phase):
     from looplet.assistant_turns import TURN_STATE_KEY, _AssistantTurns

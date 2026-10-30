@@ -42,7 +42,6 @@ from typing import Any, AsyncGenerator, Callable, Sequence
 
 from looplet._backend_contract import TerminalLLMError
 from looplet._backend_contract import attempt_limit as _attempt_limit
-from looplet.checkpoint import FileCheckpointStore as _FileCheckpointStore
 from looplet.checkpoint import _capture_checkpoint, _run_persistence
 from looplet.checkpoint import _save_pending_dispatch_async as _save_pending_dispatch
 from looplet.checkpoint import resume_loop_state as _resume_loop_state
@@ -138,6 +137,7 @@ async def _recover_prompt(
     native_policy: NativeToolPolicy,
     prepare: Any,
     loop_ctx: Any,
+    compact_service: Any = None,
 ) -> tuple[LLMResult, int]:
     from looplet.compact import TruncateCompact, run_compact_async
 
@@ -147,8 +147,11 @@ async def _recover_prompt(
             continue
         recovery_state[name] = True
         if name == "emergency_truncate":
+            service = (
+                config.compact_service if config.compact_service is not None else compact_service
+            )
             outcome = await run_compact_async(
-                config.compact_service or TruncateCompact(),
+                service if service is not None else TruncateCompact(),
                 hooks=hooks,
                 state=state,
                 session_log=session_log,
@@ -549,56 +552,52 @@ async def async_composable_loop(
     or use ``contextlib.aclosing``. Cleanup runs on exhaustion, closure, and exceptions.
     Early closure marks an unfinished run as stopped, not completed.
     """
-    from looplet.harness import prepare_harness_run, resolve_harness
+    from looplet.harness import prepare_harness_run
 
     effective_config = _resolve_loop_config(
         config, max_steps=max_steps, system_prompt=system_prompt
     )
     task, tools = _normalize_loop_inputs(task, tools, effective_config)
-    harness = resolve_harness(effective_config, hooks)
-    original_compact_service = effective_config.compact_service
-    effective_config.compact_service = harness.config.compact_service
-    hooks = harness.hooks
-    try:
-        prepared = prepare_harness_run(
-            effective_config, hooks, llm, tools, state, session_log, conversation
-        )
-    except BaseException:
-        if effective_config.compact_service is harness.config.compact_service:
-            effective_config.compact_service = original_compact_service
-        raise
-    prepared.enable_async_persistence()
-    tokens = _set_context_overrides(effective_config)
+    prepared = prepare_harness_run(
+        effective_config, hooks or [], llm, tools, state, session_log, conversation
+    )
+    tokens: list[tuple[Any, Any]] = []
     from looplet.loop import _LoopFinalizer, _mark_terminal_state
 
     finalizer = _LoopFinalizer()
-    iterator = _async_composable_loop_impl(
-        llm=prepared.llm,
-        task=task,
-        tools=tools,
-        context=context,
-        hooks=prepared.hooks,
-        config=prepared.config,
-        state=prepared.state,
-        session_log=prepared.session_log,
-        stream=stream,
-        conversation=conversation,
-        _finalizer=finalizer,
-        _checkpoint_store=prepared.checkpoint_store,
-    )
+    iterator = None
     try:
+        prepared.enable_async_persistence()
+        tokens = _set_context_overrides(effective_config)
+        iterator = _async_composable_loop_impl(
+            llm=prepared.llm,
+            task=task,
+            tools=tools,
+            context=context,
+            hooks=prepared.hooks,
+            config=prepared.config,
+            state=prepared.state,
+            session_log=prepared.session_log,
+            stream=stream,
+            conversation=conversation,
+            _finalizer=finalizer,
+            _checkpoint_store=prepared.checkpoint_store,
+            _initial_checkpoint=prepared.initial_checkpoint,
+            _compact_service=prepared.compact_service,
+        )
         async for step in iterator:
             yield step
     except GeneratorExit:
         _mark_terminal_state(finalizer.state, status="stopped", reason="stream_closed")
         raise
     except BaseException:
-        _mark_failed_state(finalizer.state if finalizer.state is not None else state)
+        _mark_failed_state(finalizer.state if finalizer.state is not None else prepared.state)
         raise
     finally:
         try:
             try:
-                await iterator.aclose()
+                if iterator is not None:
+                    await iterator.aclose()
             finally:
                 await finalizer.finish_async(suppress_errors=True)
         finally:
@@ -609,8 +608,6 @@ async def async_composable_loop(
                     prepared.release()
                 finally:
                     _reset_context_overrides(tokens)
-                    if effective_config.compact_service is harness.config.compact_service:
-                        effective_config.compact_service = original_compact_service
 
 
 async def run_result_async(
@@ -658,6 +655,8 @@ async def _async_composable_loop_impl(
     system_prompt: str | None = None,
     _finalizer: Any = None,
     _checkpoint_store: Any = None,
+    _initial_checkpoint: Any = None,
+    _compact_service: Any = None,
 ) -> AsyncGenerator[Step, None]:
     """Async version of :func:`looplet.loop.composable_loop`.
 
@@ -724,26 +723,15 @@ async def _async_composable_loop_impl(
 
     _conv = conversation if conversation is not None else Conversation()
 
-    _ckpt_store = None
-    if config.checkpoint_dir is not None:
-        _ckpt_store = _checkpoint_store or _FileCheckpointStore(config.checkpoint_dir)
-        if config.initial_checkpoint is None:
-            _latest = _ckpt_store.load_latest_for_resume(
-                run_id=(config.run_envelope.run_id if config.run_envelope is not None else None)
-            )
-            if _latest is not None:
-                config = _dc_replace(config, initial_checkpoint=_latest)
-                logger.info(
-                    "Auto-resuming async loop from checkpoint at step %d", _latest.step_number
-                )
-
+    _ckpt_store = _checkpoint_store
+    saved_checkpoint = _initial_checkpoint
     _step_offset = 0
-    if (saved_checkpoint := config.initial_checkpoint) is not None:
+    if saved_checkpoint is not None:
         _validate_checkpoint_identity(
-            config.initial_checkpoint,
+            saved_checkpoint,
             config.run_envelope.run_id if config.run_envelope is not None else None,
         )
-        resumed = _resume_loop_state(config.initial_checkpoint, max_steps=config.max_steps)
+        resumed = _resume_loop_state(saved_checkpoint, max_steps=config.max_steps)
         restore_backend = (
             config.router.select(purpose="reasoning") if config.router is not None else llm
         )
@@ -844,18 +832,18 @@ async def _async_composable_loop_impl(
     build_briefing_fn = config.resolve_callable("build_briefing", _default_build_briefing)
     checkpoint_state = config.resolve_callable("checkpoint_state")
     restore_checkpoint_state = config.resolve_callable("restore_checkpoint_state")
-    if config.initial_checkpoint is not None and restore_checkpoint_state is not None:
+    if saved_checkpoint is not None and restore_checkpoint_state is not None:
         restore_checkpoint_state(loop_ctx, resumed.get("domain_state", {}))
-    if config.initial_checkpoint is not None:
+    if saved_checkpoint is not None:
         tools.restore_results(resumed.get("tool_results_store") or {})
 
     from looplet.assistant_turns import _AssistantTurns
 
-    if config.initial_checkpoint is not None and config.initial_checkpoint.is_terminal:
+    if saved_checkpoint is not None and saved_checkpoint.is_terminal:
         from looplet.assistant_turns import TURN_STATE_KEY
 
-        if TURN_STATE_KEY in config.initial_checkpoint.metadata:
-            saved = config.initial_checkpoint
+        if TURN_STATE_KEY in saved_checkpoint.metadata:
+            saved = saved_checkpoint
             if saved.run_status != "completed":
                 raise ValueError("stopped assistant runs require an explicit new run identity")
             _set_run_lifecycle(
@@ -1006,11 +994,14 @@ async def _async_composable_loop_impl(
             if should_compact:
                 _want_compact = True
                 break
-        if _want_compact and config.compact_service is not None:
+        compact_service = (
+            config.compact_service if config.compact_service is not None else _compact_service
+        )
+        if _want_compact and compact_service is not None:
             from looplet.compact import run_compact_async as _run_compact  # noqa: PLC0415
 
             await _run_compact(
-                config.compact_service,
+                compact_service,
                 hooks=hooks,
                 state=state,
                 session_log=session_log,
@@ -1284,6 +1275,7 @@ async def _async_composable_loop_impl(
                 native_policy=native_policy,
                 prepare=_prepare_recovery_prompt,
                 loop_ctx=loop_ctx,
+                compact_service=_compact_service,
             )
             llm_calls += recovery_calls
             _record_run_stats(state, llm_calls=llm_calls)

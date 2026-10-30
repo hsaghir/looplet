@@ -61,6 +61,47 @@ def test_default_harness_writes_report_durable_progress(
     )
 
 
+@pytest.mark.parametrize("cartridge", [False, True])
+def test_policy_tools_recover_progress_from_saved_records(tmp_path, cartridge):
+    from looplet import ToolCall, ToolContext, cartridge_to_preset, preset_to_cartridge
+    from looplet.examples.default_harness import POLICIES, build_agent, grade_deliverable
+
+    deliverable = tmp_path / "deliverable"
+    preset = build_agent("policy", deliverable)
+    if cartridge:
+        exported = preset_to_cartridge(preset, tmp_path / "agent.cartridge", strict=True)
+        preset.close()
+        preset = cartridge_to_preset(exported.path)
+
+    def dispatch(name, **arguments):
+        result = preset.tools.dispatch(
+            ToolCall(tool=name, args=arguments),
+            ctx=ToolContext(metadata=preset.config.tool_metadata),
+        )
+        assert result.error is None
+        return result.data
+
+    with preset:
+        initial = dispatch("read_policy", section="accounts")
+        assert initial["completed_records"] == []
+        assert initial["remaining_sections"] == list(POLICIES)
+        assert not deliverable.exists()
+        saved = dispatch("record_control", section="backups", requirement=POLICIES["backups"])
+        recovered = dispatch("read_policy", section="secrets")
+        assert recovered["completed_records"] == saved["completed_records"] == ["backups.json"]
+        assert recovered["remaining_sections"] == ["accounts", "privileges", "secrets"]
+        assert recovered["requirement"] == POLICIES["secrets"]
+        for section in ("secrets", "accounts", "privileges"):
+            saved = dispatch("record_control", section=section, requirement=POLICIES[section])
+        assert saved["remaining_sections"] == []
+        assert dispatch("read_policy", section="accounts")["remaining_sections"] == []
+        assert grade_deliverable("policy", deliverable)["passed"]
+        assert all(
+            set(json.loads(path.read_text())) == {"section", "requirement"}
+            for path in deliverable.glob("*.json")
+        )
+
+
 @pytest.mark.parametrize("cartridge", CARTRIDGES, ids=lambda path: str(path.relative_to(EXAMPLES)))
 def test_every_example_cartridge_has_a_valid_owned_preset(cartridge, tmp_path):
     from looplet import cartridge_to_preset, validate_preset_contract

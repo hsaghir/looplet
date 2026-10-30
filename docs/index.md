@@ -1,6 +1,6 @@
 ---
 title: A Python loop for agents that call tools
-description: A Python tool loop with context management, prompt and tool hooks, run controls, and tests. Add the controls you need without hiding the loop.
+description: Run a tool-calling agent from Python functions. Inspect each step, add policy hooks, and check results with saved responses.
 hide:
   - navigation
   - toc
@@ -17,87 +17,28 @@ hide:
 <p class="hero-kicker">A Python loop for agents that call tools.</p>
 
 <p class="hero-sub" markdown>
-Choose your model, tools, task, and limits.
-Looplet runs tools and yields each step to your code.
-It also provides context management for long runs.
-Hooks let you build prompts, check calls before tools run, and inspect results afterward.
-Add these controls when you need them.
-Your code still controls the loop.
+Give Looplet a model, a task, and Python functions.
+It checks tool calls, runs the functions, and yields each result.
+Your code controls the loop.
 </p>
 
 <div class="hero-cta">
-  <a href="quickstart/" class="md-button md-button--primary">Run your first loop</a>
+   <a href="python/" class="md-button md-button--primary">Run your first loop</a>
   <a href="install/" class="md-button">Install and configure</a>
   <a href="https://github.com/hsaghir/looplet" class="md-button">GitHub</a>
 </div>
 
 </section>
 
-<div class="proof-strip" markdown>
-
-<div class="proof-item" markdown>
-**Run**
-
-Use normal Python functions as tools.
-</div>
-
-<div class="proof-item" markdown>
-**Inspect**
-
-Read the call, result, and error in each step.
-</div>
-
-<div class="proof-item" markdown>
-**Stop**
-
-Stop your iteration before the next tool call.
-</div>
-
-<div class="proof-item" markdown>
-**Extend**
-
-Add only the optional features that you need.
-</div>
-
-</div>
-
-## Why use Looplet instead of a short loop?
-
-A short loop is enough if it already meets your needs.
-Use Looplet when your agent also needs these features:
-
-- **[Model choice](install.md) and [retries](api.md#backends):** Use OpenAI, Anthropic, or connect another model. Add retries or fallback models to synchronous model calls.
-- **[Python tools](api.md#tools):** Use normal Python functions as tools. Describe accepted inputs. Add argument checks before a tool runs.
-- **[Context management](operations.md#context-pressure-and-compaction):** Track context limits. Shorten old history with summaries or truncation. Remove large tool results from later prompts.
-- **[Prompt and tool hooks](hooks.md):** Add context or build a custom prompt. Check or change calls before tools run. Inspect or change results afterward.
-- **[Run controls](operations.md#stagnation-and-call-limits):** Set step and tool-call limits. Detect repeated actions or cancel a run.
-- **[Async and streaming](operations.md):** Run async model calls and tools. Read model text as it arrives with a streaming backend.
-- **[Saved runs and replay](provenance.md):** Save prompts, responses, results, and stop reasons. Reuse saved model responses to test changed tools. Tool effects can still change.
-- **[Tests and comparisons](evals.md):** Check files or records that the agent produced. Compare tool changes with saved responses. Compare model changes with new runs.
-- **[Checkpoints](operations.md#checkpoints-and-cancellation):** Save loop state and continue a later run. Checkpoints do not undo tool effects.
-- **[Reusable agents](cartridge.md):** Keep tools, prompts, and settings in Python or an agent directory. Share that setup across projects.
-- **[Skills](skills.md) and [child agents](cartridge.md#builtin-tools):** Load extra task instructions when needed. Delegate part of a task to another agent.
-- **[Command line](cli.md):** Create, run, inspect, and test agents from your shell.
-- **[Other processes](portability.md):** Connect tools and hooks running in other processes. Share state and model access across process boundaries.
-
-These features use the same loop.
-You can reuse them across agents instead of writing separate control code for each one.
-The loop still yields steps, so your code can inspect each result and stop before the next call.
-
 ## Start with one loop
 
-Write a Python function and pass it to the ordinary loop.
-This Python-first API is **unreleased**. Install the fixed preview in a virtual environment:
-
-```bash
-python -m pip install "looplet[openai] @ https://github.com/hsaghir/looplet/archive/cf642eba3a0d4a2239db7400611222797e791540.zip"
-```
-
-Set `OPENAI_API_KEY` and `OPENAI_MODEL` for your provider.
-The [Python quickstart](python.md) covers setup, results, async loops, and network-free tests.
+This example uses a Python function and fixed model responses.
+It needs no model key or model service.
+Install the [source preview from the quickstart](python.md#install) first.
+The Python-first API is unreleased and is not in PyPI `0.4.1`.
 
 ```python title="first_loop.py"
-from looplet import OpenAIBackend, composable_loop
+from looplet import MockLLMBackend, composable_loop
 
 
 def lookup_owner(service: str) -> str:
@@ -106,56 +47,66 @@ def lookup_owner(service: str) -> str:
     return owners.get(service, "unknown")
 
 
-llm = OpenAIBackend.from_env()
+responses = [
+   '{"tool":"lookup_owner","args":{"service":"payments"}}',
+   '{"tool":"done","args":{"summary":"fintech-platform"}}',
+]
+llm = MockLLMBackend(responses, cycle=False)
 for step in composable_loop(llm, task="Who owns payments?", tools=[lookup_owner]):
     print(step.pretty())
 ```
 
-No decorator, registry, preset, custom completion function, or state object is required.
-Use `run_result()` to collect accepted output instead of inspecting each step.
-Both entry styles use the same engine and defaults.
-The latest published package is `0.4.1`; its [released walkthrough](quickstart.md) remains available.
-The Python-first additions require the preview above.
+The first tool result is `fintech-platform`.
+The second call completes the run.
+Your function stays callable as ordinary Python.
+Use `run_result()` when you need the final result instead of an iterator.
+The [quickstart](python.md) checks the result, adds a permission hook, and replays this same agent.
 
-## Add only what you need
+## Add control as the agent grows
+
+Looplet handles model retries, context limits, and private run evidence.
+You can replace these defaults and keep the same tools and loop.
 
 <div class="workflow" markdown>
 
 <div class="workflow-step" markdown>
 
-**Hooks**
+**Control calls**
 
-Build prompts, check calls before tools run, and inspect results afterward.
+Set limits and check arguments before a tool runs.
+[Use hooks](hooks.md) for your application policy.
 </div>
 
 <div class="workflow-step" markdown>
 
-**Saved runs**
+**Handle long runs**
 
-Save prompts, responses, steps, and stop reasons as files.
+Shorten old context and retrieve original tool results when needed.
+[Set runtime controls](operations.md).
 </div>
 
 <div class="workflow-step" markdown>
 
-**Tests**
+**Check outputs**
 
-Read the result that the agent produced and check it independently.
+Save model responses and rerun tools after a change.
+[Grade the actual result](evals.md).
 </div>
 
 <div class="workflow-step" markdown>
 
-**Cartridges**
+**Share an agent**
 
-Put tools, prompts, and configuration in a directory for review or distribution.
+Keep dependency construction in a Python factory.
+Use a [cartridge](cartridge.md) when you need file-based packaging.
 </div>
 
 </div>
 
-These features use the same loop.
-They are not required for the first example.
-
-[Hooks](hooks.md) | [Capture and replay](provenance.md) |
-[Tests and graders](evals.md) | [Cartridges](cartridge.md)
+Runs save private evidence by default.
+Compaction can discard details.
+You control evidence access and retention.
+See [default policies and opt-outs](operations.md#standard-agent-harness).
 
 ## Check a tool change
 
@@ -200,7 +151,7 @@ A collector reads the report and a grader checks it.
 Keep your provider and tools.
 Replace only the loop and check its behavior before you add other features.
 
-[Migrate an existing loop](migrate.md) | [Build the first loop](quickstart.md)
+[Migrate an existing loop](migrate.md) | [Build the first loop](python.md)
 
 </div>
 
@@ -227,28 +178,22 @@ Find commands, Python functions, saved files, and runtime controls.
 
 </div>
 
-## Use other processes or hosts
-
-Protocol adapters can connect tools, hooks, shared state, and model access across processes.
-Start with the Python loop.
-Add a process boundary when your deployment needs one.
-
-[Study portability](portability.md) | [Inspect the cartridge format](cartridge.md)
-
 ## Know what each check proves
 
-| Evidence | Use it for | Do not claim |
-| --- | --- | --- |
-| `Step` objects | Inspect results and stop between calls | Approval before a tool runs or proof that an answer is correct |
-| Saved run | Read what the model saw, returned, and called | That saved prompts are safe to publish |
-| Replay | Check changed tools or hooks with fixed responses | Better decisions from a prompt or model change |
-| Collector and grader | Check a file, record, or service result | Protection from code that can change the grader |
-| New model runs | Check prompt, model, schema, or context changes | General performance from one sample |
+| Evidence             | Use it for                                        | Do not claim                                                   |
+| -------------------- | ------------------------------------------------- | -------------------------------------------------------------- |
+| `Step` objects       | Inspect results and stop between calls            | Approval before a tool runs or proof that an answer is correct |
+| Saved run            | Read what the model saw, returned, and called     | That saved prompts are safe to publish                         |
+| Replay               | Check changed tools or hooks with fixed responses | Better decisions from a prompt or model change                 |
+| Collector and grader | Check a file, record, or service result           | Protection from code that can change the grader                |
+| New model runs       | Check prompt, model, schema, or context changes   | General performance from one sample                            |
 
 Completion does not prove that an answer is correct.
 Replay fixes model responses, not tool effects.
 Keep protected acceptance checks outside the code that a candidate can change.
-Run untrusted code in an isolated process or operating system environment.
+Looplet does not create an operating system sandbox.
+Run untrusted tools in a restricted container or VM.
+A Git worktree only separates edits.
 
 [Capture and replay](provenance.md) | [Behavioral evals](evals.md) |
 [Saved artifact reference](artifacts.md)
@@ -290,7 +235,7 @@ Provider adapters are optional extras.
 [Operate a production loop](operations.md)
 
 <p class="home-footer" markdown>
-[Run your first loop](quickstart.md){ .md-button .md-button--primary }
+[Run your first loop](python.md){ .md-button .md-button--primary }
 [Install Looplet](install.md){ .md-button }
 [Add tests](tutorial.md){ .md-button }
 </p>

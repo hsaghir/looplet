@@ -42,8 +42,7 @@ def test_published_install_guidance_is_separate_from_source_version() -> None:
     published = re.search(r"latest PyPI release is `(\d+\.\d+\.\d+)`", readme)
     assert published is not None
     version = published.group(1)
-    major, minor, _patch = (int(part) for part in version.split("."))
-    pin = f"looplet>={version},<{major}.{minor + 1}"
+    pin = f"looplet=={version}"
     assert pin in readme
     assert (
         "The recommended source build includes later fixes that are not yet on PyPI." not in readme
@@ -104,14 +103,15 @@ def test_released_safety_fixes_are_explicitly_scoped() -> None:
     published = re.search(r"latest PyPI release is `(\d+\.\d+\.\d+)`", readme)
     assert published is not None
     safety = install.split("## Safety fixes in 0.4.1\n", 1)[1].split("\n## ", 1)[0]
+    table = re.sub(r"[ \t]+", " ", safety)
 
-    assert f"| Behavior | Published `0.4.0` | Release `{published.group(1)}` |" in safety
+    assert f"| Behavior | Published `0.4.0` | Release `{published.group(1)}` |" in table
     for behavior in (
         "Serial native batches",
         "Native response redaction",
         "Python replay defaults",
     ):
-        assert f"| {behavior} |" in safety
+        assert f"| {behavior} |" in table
     assert "`redact=` does not scrub native response blocks." in safety
     assert "install.md#unreleased-safety-fixes" in readme
     assert "install.md#unreleased-safety-fixes" in provenance

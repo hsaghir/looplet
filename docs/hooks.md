@@ -1,25 +1,28 @@
-# Hook Authoring Guide
+# Hook authoring guide
 
-Hooks are the primary extension mechanism in `looplet`. They let you
-inject domain-specific behavior into the generic loop without modifying
-any framework code.
+Use a hook to add application policy at a specific point in the loop.
+Check permission before a tool runs, inspect its result, or reject completion.
+The tool functions and loop stay unchanged.
 
-Hooks are [`@runtime_checkable`](https://docs.python.org/3/library/typing.html#typing.runtime_checkable)
-Protocols - **any object with the right methods is a hook**. No base
-class, no registry, no decorator:
+The [loop diagram](python.md#how-the-loop-fits-together) shows hooks around model calls, tool calls, and compaction.
+
+A hook is a Python object with one or more supported methods.
+It does not need a base class or decorator.
+This hook prints each tool result:
 
 ```python
 class ConsolePrinter:
     def post_dispatch(self, state, session_log, tool_call, tool_result, step_num):
-        print(f"#{step_num} {tool_call.tool} → {tool_result.data}")
+        print(f"#{step_num} {tool_call.tool}: {tool_result.data}")
         return None
 
 for step in composable_loop(..., hooks=[ConsolePrinter()]):
     ...
 ```
 
-That's the entire contract. Include only the hook methods you need; the
-loop calls the ones you define and ignores the rest.
+Implement only the methods you need.
+The [quickstart permission hook](python.md#add-a-limit-and-a-permission-hook) is a complete example.
+The sections below describe the full interface and composition rules.
 
 ## The Hook Protocol
 
@@ -95,16 +98,16 @@ the contract, and `decision.ignored_effects(slot)` reports unsupported fields.
 Normalization logs ignored field names without their values.
 At tool gates, it converts `Block` into a denial without changing the original decision object.
 
-| Slot | Applied Effects |
-| --- | --- |
-| `pre_prompt` | `additional_context` |
-| `pre_dispatch` / `pre_tool_use` | `updated_args`, `updated_result`, denial, and context |
-| `check_permission` | `Deny` or `Block` denies the call |
-| `post_dispatch` / `post_tool_use` / `post_tool_failure` | `updated_result`, context, and `stop` |
-| `check_done` | `Block` or denial rejects completion; `Stop` is ignored |
-| `should_stop` | `stop`, including its original reason |
-| `pre_llm_call` / `post_llm_response` | Context and stop-after-step |
-| `pre_compact` / `post_compact` | Abort compaction / `rewrite_thread`, respectively |
+| Slot                                                    | Applied Effects                                         |
+| ------------------------------------------------------- | ------------------------------------------------------- |
+| `pre_prompt`                                            | `additional_context`                                    |
+| `pre_dispatch` / `pre_tool_use`                         | `updated_args`, `updated_result`, denial, and context   |
+| `check_permission`                                      | `Deny` or `Block` denies the call                       |
+| `post_dispatch` / `post_tool_use` / `post_tool_failure` | `updated_result`, context, and `stop`                   |
+| `check_done`                                            | `Block` or denial rejects completion; `Stop` is ignored |
+| `should_stop`                                           | `stop`, including its original reason                   |
+| `pre_llm_call` / `post_llm_response`                    | Context and stop-after-step                             |
+| `pre_compact` / `post_compact`                          | Abort compaction / `rewrite_thread`, respectively       |
 
 Other lifecycle events, including terminal `stop`, are observation-only.
 Metadata and `policy_decision` are audit data, not execution authority.
@@ -485,12 +488,12 @@ hooks = [EntityExtractor(), BriefingBuilder()]
 
 **`step_context` vs `metadata`:**
 
-| | `state.step_context` | `state.metadata` |
-|---|---|---|
-| **Lifetime** | Cleared every step | Persists across turns |
-| **Use for** | Ephemeral hook-to-hook data | Persistent agent metadata |
-| **Cleanup** | Automatic (loop clears it) | Manual |
-| **In `snapshot()`** | No | Yes |
+|                     | `state.step_context`        | `state.metadata`          |
+| ------------------- | --------------------------- | ------------------------- |
+| **Lifetime**        | Cleared every step          | Persists across turns     |
+| **Use for**         | Ephemeral hook-to-hook data | Persistent agent metadata |
+| **Cleanup**         | Automatic (loop clears it)  | Manual                    |
+| **In `snapshot()`** | No                          | Yes                       |
 
 ---
 

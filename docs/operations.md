@@ -1,14 +1,18 @@
 # Runtime operations
 
-Operational controls should remain separate, composable layers around the
-loop. Add one when a measured failure mode justifies it, and preserve a test
-for the boundary it owns.
+Use `LoopConfig` to set limits and choose where run evidence is saved.
+Add hooks for your application's policy.
+These controls use the same Python loop.
+
+This page describes the [fixed source preview](install.md#install-the-current-build).
+Source-only behavior is marked unreleased.
+Start with the [Python quickstart](python.md) before choosing advanced controls.
 
 | Need                               | Start with                                     |
 | ---------------------------------- | ---------------------------------------------- |
 | Async provider calls or async host | `async_composable_loop()`                      |
 | Transient provider failures        | `ResilientBackend`                             |
-| Growing prompt context             | `ContextBudget` plus a compaction service      |
+| Growing prompt context             | Automatic compaction and `context_window`      |
 | Repeated or wasteful actions       | `StagnationHook`, tool limits, budget warnings |
 | Tool authorization                 | `PermissionEngine` and `PermissionHook`        |
 | Live events                        | `StreamingHook` and an emitter                 |
@@ -105,13 +109,28 @@ Do not infer retry safety from a timeout, cancellation, or failure to observe a 
 
 ## Standard agent harness
 
-**Unreleased source behavior:** sync, async, preset, and cartridge execution all
-resolve `LoopConfig.harness_profile="execution-v1"` through `resolve_harness()`.
-The resolver performs no I/O or model calls and does not mutate supplied containers.
-`resolve_harness(config, hooks).describe()` explains the selected classes and limits;
-`preset.resolve_harness().describe()` provides the same view for a loaded cartridge.
-Execution preserves the supplied live config and host-object identities. The automatic
-compact service is installed only for the invocation; explicit in-run replacements survive.
+**Unreleased:** the default harness is the set of policies added to an ordinary run.
+Its profile is named `execution-v1`.
+Python loops and loaded cartridges use the same profile.
+It supplies compaction, typed tool history, and private run evidence.
+
+Inspect the selected policies before running an agent:
+
+```python
+from looplet import LoopConfig, resolve_harness
+
+config = LoopConfig(max_steps=8)
+print(resolve_harness(config).describe())
+```
+
+Inspection does not access files, call a model, or change supplied objects.
+Use `preset.resolve_harness().describe()` for a loaded cartridge.
+Loading the cartridge itself can execute Python.
+
+Automatic compaction and evidence bindings belong to the active run.
+They do not overwrite your config's compaction service or checkpoint paths.
+Your supplied config stays live, and explicit services keep their identity.
+Changes made by your code remain in place after the run.
 
 `execution-v1` installs deterministic compaction and native typed history, not a
 completion policy, repetition nudge, or derived tool quota. Plain text backends
@@ -210,12 +229,14 @@ The harness composes existing primitives, without extra model calls or tool retr
 | Raw history     | Lazy disk-backed `DefaultState.steps`                                 | Supply a custom state type or disable `history`.                                                                |
 | Tool evidence   | `FileToolResultStore` in the run directory                            | Bind `tool_result_store`; the supplied resource retains identity.                                               |
 | Provenance      | Recording backend and `TrajectoryRecorder`, saved at run finalization | Supply a `TrajectoryRecorder` and its recording backend.                                                        |
-| Checkpoints     | Per-step manifests sharing immutable JSON records                    | Set `checkpoint_dir`, supply `CheckpointHook`, or mark a checkpoint-owning hook with `checkpoint_owner = True`. |
+| Checkpoints     | Per-step manifests sharing immutable JSON records                     | Set `checkpoint_dir`, supply `CheckpointHook`, or mark a checkpoint-owning hook with `checkpoint_owner = True`. |
 | Branch topology | `SessionTreeRecorder`, saved as `session.jsonl`                       | Supply a `SessionTreeRecorder`.                                                                                 |
 
 Explicit services, hooks, resource bindings, and checkpoint paths win independently.
-An explicit hook is not removed by a disabled default. Temporary configuration changes
-are restored after the invocation unless host code replaces them during the run.
+An explicit hook is not removed by a disabled default.
+Automatic bindings stay private to the run; there are no temporary config edits to restore.
+Read the allocated path from `state.metadata["run_dir"]`.
+Changing `config.run_dir` after startup affects later runs, not the current evidence directory.
 `run_dir` round-trips through cartridge `runtime.yaml`, not the agent contract.
 
 A completed automatic result store remains readable through its registry.

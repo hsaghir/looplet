@@ -1,0 +1,173 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="850" viewBox="0 0 1500 850" role="img" aria-labelledby="title description">
+  <title id="title">Looplet execution, declarative cartridges, and evaluation</title>
+  <desc id="description">The box on the right shows this same loop as a cartridge file layout. It declares prompts, tools, hooks, and configuration as files. Tools and hooks can remain Python code. The host supplies the task and model backend. Read each turn from left to right: check whether context needs compaction, build the prompt, get a live or recorded model response, run a permitted tool, and yield a Step. Memory and context sources feed prompt construction. Hooks and events surround each action. Built-in compaction shortens context and keeps original tool results. Captures save model responses and tool results. Replay reuses responses and runs tools again. Updated state feeds the next turn. Completion uses check_done instead of tool permission checks. Below the loop, separate dashed lines carry the observed output and artifacts to an optional Python grader. The grader produces an eval result, separate from accepted completion.</desc>
+  <defs>
+    <pattern id="grid" width="24" height="24" patternUnits="userSpaceOnUse">
+      <path d="M24 0H0V24" fill="none" stroke="#e5edeb" stroke-width="0.7"/>
+    </pattern>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M1 1L8 5L1 9" fill="none" stroke="#75858b" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <marker id="return-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M1 1L8 5L1 9" fill="none" stroke="#17847d" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <style>
+      text { font-family: "IBM Plex Sans", sans-serif; letter-spacing: 0; }
+      .title { font-size: 28px; font-weight: 700; fill: #1d292d; }
+      .body { font-size: 16px; fill: #53636b; }
+      .stage { font-size: 14px; font-weight: 700; }
+      .index { font-size: 13px; fill: #7b8b91; }
+      .action { font-size: 20px; font-weight: 600; }
+      .code { font-family: "IBM Plex Mono", monospace; font-size: 16px; }
+      .small { font-size: 14px; fill: #64757c; }
+      .teal { fill: #0d6f69; }
+      .blue { fill: #285d98; }
+      .amber { fill: #94600f; }
+      .ink { fill: #263c43; }
+      .connector { fill: none; stroke: #75858b; stroke-width: 1.5; marker-end: url(#arrow); }
+      .eval-input { fill: none; stroke: #75858b; stroke-width: 1.5; stroke-dasharray: 6 5; marker-end: url(#arrow); }
+      .guide { fill: none; stroke: #c9d5d8; stroke-width: 1.2; }
+    </style>
+  </defs>
+
+  <rect width="1500" height="850" rx="8" fill="#ffffff"/>
+  <text class="title" x="48" y="51">How Looplet fits together</text>
+  <text class="body" x="48" y="83">Hooks surround the work. Your Python code controls the loop.</text>
+
+  <g id="cartridge">
+    <text class="stage ink" x="1176" y="122">DECLARATIVE FORM</text>
+    <rect id="cartridge-box" x="1176" y="143" width="284" height="430" rx="8" fill="#f2f8f7" stroke="#a5c9c4" stroke-width="1.2"/>
+    <text class="action teal" x="1200" y="180">Cartridge</text>
+    <text class="body ink" x="1200" y="208">This same loop,</text>
+    <text class="body ink" x="1200" y="231">declared as files.</text>
+    <path d="M1200 248H1436" stroke="#c9d5d8"/>
+    <text class="code ink" x="1200" y="281">agent.cartridge/</text>
+    <path class="guide" d="M1206 292V492M1206 306H1220M1206 336H1220M1206 366H1220M1206 458H1220M1206 492H1220M1230 382V422M1230 394H1242M1230 422H1242"/>
+    <text class="code ink" x="1228" y="312">config.yaml</text>
+    <text class="code ink" x="1228" y="342">prompts/system.md</text>
+    <text class="code ink" x="1228" y="372">tools/lookup_owner/</text>
+    <text class="code ink" x="1250" y="400">tool.yaml</text>
+    <text class="code ink" x="1250" y="428">execute.py</text>
+    <text class="code ink" x="1228" y="464">hooks/</text>
+    <text class="code ink" x="1228" y="498">memory/</text>
+    <text class="small" x="1200" y="550">Tools and hooks can use Python.</text>
+  </g>
+
+  <g id="turn">
+  <text class="body ink" x="48" y="122" font-weight="600">Task + tools + state</text>
+  <text class="code ink" x="748" y="122">LoopConfig</text>
+  <text class="body" x="863" y="122">limits + runtime policy</text>
+  <path d="M48 143H1112" stroke="#dce5e5"/>
+  <rect x="24" y="156" width="1112" height="304" fill="url(#grid)" opacity="0.55"/>
+
+  <g>
+    <text class="index" x="52" y="181">01</text>
+    <text class="stage teal" x="80" y="181">CONTEXT</text>
+    <path d="M52 193H236" stroke="#74b7b0" stroke-width="2"/>
+    <text class="code teal" x="144" y="225" text-anchor="middle">should_compact</text>
+    <text class="code teal" x="144" y="270" text-anchor="middle">pre_compact</text>
+    <path class="guide" d="M144 278V296"/>
+    <rect x="52" y="296" width="184" height="76" rx="8" fill="#edf7f4" stroke="#91c8ba" stroke-width="1.2"/>
+    <text class="action teal" x="144" y="328" text-anchor="middle">Compact context</text>
+    <text class="body teal" x="144" y="353" text-anchor="middle">if needed</text>
+    <path class="guide" d="M144 372V391"/>
+    <text class="code teal" x="144" y="414" text-anchor="middle">post_compact</text>
+    <text class="small" x="144" y="438" text-anchor="middle">Built-in: shorter context;</text>
+    <text class="small" x="144" y="458" text-anchor="middle">original results stay.</text>
+  </g>
+
+  <g>
+    <text class="index" x="276" y="181">02</text>
+    <text class="stage teal" x="304" y="181">PROMPT</text>
+    <path d="M276 193H460" stroke="#a5c9c4" stroke-width="2"/>
+    <text class="code teal" x="368" y="270" text-anchor="middle">pre_prompt</text>
+    <path class="guide" d="M368 278V296"/>
+    <rect x="276" y="296" width="184" height="76" rx="8" fill="#f2f8f7" stroke="#a5c9c4" stroke-width="1.2"/>
+    <text class="action teal" x="368" y="328" text-anchor="middle">Build the prompt</text>
+    <text class="code teal" x="368" y="353" text-anchor="middle">build_prompt</text>
+    <path class="connector" d="M368 391V375"/>
+    <text class="body teal" x="368" y="414" text-anchor="middle">Memory +</text>
+    <text class="body teal" x="368" y="438" text-anchor="middle">context sources</text>
+  </g>
+
+  <g>
+    <text class="index" x="500" y="181">03</text>
+    <text class="stage blue" x="528" y="181">MODEL</text>
+    <path d="M500 193H684" stroke="#8eb3d6" stroke-width="2"/>
+    <text class="code blue" x="592" y="270" text-anchor="middle">pre_llm_call</text>
+    <path class="guide" d="M592 278V296"/>
+    <rect x="500" y="296" width="184" height="76" rx="8" fill="#eef4fb" stroke="#8eb3d6" stroke-width="1.2"/>
+    <text class="action blue" x="592" y="328" text-anchor="middle">Get a response</text>
+    <text class="body blue" x="592" y="353" text-anchor="middle">live or recorded</text>
+    <path class="guide" d="M592 372V391"/>
+    <text class="code blue" x="592" y="414" text-anchor="middle">post_llm_response</text>
+  </g>
+
+  <g>
+    <text class="index" x="724" y="181">04</text>
+    <text class="stage amber" x="752" y="181">TOOL</text>
+    <path d="M724 193H908" stroke="#d5b078" stroke-width="2"/>
+    <text class="code amber" x="816" y="241" text-anchor="middle">pre_dispatch</text>
+    <text class="code amber" x="816" y="270" text-anchor="middle">check_permission</text>
+    <path class="guide" d="M816 278V296"/>
+    <rect x="724" y="296" width="184" height="76" rx="8" fill="#fff7e9" stroke="#d5b078" stroke-width="1.2"/>
+    <text class="action amber" x="816" y="328" text-anchor="middle">Run Python tool</text>
+    <text class="body amber" x="816" y="353" text-anchor="middle">if allowed and valid</text>
+    <path class="guide" d="M816 372V391"/>
+    <text class="code amber" x="816" y="414" text-anchor="middle">post_dispatch</text>
+  </g>
+
+  <g>
+    <text class="index" x="948" y="181">05</text>
+    <text class="stage ink" x="976" y="181">STATE</text>
+    <path d="M948 193H1132" stroke="#98afb6" stroke-width="2"/>
+    <text class="body ink" x="1040" y="270" text-anchor="middle">Record the result</text>
+    <path class="guide" d="M1040 278V296"/>
+    <rect x="948" y="296" width="184" height="76" rx="8" fill="#eef3f4" stroke="#98afb6" stroke-width="1.2"/>
+    <text class="action ink" x="1040" y="328" text-anchor="middle">Yield Step</text>
+    <text class="body ink" x="1040" y="353" text-anchor="middle">to your Python code</text>
+    <path class="guide" d="M1040 372V391"/>
+    <text class="code ink" x="1040" y="414" text-anchor="middle">should_stop</text>
+    <text class="small" x="1040" y="438" text-anchor="middle">stop or continue</text>
+  </g>
+
+  <path class="connector" d="M238 334H273"/>
+  <path class="connector" d="M462 334H497"/>
+  <path class="connector" d="M686 334H721"/>
+  <path class="connector" d="M910 334H945"/>
+  <path d="M1040 447V474Q1040 486 1028 486H36Q24 486 24 474V233Q24 221 36 221H65" fill="none" stroke="#17847d" stroke-width="1.6" marker-end="url(#return-arrow)"/>
+  <rect x="394" y="470" width="372" height="30" rx="4" fill="#ffffff"/>
+  <text class="body teal" x="580" y="490" text-anchor="middle">Next turn uses the updated state</text>
+
+  <path d="M48 523H1112" stroke="#dce5e5"/>
+  <text class="stage ink" x="48" y="558">SAVED EVIDENCE</text>
+  <text class="body ink" x="250" y="558">Model responses + tool results</text>
+  <text class="body blue" x="1112" y="558" text-anchor="end">Replay reuses responses. Tools run again.</text>
+
+  <path d="M48 583H1112" stroke="#dce5e5"/>
+  <text class="stage ink" x="48" y="618">COMPLETION</text>
+  <text class="code ink" x="214" y="618">done</text>
+  <path class="connector" d="M269 612H310"/>
+  <text class="code ink" x="331" y="618">check_done</text>
+  <path class="connector" d="M443 612H484"/>
+  <text class="body ink" x="505" y="618">accept or continue</text>
+  <text class="small" x="1112" y="618" text-anchor="end">Bypasses tool permission checks</text>
+  </g>
+
+  <g id="evaluation">
+    <path d="M48 652H1112" stroke="#dce5e5"/>
+    <text class="stage ink" x="48" y="693">EVALUATION</text>
+    <text class="small" x="48" y="718">Optional, after the run</text>
+    <text class="body ink" x="544" y="683" text-anchor="middle">Output</text>
+    <text class="body ink" x="776" y="683" text-anchor="middle">Artifacts</text>
+    <path class="eval-input" d="M544 694V718Q544 730 556 730H608Q620 730 620 742V751"/>
+    <path class="eval-input" d="M776 694V718Q776 730 764 730H712Q700 730 700 742V751"/>
+    <rect id="grader-box" x="568" y="751" width="184" height="68" rx="8" fill="#eef4fb" stroke="#8eb3d6" stroke-width="1.2"/>
+    <text class="action blue" x="660" y="780" text-anchor="middle">Grader</text>
+    <text class="small" x="660" y="804" text-anchor="middle">Python checks</text>
+    <path class="connector" d="M754 785H941"/>
+    <rect id="eval-result-box" x="944" y="751" width="184" height="68" rx="8" fill="#eef3f4" stroke="#98afb6" stroke-width="1.2"/>
+    <text class="action ink" x="1036" y="780" text-anchor="middle">Eval result</text>
+    <text class="small" x="1036" y="804" text-anchor="middle">Separate from completion</text>
+  </g>
+</svg>

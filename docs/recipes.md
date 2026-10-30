@@ -160,25 +160,33 @@ for step in composable_loop(llm=llm, tools=tools, config=config, task=task):
     ...
 ```
 
-## Deny-by-default shell tool
+<a id="deny-by-default-shell-tool"></a>
+
+## Deny-by-default tools
+
+Allow a named tool only for the arguments it needs.
+Keep the default decision set to `DENY`.
+This example allows `lookup_owner(service="payments")` and the completion tool.
 
 ```python
 from looplet import PermissionDecision, PermissionEngine, PermissionHook
 
 engine = PermissionEngine(default=PermissionDecision.DENY)
 engine.allow(
-    "bash",
-    arg_matcher=lambda args: args.get("command", "").startswith(("ls", "pwd", "cat")),
-    reason="read-only shell commands are safe by default",
+    "lookup_owner",
+    arg_matcher=lambda args: args.get("service") == "payments",
+    reason="Allow owner lookups for payments.",
 )
-engine.ask(
-    "bash",
-    arg_matcher=lambda args: "rm " in args.get("command", ""),
-    reason="destructive shell commands need approval",
-)
+engine.allow("done", reason="Allow the completion tool.")
 
 hooks = [PermissionHook(engine)]
 ```
+
+Do not authorize shell commands with `startswith()`.
+Compound commands can pass a prefix check.
+Use narrow tools with structured arguments when possible.
+Permission rules do not restrict process privileges, filesystem access, or network access.
+Run untrusted code in a restricted container or VM that enforces those limits.
 
 ## Run a sub-loop with its own tools
 

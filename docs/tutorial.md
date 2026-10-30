@@ -5,9 +5,11 @@ A collector reads the file after the loop.
 A grader checks the report against an expected value.
 These checks do not depend on the model's claim that it succeeded.
 
-Complete the [Quickstart](quickstart.md) first.
-This guide uses a cartridge to keep the agent and its tests in one directory.
-A cartridge is optional for normal loop use.
+Complete the [Python quickstart](python.md) first.
+You will produce a report file and check its profit from revenue and cost.
+This guide covers the cartridge form, which keeps the agent and its tests in one directory.
+The same collector and grader concepts apply to Python agents.
+A cartridge is not required for result checks.
 
 The complete example is in
 [`examples/regression_demo/`](https://github.com/hsaghir/looplet/tree/master/examples/regression_demo).
@@ -269,13 +271,13 @@ looplet eval run ./report_agent.cartridge \
   --threshold 1.0
 ```
 
-| Option | Effect |
-| --- | --- |
-| `--case profit_math` | Run one case |
-| `--max-steps N` | Override the step limit |
-| `--judge` | Enable graders that request an `llm` |
-| `--judge-model NAME` | Use a separate model for those graders |
-| `--threshold VALUE` | Fail if a scored grader falls below the value |
+| Option               | Effect                                        |
+| -------------------- | --------------------------------------------- |
+| `--case profit_math` | Run one case                                  |
+| `--max-steps N`      | Override the step limit                       |
+| `--judge`            | Enable graders that request an `llm`          |
+| `--judge-model NAME` | Use a separate model for those graders        |
+| `--threshold VALUE`  | Fail if a scored grader falls below the value |
 
 The command returns a non-zero exit code if a required check fails.
 Collector errors, invalid records, unknown cases, and empty required suites also make it fail.

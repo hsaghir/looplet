@@ -3119,6 +3119,24 @@ def _composable_loop_impl(
         _task_id = task.get("id", "") if isinstance(task, dict) else str(task)[:80]
         stream.emit(_LoopStartEvent(task_summary=str(_task_id), max_steps=config.max_steps))
 
+    def _save_checkpoint(step_number: int, *, status: str | None = None) -> None:
+        if _ckpt_store is None:
+            return
+        metadata = {"task": str(task)}
+        if status is not None:
+            metadata["status"] = status
+        loop_ctx.step_num = step_number
+        checkpoint = _capture_checkpoint(
+            loop_ctx,
+            step_number=step_number,
+            checkpoint_state=checkpoint_state,
+            metadata={**metadata, **_policy_checkpoint_metadata(state, _ckpt_store)},
+        )
+        _ckpt_store.save(
+            checkpoint,
+            key=f"step_{step_number}" if status is None else f"step_{step_number}_{status}",
+        )
+
     while state.budget_remaining > 0 and not done:
         step_num = state.step_count + 1 + _step_offset
         # Mirror current step + conversation into the bound LoopContext
@@ -4046,18 +4064,7 @@ def _composable_loop_impl(
                 _notify_post_step(hooks, state, session_log, cur_step)
 
                 # Save checkpoint after the session log and conversation include this step.
-                if _ckpt_store is not None:
-                    loop_ctx.step_num = cur_step
-                    _checkpoint = _capture_checkpoint(
-                        loop_ctx,
-                        step_number=cur_step,
-                        checkpoint_state=checkpoint_state,
-                        metadata={
-                            "task": str(task),
-                            **_policy_checkpoint_metadata(state, _ckpt_store),
-                        },
-                    )
-                    _ckpt_store.save(_checkpoint, key=f"step_{cur_step}")
+                _save_checkpoint(cur_step)
 
                 if not config.concurrent_dispatch:
                     reason = None
@@ -4201,6 +4208,7 @@ def _composable_loop_impl(
                     recall_key=tool_result.result_key or "",
                 )
                 _notify_post_step(hooks, state, session_log, cur_step)
+                _save_checkpoint(cur_step)
             else:
                 # done() dispatch intentionally bypasses permission checks - it's
                 # a loop signal, not a side-effecting tool. Permission-gating a
@@ -4221,9 +4229,9 @@ def _composable_loop_impl(
                 ):
                     _save_pending_dispatch(
                         _ckpt_store,
-                        calls=tool_calls[done_idx:],
+                        calls=[tool_call],
                         dispatching=[tool_call],
-                        step_number=step_num + len(tool_calls) - 1,
+                        step_number=cur_step,
                         session_log=session_log,
                         conversation_data=_conv.serialize(),
                         config_snapshot={
@@ -4324,6 +4332,7 @@ def _composable_loop_impl(
                 )
                 if rejected_done:
                     _notify_post_step(hooks, state, session_log, cur_step)
+                    _save_checkpoint(cur_step)
                     continue
                 _set_run_lifecycle(
                     loop_ctx,
@@ -4334,19 +4343,7 @@ def _composable_loop_impl(
                 )
                 _notify_post_step(hooks, state, session_log, cur_step)
                 # Save checkpoint after done step (after yield, matching non-done pattern)
-                if _ckpt_store is not None:
-                    loop_ctx.step_num = cur_step
-                    _checkpoint = _capture_checkpoint(
-                        loop_ctx,
-                        step_number=cur_step,
-                        checkpoint_state=checkpoint_state,
-                        metadata={
-                            "task": str(task),
-                            "status": "done",
-                            **_policy_checkpoint_metadata(state, _ckpt_store),
-                        },
-                    )
-                    _ckpt_store.save(_checkpoint, key=f"step_{cur_step}_done")
+                _save_checkpoint(cur_step, status="done")
                 done = True
                 stop_reason = "done"
                 # DONE_ACCEPTED is observer-only; the loop is already terminating.

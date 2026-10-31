@@ -1967,9 +1967,9 @@ async def _async_composable_loop_impl(
                 ):
                     await _save_pending_dispatch(
                         _ckpt_store,
-                        calls=tool_calls[done_idx:],
+                        calls=[tool_call],
                         dispatching=[tool_call],
-                        step_number=step_num + len(tool_calls) - 1,
+                        step_number=cur_step,
                         session_log=session_log,
                         conversation_data=_conv.serialize(),
                         config_snapshot={
@@ -2046,6 +2046,7 @@ async def _async_composable_loop_impl(
                 )
                 if rejected_done:
                     await _notify_post_step_async(hooks, state, session_log, cur_step)
+                    await _save_checkpoint(cur_step)
                     continue
                 _set_run_lifecycle(
                     loop_ctx,

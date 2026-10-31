@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+import os
+import py_compile
+import sys
 import time
 from pathlib import Path
 
+import pytest
+
+from looplet import ToolCall
 from looplet.cartridge.hot_reload import WorkspaceWatcher, fingerprint_workspace
 from looplet.cartridge.scaffold import scaffold_cartridge
 
@@ -55,6 +61,71 @@ def test_detects_edit_to_tool_execute(tmp_path: Path) -> None:
     assert w.changed() is False
 
 
+@pytest.mark.parametrize("location", ["root", "package", "resources"])
+@pytest.mark.parametrize("readonly_cache", [False, True])
+def test_reload_reads_current_helper_source_with_stale_bytecode(
+    tmp_path: Path, location: str, readonly_cache: bool
+) -> None:
+    workspace = _scaffold(tmp_path / "helper.workspace", name="helper")
+    helper_dir = workspace
+    if location == "package":
+        helper_dir = workspace / "reload_policy"
+        helper_dir.mkdir()
+        (helper_dir / "__init__.py").write_text("from .policy import policy\n")
+    elif location == "resources":
+        helper_dir = workspace / "resources"
+        helper_dir.mkdir(exist_ok=True)
+    helper = helper_dir / ("policy.py" if location == "package" else "reload_policy.py")
+    source = 'def policy():\n    return "allow"\n'
+    if location == "resources":
+        source += "def build(runtime=None):\n    return policy\n"
+    helper.write_text(source)
+    cache = Path(
+        py_compile.compile(
+            str(helper),
+            doraise=True,
+            invalidation_mode=py_compile.PycInvalidationMode.TIMESTAMP,
+        )
+    )
+    cached_bytes = cache.read_bytes()
+    if readonly_cache:
+        cache.chmod(0o444)
+        cache.parent.chmod(0o555)
+    (workspace / "tools/greet/tool.yaml").write_text("name: greet\nparameters: {}\n")
+    (workspace / "tools/greet/execute.py").write_text(
+        'from reload_policy import policy\ndef execute():\n    return {"policy": policy()}\n'
+    )
+    original_meta_path = list(sys.meta_path)
+    original_sys_path = list(sys.path)
+    try:
+        with WorkspaceWatcher(
+            workspace, runtime={"workspace": str(tmp_path)}, strict=True
+        ) as watcher:
+            original = watcher.preset()
+            initial_result = original.tools.dispatch(ToolCall(tool="greet", args={}))
+            assert initial_result.error is None
+            assert initial_result.data == {"policy": "allow"}
+            original_stat = helper.stat()
+            helper.write_text(source.replace("allow", "deny_"))
+            os.utime(helper, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+            assert watcher.changed()
+
+            replacement = watcher.reload_if_changed()
+
+            assert replacement is not None
+            result = replacement.tools.dispatch(ToolCall(tool="greet", args={}))
+            assert result.error is None
+            assert result.data == {"policy": "deny_"}
+            assert not watcher.changed()
+            assert cache.read_bytes() == cached_bytes
+    finally:
+        if readonly_cache:
+            cache.parent.chmod(0o755)
+            cache.chmod(0o644)
+    assert sys.meta_path == original_meta_path
+    assert sys.path == original_sys_path
+
+
 def test_pycache_and_dotfiles_ignored(tmp_path: Path) -> None:
     ws = _scaffold(tmp_path / "w.workspace", name="w")
     (ws / "__pycache__").mkdir(exist_ok=True)
@@ -65,6 +136,50 @@ def test_pycache_and_dotfiles_ignored(tmp_path: Path) -> None:
     fp = fingerprint_workspace(ws)
     assert not any("__pycache__" in k for k in fp)
     assert not any(".cache" in k for k in fp)
+
+
+def test_failed_helper_reload_restores_import_state_and_keeps_previous_preset(
+    tmp_path: Path,
+) -> None:
+    workspace = _scaffold(tmp_path / "reload.workspace", name="reload")
+    helper = workspace / "reload_failure_policy.py"
+    helper.write_text("def policy():\n    return True\n")
+    (workspace / "tools/greet/tool.yaml").write_text("name: greet\nparameters: {}\n")
+    (workspace / "tools/greet/execute.py").write_text(
+        'from reload_failure_policy import policy\ndef execute():\n    return {"valid": policy()}\n'
+    )
+    original_meta_path = list(sys.meta_path)
+    original_sys_path = list(sys.path)
+    with WorkspaceWatcher(workspace, runtime={"workspace": str(tmp_path)}, strict=True) as watcher:
+        original = watcher.preset()
+        helper.write_text('raise RuntimeError("synthetic helper reload failure")\n')
+
+        with pytest.raises(RuntimeError, match="synthetic helper reload failure"):
+            watcher.reload_if_changed()
+
+        assert watcher.preset() is original
+        assert watcher.changed()
+        result = original.tools.dispatch(ToolCall(tool="greet", args={}))
+        assert result.error is None
+        assert result.data == {"valid": True}
+        assert sys.meta_path == original_meta_path
+        assert sys.path == original_sys_path
+
+
+def test_cartridge_source_finder_does_not_replace_host_module_loader(tmp_path: Path) -> None:
+    from looplet.cartridge._imports import _CartridgeSourceFinder
+
+    cartridge_root = tmp_path / "cartridge"
+    cartridge_root.mkdir()
+    host_root = tmp_path / "cartridge-host"
+    host_root.mkdir()
+    helper = host_root / "host_policy.py"
+    helper.write_text("value = True\n")
+    cache = Path(py_compile.compile(str(helper), doraise=True))
+    original_cache = cache.read_bytes()
+
+    assert _CartridgeSourceFinder(cartridge_root).find_spec("host_policy", [str(host_root)]) is None
+    assert cache.read_bytes() == original_cache
 
 
 def test_force_reload_works_without_changes(tmp_path: Path) -> None:

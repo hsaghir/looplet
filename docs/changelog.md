@@ -100,6 +100,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Handled terminal failures and completion-gate rejections save complete recovery checkpoints in both loops. Terminal pending records exclude ignored trailing calls. Real interrupted dispatches still require host reconciliation.
+- Cartridge loads and reloads read current helper source, including packages and resources. Existing bytecode caches remain unchanged.
 - Event-style tool gates apply argument rewrites in order, check permissions for cached results, and stop dispatch on callback failures.
 - Captured-response replay preserves alternate completion tools when using recorded defaults and honors explicit host configuration.
 - Hook validation warns about likely method-name typos even when another hook method is valid.

@@ -16,10 +16,14 @@ import pytest
 from looplet import (
     AsyncMockLLMBackend,
     BaseToolRegistry,
+    Block,
+    CancelToken,
     DefaultState,
+    HookDecision,
     LoopConfig,
     MockLLMBackend,
     RunEnvelope,
+    ToolResult,
     ToolSpec,
     async_composable_loop,
     composable_loop,
@@ -1472,6 +1476,89 @@ class TestResumeLoopState:
         log: SessionLog = result["session_log"]
         assert len(log.entries) == 0
         assert result["step_offset"] == 0
+
+
+@pytest.mark.parametrize("async_driver", [False, True])
+@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize("failure", ["tool", "hook", "gate"])
+@pytest.mark.parametrize("trailing_call", [False, True])
+def test_handled_terminal_rejection_saves_resumable_checkpoint(
+    tmp_path: Path, async_driver: bool, native: bool, failure: str, trailing_call: bool
+) -> None:
+    journal = tmp_path / "effects.jsonl"
+    reason = f"synthetic terminal {failure} rejection"
+    cancel_token = CancelToken()
+
+    def submit(value: str) -> dict[str, str]:
+        with journal.open("a", encoding="utf-8") as receipt:
+            receipt.write(json.dumps({"value": value}) + "\n")
+        if failure == "tool":
+            raise ValueError(reason)
+        return {"value": value}
+
+    class RejectTerminal:
+        def check_done(self, state, session_log, context, step_num):
+            if failure == "gate":
+                cancel_token.cancel()
+                return Block(reason)
+
+        def post_dispatch(self, state, session_log, tool_call, tool_result, step_num):
+            cancel_token.cancel()
+            if failure == "hook":
+                return HookDecision(
+                    updated_result=ToolResult(
+                        tool=tool_call.tool,
+                        args_summary=tool_result.args_summary,
+                        data=tool_result.data,
+                        error=reason,
+                    )
+                )
+
+    tools = BaseToolRegistry()
+    tools.register(ToolSpec("submit", "Write a synthetic result", {"value": {}}, submit))
+    tools.register(ToolSpec("ignored", "Must not execute", {}, lambda: submit("unexpected")))
+    calls = [{"tool": "submit", "args": {"value": "synthetic"}}]
+    if trailing_call:
+        calls.append({"tool": "ignored", "args": {}})
+    max_steps = len(calls)
+    backend_class = AsyncMockLLMBackend if async_driver else MockLLMBackend
+    backend = backend_class([json.dumps({"tools": calls})])
+    arguments = {
+        "llm": backend,
+        "tools": tools,
+        "state": DefaultState(max_steps=max_steps),
+        "config": LoopConfig(
+            harness_profile="minimal",
+            max_steps=max_steps,
+            cancel_token=cancel_token,
+            done_tool="submit",
+            checkpoint_dir=str(tmp_path / "checkpoints"),
+            use_native_tools=native,
+        ),
+        "hooks": [RejectTerminal()],
+    }
+
+    async def run_async():
+        return [step async for step in async_composable_loop(**arguments)]
+
+    steps = asyncio.run(run_async()) if async_driver else list(composable_loop(**arguments))
+    assert len(steps) == backend.calls == 1
+    assert reason in steps[0].tool_result.error
+    effects = (
+        [json.loads(line) for line in journal.read_text().splitlines()] if journal.exists() else []
+    )
+    assert effects == ([] if failure == "gate" else [{"value": "synthetic"}])
+
+    checkpoint = FileCheckpointStore(tmp_path / "checkpoints").load_latest_for_resume()
+    assert checkpoint is not None
+    assert checkpoint.step_number == 1
+    assert not checkpoint.metadata.get("pending_calls")
+    assert checkpoint.config_snapshot["queries_used"] == 0
+    assert checkpoint.config_snapshot["budget_remaining"] == max_steps - 1
+    assert reason in json.dumps(checkpoint.conversation_data)
+    restored = resume_loop_state(checkpoint, max_steps=2)
+    assert restored["step_offset"] == 1
+    assert [entry.tool for entry in restored["session_log"].entries] == ["submit"]
 
 
 def test_interrupted_dispatch_blocks_implicit_retry(tmp_path: Path) -> None:

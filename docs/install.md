@@ -14,7 +14,7 @@ Use the [published package](#install-the-published-package) when you need that r
 ```bash
 python -m venv .venv-looplet
 . .venv-looplet/bin/activate
-python -m pip install "looplet @ https://github.com/hsaghir/looplet/archive/e4663644bf9572153975bae8db8f170d8aa46341.zip"
+python -m pip install "looplet @ https://github.com/hsaghir/looplet/archive/3ecf285ba98b1d3635af2c9711a1a73910147f8f.zip"
 ```
 
 Installation needs network access, but no Git checkout.
@@ -22,6 +22,7 @@ The examples with fixed responses need no model key or model service.
 On Windows, activate `.venv-looplet\Scripts\Activate.ps1` in PowerShell.
 
 Both the preview and release report version `0.4.1`.
+The version alone does not identify their APIs.
 Record the source fingerprint to distinguish them:
 
 ```bash
@@ -36,7 +37,7 @@ Install the adapter from the same preview revision.
 For OpenAI or a compatible endpoint:
 
 ```bash
-python -m pip install "looplet[openai] @ https://github.com/hsaghir/looplet/archive/e4663644bf9572153975bae8db8f170d8aa46341.zip"
+python -m pip install "looplet[openai] @ https://github.com/hsaghir/looplet/archive/3ecf285ba98b1d3635af2c9711a1a73910147f8f.zip"
 ```
 
 Use `[anthropic]` for Anthropic or `[all]` for both adapters.

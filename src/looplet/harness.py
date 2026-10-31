@@ -347,10 +347,19 @@ def _prepare_harness_run(
         return prepared
     root = Path(config.run_dir or Path(".looplet/runs") / uuid4().hex).resolve()
     prepared.run_dir = root
-    root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    policy = root / ".gitignore"
-    if not policy.exists():
-        policy.write_text("*\n", encoding="utf-8")
+    try:
+        root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        policy = root / ".gitignore"
+        if not policy.exists():
+            policy.write_text("*\n", encoding="utf-8")
+    except OSError as error:
+        raise OSError(
+            error.errno,
+            "Cannot initialize run evidence. Set LoopConfig(run_dir=...) to a writable "
+            "directory, or set LoopConfig(disabled_defaults=('persistence',)) to run "
+            "without saved evidence.",
+            error.filename,
+        ) from error
     effective = replace(resolved.config, run_dir=str(root))
     if (
         "checkpointing" not in disabled

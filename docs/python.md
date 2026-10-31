@@ -17,7 +17,7 @@ Create a virtual environment and install the preview:
 ```bash
 python -m venv .venv-looplet
 . .venv-looplet/bin/activate
-python -m pip install "looplet @ https://github.com/hsaghir/looplet/archive/e4663644bf9572153975bae8db8f170d8aa46341.zip"
+python -m pip install "looplet @ https://github.com/hsaghir/looplet/archive/3ecf285ba98b1d3635af2c9711a1a73910147f8f.zip"
 ```
 
 Installation needs network access, but no Git checkout.
@@ -70,7 +70,38 @@ Looplet uses the signature to describe arguments and the docstring to describe t
 It checks top-level argument types before the function runs.
 Nested validation remains your responsibility.
 
+<a id="collect-the-result"></a>
+
+## Collect and check the result
+
+Use `run_result()` when you need the final result instead of an iterator.
+Keep `lookup_owner` and `responses` from the first example.
+Create a fresh scripted backend for each run:
+
+```python
+from looplet import run_result
+
+llm = MockLLMBackend(responses, cycle=False)
+result = run_result(llm, task="Who owns payments?", tools=[lookup_owner])
+
+assert result.completed
+assert result.output["summary"] == "fintech-platform"
+lookup_step = result.steps[0]
+assert lookup_step.tool_result.error is None
+assert lookup_step.tool_result.data == "fintech-platform"
+```
+
+`result.output` contains the accepted completion output.
+`result.steps` contains this run's steps.
+`result.termination_reason` explains why the loop ended.
+Accepted completion does not prove correctness.
+The assertions above check both the answer and the tool result.
+For tools that write files or records, check those outputs independently.
+
 ## How the loop fits together
+
+This section is optional.
+Continue with [a limit and permission hook](#add-a-limit-and-a-permission-hook) to change the agent first.
 
 State holds the run's progress and tool results.
 The loop uses that state to build the next model input.
@@ -126,34 +157,6 @@ Use a permission hook when a check must happen before execution.
 Limits and `should_stop` can end the run without accepted completion.
 The diagram omits retries, error branches, and multiple calls from one response.
 See [hooks](hooks.md) and [runtime controls](operations.md) for those details.
-
-<a id="collect-the-result"></a>
-
-## Collect and check the result
-
-Use `run_result()` when you need the final result instead of an iterator.
-Keep `lookup_owner` and `responses` from the first example.
-Create a fresh scripted backend for each run:
-
-```python
-from looplet import run_result
-
-llm = MockLLMBackend(responses, cycle=False)
-result = run_result(llm, task="Who owns payments?", tools=[lookup_owner])
-
-assert result.completed
-assert result.output["summary"] == "fintech-platform"
-lookup_step = result.steps[0]
-assert lookup_step.tool_result.error is None
-assert lookup_step.tool_result.data == "fintech-platform"
-```
-
-`result.output` contains the accepted completion output.
-`result.steps` contains this run's steps.
-`result.termination_reason` explains why the loop ended.
-Accepted completion does not prove correctness.
-The assertions above check both the answer and the tool result.
-For tools that write files or records, check those outputs independently.
 
 <a id="change-one-thing-at-a-time"></a>
 
@@ -251,7 +254,7 @@ Replace the scripted backend when the offline example works.
 Install the OpenAI adapter from the same revision:
 
 ```bash
-python -m pip install "looplet[openai] @ https://github.com/hsaghir/looplet/archive/e4663644bf9572153975bae8db8f170d8aa46341.zip"
+python -m pip install "looplet[openai] @ https://github.com/hsaghir/looplet/archive/3ecf285ba98b1d3635af2c9711a1a73910147f8f.zip"
 ```
 
 Set `OPENAI_API_KEY` and `OPENAI_MODEL` for your provider.

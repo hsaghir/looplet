@@ -8,10 +8,29 @@ import shlex
 import tomllib
 from datetime import date
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import looplet
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_package_readme_links_work_outside_the_repository() -> None:
+    readme = (ROOT / "README.md").read_text()
+    targets = re.findall(r"\]\(([^)]+)\)", readme)
+    assert targets
+    assert all(urlsplit(target).scheme == "https" for target in targets)
+    assert "https://hsaghir.com/looplet/python/" in targets
+    assert "https://hsaghir.com/looplet/quickstart/" in targets
+
+
+def test_troubleshooting_distinguishes_builds_and_explains_storage_remedies() -> None:
+    troubleshooting = (ROOT / "docs/troubleshooting.md").read_text()
+    assert "looplet doctor --no-backend --json" in troubleshooting
+    assert "A version number alone does not identify their APIs." in troubleshooting
+    assert "`build` check" in troubleshooting
+    assert "LoopConfig(run_dir=...)" in troubleshooting
+    assert 'LoopConfig(disabled_defaults=("persistence",))' in troubleshooting
 
 
 def test_package_version_is_consistent_with_its_release_stage() -> None:
@@ -113,7 +132,7 @@ def test_released_safety_fixes_are_explicitly_scoped() -> None:
     ):
         assert f"| {behavior} |" in table
     assert "`redact=` does not scrub native response blocks." in safety
-    assert "install.md#unreleased-safety-fixes" in readme
+    assert "https://hsaghir.com/looplet/install/#unreleased-safety-fixes" in readme
     assert "install.md#unreleased-safety-fixes" in provenance
     assert '<a id="unreleased-safety-fixes"></a>' in install
     assert "**Since `0.4.1`:**" in provenance

@@ -20,7 +20,7 @@ Start with functions; package an agent as files only when you need to share it.
 Python 3.11 or newer is required.
 The core has no third-party runtime dependencies.
 
-[Documentation](https://hsaghir.com/looplet/) | [Quickstart](docs/python.md) | [Python API](docs/api.md)
+[Documentation](https://hsaghir.com/looplet/) | [Quickstart](https://hsaghir.com/looplet/python/) | [Python API](https://hsaghir.com/looplet/api/)
 
 ## Run one loop
 
@@ -29,7 +29,7 @@ It is not in PyPI `0.4.1`.
 Install this fixed revision in a virtual environment:
 
 ```bash
-python -m pip install "looplet @ https://github.com/hsaghir/looplet/archive/e4663644bf9572153975bae8db8f170d8aa46341.zip"
+python -m pip install "looplet @ https://github.com/hsaghir/looplet/archive/3ecf285ba98b1d3635af2c9711a1a73910147f8f.zip"
 ```
 
 This example uses fixed model responses.
@@ -58,7 +58,7 @@ The first tool result is `fintech-platform`.
 The second call completes the run.
 The function stays callable as ordinary Python.
 Replace the scripted backend with your provider after this example works.
-The [quickstart](docs/python.md) covers setup and this change.
+The [quickstart](https://hsaghir.com/looplet/python/) covers setup and this change.
 
 ## How the loop fits together
 
@@ -66,7 +66,7 @@ Each turn runs from left to right.
 Hooks run around model and tool calls.
 Updated state feeds the next turn.
 
-[![Looplet's five-stage turn, a cartridge file layout on the right, and dashed output and artifact inputs to a grader below.](docs/assets/loop-lifecycle.svg)](docs/assets/loop-lifecycle.svg)
+[![Looplet's five-stage turn, a cartridge file layout on the right, and dashed output and artifact inputs to a grader below.](https://hsaghir.com/looplet/assets/loop-lifecycle.svg)](https://hsaghir.com/looplet/assets/loop-lifecycle.svg)
 
 A cartridge defines this same loop declaratively as files.
 It declares prompts, tools, hooks, and configuration.
@@ -78,7 +78,7 @@ Compaction shortens old context before the next prompt when needed.
 Built-in compaction keeps original tool results available.
 Replay reuses saved model responses and runs tools again.
 Completion uses `check_done`, not ordinary tool permission checks.
-See [hook timing and runtime controls](docs/python.md#how-the-loop-fits-together) for the details.
+See [hook timing and runtime controls](https://hsaghir.com/looplet/python/#how-the-loop-fits-together) for the details.
 
 ## Add controls to the same loop
 
@@ -102,17 +102,17 @@ The iterator and result helper use the same engine.
 `max_steps` limits charged tool steps, not requests or spending.
 Use `LoopConfig` for other limits and runtime settings.
 
-Add a [hook](docs/hooks.md) to check calls before execution or inspect results afterward.
+Add a [hook](https://hsaghir.com/looplet/hooks/) to check calls before execution or inspect results afterward.
 For long runs, Looplet shortens old context and keeps original tool results separately.
 Runs save private evidence under `.looplet/runs/<unique-id>` by default.
 Compaction can discard details; you control evidence access and retention.
 
 Explicit hooks and services take precedence over matching defaults.
 Use `disabled_defaults` for individual opt-outs or `harness_profile="minimal"` to omit automatic additions.
-See [runtime controls](docs/operations.md#standard-agent-harness) for the full policy.
+See [runtime controls](https://hsaghir.com/looplet/operations/#standard-agent-harness) for the full policy.
 
-The [quickstart](docs/python.md) adds a permission hook, captures a run, and replays this same agent.
-Use [async APIs](docs/operations.md#asynchronous-loops) with an asynchronous backend.
+The [quickstart](https://hsaghir.com/looplet/python/) adds a permission hook, captures a run, and replays this same agent.
+Use [async APIs](https://hsaghir.com/looplet/operations/#asynchronous-loops) with an asynchronous backend.
 Use `closing` or `aclosing` when stopping iteration early.
 
 ## Check results
@@ -134,7 +134,7 @@ The example captures fixed model responses and an incorrect report.
 It changes one tool line and replays those responses with the corrected tool.
 A collector reads the new report.
 The required grader changes from fail to pass.
-See the [walkthrough](docs/regression-demo.md) for the files and limits.
+See the [walkthrough](https://hsaghir.com/looplet/regression-demo/) for the files and limits.
 
 Replay fixes model responses, not tool effects.
 Tools, networks, clocks, and random values can change unless your host controls them.
@@ -149,11 +149,11 @@ Replace the control loop first.
 Check that the new loop preserves the behavior you need.
 Then add capture, hooks, or result checks as needed.
 
-See the [Migration guide](docs/migrate.md) for the full procedure.
+See the [Migration guide](https://hsaghir.com/looplet/migrate/) for the full procedure.
 
-Use a [Python factory](docs/api.md#optional-preset-conveniences) to build fresh dependencies for each task.
-Use a [cartridge](docs/cartridge.md) when you need an agent stored and shared as files.
-The optional [`looplet new` generator](docs/agent-factory.md) drafts cartridges with a model.
+Use a [Python factory](https://hsaghir.com/looplet/api/#optional-preset-conveniences) to build fresh dependencies for each task.
+Use a [cartridge](https://hsaghir.com/looplet/cartridge/) when you need an agent stored and shared as files.
+The optional [`looplet new` generator](https://hsaghir.com/looplet/agent-factory/) drafts cartridges with a model.
 It is separate from a Python factory.
 
 ## When Looplet fits
@@ -179,33 +179,33 @@ It does not replace those systems.
 Looplet does not create an operating system sandbox.
 Run untrusted tools in a restricted container or VM.
 A Git worktree separates edits, not privileges or credentials.
-See [SECURITY.md](SECURITY.md) for deployment controls.
+See [SECURITY.md](https://github.com/hsaghir/looplet/blob/master/SECURITY.md) for deployment controls.
 
 ## Published package and stability
 
 The latest PyPI release is `0.4.1`.
 Its API differs from the preview above.
-Use the [released walkthrough](docs/quickstart.md) with this install:
+Use the [released walkthrough](https://hsaghir.com/looplet/quickstart/) with this install:
 
 ```bash
 python -m pip install "looplet==0.4.1"
 ```
 
-See [installation and version guidance](docs/install.md) before choosing a build.
-Read the [released safety fixes](docs/install.md#unreleased-safety-fixes) before sharing captures from `0.4.0`.
+See [installation and version guidance](https://hsaghir.com/looplet/install/) before choosing a build.
+Read the [released safety fixes](https://hsaghir.com/looplet/install/#unreleased-safety-fixes) before sharing captures from `0.4.0`.
 
 Looplet follows semantic versioning.
 Before version `1.0`, a minor release can change an API incompatibly.
 Pin your dependency version and artifact hashes for deployment.
-See the [changelog](CHANGELOG.md) and [release plan](ROADMAP.md#path-to-10).
+See the [changelog](https://hsaghir.com/looplet/changelog/) and [release plan](https://hsaghir.com/looplet/roadmap/#path-to-10).
 
 ## Read next
 
-- [Python quickstart](docs/python.md): run and extend one agent.
-- [Install and configure](docs/install.md): choose a build and connect a provider.
-- [Python API](docs/api.md): find functions, hooks, and configuration fields.
-- [Operations](docs/operations.md): use retries, context limits, cancellation, and checkpoints.
-- [Examples](examples/): run complete examples.
+- [Python quickstart](https://hsaghir.com/looplet/python/): run and extend one agent.
+- [Install and configure](https://hsaghir.com/looplet/install/): choose a build and connect a provider.
+- [Python API](https://hsaghir.com/looplet/api/): find functions, hooks, and configuration fields.
+- [Operations](https://hsaghir.com/looplet/operations/): use retries, context limits, cancellation, and checkpoints.
+- [Examples](https://github.com/hsaghir/looplet/tree/master/examples): run complete examples.
 
 ## Contributing
 
@@ -213,9 +213,9 @@ Report bugs or propose examples and backend adapters.
 A core feature must work across task domains.
 Include checks for the behavior that your change affects.
 
-See [CONTRIBUTING.md](CONTRIBUTING.md).
-Report security issues as described in [SECURITY.md](SECURITY.md).
+See [CONTRIBUTING.md](https://hsaghir.com/looplet/contributing/).
+Report security issues as described in [SECURITY.md](https://github.com/hsaghir/looplet/blob/master/SECURITY.md).
 
 ## License
 
-Apache License 2.0. See [LICENSE](LICENSE).
+Apache License 2.0. See [LICENSE](https://github.com/hsaghir/looplet/blob/master/LICENSE).

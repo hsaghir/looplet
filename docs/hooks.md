@@ -21,6 +21,9 @@ for step in composable_loop(..., hooks=[ConsolePrinter()]):
 ```
 
 Implement only the methods you need.
+Looplet warns about likely misspellings, even when other hook methods are valid.
+A warning does not enforce the missing policy.
+Test that a denied call does not execute its tool.
 The [quickstart permission hook](python.md#add-a-limit-and-a-permission-hook) is a complete example.
 The sections below describe the full interface and composition rules.
 

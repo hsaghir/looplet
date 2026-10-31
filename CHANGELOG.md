@@ -100,6 +100,10 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Hook constructor export preserves nested JSON/YAML settings and inferred resource references. Unsupported values now warn or fail in strict mode.
+- Cartridge overwrite reports helper conflicts without replacing application files or following destination links. Fresh exports preserve helper source bytes.
+- External async cancellation saves a cancelled runtime result and any configured terminal checkpoint. The original `CancelledError` still propagates.
+- Coding presets invalidate test evidence after write, edit, or shell calls and between runs. Errored test results cannot satisfy completion.
 - Event-style tool gates apply argument rewrites in order, check permissions for cached results, and stop dispatch on callback failures.
 - Captured-response replay preserves alternate completion tools when using recorded defaults and honors explicit host configuration.
 - Hook validation warns about likely method-name typos even when another hook method is valid.

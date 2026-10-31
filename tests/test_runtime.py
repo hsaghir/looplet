@@ -356,7 +356,13 @@ async def test_runtime_faults_share_restoration_and_persistence_contract(async_r
         )
 
 
-async def test_external_async_cancellation_restores_and_releases_runtime():
+@pytest.mark.parametrize("store_kind", ["none", "memory", "file"])
+@pytest.mark.parametrize("checkpoints", [False, True])
+async def test_external_async_cancellation_restores_and_releases_runtime(
+    tmp_path, store_kind, checkpoints
+):
+    from looplet import FileRunStore, RunEnvelope, RunPhase, RunResult
+
     entered = asyncio.Event()
     blocked = asyncio.Event()
 
@@ -369,16 +375,48 @@ async def test_external_async_cancellation_restores_and_releases_runtime():
     preset = _preset(use_native_tools=False)
     envelope = preset.config.run_envelope
     token = preset.config.cancel_token
-    runtime = AgentRuntime(preset)
-    pending = asyncio.create_task(runtime.run_async(Backend()))
+    store = (
+        MemoryRunStore()
+        if store_kind == "memory"
+        else FileRunStore(tmp_path / "runs")
+        if store_kind == "file"
+        else None
+    )
+    runtime = AgentRuntime(preset, store=store, checkpoint_every_n_steps=1 if checkpoints else None)
+    run_envelope = RunEnvelope(run_id="external-cancel")
+    pending = asyncio.create_task(runtime.run_async(Backend(), envelope=run_envelope))
     try:
         await asyncio.wait_for(entered.wait(), timeout=5)
-        pending.cancel()
-        with pytest.raises(asyncio.CancelledError):
+        pending.cancel("host request")
+        with pytest.raises(asyncio.CancelledError) as caught:
             await pending
+        assert caught.value.args == ("host request",)
         assert not runtime._active_tokens
         assert preset.config.run_envelope is envelope
         assert preset.config.cancel_token is token
+        result = RunResult.from_state(preset.state)
+        assert result.status is RunStatus.CANCELLED
+        assert result.phase is RunPhase.TERMINAL
+        assert result.termination_reason == "cancelled"
+        assert result.output is None
+        if store is not None:
+            record = store.load(run_envelope.run_id)
+            assert record is not None
+            assert record.status == "cancelled"
+            assert record.result is not None
+            assert record.result["status"] == "cancelled"
+            assert record.result["phase"] == "terminal"
+            assert record.result["termination_reason"] == "cancelled"
+            assert record.result["run_envelope"] == run_envelope.to_dict()
+            assert record.result["metadata"]["runtime_duration_ms"] >= 0
+            assert bool(record.checkpoint_keys) is checkpoints
+            if checkpoints:
+                checkpoint = store.load_checkpoint(run_envelope.run_id, record.checkpoint_keys[-1])
+                assert checkpoint is not None
+                assert checkpoint.is_terminal
+                assert checkpoint.run_status == "cancelled"
+                assert checkpoint.run_phase == "terminal"
+                assert checkpoint.termination_reason == "cancelled"
     finally:
         blocked.set()
         runtime.close()

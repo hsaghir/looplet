@@ -59,7 +59,7 @@ def _dump_yaml(value: Any, indent: int = 0) -> str:
         for item in value:
             if isinstance(item, (dict, list)):
                 rendered = _dump_yaml(item, indent + 1).rstrip()
-                if "\n" in rendered:
+                if "\n" in rendered or (isinstance(item, list) and item):
                     lines.append(f"{pad}-")
                     lines.append(rendered)
                 else:

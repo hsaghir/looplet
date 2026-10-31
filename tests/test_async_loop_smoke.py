@@ -1000,28 +1000,38 @@ class TestAsyncComposableLoop:
         assert checkpoint.metadata["status"] == "done"
         assert len(checkpoint.session_log_data["entries"]) == 1
 
-    async def test_interrupted_dispatch_blocks_implicit_retry(self, tmp_path):
+    @pytest.mark.parametrize("cancelled", [False, True])
+    async def test_interrupted_dispatch_blocks_implicit_retry(self, tmp_path, cancelled):
+        from asyncio import CancelledError
+
+        from looplet import RunResult, RunStatus
         from looplet.checkpoint import FileCheckpointStore
 
         effects = []
         tools = BaseToolRegistry()
+        interruption = CancelledError if cancelled else KeyboardInterrupt
 
         def interrupt():
             effects.append("started")
-            raise KeyboardInterrupt
+            raise interruption
 
         tools.register(ToolSpec("effect", "Side effect", {}, interrupt))
+        register_done_tool(tools)
         config = LoopConfig(max_steps=2, checkpoint_dir=tmp_path, use_native_tools=False)
         response = '{"tool":"effect","args":{},"call_id":"effect-1"}'
-        with pytest.raises(KeyboardInterrupt):
+        state = DefaultState(max_steps=2)
+        with pytest.raises(interruption):
             async for _ in async_composable_loop(
                 llm=AsyncMockLLMBackend(responses=[response]),
                 tools=tools,
-                state=DefaultState(max_steps=2),
+                state=state,
                 config=config,
             ):
                 pass
 
+        assert RunResult.from_state(state).status is (
+            RunStatus.CANCELLED if cancelled else RunStatus.FAILED
+        )
         pending = FileCheckpointStore(tmp_path).load_latest_for_resume()
         assert pending is not None
         assert pending.metadata["pending_calls"][0]["execution_status"] == "effect_unknown"

@@ -388,6 +388,13 @@ Correct the preset and retry the same path without cleanup.
 With `overwrite=True`, successful exports replace managed files and retain application-owned files.
 If installation fails, the previous destination is restored.
 
+Root Python helpers from a loaded cartridge are copied byte-for-byte into fresh exports.
+An existing identical regular file is retained.
+Different files, non-file paths, and destination links are helper conflicts.
+Strict export rejects these conflicts before changing the destination.
+Permissive export preserves the existing path and adds a serialization warning.
+Export to a new directory when helpers have changed.
+
 ### What round-trips losslessly
 
 | Component                                                                                                                                                                                                                                                                                                                                                                                            | How                                                                                                                                                 |
@@ -404,6 +411,10 @@ If installation fails, the previous destination is restored.
 
 `strict=True` rejects unsupported conversion; it does not promise a standalone distribution.
 Check required modules and run the exported agent's tests on its receiving host.
+
+Without `to_config()`, hook constructor settings are inferred from matching public or private attributes.
+Nested JSON/YAML values and declared resource references are retained.
+Values that cannot round-trip raise in strict mode and produce a warning otherwise.
 
 ### What does not round-trip (and what happens)
 

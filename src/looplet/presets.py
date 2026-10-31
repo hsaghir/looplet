@@ -822,12 +822,17 @@ def _build_research_tools(workspace: str) -> BaseToolRegistry:
 
 
 class _CodingGuardrailHook:
-    """Just-in-time guardrails: test enforcement and review nudges."""
+    """Best-effort test freshness and review nudges for the coding preset."""
 
     def __init__(self) -> None:
         self._tests_passed: bool = False
         self._files_written: set[str] = set()
         self._has_tests: bool = False
+
+    def bind(self, _loop_context: Any) -> None:
+        self._tests_passed = False
+        self._files_written.clear()
+        self._has_tests = False
 
     def post_dispatch(
         self,
@@ -838,6 +843,9 @@ class _CodingGuardrailHook:
         step_num: int,
     ) -> Any:
         from looplet.hook_decision import InjectContext  # noqa: PLC0415
+
+        if tool_call.tool in {"write", "edit", "bash"}:
+            self._tests_passed = False
 
         if tool_call.tool == "write":
             path = tool_call.args.get("file_path", "")
@@ -851,7 +859,7 @@ class _CodingGuardrailHook:
             cmd = tool_call.args.get("command", "")
             data = tool_result.data or {}
             if "pytest" in cmd or "python -m pytest" in cmd:
-                self._tests_passed = data.get("exit_code", 1) == 0
+                self._tests_passed = tool_result.error is None and data.get("exit_code", 1) == 0
                 if not self._tests_passed:
                     return InjectContext(
                         "Tests failed. Read output, fix the exact issue, run tests again."
@@ -863,7 +871,7 @@ class _CodingGuardrailHook:
 
         if not self._tests_passed:
             return HookDecision(
-                block="Tests have not passed yet. Run tests and fix failures first."
+                block="Run tests after the latest write, edit, or shell command before calling done."
             )
         return None
 
@@ -893,8 +901,8 @@ def coding_agent_preset(
         max_steps: Maximum charged steps; successful free calls do not count.
         context_window: LLM context window size in tokens.
         system_prompt: Override system prompt. If empty, uses a sensible default.
-        require_tests: If True, includes guardrail hook that blocks done()
-            until tests pass.
+        require_tests: If True, blocks done() until tests pass in this run
+            after the latest write, edit, or other shell command.
 
     Example::
 

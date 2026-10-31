@@ -590,6 +590,13 @@ async def async_composable_loop(
     except GeneratorExit:
         _mark_terminal_state(finalizer.state, status="stopped", reason="stream_closed")
         raise
+    except asyncio.CancelledError:
+        _mark_terminal_state(
+            finalizer.state if finalizer.state is not None else prepared.state,
+            status="cancelled",
+            reason="cancelled",
+        )
+        raise
     except BaseException:
         _mark_failed_state(finalizer.state if finalizer.state is not None else prepared.state)
         raise

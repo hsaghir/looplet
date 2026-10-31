@@ -306,6 +306,55 @@ def test_export_helper_conflicts_are_explicit_and_preserve_existing_paths(tmp_pa
         assert result.data == {"value": "current"}
 
 
+@pytest.mark.parametrize("strict", [False, True])
+@pytest.mark.parametrize("fault", ["read", "write"])
+@pytest.mark.parametrize("initial", ["missing", "empty", "existing"])
+def test_export_helper_io_failures_follow_strictness_and_preserve_files(
+    tmp_path, monkeypatch, strict, fault, initial
+):
+    source = _helper_cartridge(tmp_path / "source", b'VALUE = "current"\n')
+    out = tmp_path / "snapshot"
+    if initial != "missing":
+        out.mkdir()
+    if initial == "existing":
+        (out / "notes.txt").write_text("Preserve application-owned files.\n")
+    before = {
+        str(path.relative_to(out)): path.read_bytes() for path in out.rglob("*") if path.is_file()
+    }
+    method_name = "read_bytes" if fault == "read" else "write_bytes"
+    original = getattr(Path, method_name)
+
+    def fail_helper_io(path, *args, **kwargs):
+        if path.name == "export_policy.py":
+            raise OSError("injected helper I/O failure")
+        return original(path, *args, **kwargs)
+
+    with cartridge_to_preset(source, strict=True) as preset:
+        with monkeypatch.context() as patch:
+            patch.setattr(Path, method_name, fail_helper_io)
+            if strict:
+                with pytest.raises(CartridgeSerializationError, match="export_policy.py.*I/O"):
+                    preset_to_cartridge(preset, out, overwrite=True, strict=True)
+            else:
+                written = preset_to_cartridge(preset, out, overwrite=True)
+                assert any(
+                    "export_policy.py" in warning and "I/O" in warning
+                    for warning in written.serialization_warnings
+                )
+    if strict:
+        assert out.exists() is (initial != "missing")
+        assert {
+            str(path.relative_to(out)): path.read_bytes()
+            for path in out.rglob("*")
+            if path.is_file()
+        } == before
+    else:
+        assert (out / "cartridge.json").is_file()
+        assert not (out / "export_policy.py").exists()
+        for relative, contents in before.items():
+            assert (out / relative).read_bytes() == contents
+
+
 @pytest.mark.parametrize("encoding", ["utf-8", "utf-8-sig", "latin-1"])
 def test_export_preserves_helper_source_bytes(tmp_path, encoding):
     contents = f"# coding: {encoding}\nVALUE = 'caf\u00e9'\n".encode(encoding)

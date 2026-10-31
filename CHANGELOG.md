@@ -34,6 +34,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Cartridge helper loading preserves custom host path-entry loaders instead of replacing their source transformations.
 - Sync and async loops share one run-setup path. Automatic persistence and compaction bindings no longer overwrite caller configuration.
 - Overlapping runs retain independent default compaction services. Explicit host services keep their identity and replacement precedence.
 - The policy example reports saved progress and remaining sections on reads and writes. Progress survives compaction without an added loop policy.
@@ -104,6 +105,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - Method-style and event-style tool hooks apply argument and result rewrites in registration order. Cached results still pass permission checks, and tool-gate callback failures stop dispatch.
 - Terminal acceptance uses step metadata instead of business output fields. Payloads containing `rejected` or `status` no longer cause false retries or hide accepted output. History helpers retain the legacy marker for older steps.
 - Replay documentation describes failed run states for exhausted captures and protocol divergence instead of promising caller-visible exceptions.
+- Handled terminal failures and completion-gate rejections save complete recovery checkpoints in both loops. Terminal pending records exclude ignored trailing calls. Real interrupted dispatches still require host reconciliation.
+- Cartridge loads and reloads read current helper source, including packages and resources. Existing bytecode caches remain unchanged.
+- Event-style tool gates apply argument rewrites in order, check permissions for cached results, and stop dispatch on callback failures.
 - Captured-response replay preserves alternate completion tools when using recorded defaults and honors explicit host configuration.
 - Hook validation warns about likely method-name typos even when another hook method is valid.
 - Run-evidence setup errors explain writable-directory and persistence opt-out remedies while preserving the original filesystem error.

@@ -21,6 +21,7 @@ import inspect
 import logging
 import shutil
 import sys
+from importlib.machinery import PathFinder
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -28,7 +29,7 @@ if TYPE_CHECKING:
     from looplet.memory import PersistentMemorySource
     from looplet.presets import AgentPreset
 
-from looplet.cartridge._imports import _import_module_from_path
+from looplet.cartridge._imports import _CartridgeSourceFinder, _import_module_from_path
 from looplet.cartridge._layout import (
     CartridgeLayout,
     CartridgeSerializationError,
@@ -370,6 +371,7 @@ def cartridge_to_preset(
     #     into resource modules without forcing a setup.py shim).
     root_str = str(root)
     resources_dir_str = str(root / CartridgeLayout.RESOURCES_DIR)
+    source_finder = _CartridgeSourceFinder(root)
     pushed_paths: list[str] = []
     for p in (root_str, resources_dir_str):
         if (root / CartridgeLayout.RESOURCES_DIR).is_dir() or p == root_str:
@@ -377,6 +379,10 @@ def cartridge_to_preset(
                 sys.path.insert(0, p)
                 pushed_paths.append(p)
     load_resources = _LoadResourceTracker()
+    finder_index = (
+        sys.meta_path.index(PathFinder) if PathFinder in sys.meta_path else len(sys.meta_path)
+    )
+    sys.meta_path.insert(finder_index, source_finder)
     try:
         try:
             preset = _workspace_to_preset_inner(
@@ -401,6 +407,10 @@ def cartridge_to_preset(
         load_resources.disarm()
         return preset
     finally:
+        try:
+            sys.meta_path.remove(source_finder)
+        except ValueError:
+            pass
         for p in pushed_paths:
             try:
                 sys.path.remove(p)

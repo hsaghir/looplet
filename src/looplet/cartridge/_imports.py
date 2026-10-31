@@ -1,19 +1,44 @@
-"""Hook + tool + resource source loader.
+"""Load cartridge Python source without bytecode caches.
 
-Single function: :func:`_import_module_from_path`. Compiles+execs a
-Python file into a fresh ``types.ModuleType``, registered in
-``sys.modules`` under a synthetic name, with no ``__pycache__/``
-pollution. Used by every cartridge.* loader that materialises Python
-sources from disk (tools, hooks, resources, single-file tools,
-scaffolded modules).
+Direct tool, hook, and resource loading uses :func:`_import_module_from_path`.
+Ordinary helper imports use source-only loading for Python's standard loader.
+Custom host loaders retain their behavior.
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from importlib.machinery import ModuleSpec, PathFinder, SourceFileLoader
 from pathlib import Path
+from types import CodeType, ModuleType
 from typing import Any
 
 from looplet.cartridge._layout import CartridgeSerializationError
+
+
+class _CartridgeSourceLoader(SourceFileLoader):
+    def get_code(self, fullname: str) -> CodeType:
+        path = self.get_filename(fullname)
+        return self.source_to_code(self.get_data(path), path)
+
+
+class _CartridgeSourceFinder:
+    def __init__(self, root: Path) -> None:
+        self.root = root.resolve()
+
+    def find_spec(
+        self,
+        fullname: str,
+        path: Sequence[str] | None = None,
+        target: ModuleType | None = None,
+    ) -> ModuleSpec | None:
+        spec = PathFinder.find_spec(fullname, path)
+        if spec is None or spec.origin is None or type(spec.loader) is not SourceFileLoader:
+            return None
+        if not Path(spec.origin).resolve().is_relative_to(self.root):
+            return None
+        spec.loader = _CartridgeSourceLoader(fullname, spec.origin)
+        return spec
 
 
 def _import_module_from_path(path: Path, module_name: str) -> Any:

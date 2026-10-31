@@ -1294,9 +1294,9 @@ class _ReplayLLMBackend:
     ``from looplet.provenance import _ReplayLLMBackend`` if you need
     low-level control.
 
-    Raises :class:`RuntimeError` if the loop asks for more LLM calls
-    than were recorded, or if ``generate_with_tools`` is requested but
-    the recorded call used plain ``generate`` (or vice versa).
+    Raises :class:`TerminalLLMError` on exhaustion and :class:`RuntimeError`
+    on a protocol mismatch. The public replay loops handle these errors
+    as failed runs; they do not propagate them to the caller.
     """
 
     def __init__(self, calls: list[dict[str, Any]]) -> None:
@@ -1600,12 +1600,14 @@ def replay_loop(
     Yields:
         :class:`Step` objects from the replay.
 
+    Exhaustion stops the run with status ``failed`` and termination reason
+    ``replay_exhausted``. A protocol mismatch uses the normal model-call
+    failure path and reason ``llm_error``. Neither raises to the caller.
+    Pass ``state`` and inspect ``RunResult.from_state(state)`` after iteration.
+
     Raises:
         FileNotFoundError: ``trace_dir`` has no manifest or response files.
         ValueError: Saved replay defaults have an invalid shape.
-        RuntimeError: The replay loop requests more calls than were
-            recorded, or the method (``generate`` vs
-            ``generate_with_tools``) diverges from what was recorded.
 
     Example::
 

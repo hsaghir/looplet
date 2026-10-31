@@ -29,7 +29,7 @@ It is not in PyPI `0.4.1`.
 Install this fixed revision in a virtual environment:
 
 ```bash
-python -m pip install "looplet @ https://github.com/hsaghir/looplet/archive/bfe4e477229a05c4430acb9cce98ee77fcf79538.zip"
+python -m pip install "looplet @ https://github.com/hsaghir/looplet/archive/a866b0ad27be5d9b3119e41d2573503687ac794b.zip"
 ```
 
 This example uses fixed model responses.

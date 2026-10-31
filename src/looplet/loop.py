@@ -1493,6 +1493,7 @@ def _iter_event_decisions(
     event: Any,
     *,
     fail_closed: bool = False,
+    _audit_hooks: list[Any] | None = None,
     **payload_kwargs: Any,
 ) -> Generator[Any, None, None]:
     """Yield each decision before invoking the next event subscriber."""
@@ -1527,7 +1528,7 @@ def _iter_event_decisions(
             decision = normalize_hook_return(result, slot=getattr(event, "value", str(event)))
             if event != _LE.HOOK_DECISION and not result.is_noop():
                 _emit_hook_decision_event(
-                    hooks,
+                    hooks if _audit_hooks is None else _audit_hooks,
                     decision=result,
                     hook_slot="on_event",
                     hook_name=type(hook).__name__,
@@ -1560,6 +1561,7 @@ async def _iter_event_decisions_async(
     event: Any,
     *,
     fail_closed: bool = False,
+    _audit_hooks: list[Any] | None = None,
     **payload_kwargs: Any,
 ) -> AsyncIterator[Any]:
     """Await and yield each decision before invoking the next subscriber."""
@@ -1598,7 +1600,7 @@ async def _iter_event_decisions_async(
             decision = normalize_hook_return(result, slot=getattr(event, "value", str(event)))
             if event != _LE.HOOK_DECISION and not result.is_noop():
                 await _emit_hook_decision_event_async(
-                    hooks,
+                    hooks if _audit_hooks is None else _audit_hooks,
                     decision=result,
                     hook_slot="on_event",
                     hook_name=type(hook).__name__,
@@ -1680,93 +1682,68 @@ async def _intercept_tool_calls_async(
     result = _InterceptResult()
     for tc_idx, tc in enumerate(calls):
         cur_step = step_num + tc_idx
-        decisions = _iter_event_decisions_async(
-            hooks,
-            _LE.PRE_TOOL_USE,
-            fail_closed=True,
-            step_num=cur_step,
-            state=state,
-            session_log=session_log,
-            context=context,
-            tool_call=tc,
-        )
         denied = False
-        async for decision in decisions:
-            if decision.updated_args is not None:
-                tc.args = decision.updated_args
-            if decision.permission == "deny":
-                reason = decision.block or ""
-                message = f"Permission denied for tool '{tc.tool}'"
-                if reason:
-                    message += f": {reason}"
-                error = ToolError(kind=ErrorKind.PERMISSION_DENIED, message=message)
-                result.intercepted[tc_idx] = ToolResult(
-                    tool=tc.tool,
-                    args_summary=_summarize_args_dict(tc.args),
-                    data=None,
-                    error=message,
-                    error_detail=error,
-                )
-                denied = True
-                break
-            if decision.updated_result is not None:
-                result.intercepted[tc_idx] = decision.updated_result
-                break
-            if decision.additional_context:
-                result.extra_context.append(decision.additional_context)
-        if denied:
-            continue
-
-        pre_dispatch_denied = False
         for hook in hooks:
-            if tc_idx in result.intercepted:
-                break
             method = getattr(hook, "pre_dispatch", None)
-            if method is None:
-                continue
-            raw = _invoke_hook(hook, "pre_dispatch", state, session_log, tc, cur_step)
-            if _inspect.isawaitable(raw):
-                raw = await raw
-            decision = normalize_hook_return(raw, slot="pre_dispatch")
-            if decision is None:
-                if raw is not None and isinstance(raw, ToolResult):
-                    result.intercepted[tc_idx] = raw
-                    break
-                continue
-            await _emit_hook_decision_event_async(
-                hooks,
-                decision=decision,
-                hook_slot="pre_dispatch",
-                hook_name=type(hook).__name__,
-                step_num=cur_step,
-                state=state,
-                session_log=session_log,
-                context=context,
-            )
-            if decision.updated_args is not None:
-                tc.args = decision.updated_args
-            if decision.permission == "deny":
-                pre_dispatch_denied = True
-                reason = decision.block or ""
-                message = f"Permission denied for tool '{tc.tool}'"
-                if reason:
-                    message += f": {reason}"
-                error = ToolError(kind=ErrorKind.PERMISSION_DENIED, message=message)
-                result.intercepted[tc_idx] = ToolResult(
-                    tool=tc.tool,
-                    args_summary=_summarize_args_dict(tc.args),
-                    data=None,
-                    error=message,
-                    error_detail=error,
+            if method is not None:
+                raw = _invoke_hook(hook, "pre_dispatch", state, session_log, tc, cur_step)
+                if _inspect.isawaitable(raw):
+                    raw = await raw
+                decision = normalize_hook_return(raw, slot="pre_dispatch")
+                if decision is None:
+                    continue
+                await _emit_hook_decision_event_async(
+                    hooks,
+                    decision=decision,
+                    hook_slot="pre_dispatch",
+                    hook_name=type(hook).__name__,
+                    step_num=cur_step,
+                    state=state,
+                    session_log=session_log,
+                    context=context,
                 )
+                decisions = [decision]
+            else:
+                decisions = [
+                    decision
+                    async for decision in _iter_event_decisions_async(
+                        [hook],
+                        _LE.PRE_TOOL_USE,
+                        fail_closed=True,
+                        _audit_hooks=hooks,
+                        step_num=cur_step,
+                        state=state,
+                        session_log=session_log,
+                        context=context,
+                        tool_call=tc,
+                    )
+                ]
+            for decision in decisions:
+                if decision.updated_args is not None:
+                    tc.args = decision.updated_args
+                if decision.permission == "deny":
+                    reason = decision.block or ""
+                    message = f"Permission denied for tool '{tc.tool}'"
+                    if reason:
+                        message += f": {reason}"
+                    error = ToolError(kind=ErrorKind.PERMISSION_DENIED, message=message)
+                    result.intercepted[tc_idx] = ToolResult(
+                        tool=tc.tool,
+                        args_summary=_summarize_args_dict(tc.args),
+                        data=None,
+                        error=message,
+                        error_detail=error,
+                    )
+                    denied = True
+                    break
+                if decision.updated_result is not None:
+                    result.intercepted[tc_idx] = decision.updated_result
+                    break
+                if decision.additional_context:
+                    result.extra_context.append(decision.additional_context)
+            if denied:
                 break
-            if decision.updated_result is not None:
-                result.intercepted[tc_idx] = decision.updated_result
-                break
-            if decision.additional_context:
-                result.extra_context.append(decision.additional_context)
-
-        if pre_dispatch_denied:
+        if denied:
             continue
         for hook in hooks:
             method = getattr(hook, "check_permission", None)
@@ -1824,53 +1801,52 @@ async def _run_post_dispatch_hooks_async(
     outcome = _PostDispatchOutcome(tool_result=tool_result)
     for hook in hooks:
         method = getattr(hook, "post_dispatch", None)
-        if method is None:
+        if method is not None:
+            raw = _invoke_hook(
+                hook, "post_dispatch", state, session_log, tool_call, tool_result, step_num
+            )
+            if _inspect.isawaitable(raw):
+                raw = await raw
+            decision = normalize_hook_return(raw, slot="post_dispatch")
+            if decision is None:
+                continue
+            await _emit_hook_decision_event_async(
+                hooks,
+                decision=decision,
+                hook_slot="post_dispatch",
+                hook_name=type(hook).__name__,
+                step_num=step_num,
+                state=state,
+                session_log=session_log,
+                context=context,
+            )
+            decisions = [decision]
+        elif emit_lifecycle:
+            event = _LE.POST_TOOL_FAILURE if tool_result.error else _LE.POST_TOOL_USE
+            decisions = [
+                decision
+                async for decision in _iter_event_decisions_async(
+                    [hook],
+                    event,
+                    _audit_hooks=hooks,
+                    step_num=step_num,
+                    state=state,
+                    session_log=session_log,
+                    context=context,
+                    tool_call=tool_call,
+                    tool_result=tool_result,
+                )
+            ]
+        else:
             continue
-        raw = _invoke_hook(
-            hook, "post_dispatch", state, session_log, tool_call, tool_result, step_num
-        )
-        if _inspect.isawaitable(raw):
-            raw = await raw
-        decision = normalize_hook_return(raw, slot="post_dispatch")
-        if decision is None:
-            continue
-        await _emit_hook_decision_event_async(
-            hooks,
-            decision=decision,
-            hook_slot="post_dispatch",
-            hook_name=type(hook).__name__,
-            step_num=step_num,
-            state=state,
-            session_log=session_log,
-            context=context,
-        )
-        if decision.updated_result is not None:
-            outcome.tool_result = decision.updated_result
-            tool_result = outcome.tool_result
-        if decision.additional_context:
-            outcome.extra_context.append(decision.additional_context)
-        if decision.stop is not None:
-            outcome.stop_reason = decision.stop
-    if not emit_lifecycle:
-        return outcome
-    event = _LE.POST_TOOL_FAILURE if tool_result.error else _LE.POST_TOOL_USE
-    decisions = await emit_event_async(
-        hooks,
-        event,
-        step_num=step_num,
-        state=state,
-        session_log=session_log,
-        context=context,
-        tool_call=tool_call,
-        tool_result=tool_result,
-    )
-    for decision in decisions:
-        if decision.updated_result is not None:
-            outcome.tool_result = decision.updated_result
-        if decision.additional_context:
-            outcome.extra_context.append(decision.additional_context)
-        if decision.stop is not None:
-            outcome.stop_reason = decision.stop
+        for decision in decisions:
+            if decision.updated_result is not None:
+                outcome.tool_result = decision.updated_result
+                tool_result = outcome.tool_result
+            if decision.additional_context:
+                outcome.extra_context.append(decision.additional_context)
+            if decision.stop is not None:
+                outcome.stop_reason = decision.stop
     return outcome
 
 
@@ -2335,99 +2311,68 @@ def _intercept_tool_calls(
 
     for tc_idx, tc in enumerate(calls):
         cur_step = step_num + tc_idx
-
-        # ── Event-style hooks (on_event) ────────────────────
-        _pre_tool_decisions = _iter_event_decisions(
-            hooks,
-            _LE.PRE_TOOL_USE,
-            fail_closed=True,
-            step_num=cur_step,
-            state=state,
-            session_log=session_log,
-            context=context,
-            tool_call=tc,
-        )
-        _denied = False
-        for _d in _pre_tool_decisions:
-            if _d.updated_args is not None:
-                tc.args = _d.updated_args
-            if _d.permission == "deny":
-                _prefix = f"Permission denied for tool '{tc.tool}'"
-                _reason = _d.block or ""
-                _msg = f"{_prefix}: {_reason}" if _reason else _prefix
-                _te = ToolError(
-                    kind=ErrorKind.PERMISSION_DENIED,
-                    message=_msg,
-                    retriable=False,
-                )
-                result.intercepted[tc_idx] = ToolResult(
-                    tool=tc.tool,
-                    args_summary=_summarize_args_dict(tc.args),
-                    data=None,
-                    error=_te.message,
-                    error_detail=_te,
-                )
-                _denied = True
-                break
-            if _d.updated_result is not None:
-                result.intercepted[tc_idx] = _d.updated_result
-                break
-            if _d.additional_context:
-                result.extra_context.append(_d.additional_context)
-        if _denied:
-            continue
-
-        # ── Per-method pre_dispatch hooks ───────────────────
-        pre_dispatch_denied = False
+        denied = False
         for hook in hooks:
-            if tc_idx in result.intercepted:
-                break
-            if not hasattr(hook, "pre_dispatch"):
-                continue
-            cached = _invoke_hook(hook, "pre_dispatch", state, session_log, tc, cur_step)
-            _decision = normalize_hook_return(cached, slot="pre_dispatch")
-            if _decision is None:
-                if cached is not None and isinstance(cached, ToolResult):
-                    result.intercepted[tc_idx] = cached
+            if hasattr(hook, "pre_dispatch"):
+                cached = _invoke_hook(hook, "pre_dispatch", state, session_log, tc, cur_step)
+                decision = normalize_hook_return(cached, slot="pre_dispatch")
+                if decision is None:
+                    continue
+                _emit_hook_decision_event(
+                    hooks,
+                    decision=decision,
+                    hook_slot="pre_dispatch",
+                    hook_name=type(hook).__name__,
+                    step_num=cur_step,
+                    state=state,
+                    session_log=session_log,
+                    context=context,
+                )
+                decisions = [decision]
+            else:
+                decisions = list(
+                    _iter_event_decisions(
+                        [hook],
+                        _LE.PRE_TOOL_USE,
+                        fail_closed=True,
+                        _audit_hooks=hooks,
+                        step_num=cur_step,
+                        state=state,
+                        session_log=session_log,
+                        context=context,
+                        tool_call=tc,
+                    )
+                )
+            for decision in decisions:
+                if decision.updated_args is not None:
+                    tc.args = decision.updated_args
+                if decision.permission == "deny":
+                    reason = decision.block or ""
+                    message = f"Permission denied for tool '{tc.tool}'"
+                    if reason:
+                        message += f": {reason}"
+                    error = ToolError(
+                        kind=ErrorKind.PERMISSION_DENIED,
+                        message=message,
+                        retriable=False,
+                    )
+                    result.intercepted[tc_idx] = ToolResult(
+                        tool=tc.tool,
+                        args_summary=_summarize_args_dict(tc.args),
+                        data=None,
+                        error=error.message,
+                        error_detail=error,
+                    )
+                    denied = True
                     break
-                continue
-            _emit_hook_decision_event(
-                hooks,
-                decision=_decision,
-                hook_slot="pre_dispatch",
-                hook_name=type(hook).__name__,
-                step_num=cur_step,
-                state=state,
-                session_log=session_log,
-                context=context,
-            )
-            if _decision.updated_args is not None:
-                tc.args = _decision.updated_args
-            if _decision.permission == "deny":
-                pre_dispatch_denied = True
-                _prefix = f"Permission denied for tool '{tc.tool}'"
-                _reason = _decision.block or ""
-                _msg = f"{_prefix}: {_reason}" if _reason else _prefix
-                _te = ToolError(
-                    kind=ErrorKind.PERMISSION_DENIED,
-                    message=_msg,
-                    retriable=False,
-                )
-                result.intercepted[tc_idx] = ToolResult(
-                    tool=tc.tool,
-                    args_summary=_summarize_args_dict(tc.args),
-                    data=None,
-                    error=_te.message,
-                    error_detail=_te,
-                )
+                if decision.updated_result is not None:
+                    result.intercepted[tc_idx] = decision.updated_result
+                    break
+                if decision.additional_context:
+                    result.extra_context.append(decision.additional_context)
+            if denied:
                 break
-            if _decision.updated_result is not None:
-                result.intercepted[tc_idx] = _decision.updated_result
-                break
-            if _decision.additional_context:
-                result.extra_context.append(_decision.additional_context)
-
-        if pre_dispatch_denied:
+        if denied:
             continue
 
         # ── Per-method check_permission hooks ──────────────
@@ -2513,19 +2458,17 @@ def _run_post_dispatch_hooks(
     from looplet.events import LifecycleEvent as _LE  # noqa: PLC0415
 
     outcome = _PostDispatchOutcome(tool_result=tool_result)
-
-    # ── Per-method post_dispatch ───────────────────────────
     for hook in hooks:
-        if not hasattr(hook, "post_dispatch"):
-            continue
-        text = _invoke_hook(
-            hook, "post_dispatch", state, session_log, tool_call, tool_result, step_num
-        )
-        _decision = normalize_hook_return(text, slot="post_dispatch")
-        if _decision is not None:
+        if hasattr(hook, "post_dispatch"):
+            text = _invoke_hook(
+                hook, "post_dispatch", state, session_log, tool_call, tool_result, step_num
+            )
+            decision = normalize_hook_return(text, slot="post_dispatch")
+            if decision is None:
+                continue
             _emit_hook_decision_event(
                 hooks,
-                decision=_decision,
+                decision=decision,
                 hook_slot="post_dispatch",
                 hook_name=type(hook).__name__,
                 step_num=step_num,
@@ -2533,37 +2476,32 @@ def _run_post_dispatch_hooks(
                 session_log=session_log,
                 context=context,
             )
-            if _decision.updated_result is not None:
-                outcome.tool_result = _decision.updated_result
+            decisions = [decision]
+        elif emit_lifecycle:
+            event = _LE.POST_TOOL_FAILURE if tool_result.error else _LE.POST_TOOL_USE
+            decisions = list(
+                _iter_event_decisions(
+                    [hook],
+                    event,
+                    _audit_hooks=hooks,
+                    step_num=step_num,
+                    state=state,
+                    session_log=session_log,
+                    context=context,
+                    tool_call=tool_call,
+                    tool_result=tool_result,
+                )
+            )
+        else:
+            continue
+        for decision in decisions:
+            if decision.updated_result is not None:
+                outcome.tool_result = decision.updated_result
                 tool_result = outcome.tool_result
-            if _decision.additional_context:
-                outcome.extra_context.append(_decision.additional_context)
-            if _decision.stop is not None:
-                outcome.stop_reason = _decision.stop
-
-    if not emit_lifecycle:
-        return outcome
-
-    # ── Event-style POST_TOOL_USE / POST_TOOL_FAILURE ──────
-    _post_tool_event = _LE.POST_TOOL_FAILURE if tool_result.error else _LE.POST_TOOL_USE
-    _post_tool_decisions = emit_event(
-        hooks,
-        _post_tool_event,
-        step_num=step_num,
-        state=state,
-        session_log=session_log,
-        context=context,
-        tool_call=tool_call,
-        tool_result=tool_result,
-    )
-    for _d in _post_tool_decisions:
-        if _d.updated_result is not None:
-            outcome.tool_result = _d.updated_result
-        if _d.additional_context:
-            outcome.extra_context.append(_d.additional_context)
-        if _d.stop is not None:
-            outcome.stop_reason = _d.stop
-
+            if decision.additional_context:
+                outcome.extra_context.append(decision.additional_context)
+            if decision.stop is not None:
+                outcome.stop_reason = decision.stop
     return outcome
 
 
@@ -3118,6 +3056,24 @@ def _composable_loop_impl(
     if stream is not None and _LoopStartEvent is not None and not _has_streaming_hook:
         _task_id = task.get("id", "") if isinstance(task, dict) else str(task)[:80]
         stream.emit(_LoopStartEvent(task_summary=str(_task_id), max_steps=config.max_steps))
+
+    def _save_checkpoint(step_number: int, *, status: str | None = None) -> None:
+        if _ckpt_store is None:
+            return
+        metadata = {"task": str(task)}
+        if status is not None:
+            metadata["status"] = status
+        loop_ctx.step_num = step_number
+        checkpoint = _capture_checkpoint(
+            loop_ctx,
+            step_number=step_number,
+            checkpoint_state=checkpoint_state,
+            metadata={**metadata, **_policy_checkpoint_metadata(state, _ckpt_store)},
+        )
+        _ckpt_store.save(
+            checkpoint,
+            key=f"step_{step_number}" if status is None else f"step_{step_number}_{status}",
+        )
 
     while state.budget_remaining > 0 and not done:
         step_num = state.step_count + 1 + _step_offset
@@ -4046,18 +4002,7 @@ def _composable_loop_impl(
                 _notify_post_step(hooks, state, session_log, cur_step)
 
                 # Save checkpoint after the session log and conversation include this step.
-                if _ckpt_store is not None:
-                    loop_ctx.step_num = cur_step
-                    _checkpoint = _capture_checkpoint(
-                        loop_ctx,
-                        step_number=cur_step,
-                        checkpoint_state=checkpoint_state,
-                        metadata={
-                            "task": str(task),
-                            **_policy_checkpoint_metadata(state, _ckpt_store),
-                        },
-                    )
-                    _ckpt_store.save(_checkpoint, key=f"step_{cur_step}")
+                _save_checkpoint(cur_step)
 
                 if not config.concurrent_dispatch:
                     reason = None
@@ -4174,6 +4119,7 @@ def _composable_loop_impl(
             if gate_warning is not None:
                 logger.info("Quality gate rejected done() at step %d", step_num)
                 quality_gate_message = gate_warning
+                done_metadata["terminal_accepted"] = False
                 # Mirror the gate reason into ``error`` as well as
                 # ``data['rejected']``: builders grepping for errors
                 # otherwise miss schema-level rejections entirely (a
@@ -4201,6 +4147,7 @@ def _composable_loop_impl(
                     recall_key=tool_result.result_key or "",
                 )
                 _notify_post_step(hooks, state, session_log, cur_step)
+                _save_checkpoint(cur_step)
             else:
                 # done() dispatch intentionally bypasses permission checks - it's
                 # a loop signal, not a side-effecting tool. Permission-gating a
@@ -4221,9 +4168,9 @@ def _composable_loop_impl(
                 ):
                     _save_pending_dispatch(
                         _ckpt_store,
-                        calls=tool_calls[done_idx:],
+                        calls=[tool_call],
                         dispatching=[tool_call],
-                        step_number=step_num + len(tool_calls) - 1,
+                        step_number=cur_step,
                         session_log=session_log,
                         conversation_data=_conv.serialize(),
                         config_snapshot={
@@ -4271,17 +4218,11 @@ def _composable_loop_impl(
                     emit_lifecycle=False,
                 )
                 tool_result = _pd_done.tool_result
-                done_data = tool_result.data if isinstance(tool_result.data, dict) else {}
-                rejected_done = tool_result.error is not None or (
-                    done_data.get("rejected") is True or done_data.get("status") == "rejected"
-                )
+                rejected_done = tool_result.error is not None
+                done_metadata["terminal_accepted"] = not rejected_done
                 if rejected_done:
-                    reason = str(
-                        done_data.get("reason")
-                        or done_data.get("error")
-                        or tool_result.error
-                        or "Final answer was not accepted"
-                    )
+                    done_data = tool_result.data if isinstance(tool_result.data, dict) else {}
+                    reason = str(tool_result.error)
                     tool_result.data = {**done_data, "rejected": True, "reason": reason}
                     tool_result.error = reason
                     quality_gate_message = reason
@@ -4324,6 +4265,7 @@ def _composable_loop_impl(
                 )
                 if rejected_done:
                     _notify_post_step(hooks, state, session_log, cur_step)
+                    _save_checkpoint(cur_step)
                     continue
                 _set_run_lifecycle(
                     loop_ctx,
@@ -4334,19 +4276,7 @@ def _composable_loop_impl(
                 )
                 _notify_post_step(hooks, state, session_log, cur_step)
                 # Save checkpoint after done step (after yield, matching non-done pattern)
-                if _ckpt_store is not None:
-                    loop_ctx.step_num = cur_step
-                    _checkpoint = _capture_checkpoint(
-                        loop_ctx,
-                        step_number=cur_step,
-                        checkpoint_state=checkpoint_state,
-                        metadata={
-                            "task": str(task),
-                            "status": "done",
-                            **_policy_checkpoint_metadata(state, _ckpt_store),
-                        },
-                    )
-                    _ckpt_store.save(_checkpoint, key=f"step_{cur_step}_done")
+                _save_checkpoint(cur_step, status="done")
                 done = True
                 stop_reason = "done"
                 # DONE_ACCEPTED is observer-only; the loop is already terminating.

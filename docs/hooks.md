@@ -134,14 +134,24 @@ composable_loop(llm, tools=reg, hooks=hooks, ...)
 ```
 
 - `pre_prompt`: All non-None returns are concatenated into the briefing
-- `pre_dispatch`: Argument rewrites flow in order; the first denial or cached result short-circuits dispatch.
+- `pre_dispatch`: Argument rewrites flow in order. Cached results skip tool execution, but remaining hooks still run. A denial stops the pass.
 - `check_permission`: All permission gates must allow; an allow does not override another denial.
 - `post_dispatch`: Result rewrites flow in order; context accumulates and stop requests retain their reasons.
 - `check_done`: The first blocking decision rejects completion; a nonblocking decision does not.
 - `should_stop`: The first stop decision or legacy True stops the loop.
 
-**Source preview:** Event-style `pre_tool_use` hooks apply rewrites before the next hook runs.
-Cached event results still pass through `check_permission`.
+**Source preview:** `pre_dispatch` and event-style `pre_tool_use` share one pass in registration order.
+Each argument rewrite is visible to the next hook, regardless of its style.
+If a hook implements both forms, only its method-style callback runs for that point.
+A denial stops this pass.
+Cached results remain subject to later hooks, including event-style permission policies.
+
+`check_permission` runs afterward on the final arguments, including cached calls.
+Use it for policies that must check the final arguments.
+Place event-style permission policies after argument-rewriting hooks.
+
+`post_dispatch` and the matching `post_tool_use` or `post_tool_failure` event also share one ordered pass.
+Each result replacement is visible to the next hook.
 Exceptions at tool gates stop dispatch.
 Exceptions in other lifecycle observers are logged.
 Standalone `emit_event()` calls still log observer failures and continue.

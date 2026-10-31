@@ -1922,6 +1922,7 @@ async def _async_composable_loop_impl(
             )
 
             if gate_warning is not None:
+                done_metadata["terminal_accepted"] = False
                 tool_result = ToolResult(
                     tool=done_tool_name,
                     args_summary="rejected",
@@ -1983,9 +1984,9 @@ async def _async_composable_loop_impl(
                 ):
                     await _save_pending_dispatch(
                         _ckpt_store,
-                        calls=tool_calls[done_idx:],
+                        calls=[tool_call],
                         dispatching=[tool_call],
-                        step_number=step_num + len(tool_calls) - 1,
+                        step_number=cur_step,
                         session_log=session_log,
                         conversation_data=_conv.serialize(),
                         config_snapshot={
@@ -2029,17 +2030,11 @@ async def _async_composable_loop_impl(
                     emit_lifecycle=False,
                 )
                 tool_result = _pd_done.tool_result
-                done_data = tool_result.data if isinstance(tool_result.data, dict) else {}
-                rejected_done = tool_result.error is not None or (
-                    done_data.get("rejected") is True or done_data.get("status") == "rejected"
-                )
+                rejected_done = tool_result.error is not None
+                done_metadata["terminal_accepted"] = not rejected_done
                 if rejected_done:
-                    reason = str(
-                        done_data.get("reason")
-                        or done_data.get("error")
-                        or tool_result.error
-                        or "Final answer was not accepted"
-                    )
+                    done_data = tool_result.data if isinstance(tool_result.data, dict) else {}
+                    reason = str(tool_result.error)
                     tool_result.data = {**done_data, "rejected": True, "reason": reason}
                     tool_result.error = reason
                     post_dispatch_parts.append(reason)
@@ -2062,6 +2057,7 @@ async def _async_composable_loop_impl(
                 )
                 if rejected_done:
                     await _notify_post_step_async(hooks, state, session_log, cur_step)
+                    await _save_checkpoint(cur_step)
                     continue
                 _set_run_lifecycle(
                     loop_ctx,

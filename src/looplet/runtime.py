@@ -8,7 +8,7 @@ import threading
 import time
 from collections.abc import Iterator, MutableSequence
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Iterable
 from uuid import uuid4
 
@@ -386,6 +386,11 @@ class AgentRuntime:
                     task=task,
                     extra_hooks=[*extra_hooks, *execution.hooks],
                 )
+            except asyncio.CancelledError:
+                execution.result = replace(
+                    RunResult.from_state(self.preset.state), run_envelope=run_envelope
+                )
+                raise
             except Exception as exc:  # noqa: BLE001
                 execution.result = _failed_runtime_result(self.preset.state, run_envelope, exc)
             return execution.result

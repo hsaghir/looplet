@@ -125,6 +125,18 @@ def _build_demo_preset() -> AgentPreset:
     )
 
 
+def _helper_cartridge(root: Path, contents: bytes) -> Path:
+    from looplet.cartridge.scaffold import scaffold_cartridge
+
+    root = scaffold_cartridge(root, name="helper-export", tools=["lookup"])
+    (root / "export_policy.py").write_bytes(contents)
+    (root / "tools/lookup/tool.yaml").write_text("name: lookup\nparameters: {}\n")
+    (root / "tools/lookup/execute.py").write_text(
+        'from export_policy import VALUE\ndef execute():\n    return {"value": VALUE}\n'
+    )
+    return root
+
+
 # ── basic IO ────────────────────────────────────────────────────
 
 
@@ -232,6 +244,128 @@ def test_export_overwrite_preserves_unmanaged_symlinks(tmp_path):
     assert (out / "application.txt").is_symlink()
     assert (out / "application.txt").readlink() == external
     assert external.read_text() == "Keep this application-owned data."
+
+
+@pytest.mark.parametrize("strict", [False, True])
+@pytest.mark.parametrize(
+    "kind", ["identical", "different", "symlink", "dangling", "relative-dangling"]
+)
+def test_export_helper_conflicts_are_explicit_and_preserve_existing_paths(tmp_path, strict, kind):
+    source = _helper_cartridge(tmp_path / "source", b'VALUE = "previous"\n')
+    out = tmp_path / "snapshot"
+    with cartridge_to_preset(source, strict=True) as original:
+        preset_to_cartridge(original, out, strict=True)
+    contents = b'VALUE = "current"\n'
+    (source / "export_policy.py").write_bytes(contents)
+    target = out / "export_policy.py"
+    external = tmp_path / "host_policy.py"
+    if kind == "identical":
+        target.write_bytes(contents)
+    elif kind in {"symlink", "dangling"}:
+        target.unlink()
+        if kind == "symlink":
+            external.write_bytes(b'VALUE = "host"\n')
+        target.symlink_to(external)
+    elif kind == "relative-dangling":
+        target.unlink()
+        target.symlink_to("missing_policy.py")
+    notes = out / "notes.txt"
+    notes.write_text("Preserve application-owned files.\n")
+    target_before = target.readlink() if target.is_symlink() else target.read_bytes()
+    external_before = external.read_bytes() if external.is_file() else None
+    before = {
+        str(path.relative_to(out)): path.read_bytes()
+        for path in out.rglob("*")
+        if path.is_file() and not path.is_symlink()
+    }
+    with cartridge_to_preset(source, strict=True) as current:
+        call = ToolCall(tool="lookup", args={})
+        assert current.tools.dispatch(call).data == {"value": "current"}
+        if strict and kind != "identical":
+            with pytest.raises(CartridgeSerializationError, match="helper.*conflict"):
+                preset_to_cartridge(current, out, overwrite=True, strict=True)
+            assert {
+                str(path.relative_to(out)): path.read_bytes()
+                for path in out.rglob("*")
+                if path.is_file() and not path.is_symlink()
+            } == before
+        else:
+            written = preset_to_cartridge(current, out, overwrite=True, strict=strict)
+            conflicts = [
+                warning for warning in written.serialization_warnings if "conflict" in warning
+            ]
+            assert bool(conflicts) is (kind != "identical")
+        fresh = preset_to_cartridge(current, tmp_path / "fresh", strict=True)
+    assert (target.readlink() if target.is_symlink() else target.read_bytes()) == target_before
+    assert (external.read_bytes() if external.is_file() else None) == external_before
+    assert not (out / "missing_policy.py").exists()
+    assert notes.read_text() == "Preserve application-owned files.\n"
+    with cartridge_to_preset(fresh.path, strict=True) as restored:
+        result = restored.tools.dispatch(ToolCall(tool="lookup", args={}))
+        assert result.error is None
+        assert result.data == {"value": "current"}
+
+
+@pytest.mark.parametrize("strict", [False, True])
+@pytest.mark.parametrize("fault", ["read", "write"])
+@pytest.mark.parametrize("initial", ["missing", "empty", "existing"])
+def test_export_helper_io_failures_follow_strictness_and_preserve_files(
+    tmp_path, monkeypatch, strict, fault, initial
+):
+    source = _helper_cartridge(tmp_path / "source", b'VALUE = "current"\n')
+    out = tmp_path / "snapshot"
+    if initial != "missing":
+        out.mkdir()
+    if initial == "existing":
+        (out / "notes.txt").write_text("Preserve application-owned files.\n")
+    before = {
+        str(path.relative_to(out)): path.read_bytes() for path in out.rglob("*") if path.is_file()
+    }
+    method_name = "read_bytes" if fault == "read" else "write_bytes"
+    original = getattr(Path, method_name)
+
+    def fail_helper_io(path, *args, **kwargs):
+        if path.name == "export_policy.py":
+            raise OSError("injected helper I/O failure")
+        return original(path, *args, **kwargs)
+
+    with cartridge_to_preset(source, strict=True) as preset:
+        with monkeypatch.context() as patch:
+            patch.setattr(Path, method_name, fail_helper_io)
+            if strict:
+                with pytest.raises(CartridgeSerializationError, match="export_policy.py.*I/O"):
+                    preset_to_cartridge(preset, out, overwrite=True, strict=True)
+            else:
+                written = preset_to_cartridge(preset, out, overwrite=True)
+                assert any(
+                    "export_policy.py" in warning and "I/O" in warning
+                    for warning in written.serialization_warnings
+                )
+    if strict:
+        assert out.exists() is (initial != "missing")
+        assert {
+            str(path.relative_to(out)): path.read_bytes()
+            for path in out.rglob("*")
+            if path.is_file()
+        } == before
+    else:
+        assert (out / "cartridge.json").is_file()
+        assert not (out / "export_policy.py").exists()
+        for relative, contents in before.items():
+            assert (out / relative).read_bytes() == contents
+
+
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-8-sig", "latin-1"])
+def test_export_preserves_helper_source_bytes(tmp_path, encoding):
+    contents = f"# coding: {encoding}\nVALUE = 'caf\u00e9'\n".encode(encoding)
+    source = _helper_cartridge(tmp_path / "source", contents)
+    with cartridge_to_preset(source, strict=True) as preset:
+        written = preset_to_cartridge(preset, tmp_path / "snapshot", strict=True)
+    assert (written.path / "export_policy.py").read_bytes() == contents
+    with cartridge_to_preset(written.path, strict=True) as restored:
+        result = restored.tools.dispatch(ToolCall(tool="lookup", args={}))
+        assert result.error is None
+        assert result.data == {"value": "caf\u00e9"}
 
 
 @pytest.mark.parametrize("initial", ["missing", "empty", "existing"])

@@ -43,11 +43,13 @@ from looplet.cartridge._layout import (
 )
 from looplet.cartridge._manifest import Cartridge, CartridgeCompatibility
 from looplet.cartridge._render import (
+    _RUNTIME_PLACEHOLDER,
     _DataclassReprFailed,
     _hook_class,
     _render_dataclass_kwargs,
     _safe_filename,
 )
+from looplet.cartridge._resources import _REF_PATTERN
 from looplet.cartridge._yaml import _dump_yaml, _load_yaml
 from looplet.refs import _REF_PREFIX, _resource_origin, resource_ref_for
 
@@ -467,7 +469,7 @@ def _write_preset_to_cartridge(
     # snapshot stays self-contained. Without this, hooks / tools /
     # resources that import from these helpers crash on cross-process
     # reload with ``ModuleNotFoundError``.
-    _copy_workspace_helpers(preset, root, warnings)
+    _copy_workspace_helpers(preset, root, warnings, strict=strict)
 
     imports = _python_import_dependencies(root)
     if imports:
@@ -482,7 +484,7 @@ def _write_preset_to_cartridge(
 def _python_import_dependencies(root: Path) -> list[str]:
     imports = set()
     for source in root.rglob("*.py"):
-        if not source.resolve().is_relative_to(root.resolve()):
+        if not source.resolve().is_relative_to(root.resolve()) or not source.is_file():
             continue
         try:
             tree = ast.parse(source.read_bytes())
@@ -588,7 +590,9 @@ def _copy_mcp_bundle(
             warnings.append(f"mcp bundle copy: could not copy {top!r}: {exc}")
 
 
-def _copy_workspace_helpers(preset: Any, dest_root: Path, warnings: list[str]) -> None:
+def _copy_workspace_helpers(
+    preset: Any, dest_root: Path, warnings: list[str], *, strict: bool = False
+) -> None:
     """Copy top-level ``*.py`` helper modules from the preset's source
     workspace (if any) into ``dest_root``.
 
@@ -596,6 +600,9 @@ def _copy_workspace_helpers(preset: Any, dest_root: Path, warnings: list[str]) -
     populated by :func:`cartridge_to_preset` for every preset it
     returns. When the preset was built in-process (no recorded
     origin), this is a no-op - there's nothing to vendor.
+
+    Existing paths are preserved. Conflicts raise in strict mode and
+    produce a serialization warning otherwise.
     """
     src_root = _preset_origin_root(preset)
     if src_root is None:
@@ -605,15 +612,31 @@ def _copy_workspace_helpers(preset: Any, dest_root: Path, warnings: list[str]) -
         return
 
     for helper in sorted(src_root.glob("*.py")):
-        if helper.name in {"__init__.py", CartridgeLayout.SETUP_PY}:
+        if helper.name in {"__init__.py", CartridgeLayout.SETUP_PY} or not helper.is_file():
             continue
         dest_file = dest_root / helper.name
-        if dest_file.exists():
-            continue
         try:
-            dest_file.write_text(helper.read_text(encoding="utf-8"), encoding="utf-8")
+            contents = helper.read_bytes()
+            if dest_file.exists() or dest_file.is_symlink():
+                if (
+                    dest_file.is_symlink()
+                    or not dest_file.is_file()
+                    or dest_file.read_bytes() != contents
+                ):
+                    msg = (
+                        f"workspace helper {helper.name!r} conflicts with an existing destination path. "
+                        "Export to a new directory."
+                    )
+                    if strict:
+                        raise CartridgeSerializationError(msg)
+                    warnings.append(msg)
+                continue
+            dest_file.write_bytes(contents)
         except OSError as exc:
-            warnings.append(f"workspace-helper copy: could not copy {helper.name}: {exc}")
+            msg = f"workspace-helper copy: could not copy {helper.name}: {exc}"
+            if strict:
+                raise CartridgeSerializationError(msg) from exc
+            warnings.append(msg)
 
 
 def _write_resources_for_refs(
@@ -638,14 +661,16 @@ def _write_resources_for_refs(
     placeholder with a real builder (the comment header explains
     how).
     """
-    # Walk every hook's to_config() output and collect unique @<name> refs
+    # Walk each hook's serialized kwargs and collect unique @<name> refs
     # paired with the actual constructor-arg value the hook holds.
     refs_seen: dict[str, Any] = {}
     for hook in hooks:
-        if not hasattr(hook, "to_config") or not callable(hook.to_config):
-            continue
         try:
-            cfg = hook.to_config()
+            cfg = (
+                hook.to_config()
+                if callable(getattr(hook, "to_config", None))
+                else _infer_hook_kwargs_from_init(hook)
+            )
         except Exception:  # noqa: BLE001
             continue
         if not isinstance(cfg, dict):
@@ -1276,12 +1301,25 @@ def _write_hook(hook: Any, hooks_root: Path, index: int, warnings: list[str], st
             warnings.append(msg)
             cfg_payload["kwargs"] = {}
     else:
-        cfg_payload["kwargs"] = _infer_hook_kwargs_from_init(hook)
+        cfg_payload["kwargs"] = _infer_hook_kwargs_from_init(hook, warnings=warnings, strict=strict)
 
     (hook_dir / "config.yaml").write_text(_dump_yaml(cfg_payload) + "\n", encoding="utf-8")
 
 
-def _infer_hook_kwargs_from_init(hook: Any) -> dict[str, Any]:
+def _contains_literal_reference(value: Any) -> bool:
+    """Check inferred JSON values for the loader's reserved reference tokens."""
+    if isinstance(value, str):
+        return value.startswith(_REF_PREFIX) or _REF_PATTERN.match(value) is not None
+    if isinstance(value, dict):
+        return any(_contains_literal_reference(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_literal_reference(item) for item in value)
+    return False
+
+
+def _infer_hook_kwargs_from_init(
+    hook: Any, *, warnings: list[str] | None = None, strict: bool = False
+) -> dict[str, Any]:
     """Infer ``kwargs`` for a hook config by introspecting its
     ``__init__`` signature and reading matching attributes off the
     instance.
@@ -1292,8 +1330,10 @@ def _infer_hook_kwargs_from_init(hook: Any) -> dict[str, Any]:
     re-emitted as their original ``@<name>`` ref so the round-tripped
     cartridge resolves them via the same mechanism.
 
-    Skips parameters whose value couldn't be located (defensive - the
-    user can fix the hook config manually if needed).
+    Nested JSON values use the existing YAML codec. Unsupported values
+    raise in strict mode or produce a serialization warning.
+    Literal reference tokens and runtime placeholders are unsupported inferred values.
+    Parameters without matching attributes are skipped.
     """
     kwargs: dict[str, Any] = {}
     try:
@@ -1321,22 +1361,26 @@ def _infer_hook_kwargs_from_init(hook: Any) -> dict[str, Any]:
         if ref is not None:
             kwargs[p_name] = ref
             continue
-        # Plain JSON-serialisable scalar? Pass through.
-        if value is None or isinstance(value, (bool, int, float, str)):
-            kwargs[p_name] = value
+        candidate = list(value) if isinstance(value, tuple) else value
+        try:
+            json.dumps(candidate, allow_nan=False)
+            payload = {"value": candidate}
+            encoded = _dump_yaml(payload)
+            if _load_yaml(encoded) != payload:
+                raise ValueError("YAML encoding changes the constructor value")
+            if _contains_literal_reference(candidate) or _RUNTIME_PLACEHOLDER.search(encoded):
+                raise ValueError("Reference resolution changes the constructor value")
+        except (TypeError, ValueError, RecursionError, CartridgeSerializationError) as exc:
+            msg = (
+                f"hook {type(hook).__name__!r} parameter {p_name!r} "
+                "cannot round-trip as cartridge YAML"
+            )
+            if strict:
+                raise CartridgeSerializationError(msg) from exc
+            if warnings is not None:
+                warnings.append(msg)
             continue
-        if isinstance(value, (list, tuple)) and all(
-            isinstance(x, (bool, int, float, str)) for x in value
-        ):
-            kwargs[p_name] = list(value)
-            continue
-        if isinstance(value, dict) and all(
-            isinstance(v, (bool, int, float, str, type(None))) for v in value.values()
-        ):
-            kwargs[p_name] = dict(value)
-            continue
-        # Otherwise: skip (can't safely round-trip). The user can
-        # supply a manual config or implement to_config().
+        kwargs[p_name] = candidate
     return kwargs
 
 

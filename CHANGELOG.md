@@ -35,6 +35,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 ### Changed
 
 - Cartridge helper loading preserves custom host path-entry loaders instead of replacing their source transformations.
+- Strict constructor inference rejects literal reference tokens and runtime placeholders that would change during loading.
+- Evidence-flush failures retain original external cancellation and cancelled run status. Ordinary persistence failures still propagate. Cancelled persistence callbacks no longer loop indefinitely.
 - Sync and async loops share one run-setup path. Automatic persistence and compaction bindings no longer overwrite caller configuration.
 - Overlapping runs retain independent default compaction services. Explicit host services keep their identity and replacement precedence.
 - The policy example reports saved progress and remaining sections on reads and writes. Progress survives compaction without an added loop policy.
@@ -107,6 +109,10 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - Replay documentation describes failed run states for exhausted captures and protocol divergence instead of promising caller-visible exceptions.
 - Handled terminal failures and completion-gate rejections save complete recovery checkpoints in both loops. Terminal pending records exclude ignored trailing calls. Real interrupted dispatches still require host reconciliation.
 - Cartridge loads and reloads read current helper source, including packages and resources. Existing bytecode caches remain unchanged.
+- Hook constructor export preserves nested JSON/YAML settings and inferred resource references. Unsupported values now warn or fail in strict mode.
+- Cartridge overwrite reports helper conflicts without replacing application files or following destination links. Fresh exports preserve helper source bytes.
+- External async cancellation saves a cancelled runtime result and any configured terminal checkpoint. The original `CancelledError` still propagates.
+- Coding presets invalidate test evidence after write, edit, or shell calls and between runs. Errored test results cannot satisfy completion.
 - Event-style tool gates apply argument rewrites in order, check permissions for cached results, and stop dispatch on callback failures.
 - Captured-response replay preserves alternate completion tools when using recorded defaults and honors explicit host configuration.
 - Hook validation warns about likely method-name typos even when another hook method is valid.

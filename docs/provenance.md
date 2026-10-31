@@ -32,6 +32,9 @@ for step in replay_loop(trace_dir, tools=tools):
     print(step.pretty())
 ```
 
+**Source preview:** Default replay restores recorded primary and alternate terminal tool names.
+An explicit `config` overrides those defaults.
+
 **Two primitives, one facade, two extras:**
 
 | Class / function               | What it does                                              | Implements                       |

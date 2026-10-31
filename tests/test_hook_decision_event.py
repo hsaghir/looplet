@@ -18,6 +18,146 @@ from looplet.testing import MockLLMBackend
 from looplet.tools import ToolSpec
 
 
+@pytest.mark.parametrize("async_mode", ["sync", "async", "async_hooks"])
+@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize(
+    "case",
+    ["rewrite", "block", "cache", "failure", "allow_rewrite", "allow_cache", "observer_failure"],
+)
+async def test_pre_tool_event_preserves_permission_contract(async_mode, native, case):
+    import json
+    from types import SimpleNamespace
+
+    from looplet import Deny, HookDecision, ToolResult, run_result, run_result_async
+
+    effects = []
+    checked_scopes = []
+
+    def read_resource(scope: str) -> dict:
+        effects.append(scope)
+        return {"scope": scope}
+
+    class Backend:
+        calls = 0
+
+        def generate(self, prompt, **kwargs):
+            self.calls += 1
+            return json.dumps(
+                {"tool": "read_resource", "args": {"scope": "public"}}
+                if self.calls == 1
+                else {"tool": "done", "args": {"summary": "finished"}}
+            )
+
+        def generate_with_tools(self, prompt, **kwargs):
+            self.calls += 1
+            return [
+                {
+                    "type": "tool_use",
+                    "id": str(self.calls),
+                    "name": "read_resource" if self.calls == 1 else "done",
+                    "input": {"scope": "public"} if self.calls == 1 else {"summary": "finished"},
+                }
+            ]
+
+    class Intercept:
+        def on_event(self, payload):
+            if case == "observer_failure" and payload.event is LifecycleEvent.POST_TOOL_USE:
+                raise RuntimeError("observer unavailable")
+            if (
+                payload.event is not LifecycleEvent.PRE_TOOL_USE
+                or payload.tool_call.tool != "read_resource"
+            ):
+                return None
+            if case == "failure":
+                raise RuntimeError("policy lookup unavailable")
+            if case in {"rewrite", "block", "allow_rewrite"}:
+                return HookDecision(updated_args={"scope": "private"})
+            if case in {"cache", "allow_cache"}:
+                return HookDecision(
+                    updated_result=ToolResult(
+                        tool="read_resource", args_summary="", data="private cached value"
+                    )
+                )
+            return None
+
+    class Permission:
+        def on_event(self, payload):
+            if (
+                case in {"rewrite", "block", "allow_rewrite"}
+                and payload.event is LifecycleEvent.PRE_TOOL_USE
+                and payload.tool_call.tool == "read_resource"
+            ):
+                checked_scopes.append(payload.tool_call.args["scope"])
+                if payload.tool_call.args["scope"] != "public" and case != "allow_rewrite":
+                    decision = Block if case == "block" else Deny
+                    return decision("Only public data is authorized")
+            return None
+
+        def check_permission(self, tool_call, state):
+            if case in {"cache", "allow_cache"} and tool_call.tool == "read_resource":
+                checked_scopes.append(tool_call.args["scope"])
+                return case == "allow_cache"
+            return True
+
+    intercept = Intercept()
+    permission = Permission()
+    if async_mode == "async_hooks":
+
+        async def intercept_event(payload):
+            return intercept.on_event(payload)
+
+        async def permission_event(payload):
+            return permission.on_event(payload)
+
+        async def check_permission(tool_call, state):
+            return permission.check_permission(tool_call, state)
+
+        hooks = [
+            SimpleNamespace(on_event=intercept_event),
+            SimpleNamespace(on_event=permission_event, check_permission=check_permission),
+        ]
+    else:
+        hooks = [intercept, permission]
+    asynchronous = async_mode != "sync"
+    backend = Backend()
+    options = {
+        "task": "Read public data.",
+        "tools": [read_resource],
+        "hooks": hooks,
+        "config": LoopConfig(harness_profile="minimal", max_steps=2, use_native_tools=native),
+    }
+    if case == "failure":
+        with pytest.raises(RuntimeError, match="policy lookup unavailable"):
+            if asynchronous:
+                await run_result_async(backend, **options)
+            else:
+                run_result(backend, **options)
+        assert not effects
+        assert backend.calls == 1
+        return
+
+    result = (
+        await run_result_async(backend, **options)
+        if asynchronous
+        else run_result(backend, **options)
+    )
+    assert result.completed
+    assert backend.calls == 2
+    if case in {"rewrite", "block", "cache"}:
+        assert not effects
+        assert checked_scopes == (["public"] if case == "cache" else ["private"])
+        assert "Permission denied" in result.steps[0].tool_result.error
+        assert result.steps[0].tool_result.data is None
+    else:
+        expected_scope = "private" if case == "allow_rewrite" else "public"
+        assert effects == ([] if case == "allow_cache" else [expected_scope])
+        assert checked_scopes == ([] if case == "observer_failure" else [expected_scope])
+        assert result.steps[0].tool_result.error is None
+        assert result.steps[0].tool_result.data == (
+            "private cached value" if case == "allow_cache" else {"scope": expected_scope}
+        )
+
+
 @pytest.mark.parametrize("async_mode", [False, True])
 @pytest.mark.parametrize("kind", ["normal", "parse", "rejected"])
 @pytest.mark.parametrize("slot", ["pre_event", "post_event", "should_stop"])

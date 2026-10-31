@@ -1741,6 +1741,7 @@ def _prepare_replay(
             "max_turn_continuations",
             "max_tokens",
             "done_tool",
+            "done_tools",
             "max_model_calls",
             "max_assistant_turns",
             "requires_assistant_turn_policy",
@@ -1772,6 +1773,11 @@ def _prepare_replay(
             not isinstance(turn_config["done_tool"], str) or not turn_config["done_tool"]
         ):
             raise ValueError("Recorded done_tool must be a nonempty string")
+        done_tools = turn_config.get("done_tools", [])
+        if not isinstance(done_tools, list) or any(
+            not isinstance(name, str) or not name for name in done_tools
+        ):
+            raise ValueError("Recorded done_tools must be a list of nonempty strings")
         config = LoopConfig(
             max_steps=recorded_steps or fallback_steps,
             use_native_tools=calls[0]["method"] == "generate_with_tools",

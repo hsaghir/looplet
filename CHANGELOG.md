@@ -100,6 +100,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Event-style tool gates apply argument rewrites in order, check permissions for cached results, and stop dispatch on callback failures.
+- Captured-response replay preserves alternate completion tools when using recorded defaults and honors explicit host configuration.
 - Hook validation warns about likely method-name typos even when another hook method is valid.
 - Run-evidence setup errors explain writable-directory and persistence opt-out remedies while preserving the original filesystem error.
 - Package README links use absolute documentation and repository URLs.

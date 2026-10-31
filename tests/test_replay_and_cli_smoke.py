@@ -519,6 +519,83 @@ class TestReplayLoopSmoke:
 
         assert [step.tool_call.tool for step in steps] == ["add"]
 
+    @pytest.mark.parametrize("asynchronous", [False, True])
+    @pytest.mark.parametrize("native", [False, True])
+    @pytest.mark.parametrize("override", [False, True])
+    async def test_replay_preserves_alternate_terminal_unless_overridden(
+        self, tmp_path, asynchronous, native, override
+    ):
+        from looplet import RunResult, async_replay_loop, run_result, run_result_async
+
+        submissions = []
+
+        def submit(answer: str) -> dict:
+            submissions.append(answer)
+            return {"answer": answer}
+
+        class Backend:
+            calls = 0
+
+            def generate(self, prompt, **kwargs):
+                self.calls += 1
+                return '{"tool":"submit","args":{"answer":"42"}}'
+
+            def generate_with_tools(self, prompt, **kwargs):
+                self.calls += 1
+                return [
+                    {
+                        "type": "tool_use",
+                        "id": "submit-1",
+                        "name": "submit",
+                        "input": {"answer": "42"},
+                    }
+                ]
+
+        backend = Backend()
+        sink = ProvenanceSink(dir=tmp_path / "capture")
+        config = LoopConfig(
+            harness_profile="minimal",
+            max_steps=2,
+            use_native_tools=native,
+            done_tools=["submit"],
+        )
+        options = {
+            "tools": tools_from([submit], include_done=True),
+            "config": config,
+            "hooks": [sink.trajectory_hook()],
+        }
+        recorded = sink.wrap_llm(backend)
+        original = (
+            await run_result_async(recorded, **options)
+            if asynchronous
+            else run_result(recorded, **options)
+        )
+        assert original.completed and original.output == {"answer": "42"}
+        assert backend.calls == 1 and submissions == ["42"]
+        trace = sink.flush()
+        before = {path: path.read_bytes() for path in trace.rglob("*") if path.is_file()}
+        state = DefaultState(max_steps=1)
+        replay_options = {
+            "tools": tools_from([submit], include_done=True),
+            "state": state,
+        }
+        if override:
+            replay_options["config"] = LoopConfig(
+                harness_profile="minimal", max_steps=1, use_native_tools=native
+            )
+        if asynchronous:
+            replayed = [step async for step in async_replay_loop(trace, **replay_options)]
+        else:
+            replayed = list(replay_loop(trace, **replay_options))
+        result = RunResult.from_state(state)
+        assert result.completed is not override
+        assert result.termination_reason == ("budget_exhausted" if override else "done")
+        assert result.output == (None if override else {"answer": "42"})
+        assert submissions == ["42", "42"]
+        assert len(replayed) == 1
+        assert config.done_tools == ["submit"]
+        assert {path: path.read_bytes() for path in trace.rglob("*") if path.is_file()} == before
+
     @pytest.mark.parametrize(
         "payload, expected",
         [
@@ -556,6 +633,22 @@ class TestReplayLoopSmoke:
             (
                 '{"metadata": {"run_stats": {"model_turn_config": {"done_tool": ""}}}}',
                 "done_tool must be a nonempty string",
+            ),
+            (
+                '{"metadata": {"run_stats": {"model_turn_config": {"done_tools": "submit"}}}}',
+                "done_tools must be a list of nonempty strings",
+            ),
+            (
+                '{"metadata": {"run_stats": {"model_turn_config": {"done_tools": [""]}}}}',
+                "done_tools must be a list of nonempty strings",
+            ),
+            (
+                '{"metadata": {"run_stats": {"model_turn_config": {"done_tools": [1]}}}}',
+                "done_tools must be a list of nonempty strings",
+            ),
+            (
+                '{"metadata": {"run_stats": {"model_turn_config": {"done_tools": null}}}}',
+                "done_tools must be a list of nonempty strings",
             ),
         ],
     )
